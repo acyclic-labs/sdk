@@ -43,11 +43,11 @@ jobs:
             executable: acyclic
           - target: linux-arm64-gnu
             rust_target: aarch64-unknown-linux-gnu
-            runner: blacksmith-16vcpu-ubuntu-2404-arm
+            runner: blacksmith-32vcpu-ubuntu-2404-arm
             executable: acyclic
           - target: linux-arm64-musl
             rust_target: aarch64-unknown-linux-musl
-            runner: blacksmith-16vcpu-ubuntu-2404-arm
+            runner: blacksmith-32vcpu-ubuntu-2404-arm
             executable: acyclic
           - target: darwin-x64
             rust_target: x86_64-apple-darwin
@@ -67,7 +67,7 @@ jobs:
             executable: acyclic.exe
           - target: win32-arm64
             rust_target: aarch64-pc-windows-msvc
-            runner: blacksmith-4vcpu-windows-2025
+            runner: blacksmith-16vcpu-windows-2025
             executable: acyclic.exe
     runs-on: ${{ matrix.runner }}
     steps:

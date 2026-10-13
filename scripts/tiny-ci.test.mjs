@@ -124,14 +124,24 @@ test('native builds and mount checks overlap qualification and still gate public
  assert.equal(assemble.if,undefined);
  const matrix=build.strategy.matrix.include;
  assert.deepEqual(matrix.map(row=>row.target).sort(),['darwin-arm64','darwin-x64','linux-arm64-gnu','linux-arm64-musl','linux-x64-gnu','linux-x64-musl','win32-arm64','win32-x64']);
+ const windowsArm=matrix.find(row=>row.target==='win32-arm64')??assert.fail('missing Windows ARM64 build');
+ assert.equal(windowsArm.runner,'blacksmith-16vcpu-windows-2025');
+ assert.equal(windowsArm.rust_target,'aarch64-pc-windows-msvc');
+ assert.equal(windowsArm.executable,'acyclic.exe');
+ assert.ok(fs.readFileSync('.github/actionlint.yaml','utf8').includes(windowsArm.runner));
  assert.deepEqual(matrix.filter(row=>row.backend).map(row=>[row.target,row.backend,row.qualifier]),[
   ['linux-x64-gnu','linux-fuse','native-mount-qualify'],
   ['darwin-arm64','macos-nfs','native-mount-qualify'],
   ['win32-x64','windows-projfs','native-mount-qualify.exe'],
  ]);
- for(const target of ['linux-x64-gnu','linux-arm64-gnu','linux-arm64-musl','win32-x64']){
+ for(const [target,runner] of new Map([
+  ['linux-x64-gnu','blacksmith-16vcpu-ubuntu-2404'],
+  ['linux-arm64-gnu','blacksmith-32vcpu-ubuntu-2404-arm'],
+  ['linux-arm64-musl','blacksmith-32vcpu-ubuntu-2404-arm'],
+  ['win32-x64','blacksmith-32vcpu-windows-2025'],
+ ])){
   const row=matrix.find(row=>row.target===target)??assert.fail(target);
-  assert.match(row.runner,target==='win32-x64'?/^blacksmith-32vcpu-windows-2025$/:/blacksmith-16vcpu-/);
+  assert.equal(row.runner,runner);
   assert.ok(fs.readFileSync('.github/actionlint.yaml','utf8').includes(row.runner));
  }
  const steps=build.steps;
