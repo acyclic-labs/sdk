@@ -1,17 +1,26 @@
 use super::*;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+use crate::NativeFutureBundle;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
 
 fn unbound<'a, T>(reason: &'static str) -> BoxFuture<'a, Result<T>> {
     Box::pin(async move { Err(Error::Unsupported(reason.into())) })
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn native_unbound(reason: &'static str) -> Error {
+    Error::NativeBoundary {
+        code: crate::wire::ErrorCode::Unsupported,
+        reason,
+    }
 }
 
 /// Provider boundary for stable durable admission and outcome observation.
 pub trait DurableTaskHost: TaskStateProvider + TaskSpawner {
     /// Native execution support is an allocation-free preflight, not authority.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_execution(
-        &self,
-        _work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<bool> {
+    fn supports_native_execution(&self, _work: &NativeMaterializationWork) -> Result<bool> {
         Ok(false)
     }
 
@@ -36,12 +45,11 @@ pub trait DurableTaskHost: TaskStateProvider + TaskSpawner {
         _step: u32,
         _request_digest: [u8; 32],
         _fence: &'a crate::scheduler::LeaseFence,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "durable host has no original-ledger model claim",
-        })
+        _work: &'a NativeMaterializationWork,
+    ) -> Result<NativeFutureBundle<'a, ()>> {
+        Err(native_unbound(
+            "durable host has no original-ledger model claim",
+        ))
     }
 }
 
@@ -83,23 +91,21 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
     /// Borrows the policy identity on the original work.
     fn policy_identity_with_native_work(
         &self,
-        _work: &acyclic_fs::NativeMaterializationWork,
+        _work: &NativeMaterializationWork,
     ) -> Result<Option<&ComponentIdentity>> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "task state has no original native policy binding source",
-        })
+        Err(native_unbound(
+            "task state has no original native policy binding source",
+        ))
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     /// Borrows the execution identity on the original work.
     fn execution_identity_with_native_work(
         &self,
-        _work: &acyclic_fs::NativeMaterializationWork,
+        _work: &NativeMaterializationWork,
     ) -> Result<Option<&ComponentIdentity>> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "task state has no original native execution binding source",
-        })
+        Err(native_unbound(
+            "task state has no original native execution binding source",
+        ))
     }
     /// Reads the complete immutable admission for cross-provider attestation.
     fn observe_admission<'a>(
@@ -112,13 +118,11 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
     fn observe_admission_with_native_work<'a>(
         &'a self,
         _task: TaskId,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (TaskAdmissionRecord, acyclic_fs::NativeAllocation)>>
-    {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "task state has no original-ledger admission observer",
-        })
+        _work: &'a NativeMaterializationWork,
+    ) -> Result<NativeFutureBundle<'a, (TaskAdmissionRecord, NativeAllocation)>> {
+        Err(native_unbound(
+            "task state has no original-ledger admission observer",
+        ))
     }
     /// Discovers direct owner-retained children with revision-checked pagination.
     fn children<'a>(
@@ -143,12 +147,11 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
         &'a self,
         _task: TaskId,
         _operation: OperationId,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (RuntimeScope, acyclic_fs::NativeAllocation)>> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "task state has no original-ledger scope producer",
-        })
+        _work: &'a NativeMaterializationWork,
+    ) -> Result<NativeFutureBundle<'a, (RuntimeScope, NativeAllocation)>> {
+        Err(native_unbound(
+            "task state has no original-ledger scope producer",
+        ))
     }
 
     /// Observes a terminal result or ordinary pending state without dispatch.
@@ -159,13 +162,11 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
     fn outcome_with_native_work<'a>(
         &'a self,
         _task: TaskId,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<Outcome<Value>>, acyclic_fs::NativeAllocation)>>
-    {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "task state has no original-ledger outcome observer",
-        })
+        _work: &'a NativeMaterializationWork,
+    ) -> Result<NativeFutureBundle<'a, (Option<Outcome<Value>>, NativeAllocation)>> {
+        Err(native_unbound(
+            "task state has no original-ledger outcome observer",
+        ))
     }
     /// Waits for a terminal result; providers may override polling.
     fn wait_outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Outcome<Value>>> {
@@ -194,14 +195,10 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
 
     /// Pure discovery before request validation or future construction.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_interactions(
-        &self,
-        _work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "task state has no original-ledger interaction route",
-        })
+    fn supports_native_interactions(&self, _work: &NativeMaterializationWork) -> Result<()> {
+        Err(native_unbound(
+            "task state has no original-ledger interaction route",
+        ))
     }
 
     /// Native routing is independently replaceable, never an ordinary fallback.
@@ -211,15 +208,13 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
         _task_id: TaskId,
         _operation_id: OperationId,
         _interaction: Interaction,
-        _request_custody: acyclic_fs::NativeAllocation,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (InteractionOutcome, acyclic_fs::NativeAllocation)>>
-    {
+        _request_custody: NativeAllocation,
+        _work: &'a NativeMaterializationWork,
+    ) -> Result<NativeFutureBundle<'a, (InteractionOutcome, NativeAllocation)>> {
         let _paid = (_interaction, _request_custody);
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "task state has no original-ledger interaction route",
-        })
+        Err(native_unbound(
+            "task state has no original-ledger interaction route",
+        ))
     }
     /// Publishes one idempotent ref-only mailbox item.
     fn send<'a>(
@@ -271,23 +266,21 @@ pub trait TaskSpawner: acyclic_stream::ProviderPlatform {
     /// Borrows the policy identity on the original work.
     fn policy_identity_with_native_work(
         &self,
-        _work: &acyclic_fs::NativeMaterializationWork,
+        _work: &NativeMaterializationWork,
     ) -> Result<Option<&ComponentIdentity>> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "task spawner has no original native policy binding source",
-        })
+        Err(native_unbound(
+            "task spawner has no original native policy binding source",
+        ))
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     /// Borrows the execution identity on the original work.
     fn execution_identity_with_native_work(
         &self,
-        _work: &acyclic_fs::NativeMaterializationWork,
+        _work: &NativeMaterializationWork,
     ) -> Result<Option<&ComponentIdentity>> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "task spawner has no original native execution binding source",
-        })
+        Err(native_unbound(
+            "task spawner has no original native execution binding source",
+        ))
     }
     /// Publishes or reconciles one complete caller-identified admission.
     fn admit<'a>(
@@ -307,17 +300,15 @@ pub trait TaskSpawner: acyclic_stream::ProviderPlatform {
     /// Admits a child under its original parent lease.
     fn admit_owned_with_native_work<'a>(
         &'a self,
-        request: (TaskAdmissionRecord, acyclic_fs::NativeAllocation),
-        fence: (crate::scheduler::LeaseFence, acyclic_fs::NativeAllocation),
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Admission<TaskId>, acyclic_fs::NativeAllocation)>>
-    {
+        request: (TaskAdmissionRecord, NativeAllocation),
+        fence: (crate::scheduler::LeaseFence, NativeAllocation),
+        _work: &'a NativeMaterializationWork,
+    ) -> Result<NativeFutureBundle<'a, (Admission<TaskId>, NativeAllocation)>> {
         drop(request);
         drop(fence);
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "task spawner has no original-ledger owned admission producer",
-        })
+        Err(native_unbound(
+            "task spawner has no original-ledger owned admission producer",
+        ))
     }
     /// Observes one possibly lost admission without resubmission.
     fn reconcile_admission<'a>(
@@ -332,20 +323,12 @@ pub trait TaskSpawner: acyclic_stream::ProviderPlatform {
     fn reconcile_admission_with_native_work<'a>(
         &'a self,
         _operation: OperationId,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<
-        crate::NativeFutureBundle<
-            'a,
-            (
-                Option<(TaskId, TaskAdmissionRecord)>,
-                acyclic_fs::NativeAllocation,
-            ),
-        >,
-    > {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "task spawner has no original-ledger admission reconciliation producer",
-        })
+        _work: &'a NativeMaterializationWork,
+    ) -> Result<NativeFutureBundle<'a, (Option<(TaskId, TaskAdmissionRecord)>, NativeAllocation)>>
+    {
+        Err(native_unbound(
+            "task spawner has no original-ledger admission reconciliation producer",
+        ))
     }
     /// Publishes the immutable request before any indexed child admission.
     fn admit_batch<'a>(
@@ -389,12 +372,11 @@ pub trait ExecutionProvider: acyclic_stream::ProviderPlatform {
     /// Borrows the provider identity on the original work.
     fn identity_with_native_work(
         &self,
-        _work: &acyclic_fs::NativeMaterializationWork,
+        _work: &NativeMaterializationWork,
     ) -> Result<&ComponentIdentity> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "execution provider has no original native identity source",
-        })
+        Err(native_unbound(
+            "execution provider has no original native identity source",
+        ))
     }
     /// Durable spawner for this provider's task build and environment.
     fn spawner(&self) -> Arc<dyn TaskSpawner>;
@@ -427,14 +409,10 @@ pub trait InteractionRouter: acyclic_stream::ProviderPlatform {
 
     /// Pure native support discovery, before building a callback future.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_interactions(
-        &self,
-        _work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "interaction router has no original-ledger implementation",
-        })
+    fn supports_native_interactions(&self, _work: &NativeMaterializationWork) -> Result<()> {
+        Err(native_unbound(
+            "interaction router has no original-ledger implementation",
+        ))
     }
 
     /// Moves the paid request into the original owner's guarded journal route.
@@ -443,15 +421,13 @@ pub trait InteractionRouter: acyclic_stream::ProviderPlatform {
         &'a self,
         _operation_id: OperationId,
         _interaction: Interaction,
-        _request_custody: acyclic_fs::NativeAllocation,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (InteractionOutcome, acyclic_fs::NativeAllocation)>>
-    {
+        _request_custody: NativeAllocation,
+        _work: &'a NativeMaterializationWork,
+    ) -> Result<NativeFutureBundle<'a, (InteractionOutcome, NativeAllocation)>> {
         let _paid = (_interaction, _request_custody);
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "interaction router has no original-ledger route",
-        })
+        Err(native_unbound(
+            "interaction router has no original-ledger route",
+        ))
     }
 }
 
