@@ -88,7 +88,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 )?;
                 transaction
                     .checkout
-                    .mutate_owned_with_accounting(operations, ctx, cancellation(ctx))
+                    .apply_mutations(operations, ctx, cancellation(ctx))
                     .await?;
             }
             LazyLookup::Source { source, node } => {

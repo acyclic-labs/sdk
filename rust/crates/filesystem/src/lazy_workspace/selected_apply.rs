@@ -167,7 +167,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                     crate::Transaction::<A, O>::push_mutation(&mut operations, operation, ctx)?;
                     transaction
                         .checkout
-                        .mutate_owned_with_accounting(operations, ctx, cancellation(ctx))
+                        .apply_mutations(operations, ctx, cancellation(ctx))
                         .await?;
                 }
                 let namespace = self.namespace_path(&entry.path, ctx)?;
