@@ -5,7 +5,7 @@
     reason = "one ordered scenario keeps each step next to the state it checks"
 )]
 
-#[path = "support/stream.rs"]
+#[path = "support/stream/mod.rs"]
 mod test_stream;
 
 use acyclic_fs::Fs;

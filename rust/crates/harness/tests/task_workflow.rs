@@ -800,7 +800,7 @@ impl ResumableMachine for TaskMachine {
     }
 }
 
-#[path = "support/stream.rs"]
+#[path = "support/stream/mod.rs"]
 mod fault_stream;
 use fault_stream::{ExecutionFaultMode, LostSessionAck};
 
