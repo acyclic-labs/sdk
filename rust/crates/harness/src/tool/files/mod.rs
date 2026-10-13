@@ -118,7 +118,6 @@ mod projection;
 pub use projection::{FileResultProjection, ReadFileProjection};
 #[cfg(test)]
 mod tests;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use super::value;
 use super::{edit, patch, schema};
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
