@@ -269,22 +269,24 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     }
 
     /// Verifies the current task fence for dispatch or settlement.
-    pub async fn verify(
-        &self,
+    pub fn verify<'a, 'w: 'a>(
+        &'a self,
         settlement: bool,
-        work: &mut Option<&mut dyn crate::store::HistoryIo>,
-    ) -> Result<()> {
-        use crate::distributed::JournalWrite;
-        self.condition(
-            if settlement {
-                JournalWrite::Settlement
-            } else {
-                JournalWrite::Fresh
-            },
-            work,
-        )
-        .await
-        .map(|_| ())
+        work: &'a mut Option<&'w mut dyn crate::store::HistoryIo>,
+    ) -> impl std::future::Future<Output = Result<()>> + acyclic_stream::ProviderTask + 'a {
+        async move {
+            use crate::distributed::JournalWrite;
+            self.condition(
+                if settlement {
+                    JournalWrite::Settlement
+                } else {
+                    JournalWrite::Fresh
+                },
+                work,
+            )
+            .await
+            .map(|_| ())
+        }
     }
 
     pub(super) fn execution_write(
