@@ -42,28 +42,24 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         #[cfg(not(target_arch = "wasm32"))]
-        let native = quota
-            .work()
-            .as_deref()
-            .and_then(|io| io.original_native_work())
-            .cloned();
-        #[cfg(not(target_arch = "wasm32"))]
-        let mut scope = if let Some(native) = &native {
+        let mut scope = if let Some((observer, native)) =
+            quota.work().as_deref_mut().and_then(|observer| {
+                observer
+                    .original_native_work()
+                    .cloned()
+                    .map(|native| (observer, native))
+            }) {
             self.root_scope.validate_narrowing_with_native_work(
                 self.root_scope.grants(),
                 &admission.limits,
-                native,
+                &native,
             )?;
-            let grants = Capabilities::copy(admission.grants.iter(), native)?;
+            let grants = Capabilities::copy(admission.grants.iter(), &native)?;
             let (scope, custody) =
                 self.root_scope
-                    .clone_native_metadata(grants, admission.limits, true, native)?;
+                    .clone_native_metadata(grants, admission.limits, true, &native)?;
             let held = custody.bytes();
-            quota
-                .work()
-                .as_deref_mut()
-                .expect("native scope observer")
-                .absorb_native_custody(custody)?;
+            observer.absorb_native_custody(custody)?;
             quota.adopt(held)?;
             scope
         } else {
