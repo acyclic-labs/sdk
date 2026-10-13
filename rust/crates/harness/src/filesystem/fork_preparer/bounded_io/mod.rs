@@ -360,23 +360,19 @@ impl PreparationIo {
                 if self.original_native_work().is_some() {
                     return Err(match error {
                         Error::NativeWorkspace {
-                            source: WorkspaceError::Work(cause),
-                            custody: None,
-                        } => Error::NativeWork {
-                            cause: acyclic_fs::NativeTreeMaterializationError::Work(cause),
-                            custody: None,
-                        },
-                        Error::NativeWorkspace {
-                            source: WorkspaceError::Cancelled(_),
-                            custody: None,
-                        } => Error::NativeWork {
-                            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
-                            custody: None,
-                        },
-                        Error::NativeWorkspace {
                             source,
                             custody: None,
-                        } => map_error(source),
+                        } => match *source {
+                            WorkspaceError::Work(cause) => Error::NativeWork {
+                                cause: acyclic_fs::NativeTreeMaterializationError::Work(cause),
+                                custody: None,
+                            },
+                            WorkspaceError::Cancelled(_) => Error::NativeWork {
+                                cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+                                custody: None,
+                            },
+                            source => map_error(source),
+                        },
                         error => error,
                     });
                 }
