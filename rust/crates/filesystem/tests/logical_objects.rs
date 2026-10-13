@@ -158,10 +158,9 @@ async fn v2_fs_rejects_invalid_digest_oversize_and_cancellation_before_publicati
     .err()
         .ok_or("oversized put succeeded")?;
     assert_eq!(failure.work.backend_write_operations, 0);
-    assert!(
-        matches!(failure.error, ObjectStoreError::Rejected(ref reason)
-        if reason == "Objects capacity exhausted")
-    );
+    assert!(matches!(failure.error, ObjectStoreError::TooLarge {
+        observed: 9, maximum: 4,
+    }));
     assert!(
         {
             let __object_args = (&[oversized], WorkBudget::UNBOUNDED, &cancel);
