@@ -124,27 +124,30 @@ fn children_page_value(value: wire::ChildrenPageResponse) -> Result<Value> {
         .into_iter()
         .map(|child| json!({ "path": child.path }))
         .collect();
-    let mut result = json!({
-        "hierarchyVersion": STANDARD.encode(value.hierarchy_version),
-        "children": children,
-    });
+    let mut result = serde_json::Map::from_iter([
+        (
+            "hierarchyVersion".into(),
+            json!(STANDARD.encode(value.hierarchy_version)),
+        ),
+        ("children".into(), json!(children)),
+    ]);
     if let Some(next) = value.next_after {
-        result["nextAfter"] = json!(next);
+        result.insert("nextAfter".into(), json!(next));
     }
-    Ok(result)
+    Ok(Value::Object(result))
 }
 
 fn conflict_value(value: &wire::CommitConflict) -> Result<Value> {
     Ok(match value.conflict.as_ref().ok_or("invalid_response")? {
         wire::commit_conflict::Conflict::Tail(value) => {
-            let mut result = json!({
-                "path": value.path,
-                "expectedTail": value.expected.to_string(),
-            });
+            let mut result = serde_json::Map::from_iter([
+                ("path".into(), json!(value.path)),
+                ("expectedTail".into(), json!(value.expected.to_string())),
+            ]);
             if let Some(actual) = value.actual {
-                result["actualTail"] = json!(actual.to_string());
+                result.insert("actualTail".into(), json!(actual.to_string()));
             }
-            result
+            Value::Object(result)
         }
         wire::commit_conflict::Conflict::Exists(value) => json!({
             "path": value.path,

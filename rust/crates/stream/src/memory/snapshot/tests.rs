@@ -227,13 +227,18 @@ async fn malformed_and_over_capacity_snapshots_leave_live_state_unchanged()
     let valid = stream.encode_state().await;
     for length in 0..valid.len() {
         assert_eq!(
-            stream.install_state(&valid[..length]).await,
+            stream
+                .install_state(valid.get(..length).ok_or(StreamError::InvalidArgument)?)
+                .await,
             Err(StreamError::InvalidArgument)
         );
         assert_eq!(stream.encode_state().await, valid);
     }
     let mut impossible_decision = valid.clone();
-    impossible_decision[MAGIC.len()..MAGIC.len() + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+    impossible_decision
+        .get_mut(MAGIC.len()..MAGIC.len() + 8)
+        .ok_or(StreamError::InvalidArgument)?
+        .copy_from_slice(&u64::MAX.to_le_bytes());
     assert_eq!(
         stream.install_state(&impossible_decision).await,
         Err(StreamError::InvalidArgument)
@@ -255,7 +260,9 @@ async fn malformed_and_over_capacity_snapshots_leave_live_state_unchanged()
     // Reject obsolete version markers explicitly, without changing live state.
     for version in *b"024" {
         let mut obsolete = valid.clone();
-        obsolete[MAGIC.len() - 2] = version;
+        *obsolete
+            .get_mut(MAGIC.len() - 2)
+            .ok_or(StreamError::InvalidArgument)? = version;
         assert_eq!(
             stream.install_state(&obsolete).await,
             Err(StreamError::InvalidArgument)

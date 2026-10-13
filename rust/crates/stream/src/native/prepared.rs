@@ -2,7 +2,7 @@ use super::*;
 
 /// A genuine prepared Commit-family ingress.
 pub struct PreparedNativeCommit {
-    future: Option<NativeProviderFuture<'static, CommitOutcome>>,
+    future: NativeProviderFuture<'static, CommitOutcome>,
     recovery: Option<NativeProviderFuture<'static, Option<IdempotencyObservation>>>,
     record: Arc<NativeCommitRecordSlot>,
     maximum_record_bytes: usize,
@@ -16,7 +16,7 @@ impl PreparedNativeCommit {
         maximum_record_bytes: usize,
     ) -> Self {
         Self {
-            future: Some(future),
+            future,
             recovery: Some(recovery),
             record,
             maximum_record_bytes,
@@ -40,26 +40,25 @@ impl PreparedNativeCommit {
             Ok(record)
         };
         self.record.supply(record);
-        self.future
-            .take()
-            .unwrap_or_else(|| NativeProviderFuture::ready(Ok(Err(StreamError::Unavailable))))
+        std::mem::replace(
+            &mut self.future,
+            NativeProviderFuture::ready(Ok(Err(StreamError::Unavailable))),
+        )
     }
 }
 
 impl Drop for PreparedNativeCommit {
     fn drop(&mut self) {
-        if self.future.is_some() {
-            self.record.close();
-        }
+        self.record.close();
     }
 }
 
-/// One private ingress cell, not a journal, authority or request queue.
 type RecordSlotState = (
     Option<Result<OwnedBytes, StreamError>>,
     Option<std::task::Waker>,
 );
 
+/// One private ingress cell, not a journal, authority or request queue.
 pub(crate) struct NativeCommitRecordSlot {
     state: std::sync::Mutex<RecordSlotState>,
     _allocation: acyclic_native_runtime::ReadAllocation,

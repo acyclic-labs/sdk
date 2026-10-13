@@ -8,7 +8,7 @@ pub struct PreparedOwnedBytes<G: Send + Sync + 'static> {
 impl<G: Send + Sync + 'static> PreparedOwnedBytes<G> {
     /// Transfers fully initialized storage and its original owner.
     pub fn new(
-        mut data: Vec<u8>,
+        data: Vec<u8>,
         guard: G,
         meter: &Arc<dyn NativeReadMeter>,
     ) -> Result<Self, PreparedOwnedBytesFailure<G>> {
@@ -19,19 +19,7 @@ impl<G: Send + Sync + 'static> PreparedOwnedBytes<G> {
                 error: PreparedOwnedBytesError::NotFullyInitialized,
             });
         }
-        let mut guard = Some(guard);
-        GuardBundle::new(&mut data, &mut guard, meter)
-            .map(|guard| Self { guard })
-            .map_err(|error| {
-                let Some(original_guard) = guard else {
-                    unreachable!("rejected preparation retains its owner")
-                };
-                PreparedOwnedBytesFailure {
-                    data,
-                    original_guard,
-                    error: PreparedOwnedBytesError::Admission(error),
-                }
-            })
+        GuardBundle::new(data, guard, meter).map(|guard| Self { guard })
     }
     /// Initialized writable bound.
     #[must_use]
@@ -44,7 +32,7 @@ impl<G: Send + Sync + 'static> PreparedOwnedBytes<G> {
     /// Panics if unpublished storage has been shared.
     pub fn writable(&mut self) -> &mut [u8] {
         let Some(guard) = Arc::get_mut(&mut self.guard) else {
-            unreachable!("unpublished storage is unique")
+            unreachable!("prepared storage is never shared before freeze")
         };
         &mut guard.data
     }
