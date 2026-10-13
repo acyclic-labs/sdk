@@ -42,8 +42,27 @@ struct MailEvent {
     sender: TaskId,
     recipient: TaskId,
     message_id: OperationId,
+    schema_revision: u32,
+    route_revision: u32,
     payload: FileRef,
 }
+
+const MAIL_SCHEMA_REVISION: u32 = 1;
+const MAIL_ROUTE_REVISION: u32 = 1;
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MailLocation {
+    sender: TaskId,
+    message_id: OperationId,
+    recipient: TaskId,
+    schema_revision: u32,
+    route_revision: u32,
+    sequence: u64,
+    value_digest: [u8; 32],
+}
+
+const MAX_MAIL_LOCATION_BYTES: usize = 1024;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -101,11 +120,45 @@ fn worker_key(
     )?)
 }
 
+fn canonical_payload<T: Serialize>(
+    value: &T,
+    maximum: u64,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<OwnedBytes> {
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        return io.encode(value, maximum, true);
+    }
+    let _ = io;
+    let bytes = crate::contract::canonical_json_bytes(value)?;
+    if bytes.len() as u64 > maximum {
+        return Err(Error::Invalid(
+            "durable payload exceeds its byte limit".into(),
+        ));
+    }
+    Ok(OwnedBytes::from(bytes))
+}
+
+fn operation_io(
+    work: &Option<&mut dyn crate::store::HistoryIo>,
+) -> Result<Option<crate::executor::PreparationIo>> {
+    if work.is_none() {
+        return Ok(None);
+    }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
+        return crate::executor::PreparationIo::from_native_work(native).map(Some);
+    }
+    Err(Error::Unsupported(
+        "operation requires its original IO context".into(),
+    ))
+}
+
 /// Stream-backed admission and observation for one durable owner. More
 /// specialized wait, mail, interaction, and effect providers can be composed
 /// around this boundary without giving callers a coordinator handle.
 pub struct CoordinatorTaskHost<P> {
-    coordinator: Mutex<DistributedCoordinator<P>>,
+    coordinator: Arc<Mutex<DistributedCoordinator<P>>>,
     stream: Arc<P>,
     payloads: Arc<dyn SchedulerPayloadStore>,
     reader: Arc<dyn ContentResidencyVerifier>,
@@ -115,10 +168,11 @@ pub struct CoordinatorTaskHost<P> {
     root_scope: RuntimeScope,
     tasks: TaskRegistry,
     machines: MachineRegistry,
-    clock: Arc<dyn UnixMillisClock>,
+    pub(crate) clock: Arc<dyn UnixMillisClock>,
     policy: Option<Arc<dyn ToolPolicy>>,
     effects: Option<Arc<dyn DurableEffectObserver>>,
     session_limits: Option<crate::scheduler::SessionLimits>,
+    resource_creation: Vec<Arc<dyn crate::resource_preparation::ResourceCreationProvider>>,
 }
 
 /// One worker's exact task lease, bound to the coordinator's own Stream provider.
@@ -130,6 +184,9 @@ pub struct TaskJournalOwner<P> {
     workflow: crate::workflow::WorkflowAdmission,
     admission: Arc<TaskAdmissionRecord>,
     input_agent: Option<crate::AgentId>,
+    created: Option<Arc<crate::resource_preparation::CreatedResourceAccess>>,
+    read_proof: Option<OperationSpec>,
+    tool_output_schema: Option<Value>,
     invocation_cancellation: Option<acyclic_fs::CancellationToken>,
     root_binding: std::sync::OnceLock<
         Arc<(
@@ -149,6 +206,12 @@ mod admission_read;
 mod authorization;
 mod batch;
 mod control;
+#[cfg(feature = "filesystem")]
+mod created;
+#[cfg(feature = "filesystem")]
+mod created_consume;
+#[cfg(feature = "filesystem")]
+use created_consume::consume_receipts;
 mod dispatch;
 mod host;
 mod journal;
@@ -157,10 +220,18 @@ mod mail;
 mod observations;
 #[cfg(feature = "filesystem")]
 mod owner_access;
+#[cfg(feature = "filesystem")]
+mod preparation;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod readonly;
 #[cfg(feature = "filesystem")]
+mod received_mail;
+#[cfg(feature = "filesystem")]
 mod release;
+#[cfg(feature = "filesystem")]
+mod source_graph;
+#[cfg(feature = "filesystem")]
+mod sources;
 mod timer;
 mod volumes;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

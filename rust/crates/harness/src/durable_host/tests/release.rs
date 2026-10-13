@@ -118,7 +118,9 @@ async fn b19_release_requires_suspended_workflow_and_settled_tool() -> Result<()
             .await?
     );
     assert!(!!matches!(
-        f.host.recover_work(TaskId::from_bytes([1; 16])).await?,
+        f.host
+            .recover_work(TaskId::from_bytes([1; 16]), &mut None)
+            .await?,
         crate::distributed::WorkPull::Idle
     ));
     Ok(())
@@ -180,7 +182,9 @@ async fn b20_public_release_rejects_foreign_bindings() -> Result<()> {
             .is_err()
     );
     assert!(!matches!(
-        f.host.recover_work(TaskId::from_bytes([1; 16])).await?,
+        f.host
+            .recover_work(TaskId::from_bytes([1; 16]), &mut None)
+            .await?,
         crate::distributed::WorkPull::Idle
     ));
     Ok(())
@@ -228,7 +232,9 @@ async fn b21_cancelled_or_zero_read_work_retains_reservation() -> Result<()> {
                 .is_err()
         );
         assert!(!matches!(
-            f.host.recover_work(TaskId::from_bytes([1; 16])).await?,
+            f.host
+                .recover_work(TaskId::from_bytes([1; 16]), &mut None)
+                .await?,
             crate::distributed::WorkPull::Idle
         ));
     }

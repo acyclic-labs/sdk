@@ -56,13 +56,7 @@ async fn publish_lifecycle(
             "root fixture did not produce a new event".into(),
         ));
     };
-    let mut indexed = operations::IndexedPublication::new(
-        reducer.authority(),
-        &event,
-        crate::wire_codec::encode_event(reducer.authority(), &event, &mut None)?,
-        &mut None,
-    )?;
-    publication(client, reducer, &event, &mut indexed, &mut None).await?;
+    let indexed = publication(client, reducer, &event, &mut None).await?;
     let mut request_work = None;
     let (request, _request_hold) = indexed
         .request(
