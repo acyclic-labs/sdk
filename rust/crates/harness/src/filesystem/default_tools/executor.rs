@@ -106,7 +106,7 @@ where
                 .task_host()
                 .verify_dispatch_owner_with_native_work(
                     caller,
-                    owner.journal_owner.task_binding().1,
+                    &owner.journal_owner.task_binding().1,
                     work,
                 )?
                 .await?;
@@ -120,7 +120,7 @@ where
                     .task_host()
                     .verify_dispatch_owner_with_native_work(
                         caller,
-                        owner.journal_owner.task_binding().1,
+                        &owner.journal_owner.task_binding().1,
                         work,
                     )?
                     .await?;
@@ -160,7 +160,7 @@ where
                     .task_host()
                     .verify_dispatch_owner_with_native_work(
                         caller,
-                        owner.journal_owner.task_binding().1,
+                        &owner.journal_owner.task_binding().1,
                         work,
                     )?
                     .await?;

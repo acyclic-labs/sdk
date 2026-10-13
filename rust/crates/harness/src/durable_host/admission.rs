@@ -140,7 +140,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let key = format!("task-admission:{operation_id}");
         let (state, owner_scope) =
             if let Some(retained) = self.retained_declaration(operation_id, &mut None).await? {
-                if self.read_admission_json(&retained.state).await? != canonical {
+                if self.read_json(&retained.state, None).await? != canonical {
                     return Err(Error::Conflict("task admission changed on retry".into()));
                 }
                 (retained.state, retained.owner_scope)

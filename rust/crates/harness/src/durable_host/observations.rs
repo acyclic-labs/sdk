@@ -47,9 +47,21 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 quota.transfer();
                 Ok(Some(Outcome::Succeeded(value)))
             }
-            value => {
+            Some(Outcome::Failed { message }) => {
                 quota.transfer();
-                Ok(value)
+                Ok(Some(Outcome::Failed { message }))
+            }
+            Some(Outcome::Cancelled) => {
+                quota.transfer();
+                Ok(Some(Outcome::Cancelled))
+            }
+            Some(Outcome::Indeterminate { operation_id }) => {
+                quota.transfer();
+                Ok(Some(Outcome::Indeterminate { operation_id }))
+            }
+            None => {
+                quota.transfer();
+                Ok(None)
             }
         }
     }

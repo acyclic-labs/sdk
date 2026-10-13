@@ -156,19 +156,10 @@ pub(super) fn publish_restore(
     let destination_name = relative.file_name().ok_or(MaterializeError::InvalidPath)?;
     let stage_parent = held_parent(stage_root, relative, work)?;
     let name = Path::new(destination_name);
-    match {
-        #[cfg(unix)]
-        {
-            destination_parent.stat(name, work)
-        }
-        #[cfg(windows)]
-        {
-            crate::native_host::with_wide_path(name, work, |path, work| {
-                destination_parent.stat(path, work)
-            })
-        }
-    } {
-        Ok(_) => match replacement {
+    match crate::native_host::entry_identity(&destination_parent.directory, name, work)
+        .map_err(restore_demand_error)?
+    {
+        Some(_) => match replacement {
             HostPathReplacement::Atomic => crate::native_exchange::exchange_native_entries(
                 &destination_parent.directory,
                 name,
@@ -186,9 +177,7 @@ pub(super) fn publish_restore(
                 work,
             )?,
         },
-        Err(crate::demand::DemandError::Io(error))
-            if error.kind() == std::io::ErrorKind::NotFound =>
-        {
+        None => {
             {
                 #[cfg(unix)]
                 {
@@ -223,7 +212,6 @@ pub(super) fn publish_restore(
             crate::native_host::sync_directory_held(&stage_parent.directory, work)
                 .map_err(restore_demand_error)?;
         }
-        Err(error) => return Err(restore_demand_error(error)),
     }
     Ok(())
 }
@@ -356,3 +344,5 @@ mod removal;
 pub(super) use removal::*;
 mod live;
 pub(super) use live::*;
+mod host;
+pub(super) use host::*;

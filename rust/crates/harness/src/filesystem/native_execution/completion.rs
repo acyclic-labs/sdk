@@ -77,12 +77,12 @@ impl NativePreparationCompletionTemplate {
         &self.key
     }
     pub(crate) fn matches_work(&self, work: &NativeMaterializationWork) -> bool {
-        self.custody.matches_work(work)
+        self.custody.work().shares_allocation_context(work)
             && self
                 .journal
                 .custody
                 .as_ref()
-                .is_some_and(|custody| custody.matches_work(work))
+                .is_some_and(|custody| custody.work().shares_allocation_context(work))
     }
     pub(crate) fn verify_owner<P: StreamProvider>(
         &self,

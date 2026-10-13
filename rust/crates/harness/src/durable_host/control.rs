@@ -107,7 +107,39 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 quota.work(),
             )
             .await?;
-        quota.adopt(state.logical_owned_bytes()?)?;
+        let retained = [
+            state.spec.logical_owned_bytes()?,
+            state
+                .reservation
+                .as_ref()
+                .map(|value| value.logical_owned_bytes())
+                .transpose()?
+                .unwrap_or(0),
+            state
+                .checkpoint
+                .as_ref()
+                .map(|value| value.logical_owned_bytes())
+                .transpose()?
+                .unwrap_or(0),
+            state
+                .workflow
+                .as_ref()
+                .map(|value| value.logical_owned_bytes())
+                .transpose()?
+                .unwrap_or(0),
+            state
+                .outcome
+                .as_ref()
+                .map(|value| value.logical_owned_bytes())
+                .transpose()?
+                .unwrap_or(0),
+        ]
+        .into_iter()
+        .try_fold(0u64, |sum, bytes| {
+            sum.checked_add(bytes)
+                .ok_or_else(|| Error::Invalid("cancelled state custody overflows".into()))
+        })?;
+        quota.adopt(retained)?;
         drop(state);
         Ok(())
     }

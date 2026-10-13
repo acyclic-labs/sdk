@@ -489,13 +489,14 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                     path: path.clone(),
                     expected: expected_tail,
                 },
-                Err(error)
-                    if *crate::distributed::sdk_source(&error) == StreamError::NotFound
-                        && expected_tail == 0 =>
-                {
+                Err(error) if error == StreamError::NotFound && expected_tail == 0 => {
                     CommitCondition::Absent { path: path.clone() }
                 }
-                Err(error) => return Err(crate::distributed::sdk_error(error, work)),
+                Err(error) => {
+                    return Err(crate::store::operations::stream_error_with_work(
+                        error, work,
+                    ));
+                }
             };
         let CommitCondition::Tail { expected, .. } = &owner else {
             return Err(Error::Invalid("coordinator tail condition required".into()));

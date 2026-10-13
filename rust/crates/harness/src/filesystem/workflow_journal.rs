@@ -156,11 +156,12 @@ where
         let mut journal = Self::new(owner.stream(), host, &identity, volume, verifier, scope,
             maximum_payload_bytes, io)?;
         #[cfg(not(target_arch = "wasm32"))]
-        let owner = match io.and_then(PreparationIo::original_native_work) {
-            Some(work) => owner.into_native_shared(work)?,
-            None => Arc::new(owner),
-        };
-        #[cfg(target_arch = "wasm32")]
+        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+            if !owner.native_shared_work_matches(work) {
+                return Err(stock_boundary(io, crate::wire::ErrorCode::Unauthorized,
+                    "workflow owner belongs to another native ledger"));
+            }
+        }
         let owner = Arc::new(owner);
         Arc::get_mut(&mut journal).expect("new journal is uniquely owned").owner = Some(owner);
         Ok(journal)
