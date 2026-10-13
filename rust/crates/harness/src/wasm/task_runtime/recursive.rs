@@ -221,16 +221,7 @@ impl WasmTaskRuntime {
                 })?;
                 Some(
                     owner
-                        .authorize_project_source(
-                            &context,
-                            &self.service_issuer,
-                            policy.as_ref(),
-                            selected,
-                            operation,
-                            selected_project,
-                            policy_limits.work,
-                            policy_limits.bytes,
-                        )
+                        .authorize_project_source(&context, &self.service_issuer, policy.as_ref(), selected, operation, &(selected_project), policy_limits.work, policy_limits.bytes, None)
                         .await
                         .map_err(js_error)?,
                 )
@@ -366,7 +357,7 @@ impl WasmTaskRuntime {
             if let Some(authorization) = &request.authorized_source {
                 Some(
                     owner
-                        .restore_project_source_authorization(&context, authorization)
+                        .restore_project_source_authorization(&context, authorization, None)
                         .await
                         .map_err(js_error)?,
                 )

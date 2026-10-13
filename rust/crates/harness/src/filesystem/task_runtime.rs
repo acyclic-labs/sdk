@@ -1386,9 +1386,10 @@ where
             .host
             .readonly_fork_journal_owner_with_native_work(&witness, query, claim, work)?
             .await?;
-        let mut preparation = owner
-            .resource_preparation_with_native_work(request, work)?
-            .await?;
+        let io = crate::executor::PreparationIo::from_native_work(work)?;
+        io.absorb_native_custody(request.1)?;
+        let mut preparation = owner.resource_preparation(request.0, &mut Some(&mut io.history_io())).await?;
+        preparation.native_custody = Some(io.take_native_custody(io.owned_bytes()?)?);
         let mut header = work.claim(
             std::mem::size_of::<crate::resource_preparation::TaskResourcePreparation>() as u64,
             u64::from(
@@ -1433,7 +1434,7 @@ where
             .await?;
         let owner = Arc::new(owner);
         let mailbox: Arc<dyn OwnedTaskMailbox> = {
-            if !std::ptr::eq(owner.host.as_ref(), self.host.as_ref()) {
+            if !owner.original_host_binding_matches(self.host.as_ref()) {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unauthorized,
                     reason: "native mailbox owner belongs to another original host",
@@ -1771,7 +1772,7 @@ where
             ));
         }
         let wake = self.poll_task_wake_page(cursor, maximum_events).await?;
-        let work = match self.host.pull_work(worker).await? {
+        let work = match self.host.pull_work(worker, None, &mut None).await? {
             crate::distributed::WorkPull::Idle => None,
             crate::distributed::WorkPull::Claimed(lease) => Some(
                 self.resume_task(lease, commands, maximum_transitions, None)
@@ -1855,17 +1856,13 @@ where
                     )?;
                     let pull = self
                         .host
-                        .pull_operation(
-                            worker,
-                            admission.operation_id,
-                            &mut Some(&mut operation_io),
-                        )
+                        .pull_work(worker, Some(admission.operation_id), &mut Some(&mut operation_io))
                         .await?;
                     io.absorb_native_custody(operation_io.into_custody()?)?;
                     return Ok(pull);
                 }
                 self.host
-                    .pull_operation(worker, admission.operation_id, &mut None)
+                    .pull_work(worker, Some(admission.operation_id), &mut None)
                     .await
             },
             io,
@@ -1937,7 +1934,7 @@ where
         cursor: Option<TaskWakeCursor>,
         maximum_events: u32,
     ) -> Result<TaskWakePage> {
-        let crate::durable_host::WorkflowWaitPage { next_revision, through_revision, events_read, tasks } = self
+        let (next_revision, through_revision, events_read, tasks) = self
             .host
             .workflow_wait_page(
                 cursor.map_or(0, |cursor| cursor.after_revision),
@@ -2221,14 +2218,7 @@ where
                     .await
             } else {
                 self.host
-                    .suspend_workflow_command_guarded(
-                        task,
-                        fence,
-                        revision,
-                        Some(command),
-                        None,
-                        &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
-                    )
+                    .suspend_workflow(task, fence, revision, Some(command), None, None, &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?))
                     .await
             };
         }
@@ -2239,7 +2229,7 @@ where
                 .await
         } else {
             self.host
-                .suspend_workflow_command_guarded(task, fence, revision, Some(command), None, &mut None)
+                .suspend_workflow(task, fence, revision, Some(command), None, None, &mut None)
                 .await
         }
     }
@@ -2307,16 +2297,16 @@ where
                             code: crate::wire::ErrorCode::Unsupported,
                             reason: "native worker lost its original observer",
                         })?;
-                self.host.start_task(lease, Some(work)).await?;
+                self.host.start_task(lease, &mut Some(&mut crate::store::HistoryWork::new(crate::executor::PreparationIo::from_native_work(work)?))).await?;
                 self.open_task_with_native_work(task, fence, Arc::clone(context), work)
                     .await?
             } else {
-                self.host.start_task(lease, None).await?;
+                self.host.start_task(lease, &mut None).await?;
                 self.open_task(task, fence.clone()).await?
             };
             #[cfg(target_arch = "wasm32")]
             let mut session = {
-                self.host.start_task(lease, None).await?;
+                self.host.start_task(lease, &mut None).await?;
                 self.open_task(task, fence.clone()).await?
             };
             #[cfg(not(target_arch = "wasm32"))]
@@ -2327,7 +2317,7 @@ where
                     code: crate::wire::ErrorCode::Unsupported,
                     reason: "native wake input requires original observer",
                 })?;
-                let local = PreparationIo::from_native_work(work)?;
+                let local = crate::executor::PreparationIo::from_native_work(work)?;
                 let wake = self.host.workflow_input(task, fence, Some(&local)).await?;
                 let custody = local.take_native_custody(local.owned_bytes()?)?;
                 wake_custody = Some(custody);
@@ -2449,31 +2439,17 @@ where
                         std::mem::take(value)
                     } else {
                         self.task_host()
-                            .suspend_workflow_command_guarded(
-                                task,
-                                fence,
-                                revision,
-                                None,
-                                None,
-                                &mut observed::history(io)?
+                            .suspend_workflow(task, fence, revision, None, None, None, &mut observed::history(io)?
                                     .as_mut()
-                                    .map(|work| work as &mut dyn crate::store::HistoryIo),
-                            )
+                                    .map(|work| work as &mut dyn crate::store::HistoryIo))
                             .await?;
                         return Ok(WorkerTurn::Suspended { task, revision });
                     }
                 } else {
                     self.task_host()
-                        .suspend_workflow_command_guarded(
-                            task,
-                            fence,
-                            revision,
-                            None,
-                            None,
-                            &mut observed::history(io)?
+                        .suspend_workflow(task, fence, revision, None, None, None, &mut observed::history(io)?
                                 .as_mut()
-                                .map(|work| work as &mut dyn crate::store::HistoryIo),
-                        )
+                                .map(|work| work as &mut dyn crate::store::HistoryIo))
                         .await?;
                     return Ok(WorkerTurn::Suspended { task, revision });
                 };
@@ -2695,7 +2671,7 @@ where
                 #[cfg(not(target_arch = "wasm32"))]
                 Ok(TaskCommandProgress::ReadyWithNativeCustody { custody, .. }) => {
                     self.host
-                        .verify_owner(task, fence, false, &mut Some(&mut PreparationIo::from_native_work(custody.work())?.history_io()))
+                        .verify_owner(task, fence, false, &mut Some(&mut crate::executor::PreparationIo::from_native_work(custody.work())?.history_io()))
                         .await?;
                 }
                 _ => self.owner_observed(task, fence, false, io).await?,
@@ -2971,7 +2947,7 @@ where
         if self
             .run_limits
             .deadline_epoch_ms
-            .is_some_and(|deadline| self.host.clock.now_unix_millis() >= deadline)
+            .is_some_and(|deadline| self.host.now_unix_millis() >= deadline)
         {
             self.host
                 .expire_task_deadline(self.task, Some(&self.fence), &mut None)

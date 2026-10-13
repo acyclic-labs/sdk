@@ -76,15 +76,15 @@ where
                     .journal_owner(task, fence, Some(&crate::executor::PreparationIo::from_native_work(work)?))
                     .await?
                     .into_native_shared(work)?;
-                let preparation = owner
-                    .resource_preparation_with_native_work((request, custody), work)?
-                    .await?;
+                io.absorb_native_custody(custody)?;
+                let mut preparation = owner.resource_preparation(request, &mut Some(&mut io.history_io())).await?;
+                preparation.native_custody = Some(io.take_native_custody(io.owned_bytes()?)?);
                 break 'preparation Arc::new(preparation);
             }
             let owner = self
                 .runtime
                 .task_host()
-                .journal_owner(task, fence.clone())
+                .journal_owner(task, fence, None)
                 .await?
                 .with_invocation_cancellation(&cancellation);
             Arc::new(

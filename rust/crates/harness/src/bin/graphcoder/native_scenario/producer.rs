@@ -370,20 +370,11 @@ impl Producer {
             );
             Some(
                 owner
-                    .authorize_project_source(
-                        &context,
-                        &service_issuer,
-                        &policy,
-                        source_task,
-                        operation,
-                        acyclic_harness::source_authorization::ProjectSourceSnapshot {
+                    .authorize_project_source(&context, &service_issuer, &policy, source_task, operation, &(acyclic_harness::source_authorization::ProjectSourceSnapshot {
                             project: selected.volume.clone(),
                             generation: selected.generation.clone(),
                             native_snapshot: None,
-                        },
-                        16 * 1024 * 1024,
-                        16 * 1024 * 1024,
-                    )
+                        }), 16 * 1024 * 1024, 16 * 1024 * 1024, None)
                     .await?,
             )
         } else {

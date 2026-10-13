@@ -93,7 +93,7 @@ impl NativeSession {
         self.runtime.poll_task_wake(task, None).await?;
         self.runtime
             .task_host()
-            .pull_operation(worker, admission.operation_id, &mut None)
+            .pull_work(worker, Some(admission.operation_id), &mut None)
             .await
     }
     pub async fn cancel_task(&self, task: TaskId) -> Result<String> {
