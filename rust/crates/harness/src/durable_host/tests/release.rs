@@ -24,15 +24,19 @@ where
     ) -> Result<()> {
         let admission = self.owner(byte).await?.workflow_admission().clone();
         workflow.admit(admission.clone()).await?;
-        DurableWorkflowHost::open(self.machines.clone(), admission.initial, workflow.clone())
-            .await?
-            .step(
-                OperationId::from_bytes([70; 16]),
-                IdempotencyKey::new(key)?,
-                json!(0),
-                |_| Ok(()),
-            )
-            .await?;
+        DurableWorkflowHost::open(
+            self.host.machines.clone(),
+            admission.initial,
+            workflow.clone(),
+        )
+        .await?
+        .step(
+            OperationId::from_bytes([70; 16]),
+            IdempotencyKey::new(key)?,
+            json!(0),
+            |_| Ok(()),
+        )
+        .await?;
         Ok(())
     }
 }
@@ -171,7 +175,7 @@ async fn b20_public_release_rejects_foreign_bindings() -> Result<()> {
         f.files.clone(),
         &f.destination,
         &f.issuer.verifier(&mut None)?,
-        &f.signed,
+        &f.host.owner_scope,
         65_536,
         None,
     )?;

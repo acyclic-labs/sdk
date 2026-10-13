@@ -72,7 +72,7 @@ pub async fn effect_events<P: StreamProvider>(
     let (stream, held) = path(
         &cursor.authority,
         "harness/v2/effect-transitions/",
-        Some((&effect, 36)),
+        Some(&effect),
         quota.work(),
     )?;
     quota.adopt(held)?;
@@ -177,7 +177,7 @@ impl<P: StreamProvider> Tree<'_, P> {
         let stream = path(
             authority,
             "harness/v2/aggregate-operations/",
-            Some((&event.operation_id, 36)),
+            Some(&event.operation_id),
             quota.work(),
         )?;
         quota.adopt(stream.1)?;
@@ -217,7 +217,7 @@ impl<P: StreamProvider> Tree<'_, P> {
         let stream = path(
             authority,
             "harness/v2/effect-transitions/",
-            Some((&observation.effect_id, 36)),
+            Some(&observation.effect_id),
             quota.work(),
         )?;
         let record = operations::publication_record(self.client, stream, position, &mut quota)

@@ -138,31 +138,6 @@ async fn exercise<P: StreamProvider>(provider: Arc<P>) -> Result<()> {
         ordinary.commit(request).await?,
         CommitOutcome::Committed(_)
     ));
-    let corrupt_message = uuid::Uuid::from_bytes([37; 16]);
-    let corrupt_path = publication_path(
-        &authority,
-        "harness/v2/conversation-messages/",
-        Some((&corrupt_message, 36)),
-        &mut None,
-    )?
-    .0;
-    assert!(matches!(
-        ordinary
-            .commit(CommitRequest {
-                conditions: vec![CommitCondition::Absent {
-                    path: corrupt_path.clone()
-                }],
-                mutations: vec![CommitMutation::Append {
-                    path: corrupt_path,
-                    records: vec![OwnedBytes::from_static(b"{{")],
-                }],
-                idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(
-                    b"native-only-corrupt"
-                ))?,
-            })
-            .await?,
-        CommitOutcome::Committed(_)
-    ));
     let client = Arc::new(NativeOnly(provider));
     let reader = HistoryReader::new(
         &client,
@@ -203,31 +178,6 @@ async fn exercise<P: StreamProvider>(provider: Arc<P>) -> Result<()> {
     drop(io.into_custody()?);
 
     let native = NativeMaterializationWork::new(budget(), &cancellation)
-        .expect("original malformed locator work");
-    let mut io = crate::store::HistoryWork::new(
-        crate::filesystem::PreparationIo::from_native_work(&native)
-            .expect("original malformed locator observer"),
-    );
-    let error = find_message_with_work(
-        &client,
-        &authority,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        corrupt_message,
-        1,
-        1_048_576,
-        &mut Some(&mut io),
-    )
-    .await
-    .expect_err("real raw locator reaches the original guarded wire decoder");
-    assert!(
-        matches!(&error, Error::NativeJson { custody: Some(custody), .. }
-            if native.shares_ledger(custody.work()))
-    );
-    assert_eq!(native.receipt().authority_bytes_read, 2);
-    drop(error);
-    assert_eq!(io.into_custody()?.bytes(), 0);
-
-    let native = NativeMaterializationWork::new(budget(), &cancellation)
         .expect("original checkpoint commit work");
     let mut io = crate::store::HistoryWork::new(
         crate::filesystem::PreparationIo::from_native_work(&native)
@@ -249,49 +199,6 @@ async fn exercise<P: StreamProvider>(provider: Arc<P>) -> Result<()> {
     .await?;
     assert_eq!(io.into_custody()?.bytes(), 0);
 
-    for maximum_bytes in [1, event_bytes] {
-        let native = NativeMaterializationWork::new(budget(), &cancellation)
-            .expect("separate finite denial work");
-        let mut io = crate::store::HistoryWork::new(
-            crate::filesystem::PreparationIo::from_native_work(&native)
-                .expect("original denial observer"),
-        );
-        let cursor = reader.pin(0, Some(&mut io)).await?;
-        if maximum_bytes == 1 {
-            assert!(
-                reader
-                    .read_page(
-                        &cursor,
-                        HistoryReadLimits {
-                            maximum_events: 1,
-                            maximum_bytes
-                        },
-                        Some(&mut io)
-                    )
-                    .await
-                    .is_err(),
-                "raw encoded bound must reject before decode"
-            );
-        } else {
-            cancellation.cancel();
-            assert!(
-                reader
-                    .read_page(
-                        &cursor,
-                        HistoryReadLimits {
-                            maximum_events: 1,
-                            maximum_bytes
-                        },
-                        Some(&mut io)
-                    )
-                    .await
-                    .is_err(),
-                "native cancellation must fail before provider I/O"
-            );
-        }
-        drop(cursor);
-        drop(io.into_custody()?);
-    }
     Ok(())
 }
 

@@ -2,15 +2,15 @@ use super::*;
 use futures::TryStreamExt as _;
 
 pub(crate) fn stream_error_with_work(
-    source: acyclic_stream::StreamError,
-    work: &Option<&mut dyn crate::store::history::HistoryIo>,
+    source: StreamError,
+    work: &Option<&mut dyn HistoryIo>,
 ) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if work.as_deref().is_some_and(original_native_decode_mode) {
-        let code = if matches!(&source, acyclic_stream::StreamError::IdempotencyMismatch) {
+        let code = if matches!(&source, StreamError::IdempotencyMismatch) {
             crate::wire::ErrorCode::Conflict
         } else {
-            crate::wire::ErrorCode::Storage
+            Storage
         };
         return Error::NativeStream {
             code,
@@ -23,9 +23,9 @@ pub(crate) fn stream_error_with_work(
 }
 
 pub(crate) fn stream<P: StreamProvider>(
-    client: &std::sync::Arc<P>,
+    client: &Arc<P>,
     path: &str,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(
     acyclic_stream::Stream<P>,
     Option<crate::runtime::NativeCustody>,
@@ -46,7 +46,7 @@ pub(crate) fn stream<P: StreamProvider>(
     } else {
         None
     };
-    let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), path)
+    let stream = acyclic_stream::Stream::new(Arc::clone(&client), path)
         .map_err(|error| stream_error_with_work(error, work))?;
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let path_custody = None;
@@ -54,10 +54,7 @@ pub(crate) fn stream<P: StreamProvider>(
 }
 
 /// Native payload custody is intrinsic to the SDK's `OwnedBytes`.
-pub(crate) fn sdk_record_retained_bytes(
-    record: &Record,
-    work: &Option<&mut dyn crate::store::history::HistoryIo>,
-) -> u64 {
+pub(crate) fn sdk_record_retained_bytes(record: &Record, work: &Option<&mut dyn HistoryIo>) -> u64 {
     if work.as_deref().is_some_and(original_native_decode_mode) {
         0
     } else {
@@ -67,48 +64,36 @@ pub(crate) fn sdk_record_retained_bytes(
 
 /// The original finite producer; the native cursor guard follows its box.
 pub(crate) enum ObservedRecords {
-    Ordinary(acyclic_stream::RecordStream),
+    Ordinary(RecordStream),
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    Native(acyclic_stream::NativeStreamOutput<acyclic_stream::NativeRecordStream>),
+    Native(NativeStreamOutput<NativeRecordStream>),
 }
 
-/// Retains the actual record's SDK metadata, never a second byte owner.
-pub(crate) enum ObservedRecord {
-    Ordinary(Record),
+/// Retains the record and its SDK metadata allocation.
+#[derive(Debug)]
+pub(crate) struct ObservedRecord {
+    record: Record,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    Native(acyclic_stream::NativeStreamOutput<Record>),
+    _allocation: Option<acyclic_native_runtime::ReadAllocation>,
 }
 
 impl std::ops::Deref for ObservedRecord {
     type Target = Record;
     fn deref(&self) -> &Record {
-        match self {
-            Self::Ordinary(record) => record,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::Native(output) => output.value(),
-        }
-    }
-}
-
-impl std::fmt::Debug for ObservedRecord {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Debug::fmt(&**self, formatter)
+        &self.record
     }
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(super) fn original_sdk_metadata_output<T>(
     original: &acyclic_fs::NativeMaterializationWork,
-    output: acyclic_stream::NativeStreamOutput<T>,
-) -> Result<acyclic_stream::NativeStreamOutput<T>> {
-    let (value, allocation) = output.into_parts();
-    let same_meter = std::sync::Arc::ptr_eq(allocation.meter(), &original.runtime_meter());
-    let output = acyclic_stream::NativeStreamOutput::new(value, allocation);
+    output: NativeStreamOutput<T>,
+) -> Result<NativeStreamOutput<T>> {
+    let (record, allocation) = output.into_parts();
+    let same_meter = Arc::ptr_eq(allocation.meter(), &original.runtime_meter());
+    let output = NativeStreamOutput::new(record, allocation);
     if !same_meter {
-        return Err(Error::NativeWork {
-            cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
-            custody: None,
-        });
+        return Err(acyclic_fs::NativeTreeMaterializationError::InvalidLayout.into());
     }
     Ok(output)
 }
@@ -116,7 +101,7 @@ pub(super) fn original_sdk_metadata_output<T>(
 impl ObservedRecords {
     pub(crate) async fn next(
         &mut self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Option<ObservedRecord>> {
         match self {
             Self::Ordinary(records) => {
@@ -129,7 +114,11 @@ impl ObservedRecords {
                 {
                     observer.receive_record(record.value.len() as u64)?;
                 }
-                Ok(record.map(ObservedRecord::Ordinary))
+                Ok(record.map(|record| ObservedRecord {
+                    record,
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    _allocation: None,
+                }))
             }
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::Native(records) => {
@@ -138,15 +127,11 @@ impl ObservedRecords {
                     .and_then(|observer| observer.original_native_work())
                     .expect("native cursor has its original observer")
                     .clone();
-                let Some(record) =
-                    records
-                        .value_mut()
-                        .try_next()
-                        .await
-                        .map_err(|error| Error::NativeWork {
-                            cause: original.runtime_error(error),
-                            custody: None,
-                        })?
+                let Some(record) = records
+                    .value_mut()
+                    .try_next()
+                    .await
+                    .map_err(|error| Error::from(original.runtime_error(error)))?
                 else {
                     return Ok(None);
                 };
@@ -154,22 +139,25 @@ impl ObservedRecords {
                 work.as_deref_mut()
                     .expect("native cursor observer")
                     .receive_native_record(record.value().value.len() as u64)?;
-                Ok(Some(ObservedRecord::Native(original_sdk_metadata_output(
-                    &original, record,
-                )?)))
+                let (record, allocation) =
+                    original_sdk_metadata_output(&original, record)?.into_parts();
+                Ok(Some(ObservedRecord {
+                    record,
+                    _allocation: Some(allocation),
+                }))
             }
         }
     }
 }
 
 pub(crate) async fn read_records<P: StreamProvider>(
-    client: &std::sync::Arc<P>,
+    client: &Arc<P>,
     path: &StreamPath,
     from: u64,
     count: u32,
-    work: &mut Option<&mut dyn crate::store::HistoryIo>,
-) -> Result<std::result::Result<ObservedRecords, acyclic_stream::StreamError>> {
-    let request = acyclic_stream::ReadRequest {
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<std::result::Result<ObservedRecords, StreamError>> {
+    let request = ReadRequest {
         path: path.clone(),
         from,
         limit: count,
@@ -192,10 +180,10 @@ pub(crate) async fn read_records<P: StreamProvider>(
 
 /// Preserves the provider's NotFound result for the canonical CAS selector.
 pub(crate) async fn bounds_with_work<P: StreamProvider>(
-    client: &std::sync::Arc<P>,
+    client: &Arc<P>,
     path: &StreamPath,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<std::result::Result<acyclic_stream::StreamBounds, acyclic_stream::StreamError>> {
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<std::result::Result<StreamBounds, StreamError>> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(original) = work
         .as_deref()
@@ -214,61 +202,57 @@ pub(crate) async fn bounds_with_work<P: StreamProvider>(
 }
 
 pub(crate) async fn tail_with_work<P: StreamProvider>(
-    client: &std::sync::Arc<P>,
+    client: &Arc<P>,
     path: &StreamPath,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<u64> {
     tail_optional_with_work(client, path, work)
         .await?
-        .ok_or_else(|| stream_error_with_work(acyclic_stream::StreamError::NotFound, work))
+        .ok_or_else(|| stream_error_with_work(StreamError::NotFound, work))
 }
 
 pub(crate) async fn tail_optional_with_work<P: StreamProvider>(
-    client: &std::sync::Arc<P>,
+    client: &Arc<P>,
     path: &StreamPath,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Option<u64>> {
+    let mut result: Option<std::result::Result<u64, StreamError>> = None;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(original) = work
-        .as_deref()
-        .and_then(|observer| observer.original_native_work())
-    {
-        let result = client
+    if let Some(original) = work.as_deref().and_then(|io| io.original_native_work()) {
+        let tail = client
             .native_tail(path.clone(), original.runtime_meter())
             .await;
-        let result = crate::distributed::native_call_result(original, result)?;
-        return match result {
-            Ok(output) => Ok(Some(*output.value())),
-            Err(error) if error == acyclic_stream::StreamError::NotFound => {
-                drop(error);
-                Ok(None)
+        result = Some(
+            crate::distributed::native_call_result(original, tail)?.map(|output| *output.value()),
+        );
+    }
+    let result = match result {
+        Some(result) => result,
+        None => {
+            if let Some(observer) = work.as_deref_mut() {
+                observer.begin_call()?;
             }
-            Err(error) => Err(crate::store::operations::stream_error_with_work(
-                error, work,
-            )),
-        };
-    }
-    if let Some(observer) = work.as_deref_mut() {
-        observer.begin_call()?;
-    }
-    match client.tail(path.clone()).await {
+            client.tail(path.clone()).await
+        }
+    };
+    match result {
         Ok(tail) => Ok(Some(tail)),
-        Err(acyclic_stream::StreamError::NotFound) => Ok(None),
+        Err(StreamError::NotFound) => Ok(None),
         Err(error) => Err(stream_error_with_work(error, work)),
     }
 }
 
 /// Reads one exact record and rejects a producer exceeding the bound.
 pub(crate) async fn one_record<P: StreamProvider>(
-    client: &std::sync::Arc<P>,
+    client: &Arc<P>,
     path: &StreamPath,
     from: u64,
-    work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Option<ObservedRecord>> {
-    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let mut quota = CodecQuota::new(work, 0)?;
     let mut records = match read_records(client, path, from, 1, quota.work()).await? {
         Ok(records) => records,
-        Err(error) if error == acyclic_stream::StreamError::NotFound => {
+        Err(error) if error == StreamError::NotFound => {
             return Ok(None);
         }
         Err(error) => {
@@ -278,45 +262,36 @@ pub(crate) async fn one_record<P: StreamProvider>(
             ));
         }
     };
-    if let Some(io) = quota.work().as_deref() {
-        io.check_cancellation()?;
-    }
-    let first = records.next(quota.work()).await?;
-    if let Some(record) = &first {
-        let held = sdk_record_retained_bytes(record, quota.work());
-        quota.adopt(held)?;
-    }
-    if let Some(io) = quota.work().as_deref() {
-        io.check_cancellation()?;
-    }
-    let extra = records.next(quota.work()).await?;
-    if let Some(record) = &extra {
-        let held = sdk_record_retained_bytes(record, quota.work());
-        quota.adopt(held)?;
-        return Err(crate::store::guarded_boundary(
-            quota.work(),
-            crate::wire::ErrorCode::Storage,
-            "operation lookup exceeded its one-record bound",
-        ));
-    }
-    if let Some(record) = &first
-        && (record.sequence != from || record.value.len() > acyclic_stream::MAX_RECORD_BYTES)
-    {
-        return Err(crate::store::guarded_boundary(
-            quota.work(),
-            crate::wire::ErrorCode::Storage,
-            "operation location record is invalid",
-        ));
+    let mut first = None;
+    for position in 0..2 {
+        if let Some(io) = quota.work().as_deref() {
+            io.check_cancellation()?;
+        }
+        if let Some(record) = records.next(quota.work()).await? {
+            let held = sdk_record_retained_bytes(&record, quota.work());
+            quota.adopt(held)?;
+            if position != 0
+                || record.sequence != from
+                || record.value.len() > acyclic_stream::MAX_RECORD_BYTES
+            {
+                return Err(boundary(
+                    quota.work(),
+                    Storage,
+                    "operation location record is invalid",
+                ));
+            }
+            first = Some(record);
+        }
     }
     quota.transfer();
     Ok(first)
 }
 
 pub(in crate::store) async fn publication_record<P: StreamProvider>(
-    client: &std::sync::Arc<P>,
+    client: &Arc<P>,
     stream: (StreamPath, u64),
     from: u64,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    quota: &mut CodecQuota<'_, '_>,
 ) -> Result<Option<ObservedRecord>> {
     let (stream, held) = stream;
     quota.adopt(held)?;

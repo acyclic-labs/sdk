@@ -42,8 +42,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let bound = match native {
             Some(native) => {
                 self.require_mail_scope(context.scope(), io)?;
-                context.owned_task_binding(Some(&crate::executor::PreparationIo::from_native_work(native)?))?
-                    == (self.task_id(), &self.fence)
+                context.owned_task_binding(Some(
+                    &crate::executor::PreparationIo::from_native_work(native)?,
+                ))? == (self.task_id(), &self.fence)
             }
             None => {
                 context.durable_task_id() == Some(self.task_id())
@@ -201,7 +202,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let owner = crate::core::copy_authority(self.host.verifier.audience(), &mut quota)?;
         let caller_fence = self.fence.clone_with_work(quota.work())?;
         let project = snapshot.project.copy(quota.work())?;
-        let generation = super::volumes::copy_generation(&snapshot.generation, quota.work())?;
+        let reference = crate::core::copy_resource(snapshot.generation.as_resource(), &mut quota)?;
+        let generation =
+            crate::resources::GenerationRef::from_resource_with_work(reference, quota.work())?;
         let native_snapshot = snapshot
             .native_snapshot
             .as_ref()

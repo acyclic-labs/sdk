@@ -17,8 +17,6 @@ pub(crate) struct Fixture<
     pub(crate) backend: Fs<A, O>,
     pub(crate) files: Arc<FilesystemHost<A, O>>,
     pub(crate) issuer: AuthorityIssuer,
-    pub(crate) signed: Scope,
-    pub(crate) scope: RuntimeScope,
     pub(crate) host: Arc<CoordinatorTaskHost<P>>,
     pub(crate) destination: VolumeRef,
     pub(crate) storage: VolumeRef,
@@ -27,8 +25,6 @@ pub(crate) struct Fixture<
     pub(crate) task: ComponentIdentity,
     pub(crate) machine: MachineIdentity,
     pub(crate) schema: Value,
-    pub(crate) tasks: TaskRegistry,
-    pub(crate) machines: MachineRegistry,
 }
 
 impl<P, A, O> Fixture<P, A, O>
@@ -70,7 +66,7 @@ where
             self.files.clone(),
             &self.storage,
             &self.issuer.verifier(&mut None)?,
-            &self.signed,
+            &self.host.owner_scope,
             65_536,
             None,
         )
@@ -82,7 +78,7 @@ where
             self.files.clone(),
             &self.storage,
             &self.issuer.verifier(&mut None)?,
-            &self.signed,
+            &self.host.owner_scope,
             65_536,
             None,
         )
@@ -263,11 +259,11 @@ where
             payloads,
             reader.clone(),
             issuer.audience().clone(),
-            signed.clone(),
+            signed,
             verifier,
-            scope.clone(),
-            tasks.clone(),
-            machines.clone(),
+            scope,
+            tasks,
+            machines,
             Arc::new(SystemUnixMillisClock),
         )?;
         if let Some(limits) = session {
@@ -278,8 +274,6 @@ where
             backend,
             files,
             issuer,
-            signed,
-            scope,
             host: Arc::new(host),
             destination,
             storage,
@@ -288,8 +282,6 @@ where
             task,
             machine,
             schema,
-            tasks,
-            machines,
         })
     }
 
@@ -303,9 +295,9 @@ where
             input_schema: self.schema.clone(),
             output_schema: self.schema.clone(),
             parent: None,
-            grants: self.scope.grants().clone(),
-            limits: self.scope.limits(),
-            run_limits: self.scope.run_limits(),
+            grants: self.host.root_scope.grants().clone(),
+            limits: self.host.root_scope.limits(),
+            run_limits: self.host.root_scope.run_limits(),
             policy: None,
             extensions: None,
             execution: None,
@@ -343,7 +335,7 @@ where
     ) -> Result<Arc<CoordinatorTaskHost<P>>> {
         let signed = issuer.issue(
             subject,
-            self.scope.grants(),
+            self.host.root_scope.grants(),
             Some(AgentId::from_bytes([1; 16])),
             None,
             &mut None,
@@ -354,7 +346,7 @@ where
             &self.storage,
             &verifier,
             &signed,
-            self.scope.limits().file_bytes,
+            self.host.root_scope.limits().file_bytes,
             None,
         )?;
         let mut host = CoordinatorTaskHost::new(
@@ -371,9 +363,9 @@ where
             issuer.audience().clone(),
             signed,
             verifier,
-            self.scope.clone(),
-            self.tasks.clone(),
-            self.machines.clone(),
+            self.host.root_scope.clone(),
+            self.host.tasks.clone(),
+            self.host.machines.clone(),
             Arc::new(SystemUnixMillisClock),
         )?;
         if let Some(limits) = self.host.session_limits {
@@ -393,7 +385,7 @@ where
             input_schema: self.schema.clone(),
             output_schema: self.schema.clone(),
             parent,
-            scope: self.scope.clone(),
+            scope: self.host.root_scope.clone(),
             policy: None,
             execution: None,
         }
