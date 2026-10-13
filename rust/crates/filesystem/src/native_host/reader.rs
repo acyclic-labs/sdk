@@ -238,8 +238,7 @@ pub(crate) fn read_dir_held<W: NativeHostWork>(
     work: &mut W,
 ) -> Result<(HostStatReader, W::Allocation), W::Error> {
     #[cfg(windows)]
-    let volume_serial_number = u32::try_from(directory_identity(directory, work)?.device)
-        .map_err(|_| W::invalid_request())?;
+    let volume_serial_number = directory_identity(directory, work)?.device as u32;
     #[cfg(unix)]
     let file = {
         let flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY;

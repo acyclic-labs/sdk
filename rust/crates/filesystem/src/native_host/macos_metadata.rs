@@ -19,8 +19,8 @@ pub(crate) fn open_macos_metadata_target<
     work: &mut W,
 ) -> Result<MacMetadataTarget, DemandError> {
     use std::os::unix::ffi::OsStrExt as _;
-    with_unix_parent_leaf(root, path, work, |parent, leaf, work| {
-        let before = macos_stat_at(parent, leaf, work)?;
+    with_parent_leaf(root, path, work, |parent, leaf, work| {
+        let before = fstat(parent.as_raw_fd(), leaf, work)?;
         let kind = before.st_mode & libc::S_IFMT;
         if !matches!(kind, libc::S_IFREG | libc::S_IFDIR | libc::S_IFIFO) {
             let parent = clone_directory(parent, work)?;
@@ -48,7 +48,7 @@ pub(crate) fn open_macos_metadata_target<
                 },
             work,
         )?;
-        let after = fstat(file.as_raw_fd(), work)?;
+        let after = fstat(file.as_raw_fd(), c"", work)?;
         if before.st_dev != after.st_dev || before.st_ino != after.st_ino {
             return Err(io::Error::other("metadata target changed during admission").into());
         }
@@ -60,29 +60,6 @@ pub(crate) fn open_macos_metadata_target<
         }
         Ok(MacMetadataTarget::Held(file))
     })
-}
-
-pub(super) fn macos_stat_at<W: NativeHostWork<Error = DemandError, Allocation = u64>>(
-    parent: &Dir,
-    leaf: &std::ffi::CStr,
-    work: &mut W,
-) -> Result<libc::stat, DemandError> {
-    let mut observed = std::mem::MaybeUninit::<libc::stat>::uninit();
-    work.started_io(READ)?;
-    // SAFETY: the parent, single-component name, and output remain live.
-    if unsafe {
-        libc::fstatat(
-            parent.as_raw_fd(),
-            leaf.as_ptr(),
-            observed.as_mut_ptr(),
-            libc::AT_SYMLINK_NOFOLLOW,
-        )
-    } != 0
-    {
-        return Err(io::Error::last_os_error().into());
-    }
-    // SAFETY: successful fstatat initialized the complete structure.
-    Ok(unsafe { observed.assume_init() })
 }
 
 impl MacMetadataTarget {
@@ -127,7 +104,7 @@ impl MacMetadataTarget {
                         return Err(NativeMetadataError("non-ordinary file kind").into());
                     }
                     let observed = unix_name(leaf.as_os_str(), work, |leaf, work| {
-                        macos_stat_at(&parent, leaf, work)
+                        fstat(parent.as_raw_fd(), leaf, work)
                     })?;
                     if observed.st_dev as u64 != device || observed.st_ino != inode {
                         return Err(io::Error::other("metadata target changed during no-op").into());
@@ -136,7 +113,7 @@ impl MacMetadataTarget {
                 }
             };
             let fd = file.as_raw_fd();
-            let current = fstat(fd, work)?;
+            let current = fstat(fd, c"", work)?;
             if let MetadataField::Value(mode) = metadata.posix_mode
                 && mode & u32::from(libc::S_IFMT) != 0
                 && mode & u32::from(libc::S_IFMT) != u32::from(current.st_mode & libc::S_IFMT)
@@ -194,7 +171,7 @@ impl MacMetadataTarget {
                 // SAFETY: fd and two initialized timespecs remain live.
                 unix_mutation(work, || unsafe { libc::futimens(fd, times.as_ptr()) })?;
             }
-            let observed = fstat(fd, work)?;
+            let observed = fstat(fd, c"", work)?;
             if matches!(metadata.posix_mode, MetadataField::Value(value) if u32::from(observed.st_mode) & 0o7777 != value & 0o7777)
                 || matches!(metadata.posix_flags, MetadataField::Value(0) if observed.st_flags != 0)
             {

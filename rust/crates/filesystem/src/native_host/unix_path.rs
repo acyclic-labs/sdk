@@ -70,19 +70,3 @@ pub(crate) fn open_unix_directory<W: NativeHostWork>(
         open(work)
     })
 }
-
-pub(super) fn with_unix_parent_leaf<W: NativeHostWork, T>(
-    root: &Dir,
-    path: &Path,
-    work: &mut W,
-    operation: impl FnOnce(&Dir, &std::ffi::CStr, &mut W) -> Result<T, W::Error>,
-) -> Result<T, W::Error> {
-    let leaf = path.file_name().ok_or_else(W::invalid_request)?;
-    let parent = directory_path(
-        root,
-        path.parent().ok_or_else(W::invalid_request)?,
-        false,
-        work,
-    )?;
-    unix_name(leaf, work, |leaf, work| operation(&parent, leaf, work))
-}

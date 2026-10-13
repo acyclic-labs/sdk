@@ -40,10 +40,7 @@ impl HostFileType {
 #[cfg_attr(windows, derive(Copy, Debug))]
 pub struct HostStat {
     /// Native Unix fields.
-    #[cfg(target_os = "linux")]
-    pub raw: rustix::fs::Stat,
-    /// Native Unix fields.
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     pub raw: libc::stat,
     /// Native Windows file-record fields.
     #[cfg(windows)]
@@ -51,8 +48,6 @@ pub struct HostStat {
     /// Volume containing the file record.
     #[cfg(windows)]
     pub volume_serial_number: u32,
-    #[cfg(unix)]
-    len: u64,
     #[cfg(unix)]
     created: Option<cap_std::time::SystemTime>,
 }
@@ -90,7 +85,7 @@ impl HostStat {
     pub fn len(&self) -> u64 {
         #[cfg(unix)]
         {
-            self.len
+            self.raw.st_size as u64
         }
         #[cfg(windows)]
         {
@@ -155,22 +150,18 @@ impl HostStat {
         }
     }
     #[cfg(unix)]
-    pub(super) fn from_stat(
-        #[cfg(target_os = "linux")] raw: rustix::fs::Stat,
-        #[cfg(target_os = "macos")] raw: libc::stat,
-    ) -> io::Result<Self> {
-        let len =
-            u64::try_from(raw.st_size).map_err(|_| io::Error::other("negative file length"))?;
+    pub(super) fn from_stat(raw: libc::stat) -> io::Result<Self> {
+        u64::try_from(raw.st_size).map_err(|_| io::Error::other("negative file length"))?;
         #[cfg(target_os = "linux")]
         let created = None;
         #[cfg(target_os = "macos")]
         let created = unix_time(raw.st_birthtime, raw.st_birthtime_nsec).ok();
-        Ok(Self { raw, len, created })
+        Ok(Self { raw, created })
     }
     #[cfg(target_os = "linux")]
-    pub(super) fn from_statx(stat: rustix::fs::Statx) -> io::Result<Self> {
+    pub(super) fn from_statx(stat: rustix::fs::Statx) -> Self {
         // SAFETY: native stat consists only of integers and integer arrays.
-        let mut raw: rustix::fs::Stat = unsafe { std::mem::zeroed() };
+        let mut raw: libc::stat = unsafe { std::mem::zeroed() };
         raw.st_mode = stat.stx_mode as _;
         raw.st_size = stat.stx_size as _;
         raw.st_dev = rustix::fs::makedev(stat.stx_dev_major, stat.stx_dev_minor) as _;
@@ -190,11 +181,7 @@ impl HostStat {
         } else {
             None
         };
-        Ok(Self {
-            raw,
-            len: stat.stx_size,
-            created,
-        })
+        Self { raw, created }
     }
     #[cfg(windows)]
     pub(super) fn from_stat_information(
@@ -283,8 +270,7 @@ pub(crate) fn stat_file<W: NativeHostWork>(
     #[cfg(windows)]
     {
         let (identity, _) = file_identity_and_length(file, work)?;
-        let volume = u32::try_from(identity.device)
-            .map_err(|_| io::Error::other("native volume serial exceeds u32"))?;
+        let volume = identity.device as u32;
         stat_windows_file(file, volume, work)
     }
 }
