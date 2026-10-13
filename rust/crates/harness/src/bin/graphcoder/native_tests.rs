@@ -75,7 +75,6 @@ async fn composition(root: &std::path::Path) -> Result<Config> {
             key: [22; 32],
             scope,
         },
-        observed_authorities: vec![],
         generation: "terminal-native-generation-1".into(),
         model_invocation_ledger: root.join("model-invocations.jsonl"),
         limits: Limits::default(),

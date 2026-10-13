@@ -77,8 +77,7 @@ impl NativeSession {
             })?;
         let child_binding = self
             .config
-            .observed_authorities
-            .iter()
+            .bindings()
             .find(|binding| binding.authority == report.request.child)
             .ok_or_else(|| {
                 Error::Unsupported(

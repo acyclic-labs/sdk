@@ -168,11 +168,7 @@ impl Producer {
             }),
         };
         interactions
-            .open(
-                OperationId::new(),
-                caller.binding.scope.clone(),
-                ticket.clone(),
-            )
+            .open(OperationId::new(), caller.binding.scope.clone(), ticket)
             .await?;
         let plan = TaskEffectPlan {
             provider: "graphcoder.native".into(),
@@ -294,7 +290,6 @@ impl Producer {
         label: &str,
         source: Option<TaskId>,
     ) -> Result<Option<Caller>> {
-        let execute = source.is_none();
         let agent = AgentId::new();
         let child_authority = Authority {
             kind: AggregateKind::Conversation,
@@ -432,7 +427,6 @@ impl Producer {
         let checkpoint = ForkSourceConfig {
             caller: parent.task,
             owner: parent.binding.clone(),
-            project: parent.project.clone(),
             snapshot: parent
                 .aggregate
                 .reducer()
@@ -440,11 +434,6 @@ impl Producer {
                 .0,
             request: binding.request.clone(),
         };
-        let checkpoint_path = self
-            .root
-            .join("inputs")
-            .join(format!("{label}-source.json"));
-        persist(&checkpoint_path, &checkpoint).await?;
         self.config.fork_sources.push(checkpoint);
         let mut child = self.template.clone();
         child.operation_id = child_operation;
@@ -520,22 +509,16 @@ impl Producer {
             .root
             .join("inputs")
             .join(format!("{label}-report.json"));
-        let preparation_lease_path = self
-            .root
-            .join("inputs")
-            .join(format!("{label}-preparation-lease.json"));
         self.preparations.push(json!({ "label": label, "parent": parent.task, "operation": preparation_operation,
-            "task": preparation_task, "child_task_operation": child_operation, "child_agent": agent,
-            "request": request_path, "report": if execute { Some(report_path.clone()) } else { None },
-            "projected_reference_grants": projected_reference_grants,
-            "source_snapshot": checkpoint_path, "executed": execute,
-            "original_lease": if execute { Some(preparation_lease_path.clone()) } else { None } }));
+            "task": preparation_task, "child_task_operation": child_operation,
+            "request": request_path, "report": if source.is_none() { Some(report_path.clone()) } else { None },
+            "executed": source.is_none() }));
         let child_issuer = AuthorityIssuer::new(ISSUER, TEST_KEY, child_authority.clone());
         let grants = Capabilities::new(request.child.grants.iter().map(str::to_owned).chain([
             "conversation:bind".to_owned(),
             "conversation:append".to_owned(),
         ]));
-        let purpose = if execute {
+        let purpose = if source.is_none() {
             "explicit-trusted-created-child"
         } else {
             "explicit-trusted-pending-child"
@@ -546,8 +529,7 @@ impl Producer {
             key: TEST_KEY,
             scope: child_issuer.issue(purpose, &grants, Some(agent), None, &mut None)?,
         };
-        if !execute {
-            self.config.observed_authorities.push(owner.clone());
+        if source.is_some() {
             self.config.tools.forks.push(NativeToolFork {
                 caller: parent.task,
                 child: owner,
@@ -572,7 +554,6 @@ impl Producer {
             ));
         }
         let preparation_lease = claim(&self.runtime, preparation_task, &self.worker).await?;
-        persist(&preparation_lease_path, &preparation_lease).await?;
         let commands = self.runtime.commands().with_fork_preparer(binding.preparer);
         let attempt = self
             .runtime
@@ -637,11 +618,9 @@ impl Producer {
         persist(
             &report_path,
             &json!({ "report": report, "seed": seed,
-            "child": self.runtime.task_host().observe_admission(child_task).await?,
-            "parent_lease": parent.lease, "preparation_lease": preparation_lease }),
+            "child": self.runtime.task_host().observe_admission(child_task).await? }),
         )
         .await?;
-        self.config.observed_authorities.push(owner.clone());
         println!(
             "native-scenario real-fork label={label} parent={} preparation={preparation_task} child={child_task}",
             parent.task

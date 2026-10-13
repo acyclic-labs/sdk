@@ -25,17 +25,10 @@ fn emit(
         .map_err(storage)
 }
 
-fn queued<T>(
-    admission: Admission<RuntimeTask<T>>,
-    kind: &str,
-    operation: OperationId,
-    accepted: impl FnOnce(String) -> String,
-) -> acyclic_harness::Result<String> {
+fn admitted<T>(admission: Admission<RuntimeTask<T>>) -> acyclic_harness::Result<String> {
     match admission {
-        Admission::Accepted(task) => Ok(accepted(task.identity())),
-        Admission::Rejected { reason } => Err(Error::Conflict(format!(
-            "{kind} rejected operation={operation}: {reason}"
-        ))),
+        Admission::Accepted(task) => Ok(task.identity()),
+        Admission::Rejected { reason } => Err(Error::Conflict(reason)),
         Admission::Indeterminate { operation_id } => Err(Error::Indeterminate(operation_id)),
     }
 }
@@ -238,12 +231,13 @@ pub(super) async fn execute(
                     request.request,
                 )
                 .await?;
-            queued(admission, "preparation", request.operation, |task| {
-                format!(
-                    "queued preparation-task={task} admission-operation={} caller-task={} new-child-agent={}\n",
-                    request.operation, request.parent, fork.child_agent
-                )
-            })
+            Ok(format!(
+                "queued preparation-task={} admission-operation={} caller-task={} new-child-agent={}\n",
+                admitted(admission)?,
+                request.operation,
+                request.parent,
+                fork.child_agent
+            ))
         }
         "/publish-fork" => {
             #[derive(Deserialize)]
@@ -338,9 +332,7 @@ pub(super) async fn execute(
             }
             let parent = native
                 .config
-                .observed_authorities
-                .iter()
-                .chain([&native.config.owner])
+                .bindings()
                 .find(|binding| binding.authority == request.seed.parent)
                 .ok_or_else(|| {
                     Error::Unsupported("original parent history verifier unavailable".into())
@@ -522,12 +514,11 @@ pub(super) async fn execute(
                     request.input,
                 )
                 .await?;
-            queued(admission, "mailbox admission", request.operation, |task| {
-                format!(
-                    "queued task={task} admission-operation={}\n",
-                    request.operation
-                )
-            })
+            Ok(format!(
+                "queued task={} admission-operation={}\n",
+                admitted(admission)?,
+                request.operation
+            ))
         }
         "/write" => {
             #[derive(Deserialize)]
@@ -626,9 +617,10 @@ pub(super) async fn execute(
                 ),
             )?;
             let admission = native.queue(operation, command, *parent).await?;
-            queued(admission, "admission", operation, |task| {
-                format!("queued task={task} admission-operation={operation}\n")
-            })
+            Ok(format!(
+                "queued task={} admission-operation={operation}\n",
+                admitted(admission)?
+            ))
         }
         _ => Err(Error::Unsupported(
             "operation requires a durable product host; fixture input is not queued".into(),
