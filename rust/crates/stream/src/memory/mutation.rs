@@ -26,11 +26,11 @@ fn commit_identity(decision: u64, digest: [u8; 32]) -> CommitId {
     CommitId::from_bytes(hash.finalize().into())
 }
 
-fn replay(
-    state: &State,
+fn replay<'a>(
+    state: &'a State,
     key: Option<&crate::IdempotencyKey>,
     digest: [u8; 32],
-) -> Result<Option<IdempotencyOutcome>, StreamError> {
+) -> Result<Option<&'a IdempotencyOutcome>, StreamError> {
     let Some(key) = key else { return Ok(None) };
     let Some(replay) = state.replay(key.as_bytes()) else {
         return Ok(None);
@@ -38,7 +38,7 @@ fn replay(
     if replay.digest != digest {
         return Err(StreamError::IdempotencyMismatch);
     }
-    Ok(Some(replay.result.clone()))
+    Ok(Some(&replay.result))
 }
 
 fn replay_append(
@@ -47,7 +47,7 @@ fn replay_append(
     digest: [u8; 32],
 ) -> Result<Option<AppendOutcome>, StreamError> {
     match replay(state, key, digest)? {
-        Some(IdempotencyOutcome::Append(result)) => Ok(Some(result)),
+        Some(IdempotencyOutcome::Append(result)) => Ok(Some(result.clone())),
         Some(_) => Err(StreamError::IdempotencyMismatch),
         None => Ok(None),
     }
@@ -59,7 +59,7 @@ fn replay_fork(
     digest: [u8; 32],
 ) -> Result<Option<ForkReceipt>, StreamError> {
     match replay(state, key, digest)? {
-        Some(IdempotencyOutcome::Fork(result)) => Ok(Some(result)),
+        Some(IdempotencyOutcome::Fork(result)) => Ok(Some(result.clone())),
         Some(_) => Err(StreamError::IdempotencyMismatch),
         None => Ok(None),
     }
@@ -112,8 +112,4 @@ fn retain(
     if entry.envelope().is_some() || entry.replay.is_some() {
         state.retained.push_back(entry);
     }
-}
-
-fn validate_commit_authority(state: &State, request: &CommitRequest) -> Result<(), StreamError> {
-    crate::preparation::authority(request, |path| state.paths.get(path).map(|path| path.tail))
 }
