@@ -1,7 +1,6 @@
 //! Shared real-provider fixture for durable host behavior tests.
 use super::*;
 use crate::filesystem::{FilesystemContentPublisher, FilesystemContentVerifier, FilesystemHost};
-use crate::runtime::{TaskDefinition, TaskRegistry};
 type Execution<P, A, O> = crate::filesystem::FilesystemExecutionJournal<P, A, O>;
 type Workflow<P, A, O> = crate::filesystem::FilesystemWorkflowJournal<P, A, O>;
 use acyclic_fs::{
@@ -90,8 +89,7 @@ where
             .suspend_workflow(
                 task,
                 self.owner(byte).await?.task_binding().1,
-                1,
-                None,
+                (1, None),
                 None,
                 None,
                 &mut None,
@@ -173,6 +171,7 @@ where
             "operation:declare",
             "operation:observe",
             "operation:cancel",
+            "operation:wake",
             "task:spawn:test.fixture@1",
             "model:generate",
             "mail:send",
@@ -211,17 +210,27 @@ where
             },
             schema: schema.clone(),
         });
-        let definition = TaskDefinition::<Value, Value>::resumable(
-            implementation.clone(),
+        #[cfg(not(target_arch = "wasm32"))]
+        let metadata_work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(65_536, 64 * 1_024 * 1_024),
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction {
+            cause,
+            work: Box::new(work),
+        })?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let metadata_io = Some(crate::filesystem::PreparationIo::from_native_work(
+            &metadata_work,
+        )?);
+        #[cfg(target_arch = "wasm32")]
+        let metadata_io = None;
+        let (task, machine, tasks, machines) = super::created_fixture::test_registries(
+            implementation,
             schema.clone(),
             schema.clone(),
+            metadata_io.as_ref(),
         )?;
-        let task = definition.identity().clone();
-        let machine = implementation.identity().clone();
-        let mut tasks = TaskRegistry::default();
-        tasks.register(definition)?;
-        let mut machines = MachineRegistry::default();
-        machines.register(implementation, &mut None)?;
         let verifier = issuer.verifier(&mut None)?;
         let reader = FilesystemContentVerifier::new(
             files.clone(),
@@ -418,28 +427,98 @@ impl ResumableMachine for FixtureMachine {
         Ok(input.clone())
     }
     fn transition(&self, state: &Value, input: &Value) -> Result<MachineTransition> {
+        self.transition_on(state, input, None)
+    }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_work(&self) -> bool {
+        true
+    }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn identity_with_native_work<'a>(
+        &'a self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<&'a MachineIdentity> {
+        work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
+        Ok(&self.identity)
+    }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn initialize_with_native_work(
+        &self,
+        input: &Value,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+        crate::tool::clone_value(input, None, work)
+    }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn transition_with_native_work(
+        &self,
+        state: &Value,
+        input: Value,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(MachineTransition, acyclic_fs::NativeAllocation)> {
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let transition = self.transition_on(state, &input, Some(&io))?;
+        io.retain_owned(
+            std::mem::size_of::<MachineTransition>().saturating_sub(std::mem::size_of::<Value>())
+                as u64,
+        )?;
+        let custody = io.take_native_custody(io.owned_bytes()?)?;
+        Ok((transition, custody))
+    }
+}
+impl FixtureMachine {
+    fn transition_on(
+        &self,
+        state: &Value,
+        input: &Value,
+        io: Option<&crate::filesystem::PreparationIo>,
+    ) -> Result<MachineTransition> {
+        let copy = |value: &Value| {
+            crate::executor::with_history_io(io, |work| {
+                crate::wire_codec::CodecQuota::produce(work, |quota| {
+                    crate::core::copy(value, quota, |value, _| {
+                        crate::executor::json::json_value_logical_owned_bytes(value)
+                    })
+                })
+                .map(|(value, _)| value)
+            })
+        };
+        let literal = |bytes: &[u8]| match io {
+            Some(io) => io.decode_json::<Value>(bytes),
+            None => crate::contract::json_from_slice(bytes)
+                .map_err(|error| Error::Invalid(error.to_string())),
+        };
         if state.get("emitted") == Some(&Value::Bool(true)) {
             return Ok(MachineTransition {
-                state: state.clone(),
+                state: copy(state)?,
                 commands: Vec::new(),
                 status: MachineStatus::Completed {
-                    value: json!({"ok":true}),
+                    value: literal(br#"{"ok":true}"#)?,
                 },
             });
         }
-        let commands = input
+        let command = input
             .get("created_command")
-            .map(|command| {
-                serde_json::from_value(command.clone()).map_err(|e| Error::Invalid(e.to_string()))
+            .map(|value| match io {
+                Some(io) => Ok(crate::filesystem::retain_decoded(
+                    io.value_decode_preparation(value, crate::wire::ErrorCode::Invalid)?,
+                )),
+                None => serde_json::from_value(value.clone())
+                    .map_err(|error| Error::Invalid(error.to_string())),
             })
             .transpose()?;
+        let state = if command.is_some() {
+            literal(br#"{"emitted":true}"#)?
+        } else {
+            copy(state)?
+        };
+        let mut commands = Vec::new();
+        if let Some(command) = command {
+            crate::executor::stock_vec_push(&mut commands, command, io)?;
+        }
         Ok(MachineTransition {
-            state: if commands.is_some() {
-                json!({"emitted":true})
-            } else {
-                state.clone()
-            },
-            commands: commands.into_iter().collect(),
+            state,
+            commands,
             status: MachineStatus::Suspended,
         })
     }

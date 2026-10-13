@@ -145,9 +145,8 @@ pub(super) fn publish_restore(
     let destination_name = relative.file_name().ok_or(MaterializeError::InvalidPath)?;
     let stage_parent = held_parent(stage_root, relative, work)?;
     let name = Path::new(destination_name);
-    if crate::native_host::entry_identity(&destination_parent.directory, name, work)
+    if let Some(_) = crate::native_host::entry_identity(&destination_parent.directory, name, work)
         .map_err(MaterializeError::from)?
-        .is_some()
     {
         match replacement {
             HostPathReplacement::Atomic => crate::native_exchange::exchange_native_entries(
@@ -259,7 +258,7 @@ pub(super) fn create_restore_stage(
             .expect("String formatting cannot fail");
         work.record(delta).map_err(MaterializeError::from)?;
         let name = (PathBuf::from(name), allocation);
-        let created = {
+        match {
             #[cfg(unix)]
             {
                 parent.create_dir(&name.0, work)
@@ -270,10 +269,9 @@ pub(super) fn create_restore_stage(
                     parent.create_dir(path, work)
                 })
             }
-        };
-        match created {
+        } {
             Ok(()) => {
-                let opened = {
+                let root = match {
                     #[cfg(unix)]
                     {
                         parent.open_child(&name.0, work)
@@ -284,8 +282,7 @@ pub(super) fn create_restore_stage(
                             parent.open_child(path, work)
                         })
                     }
-                };
-                let root = match opened {
+                } {
                     Ok(root) => root,
                     // Without the stage capability no identity authorizes
                     // deleting this name, which may already have been swapped.

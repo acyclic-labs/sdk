@@ -136,7 +136,7 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
             acyclic_stream::MAX_RECORD_BYTES as u64,
             &mut observer,
         )?;
-        if &origin.owner != &self.host.owner
+        if origin.owner != self.host.owner
             || origin.preparation_task != self.task()
             || self.admission.parent != Some(origin.parent_task)
             || request.child.parent != Some(origin.parent_task)
@@ -237,10 +237,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             'a,
             (
                 Arc<TaskJournalOwner<P>>,
-                (
-                    crate::resource_preparation::ResourcePreparationRequest,
-                    acyclic_fs::NativeAllocation,
-                ),
+                crate::resource_preparation::ResourcePreparationRequest,
+                acyclic_fs::NativeAllocation,
             ),
         >,
     > {
@@ -263,10 +261,11 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         let mut pending = Some(claim);
         let bundle = crate::NativeFutureBundle::new(work, || {
-            let claim = pending.take().expect("funded original fork claim");
+            let claim = pending.take();
             async move {
+                let claim = claim.ok_or_else(denied)?;
                 let result: Result<Arc<TaskJournalOwner<P>>> = async {
-                    let origin = claim.0.task_origin.as_ref().expect("authenticated original fork origin");
+                    let origin = claim.0.task_origin.as_ref().ok_or_else(denied)?;
                     witness.verify_query_with_native_work(query, work).await?;
                     witness.verify_preparation_origin_with_native_work(
                         query, &claim.1, origin, work,
@@ -301,7 +300,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                                 custody: Some(custody),
                             });
                         }
-                        Ok((owner, (request, custody)))
+                        Ok((owner, request, custody))
                     }
                     Err(Error::NativeWork { cause, .. }) => Err(failed(claim, cause)),
                     Err(error) => Err(error),
@@ -309,10 +308,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
         });
         match bundle {
-            Err(Error::NativeWork { cause, .. }) => Err(failed(
-                pending.take().expect("unfunded original fork claim"),
+            Err(Error::NativeWork { cause, .. }) => Err(Error::NativeWork {
                 cause,
-            )),
+                custody: pending.take().map(|(_, _, custody)| custody),
+            }),
             result => result,
         }
     }
@@ -328,10 +327,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         {
             let _ = task;
             work.remaining()?;
-            return Err(Error::NativeBoundary {
+            Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported,
                 reason: "protected native preparation requires native-execution",
-            });
+            })
         }
         #[cfg(feature = "native-execution")]
         {

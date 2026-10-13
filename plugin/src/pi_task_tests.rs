@@ -43,7 +43,7 @@ fn preparation() -> WorkflowCommand {
     }
 }
 
-fn result(operation: OperationId, value: Outcome<FileRef>) -> Value {
+fn result(operation: OperationId, value: &Outcome<FileRef>) -> Value {
     json!({"commands":[{"operation_id":operation,"value":value}]})
 }
 
@@ -321,9 +321,11 @@ async fn selected_root_recovery_requires_original_admission() {
     let intent = PiRootIntent::Project {
         context_id: state.root_context_id,
         root_id: state.root_id,
-        paths: state.roots.iter().map(|(key, root)| {
-            (key.clone(), root.path.to_str().unwrap().to_owned())
-        }).collect(),
+        paths: state
+            .roots
+            .iter()
+            .map(|(key, root)| (key.clone(), root.path.to_str().unwrap().to_owned()))
+            .collect(),
     };
     assert!(
         observe_pi_session(&runtime.runtime, &state, &work)
@@ -368,9 +370,13 @@ async fn selected_root_recovery_requires_original_admission() {
                         &PiRootIntent::Project {
                             context_id: changed.root_context_id,
                             root_id: changed.root_id,
-                            paths: changed.roots.iter().map(|(key, root)| {
-                                (key.clone(), root.path.to_str().unwrap().to_owned())
-                            }).collect(),
+                            paths: changed
+                                .roots
+                                .iter()
+                                .map(|(key, root)| {
+                                    (key.clone(), root.path.to_str().unwrap().to_owned())
+                                })
+                                .collect(),
                         },
                         &preparation(),
                         &work
@@ -529,11 +535,16 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
     .await
     .unwrap();
     let settled = guard(
-        &result(preparation.0.operation_id, Outcome::Succeeded(allocation)),
+        &result(preparation.0.operation_id, &Outcome::Succeeded(allocation)),
         &work,
     );
     journal
-        .step(OperationId::from_bytes([151; 16]), IdempotencyKey::new("native-large-allocation").unwrap(), settled.0, Some(&acyclic_harness::filesystem::PreparationIo::from_native_custody(settled.1)))
+        .step(
+            OperationId::from_bytes([151; 16]),
+            IdempotencyKey::new("native-large-allocation").unwrap(),
+            settled.0,
+            Some(&acyclic_harness::filesystem::PreparationIo::from_native_custody(settled.1)),
+        )
         .await
         .unwrap();
     let operation = OperationId::from_bytes([152; 16]);
@@ -556,7 +567,12 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
     };
     let admitted = guard(&serde_json::to_value(&control).unwrap(), &work);
     journal
-        .step(OperationId::from_bytes([153; 16]), IdempotencyKey::new("native-large-control").unwrap(), admitted.0, Some(&acyclic_harness::filesystem::PreparationIo::from_native_custody(admitted.1)))
+        .step(
+            OperationId::from_bytes([153; 16]),
+            IdempotencyKey::new("native-large-control").unwrap(),
+            admitted.0,
+            Some(&acyclic_harness::filesystem::PreparationIo::from_native_custody(admitted.1)),
+        )
         .await
         .unwrap();
     drop(journal);
@@ -575,8 +591,18 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
     let left_io = acyclic_harness::filesystem::PreparationIo::from_native_custody(left.1);
     let right_io = acyclic_harness::filesystem::PreparationIo::from_native_custody(right.1);
     let (left, right) = tokio::join!(
-        first.step(OperationId::from_bytes([155; 16]), IdempotencyKey::new("native-large-left").unwrap(), left.0, Some(&left_io)),
-        second.step(OperationId::from_bytes([156; 16]), IdempotencyKey::new("native-large-right").unwrap(), right.0, Some(&right_io))
+        first.step(
+            OperationId::from_bytes([155; 16]),
+            IdempotencyKey::new("native-large-left").unwrap(),
+            left.0,
+            Some(&left_io)
+        ),
+        second.step(
+            OperationId::from_bytes([156; 16]),
+            IdempotencyKey::new("native-large-right").unwrap(),
+            right.0,
+            Some(&right_io)
+        )
     );
     assert_ne!(left.is_ok(), right.is_ok());
     let (accepted, rejected, stale, operation, key) = if left.is_ok() {
@@ -596,7 +622,12 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
     let next = guard(&input, &work);
     assert_eq!(
         stale
-            .step(OperationId::from_bytes([157; 16]), IdempotencyKey::new("native-large-stale").unwrap(), next.0, Some(&acyclic_harness::filesystem::PreparationIo::from_native_custody(next.1)))
+            .step(
+                OperationId::from_bytes([157; 16]),
+                IdempotencyKey::new("native-large-stale").unwrap(),
+                next.0,
+                Some(&acyclic_harness::filesystem::PreparationIo::from_native_custody(next.1))
+            )
             .await
             .err()
             .unwrap()
@@ -613,7 +644,12 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
     let checkpoint = recovered.checkpoint().clone();
     let retry = guard(&input, &work);
     let retried = recovered
-        .step(OperationId::from_bytes([operation; 16]), IdempotencyKey::new(key).unwrap(), retry.0, Some(&acyclic_harness::filesystem::PreparationIo::from_native_custody(retry.1)))
+        .step(
+            OperationId::from_bytes([operation; 16]),
+            IdempotencyKey::new(key).unwrap(),
+            retry.0,
+            Some(&acyclic_harness::filesystem::PreparationIo::from_native_custody(retry.1)),
+        )
         .await
         .unwrap();
     assert_eq!(retried.0.state, checkpoint.state);
@@ -646,7 +682,12 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
     work.cancellation().cancel();
     assert!(
         recovered
-            .step(OperationId::from_bytes([158; 16]), IdempotencyKey::new("native-large-cancelled").unwrap(), denied.0, Some(&acyclic_harness::filesystem::PreparationIo::from_native_custody(denied.1)))
+            .step(
+                OperationId::from_bytes([158; 16]),
+                IdempotencyKey::new("native-large-cancelled").unwrap(),
+                denied.0,
+                Some(&acyclic_harness::filesystem::PreparationIo::from_native_custody(denied.1))
+            )
             .await
             .is_err()
     );
@@ -656,15 +697,16 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
         .open_task_with_native_work(task, &fence, context, &query)
         .await
         .unwrap();
-    runtime
-        .task_host()
-        .cancel(task)
-        .await
-        .unwrap();
+    runtime.task_host().cancel(task).await.unwrap();
     let retry = guard(&input, &query);
     assert!(
         current
-            .step(OperationId::from_bytes([operation; 16]), IdempotencyKey::new(key).unwrap(), retry.0, Some(&acyclic_harness::filesystem::PreparationIo::from_native_custody(retry.1)))
+            .step(
+                OperationId::from_bytes([operation; 16]),
+                IdempotencyKey::new(key).unwrap(),
+                retry.0,
+                Some(&acyclic_harness::filesystem::PreparationIo::from_native_custody(retry.1))
+            )
             .await
             .is_err()
     );

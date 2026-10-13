@@ -20,7 +20,7 @@ async fn platform_roots_and_exclusive_ca() -> Result<(), Box<dyn std::error::Err
     );
     let result = async {
         let authorization =
-            BearerAuth::new("private-token").map_err(|()| ConnectError::InvalidCredential)?;
+            BearerAuth::new("private-token").map_err(|_| ConnectError::InvalidCredential)?;
         let platform = connect(&endpoint, authorization.clone(), None).await;
         if mode == "file" || mode == "dir" {
             let client = platform?;

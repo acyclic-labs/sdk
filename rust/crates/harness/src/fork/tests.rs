@@ -125,7 +125,7 @@ fn fork_history_must_be_exact_parent_prefix() -> Result<()> {
     let filesystem = seed.child_private_volume.provider().clone();
     let stream = seed.resources[0].source.provider().clone();
     let filesystem_files = files(&filesystem);
-    let only_files = CompositeForkVerifier::new(&[filesystem_files.clone()], &mut None)?;
+    let only_files = CompositeForkVerifier::new(std::slice::from_ref(&filesystem_files), &mut None)?;
     assert!(matches!(
         block_on(only_files.verify(&seed, &mut None)),
         Err(Error::Unsupported(_))

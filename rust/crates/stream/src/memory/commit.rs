@@ -50,12 +50,8 @@ impl CommitPlan {
             Some(key),
             digest,
             IdempotencyOutcome::Commit(self.cached),
+            self.resident,
         );
-        state
-            .retained
-            .last_mut()
-            .ok_or(StreamError::Unavailable)?
-            ._allocation = self.resident;
         Ok((self.result, self.output_claim))
     }
 }
@@ -308,12 +304,8 @@ impl MemoryStream {
                     Some(request.idempotency_key),
                     digest,
                     IdempotencyOutcome::Commit(cached),
+                    resident,
                 );
-                state
-                    .retained
-                    .last_mut()
-                    .ok_or(StreamError::Unavailable)?
-                    ._allocation = resident;
                 Ok((result, output_claim))
             });
         }

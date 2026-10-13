@@ -315,71 +315,39 @@ async fn verify_published_mutations(
     workspace: &LocalWorkspace,
     root: &Path,
 ) -> Result<(), Failure> {
-    if fs::read(root.join("outside-guard"))? != b"outside-safe" {
-        return Err("escape probe changed content outside the mount".into());
-    }
-    let escaped = root.join("escape-attempt.txt");
-    if fs::read(&escaped)? != b"host-only" {
-        return Err("traversal mutation did not remain in the temporary host parent".into());
-    }
-    if workspace
-        .stat(
-            "/escape-attempt.txt",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .is_ok()
-    {
-        return Err("traversal mutation escaped into workspace state".into());
-    }
-    fs::remove_file(escaped)?;
-    if workspace
-        .read(
+    verify_mount_isolation(workspace, root).await?;
+    for (path, expected, failure) in [
+        (
             "/nested/created.txt",
-            64,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?
-        .as_ref()
-        != b"created-v2"
-    {
-        return Err("created content was not published".into());
-    }
-    if workspace
-        .read(
+            b"created-v2".as_slice(),
+            "created content was not published",
+        ),
+        (
             "/nested/atomic.txt",
-            64,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?
-        .as_ref()
-        != b"atomic-new"
-    {
-        return Err("atomic save was not published".into());
-    }
-    if workspace
-        .read(
+            b"atomic-new".as_slice(),
+            "atomic save was not published",
+        ),
+        (
             "/nested/renamed.txt",
-            64,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?
-        .as_ref()
-        != b"rename-me"
-    {
-        return Err("rename was not published".into());
+            b"rename-me".as_slice(),
+            "rename was not published",
+        ),
+    ] {
+        if workspace
+            .read(
+                path,
+                64,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)?
+            .as_ref()
+            != expected
+        {
+            return Err(failure.into());
+        }
     }
     if workspace
         .stat(
@@ -522,5 +490,30 @@ pub(super) fn verify_large_windows_directory(mount: &Path) -> Result<(), Failure
         )
         .into());
     }
+    Ok(())
+}
+
+async fn verify_mount_isolation(workspace: &LocalWorkspace, root: &Path) -> Result<(), Failure> {
+    if fs::read(root.join("outside-guard"))? != b"outside-safe" {
+        return Err("escape probe changed content outside the mount".into());
+    }
+    let escaped = root.join("escape-attempt.txt");
+    if fs::read(&escaped)? != b"host-only" {
+        return Err("traversal mutation did not remain in the temporary host parent".into());
+    }
+    if workspace
+        .stat(
+            "/escape-attempt.txt",
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)
+        .is_ok()
+    {
+        return Err("traversal mutation escaped into workspace state".into());
+    }
+    fs::remove_file(escaped)?;
     Ok(())
 }

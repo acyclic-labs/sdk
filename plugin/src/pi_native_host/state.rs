@@ -25,14 +25,17 @@ impl NativeGate {
     pub(super) async fn reserve(
         &mut self,
         owner: &TaskJournalOwner<LocalStream>,
-        workspace: &crate::LocalWorkspace,
-        volume: &acyclic_harness::conversation::VolumeRef,
-        generation: GenerationId,
+        workspace_volume_generation: (
+            &crate::LocalWorkspace,
+            &acyclic_harness::conversation::VolumeRef,
+            GenerationId,
+        ),
         command: OperationId,
-        meter: &NativeMaterializationWork,
-        cancellation: &CancellationToken,
+        meter_cancellation: (&NativeMaterializationWork, &CancellationToken),
         existing_only: bool,
     ) -> Result<PublicationPermit> {
+        let (workspace, volume, generation) = workspace_volume_generation;
+        let (meter, cancellation) = meter_cancellation;
         let io = PreparationIo::from_native_work(meter)?;
         owner.verify(false, &mut Some(&mut &io)).await?;
         owner.require_volume_grant(volume, VolumeOperation::Write, &mut Some(&mut &io))?;
@@ -51,7 +54,9 @@ impl NativeGate {
             }
         }
         let recover = existing_only || self.reservation.is_some();
-        self.reservation = Some((workspace.clone(), operation, None));
+        let retained = self
+            .reservation
+            .insert((workspace.clone(), operation, None));
         let reservation = match workspace
             .publication_reservation(operation, meter, cancellation)
             .await
@@ -64,7 +69,7 @@ impl NativeGate {
                 .await
                 .map_err(Error::from)?,
         };
-        self.reservation.as_mut().expect("retained publication").2 = Some(reservation);
+        retained.2 = Some(reservation);
         if workspace
             .head(meter, cancellation)
             .await

@@ -44,7 +44,11 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
     carrier: &mut NativeDemandCarrier<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(ViewEffect, Option<crate::NativeAllocation>), MountSourceError> {
-    let native = carrier.original_native_work().ok_or(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout))?;
+    let native = carrier
+        .original_native_work()
+        .ok_or(MountSourceError::NativeWork(
+            crate::NativeTreeMaterializationError::InvalidLayout,
+        ))?;
     let (diff, allocation) = base
         .candidate_diff(
             candidate,
@@ -60,7 +64,9 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
     inputs
         .allocation
         .as_mut()
-        .ok_or(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout))?
+        .ok_or(MountSourceError::NativeWork(
+            crate::NativeTreeMaterializationError::InvalidLayout,
+        ))?
         .absorb(&mut allocation)
         .map_err(MountSourceError::NativeWork)?;
     if diff.truncated {
@@ -90,11 +96,21 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
     let mut directories = inputs.vec::<(FileId, NamespacePath)>(diff.bindings.len())?;
     for path in scope.paths() {
         for length in 0..=path.depth() {
-            let prefix = inputs
-                .clone_namespace(path.components().get(..length).ok_or(MountSourceError::Work(crate::WorkError::Overflow))?, base.volume_config().limits)?;
+            let prefix = inputs.clone_namespace(
+                path.components()
+                    .get(..length)
+                    .ok_or(MountSourceError::Work(WorkError::Overflow))?,
+                base.volume_config().limits,
+            )?;
             for checkout in [base, candidate] {
                 if let Some(record) = checkout
-                    .inspector(&mut crate::kernel::allocation::KernelAccounting::native(&native, cancellation), cancellation)?
+                    .inspector(
+                        &mut crate::kernel::allocation::KernelAccounting::native(
+                            &native,
+                            cancellation,
+                        ),
+                        cancellation,
+                    )?
                     .lookup_no_follow(&prefix, &native, cancellation)
                     .await?
                     .record

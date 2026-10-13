@@ -11,7 +11,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
 use storage::ChangePositions;
-pub(super) use storage::{copy_work, scan_work};
+pub(super) use storage::{copy_work, same_work, scan_work};
 use unicode_normalization::UnicodeNormalization as _;
 mod notifications;
 mod storage;
@@ -84,7 +84,6 @@ impl ViewOrigin {
     }
 
     /// Attributes changes to this origin for the returned scope.
-    #[cfg(any(target_os = "linux", target_os = "macos", test))]
     pub(super) fn enter(self) -> ViewOriginScope {
         ViewOriginScope(CURRENT_ORIGIN.replace(self))
     }
@@ -96,10 +95,8 @@ impl ViewOrigin {
 }
 
 /// Restores the thread's previous origin when dropped.
-#[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(super) struct ViewOriginScope(ViewOrigin);
 
-#[cfg(any(target_os = "linux", target_os = "macos", test))]
 impl Drop for ViewOriginScope {
     fn drop(&mut self) {
         CURRENT_ORIGIN.set(self.0);
@@ -420,13 +417,14 @@ fn hash_spelling_fold(name: &LogicalName, hasher: &mut DefaultHasher) {
         }
         NameEncoding::WindowsUtf16Le => {
             if let Some(units) = crate::kernel::types::utf16le_units(bytes)
-                && char::decode_utf16(units.clone()).all(|value| value.is_ok()) {
-                    hash_text(
-                        char::decode_utf16(units).map(|value| value.expect("validated UTF-16")),
-                        hasher,
-                    );
-                    return;
-                }
+                && char::decode_utf16(units.clone()).all(|value| value.is_ok())
+            {
+                hash_text(
+                    char::decode_utf16(units).map(|value| value.expect("validated UTF-16")),
+                    hasher,
+                );
+                return;
+            }
         }
     }
     // Keep malformed names separate from text with the same bytes.

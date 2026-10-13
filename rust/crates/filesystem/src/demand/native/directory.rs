@@ -24,6 +24,11 @@ impl DirectoryState {
     }
     fn read(&mut self, work: &mut CallbackWork) -> Result<(), DemandError> {
         if self.pending.is_none() && !self.eof {
+            work.check()?;
+            work.admit(WorkCounters {
+                source_entries_visited: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
             match self.entries.next(work)? {
                 None => self.eof = true,
                 Some((entry, bytes)) => {

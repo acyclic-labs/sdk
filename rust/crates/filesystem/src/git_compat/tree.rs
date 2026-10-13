@@ -36,7 +36,7 @@ pub(super) async fn resolved_git_regular_files<A: AsyncAuthorityStore, O: AsyncO
                 visited = visited.saturating_add(1);
                 let name = entry
                     .name
-                    .unicode_text()
+                    .unicode_text(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).ok().map(|receipt| receipt.value)
                     .ok_or_else(|| WorkspaceError::Path("non-portable Git path".to_owned()))?;
                 let path = if directory_display.is_empty() {
                     name.to_string()
@@ -196,7 +196,7 @@ pub async fn walk_git_tree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             for entry in &page.entries {
                 let name = entry
                     .name
-                    .unicode_text()
+                    .unicode_text(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).ok().map(|receipt| receipt.value)
                     .ok_or_else(|| WorkspaceError::Path("non-portable Git path".to_owned()))?;
                 let parent = directory.trim_start_matches('/');
                 let path = if parent.is_empty() {

@@ -14,7 +14,9 @@ pub(crate) fn binding(session: &str, identity: u8) -> PiTaskBinding {
         .unwrap(),
         allocation: PiScratchAllocation::Created(PiScratchCreation {
             workspace_id: [identity; 16],
-            generation: GenerationRef::new(&(provider), &([3; 32]), None, None).unwrap().0,
+            generation: GenerationRef::new(&(provider), &([3; 32]), None, None)
+                .unwrap()
+                .0,
         }),
     };
     PiTaskBinding {
@@ -33,33 +35,31 @@ fn allocations_and_selected_roles_are_explicit_and_bound() {
     assert!(original.validate(None, ["missing-root"], false).is_err());
     for mutation in 0..3 {
         let mut changed = original.clone();
-        match mutation {
-            0 => {
-                changed.scratch.volume = VolumeRef::new(
-                    original.scratch.volume.provider().clone(),
-                    "scratch".into(),
-                    VolumeClass::AgentPrivate,
-                    VolumeOwner::Agent(AgentId::from_bytes([2; 16])),
-                    &mut None,
+        if mutation == 0 {
+            changed.scratch.volume = VolumeRef::new(
+                original.scratch.volume.provider().clone(),
+                "scratch".into(),
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(AgentId::from_bytes([2; 16])),
+                &mut None,
+            )
+            .unwrap();
+        } else {
+            let PiScratchAllocation::Created(creation) = &mut changed.scratch.allocation else {
+                unreachable!()
+            };
+            if mutation == 1 {
+                creation.generation = GenerationRef::new(
+                    &(ProviderRef::new("other".into(), "filesystem".into(), "1".into(), &mut None)
+                        .unwrap()),
+                    &([3; 32]),
+                    None,
+                    None,
                 )
+                .map(|(value, _)| value)
                 .unwrap();
-            }
-            _ => {
-                let PiScratchAllocation::Created(creation) = &mut changed.scratch.allocation else {
-                    unreachable!()
-                };
-                if mutation == 1 {
-                    creation.generation = GenerationRef::new(&(ProviderRef::new(
-                            "other".into(),
-                            "filesystem".into(),
-                            "1".into(),
-                            &mut None,
-                        )
-                        .unwrap()), &([3; 32]), None, None).map(|(value, _)| value)
-                    .unwrap();
-                } else {
-                    creation.workspace_id = [0; 16];
-                }
+            } else {
+                creation.workspace_id = [0; 16];
             }
         }
         assert!(changed.validate(None, [], false).is_err());
@@ -72,11 +72,13 @@ fn allocations_and_selected_roles_are_explicit_and_bound() {
         json!({"state":"created"}),
     ] {
         let mut invalid = current.clone();
-        invalid["scratch"]["allocation"] = allocation;
+        *invalid.pointer_mut("/scratch/allocation").unwrap() = allocation;
         assert!(serde_json::from_value::<PiTaskBinding>(invalid).is_err());
     }
     let mut omitted = current;
-    omitted["scratch"]
+    omitted
+        .pointer_mut("/scratch")
+        .unwrap()
         .as_object_mut()
         .unwrap()
         .remove("allocation");

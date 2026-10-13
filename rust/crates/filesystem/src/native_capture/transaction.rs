@@ -16,10 +16,7 @@ pub(super) async fn push_subtree_removals<A: AsyncAuthorityStore, O: AsyncObject
         {
             capture_charge(
                 meter,
-                WorkCounters {
-                    items_examined: 1,
-                    ..WorkCounters::UNCHARGED
-                },
+                crate::materializer::NativeResourceCredit::Items.delta(1),
             )
         }?;
         if let AuthoredMutation::Remove { path, .. } = mutation
@@ -81,10 +78,7 @@ pub(super) async fn apply_capture_transaction<A: AsyncAuthorityStore, O: AsyncOb
     for mutation in &mutations {
         capture_charge(
             meter,
-            WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            },
+            crate::materializer::NativeResourceCredit::Items.delta(1),
         )?;
         bytes = bytes
             .checked_add(mutation.logical_owned_bytes())
@@ -99,7 +93,7 @@ pub(super) async fn apply_capture_transaction<A: AsyncAuthorityStore, O: AsyncOb
         .capture_origin
         .as_ref()
         .and_then(std::sync::Weak::upgrade)
-        .expect("capture scope is live");
+        .ok_or(crate::NativeTreeMaterializationError::OriginalWorkPoisoned)?;
     let allocation = meter.transfer_capture_allocation(bytes, &custody)?;
     // The existing owned input drops mutation buffers before their allocation guard.
     let input = crate::kernel::Owned::new(

@@ -26,28 +26,14 @@ impl ProviderJoinProof {
             || self.statement.is_null()
             || !proof_numbers_are_js_safe(&self.statement, work)?
         {
-            return Err(merge_boundary(work, "provider merge proof is invalid"));
+            return Err(guarded_boundary(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "provider merge proof is invalid",
+            ));
         }
         Ok(())
     }
-}
-
-pub(super) fn merge_boundary(
-    work: &Option<&mut dyn crate::store::history::HistoryIo>,
-    reason: &'static str,
-) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if work
-        .as_deref()
-        .is_some_and(|io| io.original_native_work().is_some())
-    {
-        return Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid,
-            reason,
-        };
-    }
-    let _ = work;
-    Error::Invalid(reason.into())
 }
 
 fn proof_numbers_are_js_safe(
@@ -70,10 +56,10 @@ fn proof_numbers_are_js_safe(
                 }
             }
             serde_json::Value::Array(items) => {
-                append_proof_values(&mut pending, items.iter(), items.len(), &mut quota)?
+                append_proof_values(&mut pending, items.iter(), items.len(), &mut quota)?;
             }
             serde_json::Value::Object(fields) => {
-                append_proof_values(&mut pending, fields.values(), fields.len(), &mut quota)?
+                append_proof_values(&mut pending, fields.values(), fields.len(), &mut quota)?;
             }
             _ => {}
         }
@@ -87,10 +73,13 @@ fn append_proof_values<'a>(
     count: usize,
     quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<()> {
-    let required = pending
-        .len()
-        .checked_add(count)
-        .ok_or_else(|| merge_boundary(quota.work(), "provider merge proof traversal overflows"))?;
+    let required = pending.len().checked_add(count).ok_or_else(|| {
+        guarded_boundary(
+            quota.work(),
+            crate::wire::ErrorCode::Invalid,
+            "provider merge proof traversal overflows",
+        )
+    })?;
     if required > pending.capacity() {
         let mut replacement =
             crate::core::reserve_copy_vector::<&serde_json::Value>(required, quota)?;

@@ -151,7 +151,10 @@ impl NativeDemandFile {
             bytes_copied: capacity as u64,
             ..WorkCounters::UNCHARGED
         };
-        context.admit(copying)?;
+        context.admit(WorkCounters {
+            output_bytes: capacity as u64,
+            ..copying
+        })?;
         let original = context.native_source_work();
         let (mut data, mut allocation, mut native_allocation) = if let Some(original) = &original {
             let (data, allocation) = crate::native_host::buffer::<u8, _>(capacity, &mut &*original)
@@ -186,6 +189,10 @@ impl NativeDemandFile {
                 })?;
                 let filled = self.fill(file, offset, prepared.writable(), context)?;
                 self.prove_current(file, context)?;
+                context.record(WorkCounters {
+                    output_bytes: filled as u64,
+                    ..WorkCounters::UNCHARGED
+                })?;
                 let bytes = prepared
                     .freeze(filled)
                     .map_err(|_| DemandError::InvalidRequest)?;
@@ -193,6 +200,10 @@ impl NativeDemandFile {
             } else {
                 let filled = self.fill(file, offset, &mut data, context)?;
                 self.prove_current(file, context)?;
+                context.record(WorkCounters {
+                    output_bytes: filled as u64,
+                    ..WorkCounters::UNCHARGED
+                })?;
                 data.truncate(filled);
                 Ok(crate::kernel::OwnedSourceChunk::claimed(
                     std::mem::take(&mut data).into(),
@@ -226,10 +237,6 @@ impl NativeDemandFile {
                 Err(error) => return Err(error),
             }
         }
-        context.record(WorkCounters {
-            output_bytes: filled as u64,
-            ..WorkCounters::UNCHARGED
-        })?;
         Ok(filled)
     }
     fn prove_current(

@@ -19,15 +19,11 @@ impl PiSession {
         let PluginTaskBinding::Pi(binding) = &self.state.task_binding else {
             return Err(invalid("Pi root has no original task binding"));
         };
-        let owner = pi_owner::PiOwnerConfig::load(
-            &self.resources.data,
-            &self.relative_directory,
-            work,
-        )?
-        .into_native_shared(work)?;
+        let owner =
+            pi_owner::PiOwnerConfig::load(&self.resources.data, &self.relative_directory, work)?
+                .into_native_shared(work)?;
         let preparation = pi_root_inputs::PiRootPreparation::load(
-            &self.resources.data,
-            &self.relative_directory,
+            (&self.resources.data, &self.relative_directory),
             &self.runtime,
             &self.filesystem,
             binding,
@@ -80,7 +76,9 @@ impl PiSession {
                 return Err(error);
             }
             let handles = driver.created_roots().await;
-            let allocation = if let Some(allocation) = driver.root_output().await? { allocation } else {
+            let allocation = if let Some(allocation) = driver.root_output().await? {
+                allocation
+            } else {
                 let observer = self.root_observer(None, work).await?;
                 let attempt = EffectAttemptId::from_bytes(
                     observer.effect_id_with_native_work(work)?.into_bytes(),
@@ -199,8 +197,12 @@ impl PiSession {
                 return Err(invalid("Pi selected project workspace was substituted"));
             }
             let original = acyclic_fs::LazyWorkspaceStore::load_lazy_workspace(
-                &self.resources.store, workspace.id(), &mut accounting,
-            ).await?.ok_or(RootError::NativeSource {
+                &self.resources.store,
+                workspace.id(),
+                &mut accounting,
+            )
+            .await?
+            .ok_or(RootError::NativeSource {
                 source: Box::new(acyclic_fs::LazyWorkspaceError::OriginalSnapshotUnavailable),
                 custody: None,
             })?;
@@ -254,7 +256,8 @@ impl PiSession {
                 .ok_or_else(|| invalid("Pi allocated root disappeared"))?
                 .allocation = RootAllocation::Created(creation);
         }
-        self.slots.save(&self.directory, &self.state, Survives::PowerLoss)
+        self.slots
+            .save(&self.directory, &self.state, Survives::PowerLoss)
             .map_err(RootError::Storage)?;
         let PluginTaskBinding::Pi(binding) = &self.state.task_binding else {
             return Err(invalid("Pi root binding changed during allocation"));
@@ -276,7 +279,9 @@ impl PiSession {
                     )
                     .await
                     .map_err(|(source, custody)| match source {
-                        acyclic_fs::WorkspaceLineageError::Workspace(source) => RootError::NativeWorkspace { source: Box::new(source), custody },
+                        acyclic_fs::WorkspaceLineageError::Workspace(source) => {
+                            RootError::NativeWorkspace { source, custody }
+                        }
                         source => RootError::Storage(display(source)),
                     })?,
             );
@@ -311,14 +316,20 @@ impl PiSession {
                 )
                 .await
                 .map_err(|(source, custody)| match source {
-                    acyclic_fs::WorkspaceContextError::NativeFilesystem(source) => RootError::NativeFilesystem { source: Box::new(source), custody },
+                    acyclic_fs::WorkspaceContextError::NativeFilesystem(source) => {
+                        RootError::NativeFilesystem {
+                            source: Box::new(source),
+                            custody,
+                        }
+                    }
                     source => RootError::Storage(display(source)),
                 })?,
         );
         self.state.pending_root_registration = false;
         drop(allocation.0.0);
         drop(allocation.1);
-        self.slots.save(&self.directory, &self.state, Survives::PowerLoss)
+        self.slots
+            .save(&self.directory, &self.state, Survives::PowerLoss)
             .map_err(RootError::Storage)
     }
 }

@@ -3,9 +3,7 @@
 use super::*;
 use crate::pi_host::invalid;
 use acyclic_harness::{
-    Error as RootError, Outcome, TaskId,
-    conversation::FileRef,
-    filesystem::FilesystemHost,
+    Error as RootError, Outcome, TaskId, conversation::FileRef, filesystem::FilesystemHost,
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits};
 
@@ -149,6 +147,16 @@ impl SessionController {
     }
 }
 
+type NativeJob = (
+    tokio::task::JoinHandle<
+        acyclic_harness::Result<(
+            Option<acyclic_harness::filesystem::TaskWorkerAttempt>,
+            acyclic_fs::NativeAllocation,
+        )>,
+    >,
+    acyclic_fs::NativeAllocation,
+);
+
 pub(crate) struct PiSession {
     directory: PathBuf,
     relative_directory: PathBuf,
@@ -160,18 +168,7 @@ pub(crate) struct PiSession {
     resources: ServiceResources,
     roots: BTreeMap<String, pi_root_provider::PiRootHandle>,
     native: Option<Arc<pi_native_host::PiNativeCommandHost>>,
-    native_jobs: BTreeMap<
-        TaskId,
-        (
-            tokio::task::JoinHandle<
-                acyclic_harness::Result<(
-                    Option<acyclic_harness::filesystem::TaskWorkerAttempt>,
-                    acyclic_fs::NativeAllocation,
-                )>,
-            >,
-            acyclic_fs::NativeAllocation,
-        ),
-    >,
+    native_jobs: BTreeMap<TaskId, NativeJob>,
     // Drop startup data before its allocation guard.
     native_startup_custody: acyclic_fs::NativeAllocation,
     native_pending_backing_custody: Option<acyclic_fs::NativeAllocation>,
@@ -188,12 +185,10 @@ impl PiSession {
     ) -> acyclic_harness::Result<pi_host::PiControlHost<'_>> {
         let owner = match &native {
             Some(native) => std::sync::Arc::clone(&native.protected),
-            None => pi_owner::PiOwnerConfig::load(
-                &self.resources.data,
-                &self.relative_directory,
-                work,
-            )?
-            .into_native_shared(work)?,
+            None => {
+                pi_owner::PiOwnerConfig::load(&self.resources.data, &self.relative_directory, work)?
+                    .into_native_shared(work)?
+            }
         };
         pi_host::PiControlHost::new(
             &self.relative_directory,
@@ -293,11 +288,7 @@ impl PiSession {
             ));
         }
         let relative_directory = work.path(relative_directory, None)?;
-        let owner = pi_owner::PiOwnerConfig::load(
-            &resources.0.data,
-            &relative_directory.0,
-            work,
-        )?;
+        let owner = pi_owner::PiOwnerConfig::load(&resources.0.data, &relative_directory.0, work)?;
         owner.validate_root(binding, work)?;
         let stream_path = directory.join("stream");
         if !stream_path.is_dir() {
@@ -461,17 +452,28 @@ impl PiSession {
             pi_root_provider::allocation_budget(),
             &CancellationToken::new(),
         )
-        .map_err(|(cause, work)| RootError::NativeConstruction { cause, work: Box::new(work) })?;
+        .map_err(|(cause, work)| RootError::NativeConstruction {
+            cause,
+            work: Box::new(work),
+        })?;
         *original_native_work = Some(work.clone());
         Ok(work)
     }
 
     fn mail_work(
-        &mut self, caller: TaskId, owner: &pi_owner::PiOwnerConfig,
+        &mut self,
+        caller: TaskId,
+        owner: &pi_owner::PiOwnerConfig,
         query_work: &acyclic_fs::NativeMaterializationWork,
-    ) -> impl std::future::Future<Output = acyclic_harness::Result<acyclic_fs::NativeMaterializationWork>> + Send + use<> {
-        let result = if caller == owner.policy().root_task { Ok(None) }
-            else { self.native_host_with_native_work(query_work).map(Some) };
+    ) -> impl std::future::Future<
+        Output = acyclic_harness::Result<acyclic_fs::NativeMaterializationWork>,
+    > + Send
+    + use<> {
+        let result = if caller == owner.policy().root_task {
+            Ok(None)
+        } else {
+            self.native_host_with_native_work(query_work).map(Some)
+        };
         let work = query_work.clone();
         async move {
             match result? {

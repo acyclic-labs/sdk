@@ -57,7 +57,7 @@ fn runtime_disable_is_local_to_its_composition() -> Result<()> {
     registry.install(implementation)?;
     let runtime = ExtensionRuntime::activate(registry.clone(), [identity.clone()])?;
     runtime.disable()?;
-    ExtensionRuntime::activate(registry.clone(), [identity])?;
+    ExtensionRuntime::activate(registry, [identity])?;
     assert!(matches!(
         runtime.retain(["extension:example.extension@1".into()], false),
         Err(Error::Conflict(_))

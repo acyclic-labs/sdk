@@ -80,12 +80,9 @@ where
             ));
         }
         let ordinary;
-        let observer = match io {
-            Some(io) => io,
-            None => {
-                ordinary = PreparationIo::from_budget(self.config.content_budget, cancellation)?;
-                &ordinary
-            }
+        let observer = if let Some(io) = io { io } else {
+            ordinary = PreparationIo::from_budget(self.config.content_budget, cancellation)?;
+            &ordinary
         };
         if let Some(checkpoint) = &preparation.source_checkpoint {
             let bytes = reader.read_file(checkpoint, Some(observer)).await?;

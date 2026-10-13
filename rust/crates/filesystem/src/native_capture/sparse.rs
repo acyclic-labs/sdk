@@ -30,12 +30,13 @@ pub(super) async fn settled_sparse_ranges(
         while position < end {
             meter.cancellation().check()?;
             let wanted = (CHUNK - position % CHUNK).min(end - position);
-            meter.admit(WorkCounters {
-                source_bytes_read: wanted,
-                ..WorkCounters::UNCHARGED
-            })?;
+            meter.admit(crate::materializer::NativeResourceCredit::ReadBytes.delta(wanted))?;
             let chunk = reader
-                .read(usize::try_from(wanted).map_err(|_| WorkError::Overflow)?, meter.runtime_meter(), true)
+                .read(
+                    usize::try_from(wanted).map_err(|_| WorkError::Overflow)?,
+                    meter.runtime_meter(),
+                    true,
+                )
                 .await
                 .map_err(|error| {
                     if let Some(cause) = meter.state.take_native_io_failure() {
@@ -56,18 +57,15 @@ pub(super) async fn settled_sparse_ranges(
             while start < read_end {
                 meter.clone().check().map_err(capture_demand_error)?;
                 let block_end = start.saturating_add(BLOCK - start % BLOCK).min(read_end);
-                let start_index = usize::try_from(start - position).map_err(|_| WorkError::Overflow)?;
-                let end_index = usize::try_from(block_end - position).map_err(|_| WorkError::Overflow)?;
-                let block = chunk.0.get(start_index..end_index)
-                    .ok_or(CaptureError::InvalidOptions)?;
+                let first = usize::try_from(start - position).map_err(|_| WorkError::Overflow)?;
+                let last =
+                    usize::try_from(block_end - position).map_err(|_| WorkError::Overflow)?;
+                let block = chunk.0.get(first..last).ok_or(WorkError::Overflow)?;
                 let mut nonzero = false;
                 for byte in block {
                     capture_charge(
                         meter,
-                        WorkCounters {
-                            items_examined: 1,
-                            ..WorkCounters::UNCHARGED
-                        },
+                        crate::materializer::NativeResourceCredit::Items.delta(1),
                     )?;
                     if *byte != 0 {
                         nonzero = true;

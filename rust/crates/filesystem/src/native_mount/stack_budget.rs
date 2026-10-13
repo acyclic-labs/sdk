@@ -123,6 +123,7 @@ fn seeded_files() -> Vec<String> {
 async fn lazy_workspace(
     root: &std::path::Path,
 ) -> Result<(Arc<Lazy>, Arc<Authored>), Box<dyn std::error::Error>> {
+    let root = std::fs::canonicalize(root)?;
     let source_root = root.join("source");
     for name in seeded_files() {
         let file = source_root.join(&name);

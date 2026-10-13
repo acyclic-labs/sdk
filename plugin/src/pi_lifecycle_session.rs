@@ -108,7 +108,9 @@ impl PiSession {
                 "Pi cancellation lost its original root".to_owned(),
             ));
         };
-        let _caller_source = if caller != root.task_id {
+        let _caller_source = if caller == root.task_id {
+            None
+        } else {
             let live = host.live_source(caller, work).await?.ok_or_else(|| {
                 Error::Invalid(
                     "Pi cancellation caller has no current original native owner".to_owned(),
@@ -122,8 +124,6 @@ impl PiSession {
                 ));
             }
             Some(live)
-        } else {
-            None
         };
         let mut failure = None;
         retain_first_failure(
@@ -283,9 +283,10 @@ impl PiSession {
         while !remaining.is_empty() {
             let before = remaining.len();
             let mut index = 0;
-            while index < remaining.len() {
-                let task = remaining[index];
-                let (route, parent, plan) = &plans[&task];
+            while let Some(&task) = remaining.get(index) {
+                let (route, parent, plan) = plans
+                    .get(&task)
+                    .ok_or_else(|| invalid("Pi recovery task lost its original fork plan"))?;
                 let root_key = self
                     .roots
                     .keys()
@@ -298,7 +299,13 @@ impl PiSession {
                     })?
                     .as_str();
                 let source = if plan.commit.source_task == root_task {
-                    Arc::clone(&self.roots[root_key].workspace)
+                    Arc::clone(
+                        &self
+                            .roots
+                            .get(root_key)
+                            .ok_or_else(|| invalid("Pi original Root was not restored"))?
+                            .workspace,
+                    )
                 } else if let Some(source) = child_sources.get(&plan.commit.source_task) {
                     Arc::clone(source)
                 } else {
@@ -400,8 +407,7 @@ impl PiSession {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> RootResult<()> {
         let mut failure = None;
-        let graph =
-            pi_recovery::observe_pi_session(&self.runtime.runtime, &self.state, work).await;
+        let graph = pi_recovery::observe_pi_session(&self.runtime.runtime, &self.state, work).await;
         let authenticated = graph.is_ok();
         let _graph_receipt = match graph {
             Ok(receipt) => Some(receipt),
@@ -600,9 +606,10 @@ impl PiSession {
 
 fn retain_first_failure(failure: &mut Option<Error>, result: RootResult<()>) {
     if failure.is_none()
-        && let Err(error) = result {
-            *failure = Some(error);
-        }
+        && let Err(error) = result
+    {
+        *failure = Some(error);
+    }
 }
 
 fn finish_native_drain(failure: Option<Error>) -> RootResult<()> {

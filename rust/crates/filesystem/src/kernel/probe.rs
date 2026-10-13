@@ -674,10 +674,7 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
                         }
                     }
                     ExtentKind::Content { object, object_offset } => {
-                        let read = super::blob::read_blob_range_with_accounting(
-                            self.store, object, ByteRange { offset: object_offset, length: span.length },
-                            self.limits.decode, accounting, cancellation,
-                        ).await?;
+                        let read = super::blob::read_blob_range_with_accounting(self.store, object, ByteRange { offset: object_offset, length: span.length }, self.limits.decode, accounting, cancellation, true).await?;
                         let result = hash_probe_bytes(&mut hasher, &read.bytes, accounting, cancellation, custody);
                         let retained = read.logical_owned_bytes;
                         drop(read);

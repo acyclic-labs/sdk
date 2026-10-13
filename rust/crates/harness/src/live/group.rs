@@ -92,78 +92,78 @@ impl TaskGroup {
         let admission = locked(&self.state.admission);
         let mut children = locked(&self.state.children);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = work {
-            if children.len() == children.capacity() {
-                let old = children.capacity();
-                let target = old.checked_mul(2).unwrap_or(usize::MAX).max(4);
-                let bytes = target
-                    .checked_sub(old)
-                    .and_then(|slots| slots.checked_mul(std::mem::size_of::<Weak<GroupState>>()))
-                    .and_then(|bytes| bytes.checked_add(std::mem::size_of::<GroupChildCustody>()))
-                    .ok_or(crate::Error::NativeWork {
-                        cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                            acyclic_fs::WorkError::Overflow,
-                        ),
-                        custody: None,
-                    })? as u64;
-                let custody = work
-                    .claim(bytes, 0, acyclic_fs::WorkCounters::UNCHARGED)
-                    .map_err(|cause| crate::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    })?;
-                work.charge(acyclic_fs::WorkCounters {
+        if let Some(work) = work
+            && children.len() == children.capacity()
+        {
+            let old = children.capacity();
+            let target = old.saturating_mul(2).max(4);
+            let bytes = target
+                .checked_sub(old)
+                .and_then(|slots| slots.checked_mul(std::mem::size_of::<Weak<GroupState>>()))
+                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<GroupChildCustody>()))
+                .ok_or(crate::Error::NativeWork {
+                    cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                        acyclic_fs::WorkError::Overflow,
+                    ),
+                    custody: None,
+                })? as u64;
+            let custody = work
+                .claim(bytes, 0, acyclic_fs::WorkCounters::UNCHARGED)
+                .map_err(|cause| crate::Error::NativeWork {
+                    cause,
+                    custody: None,
+                })?;
+            work.charge(acyclic_fs::WorkCounters {
+                allocation_operations: 1,
+                ..Default::default()
+            })
+            .map_err(|cause| crate::Error::NativeWork {
+                cause,
+                custody: None,
+            })?;
+            let mut retained = locked(&self.state.children_custody);
+            let previous = retained.take();
+            *retained = Some(Box::new(GroupChildCustody {
+                _previous: previous,
+                allocation: custody,
+            }));
+            let growth = work
+                .charge(acyclic_fs::WorkCounters {
                     allocation_operations: 1,
                     ..Default::default()
                 })
                 .map_err(|cause| crate::Error::NativeWork {
                     cause,
                     custody: None,
-                })?;
-                let mut retained = locked(&self.state.children_custody);
-                let previous = retained.take();
-                *retained = Some(Box::new(GroupChildCustody {
-                    _previous: previous,
-                    allocation: custody,
-                }));
-                let growth = work
-                    .charge(acyclic_fs::WorkCounters {
-                        allocation_operations: 1,
-                        ..Default::default()
-                    })
-                    .map_err(|cause| crate::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    })
-                    .and_then(|()| {
-                        let extra = target - children.len();
-                        children.try_reserve_exact(extra).map_err(|cause| {
-                            crate::Error::NativeWork {
-                                cause: acyclic_fs::NativeTreeMaterializationError::AllocationFailed(
-                                    cause,
-                                ),
-                                custody: None,
-                            }
+                })
+                .and_then(|()| {
+                    let extra = target - children.len();
+                    children
+                        .try_reserve_exact(extra)
+                        .map_err(|cause| crate::Error::NativeWork {
+                            cause: acyclic_fs::NativeTreeMaterializationError::AllocationFailed(
+                                cause,
+                            ),
+                            custody: None,
                         })
-                    });
-                if let Err(error) = growth {
-                    let mut unused = retained.take().expect("installed child-vector custody");
-                    *retained = unused._previous.take();
-                    drop(unused);
-                    return Err(error);
-                }
-                let actual = ((children.capacity() - old) * std::mem::size_of::<Weak<GroupState>>()
-                    + std::mem::size_of::<GroupChildCustody>()) as u64;
-                retained
-                    .as_mut()
-                    .expect("installed child-vector custody")
-                    .allocation
-                    .reconcile_capacity(actual)
-                    .map_err(|cause| crate::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    })?;
+                });
+            if let Err(error) = growth {
+                let mut unused = retained.take().expect("installed child-vector custody");
+                *retained = unused._previous.take();
+                drop(unused);
+                return Err(error);
             }
+            let actual = ((children.capacity() - old) * std::mem::size_of::<Weak<GroupState>>()
+                + std::mem::size_of::<GroupChildCustody>()) as u64;
+            retained
+                .as_mut()
+                .expect("installed child-vector custody")
+                .allocation
+                .reconcile_capacity(actual)
+                .map_err(|cause| crate::Error::NativeWork {
+                    cause,
+                    custody: None,
+                })?;
         }
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let _ = work;
@@ -245,16 +245,9 @@ impl TaskGroup {
             for handle in active.values() {
                 handle.abort();
             }
-            let children = {
-                let mut retained = locked(&group.children);
-                let children = retained
-                    .iter()
-                    .filter_map(Weak::upgrade)
-                    .collect::<Vec<_>>();
-                retained.retain(|child| child.strong_count() > 0);
-                children
-            };
-            pending.extend(children);
+            let mut retained = locked(&group.children);
+            pending.extend(retained.iter().filter_map(Weak::upgrade));
+            retained.retain(|child| child.strong_count() > 0);
         }
     }
 

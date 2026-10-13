@@ -76,17 +76,16 @@ impl crate::pi_host::PiControlHost<'_> {
                 &context,
                 owner,
                 request.caller,
-                Some(key),
-                None,
+                (Some(key), None),
                 request.operation(self.protected.policy().root_task, work)?,
                 work,
             )
             .await?;
-        let mut last_absence = None;
-        for (path, candidate) in std::iter::once(relative)
+        let mut candidates = std::iter::once(relative)
             .chain(relatives.into_iter().flatten())
             .zip(std::iter::once(&request.path).chain(variants.iter()))
-        {
+            .peekable();
+        while let Some((path, candidate)) = candidates.next() {
             let path = logical_path(path, work)?;
             match selection.read(&path.0, *maximum_bytes, work).await {
                 Ok(bytes) => {
@@ -100,11 +99,11 @@ impl crate::pi_host::PiControlHost<'_> {
                         },
                     );
                 }
-                Err(error) if is_absent(&error) => last_absence = Some(error),
+                Err(error) if is_absent(&error) && candidates.peek().is_some() => {}
                 Err(error) => return Err(error),
             }
         }
-        Err(last_absence.expect("the requested candidate is always checked"))
+        Err(denied("requested candidate is absent"))
     }
 }
 

@@ -115,7 +115,7 @@ pub struct ToolResult {
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl crate::filesystem::UploadRecord for ToolInvocation {
     fn diagnostic_label_bytes() -> u64 {
-        tool_serde_diagnostic_label_bytes()
+        TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES
     }
     fn logical_owned_bytes(&self) -> Result<u64> {
         let deep = crate::executor::json::json_value_logical_owned_bytes(&self.arguments)?;
@@ -132,7 +132,7 @@ impl crate::filesystem::UploadRecord for ToolInvocation {
 #[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for ToolInvocation {
     fn diagnostic_label_bytes() -> u64 {
-        tool_serde_diagnostic_label_bytes()
+        TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES
     }
     fn maximum_slot_bytes() -> u64 {
         std::mem::size_of::<Self>().max(std::mem::size_of::<(String, Value)>()) as u64
@@ -142,7 +142,7 @@ impl crate::filesystem::PreparationRecord for ToolInvocation {
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl crate::filesystem::UploadRecord for ToolResult {
     fn diagnostic_label_bytes() -> u64 {
-        tool_serde_diagnostic_label_bytes()
+        TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES
     }
     fn logical_owned_bytes(&self) -> Result<u64> {
         crate::executor::json::json_value_logical_owned_bytes(&self.value)
@@ -152,7 +152,7 @@ impl crate::filesystem::UploadRecord for ToolResult {
 #[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for ToolResult {
     fn diagnostic_label_bytes() -> u64 {
-        tool_serde_diagnostic_label_bytes()
+        TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES
     }
     fn maximum_slot_bytes() -> u64 {
         std::mem::size_of::<Self>().max(std::mem::size_of::<(String, Value)>()) as u64

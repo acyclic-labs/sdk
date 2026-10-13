@@ -16,7 +16,9 @@ impl<A, O> CheckoutMountSource<A, O> {
         })?;
         let bytes = std::mem::size_of::<ViewReadLease>() as u64;
         carrier
-            .with_work(|leaf| leaf.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED))
+            .with_work(|leaf| {
+                leaf.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)
+            })
             .map_err(super::lazy::mount_demand_error)?;
         if let Err(error) = lease.attach_owned_payload(bytes) {
             carrier
@@ -53,14 +55,12 @@ impl NativeDemandCarrier<'_> {
 
 struct LockWait<'a, 'w> {
     carrier: &'a mut NativeDemandCarrier<'w>,
-    waits: [Option<crate::cancellation::PreparedCancelled>; 2],
+    waits: [Option<crate::cancellation::Cancelled<'static>>; 2],
     reserved: u64,
 }
 
 impl LockWait<'_, '_> {
     fn prepare(&mut self, index: usize, token: &CancellationToken) -> Result<(), MountSourceError> {
-        let slot = self.waits.get_mut(index)
-            .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
         let native = self.carrier.original_native_work();
         let wait = match &native {
             Some(work) => token.prepare_cancelled_with_native_work(work),
@@ -68,7 +68,10 @@ impl LockWait<'_, '_> {
         }
         .map_err(super::lazy::mount_wait_error)?;
         let cleanup = wait.cleanup_items();
-        *slot = Some(wait);
+        *self
+            .waits
+            .get_mut(index)
+            .ok_or(MountSourceError::Work(WorkError::Overflow))? = Some(wait);
         if native.is_none() {
             self.carrier
                 .with_work(|work| {
@@ -156,14 +159,15 @@ pub(super) async fn await_lock<F: Future>(
             if token.is_cancelled() {
                 return Poll::Ready(Err(error));
             }
-            if waits.waits.get(index).ok_or(MountSourceError::Work(crate::WorkError::Overflow))?.is_none()
-                && let Err(error) = waits.prepare(index, token) {
-                    return Poll::Ready(Err(error));
-                }
-            if Pin::new(waits.waits.get_mut(index).and_then(Option::as_mut).ok_or(MountSourceError::Work(crate::WorkError::Overflow))?)
-                .poll(context)
-                .is_ready()
+            if waits.waits.get(index).is_none_or(Option::is_none)
+                && let Err(error) = waits.prepare(index, token)
             {
+                return Poll::Ready(Err(error));
+            }
+            let Some(wait) = waits.waits.get_mut(index).and_then(Option::as_mut) else {
+                return Poll::Ready(Err(MountSourceError::Work(WorkError::Overflow)));
+            };
+            if Pin::new(wait).poll(context).is_ready() {
                 return Poll::Ready(Err(error));
             }
         }

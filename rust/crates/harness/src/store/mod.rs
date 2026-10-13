@@ -126,4 +126,4 @@ pub struct StreamAggregate<P> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

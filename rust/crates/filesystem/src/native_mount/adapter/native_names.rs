@@ -188,7 +188,9 @@ impl<A, O> CheckoutMountSource<A, O> {
         Ok((
             rooted,
             options,
-            inputs.retain().ok_or(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout))?,
+            inputs.retain().ok_or(MountSourceError::NativeWork(
+                crate::NativeTreeMaterializationError::InvalidLayout,
+            ))?,
         ))
     }
 }

@@ -68,7 +68,8 @@ fn cancelled_real_open_retains_ownership_until_journal_open_stops()
         );
         let fields = captured.fields("acyclic.stream.open");
         assert_eq!(
-            fields["outcome"], "ok",
+            fields.get("outcome").ok_or("missing span field")?,
+            "ok",
             "detached work owns its successful completion"
         );
         assert!(!fields.contains_key("error.kind"));
@@ -147,7 +148,8 @@ fn cancelled_persist_retains_ownership_until_the_journal_task_stops()
         .await?;
         let fields = captured.fields("acyclic.stream.append");
         assert_eq!(
-            fields["outcome"], "ok",
+            fields.get("outcome").ok_or("missing span field")?,
+            "ok",
             "detached work owns its successful completion"
         );
         assert!(!fields.contains_key("error.kind"));
@@ -432,7 +434,12 @@ async fn every_partial_current_frame_recovers_only_the_accepted_prefix()
     let frame = PreparedFrame::encode(&command, 42, None)?;
     for cut in 0..=frame.encoded.len() {
         let mut bytes = encode_header(limits, 0)?;
-        bytes.extend_from_slice(&frame.encoded[..cut]);
+        bytes.extend_from_slice(
+            frame
+                .encoded
+                .get(..cut)
+                .ok_or(StreamError::InvalidArgument)?,
+        );
         std::fs::write(&path, &bytes)?;
         let reopened = LocalStream::open(directory.path(), limits).await?;
         if cut == frame.encoded.len() {
@@ -479,7 +486,7 @@ async fn invalid_headers_and_snapshot_state_fail_without_repairing_disk()
     let journal_path = directory.path().join(JOURNAL_FILE);
     let snapshot_path = directory.path().join(SNAPSHOT_FILE);
     let mut obsolete = encode_header(limits, 0)?;
-    obsolete[22] = b'4';
+    *obsolete.get_mut(22).ok_or(StreamError::InvalidArgument)? = b'4';
     for header in [obsolete, vec![0; HEADER_BYTES], encode_header(limits, 2)?] {
         std::fs::write(&journal_path, &header)?;
         for _ in 0..2 {
@@ -496,10 +503,19 @@ async fn invalid_headers_and_snapshot_state_fail_without_repairing_disk()
     let state = MemoryStream::new(limits.memory).encode_state().await;
     for version in *b"024" {
         let mut obsolete = encode_snapshot(limits, 1, &state)?;
-        obsolete[SNAPSHOT_MAGIC.len() - 2] = version;
+        *obsolete
+            .get_mut(SNAPSHOT_MAGIC.len() - 2)
+            .ok_or(StreamError::InvalidArgument)? = version;
         let checksum_at = obsolete.len() - 32;
-        let checksum = snapshot_checksum(&obsolete[..checksum_at]);
-        obsolete[checksum_at..].copy_from_slice(&checksum);
+        let checksum = snapshot_checksum(
+            obsolete
+                .get(..checksum_at)
+                .ok_or(StreamError::InvalidArgument)?,
+        );
+        obsolete
+            .get_mut(checksum_at..)
+            .ok_or(StreamError::InvalidArgument)?
+            .copy_from_slice(&checksum);
         std::fs::write(&snapshot_path, &obsolete)?;
         for _ in 0..2 {
             assert!(matches!(
@@ -691,7 +707,10 @@ async fn a_journal_torn_before_its_header_completed_is_created_again()
     let limits = LocalStreamLimits::default();
     let header = encode_header(limits, 0)?;
     for cut in 0..header.len() {
-        std::fs::write(&path, &header[..cut])?;
+        std::fs::write(
+            &path,
+            header.get(..cut).ok_or(StreamError::InvalidArgument)?,
+        )?;
         let provider = LocalStream::open(directory.path(), limits).await?;
         drop(provider);
         assert_eq!(std::fs::read(&path)?, header);
@@ -803,7 +822,7 @@ async fn filtered_local_operations_preserve_caller() -> Result<(), Box<dyn std::
         ("batch_len", "99"),
         ("rev", "66"),
     ] {
-        assert_eq!(fields[field], value);
+        assert_eq!(fields.get(field).ok_or("missing span field")?, value);
     }
     Ok(())
 }
@@ -858,12 +877,15 @@ async fn local_follow_observes_lifetime_drop_and_late_error()
         drop(records);
         let fields = captured.fields("acyclic.stream.follow");
         assert_eq!(
-            fields["terminal"],
+            fields.get("terminal").ok_or("missing span field")?,
             if late_error { "error" } else { "dropped" }
         );
         if late_error {
-            assert_eq!(fields["outcome"], "err");
-            assert_eq!(fields["error.kind"], "unavailable");
+            assert_eq!(fields.get("outcome").ok_or("missing span field")?, "err");
+            assert_eq!(
+                fields.get("error.kind").ok_or("missing span field")?,
+                "unavailable"
+            );
         } else {
             assert!(!fields.contains_key("outcome"));
             assert!(!fields.contains_key("error.kind"));

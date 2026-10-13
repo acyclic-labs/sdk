@@ -75,9 +75,10 @@ where
             return Ok(false);
         }
         if let Some(file_id) = file_id
-            && !self.reported(file_id) {
-                return Ok(false);
-            }
+            && !self.reported(file_id)
+        {
+            return Ok(false);
+        }
         self.authored
             .unchanged_since_with_meter(path, file_id, stamp, work)
     }
@@ -93,9 +94,10 @@ where
             return Ok(false);
         }
         if let Some(file_id) = file_id
-            && !self.reported(file_id) {
-                return Ok(false);
-            }
+            && !self.reported(file_id)
+        {
+            return Ok(false);
+        }
         self.authored
             .reported_unchanged_since_with_meter(path, file_id, stamp, work)
     }
@@ -132,7 +134,11 @@ where
             .as_ref()
             .and_then(|owner| owner.watch.as_deref())
             .map_or(Ok(()), |watch| {
-                watch.fence(&mut crate::kernel::KernelAccounting::native(work, work.cancellation()))
+                watch
+                    .fence(&mut crate::kernel::KernelAccounting::native(
+                        work,
+                        work.cancellation(),
+                    ))
                     .map_err(mount_demand_error)
             })
     }
@@ -419,7 +425,10 @@ where
         )?;
         match read {
             Some(packet) => Ok(packet),
-            None => Ok(crate::kernel::OwnedSourceChunk::intrinsic(OwnedBytes::new(), 0)),
+            None => Ok(crate::kernel::OwnedSourceChunk::intrinsic(
+                OwnedBytes::new(),
+                0,
+            )),
         }
     }
 

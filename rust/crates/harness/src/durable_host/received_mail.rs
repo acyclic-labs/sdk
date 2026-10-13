@@ -65,13 +65,17 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         {
             command
         } else {
-            let results = latest.input["commands"].as_array().ok_or_else(|| {
-                crate::store::guarded_boundary(
-                    &work,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "parcel receive result is not committed",
-                )
-            })?;
+            let results = latest
+                .input
+                .get("commands")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    crate::store::guarded_boundary(
+                        &work,
+                        crate::wire::ErrorCode::Unauthorized,
+                        "parcel receive result is not committed",
+                    )
+                })?;
             let [result] = results.as_slice() else {
                 return Err(crate::store::guarded_boundary(
                     &work,
@@ -288,9 +292,15 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         }
         let reference: FileRef = mail::decode(&record.value, io)?;
         owner.input_limits().validate_file(&reference, &mut work)?;
+        let encoded = match io {
+            Some(io) => io.encode(&reference, acyclic_stream::MAX_RECORD_BYTES as u64, false)?,
+            None => serde_json::to_vec(&reference)
+                .map_err(|error| Error::Storage(error.to_string()))?
+                .into(),
+        };
         if record.sequence != index
-            || mail::encode(&reference, acyclic_stream::MAX_RECORD_BYTES as u64, io)?.as_ref()
-                != record.value.as_ref()
+            || reference.descriptor().media_type() != "application/json"
+            || encoded.as_ref() != record.value.as_ref()
         {
             return Err(crate::store::guarded_boundary(
                 &work,
@@ -298,16 +308,21 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                 "parcel workflow reference differs",
             ));
         }
-        let value = self.read_json(&reference, io).await?;
-        let held = crate::executor::json::json_value_logical_owned_bytes(&value)?;
-        let _value = io.map(|io| io.guard_owned(held)).transpose()?;
+        drop(encoded);
+        let bytes = self
+            .reader
+            .read(&reference, reference.descriptor().byte_length(), io)?
+            .await?;
+        let _bytes = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
+        reference.descriptor().verify(&bytes, &mut work)?;
         let envelope: crate::workflow::WorkflowRecord = match io {
-            Some(io) => crate::filesystem::retain_decoded(
-                io.value_decode_preparation(&value, crate::wire::ErrorCode::Storage)?,
-            ),
-            None => {
-                serde_json::from_value(value).map_err(|error| Error::Storage(error.to_string()))?
-            }
+            Some(io) => crate::filesystem::retain_decoded(io.decode(
+                std::marker::PhantomData::<crate::workflow::WorkflowRecord>,
+                &bytes,
+                crate::wire::ErrorCode::Storage,
+            )?),
+            None => crate::contract::json_from_slice(&bytes)
+                .map_err(|error| Error::Storage(error.to_string()))?,
         };
         envelope.validate(io)?;
         if envelope.prior.revision != index || envelope.checkpoint()?.1 != index + 1 {

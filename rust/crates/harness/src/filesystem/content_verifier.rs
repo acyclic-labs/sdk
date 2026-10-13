@@ -215,11 +215,10 @@ where
                 .map(|entry| {
                     let name = entry
                         .name
-                        .unicode_text()
+                        .unicode_text(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).ok().map(|receipt| receipt.value)
                         .ok_or_else(|| {
                             Error::Unsupported("private directory name is not Unicode".into())
-                        })?
-                        .into_owned();
+                        })?;
                     let kind = match entry.kind {
                         FileKind::Regular => PrivateDirectoryEntryKind::File,
                         FileKind::Directory => PrivateDirectoryEntryKind::Directory,
@@ -303,11 +302,10 @@ where
     O: AsyncObjectStore + 'static,
 {
     async fn verify_creation(&self, volume: &VolumeRef, file: Option<&FileRef>, io: Option<&PreparationIo>) -> Result<()> {
-        if let Some(bound) = &self.exact_file {
-            if file != Some(bound) {
+        if let Some(bound) = &self.exact_file
+            && file != Some(bound) {
                 return Err(stock_boundary(io, crate::wire::ErrorCode::Unauthorized, "created reference handle names another immutable file"));
             }
-        }
         if let Some(creation) = &self.creation {
             creation.verify(&self.host, self.verifier.audience(), volume, self.exact_file.as_ref(), io)?.await?;
         }
@@ -340,12 +338,9 @@ where
             self.verifier.verify(&self.scope, &mut None)?;
         }
         let unmeasured;
-        let authority_io = match io {
-            Some(io) => io,
-            None => {
-                unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-                &unmeasured
-            }
+        let authority_io = if let Some(io) = io { io } else {
+            unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+            &unmeasured
         };
         require_file_read(&self.scope, reference, authority_io)?;
         let bytes = self

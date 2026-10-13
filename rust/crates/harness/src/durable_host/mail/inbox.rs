@@ -18,18 +18,26 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             ));
         }
         let recipient = self.mail_admission(task, io).await?;
+        if !recipient.grants.contains(capability::MAIL_READ) {
+            return Err(boundary(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "recipient scope lacks mail:read",
+            ));
+        }
         #[cfg(feature = "filesystem")]
         let mut observer = io.map(PreparationIo::history_io);
         #[cfg(feature = "filesystem")]
         let mut work = observer.as_mut().map(|io| io as &mut dyn HistoryIo);
         #[cfg(not(feature = "filesystem"))]
-        let mut work: Observer<'_> = None;
+        let mut work: Option<&mut dyn HistoryIo> = None;
         let mut text = [0; 80];
-        let mailbox = operations::stream(&self.stream, recipient_path(task, &mut text), &mut work)?;
+        let mailbox =
+            operations::stream(&self.stream, recipient_path(task, &mut text)?, &mut work)?;
         let bounds =
             match operations::bounds_with_work(&self.stream, mailbox.0.path(), &mut work).await? {
                 Ok(bounds) => bounds,
-                Err(error) if error == StreamError::NotFound => return Ok(Vec::new()),
+                Err(StreamError::NotFound) => return Ok(Vec::new()),
                 Err(error) => return Err(operations::stream_error_with_work(error, &work)),
             };
         if after > bounds.tail {
@@ -56,7 +64,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         .await?
         {
             Ok(records) => records,
-            Err(error) if error == StreamError::NotFound => return Ok(Vec::new()),
+            Err(StreamError::NotFound) => return Ok(Vec::new()),
             Err(error) => return Err(operations::stream_error_with_work(error, &work)),
         };
         let mut expected = after;
@@ -147,7 +155,12 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             if let Some(observer) = work.as_deref_mut() {
                 observer.encoded_bytes(36)?;
             }
-            write!(&mut message_id, "{}", event.message_id).expect("reserved canonical UUID text");
+            let mut id_text = [0; 36];
+            message_id.push_str(
+                uuid::Uuid::from_bytes(event.message_id.into_bytes())
+                    .hyphenated()
+                    .encode_lower(&mut id_text),
+            );
             if let Some(observer) = work.as_deref_mut() {
                 observer
                     .codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
@@ -168,7 +181,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                     )
                 })?;
         }
-        if let Some(observer) = work.as_deref_mut() {
+        if let Some(observer) = work {
             observer.return_output(output_bytes, items.len() as u64)?;
         }
         Ok(items)

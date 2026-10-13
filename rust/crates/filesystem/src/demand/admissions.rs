@@ -1,5 +1,5 @@
 use super::*;
-use crate::cancellation::{CancellationWaitAdmission, CancellationWaitError, PreparedCancelled};
+use crate::cancellation::{CancellationWaitAdmission, CancellationWaitError, Cancelled};
 use crate::kernel::{
     ProofDataCustody,
     allocation::{AllocationLedger, LogicalVecCapacity},
@@ -215,7 +215,7 @@ impl DemandWork {
     pub(crate) fn prepare_cancelled(
         &mut self,
         token: &CancellationToken,
-    ) -> Result<PreparedCancelled, CancellationWaitError> {
+    ) -> Result<Cancelled<'static>, CancellationWaitError> {
         self.reconcile_cancellation_registry()?;
         if token.is_cancelled() {
             return token.prepare_cancelled(
@@ -257,7 +257,7 @@ impl DemandWork {
     }
     pub(crate) fn finish_cancelled(
         &mut self,
-        prepared: PreparedCancelled,
+        prepared: Cancelled<'static>,
     ) -> Result<(), CancellationWaitError> {
         let reconciled = self
             .reconcile_cancellation_registry()

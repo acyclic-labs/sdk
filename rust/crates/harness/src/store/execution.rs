@@ -45,7 +45,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
             {
                 return self.execute_root_bind_with_work(command, owner, work).await;
             }
-            let write = if let Some(owner) = owner {
+
+            if let Some(owner) = owner {
                 match &command.action {
                     Action::OpenInteraction { .. } => {
                         owner.require_interaction_grant(work)?;
@@ -110,8 +111,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 }
             } else {
                 crate::distributed::JournalWrite::Fresh
-            };
-            write
+            }
         };
         #[cfg(not(feature = "filesystem"))]
         if work.is_some() {

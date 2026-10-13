@@ -1,4 +1,4 @@
-use super::proof::{merge_boundary, provider_operation_has_nonzero};
+use super::proof::provider_operation_has_nonzero;
 use super::*;
 
 /// Exact result of a parent-authorized Filesystem join.
@@ -48,8 +48,9 @@ impl ProjectMergeReceipt {
             || self.provider_operation_id.is_empty()
             || !provider_operation_has_nonzero(&self.provider_operation_id, work)?
         {
-            return Err(merge_boundary(
+            return Err(guarded_boundary(
                 work,
+                crate::wire::ErrorCode::Invalid,
                 "project merge receipt has inconsistent identities",
             ));
         }
@@ -62,8 +63,9 @@ impl ProjectMergeReceipt {
         self.provider_proof.validate(work)?;
         self.notice.validate(work)?;
         if self.notice.kind != MessageKind::Merge {
-            return Err(merge_boundary(
+            return Err(guarded_boundary(
                 work,
+                crate::wire::ErrorCode::Invalid,
                 "project merge notice has the wrong kind",
             ));
         }
@@ -103,16 +105,16 @@ impl ProjectMergeReceipt {
             operation_id: self.operation_id,
             child: crate::core::copy_authority(&self.child, quota)?,
             source_project: self.source_project.clone_in_quota(quota)?,
-            source_generation: GenerationRef::from_resource_with_work(
+            source_generation: GenerationRef::from_resource(
                 crate::core::copy_resource(self.source_generation.as_resource(), quota)?,
                 quota.work(),
             )?,
             target_project: self.target_project.clone_in_quota(quota)?,
-            expected_target_generation: GenerationRef::from_resource_with_work(
+            expected_target_generation: GenerationRef::from_resource(
                 crate::core::copy_resource(self.expected_target_generation.as_resource(), quota)?,
                 quota.work(),
             )?,
-            result_generation: GenerationRef::from_resource_with_work(
+            result_generation: GenerationRef::from_resource(
                 crate::core::copy_resource(self.result_generation.as_resource(), quota)?,
                 quota.work(),
             )?,
@@ -123,9 +125,13 @@ impl ProjectMergeReceipt {
             provider_proof: ProviderJoinProof {
                 provider: crate::core::copy_provider(&self.provider_proof.provider, quota)?,
                 format: crate::core::copy_text(&self.provider_proof.format, quota)?,
-                statement: crate::core::copy(&self.provider_proof.statement, quota, |value: &serde_json::Value, _| {
-    crate::executor::json::json_value_logical_owned_bytes(value)
-})?,
+                statement: crate::core::copy(
+                    &self.provider_proof.statement,
+                    quota,
+                    |value: &serde_json::Value, _| {
+                        crate::executor::json::json_value_logical_owned_bytes(value)
+                    },
+                )?,
             },
             notice: self.notice.clone_in_quota(quota)?,
         })

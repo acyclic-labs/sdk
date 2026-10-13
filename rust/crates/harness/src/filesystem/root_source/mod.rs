@@ -2,7 +2,7 @@
 use super::{FilesystemHost, PreparationIo};
 use crate::{
     Error, Result, TaskId,
-    conversation::{VolumeClass, VolumeRef},
+    conversation::VolumeClass,
     core::Authority,
     executor::json::JsonBounds,
     executor::with_history_io,

@@ -101,7 +101,9 @@ where
                     )
                     .await?
                     .into_mutation_phase();
-                let file = if let Some(file) = self.current_authored(owner, carrier).await? { file } else {
+                let file = if let Some(file) = self.current_authored(owner, carrier).await? {
+                    file
+                } else {
                     stage_mount_promotion(
                         &self.lazy,
                         &self.authored,
@@ -132,8 +134,13 @@ where
         length: u64,
         work: &crate::NativeMaterializationWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
-        self.source_file.read_range(offset, length, &mut crate::kernel::KernelAccounting::native(work, work.cancellation()))
-        .map_err(mount_demand_error)
+        self.source_file
+            .read_range(
+                offset,
+                length,
+                &mut crate::kernel::KernelAccounting::native(work, work.cancellation()),
+            )
+            .map_err(mount_demand_error)
     }
 }
 
@@ -153,7 +160,7 @@ where
                 return file.lookup_with_meter(work);
             }
             Ok(mount_lookup(
-                &LazyLookup::Source {
+                LazyLookup::Source {
                     node,
                     source: self.lazy.source_reference(),
                 },
@@ -191,7 +198,10 @@ where
                 }
             };
             if length == 0 {
-                return Ok(crate::kernel::OwnedSourceChunk::intrinsic(OwnedBytes::new(), 0));
+                return Ok(crate::kernel::OwnedSourceChunk::intrinsic(
+                    OwnedBytes::new(),
+                    0,
+                ));
             }
             self.read_source(offset, length, work)
         })
@@ -208,10 +218,13 @@ where
                 return file.seek_with_meter(offset, target, work);
             }
             carrier.with_work(|work| mount_items(work, 1))?;
-            let Some(length) = node.logical_bytes else {
-                return Err(MountSourceError::Invalid(
-                    "seek requires a regular file".into(),
-                ));
+            let length = match node.logical_bytes {
+                Some(length) => length,
+                None => {
+                    return Err(MountSourceError::Invalid(
+                        "seek requires a regular file".into(),
+                    ));
+                }
             };
             Ok((offset < length).then_some(match target {
                 MountSeekTarget::Data => offset,
@@ -339,10 +352,13 @@ where
                     "sparse range overflows the file address space".into(),
                 ));
             }
-            let Some(source_length) = node.logical_bytes else {
-                return Err(MountSourceError::Invalid(
-                    "seek requires a regular file".into(),
-                ));
+            let source_length = match node.logical_bytes {
+                Some(length) => length,
+                None => {
+                    return Err(MountSourceError::Invalid(
+                        "seek requires a regular file".into(),
+                    ));
+                }
             };
             let data_length = source_length.saturating_sub(offset).min(logical_bytes);
             if data_length == 0 {
@@ -359,7 +375,7 @@ where
             if output.bytes.len() as u64 != data_length {
                 return Err(MountSourceError::Stale);
             }
-            if !output.is_intrinsic() {
+            if !output.intrinsic {
                 return Err(MountSourceError::NativeUnsupported);
             }
             work.charge(crate::WorkCounters {
@@ -376,7 +392,7 @@ where
             let mut scratch_carrier = adapter::NativeDemandCarrier::Native(work);
             let mut scratch = adapter::InputBuffers::new(&mut scratch_carrier)?;
             let mut spans = scratch.vec(1)?;
-            let (bytes, _, _) = output.into_owned_parts();
+            let bytes = output.bytes;
             spans.push(crate::native_mount::MountSparseSpan {
                 relative_offset: 0,
                 bytes,

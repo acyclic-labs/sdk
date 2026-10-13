@@ -35,8 +35,8 @@ where
         });
         let preparation: Arc<TaskResourcePreparation> = 'preparation: {
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-                if reconciliation_only {
+            if let Some(work) = io.and_then(PreparationIo::original_native_work)
+                && reconciliation_only {
                     let Some(preparation) = self
                         .runtime
                         .readonly_fork_preparation_with_native_work(task, context, &request, work)
@@ -46,7 +46,6 @@ where
                     };
                     break 'preparation preparation;
                 }
-            }
             let owner = self
                 .runtime
                 .task_host()
@@ -223,7 +222,7 @@ where
             let admission = 'admission: {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(io) = io {
-                    let work = io
+                    let _work = io
                         .original_native_work()
                         .expect("dispatch checked original work");
                     let input_bytes = (std::mem::size_of::<Value>() as u64)

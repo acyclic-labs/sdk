@@ -162,17 +162,17 @@ pub(super) async fn namespace_records_to_file_root_with_accounting<
                 copied.1.absorb(&mut path.1)?;
                 copied.0.push(path.0);
             }
-            let (lookup, allocation) = crate::kernel::lookup_paths_async_with_accounting(
+            let (lookup, allocation) = crate::kernel::lookup_paths_with_accounting(
                 volume.fs.objects(),
                 root,
-                &copied.0,
+                crate::kernel::PathQueries::Owned(&copied.0),
                 volume.config(),
                 accounting,
                 cancellation,
                 None,
+                crate::kernel::PathBatchMode::NoFollow,
             )
-            .await?
-            .into_parts();
+            .await?;
             let lookup = (lookup, allocation);
             let mut valid = paths.len() == lookup.0.entries.len();
             for ((expected, _), entry) in paths.iter().zip(&lookup.0.entries) {

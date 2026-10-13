@@ -62,8 +62,8 @@ impl TaskResourcePreparation {
         io: Option<&'a crate::filesystem::PreparationIo>,
     ) -> Result<impl Future<Output = Result<()>> + ProviderTask + 'a> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.and_then(|io| io.original_native_work()) {
-            if self
+        if let Some(work) = io.and_then(|io| io.original_native_work())
+            && self
                 .native_custody
                 .as_ref()
                 .is_none_or(|guard| !guard.work().shares_allocation_context(work))
@@ -73,7 +73,6 @@ impl TaskResourcePreparation {
                     reason: "preparation lacks original native custody",
                 });
             }
-        }
         self.owner.verify_lease(settlement, io)
     }
 }
@@ -97,14 +96,13 @@ impl<P: StreamProvider> ResourcePreparationLease for crate::durable_host::TaskJo
         io: Option<&'a crate::filesystem::PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.and_then(|io| io.original_native_work()) {
-            if !self.native_shared_work_matches(work) {
+        if let Some(work) = io.and_then(|io| io.original_native_work())
+            && !self.native_shared_work_matches(work) {
                 return Err(Error::NativeBoundary {
                     code: Unauthorized,
                     reason: "preparation lease uses another native ledger",
                 });
             }
-        }
         crate::conversation::BoundedContentFuture::new(io, || async move {
             let mut observer = io.map(crate::filesystem::PreparationIo::history_io);
             let mut work = observer.as_mut().map(|io| io as &mut dyn HistoryIo);

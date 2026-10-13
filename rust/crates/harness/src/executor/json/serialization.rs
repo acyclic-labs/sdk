@@ -447,7 +447,7 @@ pub fn canonical_json_bytes_bounded<
     scope.retained = 0;
     Ok(bytes)
 }
-/// Converts through an admitted document without interpreting literal RawValue keys.
+/// Converts through an admitted document without interpreting literal `RawValue` keys.
 pub fn json_value_bounded<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     value: &T,
     bounds: JsonBounds,

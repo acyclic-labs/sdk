@@ -38,18 +38,15 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             .min(context.effective_scope().limits().file_bytes);
         {
             let ordinary;
-            let observer = match io {
-                Some(io) => io,
-                None => {
-                    ordinary = PreparationIo::from_budget(
-                        acyclic_fs::performance::work_budget(
-                            self.maximum_request_bytes,
-                            self.maximum_request_bytes,
-                        ),
-                        cancellation,
-                    )?;
-                    &ordinary
-                }
+            let observer = if let Some(io) = io { io } else {
+                ordinary = PreparationIo::from_budget(
+                    acyclic_fs::performance::work_budget(
+                        self.maximum_request_bytes,
+                        self.maximum_request_bytes,
+                    ),
+                    cancellation,
+                )?;
+                &ordinary
             };
             let bytes = observer.encode(&digest, maximum, true)?;
             let path = with_history_io(Some(observer), |work| {
@@ -71,18 +68,15 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                 .await?;
         }
         let ordinary;
-        let observer = match io {
-            Some(io) => io,
-            None => {
-                ordinary = PreparationIo::from_budget(
-                    acyclic_fs::performance::work_budget(
-                        self.maximum_request_bytes,
-                        self.maximum_request_bytes,
-                    ),
-                    cancellation,
-                )?;
-                &ordinary
-            }
+        let observer = if let Some(io) = io { io } else {
+            ordinary = PreparationIo::from_budget(
+                acyclic_fs::performance::work_budget(
+                    self.maximum_request_bytes,
+                    self.maximum_request_bytes,
+                ),
+                cancellation,
+            )?;
+            &ordinary
         };
         let operation = derived(invocation.operation_id, "plan-v5", io)?;
         let (original, _) = context.observe_staged_file_once(operation, io).await?;
@@ -170,18 +164,15 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             io,
         )?;
         let ordinary;
-        let observer = match io {
-            Some(io) => io,
-            None => {
-                ordinary = PreparationIo::from_budget(
-                    acyclic_fs::performance::work_budget(
-                        self.maximum_request_bytes,
-                        self.maximum_request_bytes,
-                    ),
-                    cancellation,
-                )?;
-                &ordinary
-            }
+        let observer = if let Some(io) = io { io } else {
+            ordinary = PreparationIo::from_budget(
+                acyclic_fs::performance::work_budget(
+                    self.maximum_request_bytes,
+                    self.maximum_request_bytes,
+                ),
+                cancellation,
+            )?;
+            &ordinary
         };
         let maximum = self
             .maximum_request_bytes
@@ -283,18 +274,15 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             let operation = derived(context.operation_id(), "preparation-task", io)?;
             let payload = {
                 let ordinary;
-                let observer = match io {
-                    Some(io) => io,
-                    None => {
-                        ordinary = PreparationIo::from_budget(
-                            acyclic_fs::performance::work_budget(
-                                self.maximum_request_bytes,
-                                self.maximum_request_bytes,
-                            ),
-                            cancellation,
-                        )?;
-                        &ordinary
-                    }
+                let observer = if let Some(io) = io { io } else {
+                    ordinary = PreparationIo::from_budget(
+                        acyclic_fs::performance::work_budget(
+                            self.maximum_request_bytes,
+                            self.maximum_request_bytes,
+                        ),
+                        cancellation,
+                    )?;
+                    &ordinary
                 };
                 let maximum = self
                     .maximum_request_bytes
@@ -417,7 +405,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                 .as_ref()
                 .map(|source| {
                     with_history_io(io, |work| {
-                        source.authorization().clone_with_work_and_custody(work)
+                        source.authorization().copy(work)
                     })
                     .map(|copied| copied.0)
                 })

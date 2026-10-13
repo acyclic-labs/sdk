@@ -63,7 +63,7 @@ pub(super) async fn lookup_capture_states<A: AsyncAuthorityStore, O: AsyncObject
     let cancellation = meter.cancellation().clone();
     while paths.len() != 0 {
         let count = paths.len().min(page_size);
-        let page = paths.as_slice().get(..count).ok_or(CaptureError::InvalidOptions)?;
+        let page = paths.as_slice().get(..count).ok_or(WorkError::Overflow)?;
         let lookup = checkout
             .lookup_batch_no_follow(page, meter, &cancellation)
             .await?;
@@ -166,10 +166,7 @@ pub(super) async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectSto
                 for (node, path) in host_links.iter() {
                     capture_charge(
                         meter,
-                        WorkCounters {
-                            items_examined: 1,
-                            ..WorkCounters::UNCHARGED
-                        },
+                        crate::materializer::NativeResourceCredit::Items.delta(1),
                     )?;
                     if *node == identity {
                         source = Some(path);

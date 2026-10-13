@@ -549,7 +549,7 @@ async fn generation_fork_rejects_an_authority_without_lineage_locators()
     else {
         return Err("missing lineage locator unexpectedly forked".into());
     };
-    assert!(matches!(error.error, AuthorityStoreError::Rejected(_)));
+    assert!(matches!(error.error, AuthorityStoreError::RejectedStatic(_)));
     assert!(matches!(({ let __authority_args = (destination, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = acyclic_fs::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = store.head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) }),
         Err(OperationFailure {
             error: AuthorityStoreError::Missing,

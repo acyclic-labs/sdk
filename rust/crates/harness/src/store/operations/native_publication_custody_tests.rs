@@ -1,4 +1,3 @@
-use super::super::history::HistoryIo;
 use super::*;
 use crate::store::checkpoints::native_staging_custody_tests::budget;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork};
@@ -42,7 +41,13 @@ async fn native_message_lookup_provider_corruption_bound_and_cancellation_releas
     )
     .await
     .expect_err("corrupt index");
-    assert!(matches!(error, Error::NativeJson { .. }));
+    assert!(matches!(
+        error,
+        Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Invalid,
+            ..
+        }
+    ));
     drop(error);
     assert_eq!(io.into_custody()?.bytes(), 0);
     Ok(())
@@ -87,8 +92,14 @@ async fn foreign_cursor_record_metadata_is_rejected_without_byte_rebinding() -> 
     ));
     drop(records);
     assert_eq!(io.into_custody()?.bytes(), 0);
-    assert_eq!(producer.live_allocation_bytes(), 0);
-    assert_eq!(receiver.live_allocation_bytes(), 0);
+    assert_eq!(
+        producer.live_allocation_bytes(),
+        NativeMaterializationWork::accounting_state_bytes()
+    );
+    assert_eq!(
+        receiver.live_allocation_bytes(),
+        NativeMaterializationWork::accounting_state_bytes()
+    );
     Ok(())
 }
 
@@ -141,16 +152,17 @@ async fn original_provider_publication_releases_exact_source_after_receipt_drop(
     let retained = publication.retained_owned();
     let client = Arc::new(MemoryStream::default());
     let mut commit_id = None;
+    let request = publication
+        .request(
+            &client,
+            IdempotencyKey::new("publication-custody")?,
+            &mut None,
+        )
+        .await?
+        .0;
     for _ in 0..2 {
-        let request = publication
-            .request(
-                &client,
-                IdempotencyKey::new("publication-custody")?,
-                &mut None,
-            )
-            .await?
-            .0;
-        let acyclic_stream::CommitOutcome::Committed(envelope) = client.commit(request).await?
+        let acyclic_stream::CommitOutcome::Committed(envelope) =
+            client.commit(request.clone()).await?
         else {
             panic!("atomic publication");
         };
@@ -158,8 +170,9 @@ async fn original_provider_publication_releases_exact_source_after_receipt_drop(
         if let Some(prior) = &commit_id {
             assert_eq!(prior, &envelope.commit_id);
         }
-        commit_id = Some(envelope.commit_id.clone());
+        commit_id = Some(envelope.commit_id);
     }
+    drop(request);
     let query =
         NativeMaterializationWork::new(budget(), &cancellation).expect("finite query budget");
     let mut query_io =
@@ -172,7 +185,10 @@ async fn original_provider_publication_releases_exact_source_after_receipt_drop(
     assert!(!cached.value.matches_meter(&query.runtime_meter()));
     drop(cached);
     assert_eq!(query_io.into_custody()?.bytes(), 0);
-    assert_eq!(query.live_allocation_bytes(), 0);
+    assert_eq!(
+        query.live_allocation_bytes(),
+        NativeMaterializationWork::accounting_state_bytes()
+    );
     let mut replay_io = crate::store::HistoryWork::new(
         crate::filesystem::PreparationIo::from_native_work(&native)?,
     );
@@ -198,6 +214,9 @@ async fn original_provider_publication_releases_exact_source_after_receipt_drop(
     assert_eq!(custody.bytes(), 0);
     assert!(native.live_allocation_bytes() >= original_capacity);
     drop(client);
-    assert_eq!(native.live_allocation_bytes(), 0);
+    assert_eq!(
+        native.live_allocation_bytes(),
+        NativeMaterializationWork::accounting_state_bytes()
+    );
     Ok(())
 }

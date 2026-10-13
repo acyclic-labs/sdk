@@ -27,7 +27,7 @@ pub(super) fn name_fold_key(
     let cancellation = name_cancellation(accounting);
     if name.encoding() == NameEncoding::Utf8 {
         let text = std::str::from_utf8(name.as_bytes()).map_err(|_| FsError::NonNormalizedName)?;
-        return types::lowercase_unicode_with_accounting(text, accounting, cancellation);
+        return types::lowercase_unicode(text, accounting, cancellation);
     }
     let delta = WorkCounters {
         bytes_copied: name.as_bytes().len() as u64,

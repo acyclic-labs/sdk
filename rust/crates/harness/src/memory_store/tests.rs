@@ -1,3 +1,4 @@
+use super::directory::{MemoryStoreEntry, MemoryStoreEntryKind};
 use super::*;
 use crate::AgentId;
 use crate::conversation::{VolumeClass, VolumeOwner};

@@ -62,7 +62,9 @@ impl MountOptions {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<NativeMaterializationWork, MountLifecycleError> {
-        let work = if let Some(work) = &self.work { work.clone() } else {
+        let work = if let Some(work) = &self.work {
+            work.clone()
+        } else {
             acyclic_native_runtime::initialize_native_io_services()
                 .map_err(NativeMountError::from)?;
             super::super::initialize_native_mount_services()?;

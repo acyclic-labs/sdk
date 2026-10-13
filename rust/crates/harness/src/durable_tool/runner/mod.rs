@@ -50,18 +50,17 @@ impl<'tools> DurableToolRunner<'tools> {
     ) -> Result<crate::store::HistoryContentFuture<'a, (Outcome<Value>, NativeCustody)>> {
         let io = preparation_io(work)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = work {
-            if !context.native_metadata_matches(work)
+        if let Some(work) = work
+            && (!context.native_metadata_matches(work)
                 || !self
                     .work
-                    .is_some_and(|original| original.shares_ledger(work))
-            {
-                return Err(boundary(
-                    io.as_ref(),
-                    Unauthorized,
-                    "tool context or runner belongs to another work",
-                ));
-            }
+                    .is_some_and(|original| original.shares_ledger(work)))
+        {
+            return Err(boundary(
+                io.as_ref(),
+                Unauthorized,
+                "tool context or runner belongs to another work",
+            ));
         }
         let tool = self
             .tools
@@ -224,13 +223,13 @@ impl<'tools> DurableToolRunner<'tools> {
                             call_id: call.0,
                             invocation: reference.0,
                         };
-                        match async {
-                            self.journal
-                                .append_if_tail(operation_id, 1, &key.0, &event, io)?
-                                .await
-                        }
-                        .await
+                        match match self
+                            .journal
+                            .append_if_tail(operation_id, 1, &key.0, &event, io)
                         {
+                            Ok(future) => future.await,
+                            Err(error) => Err(error),
+                        } {
                             Ok(true) => claimed = true,
                             Ok(false) => continue,
                             Err(error) if tool_propagate(&error, io) => return Err(error),
@@ -348,13 +347,13 @@ impl<'tools> DurableToolRunner<'tools> {
                     result: result_ref.0,
                     projection: projection_ref.0,
                 };
-                match async {
-                    self.journal
-                        .append_if_tail(operation_id, 2, &key.0, &event, io)?
-                        .await
-                }
-                .await
+                match match self
+                    .journal
+                    .append_if_tail(operation_id, 2, &key.0, &event, io)
                 {
+                    Ok(future) => future.await,
+                    Err(error) => Err(error),
+                } {
                     Ok(true) => return tool_success(result, io),
                     Ok(false) => continue,
                     Err(error) if tool_propagate(&error, io) => return Err(error),

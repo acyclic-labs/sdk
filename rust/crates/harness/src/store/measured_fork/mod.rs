@@ -6,8 +6,6 @@ use crate::{AgentId, Capabilities};
 
 use acyclic_fs::{CancellationToken, WorkBudget};
 
-use acyclic_stream::StreamPath;
-
 async fn publish(
     parent: &mut StreamAggregate<MemoryStream>,
     report: ForkReport,
@@ -318,7 +316,7 @@ fn guarded_publication_budget() -> WorkBudget {
         items_returned: 4_096,
         allocation_operations: 1_000_000,
         peak_allocation_bytes: 268_435_456,
-        ..WorkBudget::default()
+        ..acyclic_fs::performance::work_budget(4_096, 16_777_216)
     }
 }
 

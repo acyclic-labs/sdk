@@ -116,7 +116,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
             .iter()
             .map(|message| message.id)
             .collect(),
-        checkpoint: Some(reference.clone()),
+        checkpoint: Some(later_checkpoint),
     };
     aggregate
         .execute(
@@ -138,8 +138,8 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         .reducer()
         .conversation()
         .ok_or_else(|| Error::Invalid("conversation not bound".into()))?;
-    assert_eq!(retired.logical_revision(), 4);
-    assert_eq!(retired.resident_after_sequence(), 4);
+    assert_eq!(retired.logical_revision(), 6);
+    assert_eq!(retired.resident_after_sequence(), 6);
     assert!(retired.messages().is_empty());
 
     let history = HistoryReader::new(
@@ -205,9 +205,9 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     let archived = history
         .fork_history(
             aggregate.reducer(),
-            4,
+            6,
             HistoryReadLimits {
-                maximum_events: 4,
+                maximum_events: 6,
                 maximum_bytes: 2_097_152,
             },
             &mut None,

@@ -15,15 +15,50 @@ pub(crate) fn create_directories<W: NativeHostWork>(
     work: &mut W,
 ) -> Result<(), W::Error> {
     let mut base = Path::new(".");
-    if path.is_absolute() {
-        base = path;
-        while let Some(parent) = base.parent() {
+    #[cfg(unix)]
+    let directory = {
+        for component in path.components() {
             work.started_io(ITEM)?;
-            base = parent;
+            if matches!(component, std::path::Component::ParentDir) {
+                return Err(W::invalid_request());
+            }
         }
-    }
-    let (directory, _) = open_root_directory(base, work)?;
-    let relative = if path.is_absolute() {
+        base = path.parent().filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(if path.is_absolute() { path } else { base });
+        loop {
+            // Ambient parents may be aliases; the requested leaf stays no-follow.
+            let opened = unix_name(base.as_os_str(), work, |name, work| {
+                let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC;
+                #[cfg(target_os = "linux")]
+                let flags = flags | libc::O_NOATIME;
+                open_unix(libc::AT_FDCWD, name, flags, work).map(Dir::from_std_file)
+            });
+            match opened {
+                Ok(directory) => break directory,
+                Err(error) if matches!(W::io_error_kind(&error),
+                    Some(io::ErrorKind::NotFound | io::ErrorKind::InvalidFilename)) => {
+                    base = match base.parent() {
+                        Some(parent) if !parent.as_os_str().is_empty() => parent,
+                        Some(_) if base != Path::new(".") => Path::new("."),
+                        _ => return Err(error),
+                    };
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    };
+    #[cfg(windows)]
+    let directory = {
+        if path.is_absolute() {
+            base = path;
+            while let Some(parent) = base.parent() {
+                work.started_io(ITEM)?;
+                base = parent;
+            }
+        }
+        open_root_directory(base, work)?.0
+    };
+    let relative = if base != Path::new(".") {
         path.strip_prefix(base).map_err(|_| W::invalid_request())?
     } else {
         path

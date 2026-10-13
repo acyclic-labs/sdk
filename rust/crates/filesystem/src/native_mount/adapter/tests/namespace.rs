@@ -224,7 +224,13 @@ fn concurrent_observations_never_see_a_mutation_half_applied()
                                 None,
                             )
                             .await?;
-                        let mut checkout = observation.observer(&mut crate::kernel::allocation::KernelAccounting::native(&work, work.cancellation()), work.cancellation())?;
+                        let mut checkout = observation.observer(
+                            &mut crate::kernel::allocation::KernelAccounting::native(
+                                &work,
+                                work.cancellation(),
+                            ),
+                            work.cancellation(),
+                        )?;
                         let mut values = [0; 2];
                         for (value, path) in values.iter_mut().zip(&pair) {
                             *value = checkout
@@ -254,9 +260,18 @@ fn concurrent_observations_never_see_a_mutation_half_applied()
     for round in 1..=ROUNDS {
         source.runtime.wait(|| {
             Box::pin(async {
-                let mut checkout = source.checkout.lock().await;
+                let (mut candidate, epoch, stamp) = source
+                    .checkout
+                    .candidate(
+                        None,
+                        &mut NativeDemandCarrier::Native(&work),
+                        work.cancellation(),
+                        Some(&source.cancellation),
+                    )
+                    .await?;
                 for path in &pair {
-                    checkout
+                    candidate
+                        .checkout
                         .change_content(
                             path.clone(),
                             ContentChange::Write {
@@ -271,7 +286,18 @@ fn concurrent_observations_never_see_a_mutation_half_applied()
                         .map_err(engine_error)?;
                     tokio::task::yield_now().await;
                 }
-                Ok::<_, MountSourceError>(())
+                source
+                    .checkout
+                    .install_change(
+                        candidate,
+                        epoch,
+                        stamp,
+                        ViewChange::Everything,
+                        &work,
+                        &source.cancellation,
+                        source.native_callback_guard.clone(),
+                    )
+                    .await
             })
         })?;
     }
@@ -444,12 +470,14 @@ fn an_unrecorded_checkout_change_invalidates_every_lookup() -> Result<(), Box<dy
     let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
     let untouched = native_test_path("untouched");
     let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
-    let (namespace, _allocation) = source.namespace_path(
-        &path,
-        &mut NativeDemandCarrier::Native(&work),
-    )?;
+    let (namespace, _allocation) =
+        source.namespace_path(&path, &mut NativeDemandCarrier::Native(&work))?;
     source.runtime.wait(|| async {
         let mut checkout = source.checkout.lock().await;
+        checkout.checkout = checkout.checkout.private_candidate(
+            &mut crate::kernel::KernelAccounting::native(&work, work.cancellation()),
+            work.cancellation(),
+        )?;
         apply_authored(
             &mut checkout.checkout,
             &AuthoredMutation::CreateFile {

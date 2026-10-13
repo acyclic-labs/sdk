@@ -67,7 +67,7 @@ pub(crate) fn issue(
         MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
         work,
     )?;
-    let identity_text = if let Ok(text) = std::str::from_utf8(&identity.0) { text } else {
+    let Ok(identity_text) = std::str::from_utf8(&identity.0) else {
         drop(identity.0);
         drop(identity.1);
         return Err(acyclic_harness::Error::NativeBoundary {

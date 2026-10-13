@@ -64,7 +64,19 @@ fn rename<W: SourceDemandReadWork>(
     identity: NativeRootIdentity,
     work: &mut W,
 ) -> Result<(), DemandError> {
-    host::with_wide_path(from_name, work, |name, work| host::with_wide_path(to_name, work, |target, work| host::rename_held(from, name, to, target, acyclic_native_runtime::RenameMode::NoReplace, Some(identity), work)))?;
+    host::with_wide_path(from_name, work, |name, work| {
+        host::with_wide_path(to_name, work, |target, work| {
+            host::rename_held(
+                from,
+                name,
+                to,
+                target,
+                acyclic_native_runtime::RenameMode::NoReplace,
+                Some(identity),
+                work,
+            )
+        })
+    })?;
     host::sync_directory_held(from, work)?;
     host::sync_directory_held(to, work)
 }
@@ -93,7 +105,18 @@ pub(super) fn create_entry_witness<W: SourceDemandReadWork>(
     work: &mut W,
 ) -> Result<NativeRootIdentity, DemandError> {
     let mut file = host::with_wide_path(witness, work, |name, work| {
-        host::open_windows_at(left, name, ::windows::Win32::Storage::FileSystem::FILE_GENERIC_READ | ::windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE | ::windows::Win32::Storage::FileSystem::DELETE, ::windows::Wdk::Storage::FileSystem::FILE_CREATE, ::windows::Wdk::Storage::FileSystem::FILE_NON_DIRECTORY_FILE | ::windows::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT | ::windows::Wdk::Storage::FileSystem::FILE_DELETE_ON_CLOSE, work)
+        host::open_windows_at(
+            left,
+            name,
+            ::windows::Win32::Storage::FileSystem::FILE_GENERIC_READ
+                | ::windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE
+                | ::windows::Win32::Storage::FileSystem::DELETE,
+            ::windows::Wdk::Storage::FileSystem::FILE_CREATE,
+            ::windows::Wdk::Storage::FileSystem::FILE_NON_DIRECTORY_FILE
+                | ::windows::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT
+                | ::windows::Wdk::Storage::FileSystem::FILE_DELETE_ON_CLOSE,
+            work,
+        )
     })?;
     write_all(&mut file, ENTRY_WITNESS, work)?;
     for identity in [
@@ -218,7 +241,7 @@ pub(super) fn recover_entry_held<W: SourceDemandReadWork>(
         if !magic
             .iter()
             .zip(ENTRY_WITNESS.as_chunks::<2>().0.iter())
-            .all(|(word, bytes)| *word == u16::from_le_bytes([bytes[0], bytes[1]]))
+            .all(|(word, bytes)| *word == u16::from_le_bytes(*bytes))
         {
             return Err(NativeExchangeError::IncompatibleJournal.into());
         }
@@ -265,9 +288,10 @@ pub(super) fn recover_entry_held<W: SourceDemandReadWork>(
         with_path(names[3], work, |right_name, work| {
             super::entry::validate_leaf(right_name)?;
             if let Some((parent, name)) = requested_right
-                && (name != right_name || host::directory_identity(parent, work)? != parents[1]) {
-                    return Err(NativeExchangeError::IncompatibleJournal.into());
-                }
+                && (name != right_name || host::directory_identity(parent, work)? != parents[1])
+            {
+                return Err(NativeExchangeError::IncompatibleJournal.into());
+            }
             if host::file_identity_and_length(file, work)? != (witness_identity, length) {
                 return Err(NativeExchangeError::IncompatibleJournal.into());
             }
@@ -301,17 +325,13 @@ pub(super) fn recover_entry_held<W: SourceDemandReadWork>(
 }
 
 fn take_path<'a>(input: &mut &'a [u16]) -> Result<&'a [u16], DemandError> {
-    if input.len() < 4 {
-        return Err(NativeExchangeError::IncompatibleJournal.into());
-    }
-    let header = take(input, 4).map_err(std::io::Error::from)?;
-    let [a, b, c, d] = header else {
+    let [first, second, third, fourth] = take(input, 4).map_err(std::io::Error::from)? else {
         return Err(NativeExchangeError::IncompatibleJournal.into());
     };
-    let length = u64::from(*a)
-        | (u64::from(*b) << 16)
-        | (u64::from(*c) << 32)
-        | (u64::from(*d) << 48);
+    let length = u64::from(*first)
+        | (u64::from(*second) << 16)
+        | (u64::from(*third) << 32)
+        | (u64::from(*fourth) << 48);
     let bytes = length.checked_mul(2).ok_or(WorkError::Overflow)?;
     if bytes
         > (input.len() as u64)
@@ -483,21 +503,21 @@ fn write_path<W: SourceDemandReadWork>(
         ..WorkCounters::UNCHARGED
     };
     let mut buffer = [0; 512];
-    let mut units = units;
-    loop {
-        let mut used = 0;
-        for (slot, unit) in buffer.as_chunks_mut::<2>().0.iter_mut().zip(&mut units) {
-            work.admit(encoded)?;
-            *slot = unit.to_le_bytes();
-            used += 2;
-            work.record(encoded)?;
-        }
-        let bytes = buffer.get(..used).ok_or(WorkError::Overflow)?;
-        write_all(file, bytes, work)?;
-        if used < buffer.len() {
-            return Ok(());
+    let mut used = 0;
+    for unit in units {
+        work.admit(encoded)?;
+        buffer
+            .get_mut(used..used + 2)
+            .ok_or(WorkError::Overflow)?
+            .copy_from_slice(&unit.to_le_bytes());
+        used += 2;
+        work.record(encoded)?;
+        if used == buffer.len() {
+            write_all(file, &buffer, work)?;
+            used = 0;
         }
     }
+    write_all(file, buffer.get(..used).ok_or(WorkError::Overflow)?, work)
 }
 
 #[allow(

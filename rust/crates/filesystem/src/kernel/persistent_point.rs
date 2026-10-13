@@ -166,7 +166,7 @@ where S: AsyncObjectStore, F: Format {
                         let position = super::search::binary_search_with_accounting(values, accounting, |value| F::key(value).cmp(key))?;
                         let result = position.ok()
                             .and_then(|index| values.get(index))
-                            .map(|value| persistent_io::clone_value_with_accounting_and_custody::<F>(value, limits.maximum_name_bytes, accounting, data_custody, 0))
+                            .map(|value| persistent_io::clone_value::<F>(value, limits.maximum_name_bytes, accounting, data_custody, 0))
                             .transpose()?;
                         Ok(Some(match result {
                             Some((value, allocation)) => (Some(value), allocation),
@@ -180,12 +180,12 @@ where S: AsyncObjectStore, F: Format {
                         let selected = super::search::partition_point_with_accounting(children, accounting, |child| child.first <= *key)?.saturating_sub(1);
                         let child = children.get(selected).ok_or_else(|| query_error(Error::InvalidRouting))?;
                         if let Some(previous) = lower.take() { previous.retire(accounting)?; }
-                        let (value, allocation) = persistent_io::clone_key_with_accounting_and_custody::<F>(&child.first, limits.maximum_name_bytes, accounting, data_custody, 0)?;
+                        let (value, allocation) = persistent_io::clone_key::<F>(&child.first, limits.maximum_name_bytes, accounting, data_custody, 0)?;
                         let bytes = F::key_owned_bytes(&value);
                         lower = Some(Owned::new(value, allocation, bytes));
                         if let Some(next) = children.get(selected + 1) {
                             if let Some(previous) = upper.take() { previous.retire(accounting)?; }
-                            let (value, allocation) = persistent_io::clone_key_with_accounting_and_custody::<F>(&next.first, limits.maximum_name_bytes, accounting, data_custody, 0)?;
+                            let (value, allocation) = persistent_io::clone_key::<F>(&next.first, limits.maximum_name_bytes, accounting, data_custody, 0)?;
                             let bytes = F::key_owned_bytes(&value);
                             upper = Some(Owned::new(value, allocation, bytes));
                         }

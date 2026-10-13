@@ -78,8 +78,9 @@ fn malformed_admission_metadata_is_rejected() -> Result<()> {
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-#[test]
-fn native_component_model_10000_real_signed_transitions_stays_live_source_bounded() -> Result<()> {
+#[tokio::test]
+async fn native_component_model_10000_real_signed_transitions_stays_live_source_bounded()
+-> Result<()> {
     use acyclic_fs::{CancellationToken, NativeMaterializationWork};
     let budget = acyclic_fs::WorkBudget {
         allocation_operations: 4096,
@@ -91,25 +92,59 @@ fn native_component_model_10000_real_signed_transitions_stays_live_source_bounde
         items_examined: 16_777_216,
         ..acyclic_fs::WorkBudget::default()
     };
-    let mut reference = reducer_fixture();
-    apply(
-        &mut reference,
-        1,
-        Action::AppendCustom {
-            schema: "example.message".into(),
-            version: 1,
-            content: request_file(br#"{"text":"original primed entry"}"#)?,
-        },
-    )?;
-    let mut state = reference.copy(&mut None)?;
-    state.set_resident_event_limit(4)?;
-    reference.set_resident_event_limit(4)?;
-    state.set_resident_terminal_effect_limit(2)?;
-    reference.set_resident_terminal_effect_limit(2)?;
+    use crate::store::{StreamAggregate, tests::MigrationContentStore};
+    use std::sync::{Arc, Mutex};
     let owner = issuer();
-    let request = request_file(br#"{"prompt":"actual provider fixture request"}"#)?;
+    let primed_bytes = br#"{"text":"original primed entry"}"#;
+    let request_bytes = br#"{"prompt":"actual provider fixture request"}"#;
+    let schema_bytes = br#"{"type":"object"}"#;
+    let custom_bytes = br#"{"text":"steady active extension state"}"#;
+    let primed = request_file(primed_bytes)?;
+    let request = request_file(request_bytes)?;
     let schema = schema_file(&json!({"type":"object"}))?;
-    let custom = request_file(br#"{"text":"steady active extension state"}"#)?;
+    let custom = request_file(custom_bytes)?;
+    let content = MigrationContentStore(Arc::new(Mutex::new(
+        [
+            (&primed, primed_bytes.as_slice()),
+            (&request, request_bytes.as_slice()),
+            (&schema, schema_bytes.as_slice()),
+            (&custom, custom_bytes.as_slice()),
+        ]
+        .into_iter()
+        .map(|(file, bytes)| Ok((MigrationContentStore::key(file)?, bytes.to_vec())))
+        .collect::<Result<_>>()?,
+    )));
+    let client = Arc::new(acyclic_stream::MemoryStream::default());
+    let mut reference = StreamAggregate::open(
+        &client,
+        owner.audience.clone(),
+        owner.verifier(&mut None)?,
+        schemas(),
+        None,
+        crate::store::default_projection_read_limits(),
+        2,
+        None,
+        &mut None,
+    )
+    .await?
+    .with_content_verifier(Arc::new(content));
+    reference.set_resident_event_limit(4)?;
+    reference
+        .execute(
+            command(
+                operation(1),
+                0,
+                Action::AppendCustom {
+                    schema: "example.message".into(),
+                    version: 1,
+                    content: primed,
+                },
+            ),
+            None,
+            &mut None,
+        )
+        .await?;
+    let mut state = reference.reducer().copy(&mut None)?;
     let available =
         budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes();
     let mut recent = VecDeque::new();
@@ -139,7 +174,10 @@ fn native_component_model_10000_real_signed_transitions_stays_live_source_bounde
             _ => Action::ResolveEffect {
                 observation: owner.attest_effect(
                     effect_id,
-                    reference.effect(effect_id).expect("admitted effect"),
+                    reference
+                        .reducer()
+                        .effect(effect_id)
+                        .expect("admitted effect"),
                     attempt_id,
                     EffectStatus::Failed {
                         message: "actual attested provider rejection".into(),
@@ -149,18 +187,27 @@ fn native_component_model_10000_real_signed_transitions_stays_live_source_bounde
             },
         };
         let mut operation = [0_u8; 16];
-        operation[..8].copy_from_slice(&(reference.revision() + 1).to_le_bytes());
-        let ApplyResult::Applied { event } = reference.apply(command(
-            OperationId::from_bytes(operation),
-            reference.revision(),
-            action,
-        ))?
+        operation[..8].copy_from_slice(&(reference.reducer().revision() + 1).to_le_bytes());
+        let ApplyResult::Applied { event } = reference
+            .execute(
+                command(
+                    OperationId::from_bytes(operation),
+                    reference.reducer().revision(),
+                    action,
+                ),
+                None,
+                &mut None,
+            )
+            .await?
         else {
             panic!("fresh model event replayed")
         };
-        reference.mark_indexed_terminal_effect_with_work(&event, &mut None)?;
-        let query = NativeMaterializationWork::new(budget, &CancellationToken::new())
-            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let query = NativeMaterializationWork::new(budget, &CancellationToken::new()).map_err(
+            |(cause, work)| Error::NativeConstruction {
+                cause,
+                work: Box::new(work),
+            },
+        )?;
         let io = crate::filesystem::PreparationIo::from_native_work(&query)?;
         let ApplyResult::Applied { event } =
             state.apply_committed(event, &mut Some(&mut io.history_io()))?
@@ -171,7 +218,7 @@ fn native_component_model_10000_real_signed_transitions_stays_live_source_bounde
         drop(io);
         let receipt = query.receipt();
         assert!(receipt.allocation_operations < 512 && receipt.bytes_copied < 1_048_576);
-        assert_eq!(state, reference, "transition {index}");
+        assert_eq!(&state, reference.reducer(), "transition {index}");
         assert!(state.events.len() <= 4);
         assert!(
             state.projection.effects.len() <= 3

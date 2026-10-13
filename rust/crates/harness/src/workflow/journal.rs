@@ -79,8 +79,8 @@ pub(super) async fn admission(
         .transpose()?;
     let observed = journal.admission(io)?.await?;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = native {
-        if observed
+    if let Some(work) = native
+        && observed
             .1
             .as_ref()
             .is_none_or(|custody| !work.shares_ledger(custody.work()))
@@ -91,7 +91,6 @@ pub(super) async fn admission(
                 custody: observed.1,
             });
         }
-    }
     Ok(observed)
 }
 
@@ -110,8 +109,8 @@ pub(super) async fn page(
         .transpose()?;
     let observed = journal.replay(after, maximum, io)?.await?;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = native {
-        if observed
+    if let Some(work) = native
+        && observed
             .1
             .as_ref()
             .is_none_or(|custody| !work.shares_ledger(custody.work()))
@@ -122,6 +121,5 @@ pub(super) async fn page(
                 custody: observed.1,
             });
         }
-    }
     Ok(observed)
 }

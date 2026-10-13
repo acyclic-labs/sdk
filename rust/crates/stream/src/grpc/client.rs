@@ -378,30 +378,27 @@ impl RecordCursor {
         StreamError,
     > {
         let path = self.path.to_string();
-        let (body, completion) = match self.remaining {
-            Some(limit) => {
-                let body = wire::ReadRequest {
-                    path,
-                    from: self.next,
-                    limit,
-                };
-                self.client
-                    .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
-                        Box::pin(async move { service.read(request).await })
-                    })
-                    .await?
-            }
-            None => {
-                let body = wire::FollowRequest {
-                    path,
-                    from: self.next,
-                };
-                self.client
-                    .unary(FOLLOW_ATTEMPT_TIMEOUT, body, |mut service, request| {
-                        Box::pin(async move { service.follow(request).await })
-                    })
-                    .await?
-            }
+        let (body, completion) = if let Some(limit) = self.remaining {
+            let body = wire::ReadRequest {
+                path,
+                from: self.next,
+                limit,
+            };
+            self.client
+                .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
+                    Box::pin(async move { service.read(request).await })
+                })
+                .await?
+        } else {
+            let body = wire::FollowRequest {
+                path,
+                from: self.next,
+            };
+            self.client
+                .unary(FOLLOW_ATTEMPT_TIMEOUT, body, |mut service, request| {
+                    Box::pin(async move { service.follow(request).await })
+                })
+                .await?
         };
         Ok((completion.span.scope(body), completion))
     }

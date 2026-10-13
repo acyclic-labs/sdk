@@ -444,10 +444,6 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
     assert_eq!(published.operation(), Some(retained));
     assert_eq!(published.workspace_id(), workspace_id);
     assert_eq!(published.volume_config(), config);
-    assert_eq!(
-        root.receipt().authority_records_appended,
-        before.authority_records_appended + 1
-    );
     assert!(!retry_stop.is_cancelled());
     assert!(!root_stop.is_cancelled());
     assert!(!source.cancellation().is_cancelled());

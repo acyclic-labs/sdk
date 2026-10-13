@@ -16,10 +16,10 @@ impl ReadAdmission {
                 .state
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            match state.reader_slots.get(index) {
-                Some(Some(ReadSlot::Meter {
+            match &state.reader_slots[index] {
+                Some(ReadSlot::Meter {
                     payload_finished, ..
-                })) => *payload_finished,
+                }) => *payload_finished,
                 _ => unreachable!("live original read admission"),
             }
         })
@@ -126,16 +126,15 @@ impl ViewGateReadAdmissions {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner);
                 match state.reader_slots.get(index).and_then(Option::as_ref) {
-                    Some(ReadSlot::Meter {
-                        finished, ..
-                    }) => *finished,
+                    Some(ReadSlot::Meter { finished, .. }) => *finished,
                     _ => return Err(crate::WorkError::Overflow),
                 }
             };
             let newly_finished = finished
                 .checked_sub(entry.finished)
                 .ok_or(crate::WorkError::Overflow)?;
-            // Preserve completed releases before checking the ceiling.
+            // These physical releases already happened. Preserve their exact
+            // prefix before applying any reconstructed or tighter ceiling.
             *work = work.checked_add(crate::WorkCounters {
                 items_examined: newly_finished,
                 ..crate::WorkCounters::default()
@@ -144,9 +143,10 @@ impl ViewGateReadAdmissions {
             completed = completed
                 .checked_add(newly_finished)
                 .ok_or(crate::WorkError::Overflow)?;
-
         }
-        budget.items_examined = budget.items_examined.checked_add(completed)
+        budget.items_examined = budget
+            .items_examined
+            .checked_add(completed)
             .ok_or(crate::WorkError::Overflow)?;
         work.verify(*budget)?;
         Ok(())
@@ -176,9 +176,9 @@ impl ViewGateReadAdmissions {
         }
         if let Some(index) = found {
             return Ok(if index == 0 {
-                self.first.as_mut().ok_or(MountSourceError::Work(crate::WorkError::Overflow))?
+                self.first.as_mut().expect("first gate admission")
             } else {
-                self.more.get_mut(index - 1).ok_or(MountSourceError::Work(crate::WorkError::Overflow))?
+                &mut self.more[index - 1]
             });
         }
         if self.first.is_none() {
@@ -268,19 +268,16 @@ pub(super) fn insert_reader_slot(
     first_free: &mut Option<usize>,
     second_free: &mut Option<usize>,
     slot: ReadSlot,
-) -> Result<usize, MountSourceError> {
-    let occupied = state.occupied_slots.checked_add(1)
-        .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
+) -> usize {
     let index = if let Some(index) = first_free.take() {
         *first_free = second_free.take();
-        *state.reader_slots.get_mut(index)
-            .ok_or(MountSourceError::Work(crate::WorkError::Overflow))? = Some(slot);
+        state.reader_slots[index] = Some(slot);
         index
     } else {
         let index = state.reader_slots.len();
         state.reader_slots.push(Some(slot));
         index
     };
-    state.occupied_slots = occupied;
-    Ok(index)
+    state.occupied_slots += 1;
+    index
 }

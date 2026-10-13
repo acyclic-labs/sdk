@@ -198,11 +198,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             original.cancellation().check()?;
             original.checkout_control_sink(&producer)?;
             let base =
-                crate::collection::clone_generation_root_native(base, accounting, &producer)?;
+                crate::collection::clone_generation_root(base, accounting, Some(&producer))?;
             cancellation.check()?;
             let held = self
                 .root
-                .prepare_held_root_native(working, accounting, &producer)?;
+                .prepare_held_root(working, accounting, Some(&producer))?;
             return Ok(PreparedCheckoutRoots {
                 base,
                 held,
@@ -217,18 +217,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             })
             .map(Arc::clone);
         cancellation.check()?;
-        let (allocations, work, bound, _) = accounting
-            .standalone_parts()
-            .ok_or(FsError::HandleAllocationFailed)?;
-        let base =
-            crate::collection::clone_generation_root(base, allocations, work, bound, cancellation)?;
+        let (base, _) = crate::collection::clone_generation_root(base, accounting, None)?;
         let control = Self::root_control_claim(&base, producer.as_ref())?;
         let base = (base, control);
         cancellation.check()?;
         let held = self
             .root
-            .prepare_held_root(working, allocations, work, bound, cancellation)?
-            .map(|root| {
+            .prepare_held_root(working, accounting, None)?
+            .map(|(root, _)| {
                 let control = Self::root_control_claim(&root, producer.as_ref())?;
                 Ok::<_, FsError>((root, control))
             })
@@ -348,7 +344,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let (base_root, control) = match native_owner {
             #[cfg(not(target_arch = "wasm32"))]
             Some(owner) => {
-                crate::collection::clone_generation_root_native(&self.base_root, accounting, owner)?
+                crate::collection::clone_generation_root(&self.base_root, accounting, Some(owner))?
             }
             _ => {
                 let (root, _) = crate::collection::clone_generation_root_with_accounting(

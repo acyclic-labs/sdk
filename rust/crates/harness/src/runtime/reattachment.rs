@@ -26,7 +26,7 @@ impl AgentHarness {
         self.validate_observed_admission(&admission, None).await?;
         match host.observe_admission(task_id).await {
             Ok(observed) if observed == admission => {
-                self.validate_observed_admission(&observed, None).await?
+                self.validate_observed_admission(&observed, None).await?;
             }
             Ok(_) => {
                 return Err(Error::Conflict(

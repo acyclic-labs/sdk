@@ -187,7 +187,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             Some(native) => {
                 provider
                     .verify_with_native_work(policy_context, snapshot, native)?
-                    .await?
+                    .await?;
             }
             None => provider.verify(policy_context, snapshot).await?,
         }
@@ -204,7 +204,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let project = snapshot.project.copy(quota.work())?;
         let reference = crate::core::copy_resource(snapshot.generation.as_resource(), &mut quota)?;
         let generation =
-            crate::resources::GenerationRef::from_resource_with_work(reference, quota.work())?;
+            crate::resources::GenerationRef::from_resource(reference, quota.work())?;
         let native_snapshot = snapshot
             .native_snapshot
             .as_ref()

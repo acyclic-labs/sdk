@@ -483,12 +483,19 @@ async fn load_initial_lookups<S: AsyncObjectStore>(
     let (paths, path_allocation) = if refs.value.is_empty() {
         (Vec::new(), accounting.claim_owned(0, 0)?)
     } else {
-        let result = super::path_access::lookup_path_refs_async_with_accounting(
-            store, generation, &refs.value, config, accounting, cancellation, None,
+        let result = super::path_access::lookup_paths_with_accounting(
+            store,
+            generation,
+            crate::kernel::PathQueries::Borrowed(&refs.value),
+            config,
+            accounting,
+            cancellation,
+            None,
+            crate::kernel::PathBatchMode::NoFollow,
         ).await.map_err(|error| {
             if original { error } else { GenerationMutationError::Path(super::path_access::path_error(error)).into() }
         })?;
-        let (lookup, allocation) = result.into_parts();
+        let (lookup, allocation) = result;
         (lookup.entries, allocation)
     };
     let paths = Owned { value: paths, allocation: path_allocation };

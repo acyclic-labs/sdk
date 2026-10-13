@@ -118,9 +118,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 &self.volume.fs.inner.objects,
                 &self.volume.fs.inner.authority,
                 request,
-                PublicationIntent::guarded(operation_context, permit)
-                    .with_original_evidence(operation_evidence.clone())
-                    .with_original_fingerprint_permit(original_fingerprint_permit),
+                PublicationIntent {
+                    operation_context,
+                    original_evidence: operation_evidence.clone(),
+                    fingerprint_permit: original_fingerprint_permit,
+                    permit,
+                },
                 closure_limits(self.volume.config),
                 publication_budget,
                 cancellation,
@@ -343,9 +346,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     &self.volume.fs.inner.objects,
                     &self.volume.fs.inner.authority,
                     request,
-                    PublicationIntent::guarded(operation_context, permit)
-                        .with_original_evidence(operation_evidence.clone())
-                        .with_original_fingerprint_permit(original_fingerprint_permit),
+                    PublicationIntent {
+                    operation_context,
+                    original_evidence: operation_evidence.clone(),
+                    fingerprint_permit: original_fingerprint_permit,
+                    permit,
+                },
                     closure_limits(self.volume.config),
                     original,
                     cancellation,

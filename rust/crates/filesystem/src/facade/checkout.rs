@@ -97,10 +97,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
                         .transfer_checkout_control(&custody, &witness)?;
                     let mut dependencies =
                         DependencyLedger::new_with_native_custody(captured, custody, proof_control);
-                    let (base, control) = crate::collection::clone_generation_root_native(
+                    let (base, control) = crate::collection::clone_generation_root(
                         &root,
                         &mut accounting,
-                        &dependencies.data_custody,
+                        Some(&dependencies.data_custody),
                     )?;
                     dependencies.base_root_control = control;
                     let root = crate::collection::CheckoutRoots::new(

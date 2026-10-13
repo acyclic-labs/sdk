@@ -206,14 +206,14 @@ where
             io,
         )?;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            if !owner.native_shared_work_matches(work) {
-                return Err(observation_boundary(
-                    io,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "workflow owner belongs to another native ledger",
-                ));
-            }
+        if let Some(work) = io.and_then(PreparationIo::original_native_work)
+            && !owner.native_shared_work_matches(work)
+        {
+            return Err(observation_boundary(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "workflow owner belongs to another native ledger",
+            ));
         }
         let owner = Arc::new(owner);
         Arc::get_mut(&mut journal)

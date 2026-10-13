@@ -73,6 +73,7 @@ async fn original_corrupt_receipt_drops_source_and_keeps_first_native_quota_caus
                     .expect("corrupt receipt aliases retire with the provider")
                     .peak_allocation_bytes,
                 budget().peak_allocation_bytes
+                    - NativeMaterializationWork::accounting_state_bytes()
             );
         }
     }

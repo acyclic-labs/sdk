@@ -94,18 +94,13 @@ fn content() -> Result<FileRef> {
 struct TestContent;
 
 #[derive(Clone, Default)]
-pub(super) struct MigrationContentStore(
-    pub(super) Arc<std::sync::Mutex<BTreeMap<String, Vec<u8>>>>,
+pub(crate) struct MigrationContentStore(
+    pub(crate) Arc<std::sync::Mutex<BTreeMap<String, Vec<u8>>>>,
 );
 
 impl MigrationContentStore {
-    fn key(reference: &FileRef) -> Result<String> {
-        Ok(format!(
-            "{}:{}",
-            serde_json::to_string(reference.volume())
-                .map_err(|error| Error::Invalid(error.to_string()))?,
-            reference.path()
-        ))
+    pub(crate) fn key(reference: &FileRef) -> Result<String> {
+        serde_json::to_string(reference).map_err(|error| Error::Invalid(error.to_string()))
     }
 }
 

@@ -20,7 +20,7 @@ pub(crate) fn clone_context(
             Context {
                 messages: source.to_vec(),
                 metadata: context.metadata.clone(),
-                current_input_index: current_input_index,
+                current_input_index,
             },
             0,
         ));

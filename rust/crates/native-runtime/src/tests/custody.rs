@@ -158,9 +158,10 @@ fn denied_file_import_returns_original_handle_without_fabricated_io() -> io::Res
         } else {
             NativeFile::from_file(file, Some(NativeFileMeter::Borrowed(observer.as_ref())))
         };
-        let (error, mut file) = match result {
-            Err(failure) => failure,
-            Ok(_) => panic!("actual zero-memory import admission must refuse"),
+        let Err((error, mut file)) = result else {
+            return Err(io::Error::other(
+                "actual zero-memory import admission must refuse",
+            ));
         };
         assert_eq!(error.kind(), io::ErrorKind::Other);
         let mut original = [0_u8; 8];
@@ -187,10 +188,25 @@ fn prepared_read_returns_same_owner_short_prefix_and_eof_without_header() -> io:
         }?;
         assert_eq!(filled, expected);
         assert_eq!(storage.as_ptr(), identity);
-        assert_eq!(&storage[..filled], &b"abc"[..expected]);
-        assert!(storage[filled..].iter().all(|byte| *byte == 0x55));
+        assert_eq!(
+            storage.get(..filled).ok_or(io::ErrorKind::InvalidData)?,
+            b"abc".get(..expected).ok_or(io::ErrorKind::InvalidData)?
+        );
+        assert!(
+            storage
+                .get(filled..)
+                .ok_or(io::ErrorKind::InvalidData)?
+                .iter()
+                .all(|byte| *byte == 0x55)
+        );
         assert_eq!(meter.read.load(Ordering::Acquire), expected as u64);
-        assert!(file.health.tail.lock().unwrap().is_none());
+        assert!(
+            file.health
+                .tail
+                .lock()
+                .map_err(|_| io::ErrorKind::Other)?
+                .is_none()
+        );
         let weak = Arc::downgrade(&meter);
         drop(meter);
         wait_until(|| weak.upgrade().is_none());
@@ -215,7 +231,7 @@ fn prepared_read_exact_eof_and_late_cancel_preserve_physical_work() -> io::Resul
             } else {
                 complete(file.read_bounded_async(0, 8, meter.clone(), false)?)
                     .err()
-                    .expect("cancelled read")
+                    .ok_or_else(|| io::Error::other("cancelled read unexpectedly succeeded"))?
             }
         };
         assert_eq!(
@@ -253,7 +269,13 @@ fn prepared_read_panic_preserves_original_payload_and_actual_work() -> io::Resul
     drop(payload);
     drop(read);
     wait_until(|| meter.memory.load(Ordering::Acquire) == 0);
-    assert!(file.health.tail.lock().unwrap().is_none());
+    assert!(
+        file.health
+            .tail
+            .lock()
+            .map_err(|_| io::ErrorKind::Other)?
+            .is_none()
+    );
     Ok(())
 }
 
@@ -265,17 +287,11 @@ fn bounded_read_byte_and_memory_refusals_precede_io() -> io::Result<()> {
     std::fs::write(&path, b"abc")?;
     let file = bounded_write_file(&path, false)?;
     let byte_meter = Arc::new(ReadBudgetMeter::new(8, 2));
-    assert!(
-        file.read_bounded_async(0, 3, byte_meter.clone(), false)
-            .is_err()
-    );
+    assert!(file.read_bounded_async(0, 3, byte_meter, false).is_err());
     let mut limits = ReadBudgetMeter::new(8, 3);
     limits.memory_limit = 0;
     let memory_meter = Arc::new(limits);
-    assert!(
-        file.read_bounded_async(0, 3, memory_meter.clone(), false)
-            .is_err()
-    );
+    assert!(file.read_bounded_async(0, 3, memory_meter, false).is_err());
     Ok(())
 }
 
@@ -343,7 +359,11 @@ fn bounded_write_retains_custody_through_denial_drop_and_cancellation() -> io::R
         let expected = if denied {
             Vec::new()
         } else {
-            payload[..payload.len().min(1024 * 1024)].to_vec()
+            payload
+                .iter()
+                .take(1024 * 1024)
+                .copied()
+                .collect::<Vec<_>>()
         };
         let mut limits = ReadBudgetMeter::new(
             if cancelled {
@@ -388,7 +408,7 @@ fn bounded_write_retains_custody_through_denial_drop_and_cancellation() -> io::R
             let _ = job.run();
             state
                 .lock()
-                .unwrap()
+                .map_err(|_| io::ErrorKind::Other)?
                 .result
                 .take()
                 .expect("terminal write")?;

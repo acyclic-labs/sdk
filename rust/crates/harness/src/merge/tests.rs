@@ -38,7 +38,7 @@ fn field_copy_receipt() -> Result<ProjectMergeReceipt> {
     receipt
         .notice
         .extensions
-        .insert("merge-proof".into(), receipt.notice.content.clone());
+        .insert("merge.proof".into(), receipt.notice.content.clone());
     receipt.validate_shape(&mut None)?;
     Ok(receipt)
 }
@@ -59,7 +59,7 @@ fn field_copy_budget() -> acyclic_fs::WorkBudget {
 #[cfg(feature = "filesystem")]
 #[test]
 fn owned_merge_copy_uses_physical_fields_and_finite_inspection() -> Result<()> {
-    use crate::store::history::{HistoryIo as _, HistoryWork};
+    use crate::store::history::HistoryIo as _;
     let receipt = field_copy_receipt()?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let mut io = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
@@ -171,13 +171,13 @@ fn native_partial_merge_copy_retires_new_fields_without_releasing_existing_custo
     let held = io.clone_text("held")?;
     assert!(matches!(
         crate::wire_codec::CodecQuota::produce(&mut Some(&mut io), |quota| receipt.copy(quota)),
-        Err(Error::NativeWork {
-            cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
-                counter: "bytes_copied",
-                ..
-            }),
-            ..
-        })
+        Err(Error::NativeFilesystem { source, custody: None })
+            if matches!(*source, acyclic_fs::FsError::NativeKernel(
+                NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
+                    counter: "bytes_copied",
+                    ..
+                })
+            ))
     ));
     let guard = io.into_custody()?;
     assert_eq!(guard.bytes(), held.capacity() as u64);

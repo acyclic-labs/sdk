@@ -88,7 +88,11 @@ where
         before_publication: F,
     ) -> Result<crate::NativePublicationSnapshot, NativeMountPublicationFailure<E>>
     where
-        E: From<MountLifecycleError> + From<MountSourceError> + From<crate::FsError> + Send + 'static,
+        E: From<MountLifecycleError>
+            + From<MountSourceError>
+            + From<crate::FsError>
+            + Send
+            + 'static,
         F: for<'m> FnMut(&'m NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
@@ -114,9 +118,9 @@ where
             result.map_err(
                 |(cause, accounting_failure)| NativeMountPublicationFailure {
                     cause,
-                    accounting_failure: accounting_failure.map(Box::new),
+                    accounting_failure,
                     source_acknowledged: acknowledged.is_some(),
-                    publication: acknowledged.map(Box::new),
+                    publication: acknowledged,
                 },
             )?;
         with_live_session(&self.session, |session| session.revalidate(work)).map_err(|cause| {
@@ -124,7 +128,7 @@ where
                 cause: E::from(cause),
                 accounting_failure: None,
                 source_acknowledged: true,
-                publication: Some(Box::new(publication)),
+                publication: Some(publication),
             }
         })?;
         Ok(publication)
@@ -143,7 +147,11 @@ where
         before_publication: F,
     ) -> impl Future<Output = Result<crate::LazySnapshotRef, E>> + Send + 'a
     where
-        E: From<MountLifecycleError> + From<MountSourceError> + From<crate::FsError> + Send + 'static,
+        E: From<MountLifecycleError>
+            + From<MountSourceError>
+            + From<crate::FsError>
+            + Send
+            + 'static,
         F: for<'m> FnMut(&'m NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
@@ -256,7 +264,7 @@ where
         &self,
         work: &NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::NativePublicationSnapshot, (MountLifecycleError, Option<Box<MountSourceError>>)>
+    ) -> Result<crate::NativePublicationSnapshot, (MountLifecycleError, Option<MountSourceError>)>
     {
         self.settle(work).map_err(|cause| (cause, None))?;
         self.source
@@ -306,9 +314,10 @@ where
             Ok(proof)
         })();
         if result.is_err()
-            && let Some(session) = owner.as_mut() {
-                session.record_measured_cleanup_failure();
-            }
+            && let Some(session) = owner.as_mut()
+        {
+            session.record_measured_cleanup_failure();
+        }
         result
     }
 }

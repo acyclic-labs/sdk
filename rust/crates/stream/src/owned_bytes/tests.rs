@@ -2,12 +2,15 @@ use super::*;
 use crate::test_meter::Meter;
 use std::sync::atomic::{AtomicU64, Ordering as Order};
 
-fn funded(meter: &Arc<dyn NativeReadMeter>, size: usize) -> (Vec<u8>, ReadAllocation) {
-    let mut claim = ReadAllocation::new(meter, size).unwrap();
+fn funded(
+    meter: &Arc<dyn NativeReadMeter>,
+    size: usize,
+) -> std::io::Result<(Vec<u8>, ReadAllocation)> {
+    let mut claim = ReadAllocation::new(meter, size)?;
     let mut data = Vec::with_capacity(size);
-    claim.reconcile_capacity(data.capacity()).unwrap();
+    claim.reconcile_capacity(data.capacity())?;
     data.resize(data.capacity(), 0);
-    (data, claim)
+    Ok((data, claim))
 }
 struct Owner {
     _allocation: ReadAllocation,
@@ -67,19 +70,25 @@ fn ordinary_storage_preserves_capacity_and_rejects_unsafe_recovery() {
 }
 
 #[test]
-fn prepared_storage_freezes_after_cancellation_and_keeps_empty_aliases() {
+fn prepared_storage_freezes_after_cancellation_and_keeps_empty_aliases()
+-> Result<(), Box<dyn std::error::Error>> {
     let observed = Arc::new(Meter::default());
     let meter = observed.original();
-    let (data, claim) = funded(&meter, 23);
-    let mut prepared = PreparedOwnedBytes::new(data, claim, &meter).unwrap();
+    let (data, claim) = funded(&meter, 23)?;
+    let mut prepared = PreparedOwnedBytes::new(data, claim, &meter)
+        .map_err(|failure| format!("{:?}", failure.into_error()))?;
     let held = observed.held.load(Order::Relaxed);
     let maximum = prepared.maximum_len();
     prepared = prepared.freeze(maximum + 1).unwrap_err();
     assert_eq!(observed.held.load(Order::Relaxed), held);
     observed.limit.store(0, Order::Relaxed);
     observed.cancelled.store(true, Order::Relaxed);
-    prepared.writable()[..4].copy_from_slice(b"done");
-    let bytes = prepared.freeze(4).unwrap();
+    prepared
+        .writable()
+        .get_mut(..4)
+        .ok_or("invalid fixture range")?
+        .copy_from_slice(b"done");
+    let bytes = prepared.freeze(4).map_err(|_| "invalid prepared length")?;
     assert!(bytes.matches_meter(&meter));
     let range = bytes.slice(1..3);
     let empty = bytes.slice(0..0);
@@ -90,14 +99,16 @@ fn prepared_storage_freezes_after_cancellation_and_keeps_empty_aliases() {
     assert_eq!(observed.held.load(Order::Relaxed), held);
     drop(empty);
     assert_eq!(observed.held.load(Order::Relaxed), 0);
+    Ok(())
 }
 
 #[test]
-fn rejected_preparation_preserves_data_and_original_cause() {
+fn rejected_preparation_preserves_data_and_original_cause() -> Result<(), Box<dyn std::error::Error>>
+{
     for cancelled in [false, true] {
         let observed = Arc::new(Meter::default());
         let meter = observed.original();
-        let (data, claim) = funded(&meter, 9);
+        let (data, claim) = funded(&meter, 9)?;
         let capacity = data.capacity();
         if cancelled {
             observed.cancelled.store(true, Order::Relaxed);
@@ -124,7 +135,7 @@ fn rejected_preparation_preserves_data_and_original_cause() {
     }
     let observed = Arc::new(Meter::default());
     let meter = observed.original();
-    let (mut data, claim) = funded(&meter, 13);
+    let (mut data, claim) = funded(&meter, 13)?;
     data.truncate(data.capacity() - 1);
     let failure = PreparedOwnedBytes::new(data, claim, &meter).unwrap_err();
     assert!(matches!(
@@ -134,15 +145,19 @@ fn rejected_preparation_preserves_data_and_original_cause() {
     assert!(observed.held.load(Order::Relaxed) > 0);
     drop(failure);
     assert_eq!(observed.held.load(Order::Relaxed), 0);
+    Ok(())
 }
 
 #[test]
-fn in_place_transfer_keeps_owner_on_denial_and_retires_metadata_first() {
+fn in_place_transfer_keeps_owner_on_denial_and_retires_metadata_first()
+-> Result<(), Box<dyn std::error::Error>> {
     let observed = Arc::new(Meter::default());
     let meter = observed.original();
     let retired = Arc::new(AtomicU64::new(u64::MAX));
-    let (mut data, allocation) = funded(&meter, 23);
-    data[..4].copy_from_slice(b"keep");
+    let (mut data, allocation) = funded(&meter, 23)?;
+    data.get_mut(..4)
+        .ok_or("invalid fixture range")?
+        .copy_from_slice(b"keep");
     data.truncate(4);
     let (pointer, capacity) = (data.as_ptr(), data.capacity());
     let mut owner = Some(Owner {
@@ -163,7 +178,7 @@ fn in_place_transfer_keeps_owner_on_denial_and_retires_metadata_first() {
     assert_eq!(retired.load(Order::Relaxed), u64::MAX);
     assert_eq!(observed.held.load(Order::Relaxed), held);
     observed.limit.store(u64::MAX, Order::Relaxed);
-    let bytes = OwnedBytes::from_vec_with_guard_in_place(&mut data, &mut owner, &meter).unwrap();
+    let bytes = OwnedBytes::from_vec_with_guard_in_place(&mut data, &mut owner, &meter)?;
     assert!(data.is_empty() && owner.is_none());
     assert_eq!(bytes.as_slice().as_ptr(), pointer);
     let held = observed.held.load(Order::Relaxed);
@@ -177,13 +192,15 @@ fn in_place_transfer_keeps_owner_on_denial_and_retires_metadata_first() {
     drop(alias);
     assert_eq!(retired.load(Order::Relaxed), capacity as u64);
     assert_eq!(observed.held.load(Order::Relaxed), 0);
+    Ok(())
 }
 
 #[test]
-fn consuming_transfer_failure_retires_payload_before_returning_the_cause() {
+fn consuming_transfer_failure_retires_payload_before_returning_the_cause()
+-> Result<(), Box<dyn std::error::Error>> {
     let observed = Arc::new(Meter::default());
     let meter = observed.original();
-    let (data, claim) = funded(&meter, 7);
+    let (data, claim) = funded(&meter, 7)?;
     observed
         .limit
         .store(observed.allocations.load(Order::Relaxed), Order::Relaxed);
@@ -193,21 +210,25 @@ fn consuming_transfer_failure_retires_payload_before_returning_the_cause() {
         matches!(failure.into_error(), PreparedOwnedBytesError::Admission(error) if error.kind() == io::ErrorKind::OutOfMemory)
     );
     assert_eq!(observed.held.load(Order::Relaxed), 0);
+    Ok(())
 }
 
 #[cfg(feature = "serde")]
 #[test]
-fn serde_preserves_wire_bytes_without_native_ownership() {
+fn serde_preserves_wire_bytes_without_native_ownership() -> Result<(), Box<dyn std::error::Error>> {
     let observed = Arc::new(Meter::default());
     let meter = observed.original();
-    let (mut data, claim) = funded(&meter, 3);
-    data[..3].copy_from_slice(b"abc");
+    let (mut data, claim) = funded(&meter, 3)?;
+    data.get_mut(..3)
+        .ok_or("invalid fixture range")?
+        .copy_from_slice(b"abc");
     let bytes = OwnedBytes::from_vec_with_guard(data, claim, meter.clone())
-        .unwrap()
+        .map_err(|failure| format!("{:?}", failure.into_error()))?
         .slice(..3);
-    let encoded = serde_json::to_string(&bytes).unwrap();
+    let encoded = serde_json::to_string(&bytes)?;
     assert_eq!(encoded, "[97,98,99]");
-    let decoded: OwnedBytes = serde_json::from_str(&encoded).unwrap();
+    let decoded: OwnedBytes = serde_json::from_str(&encoded)?;
     assert_eq!(decoded.as_slice(), b"abc");
     assert!(!decoded.matches_meter(&meter));
+    Ok(())
 }

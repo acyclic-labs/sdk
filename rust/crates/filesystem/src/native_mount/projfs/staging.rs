@@ -18,7 +18,7 @@ pub(super) fn write_listed_content(
     let mut failure = None;
     let mut delivered = 0_u64;
     let mut sink = |_offset: u64, packet: crate::kernel::OwnedSourceChunk| {
-        let mut remaining = packet.bytes().as_ref();
+        let mut remaining = packet.bytes.as_ref();
         while !remaining.is_empty() {
             let count = match crate::native_host::file_transfer(
                 acyclic_native_runtime::NativeOperationKind::Write,
@@ -40,7 +40,7 @@ pub(super) fn write_listed_content(
             delivered = delivered
                 .checked_add(count as u64)
                 .ok_or(crate::WorkError::Overflow)?;
-            remaining = remaining.get(count..).ok_or(MountSourceError::Stale)?;
+            remaining = &remaining[count..];
         }
         Ok(())
     };
@@ -66,10 +66,10 @@ pub(super) fn write_listed_content(
                     count,
                     projection.work,
                 )?;
-                if packet.bytes().is_empty() {
+                if packet.bytes.is_empty() {
                     return Err(MountSourceError::Stale);
                 }
-                offset += u64::try_from(packet.bytes().len()).unwrap_or(u64::MAX);
+                offset += u64::try_from(packet.bytes.len()).unwrap_or(u64::MAX);
                 sink(offset, packet)?;
             }
             Ok(())
@@ -158,10 +158,6 @@ pub(super) fn delete_through<E: From<std::io::Error>>(
         ),
     };
     let on_close = FILE_DISPOSITION_INFO { DeleteFile: true };
-    let posix_bytes = u32::try_from(size_of::<FILE_DISPOSITION_INFO_EX>())
-        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
-    let on_close_bytes = u32::try_from(size_of::<FILE_DISPOSITION_INFO>())
-        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
     start()?;
     // SAFETY: the held DELETE handle and fixed-sized ABI input remain live.
     let result = unsafe {
@@ -169,7 +165,7 @@ pub(super) fn delete_through<E: From<std::io::Error>>(
             handle,
             FileDispositionInfoEx,
             (&raw const posix).cast(),
-            posix_bytes,
+            size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
         )
     };
     if result.is_err() {
@@ -180,7 +176,7 @@ pub(super) fn delete_through<E: From<std::io::Error>>(
                 handle,
                 FileDispositionInfo,
                 (&raw const on_close).cast(),
-                on_close_bytes,
+                size_of::<FILE_DISPOSITION_INFO>() as u32,
             )
         }
         .map_err(std::io::Error::from)
@@ -213,7 +209,10 @@ pub(super) fn symbolic_link_digest(data: &[u8]) -> Option<u64> {
     };
     Some(link_digest(
         std::iter::repeat_n(u16::from(b'\\'), slashes).chain(
-            name.as_chunks::<2>().0.iter().copied().map(u16::from_le_bytes),
+            name.as_chunks::<2>()
+                .0
+                .iter()
+                .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]])),
         ),
     ))
 }

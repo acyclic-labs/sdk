@@ -1,6 +1,6 @@
 use super::McpToolTransport;
 use crate::{
-    Error, Result,
+    Error, NativeWork, Result,
     runtime::{RuntimeScope, ToolContext},
     tool::{ToolExecutor, ToolInvocation, ToolResult},
 };
@@ -15,56 +15,59 @@ pub(super) struct RemoteTool {
     pub(super) transport: Arc<dyn McpToolTransport>,
 }
 impl RemoteTool {
-    fn authorize_context(&self, context: &ToolContext, invocation: &ToolInvocation) -> Result<()> {
-        if context.operation_id() != invocation.operation_id
-            || context.call_id() != invocation.call_id
-        {
-            return Err(Error::Unauthorized(
-                "MCP tool context identity mismatch".into(),
-            ));
-        }
-        self.authorize(Some(context.task().scope()), None, invocation, None)
-    }
     pub(super) fn result(&self, result: Value) -> Result<ToolResult> {
         let mut value = super::services::validate_result("tools/call", result, None)?;
         if value.get("isError").and_then(Value::as_bool) != Some(true)
             && let Some(schema) = &self.output_schema
         {
-            let result = value
+            let structured = value
                 .get("structuredContent")
                 .ok_or_else(|| Error::Invalid("MCP structured result missing".into()))?;
-            crate::executor::validate_json_schema_value(schema, result, "MCP output", &mut None)?;
+            crate::executor::validate_json_schema_value(
+                schema,
+                structured,
+                "MCP output",
+                &mut None,
+            )?;
         }
-        if let Some(fields) = value.as_object_mut() {
-            fields.retain(|key, value| {
-                matches!(
-                    key.as_str(),
-                    "content" | "structuredContent" | "isError" | "_meta"
-                ) && (key != "_meta" || !value.is_null())
-            });
-            fields.entry("isError").or_insert(Value::Bool(false));
-        }
+        let fields = value
+            .as_object_mut()
+            .expect("validated MCP tool result is an object");
+        fields.retain(|key, value| {
+            matches!(
+                key.as_str(),
+                "content" | "structuredContent" | "isError" | "_meta"
+            ) && (key != "_meta" || !value.is_null())
+        });
+        fields.entry("isError").or_insert(Value::Bool(false));
         Ok(ToolResult { value })
     }
 }
 impl ToolExecutor for RemoteTool {
     fn authorize(
         &self,
-        scope: Option<&crate::runtime::RuntimeScope>,
-        context: Option<&crate::runtime::ToolContext>,
-        invocation: &crate::tool::ToolInvocation,
-        work: crate::NativeWork<'_>,
-    ) -> crate::Result<()> {
-        let _ = (invocation, work);
-        let scope = scope.or_else(|| context.map(|context| context.task().scope()));
+        scope: Option<&RuntimeScope>,
+        context: Option<&ToolContext>,
+        invocation: &ToolInvocation,
+        work: NativeWork<'_>,
+    ) -> Result<()> {
+        if context.is_some_and(|context| {
+            context.operation_id() != invocation.operation_id
+                || context.call_id() != invocation.call_id
+        }) {
+            return Err(Error::Unauthorized(
+                "MCP tool context identity mismatch".into(),
+            ));
+        }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if work.is_some() {
-            return Err(crate::Error::NativeBoundary {
+            return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported,
                 reason: "tool executor has no native authorization producer",
             });
         }
-
+        let _ = work;
+        let scope = scope.or_else(|| context.map(|context| context.task().scope()));
         if !scope.is_some_and(|scope| {
             scope
                 .grants()
@@ -81,8 +84,8 @@ impl ToolExecutor for RemoteTool {
         context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
-            if let Some(context) = &context {
-                self.authorize_context(context, &invocation)?;
+            if context.is_some() {
+                self.authorize(None, context.as_ref(), &invocation, None)?;
             }
             self.result(
                 self.transport
@@ -102,8 +105,8 @@ impl ToolExecutor for RemoteTool {
         context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
         Box::pin(async move {
-            if let Some(context) = &context {
-                self.authorize_context(context, &invocation)?;
+            if context.is_some() {
+                self.authorize(None, context.as_ref(), &invocation, None)?;
             }
             self.transport
                 .reconcile(invocation.operation_id, context)

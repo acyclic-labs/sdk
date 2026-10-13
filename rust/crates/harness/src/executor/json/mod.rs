@@ -9,7 +9,7 @@ mod records;
 pub(crate) use identity::{canonical_json_digest, json_byte_length};
 mod diagnostics;
 pub(crate) use diagnostics::{
-    audited_serde_diagnostic_bytes, event_payload_json_admission, json_decode_owned_bytes,
+    audited_serde_diagnostic_bytes, json_decode_owned_bytes,
     snapshot_json_admission,
 };
 pub use diagnostics::{
@@ -66,11 +66,11 @@ impl JsonValueShape {
     pub const fn lexical_items(self) -> u64 {
         self.lexical_items
     }
-    /// Nodes in decoded RawValue sources.
+    /// Nodes in decoded `RawValue` sources.
     pub const fn virtual_items(self) -> u64 {
         self.virtual_items
     }
-    /// Whether RawValue requires the conservative byte-based allowance.
+    /// Whether `RawValue` requires the conservative byte-based allowance.
     pub const fn unresolved_raw(self) -> bool {
         self.unresolved_raw
     }
@@ -101,7 +101,7 @@ pub enum JsonCodecCharge {
         /// Bytes to copy.
         bytes: u64,
     },
-    /// One genuine positive SDK try_reserve operation.
+    /// One genuine positive SDK `try_reserve` operation.
     AllocationOperation {
         /// Full requested capacity.
         bytes: u64,

@@ -246,12 +246,7 @@ pub(crate) fn run_native_mount_handler_on_meter<T>(
 
 /// Borrowed stock-source consistency data, not namespace or task authority.
 pub struct NativeMountSourceLineage<'a> {
-    pub(super) owner: Arc<dyn std::any::Any + Send + Sync>,
-    pub(super) root: &'a crate::kernel::NamespacePath,
-    pub(super) native_original: Option<&'a crate::NativeMaterializationWork>,
     pub(super) lazy_owner: Option<Arc<dyn std::any::Any + Send + Sync>>,
     pub(super) lazy_root: Option<&'a str>,
-    pub(super) limits: crate::VolumeLimits,
     pub(super) capture_gate: &'a std::sync::Mutex<adapter::CaptureSourceGate>,
-    pub(super) capture_cancellation: &'a crate::CancellationToken,
 }

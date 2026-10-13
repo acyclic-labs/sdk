@@ -17,7 +17,7 @@ use crate::kernel::{
 };
 use crate::memory::{MemoryAuthorityStore, MemoryObjectStore};
 use crate::model::{Lifecycle, VolumeConfig};
-use crate::storage::{FenceOutcome, ObjectKind, object_digest};
+use crate::storage::{FenceOutcome, ObjectKind, ObjectStoreError, object_digest};
 use sha2::{Digest as _, Sha256};
 
 fn metadata() -> FileMetadata {
@@ -896,12 +896,11 @@ async fn evidence_fixture() -> Result<
     assert_eq!(proof.file_count, 3);
     assert_eq!(proof.logical_file_bytes, u128::from(u64::MAX) * 2);
     let cancellation = CancellationToken::new();
-    let mut commit_work = WorkCounters::UNCHARGED;
     let commit = prepare_publication_commit(
         request,
         None,
         None,
-        &mut PublicationAccounting::standalone(&mut commit_work, &WorkBudget::UNBOUNDED, &cancellation),
+        &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation),
         &cancellation,
     )?;
     let append = GuardedAppend {
@@ -1445,7 +1444,7 @@ async fn native_publication_owner_stale_after_await_fails_before_actual_cas()
             &objects,
             &authority,
             request,
-            PublicationIntent::unrestricted(None),
+            PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             limits(),
             &original,
             &cancellation,
@@ -1520,7 +1519,7 @@ async fn native_publication_partial_closure_and_allocation_denials_release_owned
             &objects,
             &authority,
             request,
-            PublicationIntent::unrestricted(None),
+            PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
             admitted,
             &original,
             &cancellation,
@@ -1597,8 +1596,12 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
     let evidence =
         acyclic_stream::OwnedBytes::from_vec_with_guard(data, custody, original.runtime_meter())
             .expect("fresh evidence has fully initialized unique backing");
-    let intent = PublicationIntent::unrestricted(Some(Digest::from_bytes([59; 32])))
-        .with_original_evidence(Some(evidence));
+    let intent = PublicationIntent {
+        operation_context: Some(Digest::from_bytes([59; 32])),
+        original_evidence: Some(evidence),
+        fingerprint_permit: None,
+        permit: PublicationPermit::Unrestricted,
+    };
     let mut guard = |_: &crate::NativeMaterializationWork| {
         std::future::ready(Ok::<(), NativePublicationTestError>(()))
     };
@@ -1688,7 +1691,7 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
             generation_root: changed_root,
             ..request
         },
-        PublicationIntent::unrestricted(None),
+        PublicationIntent::guarded(None, PublicationPermit::Unrestricted),
         limits(),
         &original,
         &cancellation,
@@ -1777,7 +1780,7 @@ fn publication_evidence_v2_validates_complete_frame_before_legacy_projection()
         &mut bytes,
         volume_id,
         root,
-        Some((evidence, u32::try_from(evidence.len())?.to_le_bytes(), original_evidence_digest(evidence))),
+        Some((evidence, original_evidence_digest(evidence))),
     );
     let decoded = decode_publication_evidence::<CanonicalDecodeError>(
         &bytes,
@@ -1888,7 +1891,7 @@ fn publication_evidence_v2_validates_complete_frame_before_legacy_projection()
         &mut large,
         volume_id,
         root,
-        Some((&large_evidence, u32::try_from(large_evidence.len())?.to_le_bytes(), original_evidence_digest(&large_evidence))),
+        Some((&large_evidence, original_evidence_digest(&large_evidence))),
     );
     assert!(matches!(
         decode_published_generation(&large, 4_096, |_| Ok::<

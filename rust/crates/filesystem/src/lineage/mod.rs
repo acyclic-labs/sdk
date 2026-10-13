@@ -15,7 +15,7 @@ fn lineage_filesystem_failure<E: std::error::Error + 'static>(
     error: crate::FsError,
 ) -> (WorkspaceLineageError<E>, Option<crate::NativeAllocation>) {
     (
-        WorkspaceLineageError::Workspace(Box::new(WorkspaceError::from(error))),
+        WorkspaceLineageError::from(WorkspaceError::from(error)),
         None,
     )
 }
@@ -56,7 +56,7 @@ fn lineage_shape_is_valid(record: &WorkspaceLineageRecord) -> bool {
             parent_id != record.workspace_id
                 && crate::WorkspaceName::new(
                     parent_name,
-                    &crate::WorkBudget::UNBOUNDED,
+                    crate::WorkBudget::UNBOUNDED,
                     &crate::CancellationToken::new(),
                 )
                 .is_ok()
@@ -67,7 +67,7 @@ fn lineage_shape_is_valid(record: &WorkspaceLineageRecord) -> bool {
         && record.revision > 0
         && crate::WorkspaceName::new(
             &record.workspace_name,
-            &crate::WorkBudget::UNBOUNDED,
+            crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )
         .is_ok()
@@ -114,7 +114,7 @@ pub trait WorkspaceLineageStore: Send + Sync {
                 .map_err(lineage_filesystem_failure)?;
             original.cancellation().check().map_err(|error| {
                 (
-                    WorkspaceLineageError::Workspace(Box::new(WorkspaceError::Cancelled(error))),
+                    WorkspaceLineageError::from(WorkspaceError::Cancelled(error)),
                     None,
                 )
             })?;
@@ -147,7 +147,7 @@ pub trait WorkspaceLineageStore: Send + Sync {
                 .map_err(lineage_filesystem_failure)?;
             original.cancellation().check().map_err(|error| {
                 (
-                    WorkspaceLineageError::Workspace(Box::new(WorkspaceError::Cancelled(error))),
+                    WorkspaceLineageError::from(WorkspaceError::Cancelled(error)),
                     None,
                 )
             })?;
@@ -275,7 +275,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
             crate::obs::in_span(&span, async move {
                 let destination = crate::WorkspaceName::new(
                     destination.as_ref(),
-                    &crate::WorkBudget::UNBOUNDED,
+                    crate::WorkBudget::UNBOUNDED,
                     &crate::CancellationToken::new(),
                 )
                 .map(|receipt| receipt.value)

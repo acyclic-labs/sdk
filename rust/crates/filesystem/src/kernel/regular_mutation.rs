@@ -503,17 +503,10 @@ async fn try_inline<S: AsyncObjectStore>(
                 bytes_copied: length.checked_mul(2).ok_or(WorkError::Overflow)?,
                 ..WorkCounters::UNCHARGED
             })?;
-            let read = super::blob::read_blob_range_for_copy_with_accounting(
-                store,
-                content,
-                ByteRange {
+            let read = super::blob::read_blob_range_with_accounting(store, content, ByteRange {
                     offset: content_offset,
                     length,
-                },
-                DecodeLimits::for_volume(config),
-                accounting,
-                cancellation,
-            )
+                }, DecodeLimits::for_volume(config), accounting, cancellation, false)
             .await?;
             charge_copy(accounting, length)?;
             let result = data.replace_range(
@@ -991,17 +984,10 @@ async fn try_demote_sparse_async<S: AsyncObjectStore>(
             bytes_copied: span.length.checked_mul(2).ok_or(WorkError::Overflow)?,
             ..WorkCounters::UNCHARGED
         })?;
-        let read = super::blob::read_blob_range_for_copy_with_accounting(
-            store,
-            object,
-            ByteRange {
+        let read = super::blob::read_blob_range_with_accounting(store, object, ByteRange {
                 offset: object_offset,
                 length: span.length,
-            },
-            DecodeLimits::for_volume(config),
-            accounting,
-            cancellation,
-        )
+            }, DecodeLimits::for_volume(config), accounting, cancellation, false)
         .await?;
         charge_copy(accounting, span.length)?;
         let copied = data.replace_range(
@@ -1121,5 +1107,5 @@ fn clone_stage_error(error: FsError, stage: CloneStage) -> FsError {
 }
 
 #[cfg(all(test, feature = "memory"))]
-#[path = "tests/regular_mutation.rs"]
+#[path = "tests/regular_mutation/mod.rs"]
 mod tests;

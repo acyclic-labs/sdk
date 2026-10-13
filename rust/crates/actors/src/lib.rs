@@ -53,7 +53,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn subscription_start_is_exactly_one_choice() {
+    fn subscription_start_is_exactly_one_choice() -> Result<(), ContractError> {
         let mut create = wire::CreateActorRequest {
             code_sha256: vec![1; 32],
             home_region: "eu".into(),
@@ -74,15 +74,25 @@ mod tests {
             idempotency_key: "create-a".into(),
         };
         assert_eq!(validate_create(&create), Ok(()));
-        let start = create.subscriptions[0].start.take();
+        let start = create
+            .subscriptions
+            .first_mut()
+            .ok_or(ContractError::InvalidArgument)?
+            .start
+            .take();
         assert_eq!(
             validate_create(&create),
             Err(ContractError::InvalidArgument)
         );
-        create.subscriptions[0].start = start;
+        create
+            .subscriptions
+            .first_mut()
+            .ok_or(ContractError::InvalidArgument)?
+            .start = start;
         let duplicate = create.subscriptions.clone();
         create.subscriptions.extend(duplicate);
         assert_eq!(validate_create(&create), Err(ContractError::DuplicateName));
+        Ok(())
     }
     #[test]
     fn delete_requires_actor_and_bounded_idempotency_key() {

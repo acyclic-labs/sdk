@@ -269,7 +269,7 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Option<()> {
                 None,
             ),
         };
-        retain(state, envelope, key, digest, result);
+        retain(state, envelope, key, digest, result, Default::default());
     }
     Some(())
 }

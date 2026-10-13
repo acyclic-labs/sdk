@@ -9,11 +9,9 @@ use crate::store::{HistoryIo, operations};
 use acyclic_stream::{CommitCondition, CommitOutcome};
 #[cfg(not(feature = "filesystem"))]
 use serde::de::DeserializeOwned as MailRecord;
-use std::{fmt::Write as _, mem::size_of};
+use std::mem::size_of;
 
 mod inbox;
-
-type Observer<'a> = Option<&'a mut dyn HistoryIo>;
 
 fn boundary(
     io: Option<&PreparationIo>,
@@ -78,7 +76,7 @@ fn validate_file(
     #[cfg(feature = "filesystem")]
     let mut work = observer.as_mut().map(|io| io as &mut dyn HistoryIo);
     #[cfg(not(feature = "filesystem"))]
-    let mut work: Observer<'_> = None;
+    let mut work: Option<&mut dyn HistoryIo> = None;
     limits.validate_file(file, &mut work)
 }
 
@@ -147,26 +145,32 @@ fn reserve<T>(items: &mut Vec<T>, maximum: usize, io: Option<&PreparationIo>) ->
     Ok(())
 }
 
-fn recipient_path(task: TaskId, text: &mut [u8; 80]) -> &str {
+fn recipient_path(task: TaskId, text: &mut [u8; 80]) -> Result<&str> {
     let prefix = b"harness/v3/mail/by-recipient/";
-    text[..prefix.len()].copy_from_slice(prefix);
+    let (path, _) = text.split_at_mut(prefix.len() + 36);
+    let (head, id) = path.split_at_mut(prefix.len());
+    head.copy_from_slice(prefix);
     uuid::Uuid::from_bytes(task.into_bytes())
         .hyphenated()
-        .encode_lower(&mut text[prefix.len()..prefix.len() + 36]);
-    std::str::from_utf8(&text[..prefix.len() + 36]).expect("canonical ASCII mail path")
+        .encode_lower(id);
+    std::str::from_utf8(path).map_err(|error| Error::Invalid(error.to_string()))
 }
 
-fn intent_path(sender: TaskId, message: OperationId, text: &mut [u8; 112]) -> &str {
+fn intent_path(sender: TaskId, message: OperationId, text: &mut [u8; 112]) -> Result<&str> {
     let prefix = b"harness/v3/mail/by-intent/";
-    text[..prefix.len()].copy_from_slice(prefix);
+    let (path, _) = text.split_at_mut(prefix.len() + 73);
+    let (head, ids) = path.split_at_mut(prefix.len());
+    head.copy_from_slice(prefix);
+    let (sender_text, message_text) = ids.split_at_mut(36);
     uuid::Uuid::from_bytes(sender.into_bytes())
         .hyphenated()
-        .encode_lower(&mut text[prefix.len()..prefix.len() + 36]);
-    text[prefix.len() + 36] = b'/';
+        .encode_lower(sender_text);
+    let (separator, message_text) = message_text.split_at_mut(1);
+    separator.copy_from_slice(b"/");
     uuid::Uuid::from_bytes(message.into_bytes())
         .hyphenated()
-        .encode_lower(&mut text[prefix.len() + 37..prefix.len() + 73]);
-    std::str::from_utf8(&text[..prefix.len() + 73]).expect("canonical ASCII mail intent path")
+        .encode_lower(message_text);
+    std::str::from_utf8(path).map_err(|error| Error::Invalid(error.to_string()))
 }
 
 impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
@@ -181,7 +185,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         #[cfg(feature = "filesystem")]
         let mut work = history.as_mut().map(|io| io as &mut dyn HistoryIo);
         #[cfg(not(feature = "filesystem"))]
-        let mut work: Observer<'_> = None;
+        let mut work: Option<&mut dyn HistoryIo> = None;
         self.admission(OperationId::from_bytes(task.into_bytes()), &mut work)
             .await
     }
@@ -211,7 +215,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         #[cfg(feature = "filesystem")]
         let mut work = observer.as_mut().map(|io| io as &mut dyn HistoryIo);
         #[cfg(not(feature = "filesystem"))]
-        let mut work: Observer<'_> = None;
+        let mut work: Option<&mut dyn HistoryIo> = None;
         if !crate::runtime::read_granted_with_work(&sender_admission.grants, &payload, &mut work)?
             || (!direct
                 && !crate::runtime::read_granted_with_work(
@@ -300,7 +304,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         #[cfg(feature = "filesystem")]
         let mut work = observer.as_mut().map(|io| io as &mut dyn HistoryIo);
         #[cfg(not(feature = "filesystem"))]
-        let mut work: Observer<'_> = None;
+        let mut work: Option<&mut dyn HistoryIo> = None;
         owner.verify(true, &mut work).await?;
         let bytes = self
             .prepare_mail(sender, recipient, message, payload, io)
@@ -329,17 +333,17 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         #[cfg(feature = "filesystem")]
         let mut work = observer.as_mut().map(|io| io as &mut dyn HistoryIo);
         #[cfg(not(feature = "filesystem"))]
-        let mut work: Observer<'_> = None;
+        let mut work: Option<&mut dyn HistoryIo> = None;
         let mut recipient_text = [0; 80];
         let mailbox = operations::stream(
             &self.stream,
-            recipient_path(recipient, &mut recipient_text),
+            recipient_path(recipient, &mut recipient_text)?,
             &mut work,
         )?;
         let mut intent_text = [0; 112];
         let intent = operations::stream(
             &self.stream,
-            intent_path(sender, message, &mut intent_text),
+            intent_path(sender, message, &mut intent_text)?,
             &mut work,
         )?;
         let mut source_verified = false;
@@ -391,7 +395,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                             expected: bounds.tail,
                         },
                     ),
-                    Err(error) if error == StreamError::NotFound => (
+                    Err(StreamError::NotFound) => (
                         0,
                         CommitCondition::Absent {
                             path: mailbox.0.path().clone(),
@@ -432,18 +436,19 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             let fence: Option<&crate::scheduler::LeaseFence> = None;
             let mut conditions = [("", None); 3];
             let mut count = 0;
-            for condition in [Some(&target), Some(&absent), owner_condition.as_ref()]
-                .into_iter()
-                .flatten()
-            {
-                conditions[count] = match condition {
+            for (slot, condition) in conditions.iter_mut().zip(
+                [Some(&target), Some(&absent), owner_condition.as_ref()]
+                    .into_iter()
+                    .flatten(),
+            ) {
+                *slot = match condition {
                     CommitCondition::Tail { path, expected } => (path.as_str(), Some(*expected)),
                     CommitCondition::Absent { path } => (path.as_str(), None),
                 };
                 count += 1;
             }
             let physical = encode(
-                &(&location, fence, &conditions[..count]),
+                &(&location, fence, conditions.split_at(count).0),
                 acyclic_stream::MAX_RECORD_BYTES as u64,
                 io,
             )?;
@@ -509,18 +514,18 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         #[cfg(feature = "filesystem")]
         let mut work = observer.as_mut().map(|io| io as &mut dyn HistoryIo);
         #[cfg(not(feature = "filesystem"))]
-        let mut work: Observer<'_> = None;
+        let mut work: Option<&mut dyn HistoryIo> = None;
         let mut text = [0; 112];
         let location = operations::stream(
             &self.stream,
-            intent_path(sender, message, &mut text),
+            intent_path(sender, message, &mut text)?,
             &mut work,
         )?;
         let mut records =
             match operations::read_records(&self.stream, location.0.path(), 0, 2, &mut work).await?
             {
                 Ok(records) => records,
-                Err(error) if error == StreamError::NotFound => return Ok(false),
+                Err(StreamError::NotFound) => return Ok(false),
                 Err(error) => return Err(operations::stream_error_with_work(error, &work)),
             };
         let record = records.next(&mut work).await?.ok_or_else(|| {
@@ -564,7 +569,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         let mut text = [0; 80];
         let mailbox = operations::stream(
             &self.stream,
-            recipient_path(retained.recipient, &mut text),
+            recipient_path(retained.recipient, &mut text)?,
             &mut work,
         )?;
         let mut originals = match operations::read_records(

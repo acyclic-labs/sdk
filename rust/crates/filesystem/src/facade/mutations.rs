@@ -32,8 +32,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                         None,
                         false,
                     )
-                    .await?
-                    .into_parts();
+                    .await?;
                     *records.get_mut(index).ok_or(FsError::InvalidDiff)? = observed.0.lookup.record;
                     let bytes =
                         Self::mutation_dependency_bytes(&observed.0.dependencies, accounting)?;
@@ -57,17 +56,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     if index == 1 && id == ids[0] {
                         records[1] = records[0];
                     } else if let Some(id) = id {
-                        *records.get_mut(index).ok_or(FsError::InvalidDiff)? = lookup_file_record_async_with_accounting(
-                            &self.volume.fs.inner.objects,
-                            self.base_root.file_table,
-                            id,
-                            DecodeLimits::for_volume(self.volume.config),
-                            accounting,
-                            cancellation,
-                            None,
-                        )
-                        .await?
-                        .0;
+                        *records.get_mut(index).ok_or(FsError::InvalidDiff)? =
+                            lookup_file_record_async_with_accounting(
+                                &self.volume.fs.inner.objects,
+                                self.base_root.file_table,
+                                id,
+                                DecodeLimits::for_volume(self.volume.config),
+                                accounting,
+                                cancellation,
+                                None,
+                            )
+                            .await?
+                            .0;
                     }
                 }
             }
@@ -392,15 +392,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { .. } => self
                 .root
-                .prepare_held_root_native(&working.0, accounting, producer)?,
+                .prepare_held_root(&working.0, accounting, Some(producer))?,
             _ => {
                 let (allocations, work, budget, token) = accounting
                     .standalone_parts()
                     .ok_or(FsError::PendingMutationAllocationFailed)?;
                 token.check()?;
                 self.root
-                    .prepare_held_root(&working.0, allocations, work, budget, token)?
-                    .map(|root| {
+                    .prepare_held_root(&working.0, &mut KernelAccounting::borrowed_standalone(allocations, work, budget, token), None)?
+                    .map(|(root, _)| {
                         let control = Self::root_control_claim(&root, Some(producer))?;
                         Ok::<_, FsError>((root, control))
                     })

@@ -1,9 +1,9 @@
 //! Tracing glue for `docs/observability.md`.
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use tracing::field::Empty;
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use acyclic_native_runtime::obs::OperationSpan;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use tracing::field::Empty;
 
 /// Records `outcome` and `error.kind` on the current span, then returns `result`.
 pub(crate) fn outcome<T>(result: crate::Result<T>) -> crate::Result<T> {
@@ -65,14 +65,14 @@ pub(crate) fn traced<'a, T: 'a>(
     #[cfg(not(target_arch = "wasm32"))]
     {
         let operation = span.clone();
-        return Box::pin(span.scope(async move {
+        Box::pin(span.scope(async move {
             let result = future.await;
             operation.record("outcome", if result.is_ok() { "ok" } else { "err" });
             if let Err(error) = &result {
                 operation.record("error.kind", error.kind());
             }
             result
-        }));
+        }))
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -93,8 +93,18 @@ fn filtered_operation_cannot_record_failure_on_its_parent() {
         ));
         assert!(result.is_err());
     });
-    assert!(!capture::has(&seen, "acyclic.harness.test.parent", "outcome", "err"));
-    assert!(capture::has(&seen, "acyclic.harness.test.parent", "outcome", ""));
+    assert!(!capture::has(
+        &seen,
+        "acyclic.harness.test.parent",
+        "outcome",
+        "err"
+    ));
+    assert!(capture::has(
+        &seen,
+        "acyclic.harness.test.parent",
+        "outcome",
+        ""
+    ));
 }
 
 /// Span-test capture layer shared by the crate's test modules.

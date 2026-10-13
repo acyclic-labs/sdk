@@ -28,7 +28,10 @@ where
                 Some(&self.cancellation),
             )
             .await?;
-        let checkout = observation.observer(&mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()), work.cancellation())?;
+        let checkout = observation.observer(
+            &mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()),
+            work.cancellation(),
+        )?;
         carrier.check(work.cancellation(), Some(&self.cancellation))?;
         Ok(checkout)
     }
@@ -481,7 +484,12 @@ where
             inputs
                 .carrier
                 .check(cancellation, Some(&self.cancellation))?;
-            Ok((page, inputs.retain().expect("native attribute page")))
+            Ok((
+                page,
+                inputs.retain().ok_or(MountSourceError::NativeWork(
+                    crate::NativeTreeMaterializationError::InvalidLayout,
+                ))?,
+            ))
         })
     }
 

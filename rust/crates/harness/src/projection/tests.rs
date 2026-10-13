@@ -54,7 +54,7 @@ fn canonical_checkpoint_selects_exact_bounded_delta_from_ten_thousand_records() 
         operation_id: OperationId::new(), selection: ModelContextSelection { conversation_revision: 9_998,
             message_ids: vec![conversation.messages[9_996].id, conversation.messages[9_997].id],
             checkpoint: Some(file(agent, "previous.json", "application/json", b"data")?) },
-        source: payload.clone(), retained: payload.clone(), compaction: payload.clone(),
+        source: payload.clone(), retained: payload.clone(), compaction: payload,
     };
     let bytes = crate::contract::canonical_json_bytes(&checkpoint)?;
     let pinned = file(agent, "checkpoint.json", "application/json", &bytes)?;
@@ -91,7 +91,7 @@ fn dispatch_admission_checks_bounds_and_current_user() {
 async fn manifest_projection_checks_limit_before_resolution_and_exact_count_after() -> Result<()> {
     let agent = AgentId::new();
     let attachment = Attachment { file: file(agent, "image.png", "image/png", b"data")?, label: None };
-    let bytes = crate::conversation::encode_attachment_manifest(&[attachment.clone()])?;
+    let bytes = crate::conversation::encode_attachment_manifest(std::slice::from_ref(&attachment))?;
     let mut message = message(1, MessageKind::User, file(agent, "message.txt", "text/plain", b"data")?, None);
     message.attachments = ReferencedAttachments::Manifest { manifest: file(agent, "manifest.json",
         "application/vnd.acyclic.harness.attachments+json", &bytes)?, item_count: 2 };

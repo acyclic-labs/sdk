@@ -66,15 +66,15 @@ pub(crate) async fn workspace_fork<S: AsyncAuthorityStore + ?Sized, G: Authority
     work: &mut AuthorityWork<'_>,
     mut guard: Option<&mut G>,
 ) -> Result<WorkspaceForkOutcome, AuthorityError<G::Error>> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if work.original.is_some() {
-        work.check()?;
-    }
     if permit != PublicationPermit::Unrestricted {
         return Err(crate::AuthorityStoreError::RejectedStatic(
             "authority backend cannot atomically evaluate fork publication leases",
         )
         .into());
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if work.original.is_some() {
+        work.check()?;
     }
     let WorkspaceForkCommit {
         lineage,

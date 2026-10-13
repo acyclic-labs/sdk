@@ -38,6 +38,7 @@ impl MemoryStream {
                     request.idempotency_key,
                     digest,
                     IdempotencyOutcome::Append(result.clone()),
+                    Default::default(),
                 );
             }
             return Ok((result, Default::default()));
@@ -84,12 +85,8 @@ impl MemoryStream {
                 request.idempotency_key,
                 digest,
                 IdempotencyOutcome::Append(outcome.clone()),
+                allocation,
             );
-            state
-                .retained
-                .last_mut()
-                .ok_or(StreamError::Unavailable)?
-                ._allocation = allocation;
             Ok((outcome, Default::default()))
         })
     }

@@ -42,11 +42,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if values.len() < values.capacity() {
             return Ok(0);
         }
-        let target = values
-            .capacity()
-            .checked_mul(2)
-            .unwrap_or(usize::MAX)
-            .max(4);
+        let target = values.capacity().saturating_mul(2).max(4);
         let bytes = target
             .checked_sub(values.capacity())
             .and_then(|slots| slots.checked_mul(std::mem::size_of::<T>()))
@@ -98,11 +94,11 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(false)
     }
 
-    pub(super) fn created_access<'a, 'b>(
+    pub(super) fn created_access<'a>(
         &'a self,
         admission: &'a TaskAdmissionRecord,
         visited: &'a mut Vec<OperationId>,
-        work: &'a mut Option<&'b mut dyn crate::store::history::HistoryIo>,
+        work: &'a mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> impl std::future::Future<
         Output = Result<Option<crate::resource_preparation::CreatedResourceAccess>>,
     > + acyclic_stream::ProviderTask
@@ -358,11 +354,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
             let receipt;
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if let Some(native) = proof_custody
-                .work()
-                .as_deref()
-                .and_then(|io| io.original_native_work())
-                .cloned()
+            if let Some((observer, native)) =
+                proof_custody.work().as_deref_mut().and_then(|observer| {
+                    observer
+                        .original_native_work()
+                        .cloned()
+                        .map(|native| (observer, native))
+                })
             {
                 let (verified, guard) = provider
                     .verify_with_native_work(&request, proof, &native)?
@@ -374,11 +372,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                         custody: Some(guard),
                     });
                 }
-                proof_custody
-                    .work()
-                    .as_deref_mut()
-                    .expect("native proof observer")
-                    .absorb_native_custody(guard)?;
+                observer.absorb_native_custody(guard)?;
                 receipt = verified;
             } else {
                 receipt = provider.verify(&request, proof).await?;

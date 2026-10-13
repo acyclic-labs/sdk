@@ -20,17 +20,16 @@ impl ExtensionRegistry {
         let identity = implementation.identity();
         identity.validate()?;
         let mut dependencies = implementation.dependencies();
-        let mut unique = BTreeSet::new();
+        dependencies.sort();
         for dependency in &dependencies {
             dependency.validate()?;
             if dependency.name == identity.name && dependency.version == identity.version {
                 return Err(Error::Conflict("extension depends on itself".into()));
             }
-            if !unique.insert(dependency.clone()) {
-                return Err(Error::Conflict("duplicate extension dependency".into()));
-            }
         }
-        dependencies.sort();
+        if dependencies.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(Error::Conflict("duplicate extension dependency".into()));
+        }
         let mut state = self.lock()?;
         if state.versions.contains_key(&identity) {
             return Err(Error::Conflict(
@@ -190,12 +189,6 @@ impl ExtensionRegistry {
                             dependency.name, dependency.version
                         ))
                     })?;
-                if dependency_identity.version != dependency.version {
-                    return Err(Error::Conflict(format!(
-                        "extension dependency {} is not installed at the required version",
-                        dependency.name
-                    )));
-                }
                 pending.push(dependency_identity);
             }
         }

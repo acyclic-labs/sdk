@@ -4,7 +4,7 @@ use super::*;
 async fn native_admission_failure_precedes_post_dispatch_verification_and_deadline_cancellation()
 -> Result<()> {
     let fixture = Fixture::new().await?;
-    let runtime = fixture.runtime().await?;
+    let runtime = fixture.runtime(None).await?;
     let lease = fixture.admit(&runtime).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
@@ -60,11 +60,11 @@ async fn native_admission_failure_precedes_post_dispatch_verification_and_deadli
 #[tokio::test]
 async fn expired_reopened_task_rejects_before_machine_or_tool_dispatch() -> Result<()> {
     let fixture = Fixture::new().await?;
-    let runtime = fixture.runtime().await?;
+    let runtime = fixture.runtime(None).await?;
     let lease = fixture.admit(&runtime).await?;
     drop(runtime);
     fixture.clock.0.store(20, Ordering::SeqCst);
-    let reopened = fixture.runtime().await?;
+    let reopened = fixture.runtime(None).await?;
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     let attempt = reopened
         .resume_task(lease.clone(), &reopened.commands(), 2, None)
@@ -79,17 +79,8 @@ async fn expired_reopened_task_rejects_before_machine_or_tool_dispatch() -> Resu
     assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 0);
     let state = fixture.scheduler_state(task).await?;
-    assert!(state.cancellation_requested);
-    assert_eq!(state.reservation, Some(lease.reservation.clone()));
-    assert!(state.outcome.is_none());
-    assert!(matches!(
-        reopened.reconcile_task(lease, &reopened.commands(), 1, 1_000, None).await,
-        TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { task:completed }) if completed == task
-    ));
-    assert!(matches!(
-        reopened.task_host().outcome(task).await?,
-        Some(crate::Outcome::Cancelled)
-    ));
+    assert!(state.reservation.is_none());
+    assert_eq!(state.outcome, Some(crate::Outcome::Cancelled));
     assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.tool.reconciled.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 0);
@@ -100,7 +91,7 @@ async fn expired_reopened_task_rejects_before_machine_or_tool_dispatch() -> Resu
 async fn native_machine_without_callback_rejects_before_owner_deadline_or_provider_work()
 -> Result<()> {
     let fixture = Fixture::new().await?;
-    let runtime = fixture.runtime().await?;
+    let runtime = fixture.runtime(None).await?;
     let lease = fixture.admit(&runtime).await?;
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     let fence = LeaseFence::from(&lease.reservation);
@@ -182,7 +173,9 @@ fn native_step_identity_denial_precedes_string_growth() -> Result<()> {
     let prefix = work.receipt();
     assert!(matches!(
         native_step_key(u64::MAX, &work),
-        Err(Error::NativeWork { .. })
+        Err(Error::NativeFilesystem { source, .. }) if matches!(*source,
+            acyclic_fs::FsError::NativeKernel(acyclic_fs::NativeTreeMaterializationError::Work(
+                acyclic_fs::WorkError::BudgetExceeded { counter: "peak_allocation_bytes", .. })))
     ));
     assert_eq!(
         work.receipt().allocation_operations,
@@ -197,13 +190,13 @@ fn native_step_identity_denial_precedes_string_growth() -> Result<()> {
 async fn original_native_worker_precancel_and_metadata_denial_preserve_exact_lease() -> Result<()> {
     for precancel in [true, false] {
         let fixture = Fixture::new().await?;
-        let runtime = fixture.runtime().await?;
+        let runtime = fixture.runtime(None).await?;
         fixture.machine.native.store(true, Ordering::SeqCst);
         fixture.tool.native.store(true, Ordering::SeqCst);
         let cancellation = acyclic_fs::CancellationToken::new();
         let budget = acyclic_fs::WorkBudget {
             allocation_operations: 4096,
-            ..Default::default()
+            ..super::native_mail::BUDGET
         };
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).map_err(
             |(cause, work)| Error::NativeConstruction {

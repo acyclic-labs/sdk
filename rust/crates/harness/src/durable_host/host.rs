@@ -46,9 +46,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         let lease_digest = blake3::hash(&crate::contract::canonical_json_bytes(&fence)?);
         coordinator
             .apply(
-                IdempotencyKey::new(format!(
-                    "model-dispatch:{attempt_id}:{step}:{lease_digest}"
-                ))?,
+                IdempotencyKey::new(format!("model-dispatch:{attempt_id}:{step}:{lease_digest}"))?,
                 crate::scheduler::SchedulerEvent::ModelDispatchClaimed {
                     operation_id,
                     attempt_id,
@@ -69,6 +67,14 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
 impl<P: StreamProvider> crate::runtime::TaskSpawner for CoordinatorTaskHost<P> {
     fn policy_identity(&self) -> Option<ComponentIdentity> {
         TaskStateProvider::policy_identity(self)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn policy_identity_with_native_work(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<&ComponentIdentity>> {
+        TaskStateProvider::policy_identity_with_native_work(self, work)
     }
 
     async fn reconcile_admission(
@@ -134,10 +140,7 @@ impl<P: StreamProvider> crate::runtime::TaskSpawner for CoordinatorTaskHost<P> {
         Ok(Some(entries))
     }
 
-    async fn load_batch(
-        &self,
-        batch_id: BatchId,
-    ) -> Result<Option<DurableBatchRequest>> {
+    async fn load_batch(&self, batch_id: BatchId) -> Result<Option<DurableBatchRequest>> {
         let Some(value) = self.retained_batch(batch_id).await? else {
             return Ok(None);
         };
@@ -151,10 +154,7 @@ impl<P: StreamProvider> crate::runtime::TaskSpawner for CoordinatorTaskHost<P> {
         Ok(Some(request))
     }
 
-    async fn admit_batch(
-        &self,
-        request: DurableBatchRequest,
-    ) -> Result<Vec<Admission<TaskId>>> {
+    async fn admit_batch(&self, request: DurableBatchRequest) -> Result<Vec<Admission<TaskId>>> {
         self.validate_batch(&request)?;
         self.validate_parent_scope(request.parent, &request.scope)
             .await?;
@@ -200,10 +200,7 @@ impl<P: StreamProvider> crate::runtime::TaskSpawner for CoordinatorTaskHost<P> {
         Ok(entries)
     }
 
-    async fn cancel_batch(
-        &self,
-        batch_id: BatchId,
-    ) -> Result<Option<BatchCancellationReport>> {
+    async fn cancel_batch(&self, batch_id: BatchId) -> Result<Option<BatchCancellationReport>> {
         let Some(request) = self.load_batch(batch_id).await? else {
             return Ok(None);
         };
@@ -226,9 +223,7 @@ impl<P: StreamProvider> crate::runtime::TaskSpawner for CoordinatorTaskHost<P> {
                         message: error.to_string(),
                     },
                 },
-                Admission::Rejected { reason } => {
-                    BatchCancellationStatus::NotAdmitted { reason }
-                }
+                Admission::Rejected { reason } => BatchCancellationStatus::NotAdmitted { reason },
                 Admission::Indeterminate { operation_id } => {
                     BatchCancellationStatus::Indeterminate { operation_id }
                 }
@@ -242,10 +237,8 @@ impl<P: StreamProvider> crate::runtime::TaskSpawner for CoordinatorTaskHost<P> {
         }))
     }
 
-    async fn admit(
-        &self,
-        admission: TaskAdmissionRecord,
-    ) -> Result<Admission<TaskId>> { self.admit_record(admission, None).await
+    async fn admit(&self, admission: TaskAdmissionRecord) -> Result<Admission<TaskId>> {
+        self.admit_record(admission, None).await
     }
 }
 
@@ -262,8 +255,15 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
             #[cfg(feature = "filesystem")]
             {
                 let mut history = io.map(crate::conversation::ContentIo::history_io);
-                self.verify_owner(task, fence, false,
-                    &mut history.as_mut().map(|history| history as &mut dyn crate::store::HistoryIo)).await
+                self.verify_owner(
+                    task,
+                    fence,
+                    false,
+                    &mut history
+                        .as_mut()
+                        .map(|history| history as &mut dyn crate::store::HistoryIo),
+                )
+                .await
             }
             #[cfg(not(feature = "filesystem"))]
             self.verify_owner(task, fence, false, &mut None).await
@@ -279,8 +279,15 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
             #[cfg(feature = "filesystem")]
             {
                 let mut history = io.map(crate::conversation::ContentIo::history_io);
-                self.verify_owner(task, fence, true,
-                    &mut history.as_mut().map(|history| history as &mut dyn crate::store::HistoryIo)).await
+                self.verify_owner(
+                    task,
+                    fence,
+                    true,
+                    &mut history
+                        .as_mut()
+                        .map(|history| history as &mut dyn crate::store::HistoryIo),
+                )
+                .await
             }
             #[cfg(not(feature = "filesystem"))]
             self.verify_owner(task, fence, true, &mut None).await
@@ -316,10 +323,38 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
         self.policy.as_ref().map(|policy| policy.identity())
     }
 
-    async fn observe_admission(
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn policy_identity_with_native_work(
         &self,
-        task_id: TaskId,
-    ) -> Result<TaskAdmissionRecord> {
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<&ComponentIdentity>> {
+        work.remaining()?;
+        if let Some(policy) = &self.policy {
+            let (identity, custody) = policy.identity_with_native_work(work)?;
+            let needed = (std::mem::size_of::<ComponentIdentity>() as u64)
+                .checked_add(identity.name.capacity() as u64)
+                .and_then(|bytes| bytes.checked_add(identity.version.capacity() as u64))
+                .ok_or(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "native policy identity custody overflows",
+                })?;
+            if !custody.work().shares_ledger(work) || custody.bytes() < needed {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "policy identity differs from its original native metadata custody",
+                });
+            }
+            if self.policy_binding.as_ref() != Some(&identity) {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Conflict,
+                    reason: "durable policy implementation changed after native binding",
+                });
+            }
+        }
+        Ok(self.policy_binding.as_ref())
+    }
+
+    async fn observe_admission(&self, task_id: TaskId) -> Result<TaskAdmissionRecord> {
         let operation_id = OperationId::from_bytes(task_id.into_bytes());
         self.admission(operation_id, &mut None).await
     }
@@ -335,10 +370,52 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
             ));
         }
         let admission = self.admission(operation_id, &mut None).await?;
-        self.root_scope
-            .narrow(admission.grants, admission.limits)?
-            .with_run_limits(admission.run_limits, &mut None)?
-            .with_replayed_extensions(admission.extensions)
+        #[cfg(feature = "filesystem")]
+        let scope = self.authenticated_scope(&admission, &mut None).await?.0;
+        #[cfg(not(feature = "filesystem"))]
+        let scope = {
+            if !admission.resource_proofs.is_empty() {
+                return Err(Error::Unsupported(
+                    "created resource scope requires its filesystem provider".into(),
+                ));
+            }
+            self.root_scope
+                .narrow(admission.grants.clone(), admission.limits)?
+                .with_run_limits(admission.run_limits, &mut None)?
+        };
+        scope.with_replayed_extensions(admission.extensions)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn resume_scope_with_native_work<'a>(
+        &'a self,
+        task: TaskId,
+        operation: OperationId,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (RuntimeScope, acyclic_fs::NativeAllocation)>> {
+        if task.into_bytes() != operation.into_bytes() {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "task identity does not match its admission",
+            });
+        }
+        crate::NativeFutureBundle::new(work, || async move {
+            let io = crate::executor::PreparationIo::from_native_work(work)?;
+            let admission = self
+                .admission(operation, &mut Some(&mut io.history_io()))
+                .await?;
+            let admission_custody = io.take_native_custody(
+                std::mem::size_of::<TaskAdmissionRecord>() as u64
+                    + admission.logical_owned_bytes()?,
+            )?;
+            let (scope, _) = self
+                .authenticated_scope(&admission, &mut Some(&mut io.history_io()))
+                .await?;
+            drop(admission);
+            drop(admission_custody);
+            let retained = io.owned_bytes()?;
+            Ok((scope, io.into_native_custody(retained)?))
+        })
     }
 
     async fn outcome(&self, task_id: TaskId) -> Result<Option<Outcome<Value>>> {
@@ -409,16 +486,16 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
         message_id: OperationId,
         payload: FileRef,
     ) -> Result<()> {
-        let bytes = self.prepare_mail(sender, recipient, message_id, payload, None).await?.0;
-        self.publish_mail(sender, recipient, message_id, bytes, None, None).await
+        let bytes = self
+            .prepare_mail(sender, recipient, message_id, payload, None)
+            .await?
+            .0;
+        self.publish_mail(sender, recipient, message_id, bytes, None, None)
+            .await
     }
 
-    async fn inbox(
-        &self,
-        task_id: TaskId,
-        after: u64,
-        limit: usize,
-    ) -> Result<Vec<InboxItem>> { self.inbox_page(task_id, after, limit, None).await
+    async fn inbox(&self, task_id: TaskId, after: u64, limit: usize) -> Result<Vec<InboxItem>> {
+        self.inbox_page(task_id, after, limit, None).await
     }
 
     async fn wait_until(
@@ -451,14 +528,7 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
                 break;
             }
             if self
-                .publish_control_at(
-                    &stream,
-                    "timers",
-                    task_id,
-                    operation_id,
-                    &bytes,
-                    Some(tail),
-                )
+                .publish_control_at(&stream, "timers", task_id, operation_id, &bytes, Some(tail))
                 .await?
             {
                 break;

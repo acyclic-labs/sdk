@@ -17,9 +17,9 @@ impl PiControlHost<'_> {
         let mut io = HistoryWork::new(PreparationIo::from_native_work(work)?);
         let context = context.with_output_volume(scratch).await?;
         if !context
-                .scope()
-                .grants()
-                .contains(&scratch.capability(VolumeOperation::Write, &mut Some(&mut io))?)
+            .scope()
+            .grants()
+            .contains(&scratch.capability(VolumeOperation::Write, &mut Some(&mut io))?)
         {
             return Err(denied(
                 "selected output lacks its sealed private scratch WRITE grant",
@@ -122,8 +122,7 @@ impl PiControlHost<'_> {
                 &context,
                 owner,
                 input.source,
-                input.root.as_deref(),
-                pinned,
+                (input.root.as_deref(), pinned),
                 operation,
                 work,
             )
@@ -183,8 +182,7 @@ impl PiControlHost<'_> {
                         &context,
                         owner,
                         task,
-                        Some(&source.key),
-                        Some(baseline),
+                        (Some(&source.key), Some(baseline)),
                         operation,
                         work,
                     )
@@ -238,8 +236,7 @@ impl PiControlHost<'_> {
                         input,
                         &source,
                         import_operation,
-                        prior.as_ref().map(|(intent, _)| intent),
-                        reconcile,
+                        (prior.as_ref().map(|(intent, _)| intent), reconcile),
                         work,
                     )
                     .await?

@@ -13,7 +13,7 @@ pub(super) fn current_record(
     meter: &NativeMaterializationWork,
 ) -> Result<CurrentRecord, CaptureError> {
     Ok(match capture_position(rename_records, path, meter)? {
-        Ok(index) => CurrentRecord::Known(rename_records.get(index).ok_or(CaptureError::InvalidOptions)?.1),
+        Ok(index) => CurrentRecord::Known(rename_records.get(index).ok_or(WorkError::Overflow)?.1),
         Err(_) => CurrentRecord::Lookup,
     })
 }
@@ -33,8 +33,14 @@ pub(super) fn watch_ancestor_candidates<'a>(
         for depth in (1..path.depth()).rev() {
             let parent = clone_capture_prefix(path, depth, limits, meter)?;
             if capture_position(ordinary, &parent, meter)?.is_err()
-                && !capture_position(rename_records, &parent, meter)?
-                    .ok().and_then(|index| rename_records.get(index)).is_some_and(|(_, record)| record.is_some())
+                && match capture_position(rename_records, &parent, meter)? {
+                    Ok(index) => rename_records
+                        .get(index)
+                        .ok_or(WorkError::Overflow)?
+                        .1
+                        .is_none(),
+                    Err(_) => true,
+                }
                 && !capture_excludes(policy, &parent, meter)?
                 && capture_position(&ancestors, &parent, meter)?.is_err()
             {
@@ -94,10 +100,7 @@ fn below_replaced_parent(
     for (parent, record) in parents {
         capture_charge(
             meter,
-            WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            },
+            crate::materializer::NativeResourceCredit::Items.delta(1),
         )?;
         if record.is_some() {
             capture_charge(
