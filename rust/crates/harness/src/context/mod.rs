@@ -24,8 +24,6 @@ mod discovery;
 pub use discovery::*;
 mod compaction;
 pub(crate) use compaction::clone_context;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) use compaction::clone_retention_native;
 pub use compaction::*;
 mod snapshot;
 pub use snapshot::*;
@@ -49,8 +47,9 @@ mod compaction_stage;
 pub use compaction_stage::*;
 mod allocations;
 use allocations::append_context_messages;
+use allocations::context_contract;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-use allocations::{context_contract_native, reserve_context_vec_native};
+use allocations::reserve_context_vec_native;
 pub(crate) use validation::verify_file;
 use validation::{validate_context_refs, validate_source_messages};
 use value::{BorrowedContext, ContextMessages};

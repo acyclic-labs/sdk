@@ -1,6 +1,5 @@
 //! Pinned sources and bounded context rendering.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-use super::context_contract_native;
+use super::context_contract;
 use super::{
     Context, ContextInput, ContextMessages, ContextPlacement, ContextStage,
     append_context_messages, copy_context, restrict_context_limits, validate_projected_context,

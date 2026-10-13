@@ -998,59 +998,13 @@ where
             ExecutionEvent::ModelStarted { step: recorded, purpose: ModelPurpose::Response, .. }
             | ExecutionEvent::Model { step: recorded, purpose: ModelPurpose::Response, .. } if *recorded == step)
         };
-        let records = match io {
-            #[cfg(not(target_arch = "wasm32"))]
-            Some(io) => {
-                let (_, records, custody) = crate::executor::replay_execution_with_native_work(
-                    journal.as_ref(),
-                    operation,
-                    limits.model_events_per_step.saturating_add(1),
-                    select,
-                    io.original_native_work().expect("native approval IO"),
-                )?
-                .await?;
-                io.absorb_native_custody(custody)?;
-                records
-            }
-            _ => {
-                crate::executor::replay_execution(
-                    journal.as_ref(),
-                    operation,
-                    limits.model_events_per_step.saturating_add(1),
-                    select,
-                    io,
-                )
-                .await?
-                .1
-            }
-        };
-        let retained = match io {
-            #[cfg(not(target_arch = "wasm32"))]
-            Some(io) => {
-                let (retained, custody) = crate::executor::retained_model_step_with_native_work(
-                    journal.as_ref(),
-                    &records,
-                    step,
-                    ModelPurpose::Response,
-                    limits,
-                    io.original_native_work().expect("native approval IO"),
-                )?
-                .await?;
-                io.absorb_native_custody(custody)?;
-                retained
-            }
-            _ => {
-                crate::executor::retained_model_step(
-                    journal.as_ref(),
-                    &records,
-                    step,
-                    ModelPurpose::Response,
-                    limits,
-                    io,
-                )
-                .await?
-            }
-        };
+        let (_, records, hold) = crate::executor::replay_execution(
+            journal.as_ref(), operation, limits.model_events_per_step.saturating_add(1), select, io,
+        ).await?;
+        let records = crate::executor::retain_preparation((records, hold));
+        let retained = crate::executor::retain_preparation(crate::executor::retained_model_step(
+            journal.as_ref(), &records, step, ModelPurpose::Response, limits, io,
+        ).await?);
         drop(records);
         if !retained.admission.completed {
             return Err(Error::Indeterminate(operation));
@@ -1102,33 +1056,10 @@ where
                     | ExecutionEvent::ToolFailed { step: recorded, call_id, .. }
                     if *recorded == step && call_id == &invocation.call_id)
                 };
-                let records = match io {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    Some(io) => {
-                        let (_, records, custody) =
-                            crate::executor::replay_execution_with_native_work(
-                                journal.as_ref(),
-                                operation,
-                                3,
-                                select,
-                                io.original_native_work().expect("native approval IO"),
-                            )?
-                            .await?;
-                        io.absorb_native_custody(custody)?;
-                        records
-                    }
-                    _ => {
-                        crate::executor::replay_execution(
-                            journal.as_ref(),
-                            operation,
-                            3,
-                            select,
-                            io,
-                        )
-                        .await?
-                        .1
-                    }
-                };
+                let (_, records, hold) = crate::executor::replay_execution(
+                    journal.as_ref(), operation, 3, select, io,
+                ).await?;
+                let records = crate::executor::retain_preparation((records, hold));
                 if records
                     .iter()
                     .any(|record| matches!(record.event, ExecutionEvent::ToolFailed { .. }))
@@ -1143,35 +1074,16 @@ where
                     .iter()
                     .any(|record| matches!(record.event, ExecutionEvent::ToolCompleted { .. }))
                 {
-                    match io {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        Some(io) => {
-                            let projection =
-                                crate::executor::completed_tool_projection_with_native_work(
-                                    journal.as_ref(),
-                                    &records,
-                                    step,
-                                    &invocation,
-                                    &request.request().tools,
-                                    limits,
-                                    io.original_native_work().expect("native approval IO"),
-                                )?
-                                .await?;
-                            drop(projection);
-                        }
-                        _ => {
-                            crate::executor::completed_tool_projection(
-                                journal.as_ref(),
-                                &records,
-                                step,
-                                &invocation,
-                                &request.request().tools,
-                                crate::conversation::Limits::default(),
-                                io,
-                            )
-                            .await?;
-                        }
-                    }
+                    let native = io.is_some_and(|io| io.original_native_work().is_some());
+                    let projection_hold;
+                    let projection = crate::executor::completed_tool_projection(
+                        journal.as_ref(), &records, step, &invocation, &request.request().tools,
+                        if native { limits } else { crate::conversation::Limits::default() }, io,
+                    ).await?;
+                    projection_hold = io.filter(|_| native)
+                        .map(|io| io.guard_owned(projection.logical_owned_bytes()?)).transpose()?;
+                    drop(projection);
+                    drop(projection_hold);
                     continue;
                 }
                 if !records.is_empty() {
