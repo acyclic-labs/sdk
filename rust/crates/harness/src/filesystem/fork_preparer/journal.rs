@@ -6,7 +6,7 @@ pub(super) fn preparation_journal(
     io: Option<&PreparationIo>,
 ) -> Result<WorkspaceRef> {
     let name = crate::executor::with_history_io(io, |work| {
-        crate::contract::preparation_format(
+        crate::executor::preparation_format(
             format_args!("harness-fork-preparation-{operation}"),
             work,
         )
@@ -28,7 +28,7 @@ pub(super) fn allocation_ref(
         .map(|io| io.guard_owned(volume_name.capacity() as u64))
         .transpose()?;
     let name = crate::executor::with_history_io(io, |work| {
-        crate::contract::preparation_format(format_args!("fork-allocation-{volume_name}"), work)
+        crate::executor::preparation_format(format_args!("fork-allocation-{volume_name}"), work)
     })?;
     drop(volume_name);
     drop(hold);
@@ -194,9 +194,9 @@ pub(super) fn encode<T: Serialize>(
     if let Some(io) = io {
         return io.encode(value, maximum_bytes, false);
     }
-    crate::contract::json_bytes_bounded(
+    crate::executor::json::json_bytes_bounded(
         value,
-        crate::contract::JsonBounds {
+        crate::executor::json::JsonBounds {
             maximum_bytes,
             maximum_items: u64::MAX,
             maximum_depth: 256,

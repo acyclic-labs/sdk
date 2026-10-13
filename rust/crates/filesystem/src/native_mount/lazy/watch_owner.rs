@@ -4,15 +4,19 @@ use super::*;
 pub struct NativeMountSourceWatchOwner {
     pub(super) watch: Option<Box<dyn SourceWatch>>,
     pub(super) sink: Option<Arc<dyn SourceChangeSink>>,
+    pub(super) startup_failure: Option<Arc<crate::source_watch::SourceWatchStartupFailure>>,
     pub(super) bytes: u64,
-    pub(super) custody: Option<crate::native_mount::NativeMountAllocationCustody>,
+    pub(super) custody: Option<std::sync::Arc<crate::native_mount::NativeMountAllocationCustody>>,
 }
 
 impl NativeMountSourceWatchOwner {
     /// Whether this original watcher has confirmed physical native quiescence.
     #[must_use]
     pub fn is_stopped(&self) -> bool {
-        self.watch.as_ref().is_none_or(|watch| watch.is_stopped())
+        self.startup_failure.as_ref().map_or_else(
+            || self.watch.as_ref().is_none_or(|watch| watch.is_stopped()),
+            |failure| failure.is_stopped(),
+        )
     }
 
     /// Retires this original watch using its before-start cleanup credit.
@@ -34,7 +38,12 @@ impl NativeMountSourceWatchOwner {
         if self.is_stopped() {
             return Ok(false);
         }
-        let result = if let Some(watch) = &self.watch {
+        let result = if let Some(failure) = &self.startup_failure {
+            match wait {
+                Some(wait) => failure.stop_with_cleanup_wait(wait),
+                None => failure.stop_accepted_cleanup(),
+            }
+        } else if let Some(watch) = &self.watch {
             match wait {
                 Some(wait) => watch.stop_with_cleanup_wait(wait),
                 None => watch.stop_accepted_cleanup(),
@@ -53,13 +62,15 @@ impl NativeMountSourceWatchOwner {
         let original = carrier
             .original_native_work()
             .ok_or(MountSourceError::NativeUnsupported)?;
-        let mut work = crate::demand::NativeSourceWork::from_native_materialization_work(&original);
+        let mut work = crate::NativeMaterializationWork::clone(&original);
         crate::native_host::NativeHostWork::check(&mut work).map_err(mount_demand_error)?;
         if self.is_stopped() {
             return Ok(false);
         }
-        let result = if let Some(watch) = &self.watch {
-            crate::demand::stop_watch(watch.as_ref(), &original, original.cancellation())
+        let result = if let Some(failure) = &self.startup_failure {
+            failure.stop_with_work(&mut work)
+        } else if let Some(watch) = &self.watch {
+            watch.stop(&mut crate::kernel::KernelAccounting::native(&original, original.cancellation()))
         } else {
             return Ok(false);
         };
@@ -71,6 +82,7 @@ impl Drop for NativeMountSourceWatchOwner {
     fn drop(&mut self) {
         drop(self.watch.take());
         drop(self.sink.take());
+        drop(self.startup_failure.take());
         if let Some(custody) = &self.custody {
             custody
                 .retire(self.bytes)

@@ -228,12 +228,14 @@ export class Harness {
 
   /** Issues a host grant, optionally bound to an acting agent. */
   issueScope(id: string, capabilities: readonly string[], agent?: AgentId): Scope {
-    return this.#core.issueScope(id, capabilities, agent) as Scope;
+    return (agent === undefined ? this.#core.issueScope(id, capabilities)
+      : this.#core.issueScopeForAgent(agent, id, capabilities)) as Scope;
   }
 
   /** Resolves policy layers and issues their effective grant for an optional agent. */
   issueScopeWithPolicies(id: string, layers: readonly PolicyLayer[], agent?: AgentId): Scope {
-    return this.#core.issueScopeWithPolicies(id, layers, agent) as Scope;
+    return (agent === undefined ? this.#core.issueScopeWithPolicies(id, layers)
+      : this.#core.issueScopeWithPoliciesForAgent(agent, id, layers)) as Scope;
   }
 
   /** Creates a child grant that cannot widen its parent. */

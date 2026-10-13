@@ -116,7 +116,7 @@ impl ProjectSourceAuthorization {
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
             { Error::Invalid("project source authorization ownership overflows".into()) }
         };
-        let snapshot = self.native_snapshot.as_ref().map(crate::contract::json_value_logical_owned_bytes).transpose()?.unwrap_or(0);
+        let snapshot = self.native_snapshot.as_ref().map(crate::executor::json::json_value_logical_owned_bytes).transpose()?.unwrap_or(0);
         [
             self.owner.id.capacity() as u64,
             self.caller_fence.reservation_id.capacity() as u64,
@@ -133,7 +133,7 @@ impl ProjectSourceAuthorization {
         if work.is_none() { return Ok((self.clone(), 0)); }
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         quota.work().as_deref_mut().expect("source authorization copy observer")
-            .codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+            .codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
         let owner = crate::core::copy_authority(&self.owner, &mut quota)?;
         let caller_fence = LeaseFence {
             reservation_id: crate::core::copy_text(&self.caller_fence.reservation_id, &mut quota)?,
@@ -197,7 +197,7 @@ impl ProjectSourceAuthorization {
             }
             return Err(Error::Invalid("project source lacks an exact project or finite bounds".into()));
         }
-        crate::contract::json_byte_length(self, self.maximum_bytes, work).map(|_| ())
+        crate::executor::json::json_byte_length(self, self.maximum_bytes, work).map(|_| ())
     }
 
     pub(crate) fn scope_label(
@@ -210,7 +210,7 @@ impl ProjectSourceAuthorization {
             self.operation_id, self.source_task, &self.project, &self.generation,
             &self.native_snapshot, self.graph_root, self.maximum_work, self.maximum_bytes,
         );
-        let digest = crate::contract::canonical_json_digest(
+        let digest = crate::executor::json::canonical_json_digest(
             &descriptor, self.maximum_bytes, work,
         )?;
         let mut label = String::new();

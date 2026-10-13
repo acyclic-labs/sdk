@@ -44,20 +44,20 @@ async fn b02_retry_preserves_signed_owner() -> Result<()> {
         .await?;
         let record = f.admission(2, json!(0));
         f.host.admit(record.clone()).await?;
-        let original = f
-            .host
-            .retained_declaration_with_work(record.operation_id, &mut None)
-            .await?;
+        let original = f.claim(2, "original").await?;
         let renewed = f.reopen(&f.issuer, "renewed-owner").await?;
         assert_eq!(
             renewed.admit(record.clone()).await?,
             Admission::Accepted(TaskId::from_bytes([2; 16]))
         );
+        let crate::distributed::WorkPull::Claimed(recovered) =
+            renewed.recover_work(TaskId::from_bytes([2; 16])).await?
+        else {
+            return Err(Error::NotFound("renewed original owner".into()));
+        };
         assert_eq!(
-            renewed
-                .retained_declaration_with_work(record.operation_id, &mut None)
-                .await?,
-            original
+            recovered.operation.owner_scope,
+            original.operation.owner_scope
         );
         let impostor = AuthorityIssuer::new("fixture", [8; 32], f.issuer.audience().clone());
         assert!(matches!(

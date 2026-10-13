@@ -47,30 +47,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<GenerationTransferBatch> {
-        let span = crate::obs::span!(
-            INFO,
-            "acyclic.fs.export_generation_batch",
-            outcome = crate::obs::Empty,
-            error.kind = crate::obs::Empty,
-            work.items = crate::obs::Empty,
-            work.bytes = crate::obs::Empty,
-            work.durability = crate::obs::Empty,
-        );
-        let result = crate::obs::in_span(
-            &span,
-            export_generation_batch_async(
-                &self.inner.objects,
-                manifest,
-                cursor,
-                maximum_objects,
-                maximum_object_bytes,
-                budget,
-                cancellation,
-            ),
-        )
+        let result = (export_generation_batch_async(
+            &self.inner.objects,
+            manifest,
+            cursor,
+            maximum_objects,
+            maximum_object_bytes,
+            budget,
+            cancellation,
+        ))
         .await
         .map_err(|failure| OperationFailure::new(map_transfer_error(failure.error), *failure.work));
-        result.observe_on(&span, "export_generation_batch")
+        result
     }
 
     /// Idempotently imports one manifest-aligned page of immutable bodies.
@@ -83,30 +71,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<TransferCursor> {
-        let span = crate::obs::span!(
-            INFO,
-            "acyclic.fs.import_generation_batch",
-            outcome = crate::obs::Empty,
-            error.kind = crate::obs::Empty,
-            work.items = crate::obs::Empty,
-            work.bytes = crate::obs::Empty,
-            work.durability = crate::obs::Empty,
-        );
-        let result = crate::obs::in_span(
-            &span,
-            import_generation_batch_async(
-                &self.inner.objects,
-                manifest,
-                cursor,
-                bodies,
-                maximum_objects,
-                budget,
-                cancellation,
-            ),
-        )
+        let result = (import_generation_batch_async(
+            &self.inner.objects,
+            manifest,
+            cursor,
+            bodies,
+            maximum_objects,
+            budget,
+            cancellation,
+        ))
         .await
         .map_err(|failure| OperationFailure::new(map_transfer_error(failure.error), *failure.work));
-        result.observe_on(&span, "import_generation_batch")
+        result
     }
 }
 

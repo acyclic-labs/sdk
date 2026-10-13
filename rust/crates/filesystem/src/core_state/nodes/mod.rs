@@ -334,7 +334,6 @@ pub(super) fn native_core_error(error: LocalCoreStateStoreError) -> crate::LazyW
         }
         LocalCoreStateStoreError::LazyWork(error) => error,
         LocalCoreStateStoreError::Integrity => Lazy::NativeRecordIntegrity,
-        LocalCoreStateStoreError::NativeLedgerMismatch => Lazy::NativeLedgerMismatch,
         LocalCoreStateStoreError::ContextTransaction(message) => {
             Lazy::NativeRecordContextTransaction(message, None)
         }
@@ -360,7 +359,7 @@ fn core_lazy_work(
                     .checked_add(work)
                     .expect("constructor used its remaining allowance");
             }
-            crate::LazyWorkspaceError::NativeConstruction { cause, work }
+            crate::LazyWorkspaceError::NativeWork(cause)
         },
     )
 }

@@ -86,7 +86,9 @@ export class ClientViews<Value, Assumption, Evidence> {
     tick(sequence);
     const budget = Object.freeze({ ...limits });
     this.#kernel = new WasmClientViews(domain.identity, namespace, sequence, budget,
-      domain.validate.bind(domain), domain.observe.bind(domain), domain.corresponds.bind(domain), domain.restore?.bind(domain));
+      domain.validate.bind(domain), domain.observe.bind(domain), domain.corresponds.bind(domain));
+    const restore = domain.restore?.bind(domain);
+    if (restore !== undefined) this.#kernel.enableRestore(restore);
     this.#maximumSelections = budget.records + budget.branches;
   }
 

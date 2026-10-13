@@ -771,7 +771,7 @@ async fn public_identity_and_posix_special_surfaces_share_one_candidate()
         ready!(
             checkout
                 .value
-                .list_directory_records(&root_path()?, None, 32, B, &cancellation,)
+                .list_directory_records(&root_path()?, std::ops::Bound::Unbounded, 32, B, &cancellation)
         );
     assert_eq!(listing.value.entries.len(), 7);
     Ok(())

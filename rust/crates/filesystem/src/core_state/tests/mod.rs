@@ -1,5 +1,12 @@
+use super::collection::content_address;
 use super::*;
+use crate::lazy_workspace::MemoryLazyNode;
 use crate::{Digest, WorkspaceContextRoot, WorkspaceContextState, WorkspaceName, WorkspaceRootId};
+
+const CRASH_PARENT: WorkspaceContextId = WorkspaceContextId::from_bytes([0x41; 16]);
+const CRASH_CHILD: WorkspaceContextId = WorkspaceContextId::from_bytes([0x42; 16]);
+const CRASH_WORKSPACE: WorkspaceId = WorkspaceId::from_bytes([0x43; 16]);
+const CRASH_GROUPS: [std::ops::Range<usize>; 6] = [0..1, 1..2, 2..5, 5..6, 6..7, 7..8];
 
 pub(super) fn context_paths(namespace: &Namespace, id: WorkspaceContextId) -> RecordPaths<'_> {
     RecordKey::Context(id)
@@ -99,7 +106,7 @@ pub(super) fn lazy_state(workspace_id: WorkspaceId, revision: u64) -> LazyWorksp
         "workspace_id": workspace_id,
         "parent_workspace_id": null,
         "fork_origin": null,
-        "completed_selected_import": null,
+        "selected_import_roots": null,
         "source": crate::demand::SourceReference { identity: [1; 16], epoch: 0 },
         "overlay": LazyOverlayId::from_bytes([2; 32]),
         "shadows": shadows,

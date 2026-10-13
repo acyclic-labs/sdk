@@ -112,15 +112,26 @@ where
                     context, operation, generation,
                 ));
                 if retained == Some(operation) {
-                    self.authored.shared_checkout().publish(
-                        permit, work, cancellation, Some(self.authored.cancellation()),
-                        before_publication, Some(context), acknowledged,
-                    ).await.map_err(|(error, accounting)| {
-                        accounting_failure = accounting;
-                        error
-                    })?;
-                    if !acknowledged.is_some_and(|snapshot| snapshot.operation() == Some(operation)
-                        && snapshot.generation() == generation) {
+                    self.authored
+                        .shared_checkout()
+                        .publish(
+                            permit,
+                            work,
+                            cancellation,
+                            Some(self.authored.cancellation()),
+                            before_publication,
+                            Some(context),
+                            acknowledged,
+                        )
+                        .await
+                        .map_err(|(error, accounting)| {
+                            accounting_failure = accounting;
+                            error
+                        })?;
+                    if !acknowledged.is_some_and(|snapshot| {
+                        snapshot.operation() == Some(operation)
+                            && snapshot.generation() == generation
+                    }) {
                         return Err(MountSourceError::Indeterminate.into());
                     }
                 }
@@ -164,14 +175,23 @@ where
                         Some((_, _, _, input)) => NativeSnapshotContext::Selected { cut, input },
                         None => NativeSnapshotContext::Lazy(cut),
                     };
-                    self.authored.shared_checkout().publish(
-                    permit, work, cancellation, Some(self.authored.cancellation()),
-                    before_publication, Some(context), acknowledged,
-                ).await.map_err(|(error, accounting)| {
-                    accounting_failure = accounting;
-                    error
-                })?;
-                let published = acknowledged.ok_or(MountSourceError::Indeterminate)?;
+                    self.authored
+                        .shared_checkout()
+                        .publish(
+                            permit,
+                            work,
+                            cancellation,
+                            Some(self.authored.cancellation()),
+                            before_publication,
+                            Some(context),
+                            acknowledged,
+                        )
+                        .await
+                        .map_err(|(error, accounting)| {
+                            accounting_failure = accounting;
+                            error
+                        })?;
+                    let published = acknowledged.ok_or(MountSourceError::Indeterminate)?;
                     if let Some((destination, source, config, input)) =
                         remembered.and_then(|(_, proof)| proof)
                     {
@@ -233,26 +253,35 @@ where
                 (paths, records)
             };
             let dirty = self.dirty_detached_records(work).await?;
-            if removals.is_empty() && dirty.is_empty() && selected.is_none() {
+            if removals.is_empty() && dirty.value.is_empty() && selected.is_none() {
                 let context = NativeSnapshotContext::Lazy(
                     self.lazy
                         .publication_cut(None, &mut accounting)
                         .await
                         .map_err(lazy_error)?,
                 );
-                self.authored.shared_checkout().publish(
-                    permit, work, cancellation, Some(self.authored.cancellation()),
-                    before_publication, Some(context), acknowledged,
-                ).await.map_err(|(error, accounting)| {
-                    accounting_failure = accounting;
-                    error
-                })?;
+                self.authored
+                    .shared_checkout()
+                    .publish(
+                        permit,
+                        work,
+                        cancellation,
+                        Some(self.authored.cancellation()),
+                        before_publication,
+                        Some(context),
+                        acknowledged,
+                    )
+                    .await
+                    .map_err(|(error, accounting)| {
+                        accounting_failure = accounting;
+                        error
+                    })?;
                 let published = acknowledged.ok_or(MountSourceError::Indeterminate)?;
                 self.prune_detached()?;
                 return Ok(published);
             }
             let (fresh_operation, mut candidate, identities, epoch, stamp) = self
-                .prepare_removed_identity_candidate(&removals, &dirty, work)
+                .prepare_removed_identity_candidate(&removals, &dirty.value, work)
                 .await?;
             let mut paths = input.vec(removals.len())?;
             paths.extend(removals.into_iter().map(|(path, _)| path));
@@ -288,11 +317,15 @@ where
             }
             records.extend(
                 dirty
+                    .value
                     .iter()
                     .map(|(record, metadata, _)| (record.file_id, (*record, *metadata))),
             );
             let records = records.into_values().collect::<Vec<_>>();
-            if let Err(error) = self.stage_detached_records(&records, &dirty, work).await {
+            if let Err(error) = self
+                .stage_detached_records(&records, &dirty.value, work)
+                .await
+            {
                 self.abort_detached_publication()?;
                 return Err(error.into());
             }
@@ -353,6 +386,7 @@ where
                 cancellation,
             )
             .await?;
+            candidate.operation = Some(operation);
             if self
                 .authored
                 .shared_checkout()
@@ -381,22 +415,29 @@ where
                             })
                             .map_err(|_| MountSourceError::Cancelled)
                     },
-                    Some(operation),
-                    |_, state| state.retained_operation_id(),
                 )
                 .await?
                 .is_none()
             {
                 return Err(MountSourceError::Stale.into());
             }
-            self.authored.shared_checkout().publish(
-                    permit, work, cancellation, Some(self.authored.cancellation()),
-                    before_publication, Some(context), acknowledged,
-                ).await.map_err(|(error, accounting)| {
+            self.authored
+                .shared_checkout()
+                .publish(
+                    permit,
+                    work,
+                    cancellation,
+                    Some(self.authored.cancellation()),
+                    before_publication,
+                    Some(context),
+                    acknowledged,
+                )
+                .await
+                .map_err(|(error, accounting)| {
                     accounting_failure = accounting;
                     error
                 })?;
-                let published = acknowledged.ok_or(MountSourceError::Indeterminate)?;
+            let published = acknowledged.ok_or(MountSourceError::Indeterminate)?;
             if let Some((destination, source, config, input)) = selected_proof {
                 self.lazy
                     .finish_selected_import(

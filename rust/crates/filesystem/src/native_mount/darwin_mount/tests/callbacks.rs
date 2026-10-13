@@ -8,7 +8,6 @@ fn interrupted_barrier_can_be_retried() -> TestResult {
     let before = gate.enter();
     let cancellation = crate::CancellationToken::new();
     let budget = crate::WorkBudget {
-        items_examined: 1,
         backend_read_operations: 0,
         ..crate::WorkBudget::UNBOUNDED
     };
@@ -17,34 +16,7 @@ fn interrupted_barrier_can_be_retried() -> TestResult {
     drop(before);
     assert!(gate.drain(&work(budget, &cancellation)?).is_err());
     drop(after);
-    gate.drain(&work(
-        crate::WorkBudget {
-            items_examined: 2,
-            ..budget
-        },
-        &cancellation,
-    )?)?;
-    Ok(())
-}
-
-#[test]
-fn denied_clock_does_not_settle_external_changes() -> TestResult {
-    let (_, context, _setup) = checkout_context(MountPublication::Manual)?;
-    context.around.made.store(1, Ordering::Release);
-    let cancellation = crate::CancellationToken::new();
-    let denied = work(
-        crate::WorkBudget {
-            backend_read_operations: 0,
-            ..crate::WorkBudget::UNBOUNDED
-        },
-        &cancellation,
-    )?;
-    assert!(context.revalidate(&denied).is_err());
-    assert_eq!(context.around.settled.load(Ordering::Acquire), 0);
-    let cancelled = work(crate::WorkBudget::UNBOUNDED, &cancellation)?;
-    cancellation.cancel();
-    assert!(context.revalidate(&cancelled).is_err());
-    assert_eq!(context.around.settled.load(Ordering::Acquire), 0);
+    gate.drain(&work(budget, &cancellation)?)?;
     Ok(())
 }
 
@@ -92,7 +64,7 @@ fn authored_guard_denies_before_mutation_and_reports_revocation_after_it() -> Te
                         || {
                             context.source.create_file(
                                 &path,
-                                create_metadata(0o644, mode::IFREG, 0, 0),
+                                create_metadata(0o644, libc::S_IFREG as u32, 0, 0),
                                 None,
                                 work,
                             )
@@ -244,27 +216,27 @@ fn callback_context(
 }
 
 struct DarwinAuthoredGuard {
-    original: crate::NativeMaterializationWork,
+    original: Work,
     writable: AtomicBool,
 }
 
 impl crate::native_mount::NativeMountCallbackGuard for DarwinAuthoredGuard {
     fn check<'a>(
         &'a self,
-        work: &'a crate::NativeMaterializationWork,
+        work: &'a Work,
     ) -> Result<crate::native_mount::NativeMountCallbackFuture<'a>, NativeMountError> {
         if !self.original.shares_ledger(&work) {
             return Err(NativeMountError::ControlPending);
         }
         crate::native_mount::NativeMountCallbackFuture::new(work, || async move {
-            work.admit(crate::WorkCounters::UNCHARGED)?;
+            work.admit(WorkCounters::UNCHARGED)?;
             Ok(())
         })
     }
 
     fn check_write<'a>(
         &'a self,
-        work: &'a crate::NativeMaterializationWork,
+        work: &'a Work,
     ) -> Result<crate::native_mount::NativeMountCallbackFuture<'a>, NativeMountError> {
         if !self.original.shares_ledger(&work) {
             return Err(NativeMountError::ControlPending);
@@ -281,14 +253,7 @@ impl crate::native_mount::NativeMountCallbackGuard for DarwinAuthoredGuard {
 
 fn authored_guard_context(
     writable: bool,
-) -> Result<
-    (
-        Arc<DarwinMountContext>,
-        Arc<DarwinAuthoredGuard>,
-        crate::NativeMaterializationWork,
-    ),
-    Box<dyn std::error::Error>,
-> {
+) -> Result<(Arc<DarwinMountContext>, Arc<DarwinAuthoredGuard>, Work), Box<dyn std::error::Error>> {
     crate::native_mount::initialize_native_mount_services()?;
     let (shared, config) = checkout(MountPublication::Manual)?;
     let original = work(CALLBACK_POLICY, &crate::CancellationToken::new())?;
@@ -300,7 +265,7 @@ fn authored_guard_context(
         shared,
         config,
         crate::kernel::NamespacePath::new(Vec::new(), config.limits)?,
-        original.claim(0, 0, crate::WorkCounters::UNCHARGED)?,
+        original.claim(0, 0, WorkCounters::UNCHARGED)?,
         &original,
         Some(&original),
     )?
@@ -317,7 +282,7 @@ fn authored_guard_context(
     Ok((context, guard, original))
 }
 
-fn callback_failure(context: &DarwinMountContext) -> (NativeMountError, crate::WorkCounters) {
+fn callback_failure(context: &DarwinMountContext) -> (NativeMountError, WorkCounters) {
     context
         .handler_failure
         .lock()

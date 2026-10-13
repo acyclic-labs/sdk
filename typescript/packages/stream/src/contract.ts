@@ -101,8 +101,6 @@ type WireRequest =
   | { readonly kind: "children"; readonly parent?: string; readonly limit: number }
   | { readonly kind: "children_page"; readonly parent?: string; readonly after?: string; readonly hierarchyVersion?: Uint8Array; readonly limit: number };
 
-export type HttpRequestRoute = HttpRoute;
-
 /** Encode the hosted token request through the canonical protobuf/Rust route. */
 export function wireCreateTokenRequest(request: CreateTokenRequest): Uint8Array {
   try {
@@ -227,7 +225,7 @@ export function wireReadCommitRequest(value: Uint8Array): Uint8Array {
   return toBinary(ReadCommitRequestSchema, create(ReadCommitRequestSchema, { commitId: commitId(value) }));
 }
 
-export async function encodeHttpRequest(route: HttpRequestRoute, input: Uint8Array): Promise<string> {
+export async function encodeHttpRequest(route: HttpRoute, input: Uint8Array): Promise<string> {
   await ensureStreamWasm();
   try { return encodeHttpRequestWire(route, input); }
   catch (error) { validationError(error, "request"); }
