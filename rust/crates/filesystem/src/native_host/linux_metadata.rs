@@ -18,7 +18,7 @@ pub(crate) fn set_extended_attributes<W: NativeHostWork<Error = DemandError>>(
     let mut pinned = [0_u8; 32];
     #[cfg(target_os = "linux")]
     let pinned = {
-        if fstat(file.as_raw_fd(), work)?.st_mode & libc::S_IFMT == libc::S_IFLNK {
+        if fstat(file.as_raw_fd(), c"", work)?.st_mode & libc::S_IFMT == libc::S_IFLNK {
             return Err(NativeMetadataError("named_attributes on a symbolic link").into());
         }
         let prefix = b"/proc/self/fd/";
@@ -141,7 +141,7 @@ pub(crate) fn apply_linux_metadata<W: NativeHostWork<Error = DemandError>>(
 ) -> Result<(), DemandError> {
     use crate::kernel::{FileMetadata, MetadataField};
     let fd = file.as_raw_fd();
-    let mut observed = fstat(fd, work)?;
+    let mut observed = fstat(fd, c"", work)?;
     if !matches!(
         metadata,
         FileMetadata {
@@ -205,7 +205,7 @@ pub(crate) fn apply_linux_metadata<W: NativeHostWork<Error = DemandError>>(
         unix_mutation(work, || unsafe {
             libc::fchownat(fd, c"".as_ptr(), uid, gid, libc::AT_EMPTY_PATH)
         })?;
-        observed = fstat(fd, work)?;
+        observed = fstat(fd, c"", work)?;
     }
     if let MetadataField::Value(mode) = metadata.posix_mode {
         if mode & 0o7777 != observed.st_mode & 0o7777 {
@@ -238,7 +238,7 @@ pub(crate) fn apply_linux_metadata<W: NativeHostWork<Error = DemandError>>(
             )
         })?;
     }
-    observed = fstat(fd, work)?;
+    observed = fstat(fd, c"", work)?;
     for (requested, actual) in [
         (metadata.posix_uid, observed.st_uid),
         (metadata.posix_gid, observed.st_gid),

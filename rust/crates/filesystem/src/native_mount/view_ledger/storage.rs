@@ -6,7 +6,7 @@ use crate::demand::NativeMountAllocationCustody;
 pub(super) fn vector<T>(
     count: usize,
     carrier: &mut NativeDemandCarrier<'_>,
-) -> Result<(Vec<T>, Option<std::sync::Arc<NativeMountAllocationCustody>>), MountSourceError> {
+) -> Result<(Vec<T>, Option<Arc<NativeMountAllocationCustody>>), MountSourceError> {
     carrier
         .with_work(|work| work.check())
         .map_err(mount_demand_error)?;
@@ -56,7 +56,7 @@ pub(super) struct ChangePositions {
     floor: u64,
     latest: HashMap<u64, u64>,
     // Physical backing drops before its original allocation owner.
-    custody: Option<std::sync::Arc<NativeMountAllocationCustody>>,
+    custody: Option<Arc<NativeMountAllocationCustody>>,
 }
 
 pub(super) fn record(
@@ -132,7 +132,7 @@ pub(super) fn unchanged_since(
 }
 pub(super) fn grow_vector<T>(
     entries: &mut Vec<T>,
-    owner: &mut Option<std::sync::Arc<NativeMountAllocationCustody>>,
+    owner: &mut Option<Arc<NativeMountAllocationCustody>>,
     capacity: usize,
     carrier: &mut NativeDemandCarrier<'_>,
 ) -> Result<(), MountSourceError> {

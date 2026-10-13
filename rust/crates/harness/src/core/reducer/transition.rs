@@ -5,7 +5,7 @@ impl Reducer {
         &self,
         action: &Action,
         archived_effect: Option<(EffectId, &EffectState)>,
-        quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+        quota: &mut CodecQuota<'_, '_>,
     ) -> Result<EventPayload> {
         match action {
             Action::TransitionLifecycle { to, reason } => {
@@ -85,7 +85,9 @@ impl Reducer {
                 record.validate()?;
                 Ok(EventPayload::ExtensionStateMigrated {
                     migration: ExtensionStateMigration {
-                        previous: copying::copy_reference(previous, quota)?,
+                        previous: copy(previous, quota, |value: &EventReference, _| {
+                            Ok(value.authority.id.capacity() as u64)
+                        })?,
                         record,
                     },
                 })
@@ -124,7 +126,11 @@ impl Reducer {
                     previous: copying::copy_vector(
                         &self.projection.active_extensions,
                         quota,
-                        copying::copy_dependency,
+                        |value, quota| {
+                            copy(value, quota, |value: &ExtensionDependency, _| {
+                                Ok(value.name.capacity() as u64)
+                            })
+                        },
                     )?,
                     selected,
                     configurations,
@@ -152,7 +158,12 @@ impl Reducer {
                         .projection
                         .configured_extensions
                         .get(extension)
-                        .map(|record| copying::copy_configuration(record, quota))
+                        .map(|record| {
+                            copy(record, quota, |value: &ExtensionConfiguration, work| {
+                                value.content.validate(work)?;
+                                owned_bytes(value)
+                            })
+                        })
                         .transpose()?,
                     record,
                 })
@@ -224,7 +235,12 @@ impl Reducer {
                     .verify_effect(observation, quota.work())?;
                 validate_effect_observation(effect, observation)?;
                 Ok(EventPayload::EffectResolved {
-                    observation: copying::copy_observation(observation, quota)?,
+                    observation: copy(observation, quota, |value: &EffectAttestation, work| {
+                        if let EffectStatus::Succeeded { result } = &value.status {
+                            result.validate(work)?;
+                        }
+                        owned_bytes(value)
+                    })?,
                 })
             }
             Action::PublishFork { seed } => {
@@ -276,7 +292,12 @@ impl Reducer {
                 self.require_conversation()?;
                 selection.validate(&self.projection.conversation)?;
                 Ok(EventPayload::ModelContextSelected {
-                    selection: copying::copy_selection(selection, quota)?,
+                    selection: copy(selection, quota, |value: &ModelContextSelection, work| {
+                        if let Some(file) = &value.checkpoint {
+                            file.validate(work)?;
+                        }
+                        owned_bytes(value)
+                    })?,
                 })
             }
             Action::OpenInteraction { ticket } => {
@@ -288,7 +309,10 @@ impl Reducer {
                     ));
                 }
                 Ok(EventPayload::InteractionOpened {
-                    ticket: copying::copy_ticket(ticket, quota)?,
+                    ticket: copy(ticket, quota, |value: &InteractionTicket, work| {
+                        value.request.validate(work)?;
+                        owned_bytes(value)
+                    })?,
                 })
             }
             Action::ResolveInteraction { resolution } => {
@@ -299,7 +323,15 @@ impl Reducer {
                     .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
                 validate_interaction_transition(ticket, prior.as_ref(), resolution)?;
                 Ok(EventPayload::InteractionResolved {
-                    resolution: copying::copy_resolution(resolution, quota)?,
+                    resolution: copy(resolution, quota, |value: &InteractionResolution, work| {
+                        if let InteractionOutcome::Answered { answer } = &value.outcome {
+                            answer.validate(work)?;
+                        }
+                        if let Some(file) = &value.detail {
+                            file.validate(work)?;
+                        }
+                        owned_bytes(value)
+                    })?,
                 })
             }
         }

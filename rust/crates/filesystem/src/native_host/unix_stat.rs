@@ -16,10 +16,7 @@ pub(crate) fn root_path_identity<W: NativeHostWork>(
             )
             .into());
         }
-        Ok(NativeRootIdentity {
-            device: (stat.raw.st_dev as u64),
-            object: (stat.raw.st_ino as u64),
-        })
+        Ok(stat.identity())
     }
     #[cfg(windows)]
     {
@@ -80,66 +77,55 @@ pub(super) fn open_unix<W: NativeHostWork>(
 }
 
 #[cfg(unix)]
-pub(crate) fn stat_leaf<W: NativeHostWork>(
-    directory: &Dir,
-    name: &OsStr,
-    work: &mut W,
-) -> Result<HostStat, W::Error> {
-    require_leaf(Path::new(name))?;
-    unix_name(name, work, |name, work| {
-        stat_at(directory.as_raw_fd(), name, work)
-    })
-}
-
-#[cfg(unix)]
 pub(super) fn stat_at<W: NativeHostWork>(
     fd: i32,
     name: &std::ffi::CStr,
     work: &mut W,
 ) -> Result<HostStat, W::Error> {
-    let empty_path = name.is_empty() && fd != libc::AT_FDCWD;
     #[cfg(target_os = "linux")]
-    let directory = if fd == libc::AT_FDCWD {
-        rustix::fs::CWD
-    } else {
-        // SAFETY: callers pass a live held descriptor, except the explicit CWD sentinel above, supplied by rustix itself.
-        unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) }
-    };
-    #[cfg(target_os = "linux")]
-    let flags = rustix::fs::AtFlags::SYMLINK_NOFOLLOW
-        | if empty_path {
-            rustix::fs::AtFlags::EMPTY_PATH
+    {
+        let directory = if fd == libc::AT_FDCWD {
+            rustix::fs::CWD
         } else {
-            rustix::fs::AtFlags::empty()
+            // SAFETY: the caller holds this descriptor for the complete query.
+            unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) }
         };
-    #[cfg(target_os = "linux")]
-    loop {
-        work.started_io(READ)?;
-        match rustix::fs::statx(
-            directory,
-            name,
-            flags,
-            rustix::fs::StatxFlags::BASIC_STATS | rustix::fs::StatxFlags::BTIME,
-        ) {
-            Ok(stat) => return Ok(HostStat::from_statx(stat)?),
-            Err(rustix::io::Errno::INTR) => continue,
-            Err(rustix::io::Errno::NOSYS | rustix::io::Errno::PERM) => break,
-            Err(error) => return Err(io::Error::from(error).into()),
+        let flags = rustix::fs::AtFlags::SYMLINK_NOFOLLOW
+            | if name.is_empty() && fd != libc::AT_FDCWD {
+                rustix::fs::AtFlags::EMPTY_PATH
+            } else {
+                rustix::fs::AtFlags::empty()
+            };
+        loop {
+            work.started_io(READ)?;
+            match rustix::fs::statx(
+                directory,
+                name,
+                flags,
+                rustix::fs::StatxFlags::BASIC_STATS | rustix::fs::StatxFlags::BTIME,
+            ) {
+                Ok(stat) => return Ok(HostStat::from_statx(stat)),
+                Err(rustix::io::Errno::INTR) => continue,
+                Err(rustix::io::Errno::NOSYS | rustix::io::Errno::PERM) => break,
+                Err(error) => return Err(io::Error::from(error).into()),
+            }
         }
     }
+    Ok(HostStat::from_stat(fstat(fd, name, work)?)?)
+}
+
+#[cfg(unix)]
+pub(super) fn fstat<W: NativeHostWork>(
+    fd: std::os::fd::RawFd,
+    name: &std::ffi::CStr,
+    work: &mut W,
+) -> Result<libc::stat, W::Error> {
     loop {
-        work.started_io(READ)?;
-        #[cfg(target_os = "linux")]
-        let result = if empty_path {
-            rustix::fs::fstat(directory)
-        } else {
-            rustix::fs::statat(directory, name, flags)
-        };
-        #[cfg(target_os = "macos")]
-        let result = {
+        let result = work.attempt_io(READ, || {
             let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+            // SAFETY: held descriptor, terminated name and complete output remain live.
             let result = unsafe {
-                if empty_path {
+                if name.is_empty() && fd != libc::AT_FDCWD {
                     libc::fstat(fd, stat.as_mut_ptr())
                 } else {
                     libc::fstatat(
@@ -150,39 +136,14 @@ pub(super) fn stat_at<W: NativeHostWork>(
                     )
                 }
             };
-            if result == 0 {
-                Ok(unsafe { stat.assume_init() })
-            } else {
-                Err(io::Error::last_os_error())
-            }
-        };
-        match result {
-            Ok(stat) => return Ok(HostStat::from_stat(stat)?),
-            #[cfg(target_os = "linux")]
-            Err(rustix::io::Errno::INTR) => {}
-            #[cfg(target_os = "macos")]
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(error) => return Err(io::Error::from(error).into()),
-        }
-    }
-}
-
-#[cfg(unix)]
-pub(super) fn fstat<W: NativeHostWork>(
-    fd: std::os::fd::RawFd,
-    work: &mut W,
-) -> Result<libc::stat, W::Error> {
-    loop {
-        let result = work.attempt_io(READ, || {
-            let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-            // SAFETY: a successful fstat initializes complete output for a live descriptor.
-            if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } != 0 {
+            if result != 0 {
                 return Err(io::Error::last_os_error());
             }
+            // SAFETY: the successful call initialized the complete record.
             Ok(unsafe { stat.assume_init() })
         });
         match result {
-            Err(e) if W::io_error_kind(&e) == Some(io::ErrorKind::Interrupted) => continue,
+            Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::Interrupted) => continue,
             result => return result,
         }
     }

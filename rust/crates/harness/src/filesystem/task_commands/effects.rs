@@ -24,30 +24,17 @@ where
             )
         })?;
         #[cfg(not(target_arch = "wasm32"))]
-        let work = io
-            .map(|io| {
-                io.original_native_work().ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unsupported,
-                    reason: "effect command requires the original native work",
-                })
-            })
-            .transpose()?;
+        let work = io.map(|io| {
+            io.original_native_work()
+                .expect("dispatch checked original work")
+        });
         #[cfg(target_arch = "wasm32")]
         let work = None;
-        let owner = 'owner: {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = work {
-                break 'owner self
-                    .runtime
-                    .task_host()
-                    .journal_owner(task, fence, Some(&crate::executor::PreparationIo::from_native_work(work)?))
-                    .await?;
-            }
-            self.runtime
-                .task_host()
-                .journal_owner(task, fence, io)
-                .await?
-        };
+        let owner = self
+            .runtime
+            .task_host()
+            .journal_owner(task, fence, io)
+            .await?;
         let (status, custody) = if reconciliation_only {
             effects
                 .reconcile_task_effect(&owner, command, &plan, work)

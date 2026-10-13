@@ -19,9 +19,9 @@ use std::sync::Arc;
 #[macro_use]
 mod contract;
 mod cache;
-pub use cache::{DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue};
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use cache::{native_read_batch, owned_read};
+pub(crate) use cache::owned_read;
+pub use cache::{DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue};
 mod fork;
 pub use fork::{GenerationFork, GenerationForkSource, WorkspaceForkCommit, WorkspaceForkOutcome};
 pub(crate) use fork::{first_record, seal, workspace_fork};

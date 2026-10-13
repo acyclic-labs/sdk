@@ -6,7 +6,7 @@ pub(crate) fn directory_identity<W: NativeHostWork>(
 ) -> Result<NativeRootIdentity, W::Error> {
     #[cfg(unix)]
     {
-        let stat = fstat(directory.as_raw_fd(), work)?;
+        let stat = fstat(directory.as_raw_fd(), c"", work)?;
         if stat.st_mode & libc::S_IFMT != libc::S_IFDIR {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -46,7 +46,7 @@ pub(crate) fn file_identity_and_length<W: NativeHostWork>(
 ) -> Result<(NativeRootIdentity, u64), W::Error> {
     #[cfg(unix)]
     {
-        let stat = fstat(file.as_raw_fd(), work)?;
+        let stat = fstat(file.as_raw_fd(), c"", work)?;
         let length = u64::try_from(stat.st_size)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "negative file length"))?;
         Ok((
@@ -78,32 +78,11 @@ pub(crate) fn entry_identity<W: NativeHostWork>(
     require_leaf(name)?;
     #[cfg(unix)]
     let result = unix_name(name.as_os_str(), work, |name, work| {
-        loop {
-            let result = work.attempt_io(READ, || {
-                let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-                // SAFETY: the held parent, terminated leaf and complete output remain live.
-                if unsafe {
-                    libc::fstatat(
-                        parent.as_raw_fd(),
-                        name.as_ptr(),
-                        stat.as_mut_ptr(),
-                        libc::AT_SYMLINK_NOFOLLOW,
-                    )
-                } != 0
-                {
-                    return Err(io::Error::last_os_error());
-                }
-                let stat = unsafe { stat.assume_init() };
-                Ok(NativeRootIdentity {
-                    device: stat.st_dev as u64,
-                    object: stat.st_ino as u64,
-                })
-            });
-            match result {
-                Err(e) if W::io_error_kind(&e) == Some(io::ErrorKind::Interrupted) => continue,
-                result => break result,
-            }
-        }
+        let stat = fstat(parent.as_raw_fd(), name, work)?;
+        Ok(NativeRootIdentity {
+            device: stat.st_dev as u64,
+            object: stat.st_ino as u64,
+        })
     });
     #[cfg(windows)]
     let result = {

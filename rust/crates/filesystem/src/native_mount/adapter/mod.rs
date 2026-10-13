@@ -17,6 +17,7 @@ use crate::native_capture::{
     MAX_NATIVE_EXACT_CAPTURE_PATHS, NativeViewBaseline, capture_paths_batched,
     capture_subtrees_with_native_work,
 };
+use crate::performance::BOUNDARY_BUDGET;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, ByteRange, CancellationToken,
     Checkout, ContentChange, ContentTimes, DetachedFile, FileId, FsError, NamedAttributeWriteMode,
@@ -37,8 +38,6 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(30);
-/// Diff bound for recording an installed candidate exactly; a larger effect
-/// is recorded as unenumerated.
 const MAXIMUM_EXACT_INSTALL_CHANGES: u32 = 65_536;
 const MAX_NATIVE_SUBTREE_CAPTURE_PATHS: u32 = 4_000_000;
 
@@ -63,7 +62,6 @@ pub struct CheckoutMountSource<A, O> {
     root: NamespacePath,
     limits: VolumeLimits,
     profile: FilesystemProfile,
-    /// Whether the volume resolves every case of a name to one entry.
     folds_names: bool,
     cancellation: CancellationToken,
     capture_gate: Arc<StdMutex<CaptureSourceGate>>,
@@ -82,7 +80,6 @@ pub struct CheckoutMountSource<A, O> {
     _source_allocation: Option<crate::NativeAllocation>,
 }
 
-/// The current instant as a content-change time, in signed Unix-epoch nanoseconds.
 fn content_change_time() -> Result<i64, MountSourceError> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -91,7 +88,6 @@ fn content_change_time() -> Result<i64, MountSourceError> {
         .ok_or_else(|| MountSourceError::Engine("the clock is outside file time".into()))
 }
 
-/// The content change one native range allocation requests.
 fn range_allocation<F>(range: ByteRange, operation: MountRangeAllocation) -> ContentChange<F> {
     match operation {
         MountRangeAllocation::PunchHole => ContentChange::ZeroRange {
@@ -122,34 +118,27 @@ pub(super) fn capture_io_error(error: std::io::Error) -> MountSourceError {
 }
 
 fn facade_error(error: OperationFailure<FsError>) -> MountSourceError {
-    fs_error(error.error)
-}
-
-fn fs_error(error: FsError) -> MountSourceError {
-    match error {
-        FsError::CreationRejected | FsError::Mutation(GenerationMutationError::AlreadyExists) => {
-            MountSourceError::AlreadyExists
-        }
-        FsError::NotFound
-        | FsError::Mutation(
-            GenerationMutationError::MissingParent | GenerationMutationError::MissingSource,
-        ) => MountSourceError::NotFound,
-        FsError::Work(error) => MountSourceError::Work(error),
-        FsError::NativeKernel(error) => MountSourceError::NativeWork(error),
-        FsError::Cancelled(_) => MountSourceError::Cancelled,
-        FsError::SourceSnapshotStale => MountSourceError::Stale,
-        other => MountSourceError::Filesystem(other),
-    }
+    MountSourceError::from(error.error)
 }
 
 impl From<FsError> for MountSourceError {
     fn from(error: FsError) -> Self {
-        fs_error(error)
+        match error {
+            FsError::CreationRejected
+            | FsError::Mutation(GenerationMutationError::AlreadyExists) => {
+                MountSourceError::AlreadyExists
+            }
+            FsError::NotFound
+            | FsError::Mutation(
+                GenerationMutationError::MissingParent | GenerationMutationError::MissingSource,
+            ) => MountSourceError::NotFound,
+            FsError::Work(error) => MountSourceError::Work(error),
+            FsError::NativeKernel(error) => MountSourceError::NativeWork(error),
+            FsError::Cancelled(_) => MountSourceError::Cancelled,
+            FsError::SourceSnapshotStale => MountSourceError::Stale,
+            other => MountSourceError::Filesystem(other),
+        }
     }
-}
-
-fn boundary_budget() -> WorkBudget {
-    crate::performance::BOUNDARY_BUDGET
 }
 
 mod runtime;

@@ -5,7 +5,7 @@ impl Reducer {
         &mut self,
         payload: &EventPayload,
         revision: u64,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         match payload {
             EventPayload::LifecycleTransitioned { from, to, .. } => {

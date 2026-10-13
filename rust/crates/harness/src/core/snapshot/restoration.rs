@@ -13,7 +13,7 @@ impl Reducer {
             authority_verifier,
             schemas,
             revision: snapshot.revision,
-            projection: snapshot.projection.with_bindings(()),
+            projection: snapshot.projection.map(Ok, |_| ())?,
             events: snapshot.events.into(),
             resident_event_limit: usize::MAX,
             resident_terminal_effect_limit: usize::MAX,
@@ -47,7 +47,7 @@ impl Snapshot {
         maximum_bytes: u64,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Self> {
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut quota = CodecQuota::new(work, 0)?;
         let mut admitted = 0;
         let admission = crate::executor::json::snapshot_json_admission(
             bytes,
@@ -108,26 +108,15 @@ impl Snapshot {
             state_digest,
             attestation,
         } = wire;
-        let Projection {
-            conversation,
-            lifecycle,
-            active_extensions,
-            active_extension_revision,
-            extension_states,
-            configured_extensions,
-            active_configurations,
-            effects,
-            indexed_terminal_effects,
-            effects_archived,
-            forks,
-            published_merges,
-            latest_context_checkpoint,
-            interactions,
-            bindings,
-        } = projection;
-        let (conversation, retained) =
-            ConversationState::from_wire(conversation, maximum_bytes, quota.work())?;
-        quota.adopt(retained)?;
+        let projection = projection.map(
+            |conversation| {
+                let (conversation, retained) =
+                    ConversationState::from_wire(conversation, maximum_bytes, quota.work())?;
+                quota.adopt(retained)?;
+                Ok(conversation)
+            },
+            |bindings| bindings,
+        )?;
         let snapshot = Snapshot {
             format_version,
             authority,
@@ -135,23 +124,7 @@ impl Snapshot {
             events,
             state_digest,
             attestation,
-            projection: Projection {
-                conversation,
-                lifecycle,
-                active_extensions,
-                active_extension_revision,
-                extension_states,
-                configured_extensions,
-                active_configurations,
-                effects,
-                indexed_terminal_effects,
-                effects_archived,
-                forks,
-                published_merges,
-                latest_context_checkpoint,
-                interactions,
-                bindings,
-            },
+            projection,
         };
         if let Some(io) = quota.work().as_deref() {
             io.check_cancellation()?;

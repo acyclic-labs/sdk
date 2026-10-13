@@ -4,14 +4,17 @@ use crate::materializer::NativeWorkReservation;
 
 #[derive(Default)]
 pub(super) struct Observers {
-    pub(super) entries: Vec<(Weak<dyn ViewObserver>, Option<std::sync::Arc<NativeMountAllocationCustody>>)>,
-    custody: Option<std::sync::Arc<NativeMountAllocationCustody>>,
+    pub(super) entries: Vec<(
+        Weak<dyn ViewObserver>,
+        Option<Arc<NativeMountAllocationCustody>>,
+    )>,
+    custody: Option<Arc<NativeMountAllocationCustody>>,
     pending: Option<PendingNotification>,
 }
 
 struct PendingNotification {
     live: Vec<Arc<dyn ViewObserver>>,
-    custody: Option<std::sync::Arc<NativeMountAllocationCustody>>,
+    custody: Option<Arc<NativeMountAllocationCustody>>,
     completion: NativeWorkReservation,
 }
 
@@ -39,7 +42,7 @@ impl Observers {
     ) -> Result<
         (
             Vec<Arc<dyn ViewObserver>>,
-            Option<std::sync::Arc<NativeMountAllocationCustody>>,
+            Option<Arc<NativeMountAllocationCustody>>,
         ),
         MountSourceError,
     > {
@@ -117,7 +120,7 @@ impl ViewLedger {
             carrier,
             copy_work(std::mem::size_of::<(
                 Weak<dyn ViewObserver>,
-                Option<std::sync::Arc<NativeMountAllocationCustody>>,
+                Option<Arc<NativeMountAllocationCustody>>,
             )>() as u64),
         )?;
         if let Some(pending) = &mut hub.pending {

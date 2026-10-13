@@ -1,7 +1,7 @@
 //! Child-owned Summary materialization through existing Filesystem operations.
 use super::{ParentProjectController, PreparationIo, WorkspaceMutation, fork_preparer_io as fsio};
 use crate::{
-    Error, IdempotencyKey, Result,
+    IdempotencyKey, Result,
     context::Context,
     conversation::{
         ContentGrant, ContentResidencyVerifier, FileDescriptor, FileRef, VolumeClass,

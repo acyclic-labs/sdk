@@ -45,7 +45,6 @@ impl<A, O> SharedCheckoutState<A, O> {
         }
     }
 
-    /// Begins an optimistic transaction on a copy of this candidate.
     pub(super) fn candidate(
         &self,
         operation: Option<OperationId>,
@@ -65,17 +64,16 @@ impl<A, O> SharedCheckoutState<A, O> {
         Ok(CheckoutCandidate {
             base: self
                 .checkout
-                .private_candidate(&work, cancellation)
-                .map_err(fs_error)?,
+                .private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(&work, cancellation), cancellation)
+                .map_err(MountSourceError::from)?,
             checkout: self
                 .checkout
-                .private_candidate(&work, cancellation)
-                .map_err(fs_error)?,
+                .private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(&work, cancellation), cancellation)
+                .map_err(MountSourceError::from)?,
             operation,
         })
     }
 
-    /// Records one change to the checkout's view. The exclusive guard keeps
     pub(super) fn record(&mut self, change: &ViewChange<'_>) {
         record_view_change(
             &self.ledger,

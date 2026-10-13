@@ -81,6 +81,32 @@ fn release_key(reservation: PublicationReservation) -> Result<IdempotencyKey, Au
     )
 }
 
+#[tokio::test]
+async fn atomic_first_record_recovers_main_two_step_creation() -> TestResult {
+    let store = StreamAuthorityStore::new(Arc::new(MemoryStream::default()));
+    let token = CancellationToken::new();
+    let mut work = AuthorityWork::new(BUDGET, &token);
+    let id = AuthorityId::from_bytes([9; 16]);
+    let commit = proposed(9);
+    assert!(
+        crate::async_storage::first_record(&store, id, commit.clone(), &mut work, None::<&mut ()>)
+            .await?
+    );
+    assert!(
+        store
+            .create_first_record(id, commit.clone(), &mut work, None::<&mut ()>)
+            .await?
+    );
+    let mut conflicting = commit;
+    conflicting.fingerprint = Digest::from_bytes([10; 32]);
+    assert!(
+        !store
+            .create_first_record(id, conflicting, &mut work, None::<&mut ()>)
+            .await?
+    );
+    Ok(())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn original_owner_rejection_limits_and_cancellation_preserve_the_head() -> TestResult {

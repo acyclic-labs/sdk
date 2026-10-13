@@ -161,7 +161,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             reservation_id: crate::core::copy_text(&self.fence.reservation_id, &mut quota)?,
             placement: crate::core::copy_text(&self.fence.placement, &mut quota)?,
         };
-        let source_grants = crate::core::copy_capabilities(&self.admission.grants, &mut quota)?;
+        let source_grants = crate::core::copy(&self.admission.grants, &mut quota, |grants, _| {
+            grants.logical_owned_bytes()
+        })?;
         let origin = crate::resource_preparation::ResourceCreationOrigin {
             owner,
             parent_task,

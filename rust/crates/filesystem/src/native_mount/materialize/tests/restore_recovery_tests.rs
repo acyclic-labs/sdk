@@ -158,7 +158,7 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
     assert!(failed.work.backend_read_operations > completed.work.backend_read_operations);
     let mut original = GenerationReceipt::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)
         .map_err(|failure| failure.0)?;
-    let candidate = checkout.private_candidate(original.custody.work(), &cancellation);
+    let candidate = checkout.private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(original.custody.work(), &cancellation), &cancellation);
     let candidate = candidate?;
     let reader =
         candidate.into_pinned_reader_with_native_work(original.custody.work(), &cancellation);
@@ -241,7 +241,7 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
         &cancellation,
     )
     .map_err(|failure| failure.0)?;
-    let candidate = checkout.private_candidate(no_write.custody.work(), &cancellation);
+    let candidate = checkout.private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(no_write.custody.work(), &cancellation), &cancellation);
     let candidate = candidate?;
     let reader =
         candidate.into_pinned_reader_with_native_work(no_write.custody.work(), &cancellation);

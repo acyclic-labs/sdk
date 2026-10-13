@@ -192,7 +192,7 @@ impl Reducer {
     pub(in crate::core) fn selected_configurations_in_quota(
         &self,
         selected: &[ExtensionDependency],
-        quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+        quota: &mut CodecQuota<'_, '_>,
     ) -> Result<Vec<ExtensionConfiguration>> {
         let mut count = 0;
         for extension in selected {
@@ -224,7 +224,14 @@ impl Reducer {
                             extension.name, extension.version
                         ))
                     })?;
-                configurations.push(copying::copy_configuration(record, quota)?);
+                configurations.push(copy(
+                    record,
+                    quota,
+                    |value: &ExtensionConfiguration, work| {
+                        value.content.validate(work)?;
+                        owned_bytes(value)
+                    },
+                )?);
             }
         }
         Ok(configurations)
@@ -234,9 +241,9 @@ impl Reducer {
         &self,
         selected: &[ExtensionDependency],
         configurations: &[ExtensionConfiguration],
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<bool> {
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut quota = CodecQuota::new(work, 0)?;
         let (order, produced) = self.schemas.activation_order(selected, quota.work())?;
         quota.adopt(produced)?;
         if order.as_slice() != selected {

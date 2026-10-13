@@ -1,22 +1,15 @@
 use super::*;
-use bytes::Bytes;
 
 #[tokio::test]
 async fn authority_is_fenced_and_replay_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
-    let cancel = crate::CancellationToken::new();
-
     let store = MemoryAuthorityStore::default();
     let authority_id = AuthorityId::from_bytes([1; 16]);
-    let created = store
-        .create_authority(
-            authority_id,
-            Epoch::GENESIS,
-            &mut crate::AuthorityWork::new(B, &cancel),
-            None::<&mut ()>,
-        )
-        .await
-        .map_err(|error| error.into_error(std::convert::identity))?;
-    let head = match created {
+    let created = provider!(
+        store,
+        create_authority(authority_id, Epoch::GENESIS),
+        WorkBudget::UNBOUNDED
+    )?;
+    let head = match created.value {
         CreateAuthorityOutcome::Created(head) => head,
         CreateAuthorityOutcome::Existing(_) => {
             return Err("authority unexpectedly existed".into());
@@ -25,71 +18,50 @@ async fn authority_is_fenced_and_replay_is_bounded() -> Result<(), Box<dyn std::
     let commit = ProposedCommit {
         operation_id: OperationId::from_bytes([2; 16]),
         fingerprint: Digest::from_bytes([3; 32]),
-        payload: Bytes::from_static(b"payload"),
+        payload: bytes::Bytes::from_static(b"payload"),
     };
     assert!(matches!(
-        store
-            .compare_and_append(
-                crate::GuardedAppend {
-                    authority_id: authority_id,
-                    epoch: Epoch::GENESIS,
-                    expected: head,
-                    commit: commit,
-                    permit: crate::PublicationPermit::Unrestricted
-                },
-                &mut crate::AuthorityWork::new(B, &cancel),
-                None::<&mut ()>
-            )
-            .await
-            .map_err(|error| error.into_error(std::convert::identity))?,
+        provider!(
+            store,
+            compare_and_append(authority_id, Epoch::GENESIS, head, commit),
+            WorkBudget::UNBOUNDED
+        )?
+        .value,
         AppendOutcome::Committed(_)
     ));
-    let current = store
-        .head(authority_id, &mut crate::AuthorityWork::new(B, &cancel))
-        .await?;
-    let fenced = store
-        .fence(
-            authority_id,
-            current,
-            &mut crate::AuthorityWork::new(B, &cancel),
-        )
-        .await?;
-    let FenceOutcome::Advanced(fenced_head) = fenced else {
+    let current = provider!(store, head(authority_id), WorkBudget::UNBOUNDED)?.value;
+    let fenced = provider!(store, fence(authority_id, current), WorkBudget::UNBOUNDED)?;
+    let FenceOutcome::Advanced(fenced_head) = fenced.value else {
         return Err("fresh fence conflicted".into());
     };
     assert_eq!(fenced_head.epoch.get(), 2);
-    let page = store
-        .replay(
+    let page = provider!(
+        store,
+        replay(
             authority_id,
             Sequence::GENESIS,
             ReplayLimit {
                 records: 1,
                 payload_bytes: 7,
-            },
-            &mut crate::AuthorityWork::new(B, &cancel),
-        )
-        .await
-        .map(|(value, _allocation)| value)?;
-    assert_eq!(page.len(), 1);
+            }
+        ),
+        WorkBudget::UNBOUNDED
+    )?;
+    assert_eq!(page.value.len(), 1);
     Ok(())
 }
 
 #[tokio::test]
 async fn authority_payload_and_replay_bounds_preserve_forward_progress()
 -> Result<(), Box<dyn std::error::Error>> {
-    let cancel = crate::CancellationToken::new();
-
     let store = MemoryAuthorityStore::new(2)?;
     let authority_id = AuthorityId::from_bytes([11; 16]);
-    let head = match store
-        .create_authority(
-            authority_id,
-            Epoch::GENESIS,
-            &mut crate::AuthorityWork::new(B, &cancel),
-            None::<&mut ()>,
-        )
-        .await
-        .map_err(|error| error.into_error(std::convert::identity))?
+    let head = match provider!(
+        store,
+        create_authority(authority_id, Epoch::GENESIS),
+        WorkBudget::UNBOUNDED
+    )?
+    .value
     {
         CreateAuthorityOutcome::Created(head) => head,
         CreateAuthorityOutcome::Existing(_) => {
@@ -99,68 +71,60 @@ async fn authority_payload_and_replay_bounds_preserve_forward_progress()
     let commit = ProposedCommit {
         operation_id: OperationId::from_bytes([12; 16]),
         fingerprint: Digest::from_bytes([13; 32]),
-        payload: Bytes::from_static(b"ab"),
+        payload: bytes::Bytes::from_static(b"ab"),
     };
     assert!(matches!(
-        store
-            .compare_and_append(
-                crate::GuardedAppend {
-                    authority_id: authority_id,
-                    epoch: Epoch::GENESIS,
-                    expected: head,
-                    commit: commit,
-                    permit: crate::PublicationPermit::Unrestricted
-                },
-                &mut crate::AuthorityWork::new(B, &cancel),
-                None::<&mut ()>
-            )
-            .await
-            .map_err(|error| error.into_error(std::convert::identity))?,
+        provider!(
+            store,
+            compare_and_append(authority_id, Epoch::GENESIS, head, commit),
+            WorkBudget::UNBOUNDED
+        )?
+        .value,
         AppendOutcome::Committed(_)
     ));
     assert!(matches!(
-        store
-            .replay(
+        provider!(
+            store,
+            replay(
                 authority_id,
                 Sequence::GENESIS,
                 ReplayLimit {
                     records: 1,
                     payload_bytes: 1,
-                },
-                &mut crate::AuthorityWork::new(B, &cancel)
-            )
-            .await
-            .map(|(value, _allocation)| value),
-        Err(AuthorityStoreError::ReplayRecordTooLarge {
-            observed: 2,
-            maximum: 1,
+                }
+            ),
+            WorkBudget::UNBOUNDED
+        ),
+        Err(AuthorityFailure {
+            error: AuthorityStoreError::ReplayRecordTooLarge {
+                observed: 2,
+                maximum: 1,
+            },
+            ..
         })
     ));
     let oversized = ProposedCommit {
         operation_id: OperationId::from_bytes([14; 16]),
         fingerprint: Digest::from_bytes([15; 32]),
-        payload: Bytes::from_static(b"abc"),
+        payload: bytes::Bytes::from_static(b"abc"),
     };
     assert!(matches!(
-        store
-            .compare_and_append(
-                crate::GuardedAppend {
-                    authority_id: authority_id,
-                    epoch: Epoch::GENESIS,
-                    expected: store
-                        .head(authority_id, &mut crate::AuthorityWork::new(B, &cancel))
-                        .await?,
-                    commit: oversized,
-                    permit: crate::PublicationPermit::Unrestricted
-                },
-                &mut crate::AuthorityWork::new(B, &cancel),
-                None::<&mut ()>
-            )
-            .await
-            .map_err(|error| error.into_error(std::convert::identity)),
-        Err(AuthorityStoreError::PayloadTooLarge {
-            observed: 3,
-            maximum: 2,
+        provider!(
+            store,
+            compare_and_append(
+                authority_id,
+                Epoch::GENESIS,
+                provider!(store, head(authority_id), WorkBudget::UNBOUNDED)?.value,
+                oversized
+            ),
+            WorkBudget::UNBOUNDED
+        ),
+        Err(AuthorityFailure {
+            error: AuthorityStoreError::PayloadTooLarge {
+                observed: 3,
+                maximum: 2,
+            },
+            ..
         })
     ));
     Ok(())
@@ -169,46 +133,35 @@ async fn authority_payload_and_replay_bounds_preserve_forward_progress()
 #[tokio::test]
 async fn replay_stops_at_the_payload_bound_after_contiguous_progress()
 -> Result<(), Box<dyn std::error::Error>> {
-    let cancel = crate::CancellationToken::new();
-    let mut replay_work = crate::AuthorityWork::new(B, &cancel);
-
     let store = MemoryAuthorityStore::default();
     let authority_id = AuthorityId::from_bytes([16; 16]);
-    let created = store
-        .create_authority(
-            authority_id,
-            Epoch::GENESIS,
-            &mut crate::AuthorityWork::new(B, &cancel),
-            None::<&mut ()>,
-        )
-        .await
-        .map_err(|error| error.into_error(std::convert::identity))?;
-    let CreateAuthorityOutcome::Created(mut head) = created else {
+    let created = provider!(
+        store,
+        create_authority(authority_id, Epoch::GENESIS),
+        WorkBudget::UNBOUNDED
+    )?;
+    let CreateAuthorityOutcome::Created(mut head) = created.value else {
         return Err("authority unexpectedly existed".into());
     };
     for (operation, fingerprint, payload) in [
-        ([17; 16], [18; 32], Bytes::from_static(b"aa")),
-        ([19; 16], [20; 32], Bytes::from_static(b"bb")),
+        ([17; 16], [18; 32], bytes::Bytes::from_static(b"aa")),
+        ([19; 16], [20; 32], bytes::Bytes::from_static(b"bb")),
     ] {
-        let appended = store
-            .compare_and_append(
-                crate::GuardedAppend {
-                    authority_id: authority_id,
-                    epoch: Epoch::GENESIS,
-                    expected: head,
-                    commit: ProposedCommit {
-                        operation_id: OperationId::from_bytes(operation),
-                        fingerprint: Digest::from_bytes(fingerprint),
-                        payload,
-                    },
-                    permit: crate::PublicationPermit::Unrestricted,
-                },
-                &mut crate::AuthorityWork::new(B, &cancel),
-                None::<&mut ()>,
-            )
-            .await
-            .map_err(|error| error.into_error(std::convert::identity))?;
-        let AppendOutcome::Committed(commit) = appended else {
+        let appended = provider!(
+            store,
+            compare_and_append(
+                authority_id,
+                Epoch::GENESIS,
+                head,
+                ProposedCommit {
+                    operation_id: OperationId::from_bytes(operation),
+                    fingerprint: Digest::from_bytes(fingerprint),
+                    payload,
+                }
+            ),
+            WorkBudget::UNBOUNDED
+        )?;
+        let AppendOutcome::Committed(commit) = appended.value else {
             return Err("authority append did not commit".into());
         };
         head = Head {
@@ -217,30 +170,27 @@ async fn replay_stops_at_the_payload_bound_after_contiguous_progress()
             digest: commit.digest,
         };
     }
-    let replay = store
-        .replay(
+    let replay = provider!(
+        store,
+        replay(
             authority_id,
             Sequence::GENESIS,
             ReplayLimit {
                 records: 2,
                 payload_bytes: 3,
-            },
-            &mut replay_work,
-        )
-        .await
-        .map(|(value, _allocation)| value)?;
-    assert_eq!(replay.len(), 1);
-    assert_eq!(replay[0].payload.as_ref(), b"aa");
-    assert_eq!(replay_work.spent().authority_records_read, 1);
-    assert_eq!(replay_work.spent().authority_bytes_read, 2);
+            }
+        ),
+        WorkBudget::UNBOUNDED
+    )?;
+    assert_eq!(replay.value.len(), 1);
+    assert_eq!(replay.value[0].payload.as_ref(), b"aa");
+
     Ok(())
 }
 
 #[tokio::test]
 async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
 -> Result<(), Box<dyn std::error::Error>> {
-    let cancel = crate::CancellationToken::new();
-
     assert!(matches!(
         MemoryAuthorityStore::new(0),
         Err(AuthorityStoreError::PayloadTooLarge {
@@ -251,27 +201,23 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
     let store = MemoryAuthorityStore::default();
     let authority_id = AuthorityId::from_bytes([21; 16]);
     assert!(matches!(
-        store
-            .head(authority_id, &mut crate::AuthorityWork::new(B, &cancel))
-            .await,
-        Err(AuthorityStoreError::Missing)
+        provider!(store, head(authority_id), WorkBudget::UNBOUNDED),
+        Err(AuthorityFailure {
+            error: AuthorityStoreError::Missing,
+            ..
+        })
     ));
-    let created = store
-        .create_authority(
-            authority_id,
-            Epoch::GENESIS,
-            &mut crate::AuthorityWork::new(B, &cancel),
-            None::<&mut ()>,
-        )
-        .await
-        .map_err(|error| error.into_error(std::convert::identity))?;
-    let CreateAuthorityOutcome::Created(genesis) = created else {
+    let created = provider!(
+        store,
+        create_authority(authority_id, Epoch::GENESIS),
+        WorkBudget::UNBOUNDED
+    )?;
+    let CreateAuthorityOutcome::Created(genesis) = created.value else {
         return Err("authority unexpectedly existed".into());
     };
     assert!(matches!(
-        store
-            .create_authority(authority_id, Epoch::GENESIS, &mut crate::AuthorityWork::new(B, &cancel), None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity))?
-            ,
+        provider!(store, create_authority(authority_id, Epoch::GENESIS), WorkBudget::UNBOUNDED)?
+            .value,
         CreateAuthorityOutcome::Existing(actual) if actual == genesis
     ));
     let operation_id = OperationId::from_bytes([22; 16]);
@@ -279,131 +225,96 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
     let proposed = ProposedCommit {
         operation_id,
         fingerprint,
-        payload: Bytes::from_static(b"durable"),
+        payload: bytes::Bytes::from_static(b"durable"),
     };
-    let committed = store
-        .compare_and_append(
-            crate::GuardedAppend {
-                authority_id: authority_id,
-                epoch: Epoch::GENESIS,
-                expected: genesis,
-                commit: proposed.clone(),
-                permit: crate::PublicationPermit::Unrestricted,
-            },
-            &mut crate::AuthorityWork::new(B, &cancel),
-            None::<&mut ()>,
-        )
-        .await
-        .map_err(|error| error.into_error(std::convert::identity))?;
-    let AppendOutcome::Committed(durable) = committed else {
+    let committed = provider!(
+        store,
+        compare_and_append(authority_id, Epoch::GENESIS, genesis, proposed.clone()),
+        WorkBudget::UNBOUNDED
+    )?;
+    let AppendOutcome::Committed(durable) = committed.value else {
         return Err("first append was not committed".into());
     };
     assert!(matches!(
-        store
-            .compare_and_append(crate::GuardedAppend { authority_id: authority_id, epoch: Epoch::GENESIS, expected: genesis, commit: proposed.clone(), permit: crate::PublicationPermit::Unrestricted }, &mut crate::AuthorityWork::new(B, &cancel), None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity))?
-            ,
+        provider!(store, compare_and_append(authority_id, Epoch::GENESIS, genesis, proposed.clone()), WorkBudget::UNBOUNDED)?
+            .value,
         AppendOutcome::AlreadyCommitted(actual) if actual == durable
     ));
     assert!(matches!(
-        store
-            .compare_and_append(crate::GuardedAppend { authority_id: authority_id, epoch: Epoch::GENESIS, expected: genesis, commit: ProposedCommit {
+        provider!(store, compare_and_append(authority_id, Epoch::GENESIS, genesis, ProposedCommit {
                     fingerprint: Digest::from_bytes([24; 32]),
                     ..proposed
-                }, permit: crate::PublicationPermit::Unrestricted }, &mut crate::AuthorityWork::new(B, &cancel), None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity))?
-            ,
+                }), WorkBudget::UNBOUNDED)?
+            .value,
         AppendOutcome::IdempotencyConflict {
             committed_fingerprint,
         } if committed_fingerprint == fingerprint
     ));
     assert_eq!(
-        store
-            .find_operation(
-                authority_id,
-                operation_id,
-                &mut crate::AuthorityWork::new(B, &cancel)
-            )
-            .await?,
+        provider!(
+            store,
+            find_operation(authority_id, operation_id),
+            WorkBudget::UNBOUNDED
+        )?
+        .value,
         Some(durable.clone())
     );
     assert!(
-        store
-            .find_operation(
-                authority_id,
-                OperationId::from_bytes([25; 16]),
-                &mut crate::AuthorityWork::new(B, &cancel)
-            )
-            .await?
-            .is_none()
+        provider!(
+            store,
+            find_operation(authority_id, OperationId::from_bytes([25; 16])),
+            WorkBudget::UNBOUNDED
+        )?
+        .value
+        .is_none()
     );
-    let current = store
-        .head(authority_id, &mut crate::AuthorityWork::new(B, &cancel))
-        .await?;
-    let stale = store
-        .compare_and_append(
-            crate::GuardedAppend {
-                authority_id: authority_id,
-                epoch: Epoch::GENESIS,
-                expected: genesis,
-                commit: ProposedCommit {
-                    operation_id: OperationId::from_bytes([26; 16]),
-                    fingerprint: Digest::from_bytes([27; 32]),
-                    payload: Bytes::from_static(b"stale"),
-                },
-                permit: crate::PublicationPermit::Unrestricted,
-            },
-            &mut crate::AuthorityWork::new(B, &cancel),
-            None::<&mut ()>,
-        )
-        .await
-        .map_err(|error| error.into_error(std::convert::identity))?;
+    let current = provider!(store, head(authority_id), WorkBudget::UNBOUNDED)?.value;
+    let stale = provider!(
+        store,
+        compare_and_append(
+            authority_id,
+            Epoch::GENESIS,
+            genesis,
+            ProposedCommit {
+                operation_id: OperationId::from_bytes([26; 16]),
+                fingerprint: Digest::from_bytes([27; 32]),
+                payload: bytes::Bytes::from_static(b"stale"),
+            }
+        ),
+        WorkBudget::UNBOUNDED
+    )?;
     assert!(matches!(
-        stale,
+        stale.value,
         AppendOutcome::Conflict { actual } if actual == current
     ));
-    let fenced = store
-        .fence(
-            authority_id,
-            current,
-            &mut crate::AuthorityWork::new(B, &cancel),
-        )
-        .await?;
-    let FenceOutcome::Advanced(fenced_head) = fenced else {
+    let fenced = provider!(store, fence(authority_id, current), WorkBudget::UNBOUNDED)?;
+    let FenceOutcome::Advanced(fenced_head) = fenced.value else {
         return Err("fresh fence conflicted".into());
     };
     assert_eq!(fenced_head.epoch.get(), 2);
-    let repeated_fence = store
-        .fence(
-            authority_id,
-            current,
-            &mut crate::AuthorityWork::new(B, &cancel),
-        )
-        .await?;
+    let repeated_fence = provider!(store, fence(authority_id, current), WorkBudget::UNBOUNDED)?;
     assert_eq!(
-        repeated_fence,
+        repeated_fence.value,
         FenceOutcome::Conflict {
             actual: fenced_head
         }
     );
-    let wrong_epoch = store
-        .compare_and_append(
-            crate::GuardedAppend {
-                authority_id: authority_id,
-                epoch: Epoch::GENESIS,
-                expected: fenced_head,
-                commit: ProposedCommit {
-                    operation_id: OperationId::from_bytes([28; 16]),
-                    fingerprint: Digest::from_bytes([29; 32]),
-                    payload: Bytes::from_static(b"fenced"),
-                },
-                permit: crate::PublicationPermit::Unrestricted,
-            },
-            &mut crate::AuthorityWork::new(B, &cancel),
-            None::<&mut ()>,
-        )
-        .await
-        .map_err(|error| error.into_error(std::convert::identity))?;
+    let wrong_epoch = provider!(
+        store,
+        compare_and_append(
+            authority_id,
+            Epoch::GENESIS,
+            fenced_head,
+            ProposedCommit {
+                operation_id: OperationId::from_bytes([28; 16]),
+                fingerprint: Digest::from_bytes([29; 32]),
+                payload: bytes::Bytes::from_static(b"fenced"),
+            }
+        ),
+        WorkBudget::UNBOUNDED
+    )?;
     assert!(matches!(
-        wrong_epoch,
+        wrong_epoch.value,
         AppendOutcome::Fenced { actual_epoch } if actual_epoch == fenced_head.epoch
     ));
     for invalid in [
@@ -417,32 +328,34 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
         },
     ] {
         assert!(matches!(
-            store
-                .replay(
-                    authority_id,
-                    Sequence::GENESIS,
-                    invalid,
-                    &mut crate::AuthorityWork::new(B, &cancel)
-                )
-                .await
-                .map(|(value, _allocation)| value),
-            Err(AuthorityStoreError::InvalidReplayLimit)
+            provider!(
+                store,
+                replay(authority_id, Sequence::GENESIS, invalid),
+                WorkBudget::UNBOUNDED
+            ),
+            Err(AuthorityFailure {
+                error: AuthorityStoreError::InvalidReplayLimit,
+                ..
+            })
         ));
     }
     assert!(matches!(
-        store
-            .replay(
+        provider!(
+            store,
+            replay(
                 authority_id,
                 Sequence::new(2),
                 ReplayLimit {
                     records: 1,
                     payload_bytes: 16,
-                },
-                &mut crate::AuthorityWork::new(B, &cancel)
-            )
-            .await
-            .map(|(value, _allocation)| value),
-        Err(AuthorityStoreError::ReplayCursorAhead { .. })
+                }
+            ),
+            WorkBudget::UNBOUNDED
+        ),
+        Err(AuthorityFailure {
+            error: AuthorityStoreError::Rejected(_),
+            ..
+        })
     ));
     Ok(())
 }

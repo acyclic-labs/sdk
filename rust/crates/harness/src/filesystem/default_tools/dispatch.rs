@@ -85,7 +85,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                         };
                         let payload = crate::executor::with_history_io(Some(&temporary), |work| {
                             crate::wire_codec::CodecQuota::produce(work, |quota| {
-                                crate::core::copy_value(&payload, quota)
+                                crate::core::copy(&payload, quota, |value, _| crate::executor::json::json_value_logical_owned_bytes(value))
                             })
                         })?
                         .0;

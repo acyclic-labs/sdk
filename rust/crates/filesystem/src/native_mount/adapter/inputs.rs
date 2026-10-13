@@ -27,48 +27,24 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
 
     pub(super) fn vec<T>(&mut self, count: usize) -> Result<Vec<T>, MountSourceError> {
         if let Some(work) = self.carrier.original_native_work() {
-            let owned = crate::kernel::Owned::<Vec<T>>::allocate(
-                count,
-                &mut crate::kernel::KernelAccounting::native(&work, work.cancellation()),
-            )
-            .map_err(fs_error)?;
-            let crate::kernel::KernelOwnedAllocation::NativeOriginal(mut allocation) =
-                owned.allocation
-            else {
-                unreachable!("native vector accounting");
-            };
+            let (values, mut allocation) = crate::native_host::buffer(count, &mut &work)
+                .map_err(MountSourceError::NativeWork)?;
             self.allocation
                 .as_mut()
                 .expect("native inputs")
                 .absorb(&mut allocation)
                 .map_err(MountSourceError::NativeWork)?;
-            return Ok(owned.value);
+            return Ok(values);
         }
-        let requested = count
-            .checked_mul(std::mem::size_of::<T>())
-            .and_then(|bytes| u64::try_from(bytes).ok())
-            .ok_or(MountSourceError::Work(WorkError::Overflow))?;
-        let vector = self
+        let (values, bytes) = self
             .carrier
-            .with_work(|work| super::lazy::mount_vec::<T>(count, work))?;
+            .with_work(|work| crate::native_host::buffer(count, work))
+            .map_err(super::lazy::mount_demand_error)?;
         self.bytes = self
             .bytes
-            .checked_add(requested)
+            .checked_add(bytes)
             .ok_or(MountSourceError::Work(WorkError::Overflow))?;
-        let actual = vector
-            .capacity()
-            .checked_mul(std::mem::size_of::<T>())
-            .and_then(|bytes| u64::try_from(bytes).ok())
-            .ok_or(MountSourceError::Work(WorkError::Overflow))?;
-        let mut retained = requested;
-        let reconciled = self
-            .carrier
-            .with_work(|work| work.reconcile_native_allocation(&mut retained, actual));
-        self.bytes = (self.bytes - requested)
-            .checked_add(retained)
-            .ok_or(MountSourceError::Work(WorkError::Overflow))?;
-        reconciled.map_err(super::lazy::mount_demand_error)?;
-        Ok(vector)
+        Ok(values)
     }
 
     pub(super) fn copy_bytes(&mut self, bytes: &[u8]) -> Result<Vec<u8>, MountSourceError> {
@@ -158,10 +134,7 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
             Some(work) => work.charge(delta).map_err(MountSourceError::NativeWork),
             None => self
                 .carrier
-                .with_work(|work| {
-                    work.admit(delta)?;
-                    work.record(delta)
-                })
+                .with_work(|work| work.charge(delta))
                 .map_err(super::lazy::mount_demand_error),
         }
     }

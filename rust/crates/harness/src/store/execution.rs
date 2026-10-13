@@ -87,7 +87,11 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     } => {
                         let mut retained = crate::wire_codec::CodecQuota::from_retained(work, 0);
                         let (effect, bytes) = self
-                            .effect(*effect_id, self.effect_history_limits, retained.work())
+                            .effect(
+                                *effect_id,
+                                default_projection_read_limits(),
+                                retained.work(),
+                            )
                             .await?
                             .ok_or_else(|| {
                                 guarded_boundary(
@@ -146,7 +150,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         if !fresh_migration {
             if let Some(effect_id) = self.reducer.archived_effect_for_command(command)
                 && let Some(effect) = self
-                    .effect(effect_id, self.effect_history_limits, &mut None)
+                    .effect(effect_id, default_projection_read_limits(), &mut None)
                     .await
                     .map(|state| state.map(|(state, _)| state))?
             {

@@ -9,7 +9,7 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    pub(super) async fn preparation_source(
+    pub(in crate::filesystem) async fn preparation(
         &self,
         context: &WorkerContext,
         token: &TaskResourcePreparation,
@@ -17,6 +17,7 @@ where
         reconciliation_only: bool,
         io: Option<&PreparationIo>,
     ) -> Result<RetainedSourceBinding<A, O>> {
+        native_io(io)?;
         if io.and_then(PreparationIo::original_native_work).is_some() {
             check_cancellation(cancellation, io)?;
         }
@@ -71,16 +72,16 @@ where
                 "preparation changed its retained sealed Project source",
             ));
         }
+        let ordinary;
+        let observer = match io {
+            Some(io) => io,
+            None => {
+                ordinary = PreparationIo::from_budget(self.config.content_budget, cancellation)?;
+                &ordinary
+            }
+        };
         if let Some(checkpoint) = &preparation.source_checkpoint {
-            let ordinary;
-            let content_io = match io {
-                Some(io) => io,
-                None => {
-                    ordinary = PreparationIo::from_budget(self.config.content_budget, cancellation)?;
-                    &ordinary
-                }
-            };
-            let bytes = reader.read_file(checkpoint, Some(content_io)).await?;
+            let bytes = reader.read_file(checkpoint, Some(observer)).await?;
             let record: RecursiveForkSourceIntent = match io {
                 #[cfg(not(target_arch = "wasm32"))]
                 Some(io) => crate::filesystem::retain_decoded(io.decode(
@@ -101,14 +102,6 @@ where
                 ));
             }
         }
-        let ordinary;
-        let observer = match io {
-            Some(io) => io,
-            None => {
-                ordinary = PreparationIo::from_budget(self.config.content_budget, cancellation)?;
-                &ordinary
-            }
-        };
         let reducer = self
             .open(&caller.owner, Some(request.parent_revision), Some(observer))
             .await?

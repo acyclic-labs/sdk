@@ -184,7 +184,7 @@ impl Reducer {
             work,
         )?;
         let revision = next_revision(self.revision)?;
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut quota = CodecQuota::new(work, 0)?;
         let payload = self.transition_with_work(&command.action, archived_effect, &mut quota)?;
         let mut event = Event {
             revision,
@@ -193,14 +193,22 @@ impl Reducer {
             scope: RecordedScope {
                 id: copying::copy_text(&command.scope.id, &mut quota)?,
                 issuer: copying::copy_text(&command.scope.issuer, &mut quota)?,
-                capabilities: copying::copy_capabilities(&command.scope.capabilities, &mut quota)?,
+                capabilities: copy(
+                    &command.scope.capabilities,
+                    &mut quota,
+                    |value: &Capabilities, _| value.logical_owned_bytes(),
+                )?,
                 agent: command.scope.agent,
             },
             attestation: [0; 32],
             causal_parent: command
                 .causal_parent
                 .as_ref()
-                .map(|parent| copying::copy_reference(parent, &mut quota))
+                .map(|parent| {
+                    copy(parent, &mut quota, |value: &EventReference, _| {
+                        Ok(value.authority.id.capacity() as u64)
+                    })
+                })
                 .transpose()?,
             payload,
         };
@@ -263,16 +271,7 @@ impl Reducer {
                         "fork must be published by the parent agent".into(),
                     ));
                 };
-                if let Err(error) = seed.validate(work) {
-                    return Err(if work.is_some() {
-                        error
-                    } else {
-                        Error::Invalid(
-                            "fork manifest is not bound to its operation and parent revision"
-                                .into(),
-                        )
-                    });
-                }
+                seed.validate(work)?;
                 if seed.operation_id != operation_id
                     || seed.parent != self.authority
                     || seed.parent_revision != self.revision
@@ -281,19 +280,7 @@ impl Reducer {
                         "fork manifest is not bound to its operation and parent revision".into(),
                     ));
                 }
-                if let Err(error) = self.validate_fork_reference_ownership(seed, None, work) {
-                    return Err(if work.is_some() {
-                        error
-                    } else {
-                        Error::Invalid(
-                            "fork manifest is not bound to its operation and parent revision"
-                                .into(),
-                        )
-                    });
-                }
-                if let Some(io) = work.as_deref() {
-                    io.check_cancellation()?;
-                }
+                self.validate_fork_reference_ownership(seed, None, work)?;
                 for capture in &seed.resources {
                     let volume = match &capture.source {
                         crate::fork::ResourceRevision::PrivateVolume { volume, .. } => {
