@@ -289,15 +289,7 @@ impl PiSession {
                 WorkspaceGraph::new(self.resources.store.clone())
                     .register_root(handle.workspace.workspace())
                     .await
-                    .map_err(|source| match source {
-                        acyclic_fs::WorkspaceLineageError::Workspace(source) => {
-                            RootError::NativeWorkspace {
-                                source,
-                                custody: None,
-                            }
-                        }
-                        source => RootError::Storage(display(source)),
-                    })?,
+                    .map_err(|source| RootError::Storage(display(source)))?,
             );
             let mut io = acyclic_harness::store::HistoryWork::new(
                 acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,

@@ -725,7 +725,10 @@ async fn original_native_first_dispatch_pending(
     }
     let outcome = host.outcome_with_native_work(task, work)?.await?;
     if host
-        .cancellation_requested(task, Some(&PreparationIo::from_native_work(work)?))
+        .cancellation_requested(
+            task,
+            &mut Some(&mut &PreparationIo::from_native_work(work)?),
+        )
         .await?
         || outcome.0.is_some()
     {
