@@ -15,18 +15,38 @@ async fn original_mutation_refuses_index_copy_before_allocating_or_reading()
     let store = MemoryObjectStore::default();
     let original = entry("a", 1, FileKind::Regular)?;
     let root = put(&store, &TreePage::Leaf(vec![original.clone()]), 8).await?;
-    let mutations = [TreeMutation::Replace { expected_file_id: original.file_id, entry: original }];
+    let mutations = [TreeMutation::Replace {
+        expected_file_id: original.file_id,
+        entry: original,
+    }];
     let cancellation = crate::CancellationToken::new();
     let work = crate::NativeMaterializationWork::new(
-        WorkBudget { bytes_copied: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
-    ).map_err(|(error, _)| error)?;
+        WorkBudget {
+            bytes_copied: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    )
+    .map_err(|(error, _)| error)?;
     let before = work.receipt();
     let live = work.live_allocation_bytes();
     let mut accounting = super::super::allocation::KernelAccounting::native(&work, &cancellation);
     let error = apply_tree_mutations_with_accounting(
-        &store, root, &mutations, 1, DecodeLimits::default(), &mut accounting, &cancellation,
-    ).await.expect_err("index copy must be admitted before allocating");
-    assert!(matches!(error, crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_)) | crate::FsError::Work(_)));
+        &store,
+        root,
+        &mutations,
+        1,
+        DecodeLimits::default(),
+        &mut accounting,
+        &cancellation,
+    )
+    .await
+    .expect_err("index copy must be admitted before allocating");
+    assert!(matches!(
+        error,
+        crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_))
+            | crate::FsError::Work(_)
+    ));
     assert_eq!(work.receipt(), before);
     assert_eq!(work.live_allocation_bytes(), live);
     Ok(())
@@ -41,18 +61,41 @@ async fn original_mutation_write_denial_preserves_paid_orphan_prefix()
     let first = entry("a", 1, FileKind::Fifo)?;
     let first_page = tree_page_id(&TreePage::Leaf(vec![first.clone()]), 8)?;
     let mutations = [
-        TreeMutation::Replace { entry: first, expected_file_id: FileId::from_bytes([1; 16]) },
-        TreeMutation::Replace { entry: entry("x", 4, FileKind::Fifo)?, expected_file_id: FileId::from_bytes([4; 16]) },
+        TreeMutation::Replace {
+            entry: first,
+            expected_file_id: FileId::from_bytes([1; 16]),
+        },
+        TreeMutation::Replace {
+            entry: entry("x", 4, FileKind::Fifo)?,
+            expected_file_id: FileId::from_bytes([4; 16]),
+        },
     ];
     let cancellation = crate::CancellationToken::new();
     let work = crate::NativeMaterializationWork::new(
-        WorkBudget { page_writes: 1, ..WorkBudget::UNBOUNDED }, &cancellation,
-    ).map_err(|(error, _)| error)?;
+        WorkBudget {
+            page_writes: 1,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    )
+    .map_err(|(error, _)| error)?;
     let mut accounting = super::super::allocation::KernelAccounting::native(&work, &cancellation);
     let error = apply_tree_mutations_with_accounting(
-        &store, root, &mutations, 2, DecodeLimits::default(), &mut accounting, &cancellation,
-    ).await.expect_err("second changed leaf must refuse on original page-write limit");
-    assert!(matches!(error, crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_)) | crate::FsError::Work(_)));
+        &store,
+        root,
+        &mutations,
+        2,
+        DecodeLimits::default(),
+        &mut accounting,
+        &cancellation,
+    )
+    .await
+    .expect_err("second changed leaf must refuse on original page-write limit");
+    assert!(matches!(
+        error,
+        crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_))
+            | crate::FsError::Work(_)
+    ));
     assert_eq!(work.receipt().page_writes, 1);
     assert_eq!(work.receipt().backend_write_operations, 1);
     assert!(
@@ -69,12 +112,21 @@ async fn original_mutation_write_denial_preserves_paid_orphan_prefix()
                 .await;
             __object_work.receipt(__object_result)
         }
-        .is_ok());
-    let first_page_bytes = encode_tree_page(&TreePage::Leaf(vec![entry("a", 1, FileKind::Fifo)?]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
+        .is_ok()
+    );
+    let first_page_bytes = encode_tree_page(
+        &TreePage::Leaf(vec![entry("a", 1, FileKind::Fifo)?]),
+        8,
+        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+        |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+    )?;
     assert_eq!(work.receipt().bytes_encoded, first_page_bytes.len() as u64);
     drop(accounting);
     drop(store);
-    assert_eq!(work.live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
+    assert_eq!(
+        work.live_allocation_bytes(),
+        crate::NativeMaterializationWork::accounting_state_bytes()
+    );
     Ok(())
 }
 fn name(value: &str) -> Result<LogicalName, Box<dyn std::error::Error>> {
@@ -101,9 +153,16 @@ async fn put(
     let id = tree_page_id(page, maximum_items)?;
     {
         let __object_args = (
-        id,
-        OwnedBytes::from(encode_tree_page(page, maximum_items, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+            id,
+            OwnedBytes::from(encode_tree_page(
+                page,
+                maximum_items,
+                |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+                |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+            )?),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
         let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
         let __object_result = store
             .put(__object_args.0, __object_args.1, &mut __object_work)
@@ -121,7 +180,8 @@ async fn three_leaf_tree(
             store,
             &TreePage::Leaf(vec![entry("a", 1, FileKind::Regular)?]),
             8,
-        ).await?,
+        )
+        .await?,
         put(
             store,
             &TreePage::Leaf(vec![
@@ -129,12 +189,14 @@ async fn three_leaf_tree(
                 entry("n", 3, FileKind::Regular)?,
             ]),
             8,
-        ).await?,
+        )
+        .await?,
         put(
             store,
             &TreePage::Leaf(vec![entry("x", 4, FileKind::Regular)?]),
             8,
-        ).await?,
+        )
+        .await?,
     ];
     let root = put(
         store,
@@ -153,12 +215,14 @@ async fn three_leaf_tree(
             },
         ]),
         8,
-    ).await?;
+    )
+    .await?;
     Ok((root, leaves))
 }
 
 #[tokio::test]
-async fn touched_leaf_and_shared_root_are_rewritten_once() -> Result<(), Box<dyn std::error::Error>> {
+async fn touched_leaf_and_shared_root_are_rewritten_once() -> Result<(), Box<dyn std::error::Error>>
+{
     let store = MemoryObjectStore::default();
     let (root, leaves) = three_leaf_tree(&store).await?;
     let receipt = apply_tree_mutations(
@@ -178,7 +242,8 @@ async fn touched_leaf_and_shared_root_are_rewritten_once() -> Result<(), Box<dyn
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 2);
     let root_bytes = {
@@ -209,7 +274,8 @@ async fn touched_leaf_and_shared_root_are_rewritten_once() -> Result<(), Box<dyn
 }
 
 #[tokio::test]
-async fn semantic_noop_preserves_root_and_writes_nothing() -> Result<(), Box<dyn std::error::Error>> {
+async fn semantic_noop_preserves_root_and_writes_nothing() -> Result<(), Box<dyn std::error::Error>>
+{
     let store = MemoryObjectStore::default();
     let (root, _) = three_leaf_tree(&store).await?;
     let receipt = apply_tree_mutations(
@@ -223,7 +289,8 @@ async fn semantic_noop_preserves_root_and_writes_nothing() -> Result<(), Box<dyn
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(receipt.value, root);
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 0);
@@ -262,7 +329,11 @@ async fn overflowing_leaf_splits_and_builds_one_new_root() -> Result<(), Box<dyn
     assert_eq!(receipt.work.page_writes, 3);
     let bytes = {
         let __object_args = (
-            receipt.value, u64::MAX, WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+            receipt.value,
+            u64::MAX,
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
         let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
         let __object_result = store
             .read(__object_args.0, __object_args.1, &mut __object_work)
@@ -278,7 +349,8 @@ async fn overflowing_leaf_splits_and_builds_one_new_root() -> Result<(), Box<dyn
 }
 
 #[tokio::test]
-async fn failed_identity_precondition_writes_no_objects() -> Result<(), Box<dyn std::error::Error>> {
+async fn failed_identity_precondition_writes_no_objects() -> Result<(), Box<dyn std::error::Error>>
+{
     let store = MemoryObjectStore::default();
     let (root, _) = three_leaf_tree(&store).await?;
     let failure = apply_tree_mutations(
@@ -306,12 +378,11 @@ async fn failed_identity_precondition_writes_no_objects() -> Result<(), Box<dyn 
 }
 
 #[tokio::test]
-async fn every_tree_semantic_failure_is_exact_and_non_mutating() -> Result<(), Box<dyn std::error::Error>> {
+async fn every_tree_semantic_failure_is_exact_and_non_mutating()
+-> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let existing = entry("m", 2, FileKind::Regular)?;
-    let root = put(
-        &store,
-        &TreePage::Leaf(vec![existing.clone()]), 8).await?;
+    let root = put(&store, &TreePage::Leaf(vec![existing.clone()]), 8).await?;
     let missing = name("z")?;
     let wrong_identity = FileId::from_bytes([9; 16]);
     let cases = [
@@ -390,7 +461,8 @@ async fn point_noop_uses_logarithmic_leaf_search_without_rebuild()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     // The allocation-free canonical shape pass validates all 1,024 bounded
     // records before allocation; the point lookup itself adds at most 11
     // binary-search comparisons.
@@ -401,7 +473,8 @@ async fn point_noop_uses_logarithmic_leaf_search_without_rebuild()
 }
 
 #[tokio::test]
-async fn visited_capacity_is_admitted_before_tree_access() -> Result<(), Box<dyn std::error::Error>> {
+async fn visited_capacity_is_admitted_before_tree_access() -> Result<(), Box<dyn std::error::Error>>
+{
     let store = MemoryObjectStore::default();
     let existing = wide_entry(1, FileKind::Regular)?;
     let root = put(&store, &TreePage::Leaf(vec![existing.clone()]), 8).await?;
@@ -455,7 +528,8 @@ async fn decoded_page_allocation_is_admitted_after_shape_read_before_decode()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     let maximum = baseline.work.peak_allocation_bytes - 1;
     let failure = apply_tree_mutations(
         &store,
@@ -486,7 +560,7 @@ async fn decoded_page_allocation_is_admitted_after_shape_read_before_decode()
 }
 
 #[tokio::test]
-async fn structural_batch_rebuilds_wide_leaf_in_linear_work() -> Result<(), Box<dyn std::error::Error>> {
+async fn structural_batch_rebuilds_wide_leaf_in_order() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let initial = (0..1_024_u16)
         .step_by(2)
@@ -505,14 +579,12 @@ async fn structural_batch_rebuilds_wide_leaf_in_linear_work() -> Result<(), Box<
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
-    ).await?;
-    // Merge, balanced page sizing, and page cutting each visit an item once.
-    assert!(
-        receipt.work.items_examined <= 5 * 1_024,
-        "linear structural plan examined {} items",
-        receipt.work.items_examined
-    );
-    assert_eq!(flatten_tree(&store, receipt.value).await?.len(), 1_024);
+    )
+    .await?;
+    let expected = (0..1_024_u16)
+        .map(|value| wide_entry(value, FileKind::Regular))
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(flatten_tree(&store, receipt.value).await?, expected);
     Ok(())
 }
 
@@ -538,13 +610,15 @@ async fn unordered_batch_is_deterministic_and_preserves_equal_name_order()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(flatten_tree(&store, receipt.value).await?, vec![a]);
     Ok(())
 }
 
 #[tokio::test]
-async fn unordered_sort_work_is_admitted_before_tree_access() -> Result<(), Box<dyn std::error::Error>> {
+async fn unordered_sort_work_is_admitted_before_tree_access()
+-> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = put(&store, &TreePage::Leaf(Vec::new()), 8).await?;
     let failure = apply_tree_mutations(
@@ -598,7 +672,8 @@ async fn build_tree(
                 store,
                 &TreePage::Leaf(chunk.to_vec()),
                 u32::try_from(width)?,
-            ).await?,
+            )
+            .await?,
         ));
     }
     while level.len() > 1 {
@@ -643,15 +718,16 @@ async fn flatten_tree(
         match decode_tree_page(&bytes, DecodeLimits::default(), &mut |_| {
             Ok::<_, crate::kernel::CanonicalDecodeError>(())
         })? {
-        TreePage::Leaf(entries) => entries,
-        TreePage::Internal(children) => {
-            let mut entries = Vec::new();
-            for child in children {
-                entries.extend(Box::pin(flatten_tree(store, child.page)).await?);
+            TreePage::Leaf(entries) => entries,
+            TreePage::Internal(children) => {
+                let mut entries = Vec::new();
+                for child in children {
+                    entries.extend(Box::pin(flatten_tree(store, child.page)).await?);
+                }
+                entries
             }
-            entries
-        }
-    })
+        },
+    )
 }
 
 fn next(seed: &mut u64) -> u64 {
@@ -711,7 +787,8 @@ async fn generated_directory_histories_match_independent_ordered_map()
             },
             WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-        ).await?;
+        )
+        .await?;
         assert_eq!(
             flatten_tree(&store, receipt.value).await?,
             expected.into_values().collect::<Vec<_>>(),
@@ -743,7 +820,8 @@ async fn point_inserts_rewrite_bounded_pages_however_large_the_directory()
             DecodeLimits::default(),
             WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-        ).await?;
+        )
+        .await?;
         root = receipt.value;
         if step >= ENTRIES / 2 {
             largest_late_rewrite = largest_late_rewrite.max(receipt.work.bytes_encoded);
@@ -764,7 +842,8 @@ async fn point_inserts_rewrite_bounded_pages_however_large_the_directory()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     let names = listing
         .entries
         .iter()

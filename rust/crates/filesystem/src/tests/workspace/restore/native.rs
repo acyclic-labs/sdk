@@ -25,7 +25,6 @@ async fn native_selected_restore_honors_the_real_retained_authority_reservation(
             &cancellation,
         )
         .await?;
-    let before = original.receipt();
     let key = IdempotencyKey::new();
     let paths = vec!["/selected".to_owned()];
     let mut allow =

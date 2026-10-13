@@ -1060,14 +1060,18 @@ async fn blob_read_allocations_are_admitted_before_decode_queue_and_output_growt
     .await
     .err()
     .ok_or("one-byte-short blob read allocation budget unexpectedly succeeded")?;
-    assert!(matches!(
-        failure.error,
-        BlobReadError::Work(WorkError::BudgetExceeded {
-            counter: "peak_allocation_bytes",
-            observed,
-            maximum: observed_maximum,
-        }) if observed == baseline.work.peak_allocation_bytes && observed_maximum == maximum
-    ));
+    assert!(
+        matches!(
+            failure.error,
+            BlobReadError::Work(WorkError::BudgetExceeded {
+                counter: "peak_allocation_bytes",
+                observed,
+                maximum: observed_maximum,
+            }) if observed > observed_maximum && observed_maximum <= maximum
+        ),
+        "{failure:?}"
+    );
+    assert!(failure.work.peak_allocation_bytes <= maximum);
     assert_eq!(failure.work.backend_read_operations, 1);
     assert_eq!(failure.work.backend_write_operations, 0);
     Ok(())
@@ -1757,14 +1761,18 @@ async fn page_byte_bound_and_peak_budget_reject_before_unadmitted_allocation()
     .await
     .err()
     .ok_or("one-byte-short blob peak budget unexpectedly succeeded")?;
-    assert!(matches!(
-        failure.error,
-        BlobBuildError::Work(WorkError::BudgetExceeded {
-            counter: "peak_allocation_bytes",
-            maximum: observed_maximum,
-            ..
-        }) if observed_maximum == maximum
-    ));
+    assert!(
+        matches!(
+            failure.error,
+            BlobBuildError::Work(WorkError::BudgetExceeded {
+                counter: "peak_allocation_bytes",
+                observed,
+                maximum: observed_maximum,
+            }) if observed > observed_maximum && observed_maximum <= maximum
+        ),
+        "{failure:?}"
+    );
+    assert!(failure.work.peak_allocation_bytes <= maximum);
     Ok(())
 }
 

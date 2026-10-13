@@ -59,6 +59,14 @@ impl MetadataRefusingObjects {
 }
 
 impl AsyncObjectStore for MetadataRefusingObjects {
+    async fn put_hashed(
+        &self,
+        object: crate::storage::HashedObject,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        self.admit(object.object_id())?;
+        self.inner.put_hashed(object, context).await
+    }
     async fn put(
         &self,
         object_id: ObjectId,
