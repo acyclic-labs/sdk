@@ -89,7 +89,7 @@ where
             let admitted = owner
                 .runtime
                 .task_host()
-                .observe_admission_with_native_work(caller, work)
+                .observe_admission_with_native_work(caller, work)?
                 .await?;
             if admitted.0.grants != *context.scope().grants()
                 || admitted.0.limits != context.scope().limits()

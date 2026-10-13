@@ -374,7 +374,7 @@ impl PiSession {
                         .runtime
                         .runtime
                         .task_host()
-                        .observe_admission_with_native_work(plan.preparation.task_id(), &work)
+                        .observe_admission_with_native_work(plan.preparation.task_id(), &work)?
                         .await?;
                     let admission = admission;
                     if admission != plan.preparation {
@@ -1181,11 +1181,11 @@ impl PiSession {
     ) -> acyclic_harness::Result<()> {
         let host = self.runtime.runtime.task_host();
         let (preparation, preparation_custody) = host
-            .observe_admission_with_native_work(plan.preparation.task_id(), work)
+            .observe_admission_with_native_work(plan.preparation.task_id(), work)?
             .await?;
         let preparation = preparation;
         let (child, child_custody) = host
-            .observe_admission_with_native_work(plan.request.child.task_id(), work)
+            .observe_admission_with_native_work(plan.request.child.task_id(), work)?
             .await?;
         let child = child;
         if preparation != plan.preparation || child != plan.request.child {
@@ -1203,7 +1203,7 @@ impl PiSession {
         drop(preparation);
         drop(preparation_custody);
         let (outcome, outcome_custody) = host
-            .outcome_with_native_work(plan.preparation.task_id(), work)
+            .outcome_with_native_work(plan.preparation.task_id(), work)?
             .await?;
         let outcome = outcome;
         let Some(Outcome::Succeeded(value)) = outcome else {
@@ -1406,7 +1406,7 @@ impl PiSession {
         let host = self.runtime.runtime.task_host();
         let preparation = acyclic_harness::runtime::task_id_for_admission(operations.preparation);
         let (preparation_outcome, preparation_custody) =
-            match host.outcome_with_native_work(preparation, work).await {
+            match host.outcome_with_native_work(preparation, work)?.await {
                 Ok((value, custody)) => (value, Some(custody)),
                 Err(acyclic_harness::Error::NotFound(_)) if !created => (None, None),
                 Err(error) => return Err(error),
@@ -1414,7 +1414,7 @@ impl PiSession {
         let preparation_outcome = preparation_outcome;
         let (outcome, outcome_custody) = if created {
             let (outcome, custody) = host
-                .outcome_with_native_work(commit.child.task_id, work)
+                .outcome_with_native_work(commit.child.task_id, work)?
                 .await?;
             (outcome, Some(custody))
         } else {

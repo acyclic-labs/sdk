@@ -180,7 +180,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             std::borrow::Cow::Borrowed(&record.input),
             io,
         )?;
-        if record.checkpoint()? != (&next.machine, next.revision, &next.state) || transition != record.transition {
+        if record.checkpoint()? != (&next.machine, next.revision, &next.state)
+            || transition != record.transition
+        {
             return Err(Error::Conflict(
                 "workflow transition differs from pinned machine".into(),
             ));
@@ -352,7 +354,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             io.hashed_bytes(publication.bytes.len() as u64)?;
         }
         let payload = blake3::hash(&publication.bytes);
-        let digest = crate::contract::canonical_json_digest(
+        let digest = crate::executor::json::canonical_json_digest(
             &(
                 "harness/v2/owned-publication",
                 key.as_bytes(),
@@ -451,7 +453,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             "workflows"
         };
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let path = acyclic_stream::StreamPath::new(crate::contract::preparation_format(
+        let path = acyclic_stream::StreamPath::new(crate::executor::preparation_format(
             format_args!("harness/v2/{class}/{}", self.operation_id()),
             quota.work(),
         )?)?;
@@ -501,7 +503,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if let Some(io) = work.as_deref_mut() {
             io.hashed_bytes(bytes.len() as u64)?;
         }
-        let digest = crate::contract::canonical_json_digest(
+        let digest = crate::executor::json::canonical_json_digest(
             &(
                 "harness/v2/owned-journal",
                 key.as_bytes(),

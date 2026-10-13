@@ -108,7 +108,7 @@ impl<'a> PiForkCoordinator<'a> {
             .runtime
             .runtime
             .task_host()
-            .observe_admission_with_native_work(commit.source_task, &self.work)
+            .observe_admission_with_native_work(commit.source_task, &self.work)?
             .await?;
         let source_input: (PiTaskInput, acyclic_fs::NativeAllocation) = self.decode_input_value(
             &source_admission.0.input,

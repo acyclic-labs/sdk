@@ -279,7 +279,7 @@ struct TaskJournalMailbox<P: StreamProvider> {
 
 impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJournalMailbox<P> {
     fn validate_scope(&self, scope: &RuntimeScope) -> Result<()> {
-        self.owner.as_ref().require_mail_scope(scope, &mut None)
+        self.owner.as_ref().require_mail_scope(scope, None)
     }
     fn task_binding(&self) -> (TaskId, &LeaseFence) {
         self.owner.as_ref().task_binding()
@@ -305,7 +305,7 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
         }
         self.owner
             .as_ref()
-            .require_mail_scope_with_native_work(scope, work)
+            .require_mail_scope(scope, Some(&crate::executor::PreparationIo::from_native_work(work)?))
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn send_with_native_work<'a>(

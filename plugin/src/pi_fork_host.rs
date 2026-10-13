@@ -393,7 +393,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
                 .task_host()
                 .readonly_journal_owner_with_native_work(command.commit.source_task, work)
                 .await?;
-            let outcome = source_owner.outcome_with_native_work(work).await?;
+            let outcome = source_owner.outcome_with_native_work(work)?.await?;
             if outcome
                 .0
                 .as_ref()

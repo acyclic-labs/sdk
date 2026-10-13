@@ -202,14 +202,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let operation = OperationId::from_bytes(task.into_bytes());
         let key = format!("task-command-wake:{task}:{revision}:{waiting}");
         let input = self.payloads.stage(operation, &key, b"null", None)?.await?;
-        let admission = self.admission(operation).await?;
+        let admission = self.admission(operation, None).await?;
         admission.limits.validate_file(&input, &mut None)?;
         if !read_granted(&admission.grants, &input)? {
             return Err(Error::Unauthorized(
                 "task cannot read its command wake".into(),
             ));
         }
-        self.read_json(&input).await?;
+        self.read_json(&input, None).await?;
         self.coordinator
             .lock()
             .await
@@ -237,14 +237,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         key: IdempotencyKey,
     ) -> Result<()> {
         let operation_id = OperationId::from_bytes(task.into_bytes());
-        let admission = self.admission(operation_id).await?;
+        let admission = self.admission(operation_id, None).await?;
         admission.limits.validate_file(&input, &mut None)?;
         if !read_granted(&admission.grants, &input)? {
             return Err(Error::Unauthorized(
                 "task cannot read its workflow resume input".into(),
             ));
         }
-        self.read_json(&input).await?;
+        self.read_json(&input, None).await?;
         self.coordinator
             .lock()
             .await
@@ -271,7 +271,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         fence: &crate::scheduler::LeaseFence,
     ) -> Result<Option<(u64, Value)>> {
         let operation_id = OperationId::from_bytes(task.into_bytes());
-        let admission = self.admission(operation_id).await?;
+        let admission = self.admission(operation_id, None).await?;
         let slot = {
             let mut coordinator = self.coordinator.lock().await;
             coordinator.refresh(&mut None).await?;
@@ -295,7 +295,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "task cannot read its retained workflow input".into(),
             ));
         }
-        let value = self.read_json(&input).await?;
+        let value = self.read_json(&input, None).await?;
         self.verify_owner(task, fence, false).await?;
         Ok(Some((slot.revision, value)))
     }
