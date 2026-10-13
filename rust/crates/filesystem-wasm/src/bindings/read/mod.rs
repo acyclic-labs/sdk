@@ -220,7 +220,7 @@ impl BrowserCheckout {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
         let receipt = browser_call!(
             self,
-            read_file_range_by_id(file_id, ByteRange { offset, length },)
+            read_file_range(file_id, ByteRange { offset, length },)
         )?;
         ts(BrowserFileReadResult {
             bytes: receipt.value.bytes.to_vec(),

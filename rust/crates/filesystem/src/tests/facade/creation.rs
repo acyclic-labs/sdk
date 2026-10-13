@@ -167,7 +167,7 @@ async fn pre_cancelled_existing_volume_surfaces_fail_before_visible_work()
         "cancelled identity record"
     );
     cancelled!(
-        checkout.read_file_range_by_id(file_id, range, B, &cancelled_token,),
+        checkout.read_file_range(file_id, range, B, &cancelled_token,),
         "cancelled identity read"
     );
     cancelled!(

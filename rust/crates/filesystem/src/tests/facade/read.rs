@@ -519,7 +519,7 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         128,
     )?;
 
-    let oversized_identity_read = (checkout.read_file_range_by_id(
+    let oversized_identity_read = (checkout.read_file_range(
         file_id,
         ByteRange {
             offset: 0,
@@ -536,7 +536,7 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         FsError::FileRead(FileRangeReadError::InvalidRange)
     ));
     assert_eq!(*oversized_identity_read.work, WorkCounters::default());
-    let zero_span_plan = (checkout.plan_file_extents_by_id(
+    let zero_span_plan = (checkout.plan_file_extents(
         file_id,
         ByteRange {
             offset: 0,
@@ -555,13 +555,13 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
     ));
     assert_eq!(*zero_span_plan.work, WorkCounters::default());
     assert_eq!(
-        (checkout.seek_file_extent_by_id(file_id, 0, ExtentSeekTarget::Data, B, &cancellation,))
+        (checkout.seek_file_extent(file_id, 0, ExtentSeekTarget::Data, B, &cancellation,))
             .await?
             .value,
         Some(0)
     );
     assert_eq!(
-        (checkout.seek_file_extent_by_id(file_id, 0, ExtentSeekTarget::Hole, B, &cancellation,))
+        (checkout.seek_file_extent(file_id, 0, ExtentSeekTarget::Hole, B, &cancellation,))
             .await?
             .value,
         Some(4)
@@ -573,7 +573,7 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         (5, ExtentSeekTarget::Hole, None),
     ] {
         assert_eq!(
-            (checkout.seek_file_extent_by_id(file_id, offset, target, B, &cancellation,))
+            (checkout.seek_file_extent(file_id, offset, target, B, &cancellation,))
                 .await?
                 .value,
             expected
@@ -585,7 +585,7 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             expected
         );
     }
-    let wrong_kind_seek = (checkout.seek_file_extent_by_id(
+    let wrong_kind_seek = (checkout.seek_file_extent(
         directory_id,
         0,
         ExtentSeekTarget::Data,
@@ -782,7 +782,7 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             .is_err()
     );
     assert!(
-        (checkout.read_file_range_by_id(
+        (checkout.read_file_range(
             directory_id,
             ByteRange {
                 offset: 0,
@@ -795,7 +795,7 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         .is_err()
     );
     assert!(
-        (checkout.read_file_range_by_id(
+        (checkout.read_file_range(
             file_id,
             ByteRange {
                 offset: 5,
@@ -808,7 +808,7 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         .is_err()
     );
     assert!(
-        (checkout.plan_file_extents_by_id(
+        (checkout.plan_file_extents(
             directory_id,
             ByteRange {
                 offset: 0,
@@ -822,7 +822,7 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         .is_err()
     );
     assert!(
-        (checkout.seek_file_extent_by_id(
+        (checkout.seek_file_extent(
             directory_id,
             0,
             ExtentSeekTarget::Data,
