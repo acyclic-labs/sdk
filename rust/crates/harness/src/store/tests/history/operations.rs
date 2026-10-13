@@ -37,7 +37,7 @@ async fn operation_lookup_counts_atomic_records_under_one_byte_budget() -> Resul
     );
     let index = acyclic_stream::Stream::new(
         Arc::clone(&client),
-        operations::publication_path(
+        crate::store::operations::publication_path(
             &authority(),
             "harness/v2/aggregate-operations/",
             Some((&original.operation_id, 36)),
@@ -259,7 +259,7 @@ async fn operation_location_must_share_the_canonical_events_atomic_commit() -> R
             "revision": event.revision, "intent_digest": event.intent_digest});
     acyclic_stream::Stream::new(
         Arc::clone(&client),
-        operations::publication_path(
+        crate::store::operations::publication_path(
             &authority(),
             "harness/v2/aggregate-operations/",
             Some((&event.operation_id, 36)),
