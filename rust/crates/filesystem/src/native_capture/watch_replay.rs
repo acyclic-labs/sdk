@@ -113,11 +113,11 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
     let mut receipt = CaptureReceipt::default();
     let changes_bytes = incoming.0.capacity() as u64 * std::mem::size_of::<WatchChange>() as u64;
     let mut mutations = Vec::new();
-    let mut ordinary = CaptureMap::new();
-    let mut rename_records = CaptureMap::<FileRecord>::new();
+    let mut ordinary = Vec::new();
+    let mut rename_records = Vec::new();
     let mut renamed_directories = Vec::new();
     let mut rename_destinations = Vec::new();
-    let mut moved_away = CaptureMap::new();
+    let mut moved_away = Vec::new();
 
     for (index, change) in incoming.0.into_iter().enumerate() {
         let change = if incoming.1.change_has_native_payload_custody(index) {
@@ -202,18 +202,28 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
         match change {
             WatchChange::Created(path) => {
                 let current = current_record(&rename_records, &moved_away, &path, meter)?;
-                ordinary.insert_measured(path, (current, CaptureIntent::Replace), meter)?;
+                capture_replace(
+                    &mut ordinary,
+                    path,
+                    (current, CaptureIntent::Replace),
+                    meter,
+                )?;
             }
             WatchChange::Modified(path) | WatchChange::Removed(path) => {
                 let current = current_record(&rename_records, &moved_away, &path, meter)?;
-                ordinary
-                    .get_or_insert_measured(path, (current, CaptureIntent::Complete), meter)
-                    .map(|_| ())?;
+                capture_entry(
+                    &mut ordinary,
+                    path,
+                    (current, CaptureIntent::Complete),
+                    meter,
+                )
+                .map(|_| ())?;
             }
             WatchChange::Arrived(path) => {
                 let current = current_record(&rename_records, &moved_away, &path, meter)?;
                 {
-                    let entry = ordinary.get_or_insert_measured(
+                    let entry = capture_entry(
+                        &mut ordinary,
                         path,
                         (current, CaptureIntent::Arrived),
                         meter,
@@ -226,36 +236,41 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
             }
             WatchChange::MetadataChanged(path) => {
                 let current = current_record(&rename_records, &moved_away, &path, meter)?;
-                ordinary
-                    .get_or_insert_measured(path, (current, CaptureIntent::MetadataOnly), meter)
-                    .map(|_| ())?;
+                capture_entry(
+                    &mut ordinary,
+                    path,
+                    (current, CaptureIntent::MetadataOnly),
+                    meter,
+                )
+                .map(|_| ())?;
             }
             WatchChange::Renamed { from, to } => {
                 cancellation.check()?;
-                let prior_source = ordinary.remove_measured(&from, meter)?;
+                let prior_source = capture_remove(&mut ordinary, &from, meter)?;
                 let prior_source = if let Some((key, value)) = prior_source {
                     capture_drop_path(key, meter)?;
                     Some(value)
                 } else {
                     None
                 };
-                if let Some((key, _)) = ordinary.remove_measured(&to, meter)? {
+                if let Some((key, _)) = capture_remove(&mut ordinary, &to, meter)? {
                     capture_drop_path(key, meter)?;
                 }
-                let record =
-                    if let Some((key, record)) = rename_records.remove_measured(&from, meter)? {
-                        capture_drop_path(key, meter)?;
-                        Some(record)
-                    } else if matches!(prior_source, Some((CurrentRecord::Known(None), _)))
-                        || moved_away.contains_key_measured(&from, meter)?
-                    {
-                        None
-                    } else {
-                        let source = checkout
-                            .lookup_no_follow(&from, &meter.native, &cancellation)
-                            .await?;
-                        source.record
-                    };
+                let record = if let Some((key, record)) =
+                    capture_remove(&mut rename_records, &from, meter)?
+                {
+                    capture_drop_path(key, meter)?;
+                    Some(record)
+                } else if matches!(prior_source, Some((CurrentRecord::Known(None), _)))
+                    || capture_position(&moved_away, &from, meter)?.is_ok()
+                {
+                    None
+                } else {
+                    let source = checkout
+                        .lookup_no_follow(&from, &meter.native, &cancellation)
+                        .await?;
+                    source.record
+                };
                 if let Some(record) = record {
                     if record.kind == FileKind::Directory {
                         capture_reserve(&mut renamed_directories, 1, meter)?;
@@ -273,19 +288,20 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
                         replace: true,
                     });
                     let destination = clone_capture_path(&to, meter)?;
-                    rename_records.insert_measured(destination, record, meter)?;
+                    capture_replace(&mut rename_records, destination, record, meter)?;
                 } else {
                     let destination = clone_capture_path(&to, meter)?;
                     {
-                        ordinary.insert_measured(
+                        capture_replace(
+                            &mut ordinary,
                             destination,
                             (CurrentRecord::Lookup, CaptureIntent::Replace),
                             meter,
                         )
                     }?;
                 }
-                moved_away.insert_measured(from, (), meter)?;
-                if let Some((key, ())) = moved_away.remove_measured(&to, meter)? {
+                capture_replace(&mut moved_away, from, (), meter)?;
+                if let Some((key, ())) = capture_remove(&mut moved_away, &to, meter)? {
                     capture_drop_path(key, meter)?;
                 }
                 capture_drop_path(to, meter)?;
@@ -317,10 +333,9 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
     let maximum_paths = usize::try_from(options.maximum_paths).unwrap_or(usize::MAX);
     let ancestors = watch_ancestor_candidates(
         ordinary
-            .entries
             .iter()
             .map(|(path, _)| path)
-            .chain(rename_records.entries.iter().map(|(path, _)| path))
+            .chain(rename_records.iter().map(|(path, _)| path))
             .chain(rename_destinations.iter()),
         &ordinary,
         &rename_records,
@@ -343,7 +358,7 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
     .await?;
 
     let mut lookup_paths = capture_vec(ordinary.len(), meter)?;
-    for (path, (current, _)) in &ordinary.entries {
+    for (path, (current, _)) in &ordinary {
         if matches!(current, CurrentRecord::Lookup) {
             lookup_paths.push(clone_capture_path(path, meter)?);
         }
@@ -373,10 +388,10 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
                 record = prior.record;
                 capture_drop_path(prior_path, meter)?;
             }
-            let Ok(index) = ordinary.position_measured(&path, meter)? else {
+            let Ok(index) = capture_position(&ordinary, &path, meter)? else {
                 return Err(CaptureError::InvalidOptions);
             };
-            let (current, _) = &mut ordinary.entries[index].1;
+            let (current, _) = &mut ordinary[index].1;
             *current = CurrentRecord::Known(record);
             capture_drop_path(path, meter)?;
         }
@@ -421,7 +436,7 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
         missing_ancestors.capacity() as u64 * std::mem::size_of::<NamespacePath>() as u64;
     for path in missing_ancestors {
         let Some((key, (CurrentRecord::Known(current), intent))) =
-            ordinary.remove_measured(&path, meter)?
+            capture_remove(&mut ordinary, &path, meter)?
         else {
             return Err(CaptureError::InvalidOptions);
         };
@@ -469,9 +484,9 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
         .release(rename_mutations_bytes)
         .map_err(capture_demand_error)?;
     let namespace_boundary = mutations.len();
-    let rename_records_bytes = rename_records.storage_bytes();
-    for (path, record) in rename_records.entries {
-        if ordinary.contains_key_measured(&path, meter)? {
+    let rename_records_bytes = vector_bytes(&rename_records);
+    for (path, record) in rename_records {
+        if capture_position(&ordinary, &path, meter)?.is_ok() {
             capture_drop_path(path, meter)?;
             continue;
         }
@@ -499,8 +514,8 @@ pub(super) async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: Asyn
         .release(rename_records_bytes)
         .map_err(capture_demand_error)?;
     let mut observed_ordinary = capture_vec(ordinary.len(), meter)?;
-    let ordinary_bytes = ordinary.storage_bytes();
-    for (path, (current, intent)) in ordinary.entries {
+    let ordinary_bytes = vector_bytes(&ordinary);
+    for (path, (current, intent)) in ordinary {
         let CurrentRecord::Known(current) = current else {
             return Err(CaptureError::InvalidOptions);
         };
