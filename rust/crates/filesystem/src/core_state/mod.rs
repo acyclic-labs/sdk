@@ -187,10 +187,10 @@ impl LocalCoreStateStore {
     pub fn defer_durability(&self) -> (Self, DeferredDurability) {
         let deferral = Arc::new(AtomicBool::new(true));
         let store = Self {
-            deferral: Some(Arc::clone(&deferral)),
+            deferral: Some(deferral),
             ..self.clone()
         };
-        (store.clone(), DeferredDurability { store, deferral })
+        (store.clone(), DeferredDurability { store })
     }
 
     /// Returns the namespace root.
@@ -463,32 +463,11 @@ impl Namespace {
         &self,
         family: &str,
     ) -> Result<Vec<OperationId>, LocalCoreStateStoreError> {
-        let entries = match std::fs::read_dir(self.family(family)) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(error.into()),
-        };
-        let mut operations = std::collections::BTreeSet::new();
-        for entry in entries {
-            let entry = entry?;
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else { continue };
-            let Some(stem) = name.strip_suffix(".json") else {
-                continue;
-            };
-            let stem = stem.strip_suffix(".previous").unwrap_or(stem);
-            if stem.ends_with(".next") {
-                continue;
-            }
-            let Ok(bytes) = hex::decode(stem) else {
-                continue;
-            };
-            let Ok(bytes) = <[u8; 16]>::try_from(bytes) else {
-                continue;
-            };
-            operations.insert(OperationId::from_bytes(bytes));
-        }
-        Ok(operations.into_iter().collect())
+        let operations = collection::family_stems(self, family, &[".previous.json", ".json"])?
+            .into_iter()
+            .filter_map(|stem| <[u8; 16]>::try_from(stem).ok())
+            .map(OperationId::from_bytes);
+        Ok(operations.collect())
     }
 }
 
@@ -497,13 +476,16 @@ impl Namespace {
 #[derive(Debug)]
 pub struct DeferredDurability {
     store: LocalCoreStateStore,
-    deferral: Arc<AtomicBool>,
 }
 
 impl DeferredDurability {
     /// Ends the scope and makes every commit made through the log so far durable.
     pub async fn commit(self) -> Result<(), LocalCoreStateStoreError> {
-        self.deferral.store(false, Ordering::Release);
+        self.store
+            .deferral
+            .as_ref()
+            .expect("deferred store")
+            .store(false, Ordering::Release);
         self.store
             .transaction(|root| root.with_log(|log| log.flush(&root)))
             .await
@@ -513,7 +495,11 @@ impl DeferredDurability {
 impl Drop for DeferredDurability {
     fn drop(&mut self) {
         // Abandoned commits become durable with the log's next flush.
-        self.deferral.store(false, Ordering::Release);
+        self.store
+            .deferral
+            .as_ref()
+            .expect("deferred store")
+            .store(false, Ordering::Release);
     }
 }
 
