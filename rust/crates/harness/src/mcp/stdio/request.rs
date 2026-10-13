@@ -1,47 +1,5 @@
 use super::*;
 
-/// The only operations this one-shot client can admit.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-pub enum McpStdioMethod {
-    /// One explicit discovery page.
-    #[serde(rename = "tools/list")]
-    ListTools,
-    /// One pinned tool call.
-    #[serde(rename = "tools/call")]
-    CallTool,
-    /// One resource discovery page.
-    #[serde(rename = "resources/list")]
-    ListResources,
-    /// One resource template discovery page.
-    #[serde(rename = "resources/templates/list")]
-    ListResourceTemplates,
-    /// One exact resource read.
-    #[serde(rename = "resources/read")]
-    ReadResource,
-    /// One prompt discovery page.
-    #[serde(rename = "prompts/list")]
-    ListPrompts,
-    /// One exact prompt selection.
-    #[serde(rename = "prompts/get")]
-    GetPrompt,
-}
-
-impl McpStdioMethod {
-    /// Exact protocol method, never a callback or ambient operation.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ListTools => "tools/list",
-            Self::CallTool => "tools/call",
-            Self::ListResources => "resources/list",
-            Self::ListResourceTemplates => "resources/templates/list",
-            Self::ReadResource => "resources/read",
-            Self::ListPrompts => "prompts/list",
-            Self::GetPrompt => "prompts/get",
-        }
-    }
-}
-
 /// Exact portable exchange descriptor included in native process approval.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -54,7 +12,7 @@ pub struct McpStdioRequest {
     #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub operation: OperationId,
     /// Discovery or tool call, explicitly selected by the host.
-    pub method: McpStdioMethod,
+    pub method: String,
     /// Exact object parameters included in approval and durable identity.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmToolJsonValue"))]
     pub params: Value,
@@ -68,7 +26,7 @@ impl McpStdioRequest {
         &self,
         work: NativeWork<'_>,
     ) -> Result<(McpStdioExchange, Vec<u8>, NativeCustody)> {
-        super::services::validate_params(self.method.as_str(), &self.params, work)?;
+        super::services::validate_params(&self.method, &self.params, work)?;
         if self.initialization == self.operation || self.maximum_bytes == 0 {
             return Err(error(
                 work,
@@ -101,7 +59,7 @@ impl McpStdioRequest {
             &Envelope {
                 id: self.operation,
                 jsonrpc: "2.0",
-                method: self.method.as_str(),
+                method: &self.method,
                 params: &self.params,
             },
             maximum_bytes,
@@ -173,6 +131,6 @@ impl McpStdioRequest {
         let (mut exchange, _, _) = self.exchange(None)?;
         exchange.push(stdout, None)?;
         let (value, _) = exchange.finish()?;
-        super::services::validate_result(self.method.as_str(), value, None)
+        super::services::validate_result(&self.method, value, None)
     }
 }

@@ -19,54 +19,41 @@ fn denied(reason: &'static str) -> Error {
     }
 }
 
-/// Original issued context and owner for native volume preparation.
-pub struct NativeVolumeCallbackGuard<P: StreamProvider> {
+struct VolumeCallback<P: StreamProvider> {
     context: Arc<TaskContext>,
     owner: Arc<TaskJournalOwner<P>>,
-}
-
-struct VolumeCallback<P: StreamProvider> {
-    original: NativeVolumeCallbackGuard<P>,
     volume: VolumeRef,
     writable: bool,
     custody: NativeAllocation,
 }
 
 impl TaskContext {
-    /// Authenticates and retains the original issued dispatch context.
-    pub async fn volume_callback_guard<P: StreamProvider + 'static>(
+    /// Authenticates the original issued dispatch context.
+    pub async fn verify_volume_owner<P: StreamProvider + 'static>(
         self: &Arc<Self>,
         owner: &Arc<TaskJournalOwner<P>>,
         work: &NativeMaterializationWork,
-    ) -> Result<NativeVolumeCallbackGuard<P>> {
-        self.require_original_native_dispatch(work)?;
-        if !self.native_metadata_matches(work) || !owner.native_shared_work_matches(work) {
-            return Err(denied(
-                "native callback lacks original shared metadata custody",
-            ));
-        }
-        let (task, fence) = self.owned_task_binding_with_native_work(work)?;
-        if !owner.matches_task_binding(task, fence) {
-            return Err(denied(
-                "native callback differs from the original task and full fence",
-            ));
-        }
+    ) -> Result<()> {
+        self.require_volume_owner(owner, work)?;
         let io = PreparationIo::from_native_work(work)?;
-        owner.require_task_context_binding(self, Some(&io))?;
-        owner.require_mail_scope(self.scope(), Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
         owner.verify(false, &mut Some(&mut io.history_io())).await?;
-        Ok(NativeVolumeCallbackGuard {
-            context: Arc::clone(self),
-            owner: Arc::clone(owner),
-        })
+        Ok(())
     }
-}
 
-impl<P: StreamProvider + 'static> NativeVolumeCallbackGuard<P> {
-    /// Selects the exact volume and retains its callback on the caller ledger.
-    pub fn for_volume(
+    fn require_volume_owner<P: StreamProvider + 'static>(
         &self,
         owner: &TaskJournalOwner<P>,
+        work: &NativeMaterializationWork,
+    ) -> Result<()> {
+        self.require_original_native_dispatch(work)?;
+        let io = PreparationIo::from_native_work(work)?;
+        owner.require_task_context_binding(self, Some(&io))
+    }
+
+    /// Selects the exact volume and retains its callback on the caller ledger.
+    pub fn volume_callback<P: StreamProvider + 'static>(
+        self: &Arc<Self>,
+        owner: &Arc<TaskJournalOwner<P>>,
         volume: &VolumeRef,
         writable: bool,
         work: &NativeMaterializationWork,
@@ -83,10 +70,8 @@ impl<P: StreamProvider + 'static> NativeVolumeCallbackGuard<P> {
         let mut volume_custody = io.into_native_custody(retained)?;
         custody.absorb(&mut volume_custody)?;
         Ok(Arc::new(VolumeCallback {
-            original: Self {
-                context: Arc::clone(&self.context),
-                owner: Arc::clone(&self.owner),
-            },
+            context: Arc::clone(self),
+            owner: Arc::clone(owner),
             volume,
             writable,
             custody,
@@ -94,7 +79,7 @@ impl<P: StreamProvider + 'static> NativeVolumeCallbackGuard<P> {
     }
 
     /// Checks the original task's declared volume authority without allocating a callback.
-    pub(crate) fn require_volume(
+    pub(crate) fn require_volume<P: StreamProvider + 'static>(
         &self,
         owner: &TaskJournalOwner<P>,
         volume: &VolumeRef,
@@ -102,24 +87,23 @@ impl<P: StreamProvider + 'static> NativeVolumeCallbackGuard<P> {
         work: &NativeMaterializationWork,
     ) -> Result<()> {
         work.charge(WorkCounters::default())?;
-        if !std::ptr::eq(owner, self.owner.as_ref())
-            || !self
-                .context
-                .native_custody
-                .as_ref()
-                .is_some_and(|custody| custody.work().shares_ledger(work))
+        if !self
+            .native_custody
+            .as_ref()
+            .is_some_and(|custody| custody.work().shares_ledger(work))
         {
             return Err(denied(
                 "native preparation differs from its original owner or work family",
             ));
         }
+        self.require_volume_owner(owner, self.native_work()?)?;
         let io = PreparationIo::from_native_work(work)?;
         for operation in [VolumeOperation::Read]
             .into_iter()
             .chain(writable.then_some(VolumeOperation::Write))
         {
             let capability = volume.capability(operation, &mut Some(&mut io.history_io()))?;
-            if !self.context.scope().grants().contains(&capability) {
+            if !self.scope().grants().contains(&capability) {
                 return Err(denied(
                     "native callback volume differs from its original scope",
                 ));
@@ -136,7 +120,7 @@ impl<P: StreamProvider + 'static> VolumeCallback<P> {
         work: &'a NativeMaterializationWork,
         require_write: bool,
     ) -> std::result::Result<NativeMountCallbackFuture<'a>, NativeMountError> {
-        NativeMountCallbackFuture::new_guarded::<Error, _, _>(work, || async move {
+        NativeMountCallbackFuture::new_guarded::<Error, _, _>(work, move || async move {
             if require_write && !self.writable {
                 return Err(denied("read-only callback cannot authorize writes"));
             }
@@ -146,19 +130,14 @@ impl<P: StreamProvider + 'static> VolumeCallback<P> {
                     "native callback differs from its original per-volume work",
                 ));
             }
-            self.original.require_volume(
-                &self.original.owner,
-                &self.volume,
-                self.writable,
-                work,
-            )?;
+            self.context
+                .require_volume(&self.owner, &self.volume, self.writable, work)?;
             let io = PreparationIo::from_native_work(work)?;
-            self.original
-                .owner
+            self.owner
                 .verify(false, &mut Some(&mut io.history_io()))
                 .await?;
-            self.original
-                .require_volume(&self.original.owner, &self.volume, self.writable, work)
+            self.context
+                .require_volume(&self.owner, &self.volume, self.writable, work)
         })
     }
 }
@@ -201,7 +180,13 @@ mod tests {
         let fence = crate::scheduler::LeaseFence::from(&fixture.root_lease.reservation);
         let owner = fixture
             .host
-            .journal_owner(fixture.root, &fence, Some(&crate::executor::PreparationIo::from_native_work(&original)?))
+            .journal_owner(
+                fixture.root,
+                &fence,
+                Some(&crate::executor::PreparationIo::from_native_work(
+                    &original,
+                )?),
+            )
             .await?
             .into_native_shared(&original)?;
         let (context, custody) = fixture
@@ -214,7 +199,7 @@ mod tests {
             .await?;
         let context = context.into_native_shared(custody, &original)?;
         assert!(matches!(
-            context.volume_callback_guard(&owner, &original).await,
+            context.verify_volume_owner(&owner, &original).await,
             Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 ..
@@ -223,7 +208,7 @@ mod tests {
 
         let foreign = work(&acyclic_fs::CancellationToken::new());
         assert!(matches!(
-            context.volume_callback_guard(&owner, &foreign).await,
+            context.verify_volume_owner(&owner, &foreign).await,
             Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 ..
@@ -232,7 +217,7 @@ mod tests {
 
         cancellation.cancel();
         assert!(matches!(
-            context.volume_callback_guard(&owner, &original).await,
+            context.verify_volume_owner(&owner, &original).await,
             Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
                 ..

@@ -600,19 +600,19 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         FsError::FileRead(FileRangeReadError::NotRegular)
     ));
     assert!(
-        (checkout.read_named_attribute_by_id(file_id, &attribute, B, &cancellation,))
+        (checkout.read_named_attribute(file_id, &attribute, B, &cancellation,))
             .await?
             .value
             .is_none()
     );
     assert!(
-        (checkout.list_named_attributes_by_id(file_id, None, 8, B, &cancellation,))
+        (checkout.list_named_attributes(file_id, None, 8, B, &cancellation,))
             .await?
             .value
             .entries
             .is_empty()
     );
-    let missing_remove = (checkout.change_named_attribute_by_id(
+    let missing_remove = (checkout.change_named_attribute(
         file_id,
         &attribute.clone(),
         None,
@@ -623,7 +623,7 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
     .err()
     .ok_or("attribute-free identity removal unexpectedly succeeded")?;
     assert!(matches!(missing_remove.error, FsError::NotFound));
-    let missing_replace = (checkout.change_named_attribute_by_id(
+    let missing_replace = (checkout.change_named_attribute(
         file_id,
         &attribute.clone(),
         Some((
@@ -637,7 +637,7 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
     .err()
     .ok_or("missing identity attribute replacement unexpectedly succeeded")?;
     assert!(matches!(missing_replace.error, FsError::CreationRejected));
-    (checkout.change_named_attribute_by_id(
+    (checkout.change_named_attribute(
         file_id,
         &attribute.clone(),
         Some((
@@ -648,7 +648,7 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         &cancellation,
     ))
     .await?;
-    let duplicate_create = (checkout.change_named_attribute_by_id(
+    let duplicate_create = (checkout.change_named_attribute(
         file_id,
         &attribute.clone(),
         Some((
@@ -663,16 +663,16 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
     .ok_or("duplicate identity attribute creation unexpectedly succeeded")?;
     assert!(matches!(duplicate_create.error, FsError::CreationRejected));
     assert_eq!(
-        (checkout.read_named_attribute_by_id(file_id, &attribute, B, &cancellation,))
+        (checkout.read_named_attribute(file_id, &attribute, B, &cancellation,))
             .await?
             .value
             .map(|chunk| chunk.bytes)
             .as_deref(),
         Some(b"first".as_slice())
     );
-    (checkout.change_named_attribute_by_id(file_id, &attribute.clone(), None, B, &cancellation))
+    (checkout.change_named_attribute(file_id, &attribute.clone(), None, B, &cancellation))
         .await?;
-    let repeated_remove = (checkout.change_named_attribute_by_id(
+    let repeated_remove = (checkout.change_named_attribute(
         file_id,
         &attribute.clone(),
         None,
@@ -833,17 +833,17 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         .is_err()
     );
     assert!(
-        (checkout.read_metadata_by_id(unknown_id, B, &cancellation,))
+        (checkout.read_metadata(unknown_id, B, &cancellation,))
             .await
             .is_err()
     );
     assert!(
-        (checkout.read_named_attribute_by_id(unknown_id, &attribute, B, &cancellation,))
+        (checkout.read_named_attribute(unknown_id, &attribute, B, &cancellation,))
             .await
             .is_err()
     );
     assert!(
-        (checkout.list_named_attributes_by_id(unknown_id, None, 8, B, &cancellation,))
+        (checkout.list_named_attributes(unknown_id, None, 8, B, &cancellation,))
             .await
             .is_err()
     );
@@ -862,7 +862,7 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         .is_err()
     );
     assert!(
-        (checkout.change_named_attribute_by_id(unknown_id, &attribute, None, B, &cancellation))
+        (checkout.change_named_attribute(unknown_id, &attribute, None, B, &cancellation))
             .await
             .is_err()
     );

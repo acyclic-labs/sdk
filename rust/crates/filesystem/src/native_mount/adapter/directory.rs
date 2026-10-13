@@ -29,7 +29,7 @@ where
                     Some(&self.cancellation),
                 )
                 .await?;
-            let mut checkout = observation.observer(work, cancellation).map_err(fs_error)?;
+            let mut checkout = observation.observer(work, cancellation)?;
             let (page, source_allocation) = checkout
                 .list_directory_records(
                     &path,
