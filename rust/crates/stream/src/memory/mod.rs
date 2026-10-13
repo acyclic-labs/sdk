@@ -37,6 +37,8 @@ mod tests;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod prepared;
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub(crate) use prepared::PreparedCommit;
 
 include!("memory_limits.rs");
 

@@ -10,15 +10,17 @@ type Allocation = Option<ReadAllocation>;
 type Allocation = ();
 
 #[cfg(not(target_arch = "wasm32"))]
+type WriteReservation = (
+    NativeOperationReservation<Arc<dyn NativeReadMeter>>,
+    NativeByteReservation<Arc<dyn NativeReadMeter>>,
+);
+
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct Work {
     pub(crate) meter: Arc<dyn NativeReadMeter>,
     error: std::sync::Mutex<Option<std::io::Error>>,
-    write: std::sync::Mutex<
-        Option<(
-            NativeOperationReservation<Arc<dyn NativeReadMeter>>,
-            NativeByteReservation<Arc<dyn NativeReadMeter>>,
-        )>,
-    >,
+    write: std::sync::Mutex<Option<WriteReservation>>,
+    #[cfg(feature = "local")]
     durability: std::sync::Mutex<Option<NativeOperationReservation<Arc<dyn NativeReadMeter>>>>,
     _allocation: ReadAllocation,
 }
@@ -31,6 +33,7 @@ impl Work {
             meter,
             error: std::sync::Mutex::new(None),
             write: std::sync::Mutex::new(None),
+            #[cfg(feature = "local")]
             durability: std::sync::Mutex::new(None),
             _allocation: allocation,
         }))
@@ -87,6 +90,7 @@ impl Work {
         result
     }
 
+    #[cfg(feature = "local")]
     pub(crate) fn reserve_durability(&self, count: u64) -> Result<(), StreamError> {
         let ticket = self.record(NativeOperationReservation::new(
             Arc::clone(&self.meter),
@@ -99,6 +103,7 @@ impl Work {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ticket);
         Ok(())
     }
+    #[cfg(feature = "local")]
     pub(crate) fn sync(
         &self,
         operation: impl FnOnce() -> std::io::Result<()>,
@@ -109,7 +114,7 @@ impl Work {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (physical, observed) = ticket
             .as_mut()
-            .expect("durability admitted before publication")
+            .ok_or(std::io::ErrorKind::InvalidInput)?
             .attempt(operation);
         let _ = self.record(observed);
         match physical {
@@ -208,7 +213,7 @@ impl MemoryStream {
             if let Some(allocation) = _allocation {
                 self.work
                     .as_ref()
-                    .expect("native claims carry their context")
+                    .ok_or(StreamError::Unavailable)?
                     .record(allocation.absorb(&mut other))?;
             } else {
                 *_allocation = Some(other);
@@ -255,7 +260,7 @@ impl MemoryStream {
 
     fn digest(&self, request: &mut CommitRequest) -> Result<[u8; 32], StreamError> {
         let bytes = commit_hash_bytes(request);
-        let work = self.work.as_ref().expect("native digest context");
+        let work = self.work.as_ref().ok_or(StreamError::Unavailable)?;
         work.record(work.meter.admit_codec(0, 0, bytes))?;
         let digest = commit_digest(request)?;
         work.record(work.meter.record_codec(0, 0, bytes))?;

@@ -8,7 +8,7 @@ pub struct PreparedOwnedBytes<G: Send + Sync + 'static> {
 impl<G: Send + Sync + 'static> PreparedOwnedBytes<G> {
     /// Transfers fully initialized storage and its original owner.
     pub fn new(
-        mut data: Vec<u8>,
+        data: Vec<u8>,
         guard: G,
         meter: Arc<dyn NativeReadMeter>,
     ) -> Result<Self, PreparedOwnedBytesFailure<G>> {
@@ -19,14 +19,7 @@ impl<G: Send + Sync + 'static> PreparedOwnedBytes<G> {
                 error: PreparedOwnedBytesError::NotFullyInitialized,
             });
         }
-        let mut guard = Some(guard);
-        GuardBundle::new(&mut data, &mut guard, &meter)
-            .map(|guard| Self { guard })
-            .map_err(|error| PreparedOwnedBytesFailure {
-                data,
-                original_guard: guard.expect("rejected preparation retains its owner"),
-                error: PreparedOwnedBytesError::Admission(error),
-            })
+        GuardBundle::new(data, guard, meter).map(|guard| Self { guard })
     }
     /// Initialized writable bound.
     #[must_use]
@@ -35,9 +28,10 @@ impl<G: Send + Sync + 'static> PreparedOwnedBytes<G> {
     }
     /// Borrows the exclusively owned initialized bytes.
     pub fn writable(&mut self) -> &mut [u8] {
-        &mut Arc::get_mut(&mut self.guard)
-            .expect("unpublished storage is unique")
-            .data
+        let Some(guard) = Arc::get_mut(&mut self.guard) else {
+            unreachable!("prepared storage is never shared before freeze")
+        };
+        &mut guard.data
     }
     /// Publishes a checked prefix without allocating.
     pub fn freeze(self, actual_len: usize) -> Result<OwnedBytes, Self> {

@@ -85,7 +85,11 @@ async fn public_prepared_future_keeps_original_payload_through_the_last_empty_al
         .ok_or(StreamError::Unavailable)?;
     assert!(issued.take_recovery_future().is_none());
     let allocations = meter.allocations.load(Ordering::SeqCst);
-    builder.writable()[..9].copy_from_slice(b"root-body");
+    builder
+        .writable()
+        .get_mut(..9)
+        .ok_or(StreamError::InvalidArgument)?
+        .copy_from_slice(b"root-body");
     meter.cancelled.store(true, Ordering::SeqCst);
     let body = builder
         .freeze(9)
@@ -98,7 +102,15 @@ async fn public_prepared_future_keeps_original_payload_through_the_last_empty_al
     let [CommittedMutation::Append(append)] = envelope.mutations.as_slice() else {
         panic!("single append")
     };
-    assert_eq!(append.records[0].value.as_ref(), b"root-body");
+    assert_eq!(
+        append
+            .records
+            .first()
+            .ok_or(StreamError::InvalidArgument)?
+            .value
+            .as_ref(),
+        b"root-body"
+    );
     assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
     assert_eq!(meter.pending_write.load(Ordering::SeqCst), 0);
     assert_eq!(meter.pending_write_operations.load(Ordering::SeqCst), 0);
@@ -197,9 +209,10 @@ async fn prebuilt_recovery_rejects_actual_foreign_family_and_larger_commit_witho
         drop(published);
         let allocations = meter.allocations.load(Ordering::SeqCst);
         meter.cancelled.store(true, Ordering::SeqCst);
-        let failure = match recovery.await? {
-            Err(failure) => failure,
-            Ok(_) => panic!("a closed recovery plan cannot pretend this foreign outcome is absent"),
+        let Err(failure) = recovery.await? else {
+            return Err(
+                "a closed recovery plan cannot pretend this foreign outcome is absent".into(),
+            );
         };
         assert!(if larger_commit {
             matches!(&failure, StreamError::LimitExceeded)
@@ -209,7 +222,6 @@ async fn prebuilt_recovery_rejects_actual_foreign_family_and_larger_commit_witho
         assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
         assert_eq!(meter.pending_read.load(Ordering::SeqCst), 0);
         assert_eq!(meter.pending_read_operations.load(Ordering::SeqCst), 0);
-        drop(failure);
         drop(issued);
         drop(packet_guard);
         assert_eq!(meter.pending_write.load(Ordering::SeqCst), 0);
@@ -256,7 +268,15 @@ async fn preaccepted_completion_survives_cancellation_and_lost_ack_with_exact_re
     let [CommittedMutation::Append(append)] = envelope.mutations.as_slice() else {
         panic!("one append");
     };
-    assert_eq!(append.records[0].value.as_ref(), b"actual-scalars");
+    assert_eq!(
+        append
+            .records
+            .first()
+            .ok_or(StreamError::InvalidArgument)?
+            .value
+            .as_ref(),
+        b"actual-scalars"
+    );
     assert_eq!((append.start, append.end), (1, 2));
     assert_eq!(provider.read_commit(envelope.commit_id).await?, *envelope);
     let repeated = replay

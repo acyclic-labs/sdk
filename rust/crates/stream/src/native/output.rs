@@ -68,11 +68,9 @@ impl<T, E> Future for NativeProviderFuture<'_, T, E> {
         context: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         match self.get_mut() {
-            Self::Ready(result) => std::task::Poll::Ready(
-                result
-                    .take()
-                    .expect("native provider future polled after completion"),
-            ),
+            Self::Ready(result) => result
+                .take()
+                .map_or(std::task::Poll::Pending, std::task::Poll::Ready),
             Self::Funded { future, .. } => future.as_mut().poll(context),
         }
     }

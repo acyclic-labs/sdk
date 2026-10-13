@@ -11,7 +11,7 @@ pub(crate) fn record(value: wire::Record) -> Result<Record, StreamError> {
 pub fn record_wire(value: Record) -> wire::Record {
     wire::Record {
         sequence: value.sequence,
-        value: bytes::Bytes::copy_from_slice(&value.value),
+        value: bytes::Bytes::from_owner(value.value),
         commit_id: bytes::Bytes::copy_from_slice(value.commit_id.as_bytes()),
         committed_at_micros: value.committed_at_micros,
     }

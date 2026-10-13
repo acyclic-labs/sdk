@@ -68,7 +68,10 @@ impl StreamPath {
     /// Canonical path text.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        std::str::from_utf8(&self.0).expect("validated ASCII path")
+        let Ok(path) = std::str::from_utf8(&self.0) else {
+            unreachable!("StreamPath constructors validate ASCII")
+        };
+        path
     }
 
     /// Immediate parent, if any.
