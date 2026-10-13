@@ -419,7 +419,7 @@ impl ContentGrant {
         verifier.verify(scope, work)?;
         if operation == VolumeOperation::Write { volume.require_writer(scope.agent(), work)?; }
         volume.validate(work)?;
-        let digest = crate::executor::json::canonical_json_digest(volume, maximum_bytes, work)?;
+        let digest = crate::executor::json::canonical_json_digest(volume, maximum_bytes.min(crate::store::default_projection_read_limits().maximum_bytes), work)?;
         if !contains_content_label(scope.capabilities(), operation.capability_prefix(), digest) {
             return Err(conversation_error(work, crate::wire::ErrorCode::Unauthorized,
                 "volume operation is not granted"));
