@@ -593,6 +593,7 @@ impl Identity {
         if !device.reconcile_upgrade {
             return store.complete_login(&self.endpoint, session, device);
         }
+        store.login_agent_for(&self.endpoint, device)?;
         // Keep issued tokens even if the organization read fails after login.
         let session = store.write(&self.endpoint, session)?;
         let value = Self::response(

@@ -744,6 +744,48 @@ fn fresh_login_replaces_unusable_oauth_credentials_but_preserves_agent_keys() {
 }
 
 #[tokio::test]
+async fn recovered_login_preserves_replacement_credentials() {
+    let fake = Fake::start(vec![]).await;
+    let directory = tempfile::tempdir().expect("directory");
+    let store = Store::open(&directory.path().join("identity.json")).expect("store");
+    let mut device: DeviceCode =
+        serde_json::from_value(json!({"device_code": "device", "user_code": "code",
+        "verification_uri": "https://example.test", "expires_in": 60}))
+        .expect("device");
+    device.upgrade = Some(("org".to_owned(), "key".to_owned()));
+    device.agent_identity = device.upgrade.clone();
+    device.reconcile_upgrade = true;
+    for replacement in [Some(("other-org", "key")), Some(("org", "other-key")), None] {
+        let mut credentials = agent_credentials(&fake.identity.endpoint);
+        if let Some((org_id, key_id)) = replacement {
+            if let Some(agent::Agent::Active { registration, .. }) = &mut credentials.agent {
+                registration.org_id = org_id.to_owned();
+                registration.key_id = key_id.to_owned();
+            }
+        } else {
+            credentials.agent = None;
+        }
+        store.save(&credentials).expect("replacement credentials");
+        let before = fs::read(&store.path).expect("replacement bytes");
+        assert_eq!(
+            fake.identity
+                .complete_login(
+                    &store,
+                    session("new-access", "new-refresh", 900),
+                    &mut device
+                )
+                .await
+                .err()
+                .expect("changed agent")
+                .code,
+            "credentials_changed"
+        );
+        assert_eq!(fs::read(&store.path).expect("retained credentials"), before);
+    }
+    fake.done();
+}
+
+#[tokio::test]
 async fn recovered_login_keeps_issued_tokens_when_the_tier_read_fails() {
     let mut unavailable = Expected::get(
         "/v1/identity/orgs",
