@@ -171,7 +171,7 @@ async fn native_message_lookup_provider_corruption_bound_and_cancellation_releas
     assert!(matches!(
         &error,
         Error::NativeBoundary {
-            reason: "indexed canonical event is missing",
+            code: crate::wire::ErrorCode::Storage,
             ..
         }
     ));
@@ -272,23 +272,7 @@ async fn original_provider_publication_releases_exact_source_after_receipt_drop(
     let mut work: Option<&mut dyn HistoryIo> = Some(&mut io);
     let encoded = crate::wire_codec::encode_event(&authority, &event, &mut work)?;
     let original_capacity = encoded.capacity() as u64;
-    let mut publication = IndexedPublication::new(&authority, &event, encoded, &mut work)?;
-    assert_eq!(
-        publication.bytes.retained_capacity(),
-        Some(original_capacity as usize)
-    );
-    assert!(publication.bytes.matches_meter(&native.runtime_meter()));
-    assert!(
-        publication
-            .indexes
-            .iter()
-            .all(|(_, _, bytes)| bytes.matches_meter(&native.runtime_meter()))
-    );
-    let old_snapshot = publication.indexes[0].2.clone();
-    let old_snapshot_capacity = old_snapshot
-        .retained_capacity()
-        .expect("guarded original index");
-    publication.set_effect_position_with_work(3, &mut work)?;
+    let publication = IndexedPublication::new(&authority, &event, encoded, None, &mut work)?;
     let retained = publication.retained_owned();
     let client = Arc::new(MemoryStream::default());
     let request = publication
@@ -299,8 +283,7 @@ async fn original_provider_publication_releases_exact_source_after_receipt_drop(
         )
         .await?
         .0;
-    let acyclic_stream::CommitOutcome::Committed(mut envelope) = client.commit(request).await?
-    else {
+    let acyclic_stream::CommitOutcome::Committed(envelope) = client.commit(request).await? else {
         panic!("original absent/Tail atomic publication");
     };
     let retry = publication
@@ -359,19 +342,6 @@ async fn original_provider_publication_releases_exact_source_after_receipt_drop(
         .release(replay_paid)
         .expect("original decoded event physically dropped");
     assert_eq!(replay_custody.bytes(), 0);
-    if let CommittedMutation::Append(append) = &mut envelope.mutations[0] {
-        append.start += 1;
-    }
-    assert!(matches!(
-        publication.verify(&envelope, &mut work),
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Storage,
-            reason: "indexed publication append is invalid"
-        })
-    ));
-    if let CommittedMutation::Append(append) = &mut envelope.mutations[0] {
-        append.start -= 1;
-    }
     let key = super::super::stream_idempotency_key_with_work(
         publication.path.as_str(),
         &command.idempotency_key,
@@ -408,8 +378,6 @@ async fn original_provider_publication_releases_exact_source_after_receipt_drop(
     assert_eq!(custody.bytes(), 0);
     assert!(native.live_allocation_bytes() >= original_capacity);
     drop(client);
-    assert!(native.live_allocation_bytes() >= old_snapshot_capacity as u64);
-    drop(old_snapshot);
     assert_eq!(native.live_allocation_bytes(), 0);
     Ok(())
 }

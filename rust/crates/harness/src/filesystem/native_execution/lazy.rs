@@ -41,7 +41,7 @@ pub(super) trait Backend: Send + Sync {
 struct Mount<P: StreamProvider, A, O, D, S> {
     mount: Arc<LazyMount<A, O, D, S>>,
     owner: Arc<TaskJournalOwner<P>>,
-    callback: Arc<dyn crate::runtime::NativeVolumePublicationGuard>,
+    callback: Arc<dyn acyclic_fs::native_mount::NativeMountCallbackGuard>,
 }
 
 impl NativeExistingLazyVolume {
@@ -175,7 +175,7 @@ where
                 .sync_with_permit(permit, work, move |actual: &NativeMaterializationWork| {
                     let actual = actual.clone();
                     let callback = Arc::clone(&callback);
-                    async move { callback.check(&actual)?.await }
+                    async move { callback.check(&actual)?.await.map_err(Error::from) }
                 })
                 .await)
         })
@@ -206,7 +206,7 @@ where
                     }));
                 }
             };
-            if let Err(cause) = async { self.callback.check(work)?.await }.await {
+            if let Err(cause) = async { self.callback.check(work)?.await.map_err(Error::from) }.await {
                 return Ok(Err(NativeMountPublicationFailure {
                     cause,
                     accounting_failure: None,

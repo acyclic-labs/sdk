@@ -43,6 +43,25 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         self.authenticated_fork_agent(work)?;
+        if !self.root() {
+            let audience = self
+                .created
+                .as_ref()
+                .map(|access| access.current_content(work))
+                .transpose()?
+                .flatten()
+                .and_then(|binding| binding.authority.as_ref())
+                .ok_or_else(|| {
+                    Error::Unauthorized("created task lacks its authenticated audience".into())
+                })?;
+            crate::core::inspect_metadata(&(audience, parent), work)?;
+            if audience != parent {
+                return Err(Error::Unauthorized(
+                    "fork parent differs from created audience".into(),
+                ));
+            }
+            return Ok(());
+        }
         let binding = self.root_binding.get().ok_or_else(|| {
             Error::Unauthorized("task lacks committed publication audience".into())
         })?;
@@ -296,7 +315,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         }
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         self.verify(true, &mut Some(&mut io.history_io())).await?;
-        let record = self.host.admission(self.operation_id(), Some(&io)).await?;
+        let record = self
+            .host
+            .admission(self.operation_id(), &mut Some(&mut io.history_io()))
+            .await?;
         let custody = io.take_native_custody(
             std::mem::size_of::<TaskAdmissionRecord>() as u64 + record.logical_owned_bytes()?,
         )?;

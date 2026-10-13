@@ -150,7 +150,7 @@ async fn sealed_summary_preparation(
     tasks.register(definition)?;
     let mut machines = MachineRegistry::default();
     machines.register(implementation, &mut None)?;
-    let host = Arc::new(CoordinatorTaskHost::new(DistributedCoordinator::open(&storage.stream, reader.clone(), None, &mut None).await?, storage.stream.clone(), payloads.clone(), reader, &(authority), signed, issuer.verifier(&mut None).expect("verifier copy"), runtime_scope.clone(), tasks, machines, Arc::new(acyclic_stream::SystemUnixMillisClock))?.with_session_limits(crate::scheduler::SessionLimits {
+    let host = Arc::new(CoordinatorTaskHost::new(DistributedCoordinator::open(&storage.stream, reader.clone(), None, &mut None).await?, storage.stream.clone(), payloads.clone(), reader, authority, signed, issuer.verifier(&mut None).expect("verifier copy"), runtime_scope.clone(), tasks, machines, Arc::new(acyclic_stream::SystemUnixMillisClock))?.with_session_limits(crate::scheduler::SessionLimits {
         active_tasks: 4, total_tasks: 4, depth: 2, model_steps: 4,
     })?.with_resource_creation_providers(&[Arc::new(
         crate::filesystem::FilesystemResourceCreationProvider::new(storage.host.clone(), &issuer, #[cfg(not(target_arch = "wasm32"))] None)?)], None)?);
@@ -167,7 +167,7 @@ async fn sealed_summary_preparation(
     let worker = crate::distributed::Worker {
         id: "summary-preparation-worker".into(), available: Default::default(), labels: BTreeMap::new(),
     };
-    let crate::distributed::WorkPull::Claimed(root_lease) = host.pull_work(&worker).await? else {
+    let crate::distributed::WorkPull::Claimed(root_lease) = host.pull_work(&worker, None, &mut None).await? else {
         return Err(Error::NotFound("Summary root lease missing".into()));
     };
     host.start_task(&root_lease, None).await?;
@@ -175,7 +175,7 @@ async fn sealed_summary_preparation(
     let prep_task = crate::TaskId::from_bytes(prep_op.into_bytes());
     let proofs = preparer.creation_allocations(fork, prep_task, None)?;
     let child = admission(OperationId::new(), Some(root), serde_json::json!({})).with_resource_proofs(proofs)?;
-    let command_payload = payloads.stage(fork.operation_id, "summary-fork-request",
+    let command_payload = crate::distributed::SchedulerPayloadStore::stage(payloads.as_ref(), fork.operation_id, "summary-fork-request",
         &crate::contract::canonical_json_bytes(fork)?, None)?.await?;
     let request = crate::resource_preparation::ResourcePreparationRequest {
 provider: storage.volume.provider().clone(),
@@ -196,7 +196,7 @@ read_authorization: fork.authorized_source.clone(),
     assert!(matches!(host.admit_owned(admission(prep_op, Some(root),
         serde_json::to_value(&request).map_err(|error| Error::Invalid(error.to_string()))?),
         (&root_lease.reservation).into()).await?, crate::Admission::Accepted(id) if id == prep_task));
-    let crate::distributed::WorkPull::Claimed(lease) = host.pull_work(&worker).await? else {
+    let crate::distributed::WorkPull::Claimed(lease) = host.pull_work(&worker, None, &mut None).await? else {
         return Err(Error::NotFound("Summary preparation lease missing".into()));
     };
     host.start_task(&lease, None).await?;

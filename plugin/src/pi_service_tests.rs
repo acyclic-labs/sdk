@@ -122,7 +122,7 @@ async fn cold_reopen_observes_pending_and_reserved_without_native_access() {
                     id: "pi-service-original".into(),
                     available: Default::default(),
                     labels: Default::default(),
-                })
+                }, None, &mut None)
                 .await
                 .unwrap()
             else {
@@ -217,7 +217,7 @@ async fn deactivation_cancels_before_persisting_inactive_state() {
             id: "pi-service-original".into(),
             available: Default::default(),
             labels: Default::default(),
-        })
+        }, None, &mut None)
         .await
         .unwrap()
     else {
@@ -300,7 +300,7 @@ async fn recovery_preserves_missing_storage_and_rejects_a_foreign_valid_owner() 
             id: "pi-service-original".into(),
             available: Default::default(),
             labels: Default::default(),
-        })
+        }, None, &mut None)
         .await
         .unwrap()
     else {

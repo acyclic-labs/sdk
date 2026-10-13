@@ -109,15 +109,7 @@ impl RuntimeScope {
         Ok(Self {
             grants,
             limits,
-            run_limits: TaskRunLimits::default(),
-            extensions: None,
-            extensions_sealed: false,
-            extension_runtime: None,
-            extension_schemas: None,
-            resource_proofs: Vec::new(),
-            created_access: None,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            _native_grants_custody: None,
+            ..Self::default()
         })
     }
 
@@ -144,14 +136,8 @@ impl RuntimeScope {
         let scope = Self {
             grants: grants.0,
             limits,
-            run_limits: TaskRunLimits::default(),
-            extensions: None,
-            extensions_sealed: false,
-            extension_runtime: None,
-            extension_schemas: None,
-            resource_proofs: Vec::new(),
-            created_access: None,
             _native_grants_custody: Some(grants.1),
+            ..Self::default()
         };
         Ok((scope, custody))
     }

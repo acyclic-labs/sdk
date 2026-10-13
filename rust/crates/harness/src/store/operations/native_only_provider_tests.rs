@@ -142,7 +142,7 @@ async fn exercise<P: StreamProvider>(provider: Arc<P>) -> Result<()> {
     };
     let encoded = crate::wire_codec::encode_event(&authority, &event, &mut None)?;
     let event_bytes = encoded.len() as u64;
-    let publication = IndexedPublication::new(&authority, &event, encoded, &mut None)?;
+    let publication = IndexedPublication::new(&authority, &event, encoded, None, &mut None)?;
     let request = publication
         .request(
             &ordinary,

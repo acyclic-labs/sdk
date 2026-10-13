@@ -408,7 +408,7 @@ impl Fixture {
                 id: "deadline-worker".into(),
                 available: ResourceRequest::default(),
                 labels: BTreeMap::new(),
-            })
+            }, None, &mut None)
             .await?
         {
             WorkPull::Claimed(lease) => Ok(lease),
@@ -497,15 +497,11 @@ impl Fixture {
             )?;
             let output = runtime
                 .task_host()
-                .pull_operation(
-                    &Worker {
+                .pull_work(&Worker {
                         id: "deadline-worker".into(),
                         available: ResourceRequest::default(),
                         labels: BTreeMap::new(),
-                    },
-                    operation,
-                    &mut Some(&mut operation_io),
-                )
+                    }, Some(operation), &mut Some(&mut operation_io))
                 .await?;
             (output, operation_io.into_custody()?)
         };

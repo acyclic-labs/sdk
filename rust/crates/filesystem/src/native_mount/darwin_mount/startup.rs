@@ -206,30 +206,8 @@ impl DarwinMountSession {
         if out.is_some() {
             return Err(NativeMountError::ControlPending);
         }
-        original_work(source.as_ref(), Some(original))?;
-        original.admit(WorkCounters::UNCHARGED)?;
-        let root = source
-            .lookup_with_meter(&MountPath::root(), original)?
-            .ok_or(NativeMountError::Lifecycle("volume root is absent"))?;
-        if root.node.kind != MountNodeKind::Directory {
-            return Err(NativeMountError::Lifecycle(
-                "volume root is not a directory",
-            ));
-        }
-        let mut host = original;
-        let metadata = crate::native_host::unix_name(
-            request.destination.as_os_str(),
-            &mut host,
-            |path, work| start_stat(path, work),
-        )?;
-        let mut context = DarwinMountContext::new(
-            source,
-            request.writable,
-            metadata.st_uid,
-            metadata.st_gid,
-            root.node.file_id,
-            original,
-        )?;
+        let mut context =
+            DarwinMountContext::new(source, request.writable, &request.destination, original)?;
         context
             .native_allocation
             .grow((2 * std::mem::size_of::<usize>()) as u64)?;
@@ -334,24 +312,6 @@ impl DarwinMountSession {
             &mut &*original,
         )?);
         Ok(())
-    }
-}
-
-fn start_stat(
-    path: &CStr,
-    work: &Work,
-) -> Result<libc::stat, crate::NativeTreeMaterializationError> {
-    loop {
-        work.charge(READ_WORK)?;
-        let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
-        // SAFETY: path is terminated and metadata is writable.
-        if unsafe { libc::stat(path.as_ptr(), metadata.as_mut_ptr()) } == 0 {
-            return Ok(unsafe { metadata.assume_init() });
-        }
-        let error = std::io::Error::last_os_error();
-        if error.kind() != std::io::ErrorKind::Interrupted {
-            return Err(error.into());
-        }
     }
 }
 

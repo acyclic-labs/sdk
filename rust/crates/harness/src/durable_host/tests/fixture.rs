@@ -43,7 +43,7 @@ where
     pub(crate) async fn owner(&self, byte: u8) -> Result<TaskJournalOwner<P>> {
         let lease = match self
             .host
-            .recover_work(TaskId::from_bytes([byte; 16]))
+            .recover_work(TaskId::from_bytes([byte; 16]), &mut None)
             .await?
         {
             crate::distributed::WorkPull::Claimed(lease)
@@ -117,7 +117,14 @@ where
             )?
             .await?;
         self.host
-            .resume_workflow(task, 1, input, IdempotencyKey::new("replace")?)
+            .resume_workflow(
+                task,
+                1,
+                input,
+                IdempotencyKey::new("replace")?,
+                None,
+                &mut None,
+            )
             .await?;
         self.claim(byte, "replacement").await?;
         self.owner(byte).await
@@ -325,19 +332,20 @@ where
     ) -> Result<crate::distributed::WorkLease> {
         let crate::distributed::WorkPull::Claimed(lease) = self
             .host
-            .pull_operation(
+            .pull_work(
                 &crate::distributed::Worker {
                     id: worker.into(),
                     available: Default::default(),
                     labels: BTreeMap::new(),
                 },
-                OperationId::from_bytes([byte; 16]),
+                Some(OperationId::from_bytes([byte; 16])),
+                &mut None,
             )
             .await?
         else {
             return Err(Error::NotFound("fixture lease".into()));
         };
-        self.host.start_task(&lease).await?;
+        self.host.start_task(&lease, &mut None).await?;
         Ok(lease)
     }
 

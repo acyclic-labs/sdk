@@ -105,7 +105,7 @@ impl MailFixture {
                     id: "native-mail-control".into(),
                     available: ResourceRequest::default(),
                     labels: BTreeMap::new(),
-                })
+                }, None, &mut None)
                 .await?
             {
                 WorkPull::Claimed(lease) => lease,

@@ -60,8 +60,6 @@ impl MemoryStream {
         mut request: CommitRequest,
         deadline: Option<u64>,
     ) -> Result<(CommitOutcome, Allocation), StreamError> {
-        normalize_commit(&mut request)?;
-        validate_commit_shape(&request)?;
         #[cfg(not(target_arch = "wasm32"))]
         let digest = if self.work.is_some() {
             self.digest(&mut request)?

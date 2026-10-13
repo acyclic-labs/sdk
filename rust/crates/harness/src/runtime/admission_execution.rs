@@ -11,6 +11,11 @@ impl AgentHarness {
         I: Serialize + Send + 'static,
         O: Serialize + DeserializeOwned + Send + 'static,
     {
+        if self.execution.is_some() {
+            return Err(Error::Unsupported(
+                "live task closures cannot cross an execution provider; register a resumable task and admit it with a stable operation ID".into(),
+            ));
+        }
         self.spawn_in_group(
             &self.live,
             self.scope.clone(),
@@ -20,28 +25,6 @@ impl AgentHarness {
             None,
         )
         .await
-    }
-
-    pub(super) async fn spawn_in_group<I, O>(
-        self: &Arc<Self>,
-        group: &TaskGroup,
-        scope: RuntimeScope,
-        policies: Vec<(ComponentIdentity, Arc<dyn ToolPolicy>)>,
-        definition: &Arc<TaskDefinition<I, O>>,
-        input: I,
-        operation_id: Option<OperationId>,
-    ) -> Result<RuntimeTask<O>>
-    where
-        I: Serialize + Send + 'static,
-        O: Serialize + DeserializeOwned + Send + 'static,
-    {
-        if self.execution.is_some() {
-            return Err(Error::Unsupported(
-                "live task closures cannot cross an execution provider; register a resumable task and admit it with a stable operation ID".into(),
-            ));
-        }
-        self.spawn_local_in_group(group, scope, policies, definition, input, operation_id)
-            .await
     }
 
     pub(crate) async fn spawn_local_with_operation<I, O>(
@@ -54,7 +37,7 @@ impl AgentHarness {
         I: Serialize + Send + 'static,
         O: Serialize + DeserializeOwned + Send + 'static,
     {
-        self.spawn_local_in_group(
+        self.spawn_in_group(
             &self.live,
             self.scope.clone(),
             Vec::new(),
@@ -65,7 +48,7 @@ impl AgentHarness {
         .await
     }
 
-    pub(super) async fn spawn_local_in_group<I, O>(
+    pub(super) async fn spawn_in_group<I, O>(
         self: &Arc<Self>,
         group: &TaskGroup,
         scope: RuntimeScope,
@@ -106,12 +89,9 @@ impl AgentHarness {
         let runtime = Arc::clone(self);
         let context_group = group.clone();
         let descendants = context_group.child(scope.concurrency_bound(self.concurrency), None)?;
-        let (identity, receive_identity) = tokio::sync::oneshot::channel();
+        let task_id = operation_id.unwrap_or_default();
         let admitted = group
-            .spawn(operation_id.unwrap_or_default(), async move {
-                let task_id = receive_identity
-                    .await
-                    .map_err(|_| Error::Conflict("task identity was not admitted".into()))?;
+            .spawn(task_id, async move {
                 scope.run_limits().check_deadline()?;
                 let deadline = scope.run_limits().deadline_epoch_ms;
                 let run = handler(
@@ -155,7 +135,6 @@ impl AgentHarness {
                 return Err(Error::Indeterminate(operation_id));
             }
         };
-        let _ = identity.send(*handle.id());
         Ok(RuntimeTask::Live(handle))
     }
 

@@ -12,24 +12,32 @@ async fn repeated_join_preserves_prior_incremental_publications() -> Result<(), 
     )
     .await?;
     child.write_text("/first.txt", "first").await?;
-    let first = child.join_into(&parent).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let first = unbounded!(child.join_into(&parent), plan())?;
     assert!(matches!(
         first
-            .apply(ApplyOptions {
+            .apply(
+                ApplyOptions {
                     if_target: first.target_head(),
                     idempotency_key: IdempotencyKey::from_bytes([0x68; 16]),
-                }, BTreeMap::new(), crate::PublicationPermit::Unrestricted)
+                },
+                std::collections::BTreeMap::new(),
+                crate::PublicationPermit::Unrestricted
+            )
             .await?,
         JoinOutcome::Applied(_)
     ));
     child.write_text("/second.txt", "second").await?;
-    let second = child.join_into(&parent).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let second = unbounded!(child.join_into(&parent), plan())?;
     assert!(matches!(
         second
-            .apply(ApplyOptions {
+            .apply(
+                ApplyOptions {
                     if_target: second.target_head(),
                     idempotency_key: IdempotencyKey::from_bytes([0x69; 16]),
-                }, BTreeMap::new(), crate::PublicationPermit::Unrestricted)
+                },
+                std::collections::BTreeMap::new(),
+                crate::PublicationPermit::Unrestricted
+            )
             .await?,
         JoinOutcome::Applied(_)
     ));
@@ -60,15 +68,19 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
     agent.write_text("/agent", "agent").await?;
     main.write_text("/main", "main").await?;
 
-    let plan = agent.join_into(&main).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let plan = unbounded!(agent.join_into(&main), plan())?;
     let expected = plan.target_head();
     let idempotency_key = IdempotencyKey::new();
     assert!(unbounded!(main, read("/agent", 16)).is_err());
     let outcome = plan
-        .apply(ApplyOptions {
+        .apply(
+            ApplyOptions {
                 if_target: expected,
                 idempotency_key,
-            }, BTreeMap::new(), crate::PublicationPermit::Unrestricted)
+            },
+            std::collections::BTreeMap::new(),
+            crate::PublicationPermit::Unrestricted,
+        )
         .await?;
     let JoinOutcome::Applied(joined) = outcome else {
         return Err("join did not publish".into());
@@ -77,14 +89,14 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
         &joined,
         idempotency_key,
         WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
+        &CancellationToken::new()
     ))?;
-    assert!(main.verify_join_commit(&witness, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?);
+    assert!(unbounded!(main, verify_join_commit(&witness))?);
     let mut forged = serde_json::to_value(witness)?;
     forged["source_generation"] =
         serde_json::to_value(crate::GenerationId::new(crate::Digest::ZERO))?;
     let forged: crate::JoinCommitWitness = serde_json::from_value(forged)?;
-    assert!(!main.verify_join_commit(&forged, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?);
+    assert!(!unbounded!(main, verify_join_commit(&forged))?);
     assert_eq!(
         unbounded!(main, operation_generation(idempotency_key))?
             .ok_or("join operation was not recoverable")?
@@ -109,15 +121,19 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
         OwnedBytes::from_static(b"agent")
     );
     assert!(matches!(
-        plan.apply(ApplyOptions {
+        plan.apply(
+            ApplyOptions {
                 if_target: expected,
                 idempotency_key,
-            }, BTreeMap::new(), crate::PublicationPermit::Unrestricted)
+            },
+            std::collections::BTreeMap::new(),
+            crate::PublicationPermit::Unrestricted
+        )
         .await?,
         JoinOutcome::AlreadyApplied(_)
     ));
     main.write_text("/after-join", "later").await?;
-    assert!(main.verify_join_commit(&witness, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?);
+    assert!(unbounded!(main, verify_join_commit(&witness))?);
     let ordinary_key = IdempotencyKey::new();
     let mut ordinary = unbounded!(main, begin_transaction(ordinary_key))?;
     ordinary.write_text("/ordinary", "not a join").await?;
@@ -131,7 +147,7 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
     impostor["operation_id"] = serde_json::to_value(ordinary_key.operation_id())?;
     impostor["result_generation"] = serde_json::to_value(ordinary_generation.id())?;
     let impostor: crate::JoinCommitWitness = serde_json::from_value(impostor)?;
-    assert!(!main.verify_join_commit(&impostor, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?);
+    assert!(!unbounded!(main, verify_join_commit(&impostor))?);
     Ok(())
 }
 
@@ -154,7 +170,7 @@ async fn exact_generation_join_matches_head_plan_and_rejects_stale_target()
     let planned = unbounded!(agent.join_into(&main), plan_at(&source, &target))?;
     assert_eq!(planned.source_head(), source.id());
     assert_eq!(planned.target_head(), target.id());
-    let current = agent.join_into(&main).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let current = unbounded!(agent.join_into(&main), plan())?;
     assert_eq!(planned.source_head(), current.source_head());
     assert_eq!(planned.target_head(), current.target_head());
 
@@ -193,41 +209,33 @@ async fn bounded_common_ancestor_discovery_is_direction_independent_at_the_front
     .await?;
 
     assert_eq!(
-        main.join_into(&left)
-            .bounds(1, 32, 32)
-            .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
-            .common_ancestor(),
+        unbounded!(main.join_into(&left).bounds(1, 32, 32), plan())?.common_ancestor(),
         base.id()
     );
     assert_eq!(
-        left.join_into(&main)
-            .bounds(1, 32, 32)
-            .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
-            .common_ancestor(),
+        unbounded!(left.join_into(&main).bounds(1, 32, 32), plan())?.common_ancestor(),
         base.id()
     );
     assert!(matches!(
-        left.join_into(&right).bounds(1, 32, 32).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
+        unbounded!(left.join_into(&right).bounds(1, 32, 32), plan()),
         Err(WorkspaceError::LineageLimit)
     ));
     assert!(matches!(
-        right.join_into(&left).bounds(1, 32, 32).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
+        unbounded!(right.join_into(&left).bounds(1, 32, 32), plan()),
         Err(WorkspaceError::LineageLimit)
     ));
 
     let unrelated = unbounded!(fs, create_workspace("lineage-unrelated"))?;
     assert!(matches!(
-        main.join_into(&unrelated).bounds(1, 32, 32).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
+        unbounded!(main.join_into(&unrelated).bounds(1, 32, 32), plan()),
         Err(WorkspaceError::NoCommonAncestor)
     ));
     assert!(matches!(
-        unrelated.join_into(&main).bounds(1, 32, 32).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
+        unbounded!(unrelated.join_into(&main).bounds(1, 32, 32), plan()),
         Err(WorkspaceError::NoCommonAncestor)
     ));
     assert!(matches!(
-        main.join_into(&left).bounds(0, 32, 32).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
+        unbounded!(main.join_into(&left).bounds(0, 32, 32), plan()),
         Err(WorkspaceError::JoinLimit)
     ));
     Ok(())
@@ -245,14 +253,18 @@ async fn join_rejects_a_stale_target_without_mutation() -> Result<(), Box<dyn Er
     )
     .await?;
     agent.write_text("/agent", "agent").await?;
-    let plan = agent.join_into(&main).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let plan = unbounded!(agent.join_into(&main), plan())?;
     let expected = plan.target_head();
     main.write_text("/raced", "winner").await?;
     let outcome = plan
-        .apply(ApplyOptions {
+        .apply(
+            ApplyOptions {
                 if_target: expected,
                 idempotency_key: IdempotencyKey::new(),
-            }, BTreeMap::new(), crate::PublicationPermit::Unrestricted)
+            },
+            std::collections::BTreeMap::new(),
+            crate::PublicationPermit::Unrestricted,
+        )
         .await?;
     assert!(matches!(outcome, JoinOutcome::StaleTarget(_)));
     assert!(unbounded!(main, read("/agent", 16)).is_err());

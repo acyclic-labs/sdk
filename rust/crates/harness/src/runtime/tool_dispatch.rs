@@ -44,7 +44,7 @@ impl TaskContext {
         let context = ToolContext::new(
             std::sync::Arc::new(self.clone()),
             invocation.operation_id,
-            &(invocation.call_id.clone()),
+            &invocation.call_id,
             None,
         )?;
         binding
@@ -176,20 +176,10 @@ impl TaskContext {
             .into_iter()
             .chain(self.stock_tool_policy_overrides())
         {
-            let bound_reason = if self
-                .harness
-                .policy
-                .as_ref()
-                .is_some_and(|global| Arc::ptr_eq(global, policy))
-            {
-                "runtime policy identity changed after binding"
-            } else {
-                "scoped policy identity changed after binding"
-            };
             if let Some(paid) = self
                 .policy_approval(
                     policy.as_ref(),
-                    Some((identity, bound_reason)),
+                    Some(identity),
                     definition,
                     invocation,
                     work,
@@ -256,7 +246,7 @@ impl TaskContext {
         Ok(self
             .policy_approval(
                 policy,
-                Some((expected, "policy identity changed after binding")),
+                Some(expected),
                 definition,
                 invocation,
                 Some(work),
@@ -269,7 +259,7 @@ impl TaskContext {
     pub(super) async fn policy_approval(
         &self,
         policy: &dyn ToolPolicy,
-        expected: Option<(&ComponentIdentity, &'static str)>,
+        expected: Option<&ComponentIdentity>,
         definition: &ToolDefinition,
         invocation: &ToolInvocation,
         work: Option<&NativeWork>,
@@ -285,17 +275,12 @@ impl TaskContext {
             }
             _ => (policy.identity(), None),
         };
-        if let Some((expected, reason)) = expected {
-            if expected != &identity.0 {
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                if work.is_some() {
-                    return Err(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Conflict,
-                        reason,
-                    });
-                }
-                return Err(Error::Conflict(reason.into()));
-            }
+        if expected.is_some_and(|expected| expected != &identity.0) {
+            return Err(task_workflow_error(
+                work,
+                crate::wire::ErrorCode::Conflict,
+                "policy identity changed after binding",
+            ));
         }
         let decision: (ToolPolicyDecision, Option<NativeCustody>) = match work {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -324,15 +309,10 @@ impl TaskContext {
             _ => (policy.identity(), None),
         };
         if after.0 != identity.0 {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.is_some() {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Conflict,
-                    reason: "policy identity changed during evaluation",
-                });
-            }
-            return Err(Error::Conflict(
-                "policy identity changed during evaluation".into(),
+            return Err(task_workflow_error(
+                work,
+                crate::wire::ErrorCode::Conflict,
+                "policy identity changed during evaluation",
             ));
         }
         drop(after);

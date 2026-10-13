@@ -3,7 +3,6 @@ use super::*;
 impl TaskContext {
     pub(super) async fn verify_model_files(&self, messages: &[ModelMessage]) -> Result<()> {
         let limits = self.scope.limits();
-        let mut configurations = Vec::new();
         for message in messages {
             message.content.validate_limits(limits, &mut None)?;
             for file in message.content.file_refs() {
@@ -14,10 +13,10 @@ impl TaskContext {
                     ));
                 }
             }
-            configurations.extend(message.content.native_configurations());
         }
-        let configurations = configurations
-            .into_iter()
+        let configurations = messages
+            .iter()
+            .flat_map(|message| message.content.native_configurations())
             .map(|binding| {
                 let proof = binding.verify_original(
                     self.scope.extensions.as_ref(),
