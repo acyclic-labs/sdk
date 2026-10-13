@@ -210,7 +210,13 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 Err(error) => return Err(error.into()),
             }
         }
-        let idempotency_key = work.operation_key(authority_id, commit.operation_id)?;
+        let idempotency_key = work.key(
+            b"operation\0",
+            &[
+                &authority_id.into_bytes(),
+                &commit.operation_id.into_bytes(),
+            ],
+        )?;
         let result = self
             .commit(
                 CommitRequest {
