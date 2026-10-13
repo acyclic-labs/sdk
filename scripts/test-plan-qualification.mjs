@@ -308,6 +308,80 @@ test("Linux package qualification uses sixteen workers without changing publicat
   assert.ok(readFileSync(".github/actionlint.yaml", "utf8").includes(linux.runner));
 });
 
+test("Linux filesystem packaging overlaps Harness conformance and joins both failures", () => {
+  const source = readFileSync("scripts/qualify-ci.sh", "utf8").replaceAll("\r\n", "\n");
+  const start = source.indexOf("    background harness-conformance bun");
+  const end = source.indexOf("    bun run licenses", start);
+  assert.ok(start > source.indexOf('bash scripts/check-harness-package.sh "$SDK_ARTIFACT_DIR/packages/harness"'));
+  assert.ok(end > start);
+  const commands = source.slice(start, end);
+  const helpers = source.slice(source.indexOf("background() {"), source.indexOf("native_binding() {"));
+  assert.ok(helpers.includes("finish() {"));
+  const controlledHelpers = helpers.replace("finish() {", 'finish() {\n  touch "$fixture/finish-entered"');
+  mkdirSync(".tools", { recursive: true });
+  const root = mkdtempSync(".tools/linux-packages-").replaceAll("\\", "/");
+  assert.match(root, /^\.tools\/linux-packages-[A-Za-z0-9]+$/);
+  const bash = process.platform === "win32"
+    ? join(process.env.ProgramFiles ?? "C:/Program Files", "Git", "bin", "bash.exe") : "bash";
+  try {
+    for (const scenario of [
+      { fs: 0, harness: 0, early: false }, { fs: 21, harness: 0, early: false },
+      { fs: 0, harness: 13, early: false }, { fs: 21, harness: 13, early: false },
+      { fs: 21, harness: 0, early: true },
+    ]) {
+      const fixture = `${root}/${scenario.fs}-${scenario.harness}-${scenario.early}`;
+      mkdirSync(fixture);
+      const body = scenario.early ? commands.replace(" || filesystem_status=$?", "") : commands;
+      if (scenario.early) assert.notEqual(body, commands);
+      const result = spawnSync(bash, ["-c", `set -euo pipefail
+fixture='${fixture}'
+SDK_TEMP_DIR="$fixture"
+SDK_ARTIFACT_DIR="$fixture/artifacts"
+fail_fs=${scenario.fs}
+fail_harness=${scenario.harness}
+parent_pid="$BASHPID"
+on_exit() {
+  if [[ "$BASHPID" != "$parent_pid" ]]; then return; fi
+  for child in filesystem harness; do
+    if [[ ! -f "$fixture/$child.done" ]]; then printf 'unfinished-at-exit:%s\\n' "$child"; fi
+  done
+  touch "$fixture/finish-entered"
+}
+trap on_exit EXIT
+bun() {
+  [[ "$#" == 4 && "$1" == scripts/run-harness-conformance.mjs ]]
+  [[ "$2" == "$SDK_ARTIFACT_DIR/packages/harness" ]]
+  [[ "$3" == "$SDK_ARTIFACT_DIR/packages/harness/runner-report.json" ]]
+  [[ "$4" == "$SDK_ARTIFACT_DIR/packages/harness/qualification-receipt.json" ]]
+  touch "$fixture/harness-started"
+  while [[ ! -f "$fixture/filesystem-started" || ! -f "$fixture/finish-entered" ]]; do sleep 0.01; done
+  touch "$fixture/harness.done"
+  return "$fail_harness"
+}
+bash() {
+  [[ "$#" == 2 && "$1" == scripts/check-filesystem-package.sh ]]
+  [[ "$2" == "$SDK_ARTIFACT_DIR/packages/filesystem" ]]
+  touch "$fixture/filesystem-started"
+  while [[ ! -f "$fixture/harness-started" ]]; do sleep 0.01; done
+  touch "$fixture/filesystem.done"
+  return "$fail_fs"
+}
+${controlledHelpers}
+${body}
+printf 'joined\\n'
+`], { encoding: "utf8", timeout: 10000 });
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, scenario.early ? scenario.fs : scenario.harness || scenario.fs, result.stderr);
+      if (scenario.early) assert.match(result.stdout, /unfinished-at-exit:harness/);
+      else assert.doesNotMatch(result.stdout, /unfinished-at-exit:/);
+      assert.equal(result.stdout.includes("joined"), scenario.fs === 0 && scenario.harness === 0);
+    }
+  } finally {
+    assert.ok(resolve(root).startsWith(resolve(".tools") + sep));
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("web browser commands overlap, finish before shell exit and retain named timings", () => {
   const source = readFileSync("scripts/qualify-ci.sh", "utf8").replaceAll("\r\n", "\n");
   const start = source.indexOf("    browser_qualification() {");

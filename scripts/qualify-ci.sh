@@ -302,11 +302,14 @@ case "$lane" in
       typescript/packages/stream/generated/wasm
     bun run check:generated
     bash scripts/check-harness-package.sh "$SDK_ARTIFACT_DIR/packages/harness"
-    bash scripts/check-filesystem-package.sh "$SDK_ARTIFACT_DIR/packages/filesystem"
-    bun scripts/run-harness-conformance.mjs \
+    background harness-conformance bun scripts/run-harness-conformance.mjs \
       "$SDK_ARTIFACT_DIR/packages/harness" \
       "$SDK_ARTIFACT_DIR/packages/harness/runner-report.json" \
       "$SDK_ARTIFACT_DIR/packages/harness/qualification-receipt.json"
+    filesystem_status=0
+    bash scripts/check-filesystem-package.sh "$SDK_ARTIFACT_DIR/packages/filesystem" || filesystem_status=$?
+    finish harness-conformance
+    if ((filesystem_status != 0)); then exit "$filesystem_status"; fi
     bun run licenses
     bun x buf format -d --exit-code
     bun x buf lint
