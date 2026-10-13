@@ -22,6 +22,7 @@ where
         let caller = self
             .authenticate(
                 context,
+                None,
                 arguments
                     .source
                     .is_none_or(|source| Some(source) == context.durable_task_id()),
@@ -107,7 +108,11 @@ where
                 "child claims changed after immutable source selection",
             ));
         }
-        let operation = checkpoint_operation(context.operation_id());
+        let operation = crate::filesystem::recursive::derive_operation(
+            b"harness/v2/configured-recursive-checkpoint\0",
+            &[context.operation_id().into_bytes()],
+            io,
+        )?;
         let source_checkpoint = match original {
             Some(original) => crate::executor::with_history_io(io, |work| {
                 original

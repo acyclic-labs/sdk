@@ -122,7 +122,6 @@ pub fn source(
         inherited_messages: 64,
         inherited_references: 64,
         content_budget: config.tools.content_budget,
-        project_policy_graph_root: None,
     };
     Source::new(
         configured,

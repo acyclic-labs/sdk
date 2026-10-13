@@ -7,42 +7,6 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    pub(super) async fn authenticate<'a>(
-        &'a self,
-        context: &ToolContext,
-        project_read: bool,
-        cancellation: &CancellationToken,
-        io: Option<&PreparationIo>,
-    ) -> Result<&'a ConfiguredRecursiveCaller> {
-        check_cancellation(cancellation, io)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if io.and_then(PreparationIo::original_native_work).is_some() {
-            let owner = self.source_owner(context.task(), cancellation, io).await?;
-            let caller = self
-                .authenticate_caller(context.task(), Some(&owner), project_read, io)
-                .await?;
-            let io = io.expect("native authentication observer");
-            for volume in std::iter::once(&caller.private_volume)
-                .chain(project_read.then_some(&caller.project))
-            {
-                crate::model::charge_items(Some(io), 1)?;
-                if !io.contains_capability(
-                    context.effective_scope().grants(),
-                    volume,
-                    "volume:read:",
-                )? {
-                    return Err(crate::executor::stock_boundary(
-                        Some(io),
-                        crate::wire::ErrorCode::Unauthorized,
-                        "native recursive tool effective scope denies its selected volume operation",
-                    ));
-                }
-            }
-            return Ok(caller);
-        }
-        self.authenticate_caller(context.task(), None, project_read, None)
-            .await
-    }
     pub(super) async fn source(
         &self,
         context: &ToolContext,

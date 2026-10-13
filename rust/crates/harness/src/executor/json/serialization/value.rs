@@ -63,7 +63,7 @@ impl Scope<'_> {
     }
     fn stop<T>(&mut self, error: Error) -> Encoded<T> {
         if self.failed.is_none() {
-            self.failed = Some(error);
+            self.failed = Some(error)
         }
         Err(Failure::Stopped)
     }
@@ -74,10 +74,12 @@ impl Scope<'_> {
         if self.failed.is_some() && !matches!(event, JsonCodecCharge::Release { .. }) {
             return Err(Failure::Stopped);
         }
-        match (self.charge)(event) {
-            Ok(()) => Ok(()),
-            Err(error) => self.stop(error),
-        }
+        (self.charge)(event).map_err(|error| {
+            if self.failed.is_none() {
+                self.failed = Some(error)
+            }
+            Failure::Stopped
+        })
     }
     fn item(&mut self, depth: u32) -> Encoded<()> {
         if depth > self.bounds.maximum_depth || self.items >= self.bounds.maximum_items {
@@ -115,7 +117,7 @@ impl Scope<'_> {
     }
     pub fn allocate(&mut self, bytes: u64) -> Encoded<()> {
         if bytes != 0 {
-            self.event(JsonCodecCharge::AllocationOperation { bytes })?;
+            self.event(JsonCodecCharge::AllocationOperation { bytes })?
         }
         Ok(())
     }
@@ -125,84 +127,48 @@ impl Scope<'_> {
             Err(error) => self.stop(error),
         }
     }
-    fn string(&mut self, value: &str) -> Encoded<String> {
-        if value.len() as u64 > self.bounds.maximum_bytes.saturating_sub(self.bytes) {
-            return self.bound("JSON exceeds declared byte bound");
-        }
-        let size = self.size(value)?;
-        self.data(size)?;
-        self.retain(value.len() as u64)?;
-        self.event(JsonCodecCharge::CopyAdmission {
-            bytes: value.len() as u64,
-        })?;
-        self.allocate(value.len() as u64)?;
-        let mut copied = String::new();
-        if let Err(error) = copied.try_reserve_exact(value.len()) {
-            return self.stop(Error::Allocation(error));
-        }
-        if copied.capacity() > value.len() {
-            self.retain((copied.capacity() - value.len()) as u64)?;
-        }
-        self.event(JsonCodecCharge::Copy {
-            bytes: value.len() as u64,
-        })?;
-        copied.push_str(value);
-        Ok(copied)
-    }
     fn display<T: std::fmt::Display + ?Sized>(&mut self, value: &T) -> Encoded<String> {
         struct Text<'a, 'b> {
             scope: &'a mut Scope<'b>,
-            value: String,
-            failed: Option<Failure>,
+            text: String,
         }
         impl std::fmt::Write for Text<'_, '_> {
             fn write_str(&mut self, text: &str) -> std::fmt::Result {
                 let result = (|| {
                     let encoded = self.scope.size(text)?;
                     self.scope.data(encoded - 2)?;
-                    let Some(length) = self.value.len().checked_add(text.len()) else {
+                    let Some(length) = self.text.len().checked_add(text.len()) else {
                         return self.scope.bound("JSON string size overflow");
                     };
                     self.scope.event(JsonCodecCharge::CopyAdmission {
                         bytes: text.len() as u64,
                     })?;
-                    if length > self.value.capacity() {
-                        self.scope.retain((length - self.value.capacity()) as u64)?;
+                    if length > self.text.capacity() {
+                        self.scope.retain((length - self.text.capacity()) as u64)?;
                         self.scope.allocate(length as u64)?;
-                        if let Err(error) = self.value.try_reserve_exact(length - self.value.len())
-                        {
+                        if let Err(error) = self.text.try_reserve_exact(length - self.text.len()) {
                             return self.scope.stop(Error::Allocation(error));
                         }
-                        if self.value.capacity() > length {
-                            self.scope.retain((self.value.capacity() - length) as u64)?;
-                        }
+                        self.scope.retain((self.text.capacity() - length) as u64)?;
                     }
                     self.scope.event(JsonCodecCharge::Copy {
                         bytes: text.len() as u64,
                     })?;
-                    self.value.push_str(text);
+                    self.text.push_str(text);
                     Ok(())
                 })();
-                if let Err(error) = result {
-                    self.failed = Some(error);
-                    return Err(std::fmt::Error);
-                }
-                Ok(())
+                result.map_err(|_| std::fmt::Error)
             }
         }
         self.data(2)?;
         let mut text = Text {
             scope: self,
-            value: String::new(),
-            failed: None,
+            text: String::new(),
         };
         if std::fmt::write(&mut text, format_args!("{value}")).is_err() {
-            return match text.failed.take() {
-                Some(error) => Err(error),
-                None => text.scope.bound("JSON string formatting failed"),
-            };
+            return text.scope.bound("JSON string formatting failed");
         }
-        Ok(text.value)
+        Ok(text.text)
     }
 }
 impl Drop for Scope<'_> {
@@ -228,16 +194,9 @@ struct Builder<'a, 'b> {
 }
 struct Compound<'a, 'b> {
     builder: Builder<'a, 'b>,
-    values: Values,
-}
-enum Values {
-    Array(Vec<Value>, Option<String>),
-    Object(
-        serde_json::Map<String, Value>,
-        Option<String>,
-        Option<String>,
-    ),
-    Raw(Option<Value>),
+    value: Option<Value>,
+    key: Option<String>,
+    tag: Option<String>,
 }
 struct Stack {
     bytes: [u8; 64],
@@ -261,19 +220,27 @@ impl std::io::Write for Stack {
 macro_rules! scalar {
     ($($method:ident($ty:ty)),* $(,)?) => {$(
         fn $method(self, value: $ty) -> Encoded<Value> {
-            if matches!(self.position, Position::Raw) { return self.scope.bound("expected value"); }
+            if matches!(self.position, Position::Raw) {
+                return self.scope.bound("expected value");
+            }
             self.scope.item(self.depth)?;
             if matches!(self.position, Position::Key) {
                 struct Scalar($ty);
-                impl Serialize for Scalar { fn serialize<S: ser::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> { serializer.$method(self.0) } }
+                impl Serialize for Scalar {
+                    fn serialize<S: ser::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+                        serializer.$method(self.0)
+                    }
+                }
                 let mut stack = Stack { bytes: [0; 64], length: 0 };
                 serde_json::to_writer(&mut stack, &Scalar(value))?;
                 let key = std::str::from_utf8(&stack.bytes[..stack.length]).expect("JSON scalar is UTF-8");
                 if key == "null" { return self.scope.bound("float key must be finite (got NaN or +/-inf)"); }
-                return self.scope.string(key).map(Value::String);
+                return self.scope.display(key).map(Value::String);
             }
             let value = ser::Serializer::$method(serde_json::value::Serializer, value)?;
-            let bytes = self.scope.size(&value)?; self.scope.data(bytes)?; Ok(value)
+            let bytes = self.scope.size(&value)?;
+            self.scope.data(bytes)?;
+            Ok(value)
         }
     )*};
 }
@@ -290,7 +257,7 @@ impl Builder<'_, '_> {
         self.scope.item(self.depth)?;
         self.scope.data(3)?;
         self.scope.item(self.depth + 1)?;
-        let tag = self.scope.string(tag)?;
+        let tag = self.scope.display(tag)?;
         self.scope
             .retain(std::mem::size_of::<(String, Value)>() as u64)?;
         Ok(tag)
@@ -332,19 +299,18 @@ impl<'a, 'b> ser::Serializer for Builder<'a, 'b> {
             let Some(depth) = self.scope.bounds.maximum_depth.checked_sub(self.depth) else {
                 return self.scope.bound("JSON exceeds declared structural bound");
             };
-            let bounds = JsonBounds {
-                maximum_depth: depth,
-                maximum_items: self.scope.bounds.maximum_items - self.scope.items,
-                ..self.scope.bounds
-            };
             let shape = admission::source(
                 value.as_bytes(),
-                bounds,
+                JsonBounds {
+                    maximum_depth: depth,
+                    maximum_items: self.scope.bounds.maximum_items - self.scope.items,
+                    ..self.scope.bounds
+                },
                 Some(JsonValueSchema::Root),
                 self.scope.code,
                 &mut |event| {
                     if let JsonCodecCharge::Work { items, .. } = event {
-                        self.scope.items += items;
+                        self.scope.items += items
                     }
                     self.scope
                         .event(event)
@@ -353,7 +319,7 @@ impl<'a, 'b> ser::Serializer for Builder<'a, 'b> {
             )
             .map_err(|error| {
                 if self.scope.failed.is_none() {
-                    self.scope.failed = Some(error);
+                    self.scope.failed = Some(error)
                 }
                 Failure::Stopped
             })?;
@@ -377,13 +343,13 @@ impl<'a, 'b> ser::Serializer for Builder<'a, 'b> {
             return Ok(value);
         }
         self.scope.item(self.depth)?;
-        self.scope.string(value).map(Value::String)
+        self.scope.display(value).map(Value::String)
     }
     fn serialize_bytes(mut self, value: &[u8]) -> Encoded<Value> {
         self.ordinary()?;
         let mut sequence = self.serialize_seq(None)?;
         for value in value {
-            sequence.serialize_element(value)?;
+            sequence.serialize_element(value)?
         }
         SerializeSeq::end(sequence)
     }
@@ -400,8 +366,7 @@ impl<'a, 'b> ser::Serializer for Builder<'a, 'b> {
         self.scope.data(4)?;
         Ok(Value::Null)
     }
-    fn serialize_unit_struct(mut self, _: &'static str) -> Encoded<Value> {
-        self.ordinary()?;
+    fn serialize_unit_struct(self, _: &'static str) -> Encoded<Value> {
         self.serialize_unit()
     }
     fn serialize_unit_variant(
@@ -421,7 +386,7 @@ impl<'a, 'b> ser::Serializer for Builder<'a, 'b> {
         value: &T,
     ) -> Encoded<Value> {
         if matches!(self.position, Position::Raw) {
-            self.ordinary()?;
+            self.ordinary()?
         }
         value.serialize(self)
     }
@@ -448,7 +413,9 @@ impl<'a, 'b> ser::Serializer for Builder<'a, 'b> {
         self.scope.data(2)?;
         Ok(Compound {
             builder: self,
-            values: Values::Array(Vec::new(), None),
+            value: Some(Value::Array(Vec::new())),
+            key: None,
+            tag: None,
         })
     }
     fn serialize_tuple(self, _: usize) -> Encoded<Self::SerializeTuple> {
@@ -471,9 +438,7 @@ impl<'a, 'b> ser::Serializer for Builder<'a, 'b> {
         let tag = self.tag(variant)?;
         self.depth += 1;
         let mut sequence = self.serialize_seq(None)?;
-        if let Values::Array(_, name) = &mut sequence.values {
-            *name = Some(tag);
-        }
+        sequence.tag = Some(tag);
         Ok(sequence)
     }
     fn serialize_map(mut self, _: Option<usize>) -> Encoded<Self::SerializeMap> {
@@ -482,15 +447,20 @@ impl<'a, 'b> ser::Serializer for Builder<'a, 'b> {
         self.scope.data(2)?;
         Ok(Compound {
             builder: self,
-            values: Values::Object(serde_json::Map::new(), None, None),
+            value: Some(Value::Object(serde_json::Map::new())),
+            key: None,
+            tag: None,
         })
     }
     fn serialize_struct(mut self, name: &'static str, _: usize) -> Encoded<Self::SerializeStruct> {
         self.ordinary()?;
         if name == "$serde_json::private::RawValue" {
+            self.position = Position::Raw;
             Ok(Compound {
                 builder: self,
-                values: Values::Raw(None),
+                value: None,
+                key: None,
+                tag: None,
             })
         } else {
             self.serialize_map(None)
@@ -506,9 +476,7 @@ impl<'a, 'b> ser::Serializer for Builder<'a, 'b> {
         let tag = self.tag(variant)?;
         self.depth += 1;
         let mut map = self.serialize_map(None)?;
-        if let Values::Object(_, _, name) = &mut map.values {
-            *name = Some(tag);
-        }
+        map.tag = Some(tag);
         Ok(map)
     }
     fn collect_str<T: std::fmt::Display + ?Sized>(self, value: &T) -> Encoded<Value> {
@@ -521,11 +489,11 @@ impl<'a, 'b> ser::Serializer for Builder<'a, 'b> {
 }
 impl Compound<'_, '_> {
     fn element<T: Serialize + ?Sized>(&mut self, value: &T) -> Encoded<()> {
-        let Values::Array(values, _) = &mut self.values else {
+        let Some(Value::Array(values)) = self.value.as_mut() else {
             return self.builder.scope.bound("expected sequence");
         };
         if !values.is_empty() {
-            self.builder.scope.data(1)?;
+            self.builder.scope.data(1)?
         }
         if values.len() == values.capacity() {
             let Some(bytes) = values
@@ -535,20 +503,17 @@ impl Compound<'_, '_> {
             else {
                 return self.builder.scope.bound("JSON array capacity overflow");
             };
-            let bytes = bytes as u64;
             let requested = values.len() + 1;
             self.builder
                 .scope
                 .retain(std::mem::size_of::<Value>() as u64)?;
-            self.builder.scope.allocate(bytes)?;
+            self.builder.scope.allocate(bytes as u64)?;
             if let Err(error) = values.try_reserve_exact(1) {
                 return self.builder.scope.stop(Error::Allocation(error));
             }
-            if values.capacity() > requested {
-                self.builder.scope.retain(
-                    ((values.capacity() - requested) * std::mem::size_of::<Value>()) as u64,
-                )?;
-            }
+            self.builder
+                .scope
+                .retain(((values.capacity() - requested) * std::mem::size_of::<Value>()) as u64)?;
         }
         let value = value.serialize(Builder {
             scope: self.builder.scope,
@@ -559,11 +524,11 @@ impl Compound<'_, '_> {
         Ok(())
     }
     fn key<T: Serialize + ?Sized>(&mut self, key: &T) -> Encoded<()> {
-        let Values::Object(values, target, _) = &mut self.values else {
+        let Some(Value::Object(values)) = self.value.as_ref() else {
             return self.builder.scope.bound("expected object");
         };
         if !values.is_empty() {
-            self.builder.scope.data(1)?;
+            self.builder.scope.data(1)?
         }
         let key = key.serialize(Builder {
             scope: self.builder.scope,
@@ -573,14 +538,14 @@ impl Compound<'_, '_> {
         let Value::String(key) = key else {
             return self.builder.scope.bound("key must be a string");
         };
-        *target = Some(key);
+        self.key = Some(key);
         Ok(())
     }
     fn field<T: Serialize + ?Sized>(&mut self, value: &T) -> Encoded<()> {
-        let Values::Object(values, key, _) = &mut self.values else {
+        let Some(Value::Object(values)) = self.value.as_mut() else {
             return self.builder.scope.bound("expected object");
         };
-        let Some(key) = key.take() else {
+        let Some(key) = self.key.take() else {
             return self.builder.scope.bound("map value missing key");
         };
         self.builder.scope.data(1)?;
@@ -589,7 +554,7 @@ impl Compound<'_, '_> {
         if !replaced {
             self.builder
                 .scope
-                .retain(std::mem::size_of::<(String, Value)>() as u64)?;
+                .retain(std::mem::size_of::<(String, Value)>() as u64)?
         }
         let value = value.serialize(Builder {
             scope: self.builder.scope,
@@ -606,24 +571,14 @@ impl Compound<'_, '_> {
         }
         Ok(())
     }
-    fn finish(mut self) -> Encoded<Value> {
-        let (value, tag) = match self.values {
-            Values::Array(values, tag) => (Value::Array(values), tag),
-            Values::Object(values, key, tag) => {
-                if key.is_some() {
-                    return self.builder.scope.bound("map value missing");
-                }
-                (Value::Object(values), tag)
-            }
-            Values::Raw(value) => {
-                return value.ok_or_else(|| {
-                    self.builder.scope.failed =
-                        Some(boundary("expected value", self.builder.scope.code));
-                    Failure::Stopped
-                });
-            }
+    fn finish(self) -> Encoded<Value> {
+        if self.key.is_some() {
+            return self.builder.scope.bound("map value missing");
+        }
+        let Some(value) = self.value else {
+            return self.builder.scope.bound("expected value");
         };
-        if let Some(tag) = tag {
+        if let Some(tag) = self.tag {
             let mut map = serde_json::Map::new();
             map.insert(tag, value);
             Ok(Value::Object(map))
@@ -635,13 +590,17 @@ impl Compound<'_, '_> {
 macro_rules! sequence {
     ($($trait:ident => $method:ident),* $(,)?) => {$(
         impl ser::$trait for Compound<'_, '_> {
-            type Ok = Value; type Error = Failure;
+            type Ok = Value;
+            type Error = Failure;
             fn $method<T: Serialize + ?Sized>(&mut self, value: &T) -> Encoded<()> { self.element(value) }
             fn end(self) -> Encoded<Value> { self.finish() }
         }
     )*};
 }
-sequence!(SerializeSeq => serialize_element, SerializeTuple => serialize_element, SerializeTupleStruct => serialize_field, SerializeTupleVariant => serialize_field);
+sequence!(
+    SerializeSeq => serialize_element, SerializeTuple => serialize_element,
+    SerializeTupleStruct => serialize_field, SerializeTupleVariant => serialize_field
+);
 impl SerializeMap for Compound<'_, '_> {
     type Ok = Value;
     type Error = Failure;
@@ -663,11 +622,11 @@ impl SerializeStruct for Compound<'_, '_> {
         key: &'static str,
         value: &T,
     ) -> Encoded<()> {
-        if let Values::Raw(output) = &mut self.values {
+        if matches!(self.builder.position, Position::Raw) {
             if key != "$serde_json::private::RawValue" {
                 return self.builder.scope.bound("expected value");
             }
-            *output = Some(value.serialize(Builder {
+            self.value = Some(value.serialize(Builder {
                 scope: self.builder.scope,
                 depth: self.builder.depth,
                 position: Position::Raw,
