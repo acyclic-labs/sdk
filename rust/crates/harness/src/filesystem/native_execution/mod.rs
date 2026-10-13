@@ -186,7 +186,7 @@ where
                             move |actual: &NativeMaterializationWork| {
                                 let actual = actual.clone();
                                 let callback = Arc::clone(&callback);
-                                async move { callback.check(&actual).map_err(Error::from)?.await.map_err(Error::from) }
+                                async move { callback.check(&actual)?.await.map_err(Error::from) }
                             },
                         )
                         .await?

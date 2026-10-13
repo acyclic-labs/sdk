@@ -337,15 +337,11 @@ impl<'a> PiForkCoordinator<'a> {
         };
         let reducer = Reducer::restore_native(snapshot, verifier.0, SchemaRegistry::new(), work)?;
         let source_read = match &request.0.authorized_source {
-            Some(authorization) => Some(
-                owner
-                    .restore_project_source_authorization_with_native_work(
-                        context,
-                        authorization,
-                        work,
-                    )?
-                    .await?,
-            ),
+            Some(authorization) => {
+                let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+                let handle = owner.restore_project_source_authorization(context, authorization, Some(&io)).await?;
+                Some((handle, acyclic_harness::store::HistoryWork::new(io).into_custody()?))
+            }
             None => None,
         };
         let resolver = acyclic_harness::runtime::content_residency_verifier(

@@ -55,7 +55,7 @@ impl MailFixture {
             None,
         )
         .await?;
-        let payloads = FilesystemSchedulerPayloadStore::new(
+        let payloads = FilesystemContentPublisher::new(
             fixture.filesystem.clone(),
             &(fixture.volume),
             &fixture.issuer.verifier(&mut None).expect("verifier copy"),
@@ -105,13 +105,13 @@ impl MailFixture {
                     id: "native-mail-control".into(),
                     available: ResourceRequest::default(),
                     labels: BTreeMap::new(),
-                })
+                }, None, &mut None)
                 .await?
             {
                 WorkPull::Claimed(lease) => lease,
                 _ => return Err(Error::NotFound("native mail original lease".into())),
             };
-            runtime.task_host().start_task(&lease, None).await?;
+            runtime.task_host().start_task(&lease).await?;
             tasks.push((
                 TaskId::from_bytes(lease.operation.operation_id.into_bytes()),
                 LeaseFence::from(&lease.reservation),

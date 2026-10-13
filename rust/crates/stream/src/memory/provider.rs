@@ -31,16 +31,10 @@ impl StreamProvider for MemoryStream {
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        self.append_inner(request)
-            .await
-            .map(|(value, _claim)| value)
+        self.append_inner(request).await.map(|(value, _)| value)
     }
 
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        if request.source == request.destination {
-            return Err(StreamError::InvalidArgument);
-        }
-        validate_fork_size(&request)?;
         let digest = fork_digest(&request)?;
         let mut state = self.state.write().await;
         if let Some(result) = replay_fork(&state, request.idempotency_key.as_ref(), digest)? {
@@ -49,27 +43,13 @@ impl StreamProvider for MemoryStream {
         admit_replay(&state, request.idempotency_key.as_ref(), self.limits)?;
         let forked_at = crate::preparation::fork_cut(
             &request,
-            state.paths.get(&request.source).map(|stream| stream.tail),
-            state
-                .paths
-                .get(&request.destination)
-                .map(|stream| stream.tail),
+            state.paths.get(&request.source).map(|path| path.tail),
+            state.paths.get(&request.destination).map(|path| path.tail),
         )?;
-        let source = state
-            .paths
-            .get(&request.source)
-            .ok_or(StreamError::NotFound)?;
-        let source_history = source.history.clone();
         reserve_paths(&state, &request.destination, self.limits)?;
         reserve_commit(&state, self.limits)?;
-        let (paths, _claim) = self.paths(&state, std::iter::once(&request.destination))?;
         let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
         let commit_id = commit_identity(decision, digest);
-        let history = Arc::new(History::Prefix {
-            source: source_history,
-            tail: forked_at,
-            _allocation: Default::default(),
-        });
         let receipt = ForkReceipt {
             source: request.source,
             destination: request.destination,
@@ -87,7 +67,9 @@ impl StreamProvider for MemoryStream {
                 records: Vec::new(),
             })],
         };
-        publish(&mut state, paths, vec![history], &envelope);
+        let (histories, _histories) = self.histories(&state, &envelope.mutations)?;
+        let (paths, _paths) = self.paths(&state, std::iter::once(&receipt.destination))?;
+        publish(&mut state, paths, histories, &envelope);
         state.decision = decision;
         retain(
             &mut state,
@@ -240,7 +222,7 @@ impl StreamProvider for MemoryStream {
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         self.commit_inner(request, None)
             .await
-            .map(|(value, _claim)| value)
+            .map(|(value, _)| value)
     }
 
     async fn commit_before(
@@ -250,7 +232,7 @@ impl StreamProvider for MemoryStream {
     ) -> Result<CommitOutcome, StreamError> {
         self.commit_inner(request, Some(deadline_unix_millis))
             .await
-            .map(|(value, _claim)| value)
+            .map(|(value, _)| value)
     }
 
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
@@ -272,37 +254,21 @@ impl StreamProvider for MemoryStream {
             if let Err(error) = validate_limit(request.limit) {
                 return Ok(Err(error));
             }
-            let mut operation = acyclic_native_runtime::NativeOperationReservation::new(
-                Arc::clone(&meter),
-                acyclic_native_runtime::NativeOperationKind::Read,
-                1,
-            )?;
             let state = self.state.read().await;
-            meter.admit_examination(1, 0)?;
-            let (path, recorded) = operation.attempt(|| state.paths.get(&request.path));
-            let examined = meter.record_examination(1, 0);
-            recorded?;
-            examined?;
+            let path = inspect(&meter, || state.paths.get(&request.path))?;
             let Some(path) = path else {
                 return Ok(Err(StreamError::NotFound));
             };
             if request.from > path.tail {
                 return Ok(Err(StreamError::OutOfRange));
             }
-            let mut count = 0usize;
-            let mut history = HistoryWalk::new(path.history.as_ref(), path.tail, request.from);
-            while history.next.is_some() && history.ceiling > request.from {
-                meter.admit_examination(1, 0)?;
-                if let Some((History::Batch { .. }, _)) = history.next() {
-                    count = count
-                        .checked_add(1)
-                        .ok_or(std::io::ErrorKind::OutOfMemory)?;
-                }
-                meter.record_examination(1, 0)?;
-            }
+            let count = (path.tail - request.from).min(u64::from(request.limit)) as usize;
             let mut allocation = acyclic_native_runtime::ReadAllocation::empty(&meter);
             let mut windows = crate::native::vector(count, &meter, &mut allocation)?;
-            let mut history = HistoryWalk::new(path.history.as_ref(), path.tail, request.from);
+            let end = path
+                .tail
+                .min(request.from.saturating_add(u64::from(request.limit)));
+            let mut history = HistoryWalk::new(path.history.as_ref(), end, request.from);
             while history.next.is_some() && history.ceiling > request.from {
                 meter.admit_examination(1, 0)?;
                 if let Some((History::Batch { records, .. }, ceiling)) = history.next()
@@ -321,34 +287,34 @@ impl StreamProvider for MemoryStream {
                         .map(move |index| (Arc::clone(&window.records), index))
                 })
                 .take(request.limit as usize);
-            let cursor = stream::iter(records).scan(false, move |done, (records, index)| {
-                let result = if *done {
-                    None
-                } else {
-                    let result = (|| {
-                        cursor_meter.check()?;
-                        let source = &records[index];
-                        let mut bytes = acyclic_native_runtime::NativeByteReservation::new(
-                            Arc::clone(&cursor_meter),
-                            acyclic_native_runtime::NativeOperationKind::Read,
-                            source.value.len(),
-                        )?;
-                        let copied = std::mem::size_of::<Record>() as u64;
-                        cursor_meter.admit_examination(1, copied)?;
-                        let record = source.clone();
-                        let examined = cursor_meter.record_examination(1, copied);
-                        let read = bytes.record(source.value.len());
-                        examined?;
-                        read?;
-                        Ok(Ok(crate::NativeStreamOutput::new(
+            let cursor = stream::try_unfold(records, move |mut records| {
+                let meter = Arc::clone(&cursor_meter);
+                async move {
+                    let Some((records_batch, index)) = records.next() else {
+                        return Ok(None);
+                    };
+                    meter.check()?;
+                    let source = &records_batch.records[index];
+                    let mut bytes = NativeByteReservation::new(
+                        Arc::clone(&meter),
+                        NativeOperationKind::Read,
+                        source.value.len(),
+                    )?;
+                    let copied = std::mem::size_of::<Record>() as u64;
+                    meter.admit_examination(1, copied)?;
+                    let record = source.clone();
+                    let examined = meter.record_examination(1, copied);
+                    let read = bytes.record(source.value.len());
+                    examined?;
+                    read?;
+                    Ok(Some((
+                        Ok(crate::NativeStreamOutput::new(
                             record,
-                            acyclic_native_runtime::ReadAllocation::empty(&cursor_meter),
-                        )))
-                    })();
-                    *done = result.is_err();
-                    Some(result)
-                };
-                futures::future::ready(result)
+                            ReadAllocation::empty(&meter),
+                        )),
+                        records,
+                    )))
+                }
             });
             let mut frame = acyclic_native_runtime::ReadAllocation::new(
                 &meter,
@@ -364,33 +330,14 @@ impl StreamProvider for MemoryStream {
     fn native_tail(
         &self,
         path: StreamPath,
-        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+        meter: Arc<dyn NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, u64> {
-        let original = Arc::clone(&meter);
-        crate::NativeProviderFuture::new(&original, async move {
-            let mut operation = acyclic_native_runtime::NativeOperationReservation::new(
-                Arc::clone(&meter),
-                acyclic_native_runtime::NativeOperationKind::Read,
-                1,
-            )?;
+        crate::NativeProviderFuture::new(&Arc::clone(&meter), async move {
             let state = self.state.read().await;
-            meter.admit_examination(1, 0)?;
-            let (result, recorded) = operation.attempt(|| {
-                state
-                    .paths
-                    .get(&path)
-                    .map(|path| {
-                        crate::NativeStreamOutput::new(
-                            path.tail,
-                            acyclic_native_runtime::ReadAllocation::empty(&meter),
-                        )
-                    })
-                    .ok_or(StreamError::NotFound)
-            });
-            let examined = meter.record_examination(1, 0);
-            recorded?;
-            examined?;
-            Ok(result)
+            let value = inspect(&meter, || state.paths.get(&path).map(|path| path.tail))?;
+            Ok(value
+                .ok_or(StreamError::NotFound)
+                .map(|value| crate::NativeStreamOutput::new(value, ReadAllocation::empty(&meter))))
         })
     }
 
@@ -398,33 +345,19 @@ impl StreamProvider for MemoryStream {
     fn native_bounds(
         &self,
         path: StreamPath,
-        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+        meter: Arc<dyn NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, StreamBounds> {
-        let original = Arc::clone(&meter);
-        crate::NativeProviderFuture::new(&original, async move {
-            let mut operation = acyclic_native_runtime::NativeOperationReservation::new(
-                Arc::clone(&meter),
-                acyclic_native_runtime::NativeOperationKind::Read,
-                1,
-            )?;
+        crate::NativeProviderFuture::new(&Arc::clone(&meter), async move {
             let state = self.state.read().await;
-            meter.admit_examination(1, 0)?;
-            let (result, recorded) = operation.attempt(|| {
+            let value = inspect(&meter, || {
                 state
                     .paths
                     .get(&path)
-                    .map(|path| {
-                        crate::NativeStreamOutput::new(
-                            StreamBounds { tail: path.tail },
-                            acyclic_native_runtime::ReadAllocation::empty(&meter),
-                        )
-                    })
-                    .ok_or(StreamError::NotFound)
-            });
-            let examined = meter.record_examination(1, 0);
-            recorded?;
-            examined?;
-            Ok(result)
+                    .map(|path| StreamBounds { tail: path.tail })
+            })?;
+            Ok(value
+                .ok_or(StreamError::NotFound)
+                .map(|value| crate::NativeStreamOutput::new(value, ReadAllocation::empty(&meter))))
         })
     }
 
@@ -432,21 +365,11 @@ impl StreamProvider for MemoryStream {
     fn native_inspect_idempotency(
         &self,
         key: IdempotencyKey,
-        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+        meter: Arc<dyn NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, Option<IdempotencyObservation>> {
-        let original = Arc::clone(&meter);
-        crate::NativeProviderFuture::new(&original, async move {
-            let mut operation = acyclic_native_runtime::NativeOperationReservation::new(
-                Arc::clone(&meter),
-                acyclic_native_runtime::NativeOperationKind::Read,
-                1,
-            )?;
+        crate::NativeProviderFuture::new(&Arc::clone(&meter), async move {
             let state = self.state.read().await;
-            meter.admit_examination(1, 0)?;
-            let (replay, recorded) = operation.attempt(|| state.replay(key.as_bytes()));
-            let examined = meter.record_examination(1, 0);
-            recorded?;
-            examined?;
+            let replay = inspect(&meter, || state.replay(key.as_bytes()))?;
             let output = match replay {
                 Some(replay) => {
                     crate::native::clone_outcome(&replay.result, &meter)?.map(|outcome| {
@@ -457,10 +380,7 @@ impl StreamProvider for MemoryStream {
                         })
                     })
                 }
-                None => crate::NativeStreamOutput::new(
-                    None,
-                    acyclic_native_runtime::ReadAllocation::empty(&meter),
-                ),
+                None => crate::NativeStreamOutput::new(None, ReadAllocation::empty(&meter)),
             };
             meter.check()?;
             Ok(Ok(output))
@@ -506,8 +426,6 @@ impl StreamProvider for MemoryStream {
             let provider = self.with_context(Arc::clone(&work));
             let result = async {
                 let _input = provider.request_claim(&request).map_err(E::from)?;
-                normalize_commit(&mut request).map_err(E::from)?;
-                validate_commit_shape(&request).map_err(E::from)?;
                 let digest = provider.digest(&mut request).map_err(E::from)?;
                 loop {
                     {
@@ -565,31 +483,30 @@ impl StreamProvider for MemoryStream {
         let original = Arc::clone(&meter);
         crate::NativeProviderFuture::new(&original, async move {
             let work = Work::new(meter)?;
-            let provider = Self {
-                work: Some(Arc::clone(&work)),
-                ..self.clone()
-            };
-            let (plan, recovery) = match provider.prepare(request, maximum_record_bytes).await {
-                Ok(prepared) => prepared,
-                Err(error) => return work.finish(Err(error)),
-            };
-            if let Err(error) = work.reserve_write(maximum_record_bytes) {
-                return work.finish(Err(error));
+            let provider = self.with_context(Arc::clone(&work));
+            let result = async {
+                let (plan, recovery) = provider.prepare(request, maximum_record_bytes).await?;
+                work.reserve_write(maximum_record_bytes)?;
+                let slot = work.record(crate::native::NativeCommitRecordSlot::new(&work.meter))?;
+                let ingress = Arc::clone(&slot);
+                let writer_work = Arc::clone(&work);
+                let future = work.record(crate::NativeProviderFuture::try_new(
+                    &work.meter,
+                    async move {
+                        let result = match ingress.receive().await {
+                            Ok(body) => plan.settle(body).await,
+                            Err(error) => Err(error),
+                        };
+                        writer_work.finish(result)
+                    },
+                ))?;
+                Ok((
+                    crate::PreparedNativeCommit::new(future, recovery, slot, maximum_record_bytes),
+                    None,
+                ))
             }
-            let slot = crate::native::NativeCommitRecordSlot::new(&work.meter)?;
-            let ingress = Arc::clone(&slot);
-            let writer_work = Arc::clone(&work);
-            let future = crate::NativeProviderFuture::try_new(&work.meter, async move {
-                let result = match ingress.receive().await {
-                    Ok(body) => plan.settle(body).await,
-                    Err(error) => Err(error),
-                };
-                writer_work.finish(result)
-            })?;
-            work.finish(Ok((
-                crate::PreparedNativeCommit::new(future, recovery, slot, maximum_record_bytes),
-                None,
-            )))
+            .await;
+            work.finish(result)
         })
     }
 
@@ -602,16 +519,11 @@ impl StreamProvider for MemoryStream {
         let original = Arc::clone(&meter);
         crate::NativeProviderFuture::new(&original, async move {
             let work = Work::new(meter)?;
-            let provider = Self {
-                work: Some(Arc::clone(&work)),
-                ..self.clone()
+            let provider = self.with_context(Arc::clone(&work));
+            let existing = match &request.idempotency_key {
+                Some(key) => provider.has_replay(key).await,
+                None => false,
             };
-            let existing = request.idempotency_key.as_ref().is_some_and(|key| {
-                provider
-                    .state
-                    .try_read()
-                    .is_ok_and(|state| state.replays.contains_key(key.as_bytes()))
-            });
             if !existing {
                 if let Err(error) = work.reserve_write(request.records.iter().map(Bytes::len).sum())
                 {

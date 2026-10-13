@@ -1,8 +1,6 @@
 //! Complete effect-head observations at immutable canonical publication cuts.
 use super::history::canonical_bytes_with_work as encode;
-use operations::one_record as read;
 use operations::publication_path as path;
-use operations::sdk_record_retained_bytes as record_bytes;
 
 use super::{checkpoints, history::HistoryIo, operations};
 use crate::wire_codec::CodecQuota;
@@ -56,25 +54,6 @@ pub(super) struct Tree<'a, P> {
     pub(super) authority: &'a Authority,
 }
 impl<P: StreamProvider> Tree<'_, P> {
-    pub(super) async fn record(
-        &self,
-        stream: (StreamPath, u64),
-        from: u64,
-        quota: &mut CodecQuota<'_, '_>,
-    ) -> Result<Option<operations::ObservedRecord>> {
-        let (stream, held) = stream;
-        quota.adopt(held)?;
-        let received = read(self.client, &stream, from, quota.work()).await;
-        drop(stream);
-        quota.relinquish(held)?;
-        let record = received?;
-        let held = record
-            .as_ref()
-            .map_or(0, |record| record_bytes(record, quota.work()));
-        quota.adopt(held)?;
-        Ok(record)
-    }
-
     pub(super) async fn root_at(
         &self,
         verifier: &AuthorityVerifier,
@@ -89,8 +68,7 @@ impl<P: StreamProvider> Tree<'_, P> {
         }
         let mut quota = CodecQuota::from_retained(work, 0);
         let stream = path(authority, HEADS, Some((&"cuts", 4)), quota.work())?;
-        let record = self
-            .record(stream, revision - 1, &mut quota)
+        let record = operations::publication_record(self.client, stream, revision - 1, &mut quota)
             .await?
             .ok_or_else(|| Error::Unsupported("complete effect cut is missing".into()))?;
         let mut used = 0;
@@ -104,10 +82,10 @@ impl<P: StreamProvider> Tree<'_, P> {
             quota.work(),
         )?;
         let source = path(authority, "harness/v2/", None, quota.work())?;
-        let canonical = self
-            .record(source, revision - 1, &mut quota)
-            .await?
-            .ok_or_else(|| Error::Storage("effect cut anchor is missing".into()))?;
+        let canonical =
+            operations::publication_record(self.client, source, revision - 1, &mut quota)
+                .await?
+                .ok_or_else(|| Error::Storage("effect cut anchor is missing".into()))?;
         charge(&mut used, canonical.value.len() as u64, maximum)?;
         if let Some(io) = quota.work().as_deref_mut() {
             io.hashed_bytes(canonical.value.len() as u64)?;
@@ -139,8 +117,7 @@ impl<P: StreamProvider> Tree<'_, P> {
         quota.adopt(stream.1)?;
         let tail = operations::tail_with_work(self.client, &stream.0, quota.work()).await?;
         quota.transfer();
-        let record = self
-            .record(stream, 0, &mut quota)
+        let record = operations::publication_record(self.client, stream, 0, &mut quota)
             .await?
             .ok_or_else(|| Error::Storage("effect node is missing".into()))?;
         charge(used, record.value.len() as u64, maximum)?;
@@ -237,7 +214,7 @@ impl<P: StreamProvider> Tree<'_, P> {
         let hash = *blake3::hash(&bytes).as_bytes();
         let stream = node_path_with_work(authority, hash, quota.work())?;
         quota.transfer();
-        checkpoints::stage_immutable_vec_with_work(client, stream, Ok(bytes), quota.work()).await?;
+        checkpoints::stage_immutable(client, stream, Ok(bytes), quota.work()).await?;
         Ok(hash)
     }
     async fn update(

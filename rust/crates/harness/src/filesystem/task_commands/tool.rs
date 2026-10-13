@@ -75,7 +75,7 @@ where
             }
             WorkerContext::Ordinary(context) => ToolContext::new(
                 Arc::new(self.runtime.bind_context_interactions(
-                    context,
+                    context.as_ref().clone(),
                     task,
                     Arc::clone(&journal),
                 )?),

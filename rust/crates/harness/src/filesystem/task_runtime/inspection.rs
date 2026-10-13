@@ -10,7 +10,7 @@ mod project;
 use project::ProjectSourceReader;
 
 enum SourceReader<P, A, O> {
-    Caller(TaskContext),
+    Caller(Arc<TaskContext>),
     Project(ProjectSourceReader<P, A, O>),
 }
 
@@ -252,9 +252,9 @@ where
         let source = self.host.observe_admission(source).await?;
         let reader = self
             .harness
-            .durable_context(caller, caller_admission.operation_id)
+            .durable_context(caller, caller_admission.operation_id, None)
             .await?;
-        let volumes = self.host.observe_volume_snapshots(source.task_id()).await?;
+        let volumes = self.host.observe_volume_snapshots(source.task_id(), &mut None).await?.0;
         Ok(TaskSourceInspection {
             source,
             reader: SourceReader::Caller(reader),
@@ -305,8 +305,8 @@ where
         owner.verify(false, &mut None).await?;
         let volumes = self
             .host
-            .observe_volume_snapshots(admission.task_id())
-            .await?;
+            .observe_volume_snapshots(admission.task_id(), &mut None)
+            .await?.0;
         owner.verify(false, &mut None).await?;
         let io = PreparationIo::from_budget(
             budget,
@@ -388,10 +388,8 @@ where
                 &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
             )
             .await?;
-        let volumes = self
-            .host
-            .observe_volume_snapshots_with_native_work(admission.0.task_id(), work)
-            .await?;
+        let volumes = { let io = crate::executor::PreparationIo::from_native_work(work)?; let (snapshots, retained) = self
+            .host.observe_volume_snapshots(admission.0.task_id(), &mut Some(&mut io.history_io())).await?; (snapshots, io.take_native_custody(retained)?) };
         owner
             .verify(
                 false,

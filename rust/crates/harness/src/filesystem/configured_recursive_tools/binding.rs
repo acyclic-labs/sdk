@@ -137,10 +137,8 @@ where
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = io.and_then(crate::filesystem::PreparationIo::original_native_work)
             {
-                native = runtime
-                    .task_host()
-                    .observe_volume_snapshots_with_native_work(caller.task, work)
-                    .await?;
+                native = { let io = crate::executor::PreparationIo::from_native_work(work)?; let (snapshots, retained) = runtime
+                    .task_host().observe_volume_snapshots(caller.task, &mut Some(&mut io.history_io())).await?; (snapshots, io.take_native_custody(retained)?) };
                 break 'volumes native.0.as_slice();
             }
             ordinary = runtime.inspect_source(caller.task, caller.task).await?;

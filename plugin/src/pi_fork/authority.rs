@@ -121,19 +121,9 @@ impl<'a> PiForkCoordinator<'a> {
             caller_owner: owner,
             native_snapshot,
         };
-        owner
-            .authorize_project_source_with_native_work(
-                context,
-                &self.runtime.authority.issuer,
-                &policy,
-                source_task,
-                operation,
-                &selected.0,
-                maximum_work,
-                maximum_bytes,
-                work,
-            )?
-            .await
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+        let handle = owner.authorize_project_source(context, &self.runtime.authority.issuer, &policy, source_task, operation, &selected.0, maximum_work, maximum_bytes, Some(&io)).await?;
+        Ok((handle, acyclic_harness::store::HistoryWork::new(io).into_custody()?))
     }
 
     pub(super) async fn selected_graph(

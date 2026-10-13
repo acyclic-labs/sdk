@@ -395,7 +395,6 @@ where
                             length: u64::from(length),
                         }),
                         u64::from(length),
-                        crate::model::GenerationSelector::Head,
                         &mut accounting,
                     )
                     .await

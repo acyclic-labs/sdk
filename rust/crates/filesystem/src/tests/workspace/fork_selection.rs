@@ -11,16 +11,21 @@ async fn empty_fork_keeps_lineage_without_deleting_excluded_parent_paths()
     let child = fork_workspace(
         &parent,
         "scratch-child",
-        ForkOptions::from_generation(pinned.clone(), key).empty(),
+        ForkOptions::from_generation(pinned.clone(), key).inherit_paths(Vec::new()),
     )
     .await?;
     let initial = unbounded!(child, head())?;
     assert_eq!(unbounded!(initial, parents())?, vec![pinned.id()]);
-    assert!(child.list_directory("/", None, 1).await?.entries.is_empty());
+    assert!(
+        unbounded!(child, list_directory("/", None, 1))?
+            .0
+            .entries
+            .is_empty()
+    );
     let retried = fork_workspace(
         &parent,
         "scratch-child",
-        ForkOptions::from_generation(pinned.clone(), key).empty(),
+        ForkOptions::from_generation(pinned.clone(), key).inherit_paths(Vec::new()),
     )
     .await?;
     assert_eq!(unbounded!(retried, head())?.id(), initial.id());
@@ -43,8 +48,12 @@ async fn empty_fork_keeps_lineage_without_deleting_excluded_parent_paths()
         idempotency_key: IdempotencyKey::new(),
     };
     assert!(matches!(
-        plan.apply(options, crate::PublicationPermit::Unrestricted)
-            .await?,
+        plan.apply(
+            options,
+            std::collections::BTreeMap::new(),
+            crate::PublicationPermit::Unrestricted
+        )
+        .await?,
         JoinOutcome::Applied(_)
     ));
     assert_eq!(
@@ -100,6 +109,7 @@ async fn selected_fork_import_preserves_omissions_and_detects_selected_conflicts
                     if_target: target.id(),
                     idempotency_key: IdempotencyKey::new()
                 },
+                std::collections::BTreeMap::new(),
                 crate::PublicationPermit::Unrestricted
             )
             .await?,
@@ -120,13 +130,14 @@ async fn selected_fork_import_preserves_omissions_and_detects_selected_conflicts
         assert_eq!(unbounded!(child, head())?.id(), source.id());
         child.write_text("/notes/keep.txt", "child again").await?;
         parent.write_text("/notes/keep.txt", "parent again").await?;
-        let plan = child.join_into(&parent).plan().await?;
+        let plan = unbounded!(child.join_into(&parent), plan())?;
         assert!(matches!(
             plan.apply(
                 ApplyOptions {
                     if_target: unbounded!(parent, head())?.id(),
                     idempotency_key: IdempotencyKey::new()
                 },
+                std::collections::BTreeMap::new(),
                 crate::PublicationPermit::Unrestricted
             )
             .await?,
@@ -187,6 +198,7 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
                         if_target: target.id(),
                         idempotency_key: IdempotencyKey::new()
                     },
+                    std::collections::BTreeMap::new(),
                     crate::PublicationPermit::Unrestricted
                 )
                 .await?,
@@ -216,6 +228,7 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
                             if_target: repeated.target_head(),
                             idempotency_key: IdempotencyKey::new()
                         },
+                        std::collections::BTreeMap::new(),
                         crate::PublicationPermit::Unrestricted
                     )
                     .await?,
@@ -223,6 +236,8 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
             ));
         }
     }
+    // Negative control: deletion on an ordinary full fork IS an authored
+    // deletion and must reach the parent. Filtering must not mean fork+clear.
     let fs = Fs::memory();
     let parent = unbounded!(fs, create_workspace("negative-parent"))?;
     parent.write_text("/omitted", "base").await?;
@@ -233,13 +248,14 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
     )
     .await?;
     child.remove("/omitted").await?;
-    let plan = child.join_into(&parent).plan().await?;
+    let plan = unbounded!(child.join_into(&parent), plan())?;
     assert!(matches!(
         plan.apply(
             ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new()
             },
+            std::collections::BTreeMap::new(),
             crate::PublicationPermit::Unrestricted
         )
         .await?,
@@ -247,4 +263,30 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
     ));
     assert!(unbounded!(parent, read("/omitted", 16)).is_err());
     Ok(())
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(48))]
+    #[test]
+    fn selected_fork_hardlink_aliases_keep_exact_content(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 1..64), carry_alias in proptest::prelude::any::<bool>()) {
+        let result: Result<(), Box<dyn Error>> = futures::executor::block_on(async {
+            let fs = Fs::memory();
+            let parent = unbounded!(fs, create_workspace("hardlink-parent"))?;
+            parent.write("/file", bytes::Bytes::copy_from_slice(&bytes)).await?;
+            let mut transaction = unbounded!(parent, begin_transaction(IdempotencyKey::new()))?;
+            unbounded!(transaction, hard_link("/file", "/alias"))?;
+            commit(&mut transaction).await?;
+            let mut paths = vec!["/file".to_owned()];
+            if carry_alias { paths.push("/alias".to_owned()); }
+            let child = fork_workspace(&parent, "hardlink-child", ForkOptions::from_generation(unbounded!(parent, head())?, IdempotencyKey::new()).inherit_paths(paths)).await?;
+            assert_eq!(unbounded!(child, read("/file", 64))?.as_ref(), bytes.as_slice());
+            if carry_alias { assert_eq!(unbounded!(child, read("/alias", 64))?.as_ref(), bytes.as_slice()); }
+            else { assert!(unbounded!(child, read("/alias", 64)).is_err()); }
+            child.write("/file", bytes::Bytes::from_static(b"changed")).await?;
+            if carry_alias { assert_eq!(unbounded!(child, read("/alias", 64))?.as_ref(), b"changed"); }
+            assert_eq!(unbounded!(parent, read("/alias", 64))?.as_ref(), bytes.as_slice());
+            Ok(())
+        });
+        proptest::prop_assert!(result.is_ok(), "{result:?}");
+    }
 }

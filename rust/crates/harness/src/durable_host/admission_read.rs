@@ -5,14 +5,11 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     pub(super) async fn admission(
         &self,
         operation: OperationId,
-        io: Option<&crate::executor::PreparationIo>,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<TaskAdmissionRecord> {
-        let mut history = io.map(|io| io.history_io());
-        let mut work = history
-            .as_mut()
-            .map(|io| io as &mut dyn crate::store::HistoryIo);
+        let io = operation_io(work)?;
         let mut quota = crate::wire_codec::CodecQuota::new(
-            &mut work,
+            work,
             std::mem::size_of::<TaskAdmissionRecord>() as u64,
         )?;
         let spec = self
@@ -20,10 +17,17 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .await?
             .ok_or_else(|| Error::NotFound("task admission".into()))?;
         quota.adopt(spec.logical_owned_bytes()?)?;
-        let value = self.read_json(&spec.state, io).await?;
-        quota.adopt(crate::executor::json::json_value_logical_owned_bytes(
-            &value,
-        )?)?;
+        let value = self.read_json(&spec.state, io.as_ref()).await?;
+        let owned = crate::executor::json::json_value_logical_owned_bytes(&value)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(io) = &io {
+            quota
+                .work()
+                .as_deref_mut()
+                .expect("original observer")
+                .absorb_native_custody(io.take_native_custody(owned)?)?;
+        }
+        quota.adopt(owned)?;
         let (admission, held) = TaskAdmissionRecord::from_canonical_value(value, quota.work())?;
         quota.adopt(held)?;
         if admission.operation_id != operation
@@ -83,7 +87,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         if admission.resource_proofs.is_empty() {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if let Some(native) = io.and_then(|io| io.original_native_work()) {
+            if let Some(native) = io.as_ref().and_then(|io| io.original_native_work()) {
                 self.root_scope.validate_narrowing_with_native_work(
                     &admission.grants,
                     &admission.limits,

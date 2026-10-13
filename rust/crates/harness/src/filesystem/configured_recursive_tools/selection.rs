@@ -193,20 +193,11 @@ where
                 .await?;
             Some(
                 owner
-                    .authorize_project_source(
-                        context.task(),
-                        issuer,
-                        provider.as_ref(),
-                        selected,
-                        context.operation_id(),
-                        ProjectSourceSnapshot {
+                    .authorize_project_source(context.task(), issuer, provider.as_ref(), selected, context.operation_id(), &(ProjectSourceSnapshot {
                             project: chosen.project.clone(),
                             generation,
                             native_snapshot: chosen.native_snapshot.clone(),
-                        },
-                        allocation.limits.work,
-                        allocation.limits.bytes,
-                    )
+                        }), allocation.limits.work, allocation.limits.bytes, None)
                     .await?,
             )
         } else {

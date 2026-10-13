@@ -77,7 +77,7 @@ async fn resumed_context_rejects_omitted_introduced_or_retargeted_extension_sele
         bindings.scope = root;
         bindings.state = Some(Arc::new(ResumedScope(resumed)));
         let harness = bindings.build(None)?;
-        let result = harness.durable_context(task, operation).await;
+        let result = harness.durable_context(task, operation, None).await;
         if accepts {
             assert_eq!(result?.scope().extensions(), expected.as_ref());
         } else {

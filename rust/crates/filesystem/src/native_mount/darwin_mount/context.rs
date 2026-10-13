@@ -97,18 +97,29 @@ impl DarwinMountContext {
     pub(super) fn new(
         source: Arc<dyn MountFilesystem>,
         writable: bool,
-        uid: u32,
-        gid: u32,
-        root_file_id: FileId,
+        destination: &Path,
         work: &Work,
     ) -> Result<Self, NativeMountError> {
+        work.admit(WorkCounters::UNCHARGED)?;
         let source_original_work = original_work(source.as_ref(), Some(work))?;
         let callback_guard = source.native_callback_guard();
         verify_guard(callback_guard.as_ref(), source_original_work.as_ref())?;
+        let root = source
+            .lookup_with_meter(&MountPath::root(), work)?
+            .ok_or(NativeMountError::Lifecycle("volume root is absent"))?;
+        if root.node.kind != MountNodeKind::Directory {
+            return Err(NativeMountError::Lifecycle(
+                "volume root is not a directory",
+            ));
+        }
+        let metadata =
+            crate::native_host::unix_name(destination.as_os_str(), &mut &*work, |path, work| {
+                start_stat(path, work)
+            })?;
         let mut inodes = DarwinOwned::empty(HashMap::new());
         grow_map(&mut inodes, work)?;
 
-        inodes.insert(root_file_id, ROOT_INODE);
+        inodes.insert(root.node.file_id, ROOT_INODE);
         let (handler_budget, handler_cancellation) = {
             let meter = work.state.lock();
             (meter.budget, meter.cancellation().clone())
@@ -116,8 +127,8 @@ impl DarwinMountContext {
         Ok(Self {
             source,
             writable,
-            mount_uid: uid,
-            mount_gid: gid,
+            mount_uid: metadata.st_uid,
+            mount_gid: metadata.st_gid,
             handler_failure: shared(
                 work,
                 DarwinOwned::empty(Mutex::new(DarwinCallbackState::default())),
@@ -542,5 +553,23 @@ impl DarwinMountContext {
             self.flushed.fetch_max(covered, Ordering::AcqRel);
         }
         Ok(())
+    }
+}
+
+fn start_stat(
+    path: &CStr,
+    work: &Work,
+) -> Result<libc::stat, crate::NativeTreeMaterializationError> {
+    loop {
+        work.charge(READ_WORK)?;
+        let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+        // SAFETY: path is terminated and metadata is writable.
+        if unsafe { libc::stat(path.as_ptr(), metadata.as_mut_ptr()) } == 0 {
+            return Ok(unsafe { metadata.assume_init() });
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error.into());
+        }
     }
 }

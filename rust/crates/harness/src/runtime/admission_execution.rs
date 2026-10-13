@@ -127,7 +127,7 @@ impl AgentHarness {
                         output_content: None,
                         model_steps: Arc::new((AtomicUsize::new(0), None)),
                         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                        native_metadata_source: None,
+                        native_purpose: None,
                         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                         native_custody: None,
                     },

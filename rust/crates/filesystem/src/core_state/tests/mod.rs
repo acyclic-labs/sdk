@@ -339,7 +339,7 @@ pub(super) fn lose_unflushed_writes(root: &Path, flushed: usize) {
         for record in change.0 {
             let key = record.key;
             let paths = key.paths(&namespace).expect("record paths");
-            std::fs::create_dir_all(&paths.directory).expect("record directory");
+            std::fs::create_dir_all(paths.directory()).expect("record directory");
             std::fs::write(paths.current, b"{\"torn").expect("tear unflushed record");
         }
     }
@@ -472,9 +472,9 @@ pub(super) async fn origin_parent_fixture(store: &LocalCoreStateStore) -> LazyWo
         file_id: crate::FileId::from_bytes([0xa1; 16]),
         priority: 0,
         record: vec![1, 2, 3],
-        metadata: Box::new(crate::WorkspaceMetadata::from_engine(
+        metadata: crate::WorkspaceMetadata::from_engine(
             crate::kernel::FileMetadata::default(),
-        )),
+        ),
         left: empty_shadows,
         right: empty_shadows,
     };

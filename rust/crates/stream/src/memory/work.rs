@@ -299,3 +299,15 @@ fn commit_hash_bytes(request: &CommitRequest) -> u64 {
             })
             .sum::<u64>()
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+fn inspect<T>(meter: &Arc<dyn NativeReadMeter>, lookup: impl FnOnce() -> T) -> std::io::Result<T> {
+    let mut operation =
+        NativeOperationReservation::new(Arc::clone(meter), NativeOperationKind::Read, 1)?;
+    meter.admit_examination(1, 0)?;
+    let (value, recorded) = operation.attempt(lookup);
+    let examined = meter.record_examination(1, 0);
+    recorded?;
+    examined?;
+    Ok(value)
+}

@@ -225,7 +225,7 @@ impl NativeCheckout {
         let receipt = checkout_call!(
             self,
             checkout,
-            read_file_range_by_id(
+            read_file_range(
                 file_id,
                 ByteRange {
                     offset: bigint_u64(&offset, "offset")?,

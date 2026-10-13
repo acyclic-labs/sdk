@@ -1,56 +1,67 @@
 use super::*;
 use crate::{executor::stock_boundary, wire::ErrorCode};
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn context_contract_native<T: Serialize>(
+pub(super) fn context_contract<T: Serialize>(
     value: &T,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-    use crate::store::history::HistoryIo as _;
-    let remaining = work.remaining()?;
-    let bounds = crate::executor::json::JsonBounds {
-        maximum_bytes: remaining.bytes_encoded,
-        maximum_items: remaining.items_examined,
-        maximum_depth: 256,
-    };
-    let labels: u64 = 597;
-    let private_labels = labels
-        .checked_add(std::any::type_name::<T>().len() as u64 + 4)
-        .ok_or_else(|| crate::Error::NativeBoundary {
-            code: ErrorCode::Invalid,
-            reason: "context serializer diagnostic witness overflows",
-        })?;
-    let diagnostic_bytes = crate::executor::json::audited_serde_diagnostic_bytes(0, private_labels)?;
-    let diagnostic = work.claim(diagnostic_bytes, 0, acyclic_fs::WorkCounters::default())?;
-    let mut io =
-        crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
-    let encoded = (|| {
-        crate::executor::json::validate_json_byte_bound_native_trusted(
-            value,
-            bounds,
-            ErrorCode::Invalid,
-            &mut |charge| io.codec_charge(charge),
-        )?;
-        crate::executor::json::json_value_bounded(
-            value,
-            bounds,
-            Some(ErrorCode::Invalid),
-            &mut |charge| io.codec_charge(charge),
-        )
-    })();
-    match encoded {
-        Ok(value) => Ok((value, io.into_custody()?)),
-        Err(crate::Error::NativeJson {
-            code,
-            source,
-            custody: None,
-        }) => Err(crate::Error::NativeJson {
-            code,
-            source,
-            custody: Some(diagnostic),
-        }),
-        Err(error) => Err(error),
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<Value> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
+        let work = io
+            .original_native_work()
+            .expect("native contract retains original work");
+        use crate::store::history::HistoryIo as _;
+        let remaining = work.remaining()?;
+        let bounds = crate::executor::json::JsonBounds {
+            maximum_bytes: remaining.bytes_encoded,
+            maximum_items: remaining.items_examined,
+            maximum_depth: 256,
+        };
+        let labels: u64 = 597;
+        let private_labels = labels
+            .checked_add(std::any::type_name::<T>().len() as u64 + 4)
+            .ok_or_else(|| crate::Error::NativeBoundary {
+                code: ErrorCode::Invalid,
+                reason: "context serializer diagnostic witness overflows",
+            })?;
+        let diagnostic_bytes =
+            crate::executor::json::audited_serde_diagnostic_bytes(0, private_labels)?;
+        let diagnostic = work.claim(diagnostic_bytes, 0, acyclic_fs::WorkCounters::default())?;
+        let mut observer = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
+        let encoded = (|| {
+            crate::executor::json::count_json_bytes_trusted(
+                value,
+                bounds,
+                Some(ErrorCode::Invalid),
+                &mut |charge| observer.codec_charge(charge),
+            )?;
+            crate::executor::json::json_value_bounded(
+                value,
+                bounds,
+                Some(ErrorCode::Invalid),
+                &mut |charge| observer.codec_charge(charge),
+            )
+        })();
+        return match encoded {
+            Ok(value) => {
+                io.absorb_native_custody(observer.into_custody()?)?;
+                Ok(value)
+            }
+            Err(crate::Error::NativeJson {
+                code,
+                source,
+                custody: None,
+            }) => Err(crate::Error::NativeJson {
+                code,
+                source,
+                custody: Some(diagnostic),
+            }),
+            Err(error) => Err(error),
+        };
     }
+    serde_json::to_value(value).map_err(|error| crate::Error::Invalid(error.to_string()))
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

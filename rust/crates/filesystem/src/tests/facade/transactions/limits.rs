@@ -109,7 +109,7 @@ async fn public_byte_boundaries_reject_before_allocation_or_backend_work()
         .await
         .err()
         .ok_or("oversized path read succeeded")?,
-        (checkout.read_file_range_by_id(
+        (checkout.read_file_range(
             file_id,
             ByteRange {
                 offset: 0,
@@ -138,7 +138,7 @@ async fn public_byte_boundaries_reject_before_allocation_or_backend_work()
             .await
             .err()
             .ok_or("oversized path plan succeeded")?,
-        (checkout.plan_file_extents_by_id(file_id, excessive_range, 1, B, &cancellation))
+        (checkout.plan_file_extents(file_id, excessive_range, 1, B, &cancellation))
             .await
             .err()
             .ok_or("oversized identity plan succeeded")?,

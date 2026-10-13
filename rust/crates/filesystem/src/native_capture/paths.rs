@@ -190,112 +190,15 @@ pub(super) fn clone_capture_path(
     path: &NamespacePath,
     meter: &CaptureWorkScope,
 ) -> Result<NamespacePath, CaptureError> {
-    use crate::kernel::{NamespacePathStep, ReadAllocationStep};
-    let cancellation = meter
-        .native
-        .with_original_leaf(|work| work.cancellation().clone());
-    path.clone_with_steps(&cancellation, &mut |step| -> Result<(), CaptureError> {
-        match step {
-            NamespacePathStep::Admit(delta) => {
-                let mut delta = *delta;
-                delta.source_bytes_read = delta.bytes_copied;
-                crate::native_host::NativeHostWork::admit(&mut meter.native.clone(), delta)
-                    .map_err(capture_demand_error)
-            }
-            NamespacePathStep::Performed(delta) => {
-                let mut delta = *delta;
-                delta.source_bytes_read = delta.bytes_copied;
-                meter
-                    .native
-                    .clone()
-                    .record(delta)
-                    .map_err(capture_demand_error)
-            }
-            NamespacePathStep::Charge(delta) => capture_charge(meter, *delta),
-            NamespacePathStep::Allocation(ReadAllocationStep::Allocate { bytes, operations }) => {
-                meter
-                    .native
-                    .with_original_leaf(|work| {
-                        work.claim_allocation(bytes, operations, crate::WorkCounters::UNCHARGED)
-                    })
-                    .map_err(capture_demand_error)
-            }
-            NamespacePathStep::Allocation(ReadAllocationStep::Capacity {
-                admitted_bytes,
-                actual_bytes,
-            }) => {
-                let mut allocation = admitted_bytes;
-                meter
-                    .native
-                    .with_original_leaf(|work| {
-                        work.reconcile_native_allocation(&mut allocation, actual_bytes)
-                    })
-                    .map_err(capture_demand_error)
-            }
-            NamespacePathStep::Allocation(ReadAllocationStep::ReserveFailed(error)) => {
-                Err(CaptureError::from(error))
-            }
-            NamespacePathStep::Allocation(ReadAllocationStep::BeforeCopy(bytes)) => {
-                crate::native_host::NativeHostWork::admit(
-                    &mut meter.native.clone(),
-                    WorkCounters {
-                        bytes_copied: bytes,
-                        source_bytes_read: bytes,
-                        ..WorkCounters::UNCHARGED
-                    },
-                )
-                .map_err(capture_demand_error)
-            }
-            NamespacePathStep::Allocation(ReadAllocationStep::Copied(bytes)) => meter
-                .native
-                .clone()
-                .record(WorkCounters {
-                    bytes_copied: bytes,
-                    source_bytes_read: bytes,
-                    ..WorkCounters::UNCHARGED
-                })
-                .map_err(capture_demand_error),
-            NamespacePathStep::Allocation(ReadAllocationStep::BeforeHash(bytes)) => {
-                meter.native.clone().check().map_err(capture_demand_error)?;
-                crate::native_host::NativeHostWork::admit(
-                    &mut meter.native.clone(),
-                    WorkCounters {
-                        bytes_hashed: bytes,
-                        ..WorkCounters::UNCHARGED
-                    },
-                )
-                .map_err(capture_demand_error)
-            }
-            NamespacePathStep::Allocation(ReadAllocationStep::Hashed(bytes)) => {
-                meter
-                    .native
-                    .clone()
-                    .record(WorkCounters {
-                        bytes_hashed: bytes,
-                        ..WorkCounters::UNCHARGED
-                    })
-                    .map_err(capture_demand_error)?;
-                meter.native.clone().check().map_err(capture_demand_error)
-            }
-            NamespacePathStep::Allocation(ReadAllocationStep::BeforeItem) => {
-                crate::native_host::NativeHostWork::admit(
-                    &mut meter.native.clone(),
-                    WorkCounters {
-                        items_examined: 1,
-                        ..WorkCounters::UNCHARGED
-                    },
-                )
-                .map_err(capture_demand_error)
-            }
-            NamespacePathStep::Allocation(ReadAllocationStep::Item) => capture_charge(
-                meter,
-                WorkCounters {
-                    items_examined: 1,
-                    ..WorkCounters::UNCHARGED
-                },
-            ),
-        }
-    })
+    meter.native.clone().check().map_err(capture_demand_error)?;
+    // A full prefix preserves the already validated path's exact bounds.
+    let limits = crate::model::VolumeLimits {
+        maximum_path_bytes: path.encoded_bytes(),
+        maximum_component_bytes: path.encoded_bytes(),
+        maximum_path_depth: path.depth().try_into().map_err(|_| WorkError::Overflow)?,
+        ..crate::model::VolumeLimits::default()
+    };
+    clone_capture_prefix(path, path.depth(), limits, meter)
 }
 
 pub(super) fn append_path_measured(

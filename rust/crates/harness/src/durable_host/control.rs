@@ -14,8 +14,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         task: TaskId,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<bool> {
+        #[cfg(feature = "filesystem")]
         let mut history = io.map(|io| io.history_io());
+        #[cfg(feature = "filesystem")]
         let mut work = history.as_mut().map(|io| io as &mut dyn HistoryIo);
+        #[cfg(not(feature = "filesystem"))]
+        let mut work: Option<&mut dyn crate::store::HistoryIo> = None;
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh(&mut work).await?;
         Ok(coordinator
@@ -54,7 +58,16 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "deadline observation requires original IO".into(),
             ));
         }
-        let admission = self.admission(operation, io.as_ref()).await?;
+        let admission = self
+            .admission(
+                operation,
+                &mut io
+                    .as_ref()
+                    .map(|io| io.history_io())
+                    .as_mut()
+                    .map(|io| io as &mut dyn crate::store::HistoryIo),
+            )
+            .await?;
         let deadline = admission
             .run_limits
             .deadline_epoch_ms
@@ -172,10 +185,24 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             ));
         }
         let admitted = self
-            .admission(OperationId::from_bytes(parent.into_bytes()), io.as_ref())
+            .admission(
+                OperationId::from_bytes(parent.into_bytes()),
+                &mut io
+                    .as_ref()
+                    .map(|io| io.history_io())
+                    .as_mut()
+                    .map(|io| io as &mut dyn crate::store::HistoryIo),
+            )
             .await?;
         let target = self
-            .admission(OperationId::from_bytes(child.into_bytes()), io.as_ref())
+            .admission(
+                OperationId::from_bytes(child.into_bytes()),
+                &mut io
+                    .as_ref()
+                    .map(|io| io.history_io())
+                    .as_mut()
+                    .map(|io| io as &mut dyn crate::store::HistoryIo),
+            )
             .await?;
         if !admitted.grants.contains(capability::OPERATION_CANCEL) || target.parent != Some(parent)
         {

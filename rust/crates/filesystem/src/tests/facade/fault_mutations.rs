@@ -155,7 +155,7 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         (path_read.value.bytes).as_ref(),
         OwnedBytes::from(vec![b'x'; 64]).as_ref()
     );
-    let identity_read = through_every_object_cut!(checkout.read_file_range_by_id(
+    let identity_read = through_every_object_cut!(checkout.read_file_range(
         large_id,
         range,
         B,
@@ -164,7 +164,7 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     assert_eq!(identity_read.value.bytes, path_read.value.bytes);
     let path_plan =
         through_every_object_cut!(checkout.plan_file_extents(&large, range, 8, B, &cancellation,));
-    let identity_plan = through_every_object_cut!(checkout.plan_file_extents_by_id(
+    let identity_plan = through_every_object_cut!(checkout.plan_file_extents(
         large_id,
         range,
         8,
@@ -187,7 +187,7 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         &cancellation,
     ));
     assert_eq!(data_seek.value, Some(1));
-    let hole_seek = through_every_object_cut!(checkout.seek_file_extent_by_id(
+    let hole_seek = through_every_object_cut!(checkout.seek_file_extent(
         large_id,
         1,
         ExtentSeekTarget::Hole,
@@ -198,7 +198,7 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     let path_metadata =
         through_every_object_cut!(checkout.read_metadata(&large, B, &cancellation,));
     let identity_metadata =
-        through_every_object_cut!(checkout.read_metadata_by_id(large_id, B, &cancellation,));
+        through_every_object_cut!(checkout.read_metadata(large_id, B, &cancellation,));
     assert_eq!(identity_metadata.value, path_metadata.value);
     let identity_record =
         through_every_object_cut!(checkout.read_file_record_by_id(large_id, B, &cancellation,));
@@ -336,7 +336,7 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         B,
         &cancellation
     ));
-    let cloned = through_every_object_cut!(checkout.read_file_range_by_id(
+    let cloned = through_every_object_cut!(checkout.read_file_range(
         inline_id,
         ByteRange {
             offset: 0,
@@ -348,7 +348,7 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     assert_eq!(cloned.value.bytes.as_ref(), b"xxxxne");
     let mut changed_metadata = FileMetadata::default();
     changed_metadata.modified_ns = MetadataField::Value(101);
-    through_every_object_cut!(checkout.set_attributes_by_id(
+    through_every_object_cut!(checkout.set_attributes(
         large_id,
         changed_metadata,
         None,
@@ -356,7 +356,7 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         &cancellation
     ));
     changed_metadata.modified_ns = MetadataField::Value(102);
-    through_every_object_cut!(checkout.set_attributes_by_id(
+    through_every_object_cut!(checkout.set_attributes(
         large_id,
         changed_metadata,
         Some(4_224),

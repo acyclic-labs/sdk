@@ -1,5 +1,6 @@
 use super::*;
 use crate::{AppendRequest, MemoryLimits, ReadRequest, StreamProvider, UnixMillisClock};
+use crate::{OwnedBytes as Bytes, StreamPath};
 use futures::StreamExt as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 

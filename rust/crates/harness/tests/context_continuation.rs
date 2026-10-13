@@ -209,7 +209,7 @@ async fn fixture() -> Result<Fixture> {
     )
     .await?;
     let (compacted, reference) =
-        DurableContextProvider::compact(&source, 2, Some(summary), CompactionRetention::default(), None)?;
+        DurableContextProvider::compact(&source, 2, Some(summary), &CompactionRetention::default(), None)?;
     Ok(Fixture {
         stream,
         storage,
@@ -2140,7 +2140,7 @@ async fn fabricate_checkpoint(
             .stage(operation, "poison-summary", b"fabricated summary", "text/plain", None)?
             .await?;
     }
-    let (retained, proof) = DurableContextProvider::compact(&source, proof.maximum_messages as usize, Some(summary), proof.retention, None)?;
+    let (retained, proof) = DurableContextProvider::compact(&source, proof.maximum_messages as usize, Some(summary), &proof.retention, None)?;
     if mode == 1 {
         envelope.source = stage_fixture_json(journal, operation, "poison-source", &source).await?;
     }

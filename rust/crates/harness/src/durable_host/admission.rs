@@ -41,7 +41,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             ));
         }
         Ok(Self {
-            coordinator: Mutex::new(coordinator),
+            coordinator: Arc::new(Mutex::new(coordinator)),
             stream,
             payloads,
             reader,
@@ -55,6 +55,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             policy: None,
             effects: None,
             session_limits: None,
+            resource_creation: Vec::new(),
         })
     }
 
@@ -75,7 +76,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let parent = admission
             .parent
             .ok_or_else(|| Error::Invalid("owned child admission has no parent".into()))?;
-        self.verify_owner(parent, &fence, false).await?;
+        self.verify_owner(parent, &fence, false, &mut None).await?;
         self.admit_record(admission, Some(fence)).await
     }
 
@@ -257,10 +258,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         reference: &FileRef,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Value> {
+        #[cfg(feature = "filesystem")]
         let mut history = io.map(|io| io.history_io());
+        #[cfg(feature = "filesystem")]
         let mut work = history
             .as_mut()
             .map(|io| io as &mut dyn crate::store::HistoryIo);
+        #[cfg(not(feature = "filesystem"))]
+        let mut work: Option<&mut dyn crate::store::HistoryIo> = None;
         reference.validate(&mut work)?;
         if reference.descriptor().media_type() != "application/json" {
             return Err(Error::Invalid("durable task payload is not JSON".into()));
@@ -271,14 +276,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .await?;
         reference.descriptor().verify(&bytes, &mut work)?;
         let value: Value = match io {
+            #[cfg(feature = "filesystem")]
             Some(io) => io.decode_json(&bytes)?,
-            None => crate::contract::json_from_slice(&bytes)
+            _ => crate::contract::json_from_slice(&bytes)
                 .map_err(|error| Error::Invalid(error.to_string()))?,
         };
-        let canonical = match io {
-            Some(io) => io.encode(&value, reference.descriptor().byte_length(), true)?,
-            None => OwnedBytes::from(crate::contract::canonical_json_bytes(&value)?),
-        };
+        let canonical = canonical_payload(&value, reference.descriptor().byte_length(), io)?;
         if canonical.as_ref() != bytes.as_ref() {
             return Err(Error::Invalid(
                 "durable task payload is not canonical JSON".into(),
@@ -332,7 +335,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<()> {
         if let Some(parent) = parent {
             let admitted = self
-                .admission(OperationId::from_bytes(parent.into_bytes()), None)
+                .admission(OperationId::from_bytes(parent.into_bytes()), &mut None)
                 .await?;
             RuntimeScope::new(admitted.grants, admitted.limits)?
                 .with_run_limits(admitted.run_limits, &mut None)?
@@ -361,13 +364,21 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 
     pub(super) fn event_key(
         kind: &str,
-        task_id: TaskId,
-        operation_id: OperationId,
-    ) -> Result<StreamKey> {
-        let identity = format!("harness/v2/{kind}/{task_id}/{operation_id}");
-        StreamKey::new(OwnedBytes::copy_from_slice(
-            blake3::hash(identity.as_bytes()).as_bytes(),
-        ))
-        .map_err(|error| Error::Invalid(error.to_string()))
+        task: TaskId,
+        operation: OperationId,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> Result<(StreamKey, u64)> {
+        let identity = crate::executor::preparation_format(
+            format_args!("harness/v2/{kind}/{task}/{operation}"),
+            work,
+        )?;
+        let mut quota =
+            crate::wire_codec::CodecQuota::from_retained(work, identity.capacity() as u64);
+        if let Some(io) = quota.work().as_deref_mut() {
+            io.hashed_bytes(identity.len() as u64)?;
+        }
+        let digest = blake3::hash(identity.as_bytes());
+        drop(identity);
+        crate::distributed::digest_key(digest.as_bytes(), quota.work())
     }
 }

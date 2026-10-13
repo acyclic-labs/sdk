@@ -106,7 +106,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         }
         let mut child = work.operation()?;
         let result = self
-            .authority_replay(authority, after, limit, &mut child, ReadKind::Replay)
+            .authority_replay(authority, after, limit, &mut child)
             .await
             .and_then(|value| child.finish(value));
         work.record(child.spent())?;

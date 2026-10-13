@@ -6,7 +6,6 @@ impl AgentHarness {
         let mut child = self.as_ref().clone();
         child.scope = self.scope.narrow(grants, limits)?;
         child.fork_preparer = None;
-        child.workspaces = None;
         Ok(Arc::new(child))
     }
 
@@ -16,7 +15,6 @@ impl AgentHarness {
         child.scope = self.scope.clone().with_run_limits(limits, &mut None)?;
         child.live = TaskGroup::new(child.scope.concurrency_bound(self.concurrency), None)?;
         child.fork_preparer = None;
-        child.workspaces = None;
         Ok(Arc::new(child))
     }
 
@@ -32,43 +30,12 @@ impl AgentHarness {
         let mut routed = self.as_ref().clone();
         routed.scope = self.scope.narrow(grants, limits)?;
         routed.fork_preparer = None;
-        routed.workspaces = None;
         routed.host = None;
         routed.state = Some(execution.state());
         routed.spawner = Some(execution.spawner());
         routed.execution = Some(execution);
         routed.assert_durable_policy_bindings(None)?;
         Ok(Arc::new(routed))
-    }
-
-    /// Submits one signed, versioned answer through its conversation owner.
-    pub async fn resolve_answer(
-        &self,
-        operation_id: OperationId,
-        scope: Scope,
-        id: InteractionId,
-        expected_version: u64,
-        response: InteractionResponse,
-    ) -> Result<ResolutionReceipt> {
-        let receipt = self
-            .interaction_resolver
-            .as_ref()
-            .ok_or_else(|| Error::Unsupported("interaction resolver is not bound".into()))?
-            .resolve_answer(operation_id, scope, id, expected_version, response)
-            .await?;
-        receipt.validate()?;
-        if receipt.operation_id != operation_id
-            || receipt.version != expected_version
-            || receipt.id
-                != uuid::Uuid::parse_str(&id.to_string())
-                    .map_err(|error| Error::Invalid(error.to_string()))?
-            || !matches!(receipt.outcome, InteractionOutcome::Answered { .. })
-        {
-            return Err(Error::Conflict(
-                "interaction resolver returned another answer".into(),
-            ));
-        }
-        Ok(receipt)
     }
 
     /// Submits one signed decision for the ticket's exact approved intent.
@@ -90,9 +57,7 @@ impl AgentHarness {
         receipt.validate()?;
         if receipt.operation_id != operation_id
             || receipt.version != expected_version
-            || receipt.id
-                != uuid::Uuid::parse_str(&id.to_string())
-                    .map_err(|error| Error::Invalid(error.to_string()))?
+            || receipt.id != uuid::Uuid::from_bytes(id.into_bytes())
             || !matches!(
                 (&receipt.outcome, approved),
                 (InteractionOutcome::Approved, true) | (InteractionOutcome::Declined, false)

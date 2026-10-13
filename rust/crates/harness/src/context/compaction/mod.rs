@@ -86,14 +86,26 @@ impl Default for CompactionPolicy {
     }
 }
 
+impl CompactionPolicy {
+    /// Copies the policy on the optional original preparation ledger.
+    pub(crate) fn copy(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Self> {
+        Ok(match self {
+            Self::Disabled => Self::Disabled,
+            Self::Threshold(policy) => Self::Threshold(ThresholdCompaction {
+                response_reserve_tokens: policy.response_reserve_tokens,
+                recent_tokens: policy.recent_tokens,
+                retention: policy.retention.copy(io)?,
+            }),
+        })
+    }
+}
+
 mod selection;
 pub(crate) use selection::compact_context;
 pub(super) use selection::mandatory_flags;
 mod copying;
 pub(crate) use copying::{clone_context, clone_messages, clone_metadata};
 mod allocation;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) use allocation::clone_retention_native;
 pub(crate) use allocation::reserve_vector;
 use allocation::{quota_vector, retire_vector};
 #[cfg(test)]

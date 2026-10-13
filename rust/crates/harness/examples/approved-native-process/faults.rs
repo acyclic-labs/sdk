@@ -115,7 +115,7 @@ pub(super) async fn run() -> std::result::Result<(), Box<dyn std::error::Error>>
         let stream = Arc::new(ReceiptFaultStream::<MemoryStream>::default());
         *stream.fault.lock().await = Some((kind, lost_reply));
         super::run_on(
-            Some(McpStdioMethod::CallTool),
+            Some("tools/call"),
             stream.clone(),
             Some((kind, lost_reply)),
             false,
@@ -127,7 +127,7 @@ pub(super) async fn run() -> std::result::Result<(), Box<dyn std::error::Error>>
         println!("MCP {kind} receipt fault (lost acknowledgement: {lost_reply}) passed");
     }
     super::run_on(
-        Some(McpStdioMethod::CallTool),
+        Some("tools/call"),
         Arc::new(MemoryStream::default()),
         None,
         true,
@@ -147,14 +147,14 @@ pub(super) async fn run() -> std::result::Result<(), Box<dyn std::error::Error>>
 #[cfg(feature = "filesystem-local")]
 async fn disk_restart() -> std::result::Result<(), Box<dyn std::error::Error>> {
     for (method, receipt_fault, lost_response) in [
-        (McpStdioMethod::CallTool, None, false),
-        (McpStdioMethod::CallTool, Some(("launch", false)), false),
-        (McpStdioMethod::CallTool, Some(("launch", true)), false),
-        (McpStdioMethod::CallTool, Some(("observed", false)), false),
-        (McpStdioMethod::CallTool, Some(("observed", true)), false),
-        (McpStdioMethod::CallTool, None, true),
-        (McpStdioMethod::ListTools, None, false),
-        (McpStdioMethod::ListTools, None, true),
+        ("tools/call", None, false),
+        ("tools/call", Some(("launch", false)), false),
+        ("tools/call", Some(("launch", true)), false),
+        ("tools/call", Some(("observed", false)), false),
+        ("tools/call", Some(("observed", true)), false),
+        ("tools/call", None, true),
+        ("tools/list", None, false),
+        ("tools/list", None, true),
     ] {
         let storage = tempfile::tempdir()?;
         let filesystem = Fs::local(acyclic_fs::LocalOptions::new(
@@ -224,7 +224,7 @@ pub(super) async fn host_child() -> std::result::Result<(), Box<dyn std::error::
         acyclic_stream::LocalStream::open(storage.join("coordinator"), Default::default()).await?,
     );
     let _ = super::prepare_on(
-        Some(McpStdioMethod::CallTool),
+        Some("tools/call"),
         stream,
         filesystem,
         None,

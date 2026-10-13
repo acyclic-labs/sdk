@@ -6,7 +6,6 @@ async fn directory_pages_keep_authored_phase_and_reject_changed_cuts() {
         let fs = Fs::memory();
         let root = attach(
             &fs,
-            "root",
             Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
             MemoryLazyWorkspaceStore::default(),
         )
@@ -54,7 +53,6 @@ async fn failed_authored_remove_rolls_back_source_tombstone() {
     let fs = Fs::memory();
     let root = attach(
         &fs,
-        "root",
         Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
         MemoryLazyWorkspaceStore::default(),
     )
@@ -91,7 +89,7 @@ async fn open_recovers_remove_intent_from_authored_state() {
     let fs = Fs::memory();
     let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
     let store = MemoryLazyWorkspaceStore::default();
-    let root = attach(&fs, "root", Arc::clone(&source), store.clone())
+    let root = attach(&fs, Arc::clone(&source), store.clone())
         .await
         .unwrap();
     root.write(
@@ -104,30 +102,18 @@ async fn open_recovers_remove_intent_from_authored_state() {
     .await
     .unwrap();
     let original = root.state(accounting!()).await.unwrap();
-    let LazyLookup::Authored { stat, .. } =
-        root.lookup("/file.txt", accounting!()).await.unwrap().0
+    let LazyLookup::Authored {
+        record, metadata, ..
+    } = root.lookup("/file.txt", accounting!()).await.unwrap().0
     else {
         panic!("expected authored file");
     };
-    let cancellation = CancellationToken::new();
-    let mut ctx = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-    let mut checkout = root
-        .checkout(crate::model::GenerationSelector::Head, &mut ctx)
-        .await
-        .unwrap();
-    let record = root
-        .authored_record(&mut checkout.value, "/file.txt", &mut ctx)
-        .await
-        .unwrap()
-        .unwrap()
-        .0;
-    checkout.retire(&mut ctx).unwrap();
     let shadows = root
         .insert_shadow(
             original.shadows,
-            stat.file_id,
+            record.file_id,
             record,
-            stat.metadata,
+            metadata,
             accounting!(),
         )
         .await
@@ -193,7 +179,10 @@ async fn open_recovers_remove_intent_from_authored_state() {
             ));
         }
         let reopened = LazyWorkspace::open(
-            fs.open_workspace("root", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.unwrap().value,
+            fs.open_workspace("root", WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await
+                .unwrap()
+                .value,
             Arc::clone(&source),
             store.clone(),
             accounting!(),
@@ -232,7 +221,7 @@ async fn source_only_remove_recovery_keeps_tombstone_across_a_competing_create()
     let fs = Fs::memory();
     let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
     let store = MemoryLazyWorkspaceStore::default();
-    let root = attach(&fs, "root", Arc::clone(&source), store.clone())
+    let root = attach(&fs, Arc::clone(&source), store.clone())
         .await
         .unwrap();
     root.stat("/file.txt", accounting!()).await.unwrap();
@@ -273,7 +262,10 @@ async fn source_only_remove_recovery_keeps_tombstone_across_a_competing_create()
         .await
         .unwrap();
     let reopened = LazyWorkspace::open(
-        fs.open_workspace("root", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.unwrap().value,
+        fs.open_workspace("root", WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .unwrap()
+            .value,
         source,
         store,
         accounting!(),

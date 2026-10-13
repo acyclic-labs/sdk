@@ -71,14 +71,20 @@ impl NativeExistingLazyVolume {
             };
             let io = PreparationIo::from_native_work(work)?;
             let reference = super::super::fork_preparer::bounded_io::content_workspace(
-                &binding.host.provider, binding.volume, Some(&io),
+                &binding.host.provider,
+                binding.volume,
+                Some(&io),
             )?;
-            let workspace = super::super::fork_preparer::bounded_io::open(
-                binding.host, &reference, &io,
-            ).await?;
+            let workspace =
+                super::super::fork_preparer::bounded_io::open(binding.host, &reference, &io)
+                    .await?;
             let generation = super::super::fork_preparer::bounded_io::generation(
-                binding.host, &workspace, binding.generation, &io,
-            ).await?;
+                binding.host,
+                &workspace,
+                binding.generation,
+                &io,
+            )
+            .await?;
             let actual = mount.snapshot(work, work.cancellation()).await?;
             if &actual != snapshot
                 || actual.workspace_id != workspace.id()
@@ -88,8 +94,7 @@ impl NativeExistingLazyVolume {
                 return Err(invalid());
             }
             let io = PreparationIo::from_native_work(work)?;
-            let callback = guard
-                .volume_callback(owner, binding.volume, binding.writable, work)?;
+            let callback = guard.volume_callback(owner, binding.volume, binding.writable, work)?;
             let (path, path_custody) = work.path(mount.path(), None)?;
             io.absorb_native_custody(path_custody)?;
             let mapping = NativeVolumeMapping {
@@ -147,10 +152,7 @@ where
     ) -> Result<crate::NativeFutureBundle<'a, acyclic_fs::LazySnapshotRef>> {
         crate::NativeFutureBundle::new(work, || async move {
             self.callback.check(work)?.await?;
-            let snapshot = self
-                .mount
-                .snapshot(work, work.cancellation())
-                .await?;
+            let snapshot = self.mount.snapshot(work, work.cancellation()).await?;
             self.callback.check(work)?.await?;
             Ok(snapshot)
         })
@@ -170,15 +172,11 @@ where
             let callback = Arc::clone(&self.callback);
             Ok(self
                 .mount
-                .sync_with_permit(
-                    permit,
-                    work,
-                    move |actual: &NativeMaterializationWork| {
-                        let actual = actual.clone();
-                        let callback = Arc::clone(&callback);
-                        async move { callback.check(&actual).map_err(Error::from)?.await.map_err(Error::from) }
-                    },
-                )
+                .sync_with_permit(permit, work, move |actual: &NativeMaterializationWork| {
+                    let actual = actual.clone();
+                    let callback = Arc::clone(&callback);
+                    async move { callback.check(&actual)?.await.map_err(Error::from) }
+                })
                 .await)
         })
     }
@@ -208,7 +206,7 @@ where
                     }));
                 }
             };
-            if let Err(cause) = async { self.callback.check(work).map_err(Error::from)?.await.map_err(Error::from) }.await {
+            if let Err(cause) = async { self.callback.check(work)?.await.map_err(Error::from) }.await {
                 return Ok(Err(NativeMountPublicationFailure {
                     cause,
                     accounting_failure: None,

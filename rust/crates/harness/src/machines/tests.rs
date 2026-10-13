@@ -5,10 +5,10 @@ use acyclic_machines::SimulatedMachines;
 fn operation_indeterminate_preserves_the_exact_provider_operation() -> Result<()> {
     let operation = MachinesOperationId::parse("00000000-0000-0000-0000-000000000001")
         .map_err(|error| Error::Invalid(error.to_string()))?;
-    assert_eq!(
+    assert!(matches!(
         map_error(ProviderError::OperationIndeterminate(operation), None),
-        Error::Indeterminate(OperationId::from_bytes(operation.as_bytes()))
-    );
+        Error::Indeterminate(actual) if actual == OperationId::from_bytes(operation.as_bytes())
+    ));
     Ok(())
 }
 

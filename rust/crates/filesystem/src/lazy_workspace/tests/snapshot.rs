@@ -5,7 +5,6 @@ async fn snapshot_validation_requires_available_indexes_and_generation() {
     let fs = Fs::memory();
     let root = attach(
         &fs,
-        "root",
         Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
         MemoryLazyWorkspaceStore::default(),
     )
@@ -47,7 +46,6 @@ async fn frozen_views_and_write_replay_keep_the_original_generation() {
     let fs = Fs::memory();
     let root = attach(
         &fs,
-        "root",
         Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
         MemoryLazyWorkspaceStore::default(),
     )
@@ -59,23 +57,22 @@ async fn frozen_views_and_write_replay_keep_the_original_generation() {
         .unwrap();
     let basis = root.snapshot(accounting!()).await.unwrap();
     let key = IdempotencyKey::new();
-    let batch = || {
-        std::iter::once((
-            "/new.txt",
-            Some(acyclic_stream::OwnedBytes::from_static(b"published")),
-        ))
-    };
-    let (commit, published) = root
-        .write_at_snapshot::<_, _, Box<dyn std::error::Error + Send + Sync>>(
+    let publish = async |bytes| {
+        root.write_at_snapshot::<_, _, Box<dyn std::error::Error + Send + Sync>>(
             basis,
-            batch(),
+            std::iter::once((
+                "/new.txt",
+                Some(acyclic_stream::OwnedBytes::from_static(bytes)),
+            )),
             key,
             crate::PublicationPermit::Unrestricted,
             accounting!(),
             &mut (),
         )
         .await
-        .unwrap();
+        .unwrap()
+    };
+    let (commit, published) = publish(b"published").await;
     assert!(matches!(commit, TransactionCommit::Committed(_)));
     let published = published.unwrap();
     root.workspace()
@@ -115,17 +112,7 @@ async fn frozen_views_and_write_replay_keep_the_original_generation() {
         }
     }
     assert_eq!(authored, [b"authored.txt".to_vec()]);
-    let (commit, replayed) = root
-        .write_at_snapshot::<_, _, Box<dyn std::error::Error + Send + Sync>>(
-            basis,
-            batch(),
-            key,
-            crate::PublicationPermit::Unrestricted,
-            accounting!(),
-            &mut (),
-        )
-        .await
-        .unwrap();
+    let (commit, replayed) = publish(b"published").await;
     assert!(matches!(commit, TransactionCommit::AlreadyCommitted(_)));
     assert_eq!(replayed.unwrap(), published);
     assert_eq!(
@@ -137,21 +124,7 @@ async fn frozen_views_and_write_replay_keep_the_original_generation() {
             .as_slice(),
         b"published"
     );
-    let changed = std::iter::once((
-        "/new.txt",
-        Some(acyclic_stream::OwnedBytes::from_static(b"changed")),
-    ));
-    let (commit, proof) = root
-        .write_at_snapshot::<_, _, Box<dyn std::error::Error + Send + Sync>>(
-            basis,
-            changed,
-            key,
-            crate::PublicationPermit::Unrestricted,
-            accounting!(),
-            &mut (),
-        )
-        .await
-        .unwrap();
+    let (commit, proof) = publish(b"changed").await;
     assert!(matches!(commit, TransactionCommit::AlreadyCommitted(_)));
     assert!(matches!(
         proof.err().unwrap().downcast_ref::<LazyWorkspaceError>(),
