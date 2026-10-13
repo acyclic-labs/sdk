@@ -105,7 +105,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
             merge_verifier: None,
             extension_migrations: None,
             limits: Limits::default(),
-            effect_history_limits: default_projection_read_limits(),
         })
     }
 
