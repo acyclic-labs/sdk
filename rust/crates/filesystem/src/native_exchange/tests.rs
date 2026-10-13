@@ -202,7 +202,7 @@ fn journal_rejections_preserve_the_original_request_and_roots() -> TestResult {
         f.live.clone(),
     ];
     #[cfg(windows)]
-    invalid_paths.extend(["C:relative".into(), "\rooted".into()]);
+    invalid_paths.extend(["C:relative".into(), r"\rooted".into()]);
     for path in invalid_paths {
         let mut invalid = original.clone();
         invalid.carried = vec![path];

@@ -119,6 +119,7 @@ fn native_source_io_control(
 }
 
 #[test]
+#[allow(unsafe_code, reason = "imports the fresh overlapped fixture handle")]
 fn source_io_limit_cancellation_and_retirement_cases() -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_native_runtime::{NativeFile, NativeFileMeter};
     let borrowed = source(FilesystemProfile::Portable)?;
@@ -143,11 +144,21 @@ fn source_io_limit_cancellation_and_retirement_cases() -> Result<(), Box<dyn std
             ..crate::WorkCounters::UNCHARGED
         })?;
         let meter = job.runtime_meter();
-        let file = NativeFile::from_file(
-            std::fs::File::open(&path)?,
-            Some(NativeFileMeter::Owned(meter.clone())),
-        )
-        .map_err(|(error, _)| error)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            options.custom_flags(windows::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED.0);
+        }
+        let file = options.open(&path)?;
+        let accounting = Some(NativeFileMeter::Owned(meter.clone()));
+        #[cfg(windows)]
+        // SAFETY: this fresh idle handle is overlapped and has no completion port.
+        let file = unsafe { NativeFile::from_overlapped_file_unchecked(file, accounting) };
+        #[cfg(not(windows))]
+        let file = NativeFile::from_file(file, accounting);
+        let file = file.map_err(|(error, _)| error)?;
         let data = if cancelled {
             local_stop.cancel();
             let prefix = root.receipt();
