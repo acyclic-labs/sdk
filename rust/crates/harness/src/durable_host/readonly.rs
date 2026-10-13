@@ -267,7 +267,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     witness.verify_preparation_origin_with_native_work(
                         query, &claim.1, origin, work,
                     )?;
-                    let mut io = crate::store::history::native_work_io(work)?;
+                    let mut io = crate::store::HistoryWork::new(crate::executor::PreparationIo::from_native_work(work)?);
                     let original = crate::distributed::original_reservation_proof(
                         &self.stream, self.verifier.audience(), &self.owner_scope, &self.verifier,
                         witness.admission_operation(), &origin.creation_fence,
@@ -281,7 +281,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                             reason: "original Started admission differs from the protected fork claim" });
                     }
                     owner.require_task_context_binding(query.as_ref(), Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
-                    owner.verify_read_access(&mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
+                    owner.verify_read_access(&mut Some(&mut crate::store::HistoryWork::new(crate::executor::PreparationIo::from_native_work(work)?))).await?;
                     witness.verify_query_with_native_work(query, work).await?;
                     owner.into_native_shared(work)
                 }.await;
@@ -344,7 +344,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     reason: "protected native preparation belongs to another task",
                 });
             }
-            let mut io = crate::store::history::native_work_io(work)?;
+            let mut io = crate::store::HistoryWork::new(
+                crate::executor::PreparationIo::from_native_work(work)?,
+            );
             let original = crate::distributed::original_reservation_proof(
                 &self.stream,
                 self.verifier.audience(),

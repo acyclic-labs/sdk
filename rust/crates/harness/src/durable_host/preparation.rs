@@ -51,18 +51,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             if self.read_proof.is_some() {
                 self.verify_read_access(quota.work()).await?;
             } else {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(native) = native.as_ref() {
-                    self.verify(
-                        false,
-                        &mut Some(&mut crate::store::history::native_work_io(native)?),
-                    )
-                    .await?;
-                } else {
-                    self.verify(false, &mut None).await?;
-                }
-                #[cfg(target_arch = "wasm32")]
-                self.verify(false, &mut None).await?;
+                self.verify(false, quota.work()).await?;
             }
             self.host
                 .coordinator
