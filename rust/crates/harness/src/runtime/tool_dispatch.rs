@@ -55,7 +55,7 @@ impl TaskContext {
         }
         let result = binding
             .executor
-            .execute_with_context(context, invocation)
+            .execute(invocation, Some(context))
             .await?;
         crate::executor::validate_json_schema_value(
             &tool.output_schema,

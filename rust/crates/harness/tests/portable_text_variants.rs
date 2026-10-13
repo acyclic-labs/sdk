@@ -354,7 +354,7 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
             ] {
                 assert!(matches!(
                     executor
-                        .execute_with_context(wrong, invocation.clone())
+                        .execute(invocation.clone(), Some(wrong))
                         .await,
                     Err(Error::Unauthorized(_))
                 ));

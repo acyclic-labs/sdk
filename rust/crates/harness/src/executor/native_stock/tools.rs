@@ -113,13 +113,7 @@ pub(in crate::executor) async fn stock_execute_tool(
         io.absorb_native_custody(custody)?;
         return Ok(result);
     }
-    if let Some(context) = context.take() {
-        tool.executor
-            .execute_with_context(context, invocation.clone())
-            .await
-    } else {
-        tool.executor.execute(invocation.clone()).await
-    }
+    tool.executor.execute(invocation.clone(), context.take()).await
 }
 
 pub(in crate::executor) async fn stock_reconcile_tool(
@@ -145,13 +139,7 @@ pub(in crate::executor) async fn stock_reconcile_tool(
         io.absorb_native_custody(custody)?;
         return Ok(result);
     }
-    if let Some(context) = context.take() {
-        tool.executor
-            .reconcile_with_context(context, invocation.clone())
-            .await
-    } else {
-        tool.executor.reconcile(invocation.clone()).await
-    }
+    tool.executor.reconcile(invocation.clone(), context.take()).await
 }
 
 pub(in crate::executor) fn stock_project_tool(

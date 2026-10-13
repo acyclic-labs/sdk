@@ -233,7 +233,7 @@ async fn default_recursive_tools_are_present_and_unbound_routes_are_unavailable(
                 ));
                 assert!(matches!(
                     tool.executor
-                        .execute_with_context(context, invocation)
+                        .execute(invocation, Some(context))
                         .await,
                     Err(Error::Unsupported(_))
                 ));
@@ -291,7 +291,7 @@ async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
                 &invocation.call_id, None,)?;
             let result = tool
                 .executor
-                .execute_with_context(context.clone(), invocation.clone())
+                .execute(invocation.clone(), Some(context.clone()))
                 .await?;
             assert_eq!(result.value, json!("pinned text"));
             let projection = tool.projection.project(&invocation, &result, None)?.0;
@@ -312,7 +312,7 @@ async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
             ));
             assert_eq!(
                 tool.executor
-                    .reconcile_with_context(context, invocation.clone())
+                    .reconcile(invocation.clone(), Some(context))
                     .await?,
                 Some(result)
             );
@@ -323,15 +323,10 @@ async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
                     ..limits
                 },
             )?;
+            let context = crate::runtime::ToolContext::new(
+                Arc::new(narrowed), invocation.operation_id, &invocation.call_id, None)?;
             assert!(matches!(
-                tool.executor
-                    .execute_with_context(
-                        crate::runtime::ToolContext::new(
-                            Arc::new(narrowed),
-                            invocation.operation_id,
-                            &invocation.call_id, None)?,
-                        invocation
-                    )
+                tool.executor.execute(invocation, Some(context))
                     .await,
                 Err(Error::Invalid(_))
             ));
@@ -343,15 +338,10 @@ async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
         let tool = tool.clone();
         let invocation = invocation.clone();
         async move {
+            let context = crate::runtime::ToolContext::new(
+                Arc::new(task), invocation.operation_id, &invocation.call_id, None)?;
             assert!(matches!(
-                tool.executor
-                    .execute_with_context(
-                        crate::runtime::ToolContext::new(
-                            Arc::new(task),
-                            invocation.operation_id,
-                            &invocation.call_id, None)?,
-                        invocation
-                    )
+                tool.executor.execute(invocation, Some(context))
                     .await,
                 Err(Error::Unauthorized(_)) | Err(Error::NotFound(_))
             ));
@@ -382,15 +372,15 @@ async fn default_write_reconciles_original_receipt_and_rejects_changed_retry() -
                 arguments: json!({"path":"notes/one.txt","text":"saved text","media_type":"text/plain","display_name":"one.txt"}),
             };
             let context = crate::runtime::ToolContext::new(Arc::new(task.clone()), invocation.operation_id, &invocation.call_id, None)?;
-            let first = tool.executor.execute_with_context(context.clone(), invocation.clone()).await?;
+            let first = tool.executor.execute(invocation.clone(), Some(context.clone())).await?;
             let file: FileRef = serde_json::from_value(first.value["file"].clone()).map_err(|error| Error::Invalid(error.to_string()))?;
             let user = task.stage_file(None, OperationId::new(), "notes/one.txt", b"later user edit", "text/plain", "one.txt").await?;
-            assert_eq!(tool.executor.reconcile_with_context(context.clone(), invocation.clone()).await?, Some(first));
+            assert_eq!(tool.executor.reconcile(invocation.clone(), Some(context.clone())).await?, Some(first));
             assert_eq!(task.read_file(&file, None).await?.as_ref(), b"saved text".as_ref());
             assert_eq!(task.read_file(&user, None).await?.as_ref(), b"later user edit".as_ref());
             for (field, value) in [("text", "different text"), ("path", "notes/another.txt"), ("media_type", "text/markdown"), ("display_name", "other.txt")] {
                 let mut changed = invocation.clone(); changed.arguments[field] = json!(value);
-                assert!(matches!(tool.executor.reconcile_with_context(context.clone(), changed).await, Err(Error::Conflict(_))));
+                assert!(matches!(tool.executor.reconcile(changed, Some(context.clone())).await, Err(Error::Conflict(_))));
             }
             let ordinary = OperationId::new();
             for path in ["multi/a.txt", "multi/b.txt"] {
@@ -530,7 +520,8 @@ async fn default_file_tools_require_caller_volume_grants() -> Result<()> {
             ] {
                 let invocation = ToolInvocation { operation_id: OperationId::new(), call_id: name.into(), name: name.into(), arguments };
                 let tool = tools.get(name, None, None)?.ok_or_else(|| Error::NotFound(name.into()))?;
-                assert!(matches!(tool.executor.execute_with_context(crate::runtime::ToolContext::new(Arc::new(task.clone()), invocation.operation_id, &invocation.call_id, None)?, invocation).await, Err(Error::Unauthorized(_))));
+                let context = crate::runtime::ToolContext::new(Arc::new(task.clone()), invocation.operation_id, &invocation.call_id, None)?;
+                assert!(matches!(tool.executor.execute(invocation, Some(context)).await, Err(Error::Unauthorized(_))));
             }
             let invocation = ToolInvocation { operation_id: OperationId::new(), call_id: "list".into(), name: "acyclic.list_files".into(), arguments: json!({"path":"","maximum_entries":8}) };
             assert!(matches!(tools.get("acyclic.list_files", None, None)?.ok_or_else(|| Error::NotFound("list tool".into()))?.executor.authorize(Some(task.scope()), &invocation), Err(Error::Unauthorized(_))));
