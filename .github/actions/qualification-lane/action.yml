@@ -140,11 +140,11 @@ runs:
       if: inputs.lane == 'windows-rust'
       uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       env:
-        CARGO_TARGET_DIR: ${{ runner.temp }}/target
+        CARGO_TARGET_DIR: ${{ github.workspace }}/target
         RUSTC_WRAPPER: ''
       with:
         shared-key: sdk-windows-rust-v1
-        workspaces: . -> ${{ runner.temp }}/target
+        workspaces: . -> target
         cache-bin: false
         save-if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
 
@@ -177,7 +177,7 @@ runs:
       env:
         SDK_TEMP_DIR: ${{ runner.temp }}/sdk
         SDK_ARTIFACT_DIR: ${{ runner.temp }}/artifacts
-        CARGO_TARGET_DIR: ${{ runner.temp }}/target
+        CARGO_TARGET_DIR: ${{ inputs.lane == 'windows-rust' && format('{0}/target', github.workspace) || format('{0}/target', runner.temp) }}
         BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-install-cache
         TOOLS_DIR: ${{ runner.temp }}/tools/${{ inputs.lane }}-${{ runner.arch }}
         LLVM_PATH: ${{ runner.temp }}/llvm
