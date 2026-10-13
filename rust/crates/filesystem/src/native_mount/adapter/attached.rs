@@ -51,7 +51,7 @@ where
             .await?;
         candidate
             .checkout
-            .change_named_attribute_by_id(self.file_id, &name, value, work, cancellation)
+            .change_named_attribute(self.file_id, &name, value, work, cancellation)
             .await
             .map_err(fs_error)?;
         self.checkout
@@ -440,7 +440,7 @@ where
             let name = inputs.attribute_name(name, self.profile, self.limits)?;
             let mut checkout = self.observer(work).await?;
             let value = checkout
-                .read_named_attribute_by_id(self.file_id, &name, work, cancellation)
+                .read_named_attribute(self.file_id, &name, work, cancellation)
                 .await
                 .map_err(fs_error)?;
             inputs
@@ -478,7 +478,7 @@ where
             let mut accounting =
                 crate::kernel::allocation::KernelAccounting::native(work, cancellation);
             let listing = checkout
-                .list_named_attributes_by_id_with_accounting(
+                .list_named_attributes_with_accounting(
                     self.file_id,
                     cursor.as_ref(),
                     maximum_entries,
