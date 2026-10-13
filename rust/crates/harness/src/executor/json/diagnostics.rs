@@ -10,7 +10,6 @@ use serde::__private229::de::Content;
 use serde_json::Value;
 use std::mem::size_of;
 use uuid::Uuid;
-// Preserve the existing closed-schema static diagnostic allowances.
 const EVENT_LABEL_BYTES: u64 = 3994;
 const COMMON_LABEL_BYTES: u64 = 317;
 /// Static diagnostic allowance for the SDK's preparation records.
@@ -45,29 +44,19 @@ fn diagnostic_bytes(input: u64, labels: u64, code: Option<crate::wire::ErrorCode
         code,
     )
 }
-fn ownership_overflow(code: Option<crate::wire::ErrorCode>) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(code) = code {
-        return Error::NativeBoundary {
-            code,
-            reason: "event JSON admission overflow",
-        };
-    }
-    Error::Invalid("event JSON admission overflow".into())
-}
-pub(super) fn multiply_with_code(
+fn multiply_with_code(
     value: u64,
     factor: u64,
     code: Option<crate::wire::ErrorCode>,
 ) -> Result<u64> {
     value
         .checked_mul(factor)
-        .ok_or_else(|| ownership_overflow(code))
+        .ok_or_else(|| super::boundary("event JSON admission overflow", code))
 }
-pub(super) fn sum_with_code(values: &[u64], code: Option<crate::wire::ErrorCode>) -> Result<u64> {
+fn sum_with_code(values: &[u64], code: Option<crate::wire::ErrorCode>) -> Result<u64> {
     values.iter().try_fold(0u64, |sum, value| {
         sum.checked_add(*value)
-            .ok_or_else(|| ownership_overflow(code))
+            .ok_or_else(|| super::boundary("event JSON admission overflow", code))
     })
 }
 pub(crate) fn event_payload_json_admission<F: FnMut(JsonCodecCharge) -> Result<()> + ?Sized>(
@@ -105,14 +94,8 @@ pub(crate) fn json_decode_owned_bytes(
     let input = shape.input_bytes();
     let items = shape.lexical_items();
     let slots = mul(items, 10)?;
-    let content = mul(
-        mul(
-            slots,
-            size_of::<(Content<'static>, Content<'static>)>().max(size_of::<Content<'static>>())
-                as u64,
-        )?,
-        4,
-    )?;
+    let content_slot = 4 * size_of::<(Content<'static>, Content<'static>)>()
+        .max(size_of::<Content<'static>>()) as u64;
     let typed_slot = if snapshot {
         mul(crate::core::Snapshot::LOGICAL_SCHEMA_SLOT_BYTES, 3)?
     } else {
@@ -152,27 +135,20 @@ pub(crate) fn json_decode_owned_bytes(
     let mut conversation = 0;
     if snapshot {
         diagnostic = sum(&[diagnostic, mul(SNAPSHOT_DIAGNOSTIC_BYTES + 4, 2)?])?;
-        let cache = sum(&[
-            mul(items, size_of::<[u8; 32]>() as u64)?,
-            mul(slots, size_of::<usize>() as u64)?,
-            mul(items, 2 * size_of::<(Uuid, usize)>() as u64)?,
-        ])?;
         let uuid_text = 2 * size_of::<Uuid>() as u64 + 4;
-        let canonical_items = mul(items, 17)?;
+        let width = size_of::<[u8; 32]>() as u64
+            + 10 * size_of::<usize>() as u64
+            + 2 * size_of::<(Uuid, usize)>() as u64
+            + 17 * (10 * value_slot + 2 * uuid_text + 4);
         conversation = sum(&[
-            cache,
-            mul(mul(canonical_items, 10)?, value_slot)?,
-            input,
-            mul(canonical_items, uuid_text)?,
-            mul(input, 6)?,
-            mul(canonical_items, uuid_text + 4)?,
+            mul(items, width)?,
+            mul(input, 7)?,
             mul(uuid_text.max(8), 2)?,
         ])?;
     }
     let maximum = sum(&[
-        content,
-        mul(slots, typed_slot)?,
-        sum(&[mul(slots, value_slot)?, virtual_bytes])?,
+        mul(slots, content_slot + typed_slot + value_slot)?,
+        virtual_bytes,
         mul(if snapshot { items } else { 1 }, boxed_slot)?,
         mul(input, 6)?,
         mul(input.max(8), 2)?,
@@ -181,8 +157,6 @@ pub(crate) fn json_decode_owned_bytes(
     ])?;
     Ok((maximum, diagnostic, conversation))
 }
-
-// Snapshot admission.
 
 pub(super) const SNAPSHOT_DIAGNOSTIC_BYTES: u64 = 784;
 pub(crate) fn snapshot_json_admission<F: FnMut(JsonCodecCharge) -> crate::Result<()> + ?Sized>(
