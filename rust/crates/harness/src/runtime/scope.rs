@@ -538,7 +538,7 @@ impl RuntimeScope {
         }
         let mut quota =
             crate::wire_codec::CodecQuota::new(work, std::mem::size_of::<Self>() as u64)?;
-        let grants = crate::core::copy_capabilities(&admission.grants, &mut quota)?;
+        let grants = crate::core::copy(&admission.grants, &mut quota, |value: &crate::Capabilities, _| value.logical_owned_bytes())?;
         let proofs = access
             .as_ref()
             .map_or(self.resource_proofs.as_slice(), |access| {

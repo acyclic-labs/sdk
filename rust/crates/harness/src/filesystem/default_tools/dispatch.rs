@@ -50,7 +50,9 @@ where
                         };
                         let payload = crate::wire_codec::CodecQuota::produce(
                             &mut Some(&mut *history),
-                            |copy_quota| crate::core::copy_value(&payload, copy_quota),
+                            |copy_quota| crate::core::copy(&payload, copy_quota, |value: &serde_json::Value, _| {
+    crate::executor::json::json_value_logical_owned_bytes(value)
+}),
                         )?
                         .0;
                         break 'progress owner

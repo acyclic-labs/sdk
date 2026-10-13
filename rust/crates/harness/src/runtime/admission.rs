@@ -198,7 +198,7 @@ impl TaskAdmissionRecord {
         let mut observer = Some(&mut io as &mut dyn crate::store::HistoryIo);
         let mut quota =
             crate::wire_codec::CodecQuota::new(&mut observer, std::mem::size_of::<Self>() as u64)?;
-        let copied = crate::core::copy_owned(self, &mut quota, |record, work| {
+        let copied = crate::core::copy(self, &mut quota, |record, work| {
             for proof in &record.resource_proofs {}
             let bytes = record.logical_owned_bytes()?;
             if bytes != 0 {

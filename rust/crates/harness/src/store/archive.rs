@@ -25,7 +25,14 @@ impl<P: StreamProvider> StreamAggregate<P> {
         if let Some(state) = self.reducer.effect(effect) {
             crate::executor::json::json_byte_length(state, limits.maximum_bytes, work).map(|_| ())?;
             return crate::wire_codec::CodecQuota::produce(work, |quota| {
-                crate::core::copy_effect(state, quota)
+                crate::core::copy(state, quota, |value: &crate::core::EffectState, work| {
+    value.request.validate(work)?;
+    value.result_schema.validate(work)?;
+    if let crate::core::EffectStatus::Succeeded { result } = &value.status {
+        result.validate(work)?;
+    }
+    crate::core::owned_effect(value)
+})
             })
             .map(Some);
         }

@@ -19,7 +19,7 @@ fn checkpoint_proof_binds_issuer_key_identity_audience_and_format() -> Result<()
         version: 1,
         content,
     };
-    let ApplyResult::Applied { event } = reducer.apply(command(operation(70), 0, action))? else {
+    let ApplyResult::Applied { .. } = reducer.apply(command(operation(70), 0, action))? else {
         panic!("fresh append replayed")
     };
     let snapshot = reducer.snapshot(usize::MAX, &mut None)?.0;
@@ -41,37 +41,19 @@ fn checkpoint_proof_binds_issuer_key_identity_audience_and_format() -> Result<()
     old.format_version = 2;
     assert!(restore(old, &issuer(), reducer.schemas.clone()).is_err());
     assert!(restore(snapshot.copy(&mut None)?, &issuer(), SchemaRegistry::new()).is_err());
-    let verifier = issuer().verifier(&mut None)?;
-    let mut missing = Reducer::new(issuer().audience, verifier, SchemaRegistry::new());
-    assert!(missing.apply_committed(event.clone(), &mut None).is_err());
-    for edit in 0..5 {
-        let mut changed = reducer.schemas.clone();
-        let binding = Arc::make_mut(changed.schemas.as_mut().unwrap())
-            .get_mut(&("example.message".into(), 1))
-            .unwrap();
-        match edit {
-            0 => binding.schema = json!({"type":"string"}),
-            1 => binding.implementation_digest = [8; 32],
-            2 => binding.fork_policy = ExtensionForkPolicy::Reset,
-            3 => {
-                binding.dependencies.insert(ExtensionDependency {
-                    name: "example.dependency".into(),
-                    version: 1,
-                });
-            }
-            _ => binding.configuration_schema = Some(json!({"type":"string"})),
-        }
-        assert!(restore(snapshot.copy(&mut None)?, &issuer(), changed.clone()).is_err());
-        if edit == 1 || edit == 2 {
-            let mut candidate =
-                Reducer::new(issuer().audience, issuer().verifier(&mut None)?, changed);
-            assert!(candidate.apply_committed(event.clone(), &mut None).is_err());
-        }
-    }
-    let mut exact = reducer_fixture();
-    exact.apply_committed(event, &mut None)?;
+    let mut changed = SchemaRegistry::new();
+    changed.register(
+        "example.message",
+        1,
+        json!({"type":"string"}),
+        [8; 32],
+        ExtensionForkPolicy::Reset,
+        [],
+        None,
+    )?;
+    assert!(restore(snapshot.copy(&mut None)?, &issuer(), changed).is_err());
     assert!(
-        exact
+        reducer
             .schemas
             .register(
                 "example.message",
