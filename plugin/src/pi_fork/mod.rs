@@ -58,7 +58,9 @@ pub(crate) fn project_snapshot(
         None,
         work,
     )?;
-    let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+    let mut io = acyclic_harness::store::HistoryWork::new(
+        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+    );
     let project = project.copy(&mut Some(&mut io))?;
     let mut owned = (
         ProjectSourceSnapshot {
@@ -225,71 +227,6 @@ pub(crate) const FORK_PLAN_DIAGNOSTIC_LABEL_BYTES: u64 =
             "source_task",
             "child",
             "launch",
-            "TaskAdmissionRecord",
-            "operation_id",
-            "task",
-            "machine",
-            "input",
-            "input_schema",
-            "output_schema",
-            "parent",
-            "resource_proofs",
-            "grants",
-            "limits",
-            "run_limits",
-            "policy",
-            "extensions",
-            "execution",
-            "ComponentIdentity",
-            "MachineIdentity",
-            "name",
-            "version",
-            "digest",
-            "TaskRunLimits",
-            "concurrency",
-            "max_steps",
-            "deadline_epoch_ms",
-            "ResourceCreationProofRef",
-            "provider",
-            "resource",
-            "evidence",
-            "ResourcePreparationRequest",
-            "resources",
-            "creation_grant",
-            "maximum_resources",
-            "maximum_work",
-            "maximum_bytes",
-            "payload",
-            "command",
-            "input_files",
-            "read_authorization",
-            "RecursiveSourceSnapshot",
-            "project",
-            "project_generation",
-            "private_volume",
-            "private_generation",
-            "HistoryReadLimits",
-            "maximum_events",
-            "LazySnapshotRef",
-            "id",
-            "workspace_id",
-            "authored_generation",
-            "overlay",
-            "shadows",
-            "SourceReference",
-            "identity",
-            "epoch",
-            "ExtensionAdmission",
-            "source",
-            "selected",
-            "configurations",
-            "ExecutionPlacement",
-            "build",
-            "environment",
-            "readiness_revision",
-            "LeaseFence",
-            "reservation_id",
-            "placement",
             "an array of length 16",
         ]);
 
@@ -374,7 +311,9 @@ fn native_workspace_error(
         Option<acyclic_fs::NativeAllocation>,
     ),
 ) -> Error {
-    crate::pi_fork_host::native_lazy_error(acyclic_fs::LazyWorkspaceError::NativeWorkspace(source, custody))
+    crate::pi_fork_host::native_lazy_error(acyclic_fs::LazyWorkspaceError::NativeWorkspace(
+        source, custody,
+    ))
 }
 
 fn task_id_text_matches(task: TaskId, expected: &str) -> bool {

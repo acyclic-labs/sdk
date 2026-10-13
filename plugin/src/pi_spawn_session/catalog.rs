@@ -187,7 +187,7 @@ impl PiSession {
 
     pub(super) fn spawn_save_pending(
         &mut self,
-        pending: Option<(Vec<PendingSpawn>, NativeAllocation)>,
+        pending: Option<(PendingSpawn, NativeAllocation)>,
         commit: &RetainedSpawnCommit,
         operations: PiForkOperations,
         work: &NativeMaterializationWork,
@@ -195,18 +195,17 @@ impl PiSession {
         let Some(pending) = pending else {
             return Ok(());
         };
-        if pending.0.len() != 1
-            || self
-                .state
-                .pending
-                .iter()
-                .any(|entry| entry.fork_key == operations.fork.into_bytes())
+        if self
+            .state
+            .pending
+            .iter()
+            .any(|entry| entry.fork_key == operations.fork.into_bytes())
         {
             return Err(invalid(
                 "Pi preparation returned a duplicate or unrelated reservation",
             ));
         }
-        self.spawn_validate_pending(&pending.0[0], commit, operations, work)?;
+        self.spawn_validate_pending(&pending.0, commit, operations, work)?;
         self.prepare_native_catalog_slot(work)?;
         let length = self.state.pending.len();
         if self.state.pending.capacity() == length {
@@ -232,7 +231,7 @@ impl PiSession {
             drop(old);
             drop(self.native_pending_backing_custody.replace(backing));
         }
-        self.state.pending.extend(pending.0);
+        self.state.pending.push_back(pending.0);
         let component = crate::service_session::NativeCatalogComponent::Pending;
         let previous =
             self.install_native_catalog_custody(commit.child.task_id, component, pending.1);

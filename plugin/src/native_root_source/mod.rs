@@ -308,9 +308,10 @@ mod tests {
             .unwrap();
         let foreign = VolumeRef::new(
             project.provider().clone(),
-            "not-original-source",
+            "not-original-source".into(),
             VolumeClass::Project,
             VolumeOwner::Project("not-original-root".into()),
+            &mut None,
         )
         .unwrap();
         let registry = SharedRootRegistry::default();

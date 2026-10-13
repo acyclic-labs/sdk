@@ -257,13 +257,10 @@ impl PiSession {
                 if admission.0 != plan.preparation {
                     return Err(invalid("Pi original preparation admission was substituted"));
                 }
-                let mut reservation = self
+                let reservation = self
                     .command_host(&work, Some(native.clone()))?
                     .reservation_with_native_work(plan, &work)?;
-                let mut batch = pi_native::pi_native_vec(1, &work)?;
-                batch.1.absorb(&mut reservation.1)?;
-                batch.0.push(reservation.0);
-                self.spawn_save_pending(Some(batch), commit, operations, &work)?;
+                self.spawn_save_pending(Some(reservation), commit, operations, &work)?;
             }
         }
         let saved_pending = self
@@ -271,7 +268,7 @@ impl PiSession {
             .pending
             .iter()
             .any(|entry| entry.fork_key == operations.fork.into_bytes());
-        let (mut acknowledgement, pending, mut prepared) = self
+        let (mut acknowledgement, pending) = self
             .spawn_step(
                 &native,
                 live.as_ref(),
@@ -283,20 +280,15 @@ impl PiSession {
             .await?;
         let newly_saved = pending.is_some();
         self.spawn_save_pending(pending, commit, operations, &work)?;
-        if prepared.is_none() && (newly_saved || (saved_pending && acknowledgement.is_none())) {
+        if newly_saved || (saved_pending && acknowledgement.is_none()) {
             drop(acknowledgement.take());
             let result = self
                 .spawn_step(&native, live.as_ref(), &command.0, &payload, true, &work)
                 .await?;
             acknowledgement = result.0;
             self.spawn_save_pending(result.1, commit, operations, &work)?;
-            prepared = result.2;
         }
-        if prepared.is_none() && acknowledgement.is_some() {
-            let plan = coordinator
-                .load_original_plan(original)
-                .await?
-                .ok_or_else(|| invalid("Pi prepared acknowledgement lost its fork plan"))?;
+        let prepared = if let Some(plan) = coordinator.load_original_plan(original).await? {
             let source = if plan.commit.source_task == owner.policy().root_task {
                 self.roots
                     .get(key)
@@ -308,10 +300,15 @@ impl PiSession {
                     .live_workspace(plan.commit.source_task)
                     .ok_or_else(|| invalid("Pi selected child source handle is unavailable"))?
             };
-            prepared = coordinator
+            coordinator
                 .observe_prepared(&plan, source, work.cancellation().clone())
-                .await?;
-        }
+                .await?
+        } else {
+            if acknowledgement.is_some() {
+                return Err(invalid("Pi prepared acknowledgement lost its fork plan"));
+            }
+            None
+        };
         let Some(prepared) = prepared else {
             return self
                 .spawn_observation(
@@ -369,8 +366,7 @@ impl PiSession {
         work: &NativeMaterializationWork,
     ) -> Result<(
         Option<(Value, NativeAllocation)>,
-        Option<(Vec<PendingSpawn>, NativeAllocation)>,
-        Option<PreparedPiFork>,
+        Option<(PendingSpawn, NativeAllocation)>,
     )> {
         let host = self.command_host(work, Some(native.clone()))?;
         let reply = if let Some(live) = live {
@@ -414,11 +410,7 @@ impl PiSession {
             host.control_step_with_native_work(command.clone(), retry)
                 .await?
         };
-        Ok((
-            reply,
-            host.pending_to_save()?,
-            host.take_prepared(input.commit.child.task_id)?,
-        ))
+        Ok((reply, host.pending_to_save()?))
     }
 
     async fn spawn_command<T: Serialize>(

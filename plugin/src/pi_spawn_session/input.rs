@@ -292,7 +292,15 @@ impl PiSession {
         };
         launch.validate(work)?;
         let volume = |name: &str, class, owner| {
-            VolumeRef::new(project.provider().clone(), name, class, owner)
+            VolumeRef::new(
+                project.provider().clone(),
+                name.into(),
+                class,
+                owner,
+                &mut Some(&mut HistoryWork::new(PreparationIo::from_native_work(
+                    work,
+                )?)),
+            )
         };
         let child = PiTaskBinding {
             native_session_id: session.into(),

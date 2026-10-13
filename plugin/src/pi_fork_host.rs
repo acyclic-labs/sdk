@@ -1,7 +1,7 @@
 //! Native Pi fork controls over the one retained catalog and task journal.
 use crate::{
     LocalAuthorityBackend, LocalLazyWorkspace, LocalObjectBackend, PendingSpawn,
-    PendingSpawnLifecycle, PluginTaskBinding, ServiceResources, SharedPhysicalRoot,
+    PendingSpawnLifecycle, PluginTaskBinding, ServiceResources,
     pi_fork::{
         PiForkCoordinator, PiForkOperations, PiForkPlan, PreparedPiFork, RetainedSpawnCommit,
         derived, original_operation,
@@ -11,7 +11,7 @@ use crate::{
     pi_root_provider::PiRootHandle,
     pi_task::{PiTaskExecution, PiTaskInput},
 };
-use acyclic_fs::{LazySnapshotRef, NativeMaterializationWork, WorkBudget, WorkCounters};
+use acyclic_fs::{LazySnapshotRef, NativeMaterializationWork, WorkCounters};
 use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::{
     Error, OperationId, Result, TaskId,
@@ -26,7 +26,7 @@ use acyclic_harness::{
 use acyclic_stream::LocalStream;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::BTreeMap, future::Future, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 
 pub(crate) const PI_FORK_COMMAND_KIND: &str = "acyclic.pi.fork";
 pub(crate) const PI_OBSERVE_SOURCE_COMMAND_KIND: &str = "acyclic.pi.observe-source";
@@ -139,77 +139,12 @@ impl<'a> crate::pi_host::PiControlHost<'a> {
     /// The actor durably saves these existing Preparing records before another pass.
     pub(crate) fn pending_to_save(
         &self,
-    ) -> Result<Option<(Vec<PendingSpawn>, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<Option<(PendingSpawn, acyclic_fs::NativeAllocation)>> {
         Ok(self
             .pending
             .lock()
             .map_err(|_| invalid("Pi pending control lock poisoned"))?
             .take())
-    }
-
-    /// The actor saves the Created route before handing this to the native host.
-    pub(crate) fn take_prepared(&self, task: TaskId) -> Result<Option<PreparedPiFork>> {
-        let mut prepared = self
-            .prepared
-            .lock()
-            .map_err(|_| invalid("Pi prepared control lock poisoned"))?;
-        let Some((entries, _)) = prepared.as_mut() else {
-            return Ok(None);
-        };
-        let Some(index) = entries
-            .iter()
-            .position(|entry| entry.binding.task_id == task)
-        else {
-            return Ok(None);
-        };
-        Ok(Some(entries.swap_remove(index)))
-    }
-
-    fn retain_prepared(
-        &self,
-        value: PreparedPiFork,
-        work: &NativeMaterializationWork,
-    ) -> Result<()> {
-        let mut retained = self
-            .prepared
-            .lock()
-            .map_err(|_| invalid("Pi prepared control lock poisoned"))?;
-        if let Some((entries, _)) = retained.as_mut() {
-            if let Some(existing) = entries
-                .iter_mut()
-                .find(|entry| entry.binding.task_id == value.binding.task_id)
-            {
-                *existing = value;
-                return Ok(());
-            }
-        }
-        let length = retained.as_ref().map_or(0, |(entries, _)| entries.len());
-        let capacity = length.checked_add(1).ok_or(Error::NativeWork {
-            cause: acyclic_fs::WorkError::Overflow.into(),
-            custody: None,
-        })?;
-        let copied = length
-            .checked_mul(std::mem::size_of::<PreparedPiFork>())
-            .ok_or(Error::NativeWork {
-                cause: acyclic_fs::WorkError::Overflow.into(),
-                custody: None,
-            })? as u64;
-        work.admit(WorkCounters {
-            bytes_copied: copied,
-            ..WorkCounters::UNCHARGED
-        })?;
-        let mut replacement = crate::pi_native::pi_native_vec(capacity, work)?;
-        if let Some((entries, old_custody)) = retained.take() {
-            replacement.0.extend(entries);
-            drop(old_custody);
-        }
-        work.spent(WorkCounters {
-            bytes_copied: copied,
-            ..WorkCounters::UNCHARGED
-        })?;
-        replacement.0.push(value);
-        *retained = Some(replacement);
-        Ok(())
     }
 
     pub(crate) fn coordinator(
@@ -415,7 +350,12 @@ impl<'a> crate::pi_host::PiControlHost<'a> {
                 .await?;
                 source_custody = Some(custody);
                 owner
-                    .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
+                    .verify(
+                        false,
+                        &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+                        )),
+                    )
                     .await?;
                 snapshot
             } else {
@@ -488,7 +428,9 @@ impl<'a> crate::pi_host::PiControlHost<'a> {
             .next()
             .ok_or_else(|| invalid("Pi project missing"))?;
         let workspace = {
-            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
             let value = project.storage_name(&mut Some(&mut io))?;
             (value, io.into_custody()?)
         };
@@ -523,66 +465,6 @@ impl<'a> crate::pi_host::PiControlHost<'a> {
         };
         let (value, custody) = self.decode(&pending, PENDING_DIAGNOSTIC_LABEL_BYTES, work)?;
         Ok((value, custody))
-    }
-
-    fn push_pending(
-        &self,
-        mut record: (PendingSpawn, acyclic_fs::NativeAllocation),
-        work: &NativeMaterializationWork,
-    ) -> Result<()> {
-        let mut pending = self
-            .pending
-            .lock()
-            .map_err(|_| invalid("Pi pending control lock poisoned"))?;
-        if let Some((records, custody)) = pending.as_mut() {
-            if records.len() < records.capacity() {
-                custody.absorb(&mut record.1)?;
-                records.push(record.0);
-                return Ok(());
-            }
-        }
-        let length = pending.as_ref().map_or(0, |(records, _)| records.len());
-        let capacity = length
-            .checked_add(1)
-            .ok_or_else(|| invalid("Pi pending capacity overflow"))?;
-        let copied = length
-            .checked_mul(std::mem::size_of::<PendingSpawn>())
-            .ok_or_else(|| invalid("Pi pending copy overflows"))? as u64;
-        work.admit(WorkCounters {
-            bytes_copied: copied,
-            ..WorkCounters::UNCHARGED
-        })?;
-        let mut replacement = crate::pi_native::pi_native_vec(capacity, work)?;
-        if let Some((records, custody)) = pending.as_mut() {
-            custody.absorb(&mut record.1)?;
-            custody.absorb(&mut replacement.1)?;
-            let old_bytes = records
-                .capacity()
-                .checked_mul(std::mem::size_of::<PendingSpawn>())
-                .ok_or_else(|| invalid("Pi pending previous capacity overflows"))?
-                as u64;
-            let mut previous = pending
-                .take()
-                .expect("the original pending component remains installed");
-            replacement.0.extend(previous.0);
-            if let Err(cause) = previous.1.release(old_bytes) {
-                *pending = Some((replacement.0, previous.1));
-                return Err(acyclic_harness::Error::from(cause));
-            }
-            replacement.1 = previous.1;
-        } else {
-            replacement.1.absorb(&mut record.1)?;
-        }
-        if let Err(cause) = work.spent(WorkCounters {
-            bytes_copied: copied,
-            ..WorkCounters::UNCHARGED
-        }) {
-            *pending = Some(replacement);
-            return Err(acyclic_harness::Error::from(cause));
-        }
-        replacement.0.push(record.0);
-        *pending = Some(replacement);
-        Ok(())
     }
 
     pub(crate) async fn fork(
@@ -633,7 +515,7 @@ impl<'a> crate::pi_host::PiControlHost<'a> {
             });
         }
         if self.retained.routes.values().any(|route| route.agent_id == input.commit.alias
-            && !matches!(&route.task_binding, PluginTaskBinding::Pi(binding) if same_identity(binding, &input.commit.child))) {
+            && !matches!(&route.task_binding, PluginTaskBinding::Pi(binding) if crate::pi_native_host::validate_child_binding(binding, &input.commit.child).is_ok())) {
             return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Conflict,
                 reason: "Pi requested alias already belongs to another admitted child" });
         }
@@ -653,7 +535,9 @@ impl<'a> crate::pi_host::PiControlHost<'a> {
         )?;
         let mut authority = (conversation.0, conversation.1);
         let mut verifier = {
-            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
             let value = authority.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody()?)
         };
@@ -686,7 +570,7 @@ impl<'a> crate::pi_host::PiControlHost<'a> {
                     work: 1_000_000,
                     bytes: self.protected.policy().maximum_payload_bytes,
                 },
-                remaining(&work)?,
+                work.remaining()?,
                 cancel.clone(),
             )
             .await?;
@@ -726,7 +610,7 @@ impl<'a> crate::pi_host::PiControlHost<'a> {
                 .next()
                 .ok_or_else(|| invalid("Pi child project missing"))?
                 .storage_name_with_native_work(work)?;
-            if !same_identity(binding, &plan.commit.child)
+            if crate::pi_native_host::validate_child_binding(binding, &plan.commit.child).is_err()
                 || saved.tool_use_id != plan.commit.sdk_operation
                 || saved.agent_id.as_deref() != Some(plan.commit.alias.as_str())
                 || saved.parent_agent_id != self.parent_alias(plan.commit.caller)?
@@ -752,7 +636,7 @@ impl<'a> crate::pi_host::PiControlHost<'a> {
                     "Pi existing route is not its original admitted child",
                 ));
             };
-            if !same_identity(binding, &plan.commit.child)
+            if crate::pi_native_host::validate_child_binding(binding, &plan.commit.child).is_err()
                 || route.turn_id != plan.commit.sdk_operation
                 || route.parent_agent_id != self.parent_alias(plan.commit.caller)?
             {
@@ -765,7 +649,10 @@ impl<'a> crate::pi_host::PiControlHost<'a> {
             coordinator
                 .admit_preparation(&context, &owner, &fence, &plan)
                 .await?;
-            self.push_pending(reservation, work)?;
+            *self
+                .pending
+                .lock()
+                .map_err(|_| invalid("Pi pending control lock poisoned"))? = Some(reservation);
             return Ok(TaskCommandProgress::Pending);
         }
         let Some(prepared) = coordinator
@@ -775,7 +662,7 @@ impl<'a> crate::pi_host::PiControlHost<'a> {
                 &fence,
                 &plan,
                 source,
-                remaining(&work)?,
+                work.remaining()?,
                 cancel,
             )
             .await?
@@ -791,7 +678,6 @@ impl<'a> crate::pi_host::PiControlHost<'a> {
             },
             &work,
         )?;
-        self.retain_prepared(prepared, work)?;
         Ok(result)
     }
 
@@ -897,7 +783,12 @@ impl<'a> crate::pi_host::PiControlHost<'a> {
         .await?;
         let snapshot = frozen.0;
         owner
-            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?)))
+            .verify(
+                false,
+                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                    acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?,
+                )),
+            )
             .await?;
         let observed = ObservedSource {
             caller: input.caller,
@@ -915,7 +806,12 @@ impl<'a> crate::pi_host::PiControlHost<'a> {
         )
         .await?;
         owner
-            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?)))
+            .verify(
+                false,
+                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                    acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?,
+                )),
+            )
             .await?;
         ready(
             &PiRootSource {
@@ -973,35 +869,71 @@ pub(crate) async fn freeze_created_root_source(
         .observe_allocation_with_native_work(attempt, work)
         .await?
         .ok_or_else(|| unauthorized("Root freeze has no actual original created allocation"))?;
-    crate::pi_fork_host::freeze_root_source_with_native_work(
-        protected.policy().root_task,
-        shared.as_ref(),
-        owner,
-        &actual.physical,
-        &actual.workspace,
+    let mut guard = || async {
+        owner
+            .verify(
+                false,
+                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                    acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+                )),
+            )
+            .await?;
+        provider
+            .verify_created_source(owner, key, &original.0.1, work)
+            .await?;
+        owner
+            .verify(
+                false,
+                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                    acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+                )),
+            )
+            .await
+    };
+    if owner.task_id() != protected.policy().root_task
+        || shared.durable_task_id() != Some(protected.policy().root_task)
+    {
+        return Err(Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Unauthorized,
+            reason: "Root snapshot requires its actual original Root context and owner",
+        });
+    }
+    let observed = actual
+        .physical
+        .observe_with_native_work(work, &mut guard)
+        .await?;
+    guard().await?;
+    let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
         work,
-        || async {
-            owner
-                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
-                .await?;
-            provider
-                .verify_created_source(owner, key, &original.0.1, work)
-                .await?;
-            owner
-                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
-                .await
-        },
-    )
-    .await
-}
-fn same_identity(left: &crate::PiTaskBinding, right: &crate::PiTaskBinding) -> bool {
-    left.task_id == right.task_id
-        && left.agent_id == right.agent_id
-        && left.native_session_id == right.native_session_id
-        && left.project_volumes == right.project_volumes
-        && left.scratch.volume == right.scratch.volume
-        && left.results.as_ref().map(|value| &value.volume)
-            == right.results.as_ref().map(|value| &value.volume)
+        cancellation: work.cancellation(),
+    };
+    let rebound = actual
+        .workspace
+        .rebind_source(&mut accounting)
+        .await
+        .map_err(native_lazy_error)?;
+    guard().await?;
+    if rebound.source != observed.0.source {
+        return Err(Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Conflict,
+            reason: "Root source rebind changed its guarded watcher observation",
+        });
+    }
+    let frozen = actual
+        .workspace
+        .snapshot(&mut accounting)
+        .await
+        .map_err(native_lazy_error)?;
+    guard().await?;
+    if frozen.source != observed.0.source {
+        return Err(Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Conflict,
+            reason: "Root source freeze changed its guarded watcher observation",
+        });
+    }
+    drop(rebound);
+    drop(observed.0);
+    Ok((frozen, observed.1))
 }
 fn invalid(message: &'static str) -> Error {
     Error::NativeBoundary {
@@ -1028,70 +960,6 @@ fn ready<T: Serialize>(
     Ok(TaskCommandProgress::ReadyWithNativeCustody { value, custody })
 }
 
-fn remaining(work: &NativeMaterializationWork) -> Result<WorkBudget> {
-    work.remaining().map_err(acyclic_harness::Error::from)
-}
-
-/// The Root's actual created-source guard spans the watcher, rebind and freeze on the command's existing ledger.
-pub(crate) async fn freeze_root_source_with_native_work<P, F, G>(
-    original_root: acyclic_harness::TaskId,
-    context: &acyclic_harness::runtime::TaskContext,
-    owner: &acyclic_harness::durable_host::TaskJournalOwner<P>,
-    physical: &SharedPhysicalRoot,
-    source: &LocalLazyWorkspace,
-    work: &acyclic_fs::NativeMaterializationWork,
-    mut guard: G,
-) -> Result<(LazySnapshotRef, acyclic_fs::NativeAllocation)>
-where
-    P: acyclic_stream::StreamProvider,
-    G: FnMut() -> F + Send,
-    F: Future<Output = Result<()>> + Send,
-{
-    if owner.task_id() != original_root || context.durable_task_id() != Some(original_root) {
-        return Err(Error::NativeBoundary {
-            code: acyclic_harness::wire::ErrorCode::Unauthorized,
-            reason: "Root snapshot requires its actual original Root context and owner",
-        });
-    }
-    owner
-        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
-        .await?;
-    let observed = physical.observe_with_native_work(work, &mut guard).await?;
-    guard().await?;
-    let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-        work,
-        cancellation: work.cancellation(),
-    };
-    let rebound = source
-        .rebind_source(&mut accounting)
-        .await
-        .map_err(native_lazy_error)?;
-    guard().await?;
-    if rebound.source != observed.0.source {
-        return Err(Error::NativeBoundary {
-            code: acyclic_harness::wire::ErrorCode::Conflict,
-            reason: "Root source rebind changed its guarded watcher observation",
-        });
-    }
-    let frozen = source
-        .snapshot(&mut accounting)
-        .await
-        .map_err(native_lazy_error)?;
-    guard().await?;
-    if frozen.source != observed.0.source {
-        return Err(Error::NativeBoundary {
-            code: acyclic_harness::wire::ErrorCode::Conflict,
-            reason: "Root source freeze changed its guarded watcher observation",
-        });
-    }
-    owner
-        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
-        .await?;
-    drop(rebound);
-    drop(observed.0);
-    Ok((frozen, observed.1))
-}
-
 pub(crate) fn native_lazy_error(source: acyclic_fs::LazyWorkspaceError) -> Error {
     match source {
         acyclic_fs::LazyWorkspaceError::NativeWork(cause) => cause.into(),
@@ -1100,9 +968,9 @@ pub(crate) fn native_lazy_error(source: acyclic_fs::LazyWorkspaceError) -> Error
 }
 
 /// Only an active source's ORIGINAL native view owner may checkpoint its dirty mounts.
-pub(crate) async fn freeze_child_source<P: acyclic_stream::StreamProvider>(
+pub(crate) async fn freeze_child_source(
     context: &acyclic_harness::runtime::TaskContext,
-    owner: &acyclic_harness::durable_host::TaskJournalOwner<P>,
+    owner: &acyclic_harness::durable_host::TaskJournalOwner<LocalStream>,
     view: &acyclic_harness::filesystem::NativeVolumeView<LocalAuthorityBackend, LocalObjectBackend>,
     source: &LocalLazyWorkspace,
     work: &acyclic_fs::NativeMaterializationWork,
@@ -1114,31 +982,32 @@ pub(crate) async fn freeze_child_source<P: acyclic_stream::StreamProvider>(
         });
     }
     owner
-        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
+        .verify(
+            false,
+            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            )),
+        )
         .await?;
     let checkpoint = view
         .checkpoint_projects_with_native_work(owner, work)?
         .await?;
     owner
-        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
+        .verify(
+            false,
+            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            )),
+        )
         .await?;
-    let mut selected = checkpoint
-        .0
-        .iter()
-        .filter(|(_, snapshot)| snapshot.workspace_id == source.workspace().id());
-    let snapshot = selected
-        .next()
-        .ok_or_else(|| Error::NativeBoundary {
-            code: acyclic_harness::wire::ErrorCode::Unauthorized,
-            reason: "Pi checkpoint has no actual selected source workspace",
-        })?
-        .1;
-    if selected.next().is_some() {
-        return Err(Error::NativeBoundary {
-            code: acyclic_harness::wire::ErrorCode::Unauthorized,
-            reason: "Pi checkpoint repeats a selected source workspace",
-        });
-    }
+    let snapshot = match checkpoint.0.as_slice() {
+        [(_, snapshot)] if snapshot.workspace_id == source.workspace().id() => *snapshot,
+        _ => {
+            return Err(unauthorized(
+                "Pi checkpoint must name its unique selected workspace",
+            ));
+        }
+    };
     drop(checkpoint.0);
     Ok((snapshot, checkpoint.1))
 }

@@ -444,31 +444,17 @@ impl PiNativeCommandHost {
                     .as_ref()
                     .ok_or(Error::Indeterminate(effect.command))?
                     .clone();
-                effect
-                    .owner
-                    .verify(
-                        false,
-                        &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                            acyclic_harness::filesystem::PreparationIo::from_native_work(
-                                &original_work,
-                            )?,
-                        )),
-                    )
-                    .await?;
                 let view = self
                     .live_view(task)
-                    .ok_or_else(|| Error::Indeterminate(effect.command))?;
-                let snapshots = view
-                    .checkpoint_projects_with_native_work(effect.owner.as_ref(), &original_work)?
-                    .await?;
-                if snapshots.0.len() != 1 {
-                    return Err(unauthorized(
-                        "Pi selected child has no unique authenticated project checkpoint",
-                    ));
-                }
-                let snapshot = snapshots.0[0].1;
-                drop(snapshots.0);
-                return Ok((snapshot, snapshots.1));
+                    .ok_or(Error::Indeterminate(effect.command))?;
+                return crate::pi_fork_host::freeze_child_source(
+                    &effect.context,
+                    &effect.owner,
+                    &view,
+                    &prepared.workspace,
+                    &original_work,
+                )
+                .await;
             }
             if prepared.binding.project_volumes.len() != 1 {
                 return Err(unauthorized(

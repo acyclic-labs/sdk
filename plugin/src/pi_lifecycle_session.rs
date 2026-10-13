@@ -182,7 +182,9 @@ impl PiSession {
             }
             if !self.native_jobs.contains_key(task) {
                 match async {
-                    let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?);
+                    let mut io = acyclic_harness::store::HistoryWork::new(
+                        acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?,
+                    );
                     HistoryIo::retain_owned(
                         &mut io,
                         std::mem::size_of::<WorkPull>()
@@ -224,8 +226,14 @@ impl PiSession {
             }
         }
         self.join_native_jobs(&tasks, &mut failure).await;
-        self.drain_native_tasks(&host, &tasks, NativeDrainMode::Cancel, &work, &mut failure)
-            .await;
+        self.drain_native_tasks(
+            &host,
+            &tasks,
+            Some(RouteLifecycle::Frozen),
+            &work,
+            &mut failure,
+        )
+        .await;
         retain_first_failure(
             &mut failure,
             self.slots.save_with_native_work(
@@ -279,8 +287,8 @@ impl PiSession {
             plans.insert(plan.commit.child.task_id, (route, parent, plan));
         }
 
-        let _remaining_custody = pi_recovery::vector_slots::<TaskId>(plans.len(), query_work)?;
-        let mut remaining = Vec::with_capacity(plans.len());
+        let allocated = pi_native::pi_native_vec(plans.len(), query_work)?;
+        let mut remaining = allocated.0;
         remaining.extend(plans.keys().copied());
         let mut child_sources = BTreeMap::new();
         while !remaining.is_empty() {
@@ -347,7 +355,9 @@ impl PiSession {
                 continue;
             }
             let observed = {
-                let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(query_work)?);
+                let mut io = acyclic_harness::store::HistoryWork::new(
+                    acyclic_harness::filesystem::PreparationIo::from_native_work(query_work)?,
+                );
                 HistoryIo::retain_owned(
                     &mut io,
                     std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>())
@@ -433,8 +443,8 @@ impl PiSession {
                 ),
                 custody: None,
             })?;
-        let _task_custody = pi_recovery::vector_slots::<TaskId>(task_capacity, work)?;
-        let mut tasks = Vec::with_capacity(task_capacity);
+        let allocated = pi_native::pi_native_vec(task_capacity, work)?;
+        let mut tasks = allocated.0;
         tasks.extend(self.native_jobs.keys().copied());
         for route in self.state.routes.values() {
             if let PluginTaskBinding::Pi(binding) = &route.task_binding {
@@ -491,13 +501,14 @@ impl PiSession {
         }
         self.join_native_jobs(&tasks, &mut failure).await;
         if let Some(native) = &native {
-            let mode = if deactivate && authenticated {
-                NativeDrainMode::Deactivate
-            } else {
-                NativeDrainMode::Preserve
-            };
-            self.drain_native_tasks(native, &tasks, mode, &work, &mut failure)
-                .await;
+            self.drain_native_tasks(
+                native,
+                &tasks,
+                (deactivate && authenticated).then_some(RouteLifecycle::Frozen),
+                &work,
+                &mut failure,
+            )
+            .await;
         }
         if deactivate && authenticated {
             if failure.is_none() {
@@ -521,23 +532,18 @@ impl PiSession {
         &mut self,
         native: &Arc<pi_native_host::PiNativeCommandHost>,
         tasks: &[TaskId],
-        mode: NativeDrainMode,
+        lifecycle: Option<RouteLifecycle>,
         work: &acyclic_fs::NativeMaterializationWork,
         failure: &mut Option<Error>,
     ) {
-        let _drain_custody = match pi_recovery::vector_slots::<(
-            TaskId,
-            tokio::task::JoinHandle<RootResult<()>>,
-            acyclic_fs::NativeAllocation,
-        )>(tasks.len(), work)
-        {
-            Ok(custody) => custody,
+        let allocated = match pi_native::pi_native_vec(tasks.len(), work) {
+            Ok(allocated) => allocated,
             Err(error) => {
                 retain_first_failure(failure, Err(error));
                 return;
             }
         };
-        let mut drains = Vec::with_capacity(tasks.len());
+        let mut drains = allocated.0;
         for task in tasks {
             let native = native.clone();
             let retained_work = work.clone();
@@ -550,18 +556,18 @@ impl PiSession {
             }
         }
         for (task, drain) in drains {
-            match join_native_job(drain).await {
-                Ok(()) if mode != NativeDrainMode::Preserve => {
+            match (join_native_job(drain).await, lifecycle) {
+                (Ok(()), Some(lifecycle)) => {
                     for route in self.state.routes.values_mut() {
                         if matches!(&route.task_binding, PluginTaskBinding::Pi(binding)
                             if binding.task_id == task)
                         {
-                            route.lifecycle = RouteLifecycle::Frozen;
+                            route.lifecycle = lifecycle;
                         }
                     }
                 }
-                Ok(()) => {}
-                Err(error) => retain_first_failure(failure, Err(error)),
+                (Ok(()), None) => {}
+                (Err(error), _) => retain_first_failure(failure, Err(error)),
             }
         }
     }
@@ -571,8 +577,8 @@ impl PiSession {
         target: TaskId,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> RootResult<(Vec<TaskId>, acyclic_fs::NativeAllocation)> {
-        let custody = pi_recovery::vector_slots::<TaskId>(self.state.routes.len(), work)?;
-        let mut tasks = Vec::with_capacity(self.state.routes.len());
+        let allocated = pi_native::pi_native_vec(self.state.routes.len(), work)?;
+        let mut tasks = allocated.0;
         for route in self.state.routes.values() {
             let PluginTaskBinding::Pi(binding) = &route.task_binding else {
                 return Err(Error::Invalid(
@@ -583,7 +589,7 @@ impl PiSession {
                 tasks.push(binding.task_id);
             }
         }
-        Ok((tasks, custody))
+        Ok((tasks, allocated.1))
     }
 
     async fn join_native_jobs(&mut self, tasks: &[TaskId], failure: &mut Option<Error>) {
@@ -609,13 +615,6 @@ impl PiSession {
             retain_first_failure(failure, result);
         }
     }
-}
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum NativeDrainMode {
-    Preserve,
-    Cancel,
-    Deactivate,
 }
 
 fn retain_first_failure(failure: &mut Option<Error>, result: RootResult<()>) {
@@ -722,7 +721,9 @@ async fn original_native_first_dispatch_pending(
         ));
     }
     let reservation = {
-        let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+        let mut io = acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        );
         HistoryIo::retain_owned(
             &mut io,
             std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>()) as u64,
@@ -754,7 +755,9 @@ async fn original_native_first_dispatch_pending(
         work,
     )?;
     let verifier = {
-        let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+        let mut io = acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let value = conversation.0.1.verifier(&mut Some(&mut io))?;
         (value, io.into_custody()?)
     };
@@ -768,7 +771,9 @@ async fn original_native_first_dispatch_pending(
     let effect = acyclic_harness::effect_host::task_effect_id(
         task,
         pi_fork::derived(plan.original, "native-effect", &work)?,
-        &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)),
+        &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        )),
     )?;
     let observed = history
         .0

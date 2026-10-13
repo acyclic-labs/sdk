@@ -33,13 +33,7 @@ pub(crate) struct PiControlHost<'a> {
     pub(crate) root_source: Option<&'a crate::pi_fork_host::PiRootSource>,
     pub(crate) work: acyclic_fs::NativeMaterializationWork,
     pub(crate) pending:
-        std::sync::Mutex<Option<(Vec<crate::PendingSpawn>, acyclic_fs::NativeAllocation)>>,
-    pub(crate) prepared: std::sync::Mutex<
-        Option<(
-            Vec<crate::pi_fork::PreparedPiFork>,
-            acyclic_fs::NativeAllocation,
-        )>,
-    >,
+        std::sync::Mutex<Option<(crate::PendingSpawn, acyclic_fs::NativeAllocation)>>,
 }
 
 impl<'a> PiControlHost<'a> {
@@ -74,7 +68,6 @@ impl<'a> PiControlHost<'a> {
             root_source: None,
             work: work.clone(),
             pending: std::sync::Mutex::new(None),
-            prepared: std::sync::Mutex::new(None),
         })
     }
     pub(crate) fn native(&self) -> Result<&Arc<PiNativeCommandHost>> {

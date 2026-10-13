@@ -97,11 +97,9 @@ fn session_tasks<'a>(
         .ok_or_else(|| {
             acyclic_harness::Error::from(NativeTreeMaterializationError::Work(WorkError::Overflow))
         })?;
-    {
-        let mut slots = vector_slots::<PiTaskSelection<'_>>(count, work)?;
-        custody.absorb(&mut slots)?;
-    }
-    let mut tasks = Vec::with_capacity(count);
+    let mut allocated = super::pi_native::pi_native_vec(count, work)?;
+    custody.absorb(&mut allocated.1)?;
+    let mut tasks = allocated.0;
     tasks.push(PiTaskSelection {
         binding: root,
         parent: None,
@@ -296,11 +294,9 @@ where
         )
         .await?;
     }
-    {
-        let mut slots = vector_slots::<PiTaskObservation>(tasks.0.len(), work)?;
-        custody.absorb(&mut slots)?;
-    }
-    let mut observations = Vec::with_capacity(tasks.0.len());
+    let mut allocated = super::pi_native::pi_native_vec(tasks.0.len(), work)?;
+    custody.absorb(&mut allocated.1)?;
+    let mut observations = allocated.0;
     for task in tasks.0 {
         if let Some(preparation) = task.preparation {
             let recovered = {
@@ -708,111 +704,13 @@ fn recovery_conversion_quota(shape: acyclic_harness::JsonValueShape) -> Result<(
             acyclic_harness::Error::from(NativeTreeMaterializationError::Work(WorkError::Overflow))
         })?;
     let additional = acyclic_harness::json_owned_value_conversion_additional_bytes(shape)?;
-    let labels = checked_quota(
-        acyclic_harness::preparation_serde_diagnostic_label_bytes(),
-        checked_quota(
-            super::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES,
-            super::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
-                "ResourcePreparationRequest",
-                "struct ResourcePreparationRequest",
-                "provider",
-                "child",
-                "resources",
-                "creation_grant",
-                "maximum_resources",
-                "maximum_work",
-                "maximum_bytes",
-                "payload",
-                "command",
-                "source_checkpoint",
-                "input_files",
-                "read_authorization",
-                "ResourceCreationProofRef",
-                "struct ResourceCreationProofRef",
-                "preparation",
-                "resource",
-                "evidence",
-                "TaskAdmissionRecord",
-                "struct TaskAdmissionRecord",
-                "operation_id",
-                "task",
-                "machine",
-                "input",
-                "input_schema",
-                "output_schema",
-                "parent",
-                "resource_proofs",
-                "grants",
-                "limits",
-                "run_limits",
-                "policy",
-                "extensions",
-                "execution",
-                "ComponentIdentity",
-                "struct ComponentIdentity",
-                "name",
-                "version",
-                "TaskRunLimits",
-                "struct TaskRunLimits",
-                "concurrency",
-                "max_steps",
-                "deadline_epoch_ms",
-                "ExecutionPlacement",
-                "struct ExecutionPlacement",
-                "provider",
-                "build",
-                "environment",
-                "readiness_revision",
-                "Authority",
-                "struct Authority",
-                "kind",
-                "id",
-                "AggregateKind",
-                "agent",
-                "conversation",
-                "session",
-                "turn",
-                "task",
-                "ExtensionAdmission",
-                "struct ExtensionAdmission",
-                "source",
-                "selected",
-                "configurations",
-                "Limits",
-                "struct Limits",
-            ]),
-        )?,
-    )?;
+    let labels = super::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES;
     let diagnostics = acyclic_harness::json_typed_diagnostic_owned_bytes(
         shape,
         labels,
         Some(acyclic_harness::wire::ErrorCode::Invalid),
     )?;
     Ok((checked_quota(typed, additional)?, diagnostics))
-}
-
-pub(crate) fn vector_slots<T>(
-    count: usize,
-    work: &NativeMaterializationWork,
-) -> Result<NativeAllocation> {
-    let bytes = count
-        .checked_mul(std::mem::size_of::<T>())
-        .and_then(|bytes| u64::try_from(bytes).ok())
-        .ok_or_else(|| {
-            acyclic_harness::Error::from(NativeTreeMaterializationError::Work(WorkError::Overflow))
-        })?;
-    if count == 0 {
-        return work
-            .claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)
-            .map_err(acyclic_harness::Error::from);
-    }
-    // Exactly one with_capacity allocation attempt follows this admission.
-    work.claim(
-        bytes,
-        u64::from((bytes) != 0),
-        acyclic_fs::WorkCounters::UNCHARGED,
-    )
-    .map_err(acyclic_harness::Error::from)
 }
 
 fn checked_quota(left: u64, right: u64) -> Result<u64> {
@@ -894,92 +792,4 @@ fn recovery_metadata_quota(state: &AdapterState) -> Result<u64> {
         )?;
     }
     Ok(bytes)
-}
-
-#[cfg(test)]
-mod allocation_tests {
-    use super::*;
-
-    #[test]
-    fn native_graph_vector_claim_precedes_growth_and_keeps_original_ledger() {
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let work = NativeMaterializationWork::new(
-            super::super::pi_root_provider::allocation_budget(),
-            &cancellation,
-        )
-        .unwrap();
-        let before = work.receipt();
-        let custody = vector_slots::<PiTaskObservation>(3, &work).unwrap();
-        assert_eq!(
-            work.receipt().allocation_operations,
-            before.allocation_operations + 1
-        );
-        let mut observations = Vec::with_capacity(3);
-        for index in 0..3 {
-            observations.push(PiTaskObservation::Pending {
-                task_id: TaskId::from_bytes([index + 1; 16]),
-            });
-        }
-        assert_eq!(observations.capacity(), 3);
-        assert_eq!(
-            custody.bytes(),
-            (3 * std::mem::size_of::<PiTaskObservation>()) as u64
-        );
-        let original = work
-            .claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)
-            .unwrap();
-        assert!(custody.shares_ledger(&original));
-        drop(observations);
-        drop(custody);
-        drop(original);
-        assert_eq!(work.live_allocation_bytes(), 0);
-        cancellation.cancel();
-        assert!(matches!(
-            vector_slots::<PiTaskObservation>(3, &work),
-            Err(Error::NativeWork {
-                cause: NativeTreeMaterializationError::Cancelled,
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn native_graph_rejects_foreign_custody_without_releasing_observed_payload_guard() {
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let first = NativeMaterializationWork::new(
-            super::super::pi_root_provider::allocation_budget(),
-            &cancellation,
-        )
-        .unwrap();
-        let second = NativeMaterializationWork::new(
-            super::super::pi_root_provider::allocation_budget(),
-            &cancellation,
-        )
-        .unwrap();
-        let mut retained = first
-            .claim(8, 0, acyclic_fs::WorkCounters::UNCHARGED)
-            .unwrap();
-        let mut observed = (
-            "original producer",
-            second
-                .claim(16, 0, acyclic_fs::WorkCounters::UNCHARGED)
-                .unwrap(),
-        );
-        assert!(matches!(
-            retained
-                .absorb(&mut observed.1)
-                .map_err(acyclic_harness::Error::from),
-            Err(Error::NativeWork {
-                cause: NativeTreeMaterializationError::InvalidLayout,
-                ..
-            })
-        ));
-        assert_eq!(retained.bytes(), 8);
-        assert_eq!(observed.1.bytes(), 16);
-        assert_eq!(second.live_allocation_bytes(), 16);
-        drop(observed);
-        drop(retained);
-        assert_eq!(first.live_allocation_bytes(), 0);
-        assert_eq!(second.live_allocation_bytes(), 0);
-    }
 }

@@ -166,46 +166,6 @@ pub(crate) const ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES: u64 =
             "SourceReference",
             "identity",
             "epoch",
-            "TaskEffectPlan",
-            "guarantee",
-            "request",
-            "result_schema",
-            "exactly_once",
-            "at_least_once",
-            "at_most_once",
-            "ProviderRefWire",
-            "namespace",
-            "family",
-            "version",
-            "ResourceRefWire",
-            "key",
-            "workspace",
-            "generation",
-            "artifact",
-            "sandbox",
-            "checkpoint",
-            "stream",
-            "context",
-            "run",
-            "VolumeRefWire",
-            "id",
-            "class",
-            "owner",
-            "agent_private",
-            "session_shared",
-            "agent",
-            "session",
-            "FileRefWire",
-            "path",
-            "descriptor",
-            "display_name",
-            "FileDescriptorWire",
-            "sha256",
-            "byte_length",
-            "media_type",
-            "SHA-256 digest must contain exactly 32 bytes",
-            "file byte length exceeds cross-language precision",
-            "media type is invalid",
             "WorkCounters",
             "authorityRecordsRead",
             "authorityRecordsAppended",
@@ -365,7 +325,9 @@ pub(crate) fn root_provider(
         .chain(std::iter::once(&request.binding.scratch.volume))
     {
         let grant = {
-            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&original)?);
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(&original)?,
+            );
             let value = volume.capability(VolumeOperation::Read, &mut Some(&mut io))?;
             (value, io.into_custody()?)
         };
@@ -379,7 +341,9 @@ pub(crate) fn root_provider(
         }
     }
     let grant = {
-        let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&original)?);
+        let mut io = acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(&original)?,
+        );
         let value = request
             .binding
             .scratch
