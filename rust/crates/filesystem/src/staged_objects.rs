@@ -2334,6 +2334,7 @@ mod tests {
             output_bytes: 64 * 1_048_576,
             bytes_hashed: 128 * 1_048_576,
             bytes_copied: 128 * 1_048_576,
+            bytes_encoded: crate::performance::BOUNDARY_BUDGET.bytes_encoded,
             items_examined: 8_192,
             items_returned: 256,
             allocation_operations: 1_024,
