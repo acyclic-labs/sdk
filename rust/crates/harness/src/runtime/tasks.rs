@@ -150,9 +150,6 @@ impl<I, O> TaskDefinition<I, O> {
                 "resumable task requires an implementation digest",
             ));
         }
-        crate::executor::with_history_io(io, |work| {
-            validate_task_schemas(&input_schema, &output_schema, true, work)
-        })?;
         #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             io.retain_owned(std::mem::size_of::<Self>() as u64)?;
