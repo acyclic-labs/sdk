@@ -53,7 +53,7 @@ impl NativeDemandCarrier<'_> {
 
 struct LockWait<'a, 'w> {
     carrier: &'a mut NativeDemandCarrier<'w>,
-    waits: [Option<crate::cancellation::PreparedCancelled>; 2],
+    waits: [Option<crate::cancellation::Cancelled<'static>>; 2],
     reserved: u64,
 }
 

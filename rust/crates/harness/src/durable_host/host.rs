@@ -331,10 +331,20 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
             ));
         }
         let admission = self.admission(operation_id, &mut None).await?;
-        self.authenticated_scope(&admission, &mut None)
-            .await?
-            .0
-            .with_replayed_extensions(admission.extensions)
+        #[cfg(feature = "filesystem")]
+        let scope = self.authenticated_scope(&admission, &mut None).await?.0;
+        #[cfg(not(feature = "filesystem"))]
+        let scope = {
+            if !admission.resource_proofs.is_empty() {
+                return Err(Error::Unsupported(
+                    "created resource scope requires its filesystem provider".into(),
+                ));
+            }
+            self.root_scope
+                .narrow(admission.grants.clone(), admission.limits)?
+                .with_run_limits(admission.run_limits, &mut None)?
+        };
+        scope.with_replayed_extensions(admission.extensions)
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

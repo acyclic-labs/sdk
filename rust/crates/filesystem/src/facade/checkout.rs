@@ -97,19 +97,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
                         .transfer_checkout_control(&custody, &witness)?;
                     let mut dependencies =
                         DependencyLedger::new_with_native_custody(captured, custody, proof_control);
-                    let (base, control) = crate::collection::clone_generation_root_native(
+                    let (base, control) = crate::collection::clone_generation_root(
                         &root,
                         &mut accounting,
-                        &dependencies.data_custody,
+                        Some(&dependencies.data_custody),
                     )?;
                     dependencies.base_root_control = control;
-                    let root = crate::collection::CheckoutRoots::new_native_measured(
+                    let root = crate::collection::CheckoutRoots::new(
                         self.fs.inner.objects.collection(),
                         self.config,
                         generation_root,
                         (root, working),
                         &mut accounting,
-                        &dependencies.data_custody,
+                        Some(&dependencies.data_custody),
                     )?;
                     (base, root, dependencies)
                 }
@@ -135,17 +135,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
                         &dependencies.data_custody,
                         root_parent_bytes(&base)?,
                     );
-                    let (allocations, work, allowance, _) =
-                        accounting.standalone_parts().expect("standalone checkout");
-                    let mut root = crate::collection::CheckoutRoots::new_measured(
+                    let mut root = crate::collection::CheckoutRoots::new(
                         self.fs.inner.objects.collection(),
                         self.config,
                         generation_root,
-                        root,
-                        allocations,
-                        work,
-                        allowance,
-                        cancellation,
+                        (root, ProofDataClaim::default()),
+                        &mut accounting,
+                        None,
                     )?;
                     root.attach_control_custody(&dependencies.data_custody);
                     (base, root, dependencies)

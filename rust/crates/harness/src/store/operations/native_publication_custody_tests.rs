@@ -41,7 +41,13 @@ async fn native_message_lookup_provider_corruption_bound_and_cancellation_releas
     )
     .await
     .expect_err("corrupt index");
-    assert!(matches!(error, Error::NativeJson { .. }));
+    assert!(matches!(
+        error,
+        Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Invalid,
+            ..
+        }
+    ));
     drop(error);
     assert_eq!(io.into_custody()?.bytes(), 0);
     Ok(())
