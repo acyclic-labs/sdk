@@ -24,7 +24,9 @@ fn message(content: &FileRef, sequence: u64) -> ConversationMessage {
         },
         content: content.clone(),
         attachments: ReferencedAttachments::Inline { items: Vec::new() },
-        reply_to: (sequence % 2 == 0).then(|| Uuid::from_u128(u128::from(sequence - 1))),
+        reply_to: sequence
+            .is_multiple_of(2)
+            .then(|| Uuid::from_u128(u128::from(sequence - 1))),
         tool_call_id: None,
         extensions: BTreeMap::new(),
     }

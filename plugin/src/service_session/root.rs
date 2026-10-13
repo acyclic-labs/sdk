@@ -280,10 +280,7 @@ impl PiSession {
                     .await
                     .map_err(|(source, custody)| match source {
                         acyclic_fs::WorkspaceLineageError::Workspace(source) => {
-                            RootError::NativeWorkspace {
-                                source: Box::new(source),
-                                custody,
-                            }
+                            RootError::NativeWorkspace { source, custody }
                         }
                         source => RootError::Storage(display(source)),
                     })?,
