@@ -55,6 +55,12 @@ test('the required job only checks Cargo lock consistency',()=>{
  assert.equal((workflow.match(/^\s+- uses:/gm)??[]).length,1);
  assert.doesNotMatch(workflow,/setup-node|static-ci|fmt|clippy|cargo (?:build|test|check)/);
 });
+test('README approval guard runs on pull requests without manual dispatch',()=>{
+ const guard=triggers(read('readme-guard.yml'));
+ assert.match(guard,/^  pull_request_target:/m);
+ assert.doesNotMatch(guard,/^  workflow_dispatch:/m);
+});
+
 test('heavy workflows are reachable only through the release caller',()=>{
  for(const name of workflows.filter(name=>![STATIC,'release.yml','readme-guard.yml'].includes(name))){
   assert.match(triggers(read(name)),/workflow_call:/,name);
