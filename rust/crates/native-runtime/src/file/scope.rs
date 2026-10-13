@@ -47,7 +47,7 @@ pub(crate) fn with_file_scope<T>(
 }
 
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-#[allow(unsafe_code)]
+#[allow(unsafe_code, reason = "walks live pinned frames owned by this thread")]
 pub(crate) fn in_file_scope(health: &Arc<FileHealth>) -> bool {
     let identity = Arc::as_ptr(health) as usize;
     let mut node = ACTIVE_FILES.with(Cell::get);

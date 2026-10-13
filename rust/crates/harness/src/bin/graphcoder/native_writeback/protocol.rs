@@ -74,11 +74,11 @@ pub(super) fn publication_status(
         .and_then(|(_, resolution)| resolution.as_ref())
         .map(|resolution| &resolution.outcome)
     {
-        Some(InteractionOutcome::Approved) if !matches!(status, "applied" | "recovering") => {
+        Some(InteractionOutcome::Approved {}) if !matches!(status, "applied" | "recovering") => {
             "approved"
         }
         Some(InteractionOutcome::Indeterminate { .. }) => "pending",
-        Some(InteractionOutcome::Approved) | None => status,
+        Some(InteractionOutcome::Approved {}) | None => status,
         _ => "rejected",
     }
 }

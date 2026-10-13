@@ -28,7 +28,7 @@ pub(crate) fn read_bounded_slice(
     let mut filled = 0;
     while filled < length {
         meter.check()?;
-        let destination = &mut data[filled..];
+        let destination = data.get_mut(filled..).ok_or(io::ErrorKind::InvalidData)?;
         #[cfg(windows)]
         let result =
             windows::read_at_known_overlapped(file, offset + filled as u64, destination, meter);

@@ -146,9 +146,7 @@ impl NativeJob {
                 completion,
             } => {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation));
-                drop(_allocation);
-                drop(meter);
-                drop(health);
+                drop((_allocation, meter, health));
                 if let Err(panic) = result {
                     terminal.stage_panic(panic);
                 }

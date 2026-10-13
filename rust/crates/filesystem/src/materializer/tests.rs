@@ -49,7 +49,6 @@ fn native_backend(
     root: &Path,
     operation: &Path,
 ) -> Result<std::sync::Arc<NativeTreeMaterializationBackend>, NativeTreeMaterializationError> {
-    acyclic_native_runtime::initialize_native_io_services()?;
     std::fs::create_dir_all(operation.join("backup"))?;
     let work = NativeMaterializationWork::new(
         crate::WorkBudget::UNBOUNDED,

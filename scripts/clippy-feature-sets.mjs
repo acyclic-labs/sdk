@@ -67,7 +67,7 @@ async function worker(index) {
   const env = index === 0 ? process.env : { ...process.env, CARGO_TARGET_DIR: target };
   for (let set = sets.shift(); set && !failed; set = sets.shift()) {
     const command = ["clippy", ...set, "--locked", "--", "-D", "warnings"];
-    const child = spawn("cargo", command, { env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("cargo", command, { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
     child.stdout.on("data", chunk => (output += chunk));
     child.stderr.on("data", chunk => (output += chunk));

@@ -39,27 +39,7 @@ impl Drop for CaptureProducer {
     }
 }
 
-impl CaptureSourceGate {
-    pub(in crate::native_mount) fn fresh_for_namespace(&self) -> bool {
-        !self.namespace_bound
-            && !self.ever_used
-            && !self.cancelled
-            && !self.retired
-            && self.producers == 0
-    }
-}
-
-#[cfg(windows)]
-pub(in crate::native_mount) fn namespace_gate_is_fresh(
-    lineage: &crate::native_mount::NativeMountSourceLineage<'_>,
-) -> bool {
-    lineage
-        .capture_gate
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .fresh_for_namespace()
-        && !lineage.capture_cancellation.is_cancelled()
-}
+impl CaptureSourceGate {}
 
 impl<A, O> CheckoutMountSource<A, O> {
     pub(super) fn with_capture_observer_dispatch<T>(&self, dispatch: impl FnOnce() -> T) -> T {
@@ -235,10 +215,13 @@ impl<A, O> CheckoutMountSource<A, O> {
                 ))?;
                 credit
                     .0
-                    .partition_work(crate::WorkCounters {
-                        items_examined: 1,
-                        ..crate::WorkCounters::UNCHARGED
-                    }, wait)
+                    .partition_work(
+                        crate::WorkCounters {
+                            items_examined: 1,
+                            ..crate::WorkCounters::UNCHARGED
+                        },
+                        wait,
+                    )
                     .map_err(MountSourceError::NativeWork)?
                     .record_completed(crate::WorkCounters {
                         items_examined: 1,

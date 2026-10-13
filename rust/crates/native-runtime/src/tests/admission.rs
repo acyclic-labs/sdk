@@ -260,7 +260,10 @@ fn prepared_capacity_pressure_and_abandoned_observer_keep_original_job_custody()
 
 #[cfg(unix)]
 #[test]
-#[allow(unsafe_code)]
+#[allow(
+    unsafe_code,
+    reason = "the fixture observes descriptor retirement without taking ownership"
+)]
 fn staged_admission_failure_waits_for_actual_payload_and_job_retirement() -> io::Result<()> {
     use std::os::fd::AsRawFd;
     struct HeldFile {

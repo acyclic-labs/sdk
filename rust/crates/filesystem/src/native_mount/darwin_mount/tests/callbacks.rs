@@ -207,7 +207,6 @@ fn callback_context(
     budget: crate::WorkBudget,
     cancellation: &crate::CancellationToken,
 ) -> Result<Arc<DarwinMountContext>, Box<dyn std::error::Error>> {
-    acyclic_native_runtime::initialize_native_io_services()?;
     let setup = work(crate::WorkBudget::UNBOUNDED, cancellation)?;
     let mut context = test_context(source, &setup)?;
     context.handler_budget = budget;
