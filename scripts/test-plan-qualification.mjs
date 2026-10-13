@@ -802,16 +802,20 @@ test("web browser commands overlap, finish before shell exit and retain named ti
       mkdirSync(fixture);
       const body = earlyExit ? commands.replace(
         'if wait "$browser_pid"; then :; else browser_status=1; fi', 'wait "$browser_pid" || exit 1') : commands;
+      const controlledBody = body.replace("    browser_status=0", '    touch "$fixture/all-launched"\n    browser_status=0');
+      assert.notEqual(controlledBody, body);
       const result = spawnSync(bash, ["-c", `set -euo pipefail
 fixture='${fixture}'
 observability="$fixture"
 fail_id='${failure}'
+mutated='${earlyExit ? 1 : 0}'
 parent_pid="$BASHPID"
 on_exit() {
   if [[ "$BASHPID" != "$parent_pid" ]]; then return; fi
   for child in fs mcp client; do
     if [[ ! -f "$fixture/$child.done" ]]; then printf 'unfinished-at-exit:%s\\n' "$child"; fi
   done
+  touch "$fixture/all-launched" "$fixture/release-cleanup"
 }
 trap on_exit EXIT
 bun() {
@@ -823,19 +827,15 @@ bun() {
   esac
   printf 'started:%s\\n' "$id"
   touch "$fixture/$id"
-  for attempt in {1..200}; do
-    if [[ -f "$fixture/fs" && -f "$fixture/mcp" && -f "$fixture/client" ]]; then break; fi
-    sleep 0.01
-  done
-  [[ -f "$fixture/fs" && -f "$fixture/mcp" && -f "$fixture/client" ]] || return 97
-  if [[ "$id" != "$fail_id" ]]; then
-    case "$id" in fs) sleep 0.03 ;; mcp) sleep 0.08 ;; client) sleep 0.2 ;; esac
+  while [[ ! -f "$fixture/all-launched" ]]; do sleep 0.01; done
+  if [[ "$mutated" == 1 && "$id" != "$fail_id" ]]; then
+    while [[ ! -f "$fixture/release-cleanup" ]]; do sleep 0.01; done
   fi
   touch "$fixture/$id.done"
   printf 'completed:%s\\n' "$id"
   [[ "$id" != "$fail_id" ]]
 }
-${body}
+${controlledBody}
 printf 'joined\\n'
 `], { encoding: "utf8", timeout: 10000 });
       assert.equal(result.error, undefined);
@@ -859,6 +859,7 @@ printf 'joined\\n'
           { id: "mcp", command: "bun run --filter @acyclic-labs/harness test:browser:mcp" },
           { id: "client", command: "bun run --filter @acyclic-labs/harness test:client:browser" }]) {
           const row = summary.stdout.split("\n").find(line => line.includes(browser.command)) ?? assert.fail("missing browser timing");
+          assert.match(row, /\| \d+(?:\.\d+)?s \|/);
           assert.ok(row.includes(browser.id === failure ? "exit 1" : "passed"));
         }
       }
