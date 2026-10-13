@@ -115,7 +115,7 @@ impl LocalStream {
                 Ok(input) => input,
                 Err(error) => return work.finish(Err(error)),
             };
-            let span = obs::OwnedSpan::new(tracing::info_span!(
+            let span = obs::OperationSpan::new(tracing::info_span!(
                 "acyclic.stream.append",
                 outcome = Empty,
                 error.kind = Empty

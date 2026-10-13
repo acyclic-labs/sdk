@@ -416,7 +416,15 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let declared_agent = if admission.parent.is_none() {
             declared_agent
         } else {
-            scope.current_created_agent(&mut work)?
+            scope
+                .current_created_content(&mut work)?
+                .map(|binding| match binding.volume.owner() {
+                    crate::conversation::VolumeOwner::Agent(agent) => Ok(*agent),
+                    _ => Err(Error::Unauthorized(
+                        "created scratch is not agent-owned".into(),
+                    )),
+                })
+                .transpose()?
         };
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(custody) = custody.as_mut() {

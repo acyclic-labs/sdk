@@ -1,6 +1,6 @@
 /// Reads are caller-owned; cancellation while waiting for visibility is terminal.
 struct ReadObservation {
-    span: obs::OwnedSpan,
+    span: obs::OperationSpan,
     finished: bool,
 }
 impl Drop for ReadObservation {

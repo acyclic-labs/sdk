@@ -149,8 +149,8 @@ impl Journal {
             return Err(LocalStreamError::InvalidLimits);
         }
         self.file.seek(SeekFrom::End(0))?;
-        obs::record(span, "frames", operations);
-        obs::record(span, "bytes", valid_length);
+        span.record("frames", operations);
+        span.record("bytes", valid_length);
         self.operations = operations;
         self.bytes = valid_length;
         Ok(())

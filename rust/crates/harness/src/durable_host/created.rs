@@ -227,11 +227,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             let preparation_access = self
                 .created_access(&preparation, visited, proof_custody.work())
                 .await?;
-            let (preparation_scope, scope_held) = self.root_scope.with_created_access_with_work(
-                &preparation,
-                preparation_access,
-                proof_custody.work(),
-            )?;
+            let (preparation_scope, scope_held) =
+                self.scope_from_access(&preparation, preparation_access, proof_custody.work())?;
             drop(preparation_scope);
             if let Some(io) = proof_custody.work().as_deref_mut() {
                 io.release_owned(scope_held)?;
@@ -514,9 +511,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<(RuntimeScope, u64)> {
         let mut visited = Vec::new();
         let access = self.created_access(admission, &mut visited, work).await?;
-        let result = self
-            .root_scope
-            .with_created_access_with_work(admission, access, work);
+        let result = self.scope_from_access(admission, access, work);
         if let Some(io) = work.as_deref_mut() {
             io.release_owned((visited.capacity() * std::mem::size_of::<OperationId>()) as u64)?;
         }
