@@ -68,7 +68,10 @@ pub(super) fn read_at(file: &File, offset: u64, destination: &mut [u8]) -> io::R
     read_at_validated(file, offset, destination)
 }
 
-#[allow(unsafe_code)]
+#[allow(
+    unsafe_code,
+    reason = "pread initializes only the validated held buffer"
+)]
 pub(super) fn read_at_validated(
     file: &File,
     offset: u64,
@@ -83,13 +86,13 @@ pub(super) fn read_at_validated(
             file.as_raw_fd(),
             destination.as_mut_ptr().cast(),
             length,
-            offset as libc::off_t,
+            libc::off_t::try_from(offset).map_err(|_| io::ErrorKind::InvalidInput)?,
         )
     };
     if result < 0 {
         Err(io::Error::last_os_error())
     } else {
-        Ok(result as usize)
+        usize::try_from(result).map_err(|_| io::ErrorKind::InvalidData.into())
     }
 }
 
@@ -98,7 +101,7 @@ pub(super) fn write_all_at(file: &File, offset: u64, bytes: &[u8]) -> io::Result
     file.write_all_at(bytes, offset)
 }
 
-#[allow(unsafe_code)]
+#[allow(unsafe_code, reason = "fsync acts only on the held descriptor")]
 pub(super) fn sync_once(file: &File) -> io::Result<()> {
     use std::os::fd::AsRawFd as _;
     // SAFETY: fsync only acts on the live descriptor.

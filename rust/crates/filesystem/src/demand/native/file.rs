@@ -44,10 +44,7 @@ impl NativeDemandFile {
         context.claim(controls)?;
         ownership.retain(controls, context)?;
         #[cfg(windows)]
-        let file = provider
-            .inner
-            .root
-            .open_file_yielding(&relative, context);
+        let file = provider.inner.root.open_file_yielding(&relative, context);
         #[cfg(not(windows))]
         let file = provider
             .inner
@@ -62,7 +59,7 @@ impl NativeDemandFile {
             Err(error) => return Err(error),
         };
         let opened = stat_held(&provider, &file, context)?;
-        if (opened.file_type() != crate::demand::SourceNodeKind::RegularFile) {
+        if opened.file_type() != crate::demand::SourceNodeKind::RegularFile {
             return Err(DemandError::NotRegularFile);
         }
         if version(&opened) != expected {

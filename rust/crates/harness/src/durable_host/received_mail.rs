@@ -345,7 +345,9 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             ));
         }
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        #[cfg(feature = "filesystem")]
         let (scope, retained) = self.authenticated_scope(admission, quota.work()).await?;
+        #[cfg(feature = "filesystem")]
         quota.adopt(retained)?;
         #[cfg(feature = "filesystem")]
         let access = scope.created_access();
@@ -377,14 +379,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             }
         }
         #[cfg(not(feature = "filesystem"))]
-        let reader = scope
-            .created_reference(payload)
-            .map(|reader| reader.as_ref())
-            .or_else(|| {
-                scope
-                    .created_content(Some(payload.volume()))
-                    .map(|binding| binding.1.as_ref())
-            });
+        let reader: Option<&dyn ContentResidencyVerifier> = None;
         let reader = reader.unwrap_or(self.reader.as_ref());
         let bytes = match quota.work().as_deref_mut() {
             Some(io) => {

@@ -27,7 +27,7 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
     let metadata = source_root
         .stat_file(&file, &mut meter.clone())
         .map_err(capture_demand_error)?;
-    if (metadata.file_type() != crate::demand::SourceNodeKind::RegularFile) {
+    if metadata.file_type() != crate::demand::SourceNodeKind::RegularFile {
         return Err(CaptureError::Kernel(crate::FsError::SourceSnapshotStale));
     }
     ensure_same_host_node(snapshot, &metadata)?;

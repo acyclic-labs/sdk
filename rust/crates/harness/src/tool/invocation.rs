@@ -66,7 +66,7 @@ impl ToolInvocation {
             let items = (call_id.len() as u64)
                 .checked_add(name.map_or(0, |name| name.len() as u64))
                 .ok_or_else(|| {
-                    crate::effect_host::effect_error(
+                    crate::store::guarded_boundary(
                         work,
                         crate::wire::ErrorCode::Invalid,
                         "tool identity scan overflow",
@@ -77,14 +77,14 @@ impl ToolInvocation {
                 .codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items })?;
         }
         if name.is_some_and(|name| !crate::contract::is_valid_component_label(name)) {
-            return Err(crate::effect_host::effect_error(
+            return Err(crate::store::guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Invalid,
                 "tool name is invalid",
             ));
         }
         if !valid_call_id(call_id) {
-            return Err(crate::effect_host::effect_error(
+            return Err(crate::store::guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Invalid,
                 "tool call identity is invalid",

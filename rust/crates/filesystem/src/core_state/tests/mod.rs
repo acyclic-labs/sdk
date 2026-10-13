@@ -6,7 +6,7 @@ use crate::{Digest, WorkspaceContextRoot, WorkspaceContextState, WorkspaceRootId
 pub(super) fn unbounded_accounting(
     cancellation: &crate::CancellationToken,
 ) -> crate::kernel::KernelAccounting<'_> {
-    acyclic_native_runtime::initialize_native_io_services().unwrap();
+    crate::initialize_test_native_io();
     crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, cancellation)
 }
 

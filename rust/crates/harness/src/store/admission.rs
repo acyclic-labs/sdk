@@ -251,7 +251,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             .reducer
             .interaction(&resolution.id)
             .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
-        if matches!(resolution.outcome, InteractionOutcome::Expired) {
+        if matches!(resolution.outcome, InteractionOutcome::Expired {}) {
             let deadline = ticket
                 .deadline_unix_ms
                 .ok_or_else(|| Error::Invalid("interaction has no expiry deadline".into()))?;

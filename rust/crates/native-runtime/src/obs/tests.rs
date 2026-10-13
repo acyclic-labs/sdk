@@ -1,4 +1,8 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "fixture failures abort the test directly"
+)]
 
 use acyclic_grpc_observability::tests::Capture;
 use std::{

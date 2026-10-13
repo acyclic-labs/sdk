@@ -2,7 +2,11 @@
 
 use crate::contract::capability;
 use crate::{Error, OperationId, Result, conversation::FileRef};
-use serde::{Deserialize, Serialize, de::Error as _};
+use crate::{
+    store::{guarded_boundary as boundary, operations::original_native_decode_mode},
+    wire::ErrorCode::{Conflict, Invalid},
+};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use uuid::Uuid;

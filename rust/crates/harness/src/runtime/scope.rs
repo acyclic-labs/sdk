@@ -534,7 +534,8 @@ impl RuntimeScope {
         Ok(())
     }
 
-    pub(crate) fn created_content(&self, volume: Option<&VolumeRef>) -> Option<&ContentBindings> {
+    /// Borrows the authenticated binding for a created volume or its default writer.
+    pub fn created_content(&self, volume: Option<&VolumeRef>) -> Option<&ContentBindings> {
         self.created_access
             .as_ref()?
             .content

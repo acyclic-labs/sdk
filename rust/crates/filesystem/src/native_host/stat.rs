@@ -61,7 +61,7 @@ impl HostStat {
         }
     }
     pub fn is_dir(&self) -> bool {
-        (self.file_type() == crate::demand::SourceNodeKind::Directory)
+        self.file_type() == crate::demand::SourceNodeKind::Directory
     }
     pub fn len(&self) -> u64 {
         #[cfg(unix)]

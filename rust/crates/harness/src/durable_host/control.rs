@@ -58,16 +58,15 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "deadline observation requires original IO".into(),
             ));
         }
-        let admission = self
-            .admission(
-                operation,
-                &mut io
-                    .as_ref()
-                    .map(|io| io.history_io())
-                    .as_mut()
-                    .map(|io| io as &mut dyn crate::store::HistoryIo),
-            )
-            .await?;
+        #[cfg(feature = "filesystem")]
+        let mut admission_history = io.as_ref().map(|io| io.history_io());
+        #[cfg(feature = "filesystem")]
+        let mut admission_work = admission_history
+            .as_mut()
+            .map(|io| io as &mut dyn crate::store::HistoryIo);
+        #[cfg(not(feature = "filesystem"))]
+        let mut admission_work = None;
+        let admission = self.admission(operation, &mut admission_work).await?;
         let deadline = admission
             .run_limits
             .deadline_epoch_ms

@@ -282,19 +282,48 @@ pub(super) fn rename_unix_names_once(
     destination: &std::ffi::CStr,
     mode: acyclic_native_runtime::RenameMode,
 ) -> io::Result<()> {
-    let flags = if mode == acyclic_native_runtime::RenameMode::Replace {
-        rustix::fs::RenameFlags::empty()
-    } else {
-        rustix::fs::RenameFlags::NOREPLACE
-    };
-    rustix::fs::renameat_with(from, source, to, destination, flags).map_err(Into::into)
+    #[cfg(target_os = "linux")]
+    {
+        let flags = if mode == acyclic_native_runtime::RenameMode::Replace {
+            rustix::fs::RenameFlags::empty()
+        } else {
+            rustix::fs::RenameFlags::NOREPLACE
+        };
+        rustix::fs::renameat_with(from, source, to, destination, flags).map_err(Into::into)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let flags = if mode == acyclic_native_runtime::RenameMode::NoReplace {
+            libc::RENAME_EXCL
+        } else {
+            0
+        };
+        // SAFETY: both held directory descriptors and C names outlive this atomic rename.
+        if unsafe {
+            libc::renameatx_np(
+                from.as_raw_fd(),
+                source.as_ptr(),
+                to.as_raw_fd(),
+                destination.as_ptr(),
+                flags,
+            )
+        } < 0
+        {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
 }
 
 #[cfg(unix)]
 pub(super) fn sync_held_descriptor_once(file: &impl std::os::fd::AsRawFd) -> io::Result<()> {
     // SAFETY: the borrowed descriptor remains owned by the live caller.
-    rustix::fs::fsync(unsafe { std::os::fd::BorrowedFd::borrow_raw(file.as_raw_fd()) })
-        .map_err(Into::into)
+    if unsafe { libc::fsync(file.as_raw_fd()) } < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(windows)]

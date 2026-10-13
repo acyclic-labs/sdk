@@ -222,7 +222,6 @@ mod owner_access;
 mod preparation;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod readonly;
-#[cfg(feature = "filesystem")]
 mod received_mail;
 #[cfg(feature = "filesystem")]
 mod release;

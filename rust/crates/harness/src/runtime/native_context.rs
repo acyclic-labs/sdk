@@ -1,6 +1,7 @@
 use super::content_write::bound_content_writer;
 use super::{
-    InteractionRouter, IssuedContextPurpose, Limits, RuntimeScope, TaskContext, ToolContext,
+    ContentBindings, InteractionRouter, IssuedContextPurpose, Limits, RuntimeScope, TaskContext,
+    ToolContext,
 };
 use crate::{Error, Result};
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
@@ -91,9 +92,9 @@ impl TaskContext {
 }
 
 impl TaskContext {
-    pub(super) async fn project_output_volume(
+    pub(super) async fn project_output_binding(
         self: &Arc<Self>,
-        volume: &crate::conversation::VolumeRef,
+        binding: &ContentBindings,
         work: &NativeMaterializationWork,
     ) -> Result<Arc<Self>> {
         self.require_original_native_work(work)?;
@@ -106,16 +107,6 @@ impl TaskContext {
                 "readonly metadata cannot select a native output writer",
             ));
         }
-        let binding = self
-            .scope
-            .created_content(Some(volume))
-            .filter(|binding| binding.writer.is_some())
-            .ok_or_else(|| {
-                boundary(
-                    crate::wire::ErrorCode::Unauthorized,
-                    "output volume has no authenticated created writer",
-                )
-            })?;
         bound_content_writer(
             Some(binding),
             &self.scope,

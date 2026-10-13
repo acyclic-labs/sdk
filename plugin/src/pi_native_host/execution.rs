@@ -293,12 +293,12 @@ impl TaskCommandHost for PiNativeCommandHost {
                         &recovery,
                         recovery
                             .effects
-                            .reconcile_task_effect(
+                            .run_task_effect(
                                 &recovery.owner,
                                 recovery.command,
                                 &recovery.plan.0,
                                 Some(&recovery.work),
-                            )
+                             true)
                             .await?,
                     )
                     .await?;
@@ -369,12 +369,12 @@ impl TaskCommandHost for PiNativeCommandHost {
                     &bound,
                     bound
                         .effects
-                        .reconcile_task_effect(
+                        .run_task_effect(
                             &bound.owner,
                             bound.command,
                             &bound.plan.0,
                             Some(&bound.work),
-                        )
+                         true)
                         .await?,
                 )
                 .await?;

@@ -1,12 +1,33 @@
 fn node_kind(file_type: crate::demand::SourceNodeKind) -> SourceNodeKind {
     [
-        ((file_type == crate::demand::SourceNodeKind::Directory), SourceNodeKind::Directory),
-        ((file_type == crate::demand::SourceNodeKind::RegularFile), SourceNodeKind::RegularFile),
-        ((file_type == crate::demand::SourceNodeKind::SymbolicLink), SourceNodeKind::SymbolicLink),
-        ((file_type == crate::demand::SourceNodeKind::Fifo), SourceNodeKind::Fifo),
-        ((file_type == crate::demand::SourceNodeKind::Socket), SourceNodeKind::Socket),
-        ((file_type == crate::demand::SourceNodeKind::CharacterDevice), SourceNodeKind::CharacterDevice),
-        ((file_type == crate::demand::SourceNodeKind::BlockDevice), SourceNodeKind::BlockDevice),
+        (
+            (file_type == crate::demand::SourceNodeKind::Directory),
+            SourceNodeKind::Directory,
+        ),
+        (
+            (file_type == crate::demand::SourceNodeKind::RegularFile),
+            SourceNodeKind::RegularFile,
+        ),
+        (
+            (file_type == crate::demand::SourceNodeKind::SymbolicLink),
+            SourceNodeKind::SymbolicLink,
+        ),
+        (
+            (file_type == crate::demand::SourceNodeKind::Fifo),
+            SourceNodeKind::Fifo,
+        ),
+        (
+            (file_type == crate::demand::SourceNodeKind::Socket),
+            SourceNodeKind::Socket,
+        ),
+        (
+            (file_type == crate::demand::SourceNodeKind::CharacterDevice),
+            SourceNodeKind::CharacterDevice,
+        ),
+        (
+            (file_type == crate::demand::SourceNodeKind::BlockDevice),
+            SourceNodeKind::BlockDevice,
+        ),
     ]
     .into_iter()
     .find_map(|(matches, kind)| matches.then_some(kind))
@@ -58,7 +79,7 @@ fn file_identity(metadata: &HostStat) -> [u8; 32] {
 fn file_identity(metadata: &HostStat) -> [u8; 32] {
     windows_file_identity(
         u64::from(metadata.volume_serial_number),
-        (metadata.raw.FileId as u64),
+        metadata.raw.FileId as u64,
     )
 }
 
@@ -110,8 +131,10 @@ fn source_metadata(metadata: &HostStat) -> SourceMetadata {
         result.posix_mode = Some((metadata.raw.st_mode as u32));
         result.posix_uid = Some((metadata.raw.st_uid as u32));
         result.posix_gid = Some((metadata.raw.st_gid as u32));
-        result.changed_ns =
-            Some(i128::from((metadata.raw.st_ctime as i64)) * 1_000_000_000 + i128::from((metadata.raw.st_ctime_nsec as i64)));
+        result.changed_ns = Some(
+            i128::from((metadata.raw.st_ctime as i64)) * 1_000_000_000
+                + i128::from((metadata.raw.st_ctime_nsec as i64)),
+        );
     }
     #[cfg(windows)]
     {

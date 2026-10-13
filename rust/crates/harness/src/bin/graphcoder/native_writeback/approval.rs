@@ -159,7 +159,7 @@ impl NativeSession {
             resolution: InteractionResolution {
                 id: ticket.id,
                 expected_version: 1,
-                outcome: InteractionOutcome::Approved,
+                outcome: InteractionOutcome::Approved {},
                 detail: None,
             },
         };

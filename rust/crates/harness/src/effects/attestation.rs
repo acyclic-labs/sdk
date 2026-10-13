@@ -10,14 +10,14 @@ impl EffectRegistry {
     ) -> Result<EffectAttestation> {
         let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
         if effect.status != EffectStatus::Dispatched {
-            return Err(crate::effect_host::effect_error(
+            return Err(crate::store::guarded_boundary(
                 custody.work(),
                 crate::wire::ErrorCode::Conflict,
                 "effect is not awaiting dispatch",
             ));
         }
         let attempt_id = effect.attempts.last().copied().ok_or_else(|| {
-            crate::effect_host::effect_error(
+            crate::store::guarded_boundary(
                 custody.work(),
                 crate::wire::ErrorCode::Conflict,
                 "effect has no durable dispatch attempt",
@@ -85,7 +85,7 @@ impl EffectRegistry {
     ) -> Result<Option<EffectAttestation>> {
         let provider = self.resolve(effect, work)?;
         let attempt_id = effect.attempts.last().copied().ok_or_else(|| {
-            crate::effect_host::effect_error(
+            crate::store::guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Conflict,
                 "effect has no durable dispatch attempt",
@@ -177,7 +177,7 @@ impl EffectRegistry {
             || dispatch.request_digest != effect.request_digest
             || dispatch.guarantee != effect.guarantee
         {
-            return Err(crate::effect_host::effect_error(
+            return Err(crate::store::guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Conflict,
                 "effect dispatch does not match durable state",
@@ -197,7 +197,7 @@ impl EffectRegistry {
         self.validate_observation(effect_id, effect, &observation, work)?;
         if let EffectStatus::Succeeded { result } = &observation.status {
             let resolver = self.result_resolver.as_ref().ok_or_else(|| {
-                crate::effect_host::effect_error(
+                crate::store::guarded_boundary(
                     work,
                     crate::wire::ErrorCode::Unsupported,
                     "effect result content resolver is not bound",

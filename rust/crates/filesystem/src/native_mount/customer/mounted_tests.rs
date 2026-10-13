@@ -9,7 +9,6 @@ use std::future::{Ready, ready};
 #[ignore = "mounts a live native session; requires the host's native mount capability"]
 async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
 -> Result<(), Box<dyn std::error::Error>> {
-    acyclic_native_runtime::initialize_native_io_services()?;
     crate::initialize_native_mount_services()?;
     let cancellation = CancellationToken::new();
     let new_work = |budget| test_work(budget, &cancellation);

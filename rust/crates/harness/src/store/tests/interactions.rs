@@ -228,7 +228,7 @@ async fn interaction_request_and_answer_commit_only_after_exact_content_validati
         resolution: InteractionResolution {
             id: future.id,
             expected_version: 1,
-            outcome: InteractionOutcome::Expired,
+            outcome: InteractionOutcome::Expired {},
             detail: None,
         },
     };

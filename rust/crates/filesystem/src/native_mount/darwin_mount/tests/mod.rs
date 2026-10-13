@@ -109,23 +109,27 @@ fn os(error: i32) -> std::io::Error {
 
 #[test]
 fn close_publishes_only_what_its_handle_wrote() -> TestResult {
-    let (source, context, work) = checkout_context(MountPublication::CloseAndSync)?;
-    let epoch = || source.generation_id();
+    let (shared, config) = checkout(MountPublication::CloseAndSync)?;
+    let source = Arc::new(MemorySource::new(Arc::clone(&shared), config)?);
+    let work = work(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())?;
+    let context = test_context(&source, &work)?;
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    let epoch = || runtime.block_on(async { shared.lock().await.generation_id() });
     let path = MountPath::root().child(b"published".to_vec());
     context.mutate(
         || source.create_file(&path, FileMetadata::default(), None, &work),
         &work,
     )?;
     let created = context.open(&path, context.completed.load(Ordering::Acquire), &work)?;
-    let before = epoch()?;
+    let before = epoch();
     context.flush_on_close(created, &work)?;
-    assert_ne!(epoch()?, before);
+    assert_ne!(epoch(), before);
 
     let reader = context.open(&path, 0, &work)?;
-    let before = epoch()?;
+    let before = epoch();
     context.flush_on_close(reader, &work)?;
     context.sync(&work)?;
-    assert_eq!(epoch()?, before);
+    assert_eq!(epoch(), before);
 
     context.mutate_file(
         &path,
@@ -133,13 +137,13 @@ fn close_publishes_only_what_its_handle_wrote() -> TestResult {
         |file| file.write_range(0, Bytes::from_static(b"through the handle")),
         &work,
     )?;
-    let before = epoch()?;
+    let before = epoch();
     context.flush_on_close(reader, &work)?;
-    assert_ne!(epoch()?, before);
-    let before = epoch()?;
+    assert_ne!(epoch(), before);
+    let before = epoch();
     context.flush_on_close(reader, &work)?;
     context.sync(&work)?;
-    assert_eq!(epoch()?, before);
+    assert_eq!(epoch(), before);
 
     context.mutate_file(
         &path,
@@ -148,16 +152,20 @@ fn close_publishes_only_what_its_handle_wrote() -> TestResult {
         &work,
     )?;
     context.flush_on_close(reader, &work)?;
-    let before = epoch()?;
+    let before = epoch();
     context.sync(&work)?;
-    assert_ne!(epoch()?, before);
+    assert_ne!(epoch(), before);
     Ok(())
 }
 
 #[test]
 fn manual_close_and_fsync_publish_nothing_until_sync() -> TestResult {
-    let (source, context, work) = checkout_context(MountPublication::Manual)?;
-    let epoch = || source.generation_id();
+    let (shared, config) = checkout(MountPublication::Manual)?;
+    let source = Arc::new(MemorySource::new(Arc::clone(&shared), config)?);
+    let work = work(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())?;
+    let context = test_context(&source, &work)?;
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    let epoch = || runtime.block_on(async { shared.lock().await.generation_id() });
     let path = MountPath::root().child(b"manual".to_vec());
     context.mutate(
         || source.create_file(&path, FileMetadata::default(), None, &work),
@@ -171,13 +179,13 @@ fn manual_close_and_fsync_publish_nothing_until_sync() -> TestResult {
         &work,
     )?;
     let reader = context.open(&path, 0, &work)?;
-    let before = epoch()?;
+    let before = epoch();
     context.flush_on_close(reader, &work)?;
     context.flush_on_close(created, &work)?;
     context.sync(&work)?;
-    assert_eq!(epoch()?, before);
+    assert_eq!(epoch(), before);
     source.sync()?;
-    assert_ne!(epoch()?, before);
+    assert_ne!(epoch(), before);
     Ok(())
 }
 
@@ -253,7 +261,8 @@ fn attributes_observed_before_a_change_never_take_a_later_label() -> TestResult 
 fn revalidation_waits_out_the_attribute_timeout_for_changes_around_the_mount() -> TestResult {
     let (source, context, work) = checkout_context(MountPublication::Manual)?;
     let context = Arc::new(context);
-    source.observe_view_with_meter(Arc::downgrade(&context), &work)?;
+    let observer: Arc<dyn ViewObserver> = context.clone();
+    source.observe_view_with_meter(Arc::downgrade(&observer), &work)?;
     // SAFETY: the bridge reports a constant.
     let timeout = u64::from(unsafe { acyclic_fs_darwin_mount_attribute_timeout() });
     let barrier = || -> Result<_, NativeMountError> {

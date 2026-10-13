@@ -46,7 +46,6 @@ fn recovery_control_publishes_only_actual_namespace_absence_evidence() -> TestRe
 
 #[test]
 fn actual_sdk_prebirth_interrupt_returns_without_creating_a_namespace() -> TestResult {
-    acyclic_native_runtime::initialize_native_io_services()?;
     let temporary = tempfile::tempdir()?;
     let cancellation = crate::CancellationToken::new();
     let work = work(crate::WorkBudget::UNBOUNDED, &cancellation)?;
@@ -101,7 +100,6 @@ fn actual_sdk_prebirth_interrupt_returns_without_creating_a_namespace() -> TestR
 
 #[test]
 fn pending_detach_can_finish_with_its_actual_panic_without_a_wait_token() -> TestResult {
-    acyclic_native_runtime::initialize_native_io_services()?;
     let original = work(
         crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
@@ -154,7 +152,6 @@ fn pending_detach_can_finish_with_its_actual_panic_without_a_wait_token() -> Tes
 
 #[test]
 fn stop_before_provider_birth_releases_the_session() -> TestResult {
-    acyclic_native_runtime::initialize_native_io_services()?;
     let temporary = tempfile::tempdir()?;
     let work = work(
         crate::WorkBudget::UNBOUNDED,

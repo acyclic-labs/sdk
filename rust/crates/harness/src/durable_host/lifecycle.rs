@@ -33,15 +33,15 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         use crate::scheduler::OperationPhase;
         let operation = OperationId::from_bytes(task.into_bytes());
         let io = operation_io(work)?;
-        self.admission(
-            operation,
-            &mut io
-                .as_ref()
-                .map(|io| io.history_io())
-                .as_mut()
-                .map(|io| io as &mut dyn crate::store::HistoryIo),
-        )
-        .await?;
+        #[cfg(feature = "filesystem")]
+        let mut admission_history = io.as_ref().map(|io| io.history_io());
+        #[cfg(feature = "filesystem")]
+        let mut admission_work = admission_history
+            .as_mut()
+            .map(|io| io as &mut dyn crate::store::HistoryIo);
+        #[cfg(not(feature = "filesystem"))]
+        let mut admission_work = None;
+        self.admission(operation, &mut admission_work).await?;
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh(work).await?;
         let state = coordinator.observe_operation(
@@ -90,16 +90,15 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<()> {
         let operation = lease.operation.operation_id;
         let io = operation_io(work)?;
-        let admission = self
-            .admission(
-                operation,
-                &mut io
-                    .as_ref()
-                    .map(|io| io.history_io())
-                    .as_mut()
-                    .map(|io| io as &mut dyn crate::store::HistoryIo),
-            )
-            .await?;
+        #[cfg(feature = "filesystem")]
+        let mut admission_history = io.as_ref().map(|io| io.history_io());
+        #[cfg(feature = "filesystem")]
+        let mut admission_work = admission_history
+            .as_mut()
+            .map(|io| io as &mut dyn crate::store::HistoryIo);
+        #[cfg(not(feature = "filesystem"))]
+        let mut admission_work = None;
+        let admission = self.admission(operation, &mut admission_work).await?;
         let fence = crate::scheduler::LeaseFence {
             reservation_id: match work.as_deref_mut() {
                 Some(io) => io.clone_text(&lease.reservation.id)?,
@@ -170,16 +169,15 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<()> {
         let operation = OperationId::from_bytes(task.into_bytes());
         let io = operation_io(work)?;
-        let admission = self
-            .admission(
-                operation,
-                &mut io
-                    .as_ref()
-                    .map(|io| io.history_io())
-                    .as_mut()
-                    .map(|io| io as &mut dyn crate::store::HistoryIo),
-            )
-            .await?;
+        #[cfg(feature = "filesystem")]
+        let mut admission_history = io.as_ref().map(|io| io.history_io());
+        #[cfg(feature = "filesystem")]
+        let mut admission_work = admission_history
+            .as_mut()
+            .map(|io| io as &mut dyn crate::store::HistoryIo);
+        #[cfg(not(feature = "filesystem"))]
+        let mut admission_work = None;
+        let admission = self.admission(operation, &mut admission_work).await?;
         self.verify_owner(task, fence, true, work).await?;
         let digest = crate::executor::json::canonical_json_digest(
             &outcome,
@@ -254,16 +252,15 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let operation = OperationId::from_bytes(task.into_bytes());
         if !settlement {
             let io = operation_io(work)?;
-            let admission = self
-                .admission(
-                    operation,
-                    &mut io
-                        .as_ref()
-                        .map(|io| io.history_io())
-                        .as_mut()
-                        .map(|io| io as &mut dyn crate::store::HistoryIo),
-                )
-                .await?;
+            #[cfg(feature = "filesystem")]
+            let mut admission_history = io.as_ref().map(|io| io.history_io());
+            #[cfg(feature = "filesystem")]
+            let mut admission_work = admission_history
+                .as_mut()
+                .map(|io| io as &mut dyn crate::store::HistoryIo);
+            #[cfg(not(feature = "filesystem"))]
+            let mut admission_work = None;
+            let admission = self.admission(operation, &mut admission_work).await?;
             if admission
                 .run_limits
                 .deadline_epoch_ms
@@ -299,6 +296,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.journal_owner_record(task_id, fence, None, io).await
     }
 
+    #[cfg(feature = "filesystem")]
     pub(super) async fn journal_owner_record(
         self: &Arc<Self>,
         task_id: TaskId,

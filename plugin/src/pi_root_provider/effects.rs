@@ -222,7 +222,7 @@ impl PiRootProvider {
         effect: EffectId,
         attempt: EffectAttemptId,
         name: &str,
-        value: &impl Serialize,
+        value: &(impl Serialize + Sync),
         work: &NativeMaterializationWork,
     ) -> Result<(FileRef, NativeAllocation)> {
         let coordinates = self.artifact_with_native_work(effect, attempt, name, work)?;

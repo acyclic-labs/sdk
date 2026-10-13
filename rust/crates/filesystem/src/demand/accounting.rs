@@ -19,6 +19,8 @@ pub struct DemandWork {
 impl DemandWork {
     /// Starts one bounded operation.
     pub fn new(budget: WorkBudget, cancellation: &CancellationToken) -> Self {
+        #[cfg(test)]
+        crate::initialize_test_native_io();
         Self {
             work: WorkCounters::UNCHARGED,
             budget,
