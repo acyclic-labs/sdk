@@ -89,6 +89,11 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         operation: crate::conversation::VolumeOperation,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<()> {
+        if self.read_proof.is_some() && operation == crate::conversation::VolumeOperation::Write {
+            return Err(Error::Unauthorized(
+                "historical admission has no volume writer".into(),
+            ));
+        }
         volume.validate(work)?;
         crate::core::inspect_metadata(&self.admission.grants, work)?;
         let grant = volume.capability(operation, work)?;
@@ -190,7 +195,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if let crate::workflow::MachineStatus::Completed { value } = &transition.status {
             crate::executor::with_history_io(io, |work| {
                 crate::executor::validate_json_schema_value(
-                    &self.admission.output_schema,
+                    self.tool_output_schema
+                        .as_ref()
+                        .unwrap_or(&self.admission.output_schema),
                     value,
                     "task output",
                     work,
@@ -213,6 +220,11 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         write: crate::distributed::JournalWrite,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<acyclic_stream::CommitCondition> {
+        if self.read_proof.is_some() {
+            return Err(Error::Unauthorized(
+                "historical admission has no publication authority".into(),
+            ));
+        }
         if !matches!(write, crate::distributed::JournalWrite::Settlement)
             && self
                 .invocation_cancellation
@@ -551,5 +563,57 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         drop(outcome);
         drop(received);
         result
+    }
+}
+
+#[cfg(feature = "filesystem")]
+impl<P: StreamProvider> TaskJournalOwner<P> {
+    pub(crate) async fn for_tool_workflow(
+        mut self,
+        context: &crate::runtime::ToolContext,
+        tool: &crate::durable_tool::ResumableTool,
+        invocation: &crate::tool::ToolInvocation,
+        cancellation: &acyclic_fs::CancellationToken,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Self> {
+        self.require_task_context_binding(context.task(), io)?;
+        if invocation.operation_id == self.operation_id() {
+            return Err(Error::Unauthorized(
+                "tool workflow reused its task identity".into(),
+            ));
+        }
+        self.invocation_cancellation = Some(cancellation.clone());
+        let mut history = io.map(|io| io.history_io());
+        let mut work = history
+            .as_mut()
+            .map(|io| io as &mut dyn crate::store::HistoryIo);
+        self.verify(false, &mut work).await?;
+        let before = io.map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
+        let workflow = tool.workflow_admission(context, invocation, io)?;
+        let output_schema = crate::executor::with_history_io(io, |work| {
+            crate::wire_codec::CodecQuota::produce(work, |quota| {
+                crate::core::copy_value(&tool.definition.output_schema, quota)
+            })
+            .map(|(schema, _)| schema)
+        })?;
+        self.host
+            .machines
+            .validate_checkpoint(&workflow.initial, io)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(io) = io {
+            self.native_custody
+                .as_mut()
+                .ok_or_else(|| {
+                    Error::Unauthorized("tool workflow lacks original owner custody".into())
+                })?
+                .absorb(&mut io.take_native_custody(
+                    io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
+                        Error::Invalid("tool workflow ownership underflow".into())
+                    })?,
+                )?)?;
+        }
+        self.workflow = workflow;
+        self.tool_output_schema = Some(output_schema);
+        Ok(self)
     }
 }

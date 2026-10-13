@@ -1328,9 +1328,10 @@ where
             .host
             .readonly_fork_journal_owner_with_native_work(&witness, query, claim, work)?
             .await?;
-        let mut preparation = owner
-            .resource_preparation_with_native_work(request, work)?
-            .await?;
+        let io = crate::executor::PreparationIo::from_native_work(work)?;
+        io.absorb_native_custody(request.1)?;
+        let mut preparation = owner.resource_preparation(request.0, &mut Some(&mut io.history_io())).await?;
+        preparation.native_custody = Some(io.take_native_custody(io.owned_bytes()?)?);
         let mut header = work.claim(
             std::mem::size_of::<crate::resource_preparation::TaskResourcePreparation>() as u64,
             u64::from(
@@ -1730,7 +1731,7 @@ where
             ));
         }
         let wake = self.poll_task_wake_page(cursor, maximum_events).await?;
-        let work = match self.host.pull_work(worker).await? {
+        let work = match self.host.pull_work(worker, None, &mut None).await? {
             crate::distributed::WorkPull::Idle => None,
             crate::distributed::WorkPull::Claimed(lease) => Some(
                 self.resume_task(lease, commands, maximum_transitions, None)
@@ -1812,17 +1813,13 @@ where
                     )?;
                     let pull = self
                         .host
-                        .pull_operation(
-                            worker,
-                            admission.operation_id,
-                            &mut Some(&mut operation_io),
-                        )
+                        .pull_work(worker, Some(admission.operation_id), &mut Some(&mut operation_io))
                         .await?;
                     io.absorb_native_custody(operation_io.into_custody()?)?;
                     return Ok(pull);
                 }
                 self.host
-                    .pull_operation(worker, admission.operation_id)
+                    .pull_work(worker, Some(admission.operation_id), &mut None)
                     .await
             },
             io,
@@ -2282,16 +2279,16 @@ where
                             code: crate::wire::ErrorCode::Unsupported,
                             reason: "native worker lost its original observer",
                         })?;
-                self.host.start_task(lease, Some(work)).await?;
+                self.host.start_task(lease, &mut Some(&mut crate::store::HistoryWork::new(crate::executor::PreparationIo::from_native_work(work)?))).await?;
                 self.open_task_with_native_work(task, fence, Arc::clone(context), work)
                     .await?
             } else {
-                self.host.start_task(lease).await?;
+                self.host.start_task(lease, &mut None).await?;
                 self.open_task(task, fence.clone()).await?
             };
             #[cfg(target_arch = "wasm32")]
             let mut session = {
-                self.host.start_task(lease).await?;
+                self.host.start_task(lease, &mut None).await?;
                 self.open_task(task, fence.clone()).await?
             };
             #[cfg(not(target_arch = "wasm32"))]
@@ -2302,7 +2299,7 @@ where
                     code: crate::wire::ErrorCode::Unsupported,
                     reason: "native wake input requires original observer",
                 })?;
-                let local = PreparationIo::from_native_work(work)?;
+                let local = crate::executor::PreparationIo::from_native_work(work)?;
                 let wake = self.host.workflow_input(task, fence, Some(&local)).await?;
                 let custody = local.take_native_custody(local.owned_bytes()?)?;
                 wake_custody = Some(custody);
@@ -2433,8 +2430,7 @@ where
                                 None,
                                 &mut observed::history(io)?
                                     .as_mut()
-                                    .map(|work| work as &mut dyn crate::store::HistoryIo),
-                            )
+                                    .map(|work| work as &mut dyn crate::store::HistoryIo))
                             .await?;
                         return Ok(WorkerTurn::Suspended { task, revision });
                     }
@@ -2449,8 +2445,7 @@ where
                             None,
                             &mut observed::history(io)?
                                 .as_mut()
-                                .map(|work| work as &mut dyn crate::store::HistoryIo),
-                        )
+                                .map(|work| work as &mut dyn crate::store::HistoryIo))
                         .await?;
                     return Ok(WorkerTurn::Suspended { task, revision });
                 };
@@ -2680,7 +2675,7 @@ where
                         task,
                         fence,
                         false,
-                        Some(&PreparationIo::from_native_work(custody.work())?),
+                        Some(&crate::executor::PreparationIo::from_native_work(custody.work())?),
                     )
                     .await?;
                 }

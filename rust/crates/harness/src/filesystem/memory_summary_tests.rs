@@ -167,7 +167,7 @@ async fn sealed_summary_preparation(
     let worker = crate::distributed::Worker {
         id: "summary-preparation-worker".into(), available: Default::default(), labels: BTreeMap::new(),
     };
-    let crate::distributed::WorkPull::Claimed(root_lease) = host.pull_work(&worker).await? else {
+    let crate::distributed::WorkPull::Claimed(root_lease) = host.pull_work(&worker, None, &mut None).await? else {
         return Err(Error::NotFound("Summary root lease missing".into()));
     };
     host.start_task(&root_lease, None).await?;
@@ -196,7 +196,7 @@ read_authorization: fork.authorized_source.clone(),
     assert!(matches!(host.admit_owned(admission(prep_op, Some(root),
         serde_json::to_value(&request).map_err(|error| Error::Invalid(error.to_string()))?),
         (&root_lease.reservation).into()).await?, crate::Admission::Accepted(id) if id == prep_task));
-    let crate::distributed::WorkPull::Claimed(lease) = host.pull_work(&worker).await? else {
+    let crate::distributed::WorkPull::Claimed(lease) = host.pull_work(&worker, None, &mut None).await? else {
         return Err(Error::NotFound("Summary preparation lease missing".into()));
     };
     host.start_task(&lease, None).await?;

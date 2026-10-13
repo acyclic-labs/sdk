@@ -50,8 +50,9 @@ async fn b02_retry_preserves_signed_owner() -> Result<()> {
             renewed.admit(record.clone()).await?,
             Admission::Accepted(TaskId::from_bytes([2; 16]))
         );
-        let crate::distributed::WorkPull::Claimed(recovered) =
-            renewed.recover_work(TaskId::from_bytes([2; 16])).await?
+        let crate::distributed::WorkPull::Claimed(recovered) = renewed
+            .recover_work(TaskId::from_bytes([2; 16]), &mut None)
+            .await?
         else {
             return Err(Error::NotFound("renewed original owner".into()));
         };

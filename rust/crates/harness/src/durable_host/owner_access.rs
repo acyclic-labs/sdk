@@ -55,7 +55,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         &self,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
-        if work.is_none() {
+        if work.is_none() && self.read_proof.is_none() {
             return self.verify(true, work).await;
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -81,6 +81,15 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if declaration.owner_scope.agent() != self.input_agent && self.admission.parent.is_none() {
             return Err(Error::Unauthorized(
                 "historical root actor differs from original declaration".into(),
+            ));
+        }
+        if self
+            .read_proof
+            .as_ref()
+            .is_some_and(|original| original != &declaration)
+        {
+            return Err(Error::Unauthorized(
+                "historical reservation declaration changed".into(),
             ));
         }
         drop(declaration);
