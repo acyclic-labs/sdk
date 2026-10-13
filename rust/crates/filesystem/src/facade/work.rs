@@ -120,18 +120,6 @@ pub(super) fn merge_simultaneous_work(
     Ok(merged)
 }
 
-pub(super) fn merge_simultaneous_failure(
-    prior: WorkCounters,
-    nested: WorkCounters,
-    live_bytes: u64,
-    error: FsError,
-) -> OperationFailure<FsError> {
-    match prior.with_backend(nested, live_bytes) {
-        Ok(merged) => OperationFailure::new(error, merged),
-        Err(overflow) => OperationFailure::new(overflow.into(), prior),
-    }
-}
-
 #[inline]
 pub(crate) fn measured<T, E>(
     result: Result<T, E>,

@@ -28,7 +28,6 @@ pub struct Config {
     pub stream_provider: ProviderRef,
     pub private_volume: VolumeRef,
     pub owner: AuthorityBinding,
-    pub observed_authorities: Vec<AuthorityBinding>,
     pub generation: String,
     pub model_invocation_ledger: PathBuf,
     pub limits: Limits,
@@ -49,6 +48,12 @@ pub struct Config {
     pub project_source_root: Option<TaskId>,
 }
 impl Config {
+    pub(crate) fn bindings(&self) -> impl Iterator<Item = &AuthorityBinding> {
+        std::iter::once(&self.owner)
+            .chain(self.fork_sources.iter().map(|source| &source.owner))
+            .chain(self.tools.callers.iter().map(|caller| &caller.owner))
+            .chain(self.tools.forks.iter().map(|fork| &fork.child))
+    }
     pub fn from_file(path: &Path) -> Result<Self> {
         serde_json::from_slice(&std::fs::read(path).map_err(storage)?)
             .map_err(|error| Error::Invalid(format!("native configuration: {error}")))
@@ -72,12 +77,11 @@ impl Config {
             ));
         }
         let verifier = self.owner.verifier()?;
-        for binding in &self.observed_authorities {
+        for binding in self.bindings() {
             binding.verifier()?;
         }
         for source in &self.fork_sources {
             let verifier = source.owner.verifier()?;
-            source.project.validate(&mut None)?;
             source.request.validate(&mut None)?;
             if source.request.parent != source.owner.authority
                 || source.request.parent_revision != source.snapshot.revision
@@ -105,7 +109,6 @@ impl Config {
 pub struct ForkSourceConfig {
     pub caller: TaskId,
     pub owner: AuthorityBinding,
-    pub project: VolumeRef,
     pub snapshot: Snapshot,
     pub request: acyclic_harness::fork::ForkRequest,
 }

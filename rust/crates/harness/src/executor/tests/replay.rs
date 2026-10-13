@@ -211,7 +211,7 @@ async fn execution_pages_select_bounded_records_and_reject_cross_page_corruption
             )?
             .await?;
     }
-    let (tail, selected) = replay_execution(
+    let (tail, selected, _) = replay_execution(
         &journal,
         operation,
         1,

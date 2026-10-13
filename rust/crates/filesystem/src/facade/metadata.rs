@@ -199,90 +199,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(value)
     }
 
-    /// Reads complete canonical metadata by stable file identity.
-    pub async fn read_metadata_by_id<W: FsWork>(
+    pub(super) async fn set_attributes_with_accounting<F: ContentFile>(
         &mut self,
-        file_id: FileId,
-        budget: W,
-        cancellation: &CancellationToken,
-    ) -> W::Output<FileMetadata, FsError> {
-        let mut accounting = budget.accounting(cancellation);
-        let result = self
-            .read_metadata_by_id_with_accounting(file_id, &mut accounting, cancellation)
-            .await;
-        budget.finish(result, &accounting)
-    }
-
-    pub(crate) async fn read_metadata_by_id_with_accounting(
-        &mut self,
-        file_id: FileId,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<FileMetadata, FsError> {
-        let before = readonly_standalone_live(accounting);
-        let result = async {
-            let record = self
-                .lookup_file_record_by_id_with_accounting(file_id, accounting, cancellation)
-                .await?
-                .ok_or(FsError::NotFound)?;
-            let metadata = read_record_metadata_to_file_root_with_accounting(
-                &self.volume,
-                record,
-                accounting,
-                cancellation,
-            )
-            .await?;
-            if self.tracks_observations() {
-                self.observe_base_metadata_ids_with_accounting(
-                    std::slice::from_ref(&file_id),
-                    accounting,
-                    cancellation,
-                )
-                .await?;
-            }
-            Ok(metadata)
-        }
-        .await;
-        readonly_cleanup_standalone(accounting, before, 0)?;
-        result
-    }
-
-    /// Replaces complete metadata and optionally logical size as one attached
-    pub async fn set_attributes_by_id<W: FsWork>(
-        &mut self,
-        file_id: FileId,
-        metadata: FileMetadata,
-        logical_bytes: Option<u64>,
-        budget: W,
-        cancellation: &CancellationToken,
-    ) -> W::Output<(), FsError> {
-        let mut accounting = budget.accounting(cancellation);
-        let result = async {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(original) = accounting.native_work() {
-                self.validate_native_work(original)?;
-            }
-            self.set_attributes_by_id_with_accounting(
-                file_id,
-                metadata,
-                logical_bytes,
-                &mut accounting,
-                cancellation,
-            )
-            .await
-        }
-        .await;
-        budget.finish(result, &accounting)
-    }
-
-    pub(super) async fn set_attributes_by_id_with_accounting(
-        &mut self,
-        file_id: FileId,
+        file: F,
         metadata: FileMetadata,
         logical_bytes: Option<u64>,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), FsError> {
+        let file_id = match file.address() {
+            ContentAddress::File(id) => id,
+            ContentAddress::Path(path) => {
+                let (lookup, allocation) = self
+                    .lookup_no_follow_with_accounting(path, accounting, cancellation, true)
+                    .await?;
+                drop(allocation);
+                lookup.record.ok_or(FsError::NotFound)?.file_id
+            }
+        };
         let metadata = self
             .stage_metadata_with_accounting(metadata, accounting, cancellation)
             .await?;
@@ -312,28 +246,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             operations.retire(accounting)?;
             return Err(error);
         }
-        self.mutate_owned_with_accounting(operations, accounting, cancellation)
+        self.apply_mutations(operations, accounting, cancellation)
             .await
     }
 
-    /// Replaces complete metadata and optionally logical size as one path transaction.
-    pub async fn set_attributes(
+    /// Replaces metadata and optional logical size atomically by path or file identity.
+    pub async fn set_attributes<F: ContentFile, W: FsWork>(
         &mut self,
-        path: NamespacePath,
+        file: F,
         metadata: FileMetadata,
         logical_bytes: Option<u64>,
-        budget: WorkBudget,
+        budget: W,
         cancellation: &CancellationToken,
-    ) -> FsResult<()> {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    ) -> W::Output<(), FsError> {
+        let mut accounting = budget.accounting(cancellation);
         let result = async {
-            let (lookup, allocation) = self
-                .lookup_no_follow_with_accounting(&path, &mut accounting, cancellation, true)
-                .await?;
-            drop(allocation);
-            let file_id = lookup.record.ok_or(FsError::NotFound)?.file_id;
-            self.set_attributes_by_id_with_accounting(
-                file_id,
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(original) = accounting.native_work() {
+                self.validate_native_work(original)?;
+            }
+            self.set_attributes_with_accounting(
+                file,
                 metadata,
                 logical_bytes,
                 &mut accounting,
@@ -342,33 +275,64 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .await
         }
         .await;
-        measured(result, &accounting)
+        budget.finish(result, &accounting)
     }
 
-    /// Reads complete canonical metadata for one exact path.
-    pub async fn read_metadata<W: FsWork>(
+    /// Reads complete canonical metadata by path or stable file identity.
+    pub async fn read_metadata<F: ContentFile, W: FsWork>(
         &mut self,
-        path: &NamespacePath,
+        file: F,
         budget: W,
         cancellation: &CancellationToken,
     ) -> W::Output<FileMetadata, FsError> {
         let mut accounting = budget.accounting(cancellation);
         let result = self
-            .read_metadata_with_accounting(path, &mut accounting, cancellation)
+            .read_metadata_with_accounting(file, &mut accounting, cancellation)
             .await;
         budget.finish(result, &accounting)
     }
 
-    pub(crate) async fn read_metadata_with_accounting(
+    pub(crate) async fn read_metadata_with_accounting<F: ContentFile>(
         &mut self,
-        path: &NamespacePath,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        file: F,
+        accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<FileMetadata, FsError> {
-        self.lookup_no_follow_with_metadata_with_accounting(path, accounting, cancellation)
-            .await?
-            .map(|lookup| lookup.metadata)
-            .ok_or(FsError::NotFound)
+        match file.address() {
+            ContentAddress::Path(path) => self
+                .lookup_no_follow_with_metadata_with_accounting(path, accounting, cancellation)
+                .await?
+                .map(|lookup| lookup.metadata)
+                .ok_or(FsError::NotFound),
+            ContentAddress::File(id) => {
+                let before = readonly_standalone_live(accounting);
+                let result = async {
+                    let record = self
+                        .lookup_file_record_by_id_with_accounting(id, accounting, cancellation)
+                        .await?
+                        .ok_or(FsError::NotFound)?;
+                    let metadata = read_record_metadata_to_file_root_with_accounting(
+                        &self.volume,
+                        record,
+                        accounting,
+                        cancellation,
+                    )
+                    .await?;
+                    if self.tracks_observations() {
+                        self.observe_base_metadata_ids_with_accounting(
+                            std::slice::from_ref(&id),
+                            accounting,
+                            cancellation,
+                        )
+                        .await?;
+                    }
+                    Ok(metadata)
+                }
+                .await;
+                readonly_cleanup_standalone(accounting, before, 0)?;
+                result
+            }
+        }
     }
 }
 

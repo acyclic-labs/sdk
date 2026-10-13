@@ -24,8 +24,6 @@ pub(crate) use admission::{
 };
 pub(crate) use records::json_value_logical_owned_bytes;
 pub use records::{json_from_slice_bounded, json_from_value_bounded};
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) use serialization::validate_json_byte_bound_native_trusted;
 pub use serialization::{canonical_json_bytes_bounded, json_bytes_bounded, json_value_bounded};
 
 /// Finite byte, node and nesting admission for one document.

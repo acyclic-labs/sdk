@@ -206,7 +206,7 @@ pub(super) async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectSto
         Some(observation) => {
             let metadata = observation;
             let host_kind = host_kind(&metadata)?;
-            let snapshot = HostSnapshot::from_metadata(&metadata)?;
+            let snapshot = HostSnapshot::from_metadata(&metadata);
             let linked_regular = host_kind == FileKind::Regular
                 && checkout.volume_config().hard_links
                 && metadata.nlink() > 1;
@@ -287,7 +287,7 @@ pub(super) async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectSto
                     .native
                     .with_original_leaf(|work| work.cancellation().clone());
                 let prior = checkout
-                    .read_metadata_by_id(record.file_id, &meter.native, &lookup_cancellation)
+                    .read_metadata(record.file_id, &meter.native, &lookup_cancellation)
                     .await?;
                 prior_metadata = Some(prior);
                 canonical_metadata = preserve_unobserved_metadata(canonical_metadata, prior);

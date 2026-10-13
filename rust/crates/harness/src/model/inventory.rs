@@ -104,7 +104,7 @@ impl ModelContent {
     }
 }
 impl ModelRequest {
-    fn payload_bytes(&self) -> Result<u64> {
+    pub(super) fn payload_bytes(&self) -> Result<u64> {
         let mut bytes = crate::executor::json::json_value_logical_owned_bytes(&self.model.options)?;
         for capacity in [
             self.model.provider.capacity(),

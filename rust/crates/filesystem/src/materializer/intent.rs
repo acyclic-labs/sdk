@@ -1,25 +1,24 @@
 use super::*;
 
-/// Immutable authority of one materialization operation.
+/// Immutable authority for publication or native preparation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum MaterializationIntent {
-    /// Publication between exact SDK generations.
+    /// Transition between authenticated generations.
     GenerationTransition {
-        /// Represented generation.
+        /// Source generation.
         from: GenerationId,
-        /// Published generation.
+        /// Target generation.
         to: GenerationId,
     },
-    /// Preparation from authenticated provider selections.
+    /// Authenticated provider selection and request provenance.
     NativePreparation {
-        /// Qualified provider generations.
+        /// Selected provider generations.
         selection: Vec<MaterializationPreparationSelection>,
-        /// Authenticated request and fence provenance.
+        /// Original request and fences.
         original: Vec<u8>,
     },
 }
-
-/// One qualified provider generation.
+/// One selected provider generation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MaterializationPreparationSelection {
     /// Provider identity.
@@ -29,8 +28,7 @@ pub struct MaterializationPreparationSelection {
     /// Selected generation.
     pub generation: GenerationId,
 }
-
-/// Original operation, staging, and backup allocations.
+/// Original recovery directory allocations.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MaterializationPreparationIdentity {
     /// Operation directory.
@@ -40,29 +38,27 @@ pub struct MaterializationPreparationIdentity {
     /// Preimage backup.
     pub backup: [u8; 16],
 }
-
-/// Durable directory-creation prefix.
+/// Durable directory creation prefix.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MaterializationPreparationProgress {
-    /// Held existing parent.
+    /// Existing parent allocation.
     pub parent: [u8; 16],
     /// Acknowledged operation directory.
     pub operation: Option<[u8; 16]>,
-    /// Acknowledged staging directory.
+    /// Acknowledged target directory.
     pub target: Option<[u8; 16]>,
     /// Acknowledged backup directory.
     pub backup: Option<[u8; 16]>,
-    /// Admitted mkdir without a durable acknowledgement.
+    /// Creation awaiting acknowledgement.
     pub pending: Option<MaterializationPreparationAllocation>,
 }
-
-/// Directory admitted at a durable boundary.
+/// Directory at the next preparation boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum MaterializationPreparationAllocation {
     /// Operation directory.
     Operation,
-    /// Staged target.
+    /// Target directory.
     Target,
-    /// Preimage backup.
+    /// Backup directory.
     Backup,
 }

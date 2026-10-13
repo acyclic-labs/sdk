@@ -1,6 +1,6 @@
 //! Typed resource and prompt operations over the same admitted protocol boundary.
 use super::{charge, error, rpc::check};
-use crate::{Error, NativeWork, Result, wire::ErrorCode};
+use crate::{NativeWork, Result, wire::ErrorCode};
 use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;
@@ -107,6 +107,7 @@ pub fn validate_result(method: &str, value: Value, work: NativeWork<'_>) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Error;
 
     #[test]
     fn continuations_are_rejected_before_dispatch() {

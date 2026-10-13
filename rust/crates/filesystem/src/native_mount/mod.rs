@@ -174,7 +174,6 @@ fn errno(error: MountSourceError) -> i32 {
         | MountSourceError::Filesystem(_)
         | MountSourceError::ServicesNotInitialized
         | MountSourceError::ServiceUnavailable(_)
-        | MountSourceError::Retained(_)
         | MountSourceError::MutationFinalization { .. }
         | MountSourceError::OriginalSnapshotUnavailable
         | MountSourceError::Indeterminate

@@ -459,7 +459,7 @@ async fn native_result_reads_obey_effective_limits_and_attenuated_grants() -> Re
         Err(Error::Unauthorized(_))
     ));
     let media_only = RuntimeScope::new(
-        crate::Capabilities::new([file.read_capability()?]),
+        crate::Capabilities::new([file.read_capability(&mut None)?]),
         Limits::default(),
     )?;
     assert!(matches!(
@@ -474,7 +474,7 @@ async fn native_result_reads_obey_effective_limits_and_attenuated_grants() -> Re
         Err(Error::Unauthorized(_))
     ));
     let allowed = RuntimeScope::new(
-        crate::Capabilities::new([file.read_capability()?, options.read_capability()?]),
+        crate::Capabilities::new([file.read_capability(&mut None)?, options.read_capability(&mut None)?]),
         Limits::default(),
     )?;
     assert!(matches!(

@@ -30,47 +30,17 @@ pub(super) fn validate_task_plan<P: StreamProvider>(
     planning: bool,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
+    owner.require_effect_grants(&plan.provider, planning, work)?;
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
-        owner.require_effect_grants(
-            &plan.provider,
-            planning,
-            &mut Some(&mut crate::store::HistoryWork::new(
-                crate::filesystem::PreparationIo::from_native_work(native)?,
-            )),
-        )?;
-        owner.validate_input_file(
-            &plan.request,
-            Some(&crate::filesystem::PreparationIo::from_native_work(native)?),
-        )?;
-        return owner.validate_input_file(
-            &plan.result_schema,
-            Some(&crate::filesystem::PreparationIo::from_native_work(native)?),
-        );
-    }
-    owner.require_effect_grants(&plan.provider, planning, &mut None)?;
-    owner.validate_input_file(&plan.request, None)?;
-    owner.validate_input_file(&plan.result_schema, None)
-}
-
-#[cfg(feature = "filesystem")]
-pub(super) async fn verify_owner<P: StreamProvider>(
-    owner: &crate::durable_host::TaskJournalOwner<P>,
-    settlement: bool,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<()> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
-        return owner
-            .verify(
-                settlement,
-                &mut Some(&mut crate::store::HistoryWork::new(
-                    crate::filesystem::PreparationIo::from_native_work(native)?,
-                )),
-            )
-            .await;
-    }
-    owner.verify(settlement, &mut None).await
+    let io = work
+        .as_deref()
+        .and_then(|io| io.original_native_work())
+        .map(crate::executor::PreparationIo::from_native_work)
+        .transpose()?;
+    #[cfg(target_arch = "wasm32")]
+    let io = None;
+    owner.validate_input_file(&plan.request, io.as_ref())?;
+    owner.validate_input_file(&plan.result_schema, io.as_ref())
 }
 
 impl<P: StreamProvider> ConversationEffectHost<P> {

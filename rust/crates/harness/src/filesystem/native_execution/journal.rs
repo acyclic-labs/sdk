@@ -59,7 +59,7 @@ async fn read_record<P: StreamProvider>(
             Ok(bounds) => bounds,
             Err(error)
                 if matches!(
-                    &error,
+                    error,
                     acyclic_stream::StreamError::NotFound
                 ) =>
             {

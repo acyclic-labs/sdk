@@ -271,3 +271,28 @@ fn publication_notification_keeps_the_resource_byte_limit() -> Result<(), Box<dy
     assert!(ledger.prepare_everything_notification(&original).is_ok());
     Ok(())
 }
+
+#[test]
+fn failed_record_cannot_vouch_for_an_old_lookup() -> Result<(), Box<dyn std::error::Error>> {
+    let mut setup = work();
+    let ledger = ViewLedger::new(&mut NativeDemandCarrier::Borrowed(&mut setup))?;
+    let stamp = ledger.stamp();
+    let node = FileId::new();
+    let mut denied = crate::demand::DemandWork::new(
+        crate::WorkBudget {
+            allocation_operations: 0,
+            ..crate::WorkBudget::UNBOUNDED
+        },
+        &crate::CancellationToken::new(),
+    );
+    assert!(
+        ledger
+            .record(
+                &ViewChange::Node(node),
+                &mut NativeDemandCarrier::Borrowed(&mut denied)
+            )
+            .is_err()
+    );
+    assert!(!ledger.unchanged_since(&path(&["node"])?, Some(node), stamp, &mut setup)?);
+    Ok(())
+}

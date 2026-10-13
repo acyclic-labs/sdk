@@ -117,7 +117,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             for change in compiled.value.drain(..) {
                 output.value.push(match change {
                     Ok((operations, outcome)) => self
-                        .mutate_owned_with_accounting(operations, accounting, cancellation)
+                        .apply_mutations(operations, accounting, cancellation)
                         .await
                         .map(|()| outcome),
                     Err(error) => Err(error),

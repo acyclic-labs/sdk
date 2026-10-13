@@ -1,20 +1,5 @@
 use super::*;
 
-pub(super) fn capture_stat(
-    root: &HostRoot,
-    path: &CaptureHostPath,
-    meter: &CaptureWorkScope,
-) -> Result<HostStat, DemandError> {
-    #[cfg(unix)]
-    {
-        root.stat(path, &mut meter.native.clone())
-    }
-    #[cfg(windows)]
-    {
-        root.stat_wide(path, &mut meter.native.clone())
-    }
-}
-
 pub(super) fn collect_host_walk_measured(
     root: &HostRoot,
     profile: FilesystemProfile,
@@ -30,20 +15,11 @@ pub(super) fn collect_host_walk_measured(
     pending.push((host_root, volume_root));
     while let Some((host_parent, volume_parent)) = pending.pop() {
         meter.native.clone().check().map_err(capture_demand_error)?;
-        #[cfg(unix)]
+
         let (mut reader, reader_allocation) = root
             .read_dir_stats(&host_parent, &mut meter.native.clone())
             .map_err(capture_demand_error)?;
-        #[cfg(windows)]
-        let (mut reader, reader_allocation) = root
-            .read_dir_stats_wide(&host_parent, &mut meter.native.clone())
-            .map_err(capture_demand_error)?;
         loop {
-            #[cfg(unix)]
-            let entry = reader
-                .next(&mut meter.native.clone())
-                .map_err(capture_demand_error)?;
-            #[cfg(windows)]
             let entry = reader
                 .next(&mut meter.native.clone())
                 .map_err(capture_demand_error)?;
@@ -165,7 +141,9 @@ pub(super) fn collect_host_walk_measured(
             let host_child = namespace_to_host_path_measured(&child, meter)?;
             let stat = match entry.stat {
                 Some(stat) => stat,
-                None => capture_stat(root, &host_child, meter).map_err(capture_demand_error)?,
+                None => root
+                    .stat(&host_child, &mut meter.native.clone())
+                    .map_err(capture_demand_error)?,
             };
             let recurse = stat.is_dir() && !stat.file_type().is_symlink();
             let observed_path = clone_capture_path(&child, meter)?;
@@ -225,7 +203,7 @@ pub(super) fn observe_host_path(
     host_path: &CaptureHostPath,
     meter: &CaptureWorkScope,
 ) -> Result<Option<HostStat>, CaptureError> {
-    classify_host_observation(capture_stat(source_root, host_path, meter))
+    classify_host_observation(source_root.stat(host_path, &mut meter.native.clone()))
 }
 
 pub(super) fn classify_host_observation(
@@ -240,13 +218,13 @@ pub(super) fn classify_host_observation(
 }
 
 pub(super) fn insert_host_observation(
-    observed: &mut CaptureMap<Option<HostStat>>,
+    observed: &mut Vec<(NamespacePath, Option<HostStat>)>,
     path: NamespacePath,
     metadata: HostStat,
     maximum: usize,
     meter: &CaptureWorkScope,
 ) -> Result<(), CaptureError> {
-    if !observed.contains_key_measured(&path, meter)? && observed.len() >= maximum {
+    if capture_position(observed, &path, meter)?.is_err() && observed.len() >= maximum {
         return Err(CaptureError::InvalidOptions);
     }
     capture_charge(
@@ -256,7 +234,7 @@ pub(super) fn insert_host_observation(
             ..WorkCounters::UNCHARGED
         },
     )?;
-    observed.insert_measured(path, Some(metadata), meter)?;
+    capture_replace(observed, path, Some(metadata), meter)?;
     Ok(())
 }
 
@@ -268,7 +246,7 @@ pub(super) fn collect_host_subtree_roots(
     maximum: usize,
     roots: &[NamespacePath],
     policy: &CapturePolicy,
-    observed: &mut CaptureMap<Option<HostStat>>,
+    observed: &mut Vec<(NamespacePath, Option<HostStat>)>,
     meter: &CaptureWorkScope,
 ) -> Result<(), CaptureError> {
     for root in roots {

@@ -5,7 +5,6 @@ pub(super) const HELP: &str = "graphcoder --session CONFIG.json [--headless]\n\
     graphcoder --fixture wire [--headless]  Explicit presentation playback only.\n\
     TEXT        Queue a stock root/selected-parent task, without starting it\n\
     /parent TASK|root  Select an actual retained task as parent, or root\n\
-    /queue FILE Queue a typed WorkflowCommand JSON with fresh admission identity\n\
     /command FILE Run/reconcile an explicitly configured approved native effect\n\
     /context FILE Capture discovery and replace typed attributes for later requests\n\
     /fork-selection FILE Select full/fresh/summary from an authenticated original cut\n\
@@ -37,9 +36,7 @@ pub(super) const HELP: &str = "graphcoder --session CONFIG.json [--headless]\n\
     /file FILE  Display scoped immutable content: caller,lease,file (max 64 KiB)\n\
     /diff FILE  Display scoped exact refs: caller,lease,before,after (max 32 KiB each)\n\
     /request FILE Dispatch one scoped protobuf ClientFrame; no automatic retries\n\
-    /input FILE Dispatch a prepared conversation-message command\n\
     /approve FILE Dispatch an exact scoped interaction resolution command\n\
-    /cancel FILE Dispatch an exact scoped protobuf Cancel ClientFrame\n\
     /cancel-task TASK  Request cancellation through the actual typed task host\n\
     /reopen     Drop/reopen actual local providers; do not execute queued work\n\
     /reset      Reset fixture display only (unavailable for native sessions)\n\

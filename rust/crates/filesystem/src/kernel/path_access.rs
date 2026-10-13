@@ -12,7 +12,7 @@ use crate::model::FilesystemProfile;
 use crate::model::{VolumeConfig, VolumeConfigError};
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest,
-    ObjectReadRetention, ObjectResult, ObjectStoreError};
+    ObjectReadRetention, ObjectStoreError};
 use acyclic_stream::OwnedBytes;
 use std::cmp::Ordering;
 use std::mem::size_of;
@@ -923,18 +923,6 @@ pub async fn observe_path_async<S: AsyncObjectStore>(
         .await
 }
 
-pub(crate) async fn observe_path_edges_async<S: AsyncObjectStore>(
-    store: &S,
-    generation: &super::GenerationRoot,
-    path: &NamespacePath,
-    config: VolumeConfig,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<ObservedPathLookup, PathLookupFailure> {
-    observe_path_with_terminal_async(store, generation, path, config, budget, cancellation, false, None)
-        .await
-}
-
 /// Resolves a non-empty exact path batch through shared authenticated prefixes.
 pub async fn lookup_paths<S: AsyncObjectStore>(
     store: &S,
@@ -957,20 +945,6 @@ pub async fn lookup_paths<S: AsyncObjectStore>(
     )
     .await
     .map(|observed| observed.lookup)
-}
-
-pub(crate) async fn lookup_paths_selected_async<S: AsyncObjectStore>(
-    store: &S,
-    generation: &super::GenerationRoot,
-    paths: &[NamespacePath],
-    config: VolumeConfig,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<PathBatchLookup, PathLookupFailure> {
-    lookup_path_queries_async(
-        store, generation, PathQueries::Owned(paths), false, config, budget,
-        cancellation, None, PathBatchMode::SelectedRestore,
-    ).await.map(|observed| observed.lookup)
 }
 
 /// Resolves a non-empty no-follow path batch with shared work while capturing, in the same walk, every region [`observe_path_async`] would capture for each path.
@@ -1232,13 +1206,6 @@ pub(crate) async fn observe_paths_async_with_accounting<S: AsyncObjectStore>(
         PathBatchMode::NoFollow).await
 }
 
-pub(crate) async fn observe_path_refs_async_with_accounting<S: AsyncObjectStore>(
-    store: &S, generation: &super::GenerationRoot, paths: &[&NamespacePath], config: VolumeConfig,
-    accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken, custody: Option<&super::ProofDataCustody>,
-) -> Result<AccountedPath<ObservedPathBatch>, crate::FsError> {
-    path_queries_with_accounting(store, generation, PathQueries::Borrowed(paths), true, config, accounting, cancellation, custody,
-        PathBatchMode::NoFollow).await
-}
 async fn lookup_path_queries_async<S: AsyncObjectStore>(
     store: &S, generation: &super::GenerationRoot, paths: PathQueries<'_>, observe: bool, config: VolumeConfig,
     budget: WorkBudget, cancellation: &CancellationToken, data_custody: Option<&super::ProofDataCustody>, mode: PathBatchMode,

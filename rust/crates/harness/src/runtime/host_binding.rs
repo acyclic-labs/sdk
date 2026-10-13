@@ -108,36 +108,30 @@ impl AgentHarness {
                 "retained admission changed owner bindings",
             ));
         }
-        match (&self.execution, observed.execution.as_ref()) {
+        let matches = match (&self.execution, observed.execution.as_ref()) {
             (Some(provider), Some(placement)) => {
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 if let Some(work) = native {
-                    if provider.identity_with_native_work(work)? == &placement.provider {
-                        return Ok(());
-                    }
-                    return Err(task_workflow_error(
-                        native,
-                        crate::wire::ErrorCode::Conflict,
-                        "retained execution route differs from runtime",
-                    ));
+                    provider.identity_with_native_work(work)? == &placement.provider
+                } else {
+                    placement.provider == provider.identity()
                 }
-                if placement.provider != provider.identity() {
-                    return Err(task_workflow_error(
-                        native,
-                        crate::wire::ErrorCode::Conflict,
-                        "retained execution route differs from runtime",
-                    ));
+                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                {
+                    placement.provider == provider.identity()
                 }
-                placement.validate(&mut None)?;
-                Ok(())
             }
-            (None, None) => Ok(()),
-            _ => Err(task_workflow_error(
+            (None, None) => true,
+            _ => false,
+        };
+        if !matches {
+            return Err(task_workflow_error(
                 native,
                 crate::wire::ErrorCode::Conflict,
                 "retained execution route differs from runtime",
-            )),
+            ));
         }
+        Ok(())
     }
 
     pub(super) async fn reconcile_scoped_admission<I, O>(

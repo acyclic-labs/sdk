@@ -62,7 +62,7 @@ impl CoreLog {
             let paths = key.paths(root)?;
             let file = match work {
                 Some(work) => {
-                    crate::native_host::create_directories(&paths.directory, &mut &*work)?;
+                    crate::native_host::create_directories(paths.directory(), &mut &*work)?;
                     let file = materialization_open_options(
                         &paths.current,
                         &crate::native_host::NativeOpenOptions::ReadWriteCreate,
@@ -76,7 +76,7 @@ impl CoreLog {
                     file
                 }
                 None => {
-                    std::fs::create_dir_all(&paths.directory)?;
+                    std::fs::create_dir_all(paths.directory())?;
                     OpenOptions::new()
                         .create(true)
                         .truncate(true)

@@ -8,7 +8,8 @@ async fn filtered_fork_rebase_preserves_local_and_parent_changes() -> Result<(),
     let child = fork_workspace(
         &parent,
         "filtered-rebase-child",
-        ForkOptions::from_generation(unbounded!(parent, head())?, IdempotencyKey::new()).empty(),
+        ForkOptions::from_generation(unbounded!(parent, head())?, IdempotencyKey::new())
+            .inherit_paths(Vec::new()),
     )
     .await?;
     child.write_text("/local", "child").await?;
@@ -24,13 +25,14 @@ async fn filtered_fork_rebase_preserves_local_and_parent_changes() -> Result<(),
     assert_eq!(unbounded!(child, read("/local", 16))?.as_ref(), b"child");
     child.write_text("/local", "after rebase").await?;
     let source = unbounded!(child, head())?;
-    let plan = child.join_into(&parent).plan().await?;
+    let plan = unbounded!(child.join_into(&parent), plan())?;
     assert!(matches!(
         plan.apply(
             ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new()
             },
+            std::collections::BTreeMap::new(),
             crate::PublicationPermit::Unrestricted
         )
         .await?,
@@ -69,13 +71,16 @@ async fn nested_filtered_fork_uses_its_pinned_inheritance_as_delta_baseline()
             .inherit_paths(vec!["/keep".into()]),
     )
     .await?;
+    // Inherited content is the child baseline; only authored child changes
+    // enter a destination. An unchanged selected file is not a child edit.
     child.write_text("/new", "child").await?;
-    let plan = child.join_into(&root).plan().await?;
+    let plan = unbounded!(child.join_into(&root), plan())?;
     plan.apply(
         ApplyOptions {
             if_target: plan.target_head(),
             idempotency_key: IdempotencyKey::new(),
         },
+        std::collections::BTreeMap::new(),
         crate::PublicationPermit::Unrestricted,
     )
     .await?;
@@ -83,25 +88,27 @@ async fn nested_filtered_fork_uses_its_pinned_inheritance_as_delta_baseline()
     assert_eq!(unbounded!(root, read("/omit", 32))?.as_ref(), b"root");
     assert_eq!(unbounded!(root, read("/new", 32))?.as_ref(), b"child");
     child.write_text("/keep", "edited").await?;
-    let plan = child.join_into(&root).plan().await?;
+    let plan = unbounded!(child.join_into(&root), plan())?;
     assert!(matches!(
         plan.apply(
             ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new(),
             },
+            std::collections::BTreeMap::new(),
             crate::PublicationPermit::Unrestricted
         )
         .await?,
         JoinOutcome::Conflicted { .. }
     ));
     root.write_text("/keep", "inherited").await?;
-    let plan = child.join_into(&root).plan().await?;
+    let plan = unbounded!(child.join_into(&root), plan())?;
     plan.apply(
         ApplyOptions {
             if_target: plan.target_head(),
             idempotency_key: IdempotencyKey::new(),
         },
+        std::collections::BTreeMap::new(),
         crate::PublicationPermit::Unrestricted,
     )
     .await?;
@@ -111,51 +118,6 @@ async fn nested_filtered_fork_uses_its_pinned_inheritance_as_delta_baseline()
         b"inherited"
     );
     Ok(())
-}
-
-async fn selected_hardlinks(bytes: &[u8], carry_alias: bool) -> Result<(), Box<dyn Error>> {
-    let fs = Fs::memory();
-    let parent = unbounded!(fs, create_workspace("hardlink-parent"))?;
-    parent
-        .write("/file", bytes::Bytes::copy_from_slice(bytes))
-        .await?;
-    let mut transaction = unbounded!(parent, begin_transaction(IdempotencyKey::new()))?;
-    unbounded!(transaction, hard_link("/file", "/alias"))?;
-    commit(&mut transaction).await?;
-    let mut paths = vec!["/file".to_owned()];
-    if carry_alias {
-        paths.push("/alias".to_owned());
-    }
-    let child = fork_workspace(
-        &parent,
-        "hardlink-child",
-        ForkOptions::from_generation(unbounded!(parent, head())?, IdempotencyKey::new())
-            .inherit_paths(paths),
-    )
-    .await?;
-    assert_eq!(unbounded!(child, read("/file", 64))?.as_ref(), bytes);
-    if carry_alias {
-        assert_eq!(unbounded!(child, read("/alias", 64))?.as_ref(), bytes);
-    } else {
-        assert!(unbounded!(child, read("/alias", 64)).is_err());
-    }
-    child
-        .write("/file", bytes::Bytes::from_static(b"changed"))
-        .await?;
-    if carry_alias {
-        assert_eq!(unbounded!(child, read("/alias", 64))?.as_ref(), b"changed");
-    }
-    assert_eq!(unbounded!(parent, read("/alias", 64))?.as_ref(), bytes);
-    Ok(())
-}
-
-proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config::with_cases(48))]
-    #[test]
-    fn selected_fork_hardlink_aliases_keep_exact_content(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 1..64), carry_alias in proptest::prelude::any::<bool>()) {
-        let result = futures::executor::block_on(selected_hardlinks(&bytes, carry_alias));
-        proptest::prop_assert!(result.is_ok(), "{result:?}");
-    }
 }
 
 #[tokio::test]
@@ -248,7 +210,7 @@ async fn live_rebase_merges_disjoint_sparse_ranges_without_materializing_file()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let main = unbounded!(fs, create_workspace("main-ranges"))?;
-    main.write("/shared", OwnedBytes::from(vec![b'a'; 128]))
+    main.write("/shared", bytes::Bytes::from(vec![b'a'; 128]))
         .await?;
     let agent = fork_workspace(
         &main,

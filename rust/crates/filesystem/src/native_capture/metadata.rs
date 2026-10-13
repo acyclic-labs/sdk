@@ -8,12 +8,12 @@ pub(super) struct HostSnapshot {
 }
 
 impl HostSnapshot {
-    pub(super) fn from_metadata(metadata: &HostStat) -> Result<Self, CaptureError> {
-        Ok(Self {
+    pub(super) fn from_metadata(metadata: &HostStat) -> Self {
+        Self {
             identity: metadata.identity(),
             length: metadata.len(),
             metadata: capture_metadata(metadata),
-        })
+        }
     }
 }
 
@@ -21,7 +21,7 @@ pub(super) fn ensure_same_host_node(
     expected: &HostSnapshot,
     observed: &HostStat,
 ) -> Result<(), CaptureError> {
-    ensure_same_host_snapshot(expected, &HostSnapshot::from_metadata(observed)?)
+    ensure_same_host_snapshot(expected, &HostSnapshot::from_metadata(observed))
 }
 
 pub(super) fn ensure_same_host_snapshot(
@@ -67,7 +67,9 @@ pub(super) fn ensure_current_host_node(
 ) -> Result<(), CaptureError> {
     cancellation.check()?;
     meter.native.clone().check().map_err(capture_demand_error)?;
-    let observed = capture_stat(source_root, host_path, meter).map_err(capture_demand_error)?;
+    let observed = source_root
+        .stat(host_path, &mut meter.native.clone())
+        .map_err(capture_demand_error)?;
     ensure_same_host_node(expected, &observed)?;
     cancellation.check()?;
     meter.native.clone().check().map_err(capture_demand_error)
@@ -77,7 +79,12 @@ pub(super) fn ensure_current_host_node(
 pub(super) fn test_host_stat(root: &HostRoot, path: &Path) -> Result<HostStat, CaptureError> {
     let mut meter =
         crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
-    root.stat(path, &mut meter).map_err(capture_demand_error)
+    #[cfg(unix)]
+    let result = root.stat(path, &mut meter);
+    #[cfg(windows)]
+    let result =
+        crate::native_host::with_wide_path(path, &mut meter, |path, work| root.stat(path, work));
+    result.map_err(capture_demand_error)
 }
 
 #[cfg(test)]
@@ -136,7 +143,7 @@ pub(super) fn host_kind(metadata: &HostStat) -> Result<FileKind, CaptureError> {
 #[cfg(unix)]
 #[allow(clippy::unnecessary_wraps)]
 pub(super) fn host_device_identity(metadata: &HostStat) -> Result<(u32, u32), CaptureError> {
-    Ok(split_device(metadata.rdev()))
+    Ok(split_device((metadata.raw.st_rdev as u64)))
 }
 
 #[cfg(target_os = "linux")]
@@ -222,15 +229,31 @@ pub(crate) fn system_time(value: std::io::Result<cap_std::time::SystemTime>) -> 
 
 #[cfg(unix)]
 pub(super) fn populate_platform_metadata(metadata: &HostStat, result: &mut FileMetadata) {
-    result.posix_mode = MetadataField::Value(metadata.mode());
-    result.posix_uid = MetadataField::Value(metadata.uid());
-    result.posix_gid = MetadataField::Value(metadata.gid());
-    let nanos = i128::from(metadata.ctime()) * 1_000_000_000 + i128::from(metadata.ctime_nsec());
+    result.posix_mode = MetadataField::Value((metadata.raw.st_mode as u32));
+    result.posix_uid = MetadataField::Value((metadata.raw.st_uid as u32));
+    result.posix_gid = MetadataField::Value((metadata.raw.st_gid as u32));
+    let nanos = i128::from((metadata.raw.st_ctime as i64)) * 1_000_000_000 + i128::from((metadata.raw.st_ctime_nsec as i64));
     result.changed_ns =
         i64::try_from(nanos).map_or(MetadataField::Unavailable, MetadataField::Value);
 }
 
 #[cfg(windows)]
 pub(super) fn populate_platform_metadata(metadata: &HostStat, result: &mut FileMetadata) {
-    result.windows_attributes = MetadataField::Value(metadata.file_attributes());
+    result.windows_attributes = MetadataField::Value(metadata.raw.FileAttributes);
+}
+
+#[cfg(test)]
+pub(super) fn test_open_file(root: &HostRoot, path: &Path) -> std::io::Result<cap_std::fs::File> {
+    let mut work = crate::native_host::ordinary_work();
+    #[cfg(unix)]
+    let result = root.open_file(path, &mut work);
+    #[cfg(windows)]
+    let result = crate::native_host::with_wide_path(path, &mut work, |path, work| {
+        root.open_file(
+            path,
+            windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0),
+            work,
+        )
+    });
+    result.map_err(crate::native_host::ordinary_error)
 }

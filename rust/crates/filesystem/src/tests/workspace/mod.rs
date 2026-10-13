@@ -1,10 +1,16 @@
 use super::*;
+
 use crate::model::{Lifecycle, VolumeConfig};
+
 use crate::{CancellationToken, Fs, WorkBudget};
+
 use acyclic_stream::OwnedBytes;
+
 use std::error::Error;
+
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 use std::path::Path;
+
 use std::sync::Arc;
 
 macro_rules! value {
@@ -66,20 +72,37 @@ async fn commit<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 }
 
 mod change_sets;
+
+mod discovery;
+
 mod fork_selection;
+
 mod generation;
+
 mod identity;
+
 mod joins;
+
 mod materialization;
+
 mod merge_drivers;
+
 mod operation_identity;
+
 mod publication;
+
 mod publication_guards;
+
 mod reads;
+
 mod rebase;
+
 mod restore;
+
 mod sibling_directories;
+
 mod sibling_files;
+
 mod transactions;
 
 fn selected_transaction_budget() -> WorkBudget {
@@ -111,30 +134,6 @@ fn selected_transaction_budget() -> WorkBudget {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-enum OrdinaryOwnerError {
-    #[error(transparent)]
-    Sdk(WorkspaceError),
-    #[error("ordinary owner denied publication")]
-    Denied {
-        task: [u8; 16],
-        revision: u64,
-        expired: bool,
-    },
-}
-
-impl From<WorkspaceError> for OrdinaryOwnerError {
-    fn from(error: WorkspaceError) -> Self {
-        Self::Sdk(error)
-    }
-}
-
-impl From<FsError> for OrdinaryOwnerError {
-    fn from(error: FsError) -> Self {
-        Self::Sdk(error.into())
-    }
-}
-
 async fn generation_changes<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     from: &Generation<A, O>,
     to: &Generation<A, O>,
@@ -147,5 +146,6 @@ async fn generation_changes<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         &CancellationToken::new(),
     )
     .await
+    .map(|receipt| receipt.value.0)
     .map_err(|failure| failure.error)
 }

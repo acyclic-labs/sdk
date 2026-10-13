@@ -1,62 +1,24 @@
 use super::*;
-use crate::native_host::HostStatReader;
 
 pub(super) fn native_utf16_name_bytes(
     units: impl Iterator<Item = u16>,
 ) -> impl Iterator<Item = u8> {
     std::char::decode_utf16(units).flat_map(|unit| {
-        let value = unit
-            .map(u32::from)
-            .unwrap_or_else(|error| u32::from(error.unpaired_surrogate()));
         let mut bytes = [0; 4];
-        let length = if value < 0x80 {
-            bytes[0] = value as u8;
-            1
-        } else if value < 0x800 {
-            bytes[0] = 0xc0 | (value >> 6) as u8;
-            bytes[1] = 0x80 | (value & 63) as u8;
-            2
-        } else if value < 0x10000 {
-            bytes[0] = 0xe0 | (value >> 12) as u8;
-            bytes[1] = 0x80 | ((value >> 6) & 63) as u8;
-            bytes[2] = 0x80 | (value & 63) as u8;
-            3
-        } else {
-            bytes[0] = 0xf0 | (value >> 18) as u8;
-            bytes[1] = 0x80 | ((value >> 12) & 63) as u8;
-            bytes[2] = 0x80 | ((value >> 6) & 63) as u8;
-            bytes[3] = 0x80 | (value & 63) as u8;
-            4
+        let length = match unit {
+            Ok(character) => character.encode_utf8(&mut bytes).len(),
+            Err(error) => {
+                let value = error.unpaired_surrogate();
+                bytes[..3].copy_from_slice(&[
+                    0xe0 | (value >> 12) as u8,
+                    0x80 | ((value >> 6) & 63) as u8,
+                    0x80 | (value & 63) as u8,
+                ]);
+                3
+            }
         };
         bytes.into_iter().take(length)
     })
-}
-
-pub(super) fn next_name(
-    reader: &mut HostStatReader,
-    work: &NativeMaterializationWork,
-) -> Result<Option<(std::ffi::OsString, NativeAllocation)>, NativeTreeMaterializationError> {
-    #[cfg(unix)]
-    return reader
-        .next(&mut &*work)
-        .map(|entry| entry.map(|(entry, allocation)| (entry.name, allocation)));
-    #[cfg(windows)]
-    {
-        use std::os::windows::ffi::OsStringExt as _;
-        let Some((entry, allocation)) = reader.next(&mut &*work)? else {
-            return Ok(None);
-        };
-        let mut owned = work.claim(
-            owned_size(entry.name.len(), 3)?,
-            1,
-            crate::WorkCounters::UNCHARGED,
-        )?;
-        let name = std::ffi::OsString::from_wide(&entry.name);
-        owned.reconcile_capacity(name.capacity() as u64)?;
-        drop(entry);
-        drop(allocation);
-        Ok(Some((name, owned)))
-    }
 }
 
 pub(super) fn native_compare<T: Ord>(
@@ -96,7 +58,9 @@ impl NativeTreeMaterializationBackend {
         if actual != expected {
             return Err(NativeTreeMaterializationError::AllocationChanged { expected, actual });
         }
-        let directory = { #[cfg(unix)] { self.held_root.open_dir_held(Path::new(path), &mut &self.work) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new(path), &mut &self.work, |path, work| self.held_root.open_dir_held(path, work)) } }?;
+        let directory = host_path(Path::new(path), &mut &self.work, |path, work| {
+            self.held_root.open_dir_held(path, work)
+        })?;
         crate::native_host::directory_identity(&directory, &mut &self.work)
     }
     /// Returns an admitted staging path.
@@ -115,8 +79,10 @@ impl NativeTreeMaterializationBackend {
     /// Requires empty original checkout and recovery allocations.
     pub fn require_initial_empty(&self) -> Result<(), NativeTreeMaterializationError> {
         for root in [&self.held_root, &self.held_target, &self.held_backup] {
-            let (mut reader, _cursor) = { #[cfg(unix)] { root.read_dir_stats(Path::new(""), &mut &self.work) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new(""), &mut &self.work, |path, work| root.read_dir_stats(path, work)) } }?;
-            if next_name(&mut reader, &self.work)?.is_some() {
+            let (mut reader, _cursor) = host_path(Path::new(""), &mut &self.work, |path, work| {
+                root.read_dir_stats(path, work)
+            })?;
+            if reader.next(&mut &self.work)?.is_some() {
                 return Err(NativeTreeMaterializationError::ExternalMutation);
             }
         }
@@ -131,8 +97,11 @@ impl NativeTreeMaterializationBackend {
         for path in preserved {
             self.check_path(path)?;
         }
-        let (mut reader, _cursor) = { #[cfg(unix)] { self.held_root.read_dir_stats(Path::new(""), &mut &self.work) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new(""), &mut &self.work, |path, work| self.held_root.read_dir_stats(path, work)) } }?;
-        while let Some((name, _allocation)) = next_name(&mut reader, &self.work)? {
+        let (mut reader, _cursor) = host_path(Path::new(""), &mut &self.work, |path, work| {
+            self.held_root.read_dir_stats(path, work)
+        })?;
+        while let Some((entry, _allocation)) = reader.next(&mut &self.work)? {
+            let name = entry.name;
             let mut selected = false;
             for path in edits
                 .iter()
@@ -145,7 +114,17 @@ impl NativeTreeMaterializationBackend {
                 let top = path.split('/').next().unwrap_or_default();
                 self.work
                     .charge(NativeResourceCredit::Items.delta(top.len() as u64))?;
-                if name == std::ffi::OsStr::new(top) {
+                let matches = {
+                    #[cfg(unix)]
+                    {
+                        name == std::ffi::OsStr::new(top)
+                    }
+                    #[cfg(windows)]
+                    {
+                        name.iter().copied().eq(top.encode_utf16())
+                    }
+                };
+                if matches {
                     selected = true;
                     break;
                 }
@@ -175,11 +154,27 @@ impl NativeTreeMaterializationBackend {
                 let path = std::str::from_utf8(&path)
                     .map_err(|_| NativeTreeMaterializationError::InvalidLayout)?;
                 if path.is_empty() {
-                    let (mut reader, _cursor) = { #[cfg(unix)] { backend.held_target.read_dir_stats(Path::new(""), &mut &backend.work) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new(""), &mut &backend.work, |path, work| backend.held_target.read_dir_stats(path, work)) } }?;
-                    while let Some((name, _allocation)) = next_name(&mut reader, &backend.work)? {
-                        remove_native_entry_durable(
-                            &(&backend.held_target, Path::new(&name)),
-                            &backend.work,
+                    let (mut reader, _cursor) =
+                        host_path(Path::new(""), &mut &backend.work, |path, work| {
+                            backend.held_target.read_dir_stats(path, work)
+                        })?;
+                    while let Some((entry, _allocation)) = reader.next(&mut &backend.work)? {
+                        backend
+                            .work
+                            .with_original_leaf(|state| {
+                                backend.held_target.remove(
+                                    #[cfg(unix)]
+                                    Path::new(&entry.name),
+                                    #[cfg(windows)]
+                                    &entry.name,
+                                    None,
+                                    state,
+                                )
+                            })
+                            .map_err(native_materialization_work_error)?;
+                        crate::native_host::sync_directory_held(
+                            &backend.held_target.directory,
+                            &mut &backend.work,
                         )?;
                     }
                     return Ok(backend.held_target.identity());
@@ -188,7 +183,11 @@ impl NativeTreeMaterializationBackend {
                 let parent = backend
                     .work
                     .with_original_leaf(|state| {
-                        { #[cfg(unix)] { backend.held_target.create_dir_all_held(path.parent().ok_or(crate::DemandError::InvalidRequest)?, state) } #[cfg(windows)] { crate::native_host::with_wide_path(path.parent().ok_or(crate::DemandError::InvalidRequest)?, state, |path, work| backend.held_target.create_dir_all_held(path, work)) } }
+                        host_path(
+                            path.parent().ok_or(crate::DemandError::InvalidRequest)?,
+                            state,
+                            |path, work| backend.held_target.create_dir_all_held(path, work),
+                        )
                     })
                     .map_err(native_materialization_work_error)?;
                 if host_stat(&backend.held_target, path, &backend.work)?.is_some() {
@@ -200,10 +199,14 @@ impl NativeTreeMaterializationBackend {
                 );
                 backend
                     .work
-                    .with_original_leaf(|state| { #[cfg(unix)] { parent.create_dir(leaf, state) } #[cfg(windows)] { crate::native_host::with_wide_path(leaf, state, |path, work| parent.create_dir(path, work)) } })
+                    .with_original_leaf(|state| {
+                        host_path(leaf, state, |path, work| parent.create_dir(path, work))
+                    })
                     .map_err(native_materialization_work_error)?;
                 crate::native_host::sync_directory_held(&parent.directory, &mut &backend.work)?;
-                let directory = { #[cfg(unix)] { parent.open_dir_held(leaf, &mut &backend.work) } #[cfg(windows)] { crate::native_host::with_wide_path(leaf, &mut &backend.work, |path, work| parent.open_dir_held(path, work)) } }?;
+                let directory = host_path(leaf, &mut &backend.work, |path, work| {
+                    parent.open_dir_held(path, work)
+                })?;
                 crate::native_host::directory_identity(&directory, &mut &backend.work)
             },
             Some((self.work.runtime_meter(), true)),

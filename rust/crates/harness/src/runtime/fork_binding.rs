@@ -1,21 +1,6 @@
 use super::*;
 
 impl AgentHarness {
-    /// Returns the authorized workspace boundary.
-    pub fn workspaces(&self) -> Result<Arc<dyn crate::merge::ProjectWorkspaceProvider>> {
-        if !self.scope.grants().contains(capability::FORK_PUBLISH)
-            && !self.scope.grants().contains(capability::PROJECT_MERGE)
-        {
-            return Err(Error::Unauthorized(
-                "runtime scope lacks project authority".into(),
-            ));
-        }
-        self.workspaces
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| Error::Unsupported("project workspace provider is not bound".into()))
-    }
-
     /// Selects a newly captured parent revision for future work.
     pub fn at_parent_snapshot(
         self: &Arc<Self>,
@@ -119,16 +104,5 @@ impl AgentHarness {
         let mut bound = self.as_ref().clone();
         bound.context = context;
         Arc::new(bound)
-    }
-
-    /// Selects a different model for future local child work without changing the parent's pinned task, tool, policy, or authority bindings.
-    pub fn scoped_model(
-        self: &Arc<Self>,
-        grants: Capabilities,
-        limits: Limits,
-        model: Model,
-        provider: Arc<dyn ModelProvider>,
-    ) -> Result<Arc<Self>> {
-        self.scoped(grants, limits)?.bind_model(model, provider)
     }
 }

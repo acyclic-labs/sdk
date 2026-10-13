@@ -113,7 +113,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .ok_or_else(|| Error::Invalid("fork has no source project".into()))?;
         let controller =
             ParentProjectController::new(self, parent, verifier, scope, source_project, None)?;
-        controller.require(capability::FORK_PUBLISH, VolumeOperation::Read)?;
+        controller.require(capability::FORK_PUBLISH, VolumeOperation::Read, None)?;
         let parent_agent = scope
             .agent()
             .ok_or_else(|| Error::Unauthorized("fork allocation requires a parent agent".into()))?;
@@ -372,7 +372,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     code: crate::wire::ErrorCode::Unauthorized,
                     reason: "native seed binding requires its original issued creation guard",
                 })?
-                .verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?
+                .verify(
+                    false,
+                    Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
+                )?
                 .await?;
         }
         let binding = seed_digest(seed, MAX_REPORT_BYTES, io)?;

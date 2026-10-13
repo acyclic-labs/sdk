@@ -1,11 +1,11 @@
 use super::{MountPath, NativeMountError};
-use crate::demand::{NativeMountAllocationCustody};
+use crate::demand::NativeMountAllocationCustody;
+use crate::materializer::NativeResourceCredit::{Copy, Items};
 use crate::{NativeAllocation, NativeMaterializationWork, WorkCounters, WorkError};
-use std::sync::Arc;
 
 pub(super) struct FuseOwned<T> {
     value: Option<T>,
-    legacy: Option<(NativeMountAllocationCustody, u64)>,
+    legacy: Option<(std::sync::Arc<NativeMountAllocationCustody>, u64)>,
     allocation: Option<NativeAllocation>,
 }
 
@@ -64,7 +64,13 @@ impl<T> FuseOwned<T> {
             let custody = NativeMountAllocationCustody::new(
                 &mut crate::NativeMaterializationWork::clone(work),
             )?;
-            work.with_original_leaf(|work| work.check().and_then(|()| custody.retain(bytes, work).map_err(crate::DemandError::from)))?;
+            work.with_original_leaf(|work| {
+                work.check().and_then(|()| {
+                    custody
+                        .retain(bytes, work)
+                        .map_err(crate::DemandError::from)
+                })
+            })?;
             Ok::<_, crate::native_mount::NativeMountStartupAdmissionError>(custody)
         })();
         match admitted {
@@ -138,33 +144,6 @@ impl std::borrow::Borrow<[u8]> for FuseOwned<Vec<u8>> {
     }
 }
 
-pub(super) fn fuse_item(work: &NativeMaterializationWork) -> Result<(), NativeMountError> {
-    work.charge(WorkCounters {
-        items_examined: 1,
-        ..WorkCounters::UNCHARGED
-    })
-    .map_err(Into::into)
-}
-pub(super) fn fuse_copy_admit(
-    bytes: u64,
-    work: &NativeMaterializationWork,
-) -> Result<(), NativeMountError> {
-    work.admit(WorkCounters {
-        bytes_copied: bytes,
-        ..WorkCounters::UNCHARGED
-    })
-    .map_err(Into::into)
-}
-pub(super) fn fuse_copy_record(
-    bytes: u64,
-    work: &NativeMaterializationWork,
-) -> Result<(), NativeMountError> {
-    work.record_admitted(WorkCounters {
-        bytes_copied: bytes,
-        ..WorkCounters::UNCHARGED
-    })
-    .map_err(Into::into)
-}
 pub(super) fn fuse_owned_source_chunk(
     chunk: crate::kernel::OwnedSourceChunk,
     work: &NativeMaterializationWork,
@@ -221,23 +200,22 @@ pub(super) fn fuse_reserve<T>(
         .len()
         .checked_mul(std::mem::size_of::<T>())
         .ok_or(WorkError::Overflow)? as u64;
-    fuse_copy_admit(copied, work)?;
+    work.admit(Copy.delta(copied))?;
     let mut replacement = fuse_vec(capacity, work)?;
-    fuse_copy_admit(copied, work)?;
+    work.admit(Copy.delta(copied))?;
     replacement.append(owned);
     drop(std::mem::replace(owned, replacement));
-    fuse_copy_record(copied, work)
+    work.record_admitted(Copy.delta(copied)).map_err(Into::into)
 }
 
 pub(super) fn fuse_copy_bytes(
     bytes: &[u8],
     work: &NativeMaterializationWork,
 ) -> Result<FuseOwned<Vec<u8>>, NativeMountError> {
-    fuse_copy_admit(bytes.len() as u64, work)?;
-    let mut copied = fuse_vec(bytes.len(), work)?;
-    fuse_copy_admit(bytes.len() as u64, work)?;
-    copied.extend_from_slice(bytes);
-    fuse_copy_record(bytes.len() as u64, work)?;
+    work.admit(Copy.delta(bytes.len() as u64))?;
+    let (bytes, allocation) = work.copy_bytes(bytes)?;
+    let mut copied = FuseOwned::empty(bytes);
+    copied.allocation = Some(allocation);
     Ok(copied)
 }
 
@@ -246,9 +224,6 @@ pub(super) fn fuse_source_chunk(
     work: &NativeMaterializationWork,
 ) -> Result<crate::kernel::OwnedSourceChunk, NativeMountError> {
     let mut copied = fuse_copy_bytes(bytes, work)?;
-    if copied.allocation.is_none() {
-        copied.allocation = Some(work.claim(0, 0, WorkCounters::UNCHARGED)?);
-    }
     let logical_owned_bytes = copied
         .allocation
         .as_ref()
@@ -266,25 +241,25 @@ pub(super) fn fuse_source_chunk(
     ))
 }
 
-fn path<'a>(
+pub(super) fn fuse_path<'a>(
     capacity: usize,
     components: impl Iterator<Item = &'a [u8]>,
     work: &NativeMaterializationWork,
 ) -> Result<FuseOwned<MountPath>, NativeMountError> {
     let mut path = fuse_vec::<Vec<u8>>(capacity, work)?;
     for component in components {
-        fuse_item(work)?;
+        work.charge(Items.delta(1))?;
         let copied_bytes = (component.len() as u64)
             .checked_add(std::mem::size_of::<Vec<u8>>() as u64)
             .ok_or(WorkError::Overflow)?;
-        fuse_copy_admit(copied_bytes, work)?;
+        work.admit(Copy.delta(copied_bytes))?;
         let mut copied = fuse_copy_bytes(component, work)?;
         if let Some(allocation) = copied.allocation.take() {
             path.absorb(allocation)?;
         }
         let copied = copied.value.take().expect("owned native path component");
         path.push(copied);
-        fuse_copy_record(std::mem::size_of::<Vec<u8>>() as u64, work)?;
+        work.record_admitted(Copy.delta(std::mem::size_of::<Vec<u8>>() as u64))?;
     }
     Ok(path.map(|components| MountPath { components }))
 }
@@ -293,7 +268,7 @@ pub(super) fn fuse_clone_path(
     value: &MountPath,
     work: &NativeMaterializationWork,
 ) -> Result<FuseOwned<MountPath>, NativeMountError> {
-    path(
+    fuse_path(
         value.components().len(),
         value.components().iter().map(Vec::as_slice),
         work,
@@ -304,7 +279,7 @@ pub(super) fn fuse_child_path(
     name: &[u8],
     work: &NativeMaterializationWork,
 ) -> Result<FuseOwned<MountPath>, NativeMountError> {
-    path(
+    fuse_path(
         parent
             .components()
             .len()
@@ -325,7 +300,7 @@ pub(super) fn fuse_parent(
     let Some((_, parent)) = value.components().split_last() else {
         return Ok(None);
     };
-    path(parent.len(), parent.iter().map(Vec::as_slice), work).map(Some)
+    fuse_path(parent.len(), parent.iter().map(Vec::as_slice), work).map(Some)
 }
 pub(super) fn fuse_has_prefix(
     value: &MountPath,
@@ -336,7 +311,7 @@ pub(super) fn fuse_has_prefix(
         return Ok(false);
     }
     for (component, expected) in value.components().iter().zip(prefix.components()) {
-        fuse_item(work)?;
+        work.charge(Items.delta(1))?;
         if component != expected {
             return Ok(false);
         }
@@ -353,7 +328,7 @@ pub(super) fn fuse_replace_prefix(
         return Ok(None);
     }
     let suffix = &value.components()[source.components().len()..];
-    path(
+    fuse_path(
         destination
             .components()
             .len()
@@ -367,17 +342,4 @@ pub(super) fn fuse_replace_prefix(
         work,
     )
     .map(Some)
-}
-pub(super) fn fuse_arc_clone<T: ?Sized>(
-    value: &Arc<T>,
-    work: &NativeMaterializationWork,
-) -> Result<Arc<T>, crate::native_mount::NativeMountStartupAdmissionError> {
-    let counters = WorkCounters {
-        bytes_copied: std::mem::size_of::<Arc<T>>() as u64,
-        ..WorkCounters::UNCHARGED
-    };
-    work.admit(counters)?;
-    let cloned = Arc::clone(value);
-    work.record_admitted(counters)?;
-    Ok(cloned)
 }

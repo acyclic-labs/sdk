@@ -1,5 +1,16 @@
 use super::*;
 
+struct OpaqueRouter;
+impl InteractionRouter for OpaqueRouter {
+    fn route<'a>(
+        &'a self,
+        _: OperationId,
+        _: Interaction,
+    ) -> BoxFuture<'a, Result<InteractionOutcome>> {
+        panic!("ordinary route must not run");
+    }
+}
+
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[test]
 fn native_scope_keeps_independent_input_custody_and_scalar_denial_codes() {
@@ -171,57 +182,25 @@ fn native_task_requirements_keep_provider_grants_bound() -> Result<()> {
     .requires("interactions")?;
     let mut tasks = TaskRegistry::default();
     tasks.register(definition)?;
-    let tools = ToolRegistry::default();
     let all_grants = ["model:generate", "context:build", "interaction:route"];
-    let complete_scope = RuntimeScope::new(
-        Capabilities::new(all_grants.iter().copied()),
-        Limits::default(),
-    )?;
-    assert!(
-        validate_task_dependencies(
-            &tasks,
-            &tools,
-            &ResumableToolRegistry::default(),
-            &complete_scope,
-            false,
-            false,
-            false,
-            true,
-            None,
-            None,
-            false,
-            None,
-        )
-        .is_ok()
-    );
-
+    let mut bindings = Bindings::local();
+    bindings.tasks = tasks.clone();
+    bindings.interactions = Some(Arc::new(OpaqueRouter));
+    bindings.scope = RuntimeScope::new(Capabilities::new(all_grants), Limits::default())?;
+    assert!(bindings.build(None).is_ok());
     for missing_grant in all_grants {
-        let scope = RuntimeScope::new(
+        let mut bindings = Bindings::local();
+        bindings.tasks = tasks.clone();
+        bindings.interactions = Some(Arc::new(OpaqueRouter));
+        bindings.scope = RuntimeScope::new(
             Capabilities::new(
                 all_grants
-                    .iter()
-                    .copied()
+                    .into_iter()
                     .filter(|grant| *grant != missing_grant),
             ),
             Limits::default(),
         )?;
-        assert!(
-            validate_task_dependencies(
-                &tasks,
-                &tools,
-                &ResumableToolRegistry::default(),
-                &scope,
-                false,
-                false,
-                false,
-                true,
-                None,
-                None,
-                false,
-                None,
-            )
-            .is_err()
-        );
+        assert!(bindings.build(None).is_err());
     }
     Ok(())
 }
@@ -254,7 +233,11 @@ async fn native_policy_approval_keeps_exact_binding_and_paid_utf8_prompt() -> Re
         Limits::default(),
     )?;
     let (identity, custody) = policy.identity_with_native_work(&work)?;
-    validate_policy_identity_with_native_work(&identity, &custody, &work)?;
+    check_policy_metadata(&identity, &custody, &work)?;
+    validate_policy_identity(
+        &identity,
+        Some(&crate::executor::PreparationIo::from_native_work(&work)?),
+    )?;
     drop((identity, custody));
     let (decision, custody) = policy
         .evaluate_with_native_work(&invocation, &scope, &work)?
@@ -447,16 +430,6 @@ fn opaque_policy_native_defaults_never_call_ordinary_body() -> Result<()> {
 #[test]
 fn opaque_interaction_router_rejects_native_before_ordinary_route_or_box() -> Result<()> {
     use crate::store::history::HistoryIo;
-    struct OpaqueRouter;
-    impl InteractionRouter for OpaqueRouter {
-        fn route<'a>(
-            &'a self,
-            _: OperationId,
-            _: Interaction,
-        ) -> BoxFuture<'a, Result<InteractionOutcome>> {
-            panic!("ordinary route must not run");
-        }
-    }
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs::WorkBudget::default(),
