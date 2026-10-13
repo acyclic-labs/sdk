@@ -64,6 +64,42 @@ fn create_directories_owned<W: NativeHostWork>(
     Ok(current)
 }
 
+pub(super) fn directory_path<W: NativeHostWork>(
+    parent: &Dir,
+    #[cfg(unix)] path: &Path,
+    #[cfg(windows)] path: &[u16],
+    create: bool,
+    work: &mut W,
+) -> Result<Dir, W::Error> {
+    let mut current = clone_directory(parent, work)?;
+    #[cfg(unix)]
+    let components = path.components();
+    #[cfg(windows)]
+    let components = path.split(|unit| *unit == 92).filter(|_| !path.is_empty());
+    for component in components {
+        work.started_io(ITEM)?;
+        #[cfg(unix)]
+        let std::path::Component::Normal(name) = component else {
+            return Err(W::invalid_request());
+        };
+        #[cfg(windows)]
+        let name = component;
+        #[cfg(unix)]
+        {
+            current = open_unix_directory(&current, name, create, work)?;
+        }
+        #[cfg(windows)]
+        {
+            current = if create {
+                Dir::from_std_file(create_windows_directory(&current, name, work)?)
+            } else {
+                open_windows_directory(&current, name, work)?.0
+            };
+        }
+    }
+    Ok(current)
+}
+
 pub(crate) fn open_leaf<W: NativeHostWork>(
     parent: &Dir,
     name: &Path,

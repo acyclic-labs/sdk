@@ -71,23 +71,6 @@ pub(crate) fn open_unix_directory<W: NativeHostWork>(
     })
 }
 
-pub(super) fn open_unix_directory_path<W: NativeHostWork>(
-    root: &Dir,
-    path: &Path,
-    create: bool,
-    work: &mut W,
-) -> Result<Dir, W::Error> {
-    let mut current = clone_directory(root, work)?;
-    for component in path.components() {
-        work.started_io(ITEM)?;
-        let std::path::Component::Normal(name) = component else {
-            return Err(W::invalid_request());
-        };
-        current = open_unix_directory(&current, name, create, work)?;
-    }
-    Ok(current)
-}
-
 pub(super) fn with_unix_parent_leaf<W: NativeHostWork, T>(
     root: &Dir,
     path: &Path,
@@ -95,7 +78,7 @@ pub(super) fn with_unix_parent_leaf<W: NativeHostWork, T>(
     operation: impl FnOnce(&Dir, &std::ffi::CStr, &mut W) -> Result<T, W::Error>,
 ) -> Result<T, W::Error> {
     let leaf = path.file_name().ok_or_else(W::invalid_request)?;
-    let parent = open_unix_directory_path(
+    let parent = directory_path(
         root,
         path.parent().ok_or_else(W::invalid_request)?,
         false,

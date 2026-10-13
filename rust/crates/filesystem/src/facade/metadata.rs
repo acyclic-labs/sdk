@@ -246,7 +246,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             operations.retire(accounting)?;
             return Err(error);
         }
-        self.mutate_owned_with_accounting(operations, accounting, cancellation)
+        self.apply_mutations(operations, accounting, cancellation)
             .await
     }
 

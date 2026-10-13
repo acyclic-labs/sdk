@@ -87,7 +87,7 @@ impl BrowserCheckout {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
         let receipt = browser_call!(
             self,
-            plan_file_extents_by_id(file_id, ByteRange { offset, length }, maximum_spans,)
+            plan_file_extents(file_id, ByteRange { offset, length }, maximum_spans,)
         )?;
         let result = match receipt.value {
             None => BrowserExtentPlanResult::Inline {
@@ -131,7 +131,7 @@ impl BrowserCheckout {
     ) -> Result<Ts<BrowserExtentSeekResult>, JsValue> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
         let target = extent_seek_target(&target)?;
-        let receipt = browser_call!(self, seek_file_extent_by_id(file_id, offset, target,))?;
+        let receipt = browser_call!(self, seek_file_extent(file_id, offset, target,))?;
         ts(BrowserExtentSeekResult {
             offset: receipt.value,
             work: browser_work(receipt.work),

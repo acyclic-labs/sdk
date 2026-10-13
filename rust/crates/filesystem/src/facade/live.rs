@@ -79,9 +79,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         if self.has_pending_mutations() {
             return Err(OperationFailure::before_work(FsError::PendingLiveMutation));
         }
-        let mutation = self
-            .mutate_candidate(operations, budget, cancellation)
-            .await?;
+        let mutation = self.mutate(operations, budget, cancellation).await?;
         let mut work = mutation.work;
         let publication = self
             .resume_live(

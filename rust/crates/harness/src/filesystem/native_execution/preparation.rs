@@ -256,7 +256,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
             {
                 return Err(invalid());
             }
-            let verify = || async {
+            let verify = move || async move {
                 for (binding, guard) in bindings.iter().zip(guards) {
                     verify_binding(owner, binding, guard, work).await?;
                 }
@@ -273,14 +273,10 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                 Ok::<_, Error>(())
             };
             if journal.phase == MaterializationPhase::Preparing && journal.preimages.is_empty() {
-                for (binding, (generation, volume_work)) in
-                    bindings.iter().zip(&generations).filter(|(binding, _)| {
-                        matches!(
-                            binding.namespace,
-                            NativeVolumeNamespace::MaterializedDirectory
-                        )
-                    })
-                {
+                for (binding, (generation, volume_work)) in bindings.iter().zip(&generations) {
+                    if !matches!(binding.namespace, NativeVolumeNamespace::MaterializedDirectory) {
+                        continue;
+                    }
                     verify().await?;
                     let completion = materializer.store().prepare_action(journal).await?;
                     let identity = materializer
@@ -311,7 +307,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                         .await?;
                 }
             }
-            let mut before_effect = || verify();
+            let mut before_effect = verify;
             journal = materializer
                 .recover(
                     operation,

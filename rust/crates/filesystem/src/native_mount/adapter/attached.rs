@@ -142,7 +142,7 @@ where
         invoke(&self.runtime, work, || async {
             let mut checkout = self.observer(work).await?;
             let read = checkout
-                .read_file_range_by_id(
+                .read_file_range(
                     self.file_id,
                     ByteRange {
                         offset,
@@ -170,7 +170,7 @@ where
         invoke(&self.runtime, work, || async {
             let mut checkout = self.observer(work).await?;
             let read = checkout
-                .read_file_up_to_by_id(
+                .read_file_up_to(
                     self.file_id,
                     offset,
                     maximum_bytes,
@@ -196,7 +196,7 @@ where
         invoke(&self.runtime, work, || async {
             let mut checkout = self.observer(work).await?;
             let position = checkout
-                .seek_file_extent_by_id(
+                .seek_file_extent(
                     self.file_id,
                     offset,
                     match target {

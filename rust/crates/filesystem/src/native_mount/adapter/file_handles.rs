@@ -46,7 +46,7 @@ where
                 .ok_or(MountSourceError::NotFound)?
                 .file_id;
             let result = checkout
-                .seek_file_extent_by_id(
+                .seek_file_extent(
                     file_id,
                     offset,
                     match target {

@@ -264,7 +264,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             removals.retire(accounting)?;
         } else {
             self.checkout
-                .mutate_owned_with_accounting(removals, accounting, cancellation)
+                .apply_mutations(removals, accounting, cancellation)
                 .await?;
         }
         let mut operations = crate::kernel::Owned::allocate(paths.len(), accounting)?;
@@ -327,7 +327,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             operations.retire(accounting)?;
         } else {
             self.checkout
-                .mutate_owned_with_accounting(operations, accounting, cancellation)
+                .apply_mutations(operations, accounting, cancellation)
                 .await?;
         }
         let records_result = records.retire(accounting);
