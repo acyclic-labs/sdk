@@ -67,7 +67,6 @@ pub struct BrowserLiveMutationResult {
 
 #[wasm_bindgen]
 impl BrowserCheckout {
-    /// Builds an immutable candidate generation without publishing authority.
     #[wasm_bindgen(js_name = checkpoint)]
     pub async fn checkpoint(&self) -> Result<Ts<BrowserCheckpointResult>, JsValue> {
         let cancellation = CancellationToken::default();
@@ -79,7 +78,6 @@ impl BrowserCheckout {
         encode_checkpoint_result(&receipt)
     }
 
-    /// Explicitly advances a clean manual checkout to the authority head.
     #[wasm_bindgen(js_name = refreshHead)]
     pub async fn refresh_head(&mut self) -> Result<Ts<BrowserCheckpointResult>, JsValue> {
         let cancellation = CancellationToken::default();
@@ -91,7 +89,6 @@ impl BrowserCheckout {
         encode_checkpoint_result(&receipt)
     }
 
-    /// Explicitly performs observation-safe synchronization for a live checkout.
     #[wasm_bindgen(js_name = refreshLive)]
     pub async fn refresh_live(&mut self) -> Result<Ts<BrowserCheckpointResult>, JsValue> {
         let cancellation = CancellationToken::default();
@@ -103,7 +100,6 @@ impl BrowserCheckout {
         encode_checkpoint_result(&receipt)
     }
 
-    /// Checkpoints and conditionally publishes this private overlay.
     pub async fn commit(
         &mut self,
         operation_id: Vec<u8>,
@@ -135,7 +131,6 @@ impl BrowserCheckout {
         commit_value(receipt.value, receipt.work)
     }
 
-    /// Applies and publishes one direct-live transaction with bounded safe retries.
     #[wasm_bindgen(js_name = mutateLive)]
     pub async fn mutate_live(
         &mut self,
@@ -165,7 +160,6 @@ impl BrowserCheckout {
         authored_live_mutation_value(receipt.value, receipt.work)
     }
 
-    /// Resumes an unresolved direct-live transaction with the same operation identity.
     #[wasm_bindgen(js_name = resumeLive)]
     pub async fn resume_live(
         &mut self,
@@ -192,7 +186,6 @@ impl BrowserCheckout {
         live_mutation_value(receipt.value, receipt.work).and_then(ts)
     }
 
-    /// Safely advances to head and sparsely replays private mutations.
     #[wasm_bindgen(js_name = rebaseHead)]
     pub async fn rebase_head(
         &mut self,

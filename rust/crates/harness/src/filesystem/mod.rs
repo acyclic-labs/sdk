@@ -128,8 +128,6 @@ pub use native_execution::{
     NativeViewPublicationReceipt, NativeVolumeView, copy_native_mapping_with_work,
     observe_preparation,
 };
-#[cfg(not(target_arch = "wasm32"))]
-pub use recursive::restore_recursive_fork_source_with_native_work;
 pub use recursive::{
     ForkPreparationLimits, ForkPreparationMachine, ForkToolArguments, RecursiveForkConfig,
     RecursiveSourceSnapshot, RetainedSourceBinding, fork_preparation_request,

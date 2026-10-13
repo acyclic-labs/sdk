@@ -341,21 +341,18 @@ where
             "child cannot read its exact initial message",
         ));
     }
-    let bytes = 'read: {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.and_then(crate::filesystem::PreparationIo::original_native_work) {
-            break 'read context.read_file_with_native_work(&file, work).await?;
-        }
-        break 'read context
-            .read_file_measured(
-                &file,
+    let ordinary;
+    let content_io = match io {
+        Some(io) => io,
+        None => {
+            ordinary = crate::filesystem::PreparationIo::from_budget(
                 acyclic_fs::performance::work_budget(binding.limits.work, binding.limits.bytes),
                 cancellation,
-            )
-            .await
-            .map_err(|failure| failure.error)?
-            .value;
+            )?;
+            &ordinary
+        }
     };
+    let bytes = context.read_file(&file, Some(content_io)).await?;
     if let Some(pointer) = &binding.child_message_file_pointer {
         if pointer.is_empty() || !pointer.starts_with('/') {
             return Err(recursive_reject(

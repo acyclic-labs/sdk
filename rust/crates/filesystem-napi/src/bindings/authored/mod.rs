@@ -3,85 +3,52 @@ use super::*;
 /// One strict discriminated operation in an atomic within-volume transaction.
 #[napi(object)]
 pub struct NativeTransactionOperation {
-    /// Stable operation discriminator.
     pub kind: String,
-    /// Primary path when required.
     pub path: Option<String>,
-    /// Source path when required.
     pub source: Option<String>,
-    /// Destination path when required.
     pub destination: Option<String>,
-    /// Regular-file body or write bytes.
     pub bytes: Option<Buffer>,
-    /// Symbolic-link target bytes.
     pub target: Option<Buffer>,
-    /// Reparse-point payload bytes.
     pub payload: Option<Buffer>,
-    /// Optional remove identity precondition.
     pub expected_file_id: Option<Buffer>,
-    /// Special or device kind.
     pub file_kind: Option<String>,
-    /// Primary logical offset.
     pub offset: Option<BigInt>,
-    /// Clone source offset.
     pub source_offset: Option<BigInt>,
-    /// Clone destination offset.
     pub destination_offset: Option<BigInt>,
-    /// Logical range length.
     pub length: Option<BigInt>,
-    /// Replacement logical file length.
     pub logical_bytes: Option<BigInt>,
-    /// Device major identity.
     pub major: Option<NapiU32>,
-    /// Device minor identity.
     pub minor: Option<NapiU32>,
-    /// Rename replacement policy.
     pub replace: Option<bool>,
-    /// Zero-range physical allocation policy.
     pub allocated: Option<bool>,
-    /// Zero-range extension policy.
     pub extend: Option<bool>,
-    /// Preallocation logical-size policy.
     pub keep_size: Option<bool>,
-    /// Complete canonical metadata replacement bytes.
     pub canonical_bytes: Option<Buffer>,
 }
 
 /// Stable result positions for one atomic transaction.
 #[napi(object)]
 pub struct NativeTransactionResult {
-    /// One optional created file identity per input operation.
     pub created_file_ids: Vec<Option<Buffer>>,
-    /// Exact machine-readable work receipt.
     pub work_json: String,
 }
 
 /// One direct-live authored transaction result with stable create positions.
 #[napi(object)]
 pub struct NativeAuthoredLiveMutationResult {
-    /// One entry per authored operation; only create operations contain identities.
     pub created_file_ids: Vec<Option<Buffer>>,
-    /// Terminal publication status.
     pub status: String,
-    /// Published generation identity when committed.
     pub generation_id: Option<Buffer>,
-    /// Authority epoch when available.
     pub epoch: Option<BigInt>,
-    /// Authority sequence when available.
     pub sequence: Option<BigInt>,
-    /// Exact bounded conflict count.
     pub conflict_count: u32,
-    /// Whether additional conflicts were omitted.
     pub truncated: bool,
-    /// Existing fingerprint for idempotency conflict.
     pub committed_fingerprint: Option<Buffer>,
-    /// Exact machine-readable work receipt.
     pub work_json: String,
 }
 
 #[napi]
 impl NativeCheckout {
-    /// Applies one ordered sparse mutation batch atomically within this volume.
     #[napi]
     pub async fn apply_transaction(
         &self,

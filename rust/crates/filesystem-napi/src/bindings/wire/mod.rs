@@ -28,7 +28,6 @@ mod napi_u32_codec {
     use napi::{JsNumber, Unknown, ValueType};
 
     impl FromNapiValue for NapiU32 {
-        /// # Safety
         unsafe fn from_napi_value(
             env: napi::sys::napi_env,
             value: napi::sys::napi_value,
@@ -48,7 +47,6 @@ mod napi_u32_codec {
     }
 
     impl ToNapiValue for NapiU32 {
-        /// # Safety
         unsafe fn to_napi_value(
             env: napi::sys::napi_env,
             value: Self,
@@ -59,7 +57,7 @@ mod napi_u32_codec {
     }
 }
 
-/// Serialize exact work counters as decimal strings so native JSON never
+/// Work counters as decimal strings: JSON numbers lose u64 precision.
 pub(in crate::bindings) fn work_json(work: &acyclic_fs::WorkCounters) -> Result<String> {
     let mut value = serde_json::to_value(work).map_err(napi_error)?;
     let object = value
@@ -74,77 +72,32 @@ pub(in crate::bindings) fn work_json(work: &acyclic_fs::WorkCounters) -> Result<
     serde_json::to_string(&value).map_err(napi_error)
 }
 
-compat_json!(
-    encode_multi_root_plan_json,
-    encode_multi_root_plan_payload,
-    "Encodes a multi-root plan payload in the versioned compatibility envelope."
-);
-
-compat_json!(
-    decode_multi_root_plan_json,
-    decode_multi_root_plan_payload,
-    "Decodes a versioned multi-root plan envelope to its canonical payload."
-);
-
-compat_json!(
-    encode_multi_root_candidate_json,
-    encode_multi_root_candidate_payload,
-    "Encodes a multi-root candidate payload in the compatibility envelope."
-);
-
-compat_json!(
-    decode_multi_root_candidate_json,
-    decode_multi_root_candidate_payload,
-    "Decodes a multi-root candidate envelope to its canonical payload."
-);
-
-compat_json!(
-    encode_publication_json,
-    encode_publication_payload,
-    "Encodes a publication payload in the versioned compatibility envelope."
-);
-
-compat_json!(
-    decode_publication_json,
-    decode_publication_payload,
-    "Decodes a versioned publication envelope to its canonical payload."
-);
-
 /// Exact hard limits for the process-local immutable-object accelerator.
 #[napi(object)]
 pub struct NativeObjectCacheOptions {
-    /// Maximum resident immutable objects.
     pub maximum_entries: NapiU32,
-    /// Maximum resident canonical object bytes.
     pub maximum_bytes: BigInt,
-    /// Maximum distinct backing-store reads in flight.
     pub maximum_in_flight: NapiU32,
-    /// Maximum followers retained behind one in-flight read.
     pub maximum_waiters_per_object: NapiU32,
 }
 
 /// One exact namespace component crossing the native binding boundary.
 #[napi(object)]
 pub struct NativePathComponent {
-    /// `utf8`, `posix-bytes`, or `windows-utf16le`.
     pub encoding: String,
-    /// Exact component bytes in the declared representation.
     pub bytes: Buffer,
 }
 
 /// One exact absolute volume path; an empty vector denotes the root.
 #[napi(object)]
 pub struct NativeNamespacePath {
-    /// Root-to-leaf exact components.
     pub components: Vec<NativePathComponent>,
 }
 
 /// Immutable content-addressed candidate built without publishing authority.
 #[napi(object)]
 pub struct NativeCheckpointResult {
-    /// Stable 32-byte generation identity.
     pub generation_id: Buffer,
-    /// Exact machine-readable work receipt.
     pub work_json: String,
 }
 
@@ -159,18 +112,12 @@ pub(in crate::bindings) struct PendingReconcile {
 /// Explicit immutable inheritance and stable retry identity.
 #[napi(object)]
 pub struct NativeForkOptions {
-    /// Absent inherits all; empty inherits no paths while preserving lineage.
     pub paths: Option<Vec<String>>,
-    /// Exact caller-owned stable creation key.
     pub idempotency_key: Option<Buffer>,
 }
 
 /// One exact transaction dependency conflict.
 #[napi(object)]
-#[allow(
-    missing_docs,
-    reason = "plain N-API object whose fields the struct doc describes as a whole"
-)]
 pub struct NativeTransactionConflict {
     pub region: String,
     pub file_id: Option<Buffer>,
@@ -201,16 +148,6 @@ pub(in crate::bindings) fn native_idempotency_key(value: Option<Buffer>) -> Resu
                 })
         },
     )
-}
-
-pub(in crate::bindings) const fn operation_reconcile_limits(
-    options: NativeOperationReconcileOptions,
-) -> OperationReconcileLimits {
-    OperationReconcileLimits {
-        maximum_generations: options.maximum_generations.into_inner(),
-        maximum_changes: options.maximum_changes.into_inner(),
-        maximum_conflicts: options.maximum_conflicts.into_inner(),
-    }
 }
 
 pub(in crate::bindings) fn native_reconcile_outcome(
@@ -276,17 +213,6 @@ pub(in crate::bindings) fn generation_id(bytes: &[u8]) -> Result<acyclic_fs::Gen
         bytes,
         "generation identity",
     )?)))
-}
-
-pub(in crate::bindings) fn publication_permit(
-    lease: Option<&NativeOperationWindowLease>,
-) -> Result<acyclic_fs::PublicationPermit> {
-    Ok(lease
-        .map(operation_window_lease)
-        .transpose()?
-        .map_or(acyclic_fs::PublicationPermit::Unrestricted, |lease| {
-            lease.publication_permit()
-        }))
 }
 
 pub(in crate::bindings) fn native_generation_buffer(generation: GenerationId) -> Buffer {

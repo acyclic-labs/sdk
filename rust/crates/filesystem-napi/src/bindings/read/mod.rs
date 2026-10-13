@@ -3,54 +3,39 @@ use super::*;
 /// Exact no-follow lookup result.
 #[napi(object)]
 pub struct NativeLookup {
-    /// Whether the terminal path exists.
     pub exists: bool,
-    /// Stable file identity when present.
     pub file_id: Option<Buffer>,
-    /// Canonical file kind when present.
     pub file_kind: Option<FileKind>,
-    /// Number of resolved components.
     pub resolved_components: u32,
-    /// Exact machine-readable work receipt.
     pub work_json: String,
 }
 
 /// One original-order entry from a shared path lookup batch.
 #[napi(object)]
 pub struct NativeBatchLookupEntry {
-    /// Whether the terminal path exists.
     pub exists: bool,
-    /// Stable file identity when present.
     pub file_id: Option<Buffer>,
-    /// Canonical file kind when present.
     pub file_kind: Option<FileKind>,
-    /// Number of path components resolved before terminal absence.
     pub resolved_components: u32,
 }
 
 /// One bounded shared-frontier path lookup receipt.
 #[napi(object)]
 pub struct NativeBatchLookup {
-    /// One result per original path, preserving order and duplicates.
     pub entries: Vec<NativeBatchLookupEntry>,
-    /// Logical result-vector capacity retained by the caller.
     pub retained_allocation_bytes: BigInt,
-    /// Exact machine-readable work receipt.
     pub work_json: String,
 }
 
 /// One bounded regular-file range.
 #[napi(object)]
 pub struct NativeFileRead {
-    /// Exact logical bytes.
     pub bytes: Buffer,
-    /// Exact machine-readable work receipt.
     pub work_json: String,
 }
 
 #[napi]
 impl NativeCheckout {
-    /// Resolves one canonical absolute path without following links.
     #[napi]
     pub async fn lookup_no_follow(&self, path: String) -> Result<NativeLookup> {
         let path = native_path(&path, self.config)?;
@@ -66,7 +51,6 @@ impl NativeCheckout {
         })
     }
 
-    /// Resolves an ordered batch of canonical paths through one shared
     #[napi]
     pub async fn lookup_batch_no_follow(&self, paths: Vec<String>) -> Result<NativeBatchLookup> {
         let maximum =
@@ -104,7 +88,6 @@ impl NativeCheckout {
         })
     }
 
-    /// Returns one complete no-follow file record and canonical metadata.
     #[napi]
     pub async fn stat_no_follow(&self, path: String) -> Result<NativeStat> {
         let path = native_path(&path, self.config)?;
@@ -132,7 +115,6 @@ impl NativeCheckout {
         })
     }
 
-    /// Reads one complete file record by stable identity.
     #[napi]
     pub async fn read_file_record_by_id(&self, file_id: Buffer) -> Result<NativeFileRecordRead> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
@@ -144,7 +126,6 @@ impl NativeCheckout {
         })
     }
 
-    /// Resolves an ordered path batch once into immutable generation-bound handles.
     #[napi]
     pub fn resolve_files<'env>(
         &self,
@@ -206,7 +187,6 @@ impl NativeCheckout {
         })
     }
 
-    /// Reads one exact logical regular-file range.
     #[napi]
     pub async fn read_file_range(
         &self,
@@ -233,7 +213,6 @@ impl NativeCheckout {
         })
     }
 
-    /// Reads one exact logical range by stable file identity.
     #[napi]
     pub async fn read_file_range_by_id(
         &self,
@@ -260,7 +239,6 @@ impl NativeCheckout {
         })
     }
 
-    /// Reads one symbolic link's exact opaque target bytes without following it.
     #[napi]
     pub async fn read_symbolic_link(&self, path: String) -> Result<NativeFileRead> {
         let path = native_path(&path, self.config)?;
@@ -272,7 +250,6 @@ impl NativeCheckout {
         })
     }
 
-    /// Reads one opaque Windows reparse-point payload without interpreting it.
     #[napi]
     pub async fn read_reparse_point(&self, path: String) -> Result<NativeFileRead> {
         let path = native_path(&path, self.config)?;

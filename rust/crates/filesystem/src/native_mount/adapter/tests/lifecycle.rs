@@ -169,10 +169,7 @@ fn publication_policy_and_subtree_cases() -> Result<(), Box<dyn std::error::Erro
                 profile,
                 ..VolumeConfig::portable(Lifecycle::Ephemeral)
             };
-            let root = NamespacePath::new(
-                vec![source.logical_name(directory.components()[0].as_slice())?],
-                config.limits,
-            )?;
+            let root = source.path(&directory)?;
             let subtree = CheckoutMountSource::new_at(source.checkout.clone(), config, root)?;
             let nested = native_test_path("nested.bin");
             subtree.create_file(&nested, metadata(), None, &work)?;

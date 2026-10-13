@@ -3,39 +3,29 @@ use super::*;
 /// Complete resumable generation-transfer manifest.
 #[napi(object)]
 pub struct NativeExportManifest {
-    /// Canonical, versioned, authenticated transfer descriptor.
     pub manifest_bytes: Buffer,
-    /// Stable sorted typed 33-byte complete object closure.
     pub objects: Vec<Buffer>,
-    /// Exact machine-readable work receipt.
     pub work_json: String,
 }
 
 /// One manifest-ordered immutable-object transfer page.
 #[napi(object)]
 pub struct NativeGenerationTransferBatch {
-    /// Manifest-relative first object position.
     pub first_object: BigInt,
-    /// Next position, absent at the canonical end.
     pub next_object: Option<BigInt>,
-    /// Ordered immutable object bodies.
     pub objects: Vec<Buffer>,
-    /// Exact machine-readable work receipt.
     pub work_json: String,
 }
 
 /// Cursor after one idempotently imported transfer page.
 #[napi(object)]
 pub struct NativeGenerationTransferCursor {
-    /// Manifest-relative next object position.
     pub next_object: BigInt,
-    /// Exact machine-readable work receipt.
     pub work_json: String,
 }
 
 #[napi]
 impl NativeCheckout {
-    /// Builds a deterministic complete manifest for resumable generation transfer.
     #[napi]
     pub async fn export_manifest(&self) -> Result<NativeExportManifest> {
         let checkout = Box::pin(self.inner.lock()).await;

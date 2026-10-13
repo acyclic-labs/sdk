@@ -773,21 +773,23 @@ async fn original_native_first_dispatch_pending(
         let value = conversation.0.1.verifier(&mut Some(&mut io))?;
         (value, io.into_custody()?)
     };
-    let history = acyclic_harness::store::HistoryReader::new_with_native_work(
+    let mut io = acyclic_harness::store::HistoryWork::new(
+        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+    );
+    let history = acyclic_harness::store::HistoryReader::new(
         stream,
         &conversation.0.0,
         &verifier.0,
-        work,
+        &mut Some(&mut io),
     )?;
-    let pin = history.0.pin_with_native_work(0, work).await?;
+    let pin = history.pin(0, Some(&mut io)).await?;
     let effect = acyclic_harness::effect_host::task_effect_id(
         task,
         pi_fork::derived(plan.original, "native-effect", &work)?,
         &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)),
     )?;
     let observed = history
-        .0
-        .effect_with_native_work(&pin.0, effect, limits, work)
+        .effect(&pin, effect, limits, Some(&mut io))
         .await?;
-    Ok(observed.0.is_none())
+    Ok(observed.is_none())
 }
