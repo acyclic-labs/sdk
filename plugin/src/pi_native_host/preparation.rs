@@ -4,14 +4,17 @@ use super::*;
 impl PiNativeCommandHost {
     pub(super) async fn prepare_effect(
         &self,
-        shared: Arc<TaskContext>,
-        input: &PiTaskInput,
-        owner: Arc<TaskJournalOwner<LocalStream>>,
+        shared_input_owner: (
+            Arc<TaskContext>,
+            &PiTaskInput,
+            Arc<TaskJournalOwner<LocalStream>>,
+        ),
         command: &WorkflowCommand,
         mut retained_intent: (PiNativeLaunchIntent, NativeAllocation),
         existing_only: bool,
         work: &NativeMaterializationWork,
     ) -> Result<Arc<BoundEffect>> {
+        let (shared, input, owner) = shared_input_owner;
         let intent = &mut retained_intent.0;
         let context = shared.as_ref();
         self.hydrate_child(
@@ -166,12 +169,13 @@ impl PiNativeCommandHost {
                     .scratch_gate
                     .reserve(
                         &owner,
-                        &scratch_workspace,
-                        &prepared.binding.scratch.volume,
-                        scratch_generation,
+                        (
+                            &scratch_workspace,
+                            &prepared.binding.scratch.volume,
+                            scratch_generation,
+                        ),
                         command.operation_id,
-                        work,
-                        cancellation,
+                        (work, cancellation),
                         existing_only,
                     )
                     .await?;
@@ -230,12 +234,9 @@ impl PiNativeCommandHost {
                     root.as_mut()
                         .ok_or(Error::Indeterminate(command.operation_id))?
                         .create_directories(
-                            &owner,
-                            &shared,
+                            (&owner, &shared),
                             &prepared.binding,
-                            &options.0,
-                            intent,
-                            session,
+                            (&options.0, intent, session),
                             std::slice::from_ref(&scratch_binding),
                             work,
                         )
@@ -269,12 +270,13 @@ impl PiNativeCommandHost {
                     .project_gate
                     .reserve(
                         &owner,
-                        prepared.workspace.workspace(),
-                        project,
-                        prepared.native_lazy.authored_generation,
+                        (
+                            prepared.workspace.workspace(),
+                            project,
+                            prepared.native_lazy.authored_generation,
+                        ),
                         command.operation_id,
-                        work,
-                        cancellation,
+                        (work, cancellation),
                         existing_only,
                     )
                     .await?;

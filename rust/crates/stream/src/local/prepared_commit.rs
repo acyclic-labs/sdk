@@ -19,13 +19,18 @@ impl LocalStream {
                 stream.check_available()?;
                 let input = provider.request_claim(&request)?;
                 // Clone only before issuance, with both control vectors funded.
-                let copied = input.as_ref().map_or(0, |claim| claim.bytes() as usize);
+                let copied = usize::try_from(
+                    input
+                        .as_ref()
+                        .map_or(0, acyclic_native_runtime::ReadAllocation::bytes),
+                )
+                .map_err(|_| StreamError::Capacity)?;
                 let command_claim = work.record(acyclic_native_runtime::ReadAllocation::new(
                     &work.meter,
                     copied,
                 ))?;
                 work.record(work.meter.admit_codec(0, copied as u64, 0))?;
-                let mut command = Command::Commit(request.clone());
+                let command = Command::Commit(request.clone());
                 work.record(work.meter.record_codec(0, copied as u64, 0))?;
                 drop(input);
                 let (plan, recovery) = provider.prepare(request, maximum).await?;
@@ -36,7 +41,7 @@ impl LocalStream {
                         bytes.checked_add(4 + FRAME_TIME_BYTES + FRAME_CHECKSUM_BYTES + 20)
                     })
                     .ok_or(StreamError::Capacity)?;
-                let mut frame = PreparedFrame::reserve(capacity, Some(Arc::clone(&work)))
+                let frame = PreparedFrame::reserve(capacity, Some(Arc::clone(&work)))
                     .map_err(|error| stream.frame_error(error))?;
                 work.reserve_durability(4)?;
                 let slot = work.record(crate::native::NativeCommitRecordSlot::new(&work.meter))?;
@@ -45,46 +50,7 @@ impl LocalStream {
                 let writer_work = Arc::clone(&work);
                 let worker = async move {
                     let _command_claim = command_claim;
-                    let result = async {
-                        let body = ingress.receive().await?;
-                        let visibility = writer.inner.visibility.write().await;
-                        writer.check_available()?;
-                        let Command::Commit(request) = &mut command else {
-                            unreachable!()
-                        };
-                        let [crate::CommitMutation::Append { records, .. }] =
-                            request.mutations.as_mut_slice()
-                        else {
-                            unreachable!()
-                        };
-                        records[0] = body.clone();
-                        let time = writer.inner.commit_clock.source.now_unix_millis();
-                        frame
-                            .fill(&command, time)
-                            .map_err(|error| writer.frame_error(error))?;
-                        writer
-                            .inner
-                            .journal
-                            .lock()
-                            .map_err(|_| StreamError::Unavailable)?
-                            .admit(&frame)
-                            .map_err(|error| writer.frame_error(error))?;
-                        writer.inner.commit_clock.pin(time);
-                        let result = plan.settle(body).await;
-                        writer.inner.commit_clock.unpin();
-                        let result = match result {
-                            Ok(result) => {
-                                writer.persist(frame).await?;
-                                Ok(result)
-                            }
-                            Err(error) => Err(error),
-                        };
-                        let required = writer.inner.required()?;
-                        drop(visibility);
-                        writer.await_durable(required).await?;
-                        result
-                    }
-                    .await;
+                    let result = writer.settle_prepared(command, frame, plan, ingress).await;
                     writer_work.finish(result)
                 };
                 let allocation = work.record(acyclic_native_runtime::ReadAllocation::new(
@@ -101,7 +67,10 @@ impl LocalStream {
                     Ok(future) => future,
                     Err(error) => {
                         slot.close();
-                        return Err(work.record::<()>(Err(error)).unwrap_err());
+                        return Err({
+                            let _ = work.record::<()>(Err(error));
+                            StreamError::Unavailable
+                        });
                     }
                 };
                 Ok((
@@ -114,11 +83,64 @@ impl LocalStream {
         })
     }
 
+    async fn settle_prepared(
+        &self,
+        mut command: Command,
+        mut frame: PreparedFrame,
+        plan: crate::memory::PreparedCommit,
+        ingress: Arc<crate::native::NativeCommitRecordSlot>,
+    ) -> Result<
+        (
+            CommitOutcome,
+            Option<acyclic_native_runtime::ReadAllocation>,
+        ),
+        StreamError,
+    > {
+        let body = ingress.receive().await?;
+        let visibility = self.inner.visibility.write().await;
+        self.check_available()?;
+        let Command::Commit(request) = &mut command else {
+            unreachable!()
+        };
+        let [crate::CommitMutation::Append { records, .. }] = request.mutations.as_mut_slice()
+        else {
+            unreachable!()
+        };
+        *records.first_mut().ok_or(StreamError::InvalidArgument)? = body.clone();
+        let time = self.inner.commit_clock.source.now_unix_millis();
+        frame
+            .fill(&command, time)
+            .map_err(|error| self.frame_error(error))?;
+        self.inner
+            .journal
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?
+            .admit(&frame)
+            .map_err(|error| self.frame_error(error))?;
+        self.inner.commit_clock.pin(time);
+        let result = plan.settle(body).await;
+        self.inner.commit_clock.unpin();
+        let result = match result {
+            Ok(result) => {
+                self.persist(frame).await?;
+                Ok(result)
+            }
+            Err(error) => Err(error),
+        };
+        let required = self.inner.required()?;
+        drop(visibility);
+        self.await_durable(required).await?;
+        result
+    }
+
     fn frame_error(&self, error: LocalStreamError) -> StreamError {
         match error {
             LocalStreamError::InvalidLimits => StreamError::Capacity,
             LocalStreamError::Io(error) => match &self.work {
-                Some(work) => work.record::<()>(Err(error)).unwrap_err(),
+                Some(work) => {
+                    let _ = work.record::<()>(Err(error));
+                    StreamError::Unavailable
+                }
                 None => StreamError::Unavailable,
             },
             _ => StreamError::Unavailable,

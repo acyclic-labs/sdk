@@ -221,16 +221,13 @@ pub(crate) fn build_control_request(
     let hash_custody = body_hash(&body, work)?;
     let hash = &hash_custody.0;
     let authority = owner.authority(work)?;
-    let operator = authority
-        .issuer
-        .issue(
-            &format!("pi:operator:{}:{hash}", body.session()),
-            &Capabilities::new([capability(&body, hash)]),
-            Some(owner.policy().agent),
-            None,
-            &mut None,
-        )
-        .expect("scope proof");
+    let operator = authority.issuer.issue(
+        &format!("pi:operator:{}:{hash}", body.session()),
+        &Capabilities::new([capability(&body, hash)]),
+        Some(owner.policy().agent),
+        None,
+        &mut None,
+    )?;
     let session_id = body.session().to_owned();
     let event = match &body {
         PiOperatorBody::Inspect { .. } => "OperatorInspect",
@@ -313,10 +310,9 @@ pub(crate) fn parse_cli(args: &[String]) -> std::result::Result<PiOperatorCli, S
     let mut file = None;
     let mut offset = None;
     let mut maximum_bytes = None;
-    let mut index = 1;
-    while index < args.len() {
-        let flag = args[index].as_str();
-        index += 1;
+    let mut arguments = args.iter().skip(1);
+    while let Some(argument) = arguments.next() {
+        let flag = argument.as_str();
         if flag == "--json" {
             if json {
                 return Err("duplicate --json".into());
@@ -331,11 +327,10 @@ pub(crate) fn parse_cli(args: &[String]) -> std::result::Result<PiOperatorCli, S
             project_files = true;
             continue;
         }
-        let value = args
-            .get(index)
+        let value = arguments
+            .next()
             .ok_or_else(|| format!("{flag} requires a value"))?
             .clone();
-        index += 1;
         let slot = match flag {
             "--session" => &mut session,
             "--operation" => &mut operation,
@@ -449,8 +444,7 @@ fn operator_owned_quota(items: u64, input_bytes: u64, scratch: u64) -> Result<u6
         // These are the complete dynamic element types of the typed DTO.
     ]
     .into_iter()
-    .max()
-    .expect("nonempty approval schema") as u64;
+    .fold(0, usize::max) as u64;
     items
         .checked_mul(10)
         .and_then(|slots| slots.checked_mul(maximum_slot + 2 * content_slot))

@@ -61,7 +61,14 @@ async fn public_guarded_commit_binds_current_clock_and_keeps_exact_cached_replay
     let [CommittedMutation::Append(append)] = envelope.mutations.as_slice() else {
         panic!("single append")
     };
-    assert_eq!(append.records[0].committed_at_micros, 125_000);
+    assert_eq!(
+        append
+            .records
+            .first()
+            .ok_or(StreamError::InvalidArgument)?
+            .committed_at_micros,
+        125_000
+    );
     let retained = provider.read_commit(envelope.commit_id).await?;
     assert_eq!(&retained, envelope);
     let mut rows = provider

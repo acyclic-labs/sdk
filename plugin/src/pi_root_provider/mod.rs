@@ -65,8 +65,8 @@ use inputs::{
     read_root_artifact_with_native_work,
 };
 pub(crate) use inputs::{
-    load_original_preparation_with_native_work, observe_pi_input, stage_pi_input, stage_pi_operator_input,
-    stage_pi_root_input_with_native_work,
+    load_original_preparation_with_native_work, observe_pi_input, stage_pi_input,
+    stage_pi_operator_input, stage_pi_root_input_with_native_work,
 };
 pub(crate) use preparation::bind_root_output_context_with_native_work;
 pub(crate) use sources::{
@@ -134,13 +134,16 @@ pub(crate) fn allocation_budget() -> WorkBudget {
 fn same_allocation(left: &PiRootAllocation, right: &PiRootAllocation) -> bool {
     left.scratch == right.scratch
         && left.roots.keys().eq(right.roots.keys())
-        && left.roots.iter().all(|(key, root)| {
-            let other = &right.roots[key];
-            root.repository_workspace_id == other.repository_workspace_id
-                && root.source_identity == other.source_identity
-                && root.source_epoch == other.source_epoch
-                && root.native_root_identity == other.native_root_identity
-        })
+        && left
+            .roots
+            .values()
+            .zip(right.roots.values())
+            .all(|(root, other)| {
+                root.repository_workspace_id == other.repository_workspace_id
+                    && root.source_identity == other.source_identity
+                    && root.source_epoch == other.source_epoch
+                    && root.native_root_identity == other.native_root_identity
+            })
 }
 
 struct ProviderState {

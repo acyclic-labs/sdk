@@ -1702,7 +1702,7 @@ async fn namespace_and_identity_preconditions_fail_with_exact_terminal_errors()
 }
 
 #[tokio::test]
-async fn nested_regular_identity_failures_preserve_prior_generation_work()
+async fn identity_copy_refusal_preserves_prior_planning_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let fixture = fixture(&store).await?;
@@ -1758,7 +1758,7 @@ async fn nested_regular_identity_failures_preserve_prior_generation_work()
             "unexpected nested regular failure: {:?}",
             failure.error
         );
-        assert!(failure.work.backend_read_operations > 0);
+        assert!(failure.work.items_examined > 0);
         assert_eq!(failure.work.bytes_copied, 0);
     }
     Ok(())

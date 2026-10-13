@@ -24,14 +24,14 @@ fn invalid(reason: &'static str) -> Error {
 
 pub(crate) async fn bind_task_conversation(
     stream: &Arc<LocalStream>,
-    authority: (Authority, AuthorityIssuer, Scope),
-    custody: NativeAllocation,
+    authority_custody: ((Authority, AuthorityIssuer, Scope), NativeAllocation),
     owner: &TaskJournalOwner<LocalStream>,
     volume: &VolumeRef,
     creation: acyclic_fs::OperationId,
     limits: Limits,
     work: &NativeMaterializationWork,
 ) -> Result<()> {
+    let (authority, custody) = authority_custody;
     if authority.0.id
         != *uuid::Uuid::from_bytes(owner.task_id().into_bytes())
             .hyphenated()

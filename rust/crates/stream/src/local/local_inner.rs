@@ -39,7 +39,7 @@ impl LocalInner {
         target: u64,
         file: &File,
         durability: LocalDurability,
-        work: Option<Arc<crate::memory::Work>>,
+        work: Option<&crate::memory::Work>,
     ) {
         #[cfg(test)]
         {

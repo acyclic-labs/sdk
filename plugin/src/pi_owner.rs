@@ -497,7 +497,11 @@ impl PiOwnerConfig {
             ));
         }
         let custody = work.claim(length + 1, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
-        let mut bytes = Vec::with_capacity(length as usize + 1);
+        let mut bytes = Vec::with_capacity(
+            usize::try_from(length).map_err(|_| {
+                acyclic_fs::NativeTreeMaterializationError::from(acyclic_fs::WorkError::Overflow)
+            })? + 1,
+        );
         file.take(length + 1)
             .read_to_end(&mut bytes)
             .map_err(|error| Error::from(work.runtime_error(error)))?;

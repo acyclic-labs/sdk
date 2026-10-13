@@ -121,7 +121,7 @@ async fn grpc_transport_passes_the_public_suite() -> TestResult {
             .into_iter()
             .map(|record| record.value)
             .collect::<Vec<_>>(),
-        values[2..19].to_vec()
+        values.iter().skip(2).take(17).cloned().collect::<Vec<_>>()
     );
     Ok(())
 }
@@ -315,22 +315,17 @@ async fn retry_attempts_record_independent_spans() -> TestResult {
     decode_response(response, Ok)?;
     let attempts = captured.all("acyclic.stream.grpc.call");
     assert_eq!(attempts.len(), 2);
-    assert_eq!(
-        (
-            attempts[0]["attempt"].as_str(),
-            attempts[0]["outcome"].as_str(),
-            attempts[0]["rpc.code"].as_str()
-        ),
-        ("1", "err", "14")
-    );
-    assert_eq!(
-        (
-            attempts[1]["attempt"].as_str(),
-            attempts[1]["outcome"].as_str(),
-            attempts[1]["rpc.code"].as_str()
-        ),
-        ("2", "ok", "0")
-    );
+    for (attempt, (number, outcome, code)) in
+        attempts.iter().zip([("1", "err", "14"), ("2", "ok", "0")])
+    {
+        for (field, expected) in [
+            ("attempt", number),
+            ("outcome", outcome),
+            ("rpc.code", code),
+        ] {
+            assert_eq!(attempt.get(field).map(String::as_str), Some(expected));
+        }
+    }
     Ok(())
 }
 

@@ -20,20 +20,26 @@ pub(crate) struct PiWritebackRoot {
 }
 impl PiWritebackRoot {
     pub(crate) async fn new(
-        protected: Arc<crate::pi_owner::PiOwnerConfig>,
-        resources: &crate::ServiceResources,
-        filesystem: Arc<crate::pi_native_host::PiNativeFilesystem>,
-        stream: Arc<LocalStream>,
-        context: Arc<TaskContext>,
-        owner: Arc<TaskJournalOwner<LocalStream>>,
+        protected_resources_filesystem_stream: (
+            Arc<crate::pi_owner::PiOwnerConfig>,
+            &crate::ServiceResources,
+            Arc<crate::pi_native_host::PiNativeFilesystem>,
+            Arc<LocalStream>,
+        ),
+        context_owner: (Arc<TaskContext>, Arc<TaskJournalOwner<LocalStream>>),
         request: (crate::pi_root_inputs::PiRootRequest, NativeAllocation),
-        key: &str,
-        original: LazySnapshotRef,
-        path: &Path,
-        operation: acyclic_harness::OperationId,
-        identity: acyclic_fs::NativeRootIdentity,
+        key_original_path_operation_identity: (
+            &str,
+            LazySnapshotRef,
+            &Path,
+            acyclic_harness::OperationId,
+            acyclic_fs::NativeRootIdentity,
+        ),
         work: &NativeMaterializationWork,
     ) -> Result<Arc<Self>> {
+        let (protected, resources, filesystem, stream) = protected_resources_filesystem_stream;
+        let (context, owner) = context_owner;
+        let (key, original, path, operation, identity) = key_original_path_operation_identity;
         let task = owner.task_id();
         if !path.is_absolute()
             || request.0.binding.task_id != protected.policy().root_task

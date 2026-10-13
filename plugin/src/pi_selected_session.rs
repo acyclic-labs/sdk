@@ -69,12 +69,13 @@ impl PiSession {
             Some(value) => Some(
                 value
                     .as_u64()
+                    .and_then(|value| u32::try_from(value).ok())
                     .filter(|value| (1..=256).contains(value))
                     .ok_or_else(|| {
                         acyclic_harness::Error::Invalid(
                             "selected page requires 1..256 entries".to_owned(),
                         )
-                    })? as u32,
+                    })?,
             ),
         };
         let destination = match arguments.get("destination") {
@@ -161,7 +162,6 @@ impl PiSession {
                 owner.policy().maximum_payload_bytes,
                 &work,
             )?;
-            let input = input;
             let (observed, custody) = selected
                 .control_with_native_work(
                     observe_operation,
@@ -269,10 +269,11 @@ impl PiSession {
             return Err(acyclic_harness::Error::from(cause));
         }
         if let Some(mut source_custody) = root_cut_custody
-            && let Err(cause) = custody.absorb(&mut source_custody) {
-                drop(value);
-                return Err(acyclic_harness::Error::from(cause));
-            }
+            && let Err(cause) = custody.absorb(&mut source_custody)
+        {
+            drop(value);
+            return Err(acyclic_harness::Error::from(cause));
+        }
         Ok((value, custody))
     }
 }

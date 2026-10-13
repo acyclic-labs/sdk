@@ -31,22 +31,27 @@ struct GuardBundle<G: ?Sized> {
 #[cfg(not(target_arch = "wasm32"))]
 impl<G: Send + Sync + 'static> GuardBundle<G> {
     fn new(
-        data: &mut Vec<u8>,
-        guard: &mut Option<G>,
+        data: Vec<u8>,
+        guard: G,
         meter: &Arc<dyn NativeReadMeter>,
-    ) -> io::Result<Arc<Self>> {
-        if guard.is_none() {
-            return Err(io::ErrorKind::InvalidInput.into());
-        }
-        let metadata = ReadAllocation::new(meter, std::mem::size_of::<Self>())?;
+    ) -> Result<Arc<Self>, PreparedOwnedBytesFailure<G>> {
+        let metadata = match ReadAllocation::new(meter, std::mem::size_of::<GuardBundle<G>>()) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                return Err(PreparedOwnedBytesFailure {
+                    data,
+                    original_guard: guard,
+                    error: PreparedOwnedBytesError::Admission(error),
+                });
+            }
+        };
         Ok(Arc::new(Self {
-            data: std::mem::take(data),
+            data,
             metadata,
-            _original_guard: guard.take().ok_or(io::ErrorKind::InvalidInput)?,
+            _original_guard: guard,
         }))
     }
 }
-
 /// Immutable bytes retaining their original allocation.
 #[derive(Clone)]
 pub struct OwnedBytes {
@@ -77,21 +82,18 @@ impl OwnedBytes {
     /// Transfers a vector and its allocation owner.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn from_vec_with_guard<G: Send + Sync + 'static>(
-        mut data: Vec<u8>,
+        data: Vec<u8>,
         guard: G,
         meter: Arc<dyn NativeReadMeter>,
     ) -> Result<Self, PreparedOwnedBytesFailure<G>> {
-        let mut guard = Some(guard);
-        Self::from_vec_with_guard_in_place(&mut data, &mut guard, &meter).map_err(|error| {
-            let Some(original_guard) = guard else {
-                unreachable!("rejected transfer retains its owner")
-            };
-            PreparedOwnedBytesFailure {
-                data,
-                error: PreparedOwnedBytesError::Admission(error),
-                original_guard,
-            }
-        })
+        let (length, capacity) = (data.len(), data.capacity());
+        let result = GuardBundle::new(data, guard, &meter).map(|guard| Self {
+            data: Data::Native(guard),
+            range: 0..length,
+            retained_capacity: Some(capacity),
+        });
+        drop(meter);
+        result
     }
     /// Leaves the vector and its owner untouched if admission fails.
     #[cfg(not(target_arch = "wasm32"))]
@@ -100,8 +102,17 @@ impl OwnedBytes {
         guard: &mut Option<G>,
         meter: &Arc<dyn NativeReadMeter>,
     ) -> io::Result<Self> {
+        if guard.is_none() {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        let metadata = ReadAllocation::new(meter, std::mem::size_of::<GuardBundle<G>>())?;
+        let original_guard = guard.take().ok_or(io::ErrorKind::InvalidInput)?;
         let (length, capacity) = (data.len(), data.capacity());
-        let guard = GuardBundle::new(data, guard, meter)?;
+        let guard = Arc::new(GuardBundle {
+            data: std::mem::take(data),
+            metadata,
+            _original_guard: original_guard,
+        });
         Ok(Self {
             data: Data::Native(guard),
             range: 0..length,
@@ -116,7 +127,10 @@ impl OwnedBytes {
             #[cfg(not(target_arch = "wasm32"))]
             Data::Native(guard) => guard.data.as_slice(),
         };
-        bytes.split_at(self.range.start).1.split_at(self.len()).0
+        let Some(bytes) = bytes.get(self.range.clone()) else {
+            unreachable!("visible range is checked when bytes are sliced")
+        };
+        bytes
     }
     /// Number of visible bytes.
     #[must_use]
@@ -167,7 +181,7 @@ impl OwnedBytes {
     /// Shares a checked range with its original allocation owner.
     ///
     /// # Panics
-    /// Panics when the range is outside the visible bytes.
+    /// Panics if the range exceeds the visible bytes.
     #[must_use]
     pub fn slice(&self, range: impl RangeBounds<usize>) -> Self {
         if self.retained_capacity.is_none()

@@ -252,7 +252,8 @@ impl PiTaskRuntime {
         )?;
         root.validate(binding, work)?;
         let authority = &self.authority;
-        let task = TaskId::parse(&authority.verifier.audience().id).expect("validated root task");
+        let task = TaskId::parse(&authority.verifier.audience().id)
+            .map_err(|error| invalid(&error.to_string()))?;
         if binding.task_id != task
             || Some(binding.agent_id) != authority.signed.agent()
             || !matches!(binding.scratch.allocation, PiScratchAllocation::Preparing)
