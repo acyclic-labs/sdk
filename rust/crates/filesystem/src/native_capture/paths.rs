@@ -32,7 +32,7 @@ pub(super) fn clone_capture_prefix(
     meter: &NativeMaterializationWork,
 ) -> Result<NamespacePath, CaptureError> {
     let names = path.components().get(..depth).ok_or(CaptureError::from(
-        crate::kernel::NamespacePathError::TooDeep.into(),
+        crate::kernel::NamespacePathError::TooDeep,
     ))?;
     NamespacePath::validate_component_lengths(
         names.iter().map(|name| name.as_bytes().len()),
