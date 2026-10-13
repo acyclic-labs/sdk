@@ -407,12 +407,17 @@ case "$lane" in
     bun run --filter '@acyclic-labs/objects' build
     bun run --filter '@acyclic-labs/stream' build
     bun run --filter '@acyclic-labs/harness' build
-    CHROME="$(command -v google-chrome || command -v chromium)" \
-      bun run --filter '@acyclic-labs/fs' test:browser
-    CHROME="$(command -v google-chrome || command -v chromium)" \
-      bun run --filter '@acyclic-labs/harness' test:browser:mcp
-    CHROME="$(command -v google-chrome || command -v chromium)" \
-      bun run --filter '@acyclic-labs/harness' test:client:browser
+    export CHROME="$(command -v google-chrome || command -v chromium)"
+    browser_pids=()
+    # Each driver owns its server and profile; overlap their browser cleanup.
+    bun run --filter '@acyclic-labs/fs' test:browser & browser_pids+=("$!")
+    bun run --filter '@acyclic-labs/harness' test:browser:mcp & browser_pids+=("$!")
+    bun run --filter '@acyclic-labs/harness' test:client:browser & browser_pids+=("$!")
+    browser_status=0
+    for browser_pid in "${browser_pids[@]}"; do
+      if wait "$browser_pid"; then :; else browser_status=1; fi
+    done
+    if (( browser_status != 0 )); then exit "$browser_status"; fi
     ;;
   typescript)
     # Family admission resolves the locked Cargo graph offline before WASM

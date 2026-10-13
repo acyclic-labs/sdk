@@ -778,3 +778,56 @@ test("Linux package qualification uses sixteen workers without changing publicat
   assert.ok(workflow.includes("MAKEFLAGS: -j${{ matrix.workers }}"));
   assert.ok(readFileSync(".github/actionlint.yaml", "utf8").includes(linux.runner));
 });
+
+test("web browser commands overlap and every child failure fails qualification", () => {
+  const source = readFileSync("scripts/qualify-ci.sh", "utf8").replaceAll("\r\n", "\n");
+  const start = source.indexOf("    browser_pids=()");
+  const end = source.indexOf("    ;;", start);
+  assert.ok(start > source.indexOf("bun run --filter '@acyclic-labs/harness' build"));
+  assert.ok(end > start);
+  const commands = source.slice(start, end);
+  mkdirSync(".tools", { recursive: true });
+  const root = mkdtempSync(".tools/web-browsers-").replaceAll("\\", "/");
+  assert.match(root, /^\.tools\/web-browsers-[A-Za-z0-9]+$/);
+  const bash = process.platform === "win32"
+    ? join(process.env.ProgramFiles ?? "C:/Program Files", "Git", "bin", "bash.exe") : "bash";
+  try {
+    for (const failure of ["none", "fs", "mcp", "client"]) {
+      const fixture = `${root}/${failure}`;
+      mkdirSync(fixture);
+      const result = spawnSync(bash, ["-c", `set -euo pipefail
+fixture='${fixture}'
+fail_id='${failure}'
+bun() {
+  case "$*" in
+    *"@acyclic-labs/fs"*) id=fs ;;
+    *"test:browser:mcp"*) id=mcp ;;
+    *"test:client:browser"*) id=client ;;
+    *) return 98 ;;
+  esac
+  printf 'started:%s\\n' "$id"
+  touch "$fixture/$id"
+  for attempt in {1..200}; do
+    if [[ -f "$fixture/fs" && -f "$fixture/mcp" && -f "$fixture/client" ]]; then break; fi
+    sleep 0.01
+  done
+  [[ -f "$fixture/fs" && -f "$fixture/mcp" && -f "$fixture/client" ]] || return 97
+  printf 'completed:%s\\n' "$id"
+  [[ "$id" != "$fail_id" ]]
+}
+${commands}
+printf 'joined\\n'
+`], { encoding: "utf8", timeout: 10000 });
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, failure === "none" ? 0 : 1, result.stderr);
+      const events = result.stdout.trim().split("\n");
+      assert.deepEqual(events.filter(event => event.startsWith("started:")).sort(),
+        ["started:client", "started:fs", "started:mcp"]);
+      assert.deepEqual(events.filter(event => event.startsWith("completed:")).sort(),
+        ["completed:client", "completed:fs", "completed:mcp"]);
+      assert.equal(events.includes("joined"), failure === "none");
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
