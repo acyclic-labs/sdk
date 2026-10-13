@@ -87,6 +87,39 @@ where
             .map(|(_, prepared)| prepared.publication)
     }
 
+    /// Selects a working volume under its original owner and operation grant.
+    pub async fn working_volume<P: StreamProvider>(
+        &self,
+        owner: &TaskJournalOwner<P>,
+        volume: &VolumeRef,
+        operation: VolumeOperation,
+        work: &NativeMaterializationWork,
+    ) -> Result<&NativeWorkingSet<A, O>> {
+        let io = PreparationIo::from_native_work(work)?;
+        if !self.work().shares_ledger(work)
+            || !owner.native_shared_work_matches(work)
+            || owner.task_binding() != (self.preparation.task, &self.preparation.original_fence)
+        {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "working volume changed its original owner",
+            });
+        }
+        owner.verify(false, &mut Some(&mut &io)).await?;
+        owner.require_volume_grant(volume, operation, &mut Some(&mut &io))?;
+        for (mapping, prepared) in self.manifest().volumes.iter().zip(&self.volumes) {
+            if &mapping.volume == volume && (operation == VolumeOperation::Read || mapping.writable)
+            {
+                prepared.callback.check(work)?.await?;
+                return Ok(&prepared.view);
+            }
+        }
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            reason: "volume is outside its original working view",
+        })
+    }
+
     /// Rechecks the physical views and immutable source selections.
     pub async fn validate_for_dispatch(&self) -> Result<()> {
         for volume in &self.volumes {

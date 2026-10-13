@@ -6,7 +6,6 @@ use std::path::{Component, Path};
 
 pub(crate) const PI_BUILTIN_COMMAND_KIND: &str = "acyclic.pi.builtin";
 pub(crate) const MAXIMUM_BUILTIN_BYTES: u64 = 262_144;
-pub(crate) const PI_BUILTIN_TOOL_REVISION: &str = "1.1.0";
 
 const BUILTIN_DIAGNOSTIC_LABEL_BYTES: u64 =
     acyclic_harness::preparation_serde_diagnostic_label_bytes() + 187;
@@ -174,22 +173,24 @@ fn is_absent(error: &Error) -> bool {
             cause: acyclic_fs::NativeTreeMaterializationError::Io(source),
             ..
         } => source.kind() == std::io::ErrorKind::NotFound,
+        Error::NativeView {
+            cause:
+                acyclic_fs::native_mount::MountLifecycleError::Materialization(
+                    acyclic_fs::NativeTreeMaterializationError::Io(source),
+                ),
+            ..
+        } => source.kind() == std::io::ErrorKind::NotFound,
         _ => false,
     }
 }
 
-mod contract;
-mod executor;
 mod native_io;
 mod paths;
 mod response;
 mod root;
 mod working_view;
-pub(crate) use contract::builtin_tool_definition_with_native_work;
-pub(crate) use executor::builtin_tool_executor_with_native_work;
 pub(crate) use paths::relative_path;
 use paths::{logical_path, scoped_variants, validate_path};
 pub(crate) use response::read_response;
 pub(crate) use root::authorize_owner;
-pub(crate) use working_view::mounted_relative_path;
 use working_view::{select_native_path, validate_declared_working_roles};

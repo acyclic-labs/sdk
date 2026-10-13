@@ -187,7 +187,7 @@ impl Read for MaterializationReader<'_> {
                 })
                 .map_err(std::io::Error::other)?;
         }
-        let count = crate::native_host::builtin_io(
+        let count = crate::native_host::file_transfer(
             acyclic_native_runtime::NativeOperationKind::Read,
             length,
             self.work,

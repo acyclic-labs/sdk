@@ -158,21 +158,7 @@ impl PiTaskRuntime {
                 acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
             )),
         )?;
-        let (mut tools, tools_custody) = ToolRegistry::new(work)?;
-        let mut tools_custody = Some(tools_custody);
-        let builtin = super::pi_builtin::builtin_tool_definition_with_native_work(work)?;
-        tools.register(
-            (
-                acyclic_harness::tool::Tool {
-                    definition: builtin.0,
-                    executor: super::pi_builtin::builtin_tool_executor_with_native_work(work)?,
-                    projection: Arc::new(acyclic_harness::tool::JsonToolProjection),
-                },
-                Some(builtin.1),
-            ),
-            &mut tools_custody,
-            Some(work),
-        )?;
+        let (tools, _tools_custody) = ToolRegistry::new(work)?;
         let resumable_tools = acyclic_harness::durable_tool::ResumableToolRegistry::default();
         let mut slot = work.claim(
             std::mem::size_of::<Self>() as u64,

@@ -23,6 +23,31 @@ where
         &self.source_root
     }
 
+    /// Runs bounded file IO inside this original working set's held directory.
+    pub async fn file_io<T>(
+        &self,
+        path: &Path,
+        write: bool,
+        parents: bool,
+        work: &NativeMaterializationWork,
+        operation: impl FnOnce(
+            &mut std::fs::File,
+            &NativeMaterializationWork,
+        ) -> Result<T, crate::NativeTreeMaterializationError>
+        + Send,
+    ) -> Result<T, MountLifecycleError> {
+        if (write && !self.writable) || !self._custody.work().shares_ledger(work) {
+            return Err(MountLifecycleError::NativePolicy(
+                "working file lacks its original authority",
+            ));
+        }
+        let work = work.with_source_io_lease(self.native_source_io_lease()?)?;
+        self.validate_for_presentation(&work).await?;
+        let result = file_io::run(self, path, write, parents, &work, operation);
+        self.validate_for_presentation(&work).await?;
+        result.map_err(Into::into)
+    }
+
     /// Accepts physical I/O on this source's paid retirement gate.
     pub fn native_source_io_lease(
         &self,
@@ -235,3 +260,6 @@ pub(super) fn validate_native_working_set_root(
     }
     Ok(root.identity())
 }
+
+#[path = "file_io.rs"]
+mod file_io;

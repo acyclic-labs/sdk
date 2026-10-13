@@ -466,18 +466,18 @@ impl PiSession {
         Ok(work)
     }
 
-    async fn mail_work(
-        &mut self,
-        caller: TaskId,
-        owner: &pi_owner::PiOwnerConfig,
+    fn mail_work(
+        &mut self, caller: TaskId, owner: &pi_owner::PiOwnerConfig,
         query_work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness::Result<acyclic_fs::NativeMaterializationWork> {
-        if caller == owner.policy().root_task {
-            Ok(query_work.clone())
-        } else {
-            self.native_host_with_native_work(query_work)?
-                .invocation_work(caller)
-                .await
+    ) -> impl std::future::Future<Output = acyclic_harness::Result<acyclic_fs::NativeMaterializationWork>> + Send + use<> {
+        let result = if caller == owner.policy().root_task { Ok(None) }
+            else { self.native_host_with_native_work(query_work).map(Some) };
+        let work = query_work.clone();
+        async move {
+            match result? {
+                None => Ok(work),
+                Some(host) => host.invocation_work(caller).await,
+            }
         }
     }
 

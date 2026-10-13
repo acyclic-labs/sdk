@@ -211,7 +211,7 @@ fn hash_native_entry(
             if maximum == 0 {
                 work.admit(NativeResourceCredit::ReadBytes.delta(1))?;
             }
-            let read = crate::native_host::builtin_io(
+            let read = crate::native_host::file_transfer(
                 acyclic_native_runtime::NativeOperationKind::Read,
                 maximum,
                 work,

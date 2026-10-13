@@ -20,7 +20,7 @@ pub(super) fn write_listed_content(
     let mut sink = |_offset: u64, packet: crate::kernel::OwnedSourceChunk| {
         let mut remaining = packet.bytes().as_ref();
         while !remaining.is_empty() {
-            let count = match crate::native_host::builtin_io(
+            let count = match crate::native_host::file_transfer(
                 acyclic_native_runtime::NativeOperationKind::Write,
                 (remaining).len(),
                 projection.work,

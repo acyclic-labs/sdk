@@ -351,18 +351,6 @@ impl PiNativeCommandHost {
                     .ok_or(Error::Indeterminate(command.operation_id))?,
             )
         };
-        let original_view_owner = handles
-            .preparation_owner
-            .as_ref()
-            .ok_or(Error::Indeterminate(command.operation_id))?
-            .0
-            .clone();
-        let working_view = view
-            .task_working_view_with_native_work(&original_view_owner, work)?
-            .await?;
-        shared
-            .bind_working_view_with_native_work(working_view, work)
-            .await?;
         *entry
             .view
             .write()

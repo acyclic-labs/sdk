@@ -13,7 +13,6 @@ impl crate::pi_host::PiControlHost<'_> {
         let decoded = PiBuiltinRequest::decode(&payload, work)?;
         drop(payload);
         let request = &decoded.0;
-        request.require_root_source_read(self.protected.policy().root_task)?;
         if context.durable_task_id() != Some(request.caller)
             || command.kind != PI_BUILTIN_COMMAND_KIND
             || command.operation_id != request.operation(self.protected.policy().root_task, work)?
@@ -23,6 +22,32 @@ impl crate::pi_host::PiControlHost<'_> {
         let caller = self.caller(&context, &fence, work).await?;
         let owner = &caller.0;
         let input = &caller.1;
+        if request.caller != self.protected.policy().root_task {
+            let live = self
+                .native()?
+                .live_source(request.caller, work)
+                .await?
+                .ok_or_else(|| denied("builtin child has no original live view"))?;
+            if live.prepared.binding != input.binding {
+                return Err(denied("builtin child changed its admitted binding"));
+            }
+            let (value, custody) = native_io::accepted_builtin_io(
+                &context,
+                &live.owner,
+                &live.view,
+                request,
+                &input.binding,
+                work,
+            )
+            .await?;
+            return Ok(
+                acyclic_harness::filesystem::TaskCommandProgress::ReadyWithNativeCustody {
+                    value,
+                    custody,
+                },
+            );
+        }
+        request.require_root_source_read(self.protected.policy().root_task)?;
         if input.binding.task_id != request.caller
             || input.binding.agent_id != self.protected.policy().agent
         {
