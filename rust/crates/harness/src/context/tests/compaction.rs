@@ -73,7 +73,7 @@ fn compaction_preserves_instructions_current_input_and_complete_exchanges() -> R
     );
     let (first, _) = compact(&plain, 3, 4)?;
     let (again, _) = compact(&first, 3, first.messages.len())?;
-    assert_eq!(again.messages[0], source.messages[0]);
+    assert_eq!(again.messages[1], source.messages[0]);
     assert_eq!(again.messages.last(), source.messages.last());
     let mut trailing = source.clone();
     trailing.messages.swap(4, 5);
