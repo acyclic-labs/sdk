@@ -1,11 +1,10 @@
 //! Executes the Rust Stream scenario projected into the TypeScript consumer guide.
 
-use acyclic_stream::OwnedBytes;
+use acyclic_stream::OwnedBytes as Bytes;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamPath,
     StreamProvider,
 };
-use bytes::Bytes;
 use futures::TryStreamExt as _;
 use serde_json::json;
 
@@ -14,8 +13,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let provider = MemoryStream::default();
     let path = StreamPath::new("typescript/events")?;
     let values = vec![
-        OwnedBytes::from_static(br#"{"kind":"created"}"#),
-        OwnedBytes::from_static(br#"{"kind":"ready"}"#),
+        Bytes::from_static(br#"{"kind":"created"}"#),
+        Bytes::from_static(br#"{"kind":"ready"}"#),
     ];
     let idempotency_key = IdempotencyKey::new(Bytes::from_static(b"typescript-stream"))?;
     let append = provider

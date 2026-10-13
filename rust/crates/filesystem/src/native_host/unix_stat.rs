@@ -23,15 +23,12 @@ pub(crate) fn root_path_identity<W: NativeHostWork>(
     }
     #[cfg(windows)]
     {
-        let (input, input_allocation) = encode_root_path_name(path, work)?;
-        let result = normalize_root_wide_name(&input, work);
-        drop(input);
-        work.release(input_allocation)?;
-        let (name, allocation) = result?;
-        let result = root_path_identity_wide(&name, work);
-        drop(name);
-        work.release(allocation)?;
-        result
+        with_root_name(path, work, |name, work| {
+            let file = work.attempt_io(READ, || {
+                open_windows_root_name(name, fs::FILE_READ_ATTRIBUTES | fs::SYNCHRONIZE)
+            })?;
+            directory_identity(&Dir::from_std_file(file), work)
+        })
     }
 }
 

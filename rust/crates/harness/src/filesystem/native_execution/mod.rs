@@ -104,9 +104,9 @@ where
         for (volume, mapping) in self.volumes.iter().zip(&self.manifest().volumes) {
             match volume {
                 PreparedVolume::Materialized { view, work, .. } => {
-                    view.validate_for_presentation_with_work(work, work.cancellation())
+                    view.validate_for_presentation(work)
                         .await?;
-                    view.verify_unchanged_with_work(work, work.cancellation())
+                    view.verify_unchanged(work)
                         .await?;
                 }
                 PreparedVolume::Lazy(lazy) => {
@@ -169,7 +169,7 @@ where
                 }
                 let snapshot = match volume {
                     PreparedVolume::Materialized { view, work, .. } if !mapping.writable => view
-                        .verify_unchanged_with_work(work, work.cancellation())
+                        .verify_unchanged(work)
                         .await
                         .map_err(|cause| failure(cause.into()))?,
                     PreparedVolume::Materialized {
@@ -180,10 +180,9 @@ where
                         ..
                     } => {
                         let callback = Arc::clone(callback);
-                        view.sync_with_permit_with_work(
+                        view.sync_with_permit(
                             *publication,
                             work,
-                            work.cancellation(),
                             move |actual: &NativeMaterializationWork| {
                                 let actual = actual.clone();
                                 let callback = Arc::clone(&callback);

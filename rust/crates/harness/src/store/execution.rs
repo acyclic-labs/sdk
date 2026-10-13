@@ -48,7 +48,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
             let write = if let Some(owner) = owner {
                 match &command.action {
                     Action::OpenInteraction { .. } => {
-                        owner.require_interaction_grant(work)?;
+                        crate::core::inspect_metadata(&owner.admission.grants, work)?;
+                        owner.require_interaction_grant(None)?;
                         crate::distributed::JournalWrite::Fresh
                     }
                     Action::PlanEffect {

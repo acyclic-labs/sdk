@@ -231,7 +231,7 @@ pub(super) fn validate_native_working_set_root(
     if expected.is_some_and(|identity| identity != root.identity()) {
         return Err(MountSourceError::Stale.into());
     }
-    if !root.stat(selected_root, &mut &*work)?.is_dir() {
+    if !{ #[cfg(unix)] { root.stat(selected_root, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(selected_root, &mut &*work, |path, work| root.stat(path, work)) } }?.is_dir() {
         return Err(MountLifecycleError::NativePolicy(
             "selected native working-set directory is absent",
         ));

@@ -1,35 +1,6 @@
 use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
-    /// Finds bounded sorted aliases using the canonical cached reverse traversal.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn paths_for_file_id_with_native_work(
-        &self,
-        file_id: FileId,
-        maximum_entries: u32,
-        work: &NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<(Vec<NamespacePath>, NativeAllocation), WorkspaceError> {
-        cancellation.check()?;
-        self.validate_native_work(work)
-            .map_err(WorkspaceError::Filesystem)?;
-        let mut accounting = KernelAccounting::native(work, cancellation);
-        let (paths, allocation) = crate::workspace::reverse_paths_to_file_root_with_accounting(
-            &self.volume,
-            &self.root,
-            self.generation_root,
-            file_id,
-            maximum_entries,
-            &mut accounting,
-            cancellation,
-        )
-        .await?;
-        Ok((
-            paths,
-            native_pinned_allocation(allocation).map_err(WorkspaceError::Filesystem)?,
-        ))
-    }
-
     /// Resolves an exact no-follow path on the original native journal.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn lookup_record_with_native_work(
@@ -229,15 +200,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 } else {
                     None
                 };
-                let base = self.base_root.file_table;
-                if let Some(candidate) = candidate
-                    && self
-                        .dependencies
-                        .proof()
-                        .observes_path(base, path, capture_terminal)
-                {
-                    return Ok((candidate, accounting.claim_owned(0, 0)?));
-                }
                 let (value, allocation) = self
                     .observe_base_for_candidate_with_accounting(
                         path,
@@ -250,12 +212,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 let mut observed = (value, allocation);
                 let base_lookup = observed.0.lookup;
                 let dependencies = std::mem::take(&mut observed.0.dependencies);
-                self.observe_staged_paths_with_accounting(
-                    base,
-                    [path],
-                    capture_terminal,
+                self.dependencies.extend_observations(
                     dependencies,
                     &mut observed.1,
+                    self.volume.config.limits.maximum_checkout_dependencies,
                     accounting,
                     cancellation,
                 )?;
@@ -374,7 +334,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             self.synchronize_live_with_accounting(accounting, cancellation)
                 .await?;
             let config = self.volume.config;
-            let base = self.base_root.file_table;
             if !self.tracks_observations() {
                 let lookup = if selected_restore {
                     crate::kernel::lookup_paths_selected_async_with_accounting(
@@ -416,12 +375,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .into_parts();
                 let mut observed = (value, allocation);
                 let dependencies = std::mem::take(&mut observed.0.dependencies);
-                self.observe_staged_paths_with_accounting(
-                    base,
-                    paths,
-                    true,
+                self.dependencies.extend_observations(
                     dependencies,
                     &mut observed.1,
+                    self.volume.config.limits.maximum_checkout_dependencies,
                     accounting,
                     cancellation,
                 )?;
@@ -465,58 +422,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .await?
             .into_parts();
             let lookup = (value, allocation);
-            let mut unobserved =
-                crate::kernel::Owned::<Vec<&NamespacePath>>::allocate(0, accounting)?;
-            {
-                let proof = self.dependencies.proof();
-                for path in paths {
-                    let examined = WorkCounters {
-                        items_examined: 1,
-                        ..WorkCounters::UNCHARGED
-                    };
-                    accounting.admit(examined)?;
-                    let observed = proof.observes_path(base, path, true);
-                    accounting.record_completed(examined)?;
-                    if !observed {
-                        unobserved.ensure_for_push(paths.len(), accounting)?;
-                        let copied = WorkCounters {
-                            bytes_copied: size_of::<&NamespacePath>() as u64,
-                            ..WorkCounters::UNCHARGED
-                        };
-                        accounting.admit(copied)?;
-                        unobserved.value.push(path);
-                        accounting.record_completed(copied)?;
-                    }
-                }
-            }
-            if !unobserved.value.is_empty() {
-                let (value, allocation) = crate::kernel::observe_path_refs_async_with_accounting(
-                    &self.volume.fs.inner.objects,
-                    &self.base_root,
-                    &unobserved.value,
-                    config,
-                    accounting,
-                    cancellation,
-                    Some(&self.dependencies.data_custody),
-                )
-                .await?
-                .into_parts();
-                let mut observed = (value, allocation);
-                let dependencies = std::mem::take(&mut observed.0.dependencies);
-                unobserved.retire(accounting)?;
-                self.observe_staged_paths_with_accounting(
-                    base,
-                    paths,
-                    true,
-                    dependencies,
-                    &mut observed.1,
-                    accounting,
-                    cancellation,
-                )?;
-                drop(observed);
-            } else {
-                unobserved.retire(accounting)?;
-            }
+            let (value, allocation) = crate::kernel::observe_paths_async_with_accounting(
+                &self.volume.fs.inner.objects,
+                &self.base_root,
+                paths,
+                config,
+                accounting,
+                cancellation,
+                Some(&self.dependencies.data_custody),
+            )
+            .await?
+            .into_parts();
+            let mut observed = (value, allocation);
+            let dependencies = std::mem::take(&mut observed.0.dependencies);
+            self.dependencies.extend_observations(
+                dependencies,
+                &mut observed.1,
+                self.volume.config.limits.maximum_checkout_dependencies,
+                accounting,
+                cancellation,
+            )?;
+            drop(observed);
             Ok((lookup.0, lookup.1))
         }
         .await;
@@ -529,28 +455,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             (lookup, allocation)
         })
     }
-    pub(super) fn observe_staged_paths_with_accounting<'p>(
-        &mut self,
-        base: ObjectId,
-        paths: impl IntoIterator<Item = &'p NamespacePath>,
-        capture_terminal: bool,
-        dependencies: Vec<Dependency>,
-        allocation: &mut KernelOwnedAllocation,
-        accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<(), FsError> {
-        self.dependencies.observe_paths(
-            base,
-            paths,
-            capture_terminal,
-            dependencies,
-            allocation,
-            self.volume.config.limits.maximum_checkout_dependencies,
-            accounting,
-            cancellation,
-        )
-    }
-
     pub(crate) async fn lookup_file_record_by_id_with_accounting(
         &self,
         file_id: FileId,

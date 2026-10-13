@@ -8,8 +8,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     conformance::verify(&provider).await?;
     let first = StreamPath::new("conformance/atomic-first")?;
     let second = StreamPath::new("conformance/atomic-second")?;
-    let atomic_key =
-        acyclic_stream::IdempotencyKey::new(bytes::Bytes::from_static(b"http-atomic"))?;
+    let atomic_key = acyclic_stream::IdempotencyKey::new(acyclic_stream::OwnedBytes::from_static(
+        b"http-atomic",
+    ))?;
     let atomic = acyclic_stream::CommitRequest {
         conditions: vec![
             acyclic_stream::CommitCondition::Absent {
@@ -62,9 +63,9 @@ async fn verify_commit_only(endpoint: &str) -> Result<(), Box<dyn std::error::Er
             path: StreamPath::new("conformance/commit-only")?,
             records: vec![acyclic_stream::OwnedBytes::from_static(b"admitted")],
         }],
-        idempotency_key: acyclic_stream::IdempotencyKey::new(bytes::Bytes::from_static(
-            b"commit-only",
-        ))?,
+        idempotency_key: acyclic_stream::IdempotencyKey::new(
+            acyclic_stream::OwnedBytes::from_static(b"commit-only"),
+        )?,
     };
     let commit_only_result = commit_only.commit(commit_only_request.clone()).await?;
     assert_eq!(
@@ -94,9 +95,9 @@ async fn verify_deadline_and_bounds(
             path: deadline_path.clone(),
             records: vec![acyclic_stream::OwnedBytes::from_static(b"must-not-commit")],
         }],
-        idempotency_key: acyclic_stream::IdempotencyKey::new(bytes::Bytes::from_static(
-            b"http-deadline",
-        ))?,
+        idempotency_key: acyclic_stream::IdempotencyKey::new(
+            acyclic_stream::OwnedBytes::from_static(b"http-deadline"),
+        )?,
     };
     assert_eq!(
         provider.commit_before(request, 1).await,

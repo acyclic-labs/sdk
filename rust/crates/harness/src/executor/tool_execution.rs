@@ -184,7 +184,7 @@ impl StockExecution<'_> {
                                     None,
                                 )?;
                             let approval =
-                                crate::durable_host::task_interaction_id(task, approval_operation);
+                                crate::executor::with_history_io(self.io, |work| crate::durable_host::task_interaction_id(task, approval_operation, work))?;
                             journal
                                 .open_interaction(approval, &request, self.io)?
                                 .await?;
