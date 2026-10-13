@@ -1,9 +1,7 @@
 //! Stock workflow command dispatch through existing journaled executors.
 use crate::runtime::TaskSpawner as _;
 
-use super::{
-    FilesystemTaskRuntime, TaskCommandHost, TaskCommandProgress, task_runtime::WorkerContext,
-};
+use super::{FilesystemTaskRuntime, TaskCommandHost, TaskCommandProgress};
 use crate::{
     Error, OperationId, Outcome, Result, TaskId,
     context::ContextPipeline,
@@ -311,14 +309,7 @@ where
         command: WorkflowCommand,
         payload: Value,
     ) -> BoxFuture<'a, Result<TaskCommandProgress>> {
-        Box::pin(self.execute_observed(
-            WorkerContext::Ordinary(Arc::new(context)),
-            fence,
-            command,
-            payload,
-            false,
-            None,
-        ))
+        Box::pin(self.execute_observed(Arc::new(context), fence, command, payload, false, None))
     }
 
     fn reconcile<'a>(
@@ -328,14 +319,7 @@ where
         command: WorkflowCommand,
         payload: Value,
     ) -> BoxFuture<'a, Result<TaskCommandProgress>> {
-        Box::pin(self.execute_observed(
-            WorkerContext::Ordinary(Arc::new(context)),
-            fence,
-            command,
-            payload,
-            true,
-            None,
-        ))
+        Box::pin(self.execute_observed(Arc::new(context), fence, command, payload, true, None))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -350,15 +334,8 @@ where
         self.validate_native_configuration_work(work)?;
         crate::NativeFutureBundle::new(work, || async move {
             let io = super::PreparationIo::from_native_work(work)?;
-            self.execute_observed(
-                WorkerContext::Native(context),
-                fence,
-                command,
-                payload,
-                false,
-                Some(&io),
-            )
-            .await
+            self.execute_observed(context, fence, command, payload, false, Some(&io))
+                .await
         })
     }
 
@@ -374,15 +351,8 @@ where
         self.validate_native_configuration_work(work)?;
         crate::NativeFutureBundle::new(work, || async move {
             let io = super::PreparationIo::from_native_work(work)?;
-            self.execute_observed(
-                WorkerContext::Native(context),
-                fence,
-                command,
-                payload,
-                true,
-                Some(&io),
-            )
-            .await
+            self.execute_observed(context, fence, command, payload, true, Some(&io))
+                .await
         })
     }
 }
@@ -447,9 +417,6 @@ fn tool_invocation(
         name: crate::executor::stock_string_copy(&definition.name, io)?,
         arguments,
     };
-    crate::executor::with_history_io(io, |work| {
-        ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), work)
-    })?;
     Ok(invocation)
 }
 fn ready(value: impl Serialize, io: Option<&super::PreparationIo>) -> Result<TaskCommandProgress> {
@@ -469,25 +436,4 @@ fn ready(value: impl Serialize, io: Option<&super::PreparationIo>) -> Result<Tas
     Err(Error::Unsupported(
         "mail result observer requires the original native work".into(),
     ))
-}
-fn child_operation(
-    task: TaskId,
-    command: OperationId,
-    io: Option<&super::PreparationIo>,
-) -> Result<OperationId> {
-    if let Some(io) = io {
-        let hashed = acyclic_fs::WorkCounters {
-            bytes_hashed: b"harness/v2/task-child\0".len() as u64 + 32,
-            ..Default::default()
-        };
-        io.preflight(hashed)?;
-        io.charge(hashed)?;
-    }
-    let mut digest = blake3::Hasher::new();
-    digest.update(b"harness/v2/task-child\0");
-    digest.update(&task.into_bytes());
-    digest.update(&command.into_bytes());
-    let mut bytes = [0; 16];
-    bytes.copy_from_slice(&digest.finalize().as_bytes()[..16]);
-    Ok(OperationId::from_bytes(bytes))
 }

@@ -4,10 +4,10 @@ use crate::memory::MemoryObjectStore as TestMemoryObjectStore;
 use crate::model::{
     CaseSensitivity, ConcurrencyMode, FilesystemProfile, UnicodePolicy, VolumeLimits,
 };
-use crate::storage::CreateAuthorityOutcome;
-use crate::storage::object_digest;
-use crate::storage::{AuthorityFailure, AuthorityResult};
-use crate::storage::{ObjectFailure, ObjectRead, ObjectReadRequest, ObjectResult, ObjectWrite};
+use crate::storage::{
+    AuthorityFailure, AuthorityResult, CreateAuthorityOutcome, ObjectFailure, ObjectRead,
+    ObjectReadRequest, ObjectResult, ObjectWrite, object_digest,
+};
 use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -124,18 +124,25 @@ fn root_path() -> Result<NamespacePath, Box<dyn std::error::Error>> {
     Ok(NamespacePath::new(Vec::new(), config().limits)?)
 }
 
-fn checkout_state<A, O>(checkout: &Checkout<A, O>) -> CheckoutState {
-    CheckoutState {
-        base_generation_root: checkout.root.base(),
-        generation_root: checkout.generation_root,
-        base_root: checkout.base_root.clone(),
-        root: checkout.root.clone(),
-        authority_head: checkout.authority_head,
-        prepared_merge_parent: checkout.prepared_merge_parent,
-        dependencies: checkout.dependencies.proof().dependencies.clone(),
-        mode: checkout.mode,
-    }
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CheckoutState {
+    base_generation_root: ObjectId,
+    generation_root: ObjectId,
+    base_root: GenerationRoot,
+    root: GenerationRoot,
+    authority_head: Option<Head>,
+    prepared_merge_parent: Option<ObjectId>,
+    dependencies: CheckoutDependencies,
+    mode: CheckoutMode,
 }
+
+// --- Case-folding / Unicode-normalization ---
+//
+// `CaseSensitivity::ProfileFolded` rejects same-directory siblings whose
+// names collide once case-folded (`FsError::NameCollision`) and resolves
+// lookups case-insensitively; `UnicodePolicy::RequireNfc` rejects any new
+// name that is not canonical NFC (`FsError::NonNormalizedName`). Both are
+// admitted at volume creation (pinned above).
 
 fn folded_config() -> VolumeConfig {
     VolumeConfig {
@@ -151,48 +158,43 @@ fn nfc_config() -> VolumeConfig {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct CheckoutState {
-    base_generation_root: ObjectId,
-    generation_root: ObjectId,
-    base_root: GenerationRoot,
-    root: GenerationRoot,
-    authority_head: Option<Head>,
-    prepared_merge_parent: Option<ObjectId>,
-    dependencies: CheckoutDependencies,
-    mode: CheckoutMode,
+fn checkout_state<A, O>(checkout: &Checkout<A, O>) -> CheckoutState {
+    CheckoutState {
+        base_generation_root: checkout.root.base(),
+        generation_root: checkout.generation_root,
+        base_root: checkout.base_root.clone(),
+        root: checkout.root.clone(),
+        authority_head: checkout.authority_head,
+        prepared_merge_parent: checkout.prepared_merge_parent,
+        dependencies: checkout.dependencies.proof().dependencies.clone(),
+        mode: checkout.mode,
+    }
 }
 
 struct FaultControl {
     operation: AtomicUsize,
     fail_at: AtomicUsize,
 }
-
 struct FaultObjectStore {
-    inner: crate::memory::MemoryObjectStore,
+    inner: crate::MemoryObjectStore,
     control: Arc<FaultControl>,
 }
-
 struct FaultAuthorityStore {
-    inner: crate::memory::MemoryAuthorityStore,
+    inner: crate::MemoryAuthorityStore,
     control: Arc<FaultControl>,
 }
-
 struct PostPutObjectStore {
-    inner: Arc<crate::memory::MemoryObjectStore>,
+    inner: Arc<crate::MemoryObjectStore>,
     control: Arc<FaultControl>,
 }
-
 struct PostAppendAuthorityStore {
-    inner: Arc<crate::memory::MemoryAuthorityStore>,
+    inner: Arc<crate::MemoryAuthorityStore>,
     control: Arc<FaultControl>,
 }
-
 struct CountingObjectStore {
-    inner: crate::memory::MemoryObjectStore,
+    inner: crate::MemoryObjectStore,
     tracked: Arc<std::sync::Mutex<Option<ObjectId>>>,
     reads: Arc<AtomicUsize>,
-
     unreadable: Arc<std::sync::Mutex<Option<ObjectKind>>>,
 }
 
@@ -220,21 +222,28 @@ impl FaultControl {
 }
 
 fn authority_context(work: &crate::AuthorityWork<'_>) -> Result<(), AuthorityStoreError> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if work.original.is_some() {
+    if work.is_native() {
         return Err(AuthorityStoreError::NativeOriginalUnsupported);
     }
     Ok(())
 }
 fn object_context(work: &crate::AuthorityWork<'_>) -> Result<(), ObjectStoreError> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if work.original.is_some() {
+    if work.is_native() {
         return Err(ObjectStoreError::NativeUnavailable);
     }
     work.work.remaining(work.budget)?;
     work.cancellation
         .check()
         .map_err(|_| ObjectStoreError::Cancelled)
+}
+fn authority_permit(permit: PublicationPermit) -> Result<(), AuthorityStoreError> {
+    if permit == PublicationPermit::Unrestricted {
+        Ok(())
+    } else {
+        Err(AuthorityStoreError::Rejected(
+            "authority backend cannot atomically evaluate operation leases".into(),
+        ))
+    }
 }
 impl FaultAuthorityStore {
     fn fail(
@@ -252,7 +261,7 @@ impl FaultAuthorityStore {
                 ..WorkCounters::UNCHARGED
             })?;
             return Err(AuthorityStoreError::Corrupt(
-                "deterministic test fault".to_owned(),
+                "deterministic test fault".into(),
             ));
         }
         Ok(())
@@ -295,31 +304,26 @@ impl CountingObjectStore {
         Ok(())
     }
 }
-
 impl AsyncAuthorityStore for FaultAuthorityStore {
     async fn create_authority<G: crate::AuthorityGuard>(
         &self,
         authority: AuthorityId,
-        epoch: crate::Epoch,
+        epoch: Epoch,
         work: &mut crate::AuthorityWork<'_>,
         mut guard: Option<&mut G>,
     ) -> Result<CreateAuthorityOutcome, crate::AuthorityError<G::Error>> {
         authority_context(work)?;
         crate::async_storage::seal(guard.as_deref_mut(), work).await?;
         self.fail(false, work)?;
-        let value = AsyncAuthorityStore::create_authority(
-            &self.inner,
-            authority,
-            epoch,
-            work,
-            None::<&mut ()>,
-        )
-        .await
-        .map_err(|error| {
-            crate::AuthorityError::Authority(error.into_error(std::convert::identity))
-        })?;
+        let value = self
+            .inner
+            .create_authority(authority, epoch, work, None::<&mut ()>)
+            .await
+            .map_err(|error| {
+                crate::AuthorityError::Authority(error.into_error(std::convert::identity))
+            })?;
         if matches!(value, CreateAuthorityOutcome::Existing(_)) {
-            crate::async_storage::seal(guard.as_deref_mut(), work).await?;
+            crate::async_storage::seal(guard, work).await?;
         }
         Ok(value)
     }
@@ -327,24 +331,18 @@ impl AsyncAuthorityStore for FaultAuthorityStore {
         &self,
         request: crate::GuardedAppend,
         work: &mut crate::AuthorityWork<'_>,
-        mut guard: Option<&mut G>,
+        guard: Option<&mut G>,
     ) -> Result<AppendOutcome, crate::AuthorityError<G::Error>> {
         authority_context(work)?;
-        if request.permit != PublicationPermit::Unrestricted {
-            return Err(AuthorityStoreError::Rejected(
-                "authority backend cannot atomically evaluate operation leases".to_owned(),
-            )
-            .into());
-        }
-        crate::async_storage::seal(guard.as_deref_mut(), work).await?;
+        authority_permit(request.permit)?;
+        crate::async_storage::seal(guard, work).await?;
         self.fail(false, work)?;
-        let value =
-            AsyncAuthorityStore::compare_and_append(&self.inner, request, work, None::<&mut ()>)
-                .await
-                .map_err(|error| {
-                    crate::AuthorityError::Authority(error.into_error(std::convert::identity))
-                })?;
-        Ok(value)
+        self.inner
+            .compare_and_append(request, work, None::<&mut ()>)
+            .await
+            .map_err(|error| {
+                crate::AuthorityError::Authority(error.into_error(std::convert::identity))
+            })
     }
     async fn head(
         &self,
@@ -353,28 +351,28 @@ impl AsyncAuthorityStore for FaultAuthorityStore {
     ) -> Result<Head, AuthorityStoreError> {
         authority_context(work)?;
         self.fail(true, work)?;
-        AsyncAuthorityStore::head(&self.inner, authority, work).await
+        self.inner.head(authority, work).await
     }
     async fn replay(
         &self,
         authority: AuthorityId,
-        after: crate::Sequence,
-        limit: crate::ReplayLimit,
+        after: Sequence,
+        limit: ReplayLimit,
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<(Vec<DurableCommit>, crate::AuthorityAllocation), AuthorityStoreError> {
         authority_context(work)?;
         self.fail(true, work)?;
-        AsyncAuthorityStore::replay(&self.inner, authority, after, limit, work).await
+        self.inner.replay(authority, after, limit, work).await
     }
     async fn fence(
         &self,
         authority: AuthorityId,
         expected: Head,
         work: &mut crate::AuthorityWork<'_>,
-    ) -> Result<crate::FenceOutcome, AuthorityStoreError> {
+    ) -> Result<FenceOutcome, AuthorityStoreError> {
         authority_context(work)?;
         self.fail(false, work)?;
-        AsyncAuthorityStore::fence(&self.inner, authority, expected, work).await
+        self.inner.fence(authority, expected, work).await
     }
     async fn find_operation(
         &self,
@@ -384,67 +382,32 @@ impl AsyncAuthorityStore for FaultAuthorityStore {
     ) -> Result<Option<DurableCommit>, AuthorityStoreError> {
         authority_context(work)?;
         self.fail(true, work)?;
-        AsyncAuthorityStore::find_operation(&self.inner, authority, operation, work).await
+        self.inner.find_operation(authority, operation, work).await
     }
 }
-
 impl AsyncAuthorityStore for PostAppendAuthorityStore {
     async fn create_authority<G: crate::AuthorityGuard>(
         &self,
         authority: AuthorityId,
-        epoch: crate::Epoch,
+        epoch: Epoch,
         work: &mut crate::AuthorityWork<'_>,
-        mut guard: Option<&mut G>,
+        guard: Option<&mut G>,
     ) -> Result<CreateAuthorityOutcome, crate::AuthorityError<G::Error>> {
         authority_context(work)?;
-        crate::async_storage::seal(guard.as_deref_mut(), work).await?;
-        work.cancellation
-            .check()
-            .map_err(|_| AuthorityStoreError::Cancelled)?;
-        let value = AsyncAuthorityStore::create_authority(
-            self.inner.as_ref(),
-            authority,
-            epoch,
-            work,
-            None::<&mut ()>,
-        )
-        .await
-        .map_err(|error| {
-            crate::AuthorityError::Authority(error.into_error(std::convert::identity))
-        })?;
-        if matches!(value, CreateAuthorityOutcome::Existing(_)) {
-            crate::async_storage::seal(guard.as_deref_mut(), work).await?;
-        }
-        Ok(value)
+        self.inner
+            .create_authority(authority, epoch, work, guard)
+            .await
     }
     async fn compare_and_append<G: crate::AuthorityGuard>(
         &self,
         request: crate::GuardedAppend,
         work: &mut crate::AuthorityWork<'_>,
-        mut guard: Option<&mut G>,
+        guard: Option<&mut G>,
     ) -> Result<AppendOutcome, crate::AuthorityError<G::Error>> {
         authority_context(work)?;
-        if request.permit != PublicationPermit::Unrestricted {
-            return Err(AuthorityStoreError::Rejected(
-                "authority backend cannot atomically evaluate operation leases".to_owned(),
-            )
-            .into());
-        }
-        crate::async_storage::seal(guard.as_deref_mut(), work).await?;
-        work.cancellation
-            .check()
-            .map_err(|_| AuthorityStoreError::Cancelled)?;
-        let value = AsyncAuthorityStore::compare_and_append(
-            self.inner.as_ref(),
-            request,
-            work,
-            None::<&mut ()>,
-        )
-        .await
-        .map_err(|error| {
-            crate::AuthorityError::Authority(error.into_error(std::convert::identity))
-        })?;
-        if matches!(&value, AppendOutcome::Committed(_)) && self.control.should_fail() {
+        authority_permit(request.permit)?;
+        let value = self.inner.compare_and_append(request, work, guard).await?;
+        if matches!(value, AppendOutcome::Committed(_)) && self.control.should_fail() {
             return Err(AuthorityStoreError::Indeterminate {
                 operation: "compare-and-append",
                 source: std::io::Error::other("deterministic acknowledgement loss"),
@@ -459,35 +422,26 @@ impl AsyncAuthorityStore for PostAppendAuthorityStore {
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<Head, AuthorityStoreError> {
         authority_context(work)?;
-        work.cancellation
-            .check()
-            .map_err(|_| AuthorityStoreError::Cancelled)?;
-        AsyncAuthorityStore::head(self.inner.as_ref(), authority, work).await
+        self.inner.head(authority, work).await
     }
     async fn replay(
         &self,
         authority: AuthorityId,
-        after: crate::Sequence,
-        limit: crate::ReplayLimit,
+        after: Sequence,
+        limit: ReplayLimit,
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<(Vec<DurableCommit>, crate::AuthorityAllocation), AuthorityStoreError> {
         authority_context(work)?;
-        work.cancellation
-            .check()
-            .map_err(|_| AuthorityStoreError::Cancelled)?;
-        AsyncAuthorityStore::replay(self.inner.as_ref(), authority, after, limit, work).await
+        self.inner.replay(authority, after, limit, work).await
     }
     async fn fence(
         &self,
         authority: AuthorityId,
         expected: Head,
         work: &mut crate::AuthorityWork<'_>,
-    ) -> Result<crate::FenceOutcome, AuthorityStoreError> {
+    ) -> Result<FenceOutcome, AuthorityStoreError> {
         authority_context(work)?;
-        work.cancellation
-            .check()
-            .map_err(|_| AuthorityStoreError::Cancelled)?;
-        AsyncAuthorityStore::fence(self.inner.as_ref(), authority, expected, work).await
+        self.inner.fence(authority, expected, work).await
     }
     async fn find_operation(
         &self,
@@ -496,13 +450,9 @@ impl AsyncAuthorityStore for PostAppendAuthorityStore {
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<Option<DurableCommit>, AuthorityStoreError> {
         authority_context(work)?;
-        work.cancellation
-            .check()
-            .map_err(|_| AuthorityStoreError::Cancelled)?;
-        AsyncAuthorityStore::find_operation(self.inner.as_ref(), authority, operation, work).await
+        self.inner.find_operation(authority, operation, work).await
     }
 }
-
 impl AsyncObjectStore for FaultObjectStore {
     async fn put(
         &self,
@@ -511,8 +461,7 @@ impl AsyncObjectStore for FaultObjectStore {
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
         self.fail(false, work)?;
-        let value = AsyncObjectStore::put(&self.inner, id, bytes, work).await?;
-        Ok(value)
+        self.inner.put(id, bytes, work).await
     }
     async fn put_many(
         &self,
@@ -520,8 +469,7 @@ impl AsyncObjectStore for FaultObjectStore {
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
         self.fail(false, work)?;
-        let value = AsyncObjectStore::put_many(&self.inner, writes, work).await?;
-        Ok(value)
+        self.inner.put_many(writes, work).await
     }
     async fn read(
         &self,
@@ -530,8 +478,7 @@ impl AsyncObjectStore for FaultObjectStore {
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<ObjectRead, ObjectStoreError> {
         self.fail(true, work)?;
-        let value = AsyncObjectStore::read(&self.inner, id, maximum, work).await?;
-        Ok(value)
+        self.inner.read(id, maximum, work).await
     }
     async fn read_many(
         &self,
@@ -539,8 +486,7 @@ impl AsyncObjectStore for FaultObjectStore {
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
         self.fail(true, work)?;
-        let value = AsyncObjectStore::read_many(&self.inner, requests, work).await?;
-        Ok(value)
+        self.inner.read_many(requests, work).await
     }
     async fn contains(
         &self,
@@ -548,11 +494,9 @@ impl AsyncObjectStore for FaultObjectStore {
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<bool, ObjectStoreError> {
         self.fail(true, work)?;
-        let value = AsyncObjectStore::contains(&self.inner, id, work).await?;
-        Ok(value)
+        self.inner.contains(id, work).await
     }
 }
-
 impl AsyncObjectStore for CountingObjectStore {
     async fn put(
         &self,
@@ -561,8 +505,7 @@ impl AsyncObjectStore for CountingObjectStore {
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
         object_context(work)?;
-        let value = AsyncObjectStore::put(&self.inner, id, bytes, work).await?;
-        Ok(value)
+        self.inner.put(id, bytes, work).await
     }
     async fn put_many(
         &self,
@@ -570,8 +513,7 @@ impl AsyncObjectStore for CountingObjectStore {
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
         object_context(work)?;
-        let value = AsyncObjectStore::put_many(&self.inner, writes, work).await?;
-        Ok(value)
+        self.inner.put_many(writes, work).await
     }
     async fn read(
         &self,
@@ -581,8 +523,7 @@ impl AsyncObjectStore for CountingObjectStore {
     ) -> Result<ObjectRead, ObjectStoreError> {
         object_context(work)?;
         self.record(id)?;
-        let value = AsyncObjectStore::read(&self.inner, id, maximum, work).await?;
-        Ok(value)
+        self.inner.read(id, maximum, work).await
     }
     async fn read_many(
         &self,
@@ -593,8 +534,7 @@ impl AsyncObjectStore for CountingObjectStore {
         for request in requests {
             self.record(request.object_id)?;
         }
-        let value = AsyncObjectStore::read_many(&self.inner, requests, work).await?;
-        Ok(value)
+        self.inner.read_many(requests, work).await
     }
     async fn contains(
         &self,
@@ -602,11 +542,9 @@ impl AsyncObjectStore for CountingObjectStore {
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<bool, ObjectStoreError> {
         object_context(work)?;
-        let value = AsyncObjectStore::contains(&self.inner, id, work).await?;
-        Ok(value)
+        self.inner.contains(id, work).await
     }
 }
-
 impl AsyncObjectStore for PostPutObjectStore {
     async fn put(
         &self,
@@ -614,22 +552,22 @@ impl AsyncObjectStore for PostPutObjectStore {
         bytes: OwnedBytes,
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
-        let value = AsyncObjectStore::put(self.inner.as_ref(), id, bytes, work).await?;
+        self.inner.put(id, bytes, work).await?;
         if self.control.should_fail() {
             return Err(ObjectStoreError::Corrupt);
         }
-        Ok(value)
+        Ok(())
     }
     async fn put_many(
         &self,
         writes: &[ObjectWrite],
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
-        let value = AsyncObjectStore::put_many(self.inner.as_ref(), writes, work).await?;
+        self.inner.put_many(writes, work).await?;
         if self.control.should_fail() {
             return Err(ObjectStoreError::Corrupt);
         }
-        Ok(value)
+        Ok(())
     }
     async fn read(
         &self,
@@ -637,16 +575,14 @@ impl AsyncObjectStore for PostPutObjectStore {
         maximum: u64,
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<ObjectRead, ObjectStoreError> {
-        let value = AsyncObjectStore::read(self.inner.as_ref(), id, maximum, work).await?;
-        Ok(value)
+        self.inner.read(id, maximum, work).await
     }
     async fn read_many(
         &self,
         requests: &[ObjectReadRequest],
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
-        let value = AsyncObjectStore::read_many(self.inner.as_ref(), requests, work).await?;
-        Ok(value)
+        self.inner.read_many(requests, work).await
     }
     async fn contains(
         &self,
@@ -654,17 +590,15 @@ impl AsyncObjectStore for PostPutObjectStore {
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<bool, ObjectStoreError> {
         object_context(work)?;
-        let value = AsyncObjectStore::contains(self.inner.as_ref(), id, work).await?;
-        Ok(value)
+        self.inner.contains(id, work).await
     }
     async fn put_hashed(
         &self,
         object: HashedObject,
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if work.original.is_some() {
-            AsyncObjectStore::put_hashed(self.inner.as_ref(), object, work).await?;
+        if work.is_native() {
+            self.inner.put_hashed(object, work).await?;
             if self.control.should_fail() {
                 return Err(ObjectStoreError::Corrupt);
             }
@@ -674,55 +608,33 @@ impl AsyncObjectStore for PostPutObjectStore {
         self.put(id, bytes, work).await
     }
 }
-
-#[path = "adoption.rs"]
 mod adoption;
-#[path = "attributes.rs"]
 mod attributes;
-#[path = "content.rs"]
 mod content;
-#[path = "creation.rs"]
 mod creation;
-#[path = "detached.rs"]
 mod detached;
-#[path = "fault_creation.rs"]
 mod fault_creation;
-#[path = "fault_mutations.rs"]
 mod fault_mutations;
-#[path = "fault_publication.rs"]
 mod fault_publication;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-#[path = "heterogeneous_mount.rs"]
 mod heterogeneous_mount;
-#[path = "identity.rs"]
 mod identity;
-#[path = "live.rs"]
 mod live;
-#[path = "local.rs"]
 mod local;
-#[path = "merge.rs"]
 mod merge;
-#[path = "paths.rs"]
 mod paths;
-#[path = "profiles.rs"]
 mod profiles;
-#[path = "publication.rs"]
+mod protocol_helpers;
 mod publication;
-#[path = "read.rs"]
 mod read;
-#[path = "selection.rs"]
 mod selection;
-#[path = "special.rs"]
 mod special;
-#[path = "tracking.rs"]
 mod tracking;
 mod transactions;
-#[path = "transfer.rs"]
 mod transfer;
-
-mod protocol_helpers;
 use protocol_helpers::*;
-
+mod fixtures;
+use fixtures::*;
 const B: WorkBudget = WorkBudget::UNBOUNDED;
 fn allow<E>(
     _: WorkBudget,
@@ -732,6 +644,3 @@ fn allow<E>(
         work: WorkCounters::UNCHARGED,
     }))
 }
-
-mod fixtures;
-use fixtures::*;

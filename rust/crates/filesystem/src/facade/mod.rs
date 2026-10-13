@@ -245,7 +245,6 @@ pub use generation::Volume;
 use generation::generation_from_record;
 pub(crate) use generation::read_generation_root;
 use generation::record_logical_bytes;
-use join_publication::WorkspaceJoinPublication;
 use join_publication::checkout_commit_outcome;
 use join_request::WORKSPACE_JOIN_OPERATION_DOMAIN;
 pub(crate) use join_request::WorkspaceJoinOutcome;

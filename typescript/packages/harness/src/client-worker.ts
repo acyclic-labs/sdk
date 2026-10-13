@@ -20,7 +20,6 @@ export function publishClientSnapshots<Value>(store: ClientSnapshot<Value>, port
   let inFlight = false;
   let latest = store.getSnapshot();
   let sent = latest;
-  let ready = false;
   const send = (): void => {
     if (stopped || inFlight) return;
     try {
@@ -39,19 +38,18 @@ export function publishClientSnapshots<Value>(store: ClientSnapshot<Value>, port
     inFlight = false;
     if (!Object.is(latest, sent)) send();
   };
-  let unsubscribe = () => {};
+  let unsubscribe: (() => void) | undefined;
   const stop = (): void => {
     if (stopped) return;
     stopped = true;
-    unsubscribe();
+    unsubscribe?.();
     port.removeEventListener("message", receive);
     port.close();
   };
   port.addEventListener("message", receive);
   port.start();
-  try { unsubscribe = store.subscribe(() => { latest = store.getSnapshot(); if (ready && !Object.is(latest, sent)) send(); }); }
+  try { unsubscribe = store.subscribe(() => { latest = store.getSnapshot(); if (unsubscribe !== undefined && !Object.is(latest, sent)) send(); }); }
   catch (error) { stop(); throw error; }
-  ready = true;
   latest = store.getSnapshot();
   send();
   return stop;

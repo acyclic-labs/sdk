@@ -197,24 +197,27 @@ impl StockExecution<'_> {
             reason: "stock policy has no issued task",
         })?;
         let io = self.io.expect("native execution ledger");
-        for (_, policy) in context
+        context.require_original_native_work(work)?;
+        context.require_native_scope_restriction(&self.stock.tool_scope, work)?;
+        for (identity, policy) in context
             .stock_tool_policy_binding()
             .into_iter()
             .chain(context.stock_tool_policy_overrides())
         {
             let Some(((approval_operation, request), custody)) = context
-                .stock_policy_approval(
+                .policy_approval(
                     policy.as_ref(),
-                    &self.stock.tool_scope,
+                    Some(identity),
                     definition,
                     invocation,
-                    work,
+                    Some(work),
+                    &self.stock.tool_scope,
                 )
                 .await?
             else {
                 continue;
             };
-            io.absorb_native_custody(custody)?;
+            io.absorb_native_custody(custody.expect("native approval retains its prompt"))?;
             if let Some(progress) = self
                 .settle_approval(
                     journal,

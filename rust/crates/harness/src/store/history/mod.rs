@@ -329,38 +329,29 @@ pub(crate) fn verify_history_record_with_retained_quota(
             "history record position or byte bound is invalid",
         ));
     }
+    let mut quota = crate::wire_codec::CodecQuota::from_retained(work, 0);
     let ((record_authority, event), owned_event) =
-        crate::wire_codec::decode_event(&record.value, work)?;
-    let verification = (|| {
-        let revision = sequence.checked_add(1).ok_or_else(|| {
-            super::guarded_boundary(
-                work,
-                crate::wire::ErrorCode::Storage,
-                "history event revision overflows",
-            )
-        })?;
-        if &record_authority != authority || event.revision != revision {
-            return Err(super::guarded_boundary(
-                work,
-                crate::wire::ErrorCode::Storage,
-                "history event binding is invalid",
-            ));
-        }
-        verifier.verify_audience(authority, &mut None)?;
-        verifier.verify_event(&event, work)
-    })();
-    let authority_bytes = record_authority.id.capacity() as u64;
+        crate::wire_codec::decode_event(&record.value, quota.work())?;
+    quota.adopt(record_authority.id.capacity() as u64 + owned_event)?;
+    let revision = sequence.checked_add(1).ok_or_else(|| {
+        super::guarded_boundary(
+            quota.work(),
+            crate::wire::ErrorCode::Storage,
+            "history event revision overflows",
+        )
+    })?;
+    if &record_authority != authority || event.revision != revision {
+        return Err(super::guarded_boundary(
+            quota.work(),
+            crate::wire::ErrorCode::Storage,
+            "history event binding is invalid",
+        ));
+    }
+    verifier.verify_audience(authority, &mut None)?;
+    verifier.verify_event(&event, quota.work())?;
     drop(record_authority);
-    if let Err(error) = verification {
-        drop(event);
-        if let Some(work) = work.as_deref_mut() {
-            let _ = work.release_owned(authority_bytes + owned_event);
-        }
-        return Err(error);
-    }
-    if let Some(work) = work.as_deref_mut() {
-        work.release_owned(authority_bytes)?;
-    }
+    quota.replace(owned_event)?;
+    quota.transfer();
     Ok((event, owned_event))
 }
 
@@ -417,3 +408,4 @@ pub(crate) fn canonical_bytes_for_bounds_with_work<T: Serialize + ?Sized>(
 mod conversation;
 mod forks;
 mod pages;
+pub(in crate::store) use pages::project_effect;
