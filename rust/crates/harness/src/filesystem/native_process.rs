@@ -111,7 +111,7 @@ pub struct NativeProcessProvider<P, A, O> {
     view: Option<Arc<NativeVolumeView<A, O>>>,
     approval: InteractionId,
     authority: Arc<NativeProcessAuthority>,
-    result_schema: serde_json::Value,
+    result_schema: acyclic_stream::OwnedBytes,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -141,11 +141,6 @@ struct NativeObservation {
     diagnostic: Option<crate::conversation::FileRef>,
 }
 
-struct NativeExecution {
-    status: EffectStatus,
-    diagnostic: Option<crate::conversation::FileRef>,
-}
-
 impl<P, A, O> NativeProcessProvider<P, A, O>
 where
     P: StreamProvider + 'static,
@@ -169,7 +164,7 @@ where
             _ => observed.diagnostic,
         };
         if let Some(reference) = &reference {
-            self.owner.validate_input_file(reference)?;
+            self.owner.validate_input_file(reference, None)?;
             if reference.volume() != self.authority.results.volume()
                 || reference.descriptor().byte_length()
                     > u64::from(self.request.maximum_result_bytes)
@@ -179,9 +174,19 @@ where
                 ));
             }
             crate::effects::validate_result_bytes(
+                &self.plan.result_schema,
                 &self.result_schema,
                 reference,
-                &self.authority.content.read(reference).await?,
+                &self
+                    .authority
+                    .content
+                    .read(
+                        reference,
+                        u64::from(self.request.maximum_result_bytes),
+                        None,
+                    )?
+                    .await?,
+                &mut None,
             )?;
         }
         Ok(reference)
@@ -197,12 +202,12 @@ where
         authority: NativeProcessAuthority,
     ) -> Result<Self> {
         if view.is_some() {
-            owner.verify(false).await?;
+            owner.verify(false, &mut None).await?;
         }
-        owner.verify(true).await?;
-        owner.require_effect_grants(&plan.provider, false)?;
-        owner.validate_input_file(&plan.request)?;
-        owner.validate_input_file(&plan.result_schema)?;
+        owner.verify(true, &mut None).await?;
+        owner.require_effect_grants(&plan.provider, false, &mut None)?;
+        owner.validate_input_file(&plan.request, None)?;
+        owner.validate_input_file(&plan.result_schema, None)?;
         if plan.effect_kind != NATIVE_PROCESS_EFFECT_KIND
             || plan.guarantee != EffectGuarantee::AtMostOnce
         {
@@ -213,8 +218,11 @@ where
         if plan.request.descriptor().media_type() != "application/json" {
             return Err(Error::Invalid("native request must be JSON content".into()));
         }
-        let bytes = authority.content.read(&plan.request).await?;
-        plan.request.descriptor().verify(&bytes)?;
+        let bytes = authority
+            .content
+            .read(&plan.request, owner.input_limits().file_bytes, None)?
+            .await?;
+        plan.request.descriptor().verify(&bytes, &mut None)?;
         let request: NativeProcessRequest = crate::contract::json_from_slice(&bytes)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         request.validate()?;
@@ -236,22 +244,27 @@ where
         if let Some(view) = &view {
             request.validate_native_paths(view.manifest())?;
         }
-        let schema = authority.content.read(&plan.result_schema).await?;
-        let result_schema = crate::effects::validate_schema_bytes(&plan.result_schema, &schema)?;
+        let result_schema = authority
+            .content
+            .read(&plan.result_schema, owner.input_limits().file_bytes, None)?
+            .await?;
+        crate::effects::validate_schema_bytes(&plan.result_schema, &result_schema, &mut None)?;
         owner.require_volume_grant(
             authority.results.volume(),
             crate::conversation::VolumeOperation::Write,
+            &mut None,
         )?;
         owner.require_volume_grant(
             authority.results.volume(),
             crate::conversation::VolumeOperation::Read,
+            &mut None,
         )?;
         authority
             .approvals
             .verify(
                 approval,
                 command,
-                request.approval_digest(owner.task_binding().0, command)?,
+                request.approval_digest(owner.task_binding().0, command, None)?,
             )
             .await?;
         Ok(Self {
@@ -266,16 +279,25 @@ where
         })
     }
 
-    async fn require_dispatch(&self, dispatch: &EffectDispatch) -> Result<()> {
-        self.owner.verify(false).await?;
-        let effect_id = task_effect_id(self.owner.task_binding().0, self.command)?;
-        let aggregate = StreamAggregate::open(
+    async fn aggregate(&self) -> Result<StreamAggregate<P>> {
+        StreamAggregate::open(
             &self.owner.stream(),
             self.authority.verifier.audience().clone(),
             self.authority.verifier.clone(),
             self.authority.schemas.clone(),
+            None,
+            crate::store::default_projection_read_limits(),
+            crate::store::DEFAULT_TERMINAL_EFFECTS,
+            None,
+            &mut None,
         )
-        .await?;
+        .await
+    }
+
+    async fn require_dispatch(&self, dispatch: &EffectDispatch) -> Result<()> {
+        self.owner.verify(false, &mut None).await?;
+        let effect_id = task_effect_id(self.owner.task_binding().0, self.command, &mut None)?;
+        let aggregate = self.aggregate().await?;
         let state = aggregate.reducer().effect(effect_id).ok_or_else(|| {
             Error::Unauthorized("native command has no committed effect admission".into())
         })?;
@@ -300,7 +322,7 @@ where
                 self.approval,
                 self.command,
                 self.request
-                    .approval_digest(self.owner.task_binding().0, self.command)?,
+                    .approval_digest(self.owner.task_binding().0, self.command, None)?,
             )
             .await?;
         view.validate_for_dispatch().await
@@ -315,9 +337,9 @@ where
             conversation: self.authority.verifier.audience().clone(),
             task,
             command: self.command,
-            fence,
+            fence: fence.clone_with_work(&mut None)?,
             approval: self.approval,
-            approval_digest: self.request.approval_digest(task, self.command)?,
+            approval_digest: self.request.approval_digest(task, self.command, None)?,
         };
         let path = receipt_path(dispatch.attempt_id)?;
         let existing = read_receipt(&self.owner, &path).await?;
@@ -352,17 +374,15 @@ where
         })?);
         let authority = Arc::clone(&self.authority);
         let request = self.request.clone();
-        let schema = self.result_schema.clone();
+        let schema = (self.plan.result_schema.clone(), self.result_schema.clone());
         tokio::spawn(async move {
-            let execution = execute(&owner, &view, &authority, &request, &dispatch, &schema)
-                .await
-                .unwrap_or(NativeExecution {
-                    status: EffectStatus::Indeterminate,
-                    diagnostic: None,
-                });
+            let (status, diagnostic) =
+                execute(&owner, &view, &authority, &request, &dispatch, &schema)
+                    .await
+                    .unwrap_or((EffectStatus::Indeterminate, None));
             let observed = NativeObservation {
-                effect: observation(&dispatch, execution.status),
-                diagnostic: execution.diagnostic,
+                effect: observation(&dispatch, status),
+                diagnostic,
             };
             if !append_receipt(
                 &owner,
@@ -419,7 +439,7 @@ where
         attempt: crate::EffectAttemptId,
     ) -> BoxProviderFuture<'a, Result<Option<EffectObservation>>> {
         Box::pin(async move {
-            self.owner.verify(true).await?;
+            self.owner.verify(true, &mut None).await?;
             let Some((launch, observed)) =
                 read_receipt(&self.owner, &receipt_path(attempt)?).await?
             else {
@@ -429,7 +449,8 @@ where
                 || launch.command != self.command
                 || launch.plan != self.plan
                 || &launch.conversation != self.authority.verifier.audience()
-                || launch.dispatch.effect_id != task_effect_id(launch.task, self.command)?
+                || launch.dispatch.effect_id
+                    != task_effect_id(launch.task, self.command, &mut None)?
                 || launch.dispatch.attempt_id != attempt
                 || launch.dispatch.provider != self.plan.provider
                 || launch.dispatch.request != self.plan.request
@@ -437,19 +458,15 @@ where
                 || launch.dispatch.guarantee != self.plan.guarantee
                 || launch.approval != self.approval
                 || launch.approval_digest
-                    != self.request.approval_digest(launch.task, self.command)?
+                    != self
+                        .request
+                        .approval_digest(launch.task, self.command, None)?
             {
                 return Err(Error::Conflict(
                     "native receipt belongs to a different admission".into(),
                 ));
             }
-            let aggregate = StreamAggregate::open(
-                &self.owner.stream(),
-                launch.conversation.clone(),
-                self.authority.verifier.clone(),
-                self.authority.schemas.clone(),
-            )
-            .await?;
+            let aggregate = self.aggregate().await?;
             let state = aggregate
                 .reducer()
                 .effect(launch.dispatch.effect_id)
@@ -480,7 +497,7 @@ async fn capture<P: StreamProvider + 'static>(
     owner: &Arc<TaskJournalOwner<P>>,
     request: &NativeProcessRequest,
 ) -> Result<Option<NativeProcessResult>> {
-    owner.verify(false).await?;
+    owner.verify(false, &mut None).await?;
     let check_owner = Arc::clone(owner);
     let invocation = request.clone();
     let runtime = tokio::runtime::Handle::current();
@@ -502,7 +519,7 @@ async fn capture<P: StreamProvider + 'static>(
             runtime
                 .block_on(tokio::time::timeout(
                     Duration::from_millis(u64::from(invocation.control_timeout_ms)),
-                    check_owner.verify(false),
+                    check_owner.verify(false, &mut None),
                 ))
                 .map_err(|error| {
                     std::io::Error::new(std::io::ErrorKind::Interrupted, error.to_string())
@@ -512,7 +529,7 @@ async fn capture<P: StreamProvider + 'static>(
                 })
         };
         check()?;
-        let mut process = acyclic_native_runtime::spawn_process_tree(&mut command)?;
+        let mut process = acyclic_native_runtime::ProcessTree::spawn(&mut command)?;
         let mut next_check = std::time::Instant::now();
         let poll = || {
             if std::time::Instant::now() >= next_check {
@@ -524,29 +541,44 @@ async fn capture<P: StreamProvider + 'static>(
         };
         let timeout = Duration::from_millis(u64::from(invocation.timeout_ms));
         let maximum_output = invocation.maximum_output_bytes as usize;
-        let output = if let Some(request) = &invocation.mcp_stdio {
-            let (mut exchange, first) = request.exchange().map_err(|error| {
+        let exchange = invocation
+            .mcp_stdio
+            .as_ref()
+            .map(|request| request.exchange(None))
+            .transpose()
+            .map_err(|error| {
                 std::io::Error::new(std::io::ErrorKind::InvalidInput, error.to_string())
             })?;
-            process.wait_with_exchange_observed(
-                timeout,
-                maximum_output,
-                request.maximum_bytes as usize,
-                &first,
-                poll,
-                |chunk| {
-                    let bytes = exchange.push(chunk).map_err(|error| {
-                        std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
-                    })?;
-                    Ok(acyclic_native_runtime::ProcessInput {
-                        bytes,
-                        complete: exchange.is_complete(),
-                    })
-                },
-            )
-        } else {
-            process.wait_with_output_observed(timeout, maximum_output, poll)
+        let (mut exchange, first, _hold) = match exchange {
+            Some((exchange, first, hold)) => (Some(exchange), first, hold),
+            None => (None, Vec::new(), None),
         };
+        let input = exchange
+            .as_ref()
+            .map(|_| acyclic_native_runtime::CaptureInput::Exchange {
+                initial: &first,
+                maximum: invocation.mcp_stdio.as_ref().unwrap().maximum_bytes as usize,
+            });
+        let output = process.wait_with_output(
+            timeout,
+            maximum_output,
+            input,
+            poll,
+            |chunk| {
+                let Some(exchange) = exchange.as_mut() else {
+                    return Ok(Default::default());
+                };
+                let (bytes, _hold) = exchange.push(chunk, None).map_err(|error| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
+                })?;
+                Ok(acyclic_native_runtime::ProcessInput {
+                    bytes,
+                    complete: exchange.is_complete(),
+                })
+            },
+            None,
+            None,
+        );
         Ok::<_, std::io::Error>(output)
     })
     .await
@@ -586,37 +618,33 @@ async fn execute<P, A, O>(
     authority: &NativeProcessAuthority,
     request: &NativeProcessRequest,
     dispatch: &EffectDispatch,
-    schema: &serde_json::Value,
-) -> Result<NativeExecution>
+    schema: &(crate::conversation::FileRef, acyclic_stream::OwnedBytes),
+) -> Result<(EffectStatus, Option<crate::conversation::FileRef>)>
 where
     P: StreamProvider + 'static,
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     let Some(result) = capture(owner, request).await? else {
-        return Ok(NativeExecution {
-            status: EffectStatus::Indeterminate,
-            diagnostic: None,
-        });
+        return Ok((EffectStatus::Indeterminate, None));
     };
     let bytes = crate::contract::canonical_json_bytes(&result)?;
     if bytes.len() > request.maximum_result_bytes as usize {
-        return Ok(NativeExecution {
-            status: EffectStatus::Indeterminate,
-            diagnostic: None,
-        });
+        return Ok((EffectStatus::Indeterminate, None));
     }
-    crate::contract::validate_json_schema_value(
-        schema,
+    crate::executor::validate_json_schema_value(
+        &crate::contract::json_from_slice(&schema.1)
+            .map_err(|error| Error::Invalid(error.to_string()))?,
         &serde_json::to_value(&result).map_err(|error| Error::Invalid(error.to_string()))?,
         "native process result",
+        &mut None,
     )?;
     let publish = result.stop.is_none();
     let cleanup_completed = result
         .stop
         .as_ref()
         .is_none_or(|stop| stop.cleanup_completed);
-    let result = authority
+    let (result, _result_hold) = authority
         .results
         .stage(
             OperationId::from_bytes(dispatch.attempt_id.into_bytes()),
@@ -624,30 +652,22 @@ where
             &bytes,
             "application/json",
             "Native process result",
-        )
+            None,
+        )?
         .await?;
     if result.volume() != authority.results.volume() {
         return Err(Error::Unauthorized(
             "native result publisher returned another owner volume".into(),
         ));
     }
-    crate::effects::validate_result_bytes(schema, &result, &bytes)?;
+    crate::effects::validate_result_bytes(&schema.0, &schema.1, &result, &bytes, &mut None)?;
     if publish && view.publish(owner).await.is_err() {
-        return Ok(NativeExecution {
-            status: EffectStatus::Indeterminate,
-            diagnostic: Some(result),
-        });
+        return Ok((EffectStatus::Indeterminate, Some(result)));
     }
     Ok(if cleanup_completed {
-        NativeExecution {
-            status: EffectStatus::Succeeded { result },
-            diagnostic: None,
-        }
+        (EffectStatus::Succeeded { result }, None)
     } else {
-        NativeExecution {
-            status: EffectStatus::Indeterminate,
-            diagnostic: Some(result),
-        }
+        (EffectStatus::Indeterminate, Some(result))
     })
 }
 
@@ -686,7 +706,7 @@ async fn read_receipt<P: StreamProvider>(
     owner: &TaskJournalOwner<P>,
     path: &StreamPath,
 ) -> Result<Option<(LaunchReceipt, Option<NativeObservation>)>> {
-    let stream = owner.stream().stream(path.as_str())?;
+    let stream = acyclic_stream::Stream::new(owner.stream(), path.as_str())?;
     let bounds = match stream.bounds().await {
         Ok(bounds) => bounds,
         Err(StreamError::NotFound) => return Ok(None),
@@ -754,7 +774,13 @@ async fn append_receipt<P: StreamProvider>(
         blake3::hash(&bytes).as_bytes(),
     ))?;
     owner
-        .append(path, tail, &key, Bytes::from(bytes), write)
+        .append(
+            path,
+            tail,
+            &key,
+            acyclic_stream::OwnedBytes::from(bytes),
+            write,
+        )
         .await
 }
 

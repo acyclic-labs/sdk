@@ -80,15 +80,7 @@ async fn open(
     custody.absorb(&mut operation_custody)?;
     let original = work.clone();
     acyclic_native_runtime::run_blocking_io(
-        move || {
-            NativeTreeMaterializationBackend::new(
-                root,
-                operation_directory,
-                Some(custody),
-                original,
-                false,
-            )
-        },
+        move || NativeTreeMaterializationBackend::new(root, operation_directory, custody, original),
         Some((work.runtime_meter(), false)),
     )
     .map_err(|error| Error::from(work.runtime_error(error)))?

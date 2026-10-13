@@ -28,17 +28,10 @@ mod preparation;
 pub use allocation::NativePreparationRoot;
 mod completion;
 pub(crate) use completion::NativePreparationCompletionTemplate;
-mod preparation_record;
-pub use preparation_record::NativeRecordedPreparation;
-mod inspection;
 pub(super) mod journal;
-pub use inspection::observe_preparation;
+mod preparation_record;
 mod publication;
 pub use publication::NativeViewPublicationError;
-mod root_output;
-pub use root_output::NativeRootOutputSource;
-mod working_files;
-pub use working_files::NativeTaskWorkingView;
 
 /// Borrowed selection of one exact generation and publication permit.
 pub struct BorrowedNativeVolumeBinding<'a, A, O> {
@@ -75,7 +68,8 @@ enum PreparedVolume<A, O> {
 /// SDK namespace and its protected original preparation.
 pub struct NativeVolumeView<A, O> {
     volumes: Vec<PreparedVolume<A, O>>,
-    preparation: NativeRecordedPreparation,
+    preparation: preparation_record::Intent,
+    custody: NativeAllocation,
 }
 
 impl<A, O> NativeVolumeView<A, O>
@@ -85,18 +79,13 @@ where
 {
     /// Original task work ledger.
     pub fn work(&self) -> &NativeMaterializationWork {
-        self.preparation.custody.work()
+        self.custody.work()
     }
 
     /// Exact request/approval manifest.
     #[must_use]
     pub const fn manifest(&self) -> &NativeViewManifest {
         &self.preparation.manifest
-    }
-
-    /// Original protected journal and selection.
-    pub fn preparation(&self) -> &NativeRecordedPreparation {
-        &self.preparation
     }
 
     /// Rechecks the original physical views and immutable source selections.

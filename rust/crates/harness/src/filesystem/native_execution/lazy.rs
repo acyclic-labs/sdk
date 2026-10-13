@@ -60,14 +60,22 @@ impl NativeExistingLazyVolume {
             let NativeVolumeNamespace::LazyMount { snapshot } = binding.namespace else {
                 return Err(invalid());
             };
-            let workspace = binding
-                .host
-                .open_volume_with_native_work(binding.volume, work)
-                .await?;
-            let generation = binding
-                .host
-                .generation_with_native_work(&workspace, binding.generation, work)
-                .await?;
+            let volume_io = PreparationIo::from_native_work(work)?;
+            let reference = crate::filesystem::fork_preparer_io::content_workspace(
+                &binding.host.provider,
+                binding.volume,
+                Some(&volume_io),
+            )?;
+            let workspace =
+                crate::filesystem::fork_preparer_io::open(binding.host, &reference, &volume_io)
+                    .await?;
+            let generation = crate::filesystem::fork_preparer_io::generation(
+                binding.host,
+                &workspace,
+                binding.generation,
+                &volume_io,
+            )
+            .await?;
             let actual = mount.snapshot(work, work.cancellation()).await?;
             if &actual != snapshot
                 || actual.workspace_id != workspace.id()

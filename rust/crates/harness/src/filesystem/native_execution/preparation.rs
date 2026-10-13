@@ -95,14 +95,22 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                     return Err(invalid());
                 }
                 verify_binding(owner, binding, guard, &volume_work).await?;
-                let workspace = binding
-                    .host
-                    .open_volume_with_native_work(binding.volume, &volume_work)
-                    .await?;
-                let generation = binding
-                    .host
-                    .generation_with_native_work(&workspace, binding.generation, &volume_work)
-                    .await?;
+                let volume_io = PreparationIo::from_native_work(&volume_work)?;
+                let reference = crate::filesystem::fork_preparer_io::content_workspace(
+                    &binding.host.provider,
+                    binding.volume,
+                    Some(&volume_io),
+                )?;
+                let workspace =
+                    crate::filesystem::fork_preparer_io::open(binding.host, &reference, &volume_io)
+                        .await?;
+                let generation = crate::filesystem::fork_preparer_io::generation(
+                    binding.host,
+                    &workspace,
+                    binding.generation,
+                    &volume_io,
+                )
+                .await?;
                 if binding.writable
                     && workspace
                         .head(&volume_work, work.cancellation())
@@ -178,7 +186,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                 },
                 volumes: mappings,
             };
-            manifest.validate_with_io(Some(&io))?;
+            manifest.validate(Some(&io))?;
             let store = super::journal::Store {
                 owner: Arc::clone(owner),
                 work: work.clone(),
@@ -301,7 +309,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                         .await?;
                 }
             }
-            let mut before_effect = |_source| verify();
+            let mut before_effect = verify;
             journal = materializer
                 .recover(
                     operation,
@@ -366,14 +374,8 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
             verify().await?;
             Ok(Self {
                 volumes,
-                preparation: NativeRecordedPreparation {
-                    task: intent.task,
-                    original_fence: intent.original_fence,
-                    operation_directory: intent.operation_directory,
-                    manifest: intent.manifest,
-                    journal,
-                    custody,
-                },
+                preparation: intent,
+                custody,
             })
         })
     }
