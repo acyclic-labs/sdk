@@ -28,7 +28,7 @@ use std::sync::Arc;
 mod headless;
 mod native_stock;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub use native_stock::NativeStockExecutor;
+pub(crate) use native_stock::NativeStockExecutor;
 use native_stock::*;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use native_stock::{
@@ -68,11 +68,11 @@ pub use checkpoint_selection::{canonical_checkpoint_for_operation, load_canonica
 mod checkpoint_projection;
 pub use checkpoint_projection::{load_canonical_checkpoint, load_canonical_checkpoint_through};
 mod payload;
+#[cfg(feature = "filesystem")]
+pub(crate) use payload::reserve_preparation_workspace;
 pub(crate) use payload::{
     decode_json, load_json, load_model_request, preparation_digest, retain_preparation,
 };
-#[cfg(feature = "filesystem")]
-pub(crate) use payload::{receive_preparation, reserve_preparation_workspace};
 mod admission;
 
 /// Internal replay batch size; callers may request any positive page allowance.
@@ -511,3 +511,9 @@ pub(crate) struct ModelEventAdmission {
 
 #[cfg(test)]
 mod tests;
+
+mod validation;
+pub(crate) use validation::{compile_json_schema, preparation_format, validate_json_schema_value};
+
+/// Bounded JSON shared by the existing IO adapters.
+pub mod json;

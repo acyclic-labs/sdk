@@ -155,7 +155,7 @@ pub(super) async fn apply_host_metadata_offloaded(
             #[cfg(unix)]
             root.0.stat(super::work::host_path(&path.0), work)?;
             #[cfg(windows)]
-            root.0.stat_wide(&path.0, work)?;
+            root.0.stat(&path.0, work)?;
             return Ok(());
         }
         #[cfg(target_os = "linux")]
@@ -169,7 +169,7 @@ pub(super) async fn apply_host_metadata_offloaded(
             work,
         )?;
         #[cfg(windows)]
-        let target = root.0.open_windows_metadata_target_wide(&path.0, work)?;
+        let target = root.0.open_windows_metadata_target(&path.0, work)?;
         #[cfg(target_os = "linux")]
         {
             crate::native_host::apply_linux_metadata(&target, metadata, work)
@@ -224,7 +224,13 @@ pub(super) fn validate_options(
             return Err(MaterializeError::AllocationChanged { expected, actual });
         }
     }
-    let (entries, reader_allocation) = root.read_dir_stats(Path::new(""), &mut work)?;
+    let (entries, reader_allocation) = root.read_dir_stats(
+        #[cfg(unix)]
+        Path::new(""),
+        #[cfg(windows)]
+        &[],
+        &mut work,
+    )?;
     let mut entries = entries;
     let next = entries.next(&mut work);
     drop(entries);
@@ -253,10 +259,19 @@ pub(super) fn create_file(
     path: &Vec<HostPathUnit>,
     receipt: &mut GenerationReceipt,
 ) -> Result<acyclic_native_runtime::NativeFile, MaterializeError> {
+    let mut work = receipt.custody.work().clone();
     #[cfg(windows)]
-    let file = receipt.run(|work| host_root.create_windows_file_wide(&path, true, false, work))?;
+    let file = host_root
+        .create_file(
+            path,
+            ::windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0),
+            &mut work,
+        )
+        .map_err(MaterializeError::from)?;
     #[cfg(unix)]
-    let file = receipt.run(|work| host_root.create_file(super::work::host_path(path), work))?;
+    let file = host_root
+        .create_file(super::work::host_path(path), &mut work)
+        .map_err(MaterializeError::from)?;
     let meter = Some(acyclic_native_runtime::NativeFileMeter::Owned(
         receipt.custody.work().runtime_meter(),
     ));
@@ -333,16 +348,17 @@ pub(super) fn create_symlink(
     destination: &Vec<HostPathUnit>,
     receipt: &mut GenerationReceipt,
 ) -> Result<(), MaterializeError> {
+    let mut work = receipt.custody.work().clone();
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt as _;
-        receipt.run(|work| {
-            host_root.symlink(
+        host_root
+            .symlink(
                 OsStr::from_bytes(target),
                 super::work::host_path(destination),
-                work,
+                &mut work,
             )
-        })
+            .map_err(MaterializeError::from)
     }
     #[cfg(windows)]
     {
@@ -355,7 +371,9 @@ pub(super) fn create_symlink(
             ..WorkCounters::UNCHARGED
         })?;
         units.extend(decoded);
-        let result = receipt.run(|work| host_root.symlink_file_wide(&units, &destination, work));
+        let result = host_root
+            .symlink_file(&units, destination, &mut work)
+            .map_err(MaterializeError::from);
         let retained = units.capacity() * std::mem::size_of::<u16>();
         drop(units);
         receipt
@@ -379,10 +397,11 @@ pub(super) fn create_special(
 ) -> Result<(), MaterializeError> {
     #[cfg(unix)]
     {
+        let mut work = receipt.custody.work().clone();
         match kind {
-            FileKind::Fifo => receipt.run(|work| {
-                host_root.create_fifo_held(super::work::host_path(destination), 0o600, work)
-            }),
+            FileKind::Fifo => host_root
+                .create_fifo_held(super::work::host_path(destination), 0o600, &mut work)
+                .map_err(MaterializeError::from),
             FileKind::CharacterDevice | FileKind::BlockDevice => {
                 let (major, minor) =
                     device.ok_or_else(|| MaterializeError::UnsupportedKind(kind))?;
@@ -394,17 +413,18 @@ pub(super) fn create_special(
                 let device_number = super::device::join_device(major, minor).map_err(|errno| {
                     MaterializeError::Io(std::io::Error::from_raw_os_error(errno))
                 })?;
-                receipt.run(|work| {
-                    host_root.create_device_held(
+                host_root
+                    .create_device_held(
                         super::work::host_path(destination),
                         file_type | 0o600,
                         device_number,
-                        work,
+                        &mut work,
                     )
-                })
+                    .map_err(MaterializeError::from)
             }
-            FileKind::Socket => receipt
-                .run(|work| host_root.bind_unix_socket(super::work::host_path(destination), work)),
+            FileKind::Socket => host_root
+                .bind_unix_socket(super::work::host_path(destination), &mut work)
+                .map_err(MaterializeError::from),
             _ => Err(MaterializeError::UnsupportedKind(kind)),
         }
     }

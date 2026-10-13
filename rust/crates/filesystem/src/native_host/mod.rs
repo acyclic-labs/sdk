@@ -18,22 +18,29 @@ use std::{
 };
 #[cfg(all(windows, any(feature = "native-mount", test)))]
 use windows::Win32::Storage::FileSystem::FILE_BASIC_INFO;
+#[cfg(windows)]
+use windows::{
+    Wdk::Storage::FileSystem as nt,
+    Win32::{Foundation as win, Storage::FileSystem as fs},
+};
+#[cfg(windows)]
+mod windows_journal;
+#[cfg(windows)]
+pub(crate) use windows_journal::*;
 mod record;
 pub(crate) use record::*;
 mod work;
 pub(crate) use work::*;
 mod cwd;
 pub(crate) use cwd::*;
+#[cfg(unix)]
 mod unix_path;
+#[cfg(unix)]
 pub(crate) use unix_path::*;
 mod open;
 pub(crate) use open::*;
 mod mutation;
 pub(crate) use mutation::*;
-#[cfg(windows)]
-mod metadata_sync;
-#[cfg(windows)]
-pub(crate) use metadata_sync::*;
 mod metadata;
 use metadata::*;
 #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
@@ -44,10 +51,6 @@ mod stat;
 pub(crate) use stat::*;
 mod reader;
 pub(crate) use reader::*;
-#[cfg(windows)]
-mod windows_path;
-#[cfg(windows)]
-pub(crate) use windows_path::*;
 mod root;
 pub(crate) use root::*;
 #[cfg(unix)]
@@ -58,7 +61,9 @@ mod links;
 pub(crate) use links::*;
 mod unix_stat;
 pub(crate) use unix_stat::*;
+#[cfg(windows)]
 mod root_path;
+#[cfg(windows)]
 pub(crate) use root_path::*;
 mod identity;
 pub(crate) use identity::*;
@@ -66,10 +71,6 @@ pub(crate) use identity::*;
 mod windows_metadata;
 #[cfg(all(windows, any(feature = "native-mount", test)))]
 pub(crate) use windows_metadata::*;
-#[cfg(windows)]
-mod windows_file;
-#[cfg(windows)]
-pub(crate) use windows_file::*;
 #[cfg(windows)]
 mod copy;
 #[cfg(windows)]
@@ -88,7 +89,7 @@ pub use metadata::NativeMetadataError;
 pub(crate) use ranges::*;
 pub use reader::HostStatReader;
 pub use root::HostRoot;
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 pub use sparse::punch_hole;
 pub use stat::{HostDataRange, HostFileType, HostListedEntry, HostStat};
 #[cfg(windows)]

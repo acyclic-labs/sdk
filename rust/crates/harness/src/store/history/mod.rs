@@ -142,7 +142,7 @@ pub trait HistoryIo: Send {
     /// Admit encoding.
     fn admit_encoding(&self, bytes: u64) -> Result<()>;
     /// Codec charge.
-    fn codec_charge(&mut self, charge: crate::contract::JsonCodecCharge) -> Result<()>;
+    fn codec_charge(&mut self, charge: crate::executor::json::JsonCodecCharge) -> Result<()>;
     /// Decode json value.
     fn decode_json_value(&mut self, _bytes: &[u8]) -> Result<(serde_json::Value, u64)> {
         Err(Error::Unsupported(
@@ -382,7 +382,7 @@ pub(crate) fn canonical_bytes_with_work<T: Serialize + ?Sized>(
     }
     canonical_bytes_for_bounds_with_work(
         value,
-        crate::contract::JsonBounds {
+        crate::executor::json::JsonBounds {
             maximum_bytes,
             maximum_items: maximum_bytes.saturating_add(1),
             maximum_depth: 256,
@@ -393,7 +393,7 @@ pub(crate) fn canonical_bytes_with_work<T: Serialize + ?Sized>(
 
 pub(crate) fn canonical_bytes_for_bounds_with_work<T: Serialize + ?Sized>(
     value: &T,
-    bounds: crate::contract::JsonBounds,
+    bounds: crate::executor::json::JsonBounds,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Vec<u8>> {
     let Some(work) = work.as_deref_mut() else {
@@ -402,7 +402,7 @@ pub(crate) fn canonical_bytes_for_bounds_with_work<T: Serialize + ?Sized>(
     let code = super::operations::original_native_decode_mode(work)
         .then_some(crate::wire::ErrorCode::Invalid);
     let bytes =
-        crate::contract::canonical_json_bytes_bounded(value, bounds, code, &mut |charge| {
+        crate::executor::json::canonical_json_bytes_bounded(value, bounds, code, &mut |charge| {
             work.codec_charge(charge)
         })?;
     if let Err(error) = work.retain_owned((bytes.capacity() - bytes.len()) as u64) {

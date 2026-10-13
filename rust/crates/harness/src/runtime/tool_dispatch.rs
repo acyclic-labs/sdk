@@ -28,7 +28,7 @@ impl TaskContext {
         }
         let arguments =
             serde_json::to_value(input).map_err(|error| Error::Invalid(error.to_string()))?;
-        crate::contract::validate_json_schema_value(
+        crate::executor::validate_json_schema_value(
             &tool.input_schema,
             &arguments,
             "tool input",
@@ -57,7 +57,7 @@ impl TaskContext {
             .executor
             .execute_with_context(context, invocation)
             .await?;
-        crate::contract::validate_json_schema_value(
+        crate::executor::validate_json_schema_value(
             &tool.output_schema,
             &result.value,
             "tool output",

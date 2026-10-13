@@ -197,7 +197,7 @@ impl DurableBatchRequest {
             execution.validate(&mut None)?;
         }
         for input in &self.inputs {
-            crate::contract::validate_json_schema_value(
+            crate::executor::validate_json_schema_value(
                 &self.input_schema,
                 input,
                 "batch input",

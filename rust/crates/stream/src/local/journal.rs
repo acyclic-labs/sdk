@@ -1,52 +1,10 @@
-use super::*;
-
-pub(super) struct Journal {
-    /// Held locked for as long as the provider is open.
-    pub(super) lock: File,
-    pub(super) file: File,
-    /// Which snapshot the journal follows: the one naming this epoch.
-    pub(super) epoch: u64,
-    pub(super) operations: u64,
-    pub(super) bytes: u64,
-    pub(super) limits: LocalStreamLimits,
-    /// How many frames were ever written, across every epoch: the sequence of the latest one.
-    pub(super) appended: u64,
-    /// The latest frame written by a mutation that waits for the device.
-    pub(super) required: u64,
-    /// Every frame through this sequence is durable.
-    pub(super) synced: u64,
-    /// Whether a flush is under way.
-    pub(super) syncing: bool,
-    pub(super) root: PathBuf,
-    pub(super) torn_tail: Option<u64>,
-}
-
-impl Drop for Journal {
-    fn drop(&mut self) {
-        let _ = self.lock.unlock();
-    }
-}
-
-/// The blocking worker waits without releasing ownership; replay never authorizes truncation or restart after a rejected semantic prefix.
-pub(super) fn validate_recovery(
-    recovered: &mpsc::Sender<Recovered>,
-) -> Result<bool, LocalStreamError> {
-    let (complete, validation) = tokio::sync::oneshot::channel();
-    recovered
-        .blocking_send(Recovered::Validate(complete))
-        .map_err(|_| LocalStreamError::Executor)?;
-    validation
-        .blocking_recv()
-        .map_err(|_| LocalStreamError::Executor)
-}
-
 impl Journal {
-    pub(super) fn open(
+    fn open(
         root: &Path,
         limits: LocalStreamLimits,
         recovered: &mpsc::Sender<Recovered>,
         span: &tracing::Span,
-    ) -> Result<(Self, File), LocalStreamError> {
+    ) -> Result<Self, LocalStreamError> {
         let lock = lock_root(root, limits)?;
         let epoch = match read_snapshot(root, limits)? {
             Some(snapshot) => {
@@ -66,9 +24,10 @@ impl Journal {
             .read(true)
             .write(true)
             .open(&path)?;
-        let sync = file.try_clone()?;
         let mut journal = Self {
+            _ownership_anchor: None,
             lock,
+            sync: Arc::new(file.try_clone()?),
             file,
             epoch,
             operations: 0,
@@ -84,7 +43,7 @@ impl Journal {
         let header_bytes =
             u64::try_from(HEADER_BYTES).map_err(|_| LocalStreamError::InvalidLimits)?;
         let length = journal.file.metadata()?.len();
-        let mut header = [0_u8; HEADER_BYTES];
+        let mut header = vec![0_u8; HEADER_BYTES];
         let found = if length < header_bytes {
             None
         } else {
@@ -95,7 +54,9 @@ impl Journal {
             Some(decode_header(&header, limits))
         };
         match found {
-            // An incomplete header cannot have acknowledged a frame.
+            // Every frame follows a whole header, so a journal holding less
+            // than a valid header never acknowledged one: its creation or
+            // restart was torn, and it starts again.
             None => {
                 journal.file.seek(SeekFrom::Start(0))?;
                 let mut partial = Vec::new();
@@ -104,25 +65,27 @@ impl Journal {
                     return Err(LocalStreamError::Corrupt);
                 }
                 if !validate_recovery(recovered)? {
-                    return Ok((journal, sync));
+                    return Ok(journal);
                 }
-                journal.restart(epoch)?;
+                journal.restart(epoch, None)?;
                 sync_directory(&path, limits.durability)?;
-                return Ok((journal, sync));
+                return Ok(journal);
             }
             Some(Some(found)) if found == epoch => {}
+            // The snapshot for the next epoch landed before the journal
+            // restarted, so it already holds every frame here.
             Some(Some(found)) if found.checked_add(1) == Some(epoch) => {
                 if !validate_recovery(recovered)? {
-                    return Ok((journal, sync));
+                    return Ok(journal);
                 }
-                journal.restart(epoch)?;
-                return Ok((journal, sync));
+                journal.restart(epoch, None)?;
+                return Ok(journal);
             }
             _ => return Err(LocalStreamError::Corrupt),
         }
         journal.replay(length, recovered, span)?;
         if !validate_recovery(recovered)? {
-            return Ok((journal, sync));
+            return Ok(journal);
         }
         if let Some(frame_start) = journal.torn_tail {
             match acyclic_native_runtime::recover_log_tail(
@@ -136,12 +99,14 @@ impl Journal {
                 acyclic_native_runtime::LogTail::Corrupt => return Err(LocalStreamError::Corrupt),
             }
         }
+        // Frames a crashed process wrote but never flushed are replayed, so
+        // they are made durable before anything can observe them.
         sync_file_data(&journal.file, limits.durability)?;
-        Ok((journal, sync))
+        Ok(journal)
     }
 
-    /// Hands every whole frame of a journal `length` long to `recovered`, cutting a torn one off the end.
-    pub(super) fn replay(
+    /// Hands every whole frame of a journal `length` long to `recovered`,
+    fn replay(
         &mut self,
         length: u64,
         recovered: &mpsc::Sender<Recovered>,
@@ -159,7 +124,10 @@ impl Journal {
                 self.torn_tail = Some(frame_start);
                 break;
             };
+            // An intact frame was written whole, so one that does not decode
+            // may be a committed command: fail closed.
             let (committed_at_millis, command) = frame
+                .command
                 .split_first_chunk::<8>()
                 .ok_or(LocalStreamError::Corrupt)?;
             let command = decode_command(command).map_err(|_| LocalStreamError::Corrupt)?;
@@ -174,26 +142,33 @@ impl Journal {
                 })
                 .map_err(|_| LocalStreamError::Executor)?;
             valid_length = valid_length
-                .checked_add(4 + frame.len() as u64 + FRAME_CHECKSUM_BYTES as u64)
+                .checked_add(frame_bytes(&frame.length))
                 .ok_or(LocalStreamError::Corrupt)?;
         }
         if valid_length > limits.journal_bytes {
             return Err(LocalStreamError::InvalidLimits);
         }
         self.file.seek(SeekFrom::End(0))?;
-        span.record("frames", operations);
-        span.record("bytes", valid_length);
+        obs::record(span, "frames", operations);
+        obs::record(span, "bytes", valid_length);
         self.operations = operations;
         self.bytes = valid_length;
         Ok(())
     }
 
     /// Empties the journal to follow the snapshot of `epoch`.
-    pub(super) fn restart(&mut self, epoch: u64) -> Result<(), LocalStreamError> {
+    fn restart(
+        &mut self,
+        epoch: u64,
+        work: Option<&Arc<crate::memory::Work>>,
+    ) -> Result<(), LocalStreamError> {
         self.file.set_len(0)?;
         self.file.seek(SeekFrom::Start(0))?;
         self.file.write_all(&encode_header(self.limits, epoch)?)?;
-        sync_file(&self.file, self.limits.durability)?;
+        match work {
+            Some(work) => work.sync(|| sync_file(&self.file, self.limits.durability))?,
+            None => sync_file(&self.file, self.limits.durability)?,
+        }
         self.epoch = epoch;
         self.operations = 0;
         self.bytes = u64::try_from(HEADER_BYTES).map_err(|_| LocalStreamError::InvalidLimits)?;
@@ -202,129 +177,47 @@ impl Journal {
         Ok(())
     }
 
-    pub(super) fn compaction_due(&self) -> bool {
+    fn compaction_due(&self) -> bool {
         self.operations > 0
             && (self.operations >= self.limits.journal_operations / 2
                 || self.bytes >= self.limits.journal_bytes / 2)
     }
 
-    /// Makes `state`, which holds every frame so far, the snapshot the journal follows, then empties the journal.
-    pub(super) fn compact(
+    /// Makes `state`, which holds every frame so far, the snapshot the
+    fn compact(
         &mut self,
         state: &[u8],
-        meter: Option<&Arc<dyn NativeReadMeter>>,
-    ) -> (Result<(), LocalStreamError>, std::io::Result<()>, bool) {
-        let mut observed = Ok(());
-        let mut started = false;
-        let physical = (|| {
-            let epoch = self.epoch.checked_add(1).ok_or(LocalStreamError::Corrupt)?;
-            let temporary = joined_path(&self.root, SNAPSHOT_TEMPORARY, meter)?;
-            let snapshot = joined_path(&self.root, SNAPSHOT_FILE, meter)?;
-            let encoded = encode_snapshot(self.limits, epoch, state, meter)?;
-            let header = encode_header(self.limits, epoch)?;
-            // Admit fixed boundaries before create; admit data retries separately.
-            let mut controls = meter
-                .map(|meter| {
-                    NativeOperationReservation::new(
-                        Arc::clone(meter),
-                        NativeOperationKind::Write,
-                        3,
-                    )
-                })
-                .transpose()?;
-            let mut seeks = meter
-                .map(|meter| {
-                    NativeOperationReservation::new(Arc::clone(meter), NativeOperationKind::Read, 1)
-                })
-                .transpose()?;
-            let mut durability = meter
-                .map(|meter| {
-                    NativeOperationReservation::new(
-                        Arc::clone(meter),
-                        NativeOperationKind::Durability,
-                        3,
-                    )
-                })
-                .transpose()?;
-            let mut snapshot_write = meter
-                .map(|meter| AdmittedFrameWrite::new(meter, encoded.value.len()))
-                .transpose()?;
-            let mut header_write = meter
-                .map(|meter| AdmittedFrameWrite::new(meter, header.len()))
-                .transpose()?;
-            let mut file = SnapshotFile::create(
-                &temporary.value,
-                meter,
-                &mut controls,
-                &mut observed,
-                &mut started,
-            )?;
-            let handle = file
-                .file
-                .as_mut()
-                .expect("successful create retains its held file");
-            let (written, recorded) = match &mut snapshot_write {
-                Some(admission) => admission.write_all(handle, &encoded.value),
-                None => (
-                    handle
-                        .write_all(&encoded.value)
-                        .map_err(LocalStreamError::Io),
-                    Ok(()),
-                ),
-            };
-            keep_observation(&mut observed, recorded);
-            written?;
-            let (synced, recorded) = attempt_control(&mut durability, || {
-                sync_file(handle, self.limits.durability)
-            });
-            keep_observation(&mut observed, recorded);
-            synced?;
-            keep_observation(&mut observed, file.close());
-            let (renamed, recorded) = attempt_control(&mut controls, || {
-                std::fs::rename(&temporary.value, &snapshot.value)
-            });
-            keep_observation(&mut observed, recorded);
-            renamed?;
-            let (synced, recorded) = attempt_control(&mut durability, || {
-                sync_directory(&snapshot.value, self.limits.durability)
-            });
-            keep_observation(&mut observed, recorded);
-            synced?;
-            let (truncated, recorded) = attempt_control(&mut controls, || self.file.set_len(0));
-            keep_observation(&mut observed, recorded);
-            truncated?;
-            let (seeked, recorded) =
-                attempt_control(&mut seeks, || self.file.seek(SeekFrom::Start(0)));
-            keep_observation(&mut observed, recorded);
-            seeked?;
-            let (written, recorded) = match &mut header_write {
-                Some(admission) => admission.write_all(&mut self.file, &header),
-                None => (
-                    self.file.write_all(&header).map_err(LocalStreamError::Io),
-                    Ok(()),
-                ),
-            };
-            keep_observation(&mut observed, recorded);
-            written?;
-            let (synced, recorded) = attempt_control(&mut durability, || {
-                sync_file(&self.file, self.limits.durability)
-            });
-            keep_observation(&mut observed, recorded);
-            synced?;
-            self.epoch = epoch;
-            self.operations = 0;
-            self.bytes = HEADER_BYTES as u64;
-            self.synced = self.appended;
-            Ok(())
-        })();
-        (physical, observed, started)
+        work: Option<&Arc<crate::memory::Work>>,
+    ) -> Result<(), LocalStreamError> {
+        let epoch = self.epoch.checked_add(1).ok_or(LocalStreamError::Corrupt)?;
+        let temporary = self.root.join(SNAPSHOT_TEMPORARY);
+        let snapshot = self.root.join(SNAPSHOT_FILE);
+        {
+            let mut file = File::create(&temporary)?;
+            file.write_all(&encode_snapshot(self.limits, epoch, state)?)?;
+            match work {
+                Some(work) => work.sync(|| sync_file(&file, self.limits.durability))?,
+                None => sync_file(&file, self.limits.durability)?,
+            }
+        }
+        std::fs::rename(&temporary, &snapshot)?;
+        match work {
+            Some(work) => work.sync(|| {
+                acyclic_native_runtime::sync_parent(
+                    &snapshot,
+                    native_durability(self.limits.durability),
+                )
+            })?,
+            None => sync_directory(&snapshot, self.limits.durability)?,
+        }
+        self.restart(epoch, work)
     }
 
-    pub(super) fn admit_bytes(&self, bytes: u64) -> Result<(), LocalStreamError> {
+    fn admit(&self, frame: &PreparedFrame) -> Result<(), LocalStreamError> {
         if self.operations >= self.limits.journal_operations
             || self
                 .bytes
-                .checked_add(bytes)
+                .checked_add(frame.encoded.len() as u64)
                 .is_none_or(|value| value > self.limits.journal_bytes)
         {
             return Err(LocalStreamError::InvalidLimits);
@@ -332,25 +225,15 @@ impl Journal {
         Ok(())
     }
 
-    /// Uses the same cursor and counters.
-    pub(super) fn append(
+    /// Writes `frame` after every earlier one, without waiting for the
+    fn append(
         &mut self,
-        frame: &[u8],
+        frame: &mut PreparedFrame,
         required: bool,
-        admission: Option<&mut AdmittedFrameWrite>,
-    ) -> (Result<(), LocalStreamError>, std::io::Result<()>) {
-        let (written, observed) = match admission {
-            Some(admission) => admission.write_all(&mut self.file, frame),
-            None => (
-                self.file.write_all(frame).map_err(LocalStreamError::Io),
-                Ok(()),
-            ),
-        };
-        if let Err(error) = written {
-            return (Err(error.into()), observed);
-        }
+    ) -> Result<(), LocalStreamError> {
+        frame.write(&mut self.file)?;
         tracing::trace!(
-            bytes = frame.len() as u64,
+            bytes = frame.encoded.len() as u64,
             required,
             "acyclic.stream.journal_append"
         );
@@ -359,33 +242,13 @@ impl Journal {
             self.required = self.appended;
         }
         self.operations += 1;
-        self.bytes += frame.len() as u64;
-        (Ok(()), observed)
+        self.bytes += frame.encoded.len() as u64;
+        Ok(())
     }
 
     /// Whether frames were written since the journal last flushed.
     #[cfg(test)]
-    pub(super) fn unflushed(&self) -> bool {
+    fn unflushed(&self) -> bool {
         self.appended > self.synced
     }
-}
-
-/// Creates `root` if it is missing and takes its exclusive lock.
-pub(super) fn lock_root(root: &Path, limits: LocalStreamLimits) -> Result<File, LocalStreamError> {
-    std::fs::create_dir_all(root)?;
-    sync_directory(root, limits.durability)?;
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(root.join(LOCK_FILE))?;
-    lock.try_lock_exclusive().map_err(|error| {
-        if acyclic_native_runtime::is_exclusive_lock_contention(&error) {
-            LocalStreamError::AlreadyOpen
-        } else {
-            LocalStreamError::Io(error)
-        }
-    })?;
-    Ok(lock)
 }

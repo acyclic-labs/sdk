@@ -29,7 +29,7 @@ impl FileTool {
         let file = match self {
             Self::Read => {
                 let input: ReadFileInput = decode(&invocation.arguments, None)?.0;
-                let bytes = task.read_file(&input.file).await?;
+                let bytes = task.read_file(&input.file, None).await?;
                 let text = std::str::from_utf8(&bytes)
                     .map_err(|_| Error::Invalid("file read requires UTF-8 content".into()))?
                     .to_owned();
@@ -39,14 +39,17 @@ impl FileTool {
             }
             Self::Write => {
                 let input: WriteFileInput = decode(&invocation.arguments, None)?.0;
-                task.stage_file_once(
-                    invocation.operation_id,
-                    &input.path,
-                    input.text.as_bytes(),
-                    &input.media_type,
-                    &input.display_name,
-                )
-                .await?
+                task
+                    .stage_file_once(
+                        invocation.operation_id,
+                        &input.path,
+                        input.text.as_bytes(),
+                        &input.media_type,
+                        &input.display_name,
+                        None,
+                    )
+                    .await
+                    .map(|(file, _)| file)?
             }
             Self::Patch {
                 maximum_work,
@@ -66,7 +69,7 @@ impl FileTool {
                         "patch input exceeds original task file bound".into(),
                     ));
                 }
-                let bytes = task.read_file(&input.file).await?;
+                let bytes = task.read_file(&input.file, None).await?;
                 let source = std::str::from_utf8(&bytes)
                     .map_err(|_| Error::Invalid("patch editing requires UTF-8 content".into()))?;
                 let edited = super::patch::apply_update(
@@ -75,14 +78,21 @@ impl FileTool {
                     limits,
                     &mut super::edit::AlgorithmWork::ordinary(),
                 )?;
-                task.stage_file_at(invocation.operation_id, &input.file, edited.as_bytes())
-                    .await?
+                task
+                    .stage_file_at(
+                        invocation.operation_id,
+                        &input.file,
+                        edited.as_bytes(),
+                        None,
+                    )
+                    .await
+                    .map(|(file, _)| file)?
             }
             Self::Edit => {
                 let input: EditFileInput = decode(&invocation.arguments, None)?.0;
                 let maximum = task.scope().limits().file_bytes;
                 super::edit::validate_edit_bound(maximum)?;
-                let bytes = task.read_file(&input.file).await?;
+                let bytes = task.read_file(&input.file, None).await?;
                 let text = std::str::from_utf8(&bytes)
                     .map_err(|_| Error::Invalid("exact text edit requires UTF-8 content".into()))?;
                 let edited = super::edit::exact_replace(
@@ -92,8 +102,15 @@ impl FileTool {
                     maximum,
                     &mut super::edit::AlgorithmWork::ordinary(),
                 )?;
-                task.stage_file_at(invocation.operation_id, &input.file, edited.as_bytes())
-                    .await?
+                task
+                    .stage_file_at(
+                        invocation.operation_id,
+                        &input.file,
+                        edited.as_bytes(),
+                        None,
+                    )
+                    .await
+                    .map(|(file, _)| file)?
             }
         };
         Ok(ToolResult {
@@ -113,7 +130,7 @@ impl FileTool {
         let scope = scope.ok_or_else(|| {
             Error::Unauthorized("file tool requires original runtime scope".into())
         })?;
-        crate::contract::json_byte_length(
+        crate::executor::json::json_byte_length(
             &invocation.arguments,
             scope.limits().file_bytes,
             &mut None,
@@ -242,8 +259,9 @@ impl ToolExecutor for FileTool {
                 return Ok((Some(result.0), result.1));
             }
             // Never redispatch an uncertain publication.
+            let observation_io = crate::executor::PreparationIo::from_native_work(work)?;
             let receipt = context
-                .observe_staged_file_once_with_native_work(invocation.operation_id, work)
+                .observe_staged_file_once(invocation.operation_id, Some(&observation_io))
                 .await?;
             match receipt.0 {
                 Some(file) => {
@@ -251,7 +269,7 @@ impl ToolExecutor for FileTool {
                         super::value(&FileResult { file }, work.remaining()?.bytes_encoded, work)?;
                     Ok((Some(ToolResult { value: encoded.0 }), encoded.1))
                 }
-                None => Ok((None, receipt.1)),
+                None => Ok((None, observation_io.take_native_custody(receipt.1)?)),
             }
         })
     }
@@ -341,7 +359,7 @@ impl FileTool {
             Self::Read => {
                 let input = super::decode::<ReadFileInput>(&invocation.arguments, Some(work))?;
                 let read = context
-                    .read_file_with_native_work(&input.0.file, work)
+                    .read_file(&input.0.file, Some(&crate::executor::PreparationIo::from_native_work(work)?))
                     .await?;
                 let source = std::str::from_utf8(read.as_ref())
                     .map_err(|_| native::invalid("file read requires UTF-8 content"))?;
@@ -358,21 +376,25 @@ impl FileTool {
             }
             Self::Write => {
                 let input = super::decode::<WriteFileInput>(&invocation.arguments, Some(work))?;
-                context
-                    .stage_file_once_with_native_work(
-                        invocation.operation_id,
-                        &input.0.path,
-                        input.0.text.as_bytes(),
-                        &input.0.media_type,
-                        &input.0.display_name,
-                        work,
-                    )
-                    .await?
+                {
+                    let publication_io = crate::executor::PreparationIo::from_native_work(work)?;
+                    context
+                        .stage_file_once(
+                            invocation.operation_id,
+                            &input.0.path,
+                            input.0.text.as_bytes(),
+                            &input.0.media_type,
+                            &input.0.display_name,
+                            Some(&publication_io),
+                        )
+                        .await
+                        .and_then(|(file, retained)| Ok((file, publication_io.take_native_custody(retained)?)))
+                }?
             }
             Self::Edit => {
                 let input = super::decode::<EditFileInput>(&invocation.arguments, Some(work))?;
                 let read = context
-                    .read_file_with_native_work(&input.0.file, work)
+                    .read_file(&input.0.file, Some(&crate::executor::PreparationIo::from_native_work(work)?))
                     .await?;
                 let source = std::str::from_utf8(read.as_ref())
                     .map_err(|_| native::invalid("exact text edit requires UTF-8 content"))?;
@@ -385,14 +407,18 @@ impl FileTool {
                     context.effective_scope().limits().file_bytes,
                     &mut allocation,
                 )?;
-                context
-                    .stage_file_at_with_native_work(
-                        invocation.operation_id,
-                        &input.0.file,
-                        edited.as_bytes(),
-                        work,
-                    )
-                    .await?
+                {
+                    let publication_io = crate::executor::PreparationIo::from_native_work(work)?;
+                    context
+                        .stage_file_at(
+                            invocation.operation_id,
+                            &input.0.file,
+                            edited.as_bytes(),
+                            Some(&publication_io),
+                        )
+                        .await
+                        .and_then(|(file, retained)| Ok((file, publication_io.take_native_custody(retained)?)))
+                }?
             }
             Self::Patch {
                 maximum_work,
@@ -412,7 +438,7 @@ impl FileTool {
                     ));
                 }
                 let read = context
-                    .read_file_with_native_work(&input.0.file, work)
+                    .read_file(&input.0.file, Some(&crate::executor::PreparationIo::from_native_work(work)?))
                     .await?;
                 let source = std::str::from_utf8(read.as_ref())
                     .map_err(|_| native::invalid("patch editing requires UTF-8 content"))?;
@@ -420,14 +446,18 @@ impl FileTool {
                     super::edit::AlgorithmWork::native(work, std::mem::size_of::<String>())?;
                 let edited =
                     super::patch::apply_update(source, &input.0.diff, limits, &mut allocation)?;
-                context
-                    .stage_file_at_with_native_work(
-                        invocation.operation_id,
-                        &input.0.file,
-                        edited.as_bytes(),
-                        work,
-                    )
-                    .await?
+                {
+                    let publication_io = crate::executor::PreparationIo::from_native_work(work)?;
+                    context
+                        .stage_file_at(
+                            invocation.operation_id,
+                            &input.0.file,
+                            edited.as_bytes(),
+                            Some(&publication_io),
+                        )
+                        .await
+                        .and_then(|(file, retained)| Ok((file, publication_io.take_native_custody(retained)?)))
+                }?
             }
         };
         let encoded = super::value(

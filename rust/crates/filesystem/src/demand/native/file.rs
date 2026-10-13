@@ -47,7 +47,7 @@ impl NativeDemandFile {
         let file = provider
             .inner
             .root
-            .open_file_yielding_wide(&relative, context);
+            .open_file_yielding(&relative, context);
         #[cfg(not(windows))]
         let file = provider
             .inner
@@ -125,7 +125,7 @@ impl NativeDemandFile {
             .provider
             .inner
             .root
-            .open_file_yielding_wide(&self.relative, context)
+            .open_file_yielding(&self.relative, context)
         {
             Ok(file) => file,
             Err(DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -242,7 +242,7 @@ impl NativeDemandFile {
         #[cfg(unix)]
         let named = self.provider.inner.root.stat(&self.relative, context);
         #[cfg(windows)]
-        let named = self.provider.inner.root.stat_wide(&self.relative, context);
+        let named = self.provider.inner.root.stat(&self.relative, context);
         if version(&held) != self.expected
             || named.as_ref().map(version).ok() != Some(self.expected)
         {

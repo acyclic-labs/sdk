@@ -3,45 +3,32 @@ use super::*;
 /// One sparse data/hole boundary lookup.
 #[napi(object)]
 pub struct NativeExtentSeek {
-    /// Exact logical offset, or absence when no matching extent remains.
     pub offset: Option<BigInt>,
-    /// Exact machine-readable work receipt.
     pub work_json: String,
 }
 
 /// One exact logical sparse span.
 #[napi(object)]
 pub struct NativeExtentSpan {
-    /// Physical span class.
     pub kind: String,
-    /// Inclusive logical file offset.
     pub offset: BigInt,
-    /// Positive logical span length.
     pub length: BigInt,
-    /// Exclusive end of the complete canonical source extent.
     pub source_end: BigInt,
-    /// Typed immutable object identity for content spans.
     pub object_id: Option<Buffer>,
-    /// Byte offset within the immutable object for content spans.
     pub object_offset: Option<BigInt>,
 }
 
 /// Bounded sparse range plan without file-body reads.
 #[napi(object)]
 pub struct NativeExtentPlan {
-    /// `inline` for embedded tiny files or `sparse` for an extent plan.
     pub kind: String,
-    /// Exact ordered spans for a sparse file.
     pub spans: Vec<NativeExtentSpan>,
-    /// Logical allocation retained by the span vector.
     pub retained_allocation_bytes: Option<BigInt>,
-    /// Exact machine-readable work receipt.
     pub work_json: String,
 }
 
 #[napi]
 impl NativeCheckout {
-    /// Plans one bounded sparse range without reading file content blobs.
     #[napi]
     pub async fn plan_file_extents(
         &self,
@@ -69,7 +56,6 @@ impl NativeCheckout {
         native_extent_plan(receipt)
     }
 
-    /// Plans one bounded sparse range by stable file identity.
     #[napi]
     pub async fn plan_file_extents_by_id(
         &self,
@@ -97,7 +83,6 @@ impl NativeCheckout {
         native_extent_plan(receipt)
     }
 
-    /// Finds the next sparse data or hole boundary without reading file bodies.
     #[napi]
     pub async fn seek_file_extent(
         &self,
@@ -119,7 +104,6 @@ impl NativeCheckout {
         })
     }
 
-    /// Finds the next sparse boundary by stable file identity.
     #[napi]
     pub async fn seek_file_extent_by_id(
         &self,

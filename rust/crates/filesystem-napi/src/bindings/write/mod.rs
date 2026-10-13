@@ -2,7 +2,6 @@ use super::*;
 
 #[napi]
 impl NativeCheckout {
-    /// Replaces one logical file range in the private COW overlay.
     #[napi]
     pub async fn write_file(
         &self,
@@ -25,7 +24,6 @@ impl NativeCheckout {
         mutation_result(receipt.work)
     }
 
-    /// Replaces one logical file range by stable file identity.
     #[napi]
     pub async fn write_file_by_id(
         &self,
@@ -48,7 +46,6 @@ impl NativeCheckout {
         mutation_result(receipt.work)
     }
 
-    /// Changes a regular file's logical length.
     #[napi]
     pub async fn resize_file(
         &self,
@@ -69,7 +66,6 @@ impl NativeCheckout {
         mutation_result(receipt.work)
     }
 
-    /// Changes a regular file's logical length by stable file identity.
     #[napi]
     pub async fn resize_file_by_id(
         &self,
@@ -90,7 +86,6 @@ impl NativeCheckout {
         mutation_result(receipt.work)
     }
 
-    /// Punches a hole or records physically allocated zeros.
     #[napi]
     pub async fn zero_file_range(
         &self,
@@ -119,7 +114,6 @@ impl NativeCheckout {
         mutation_result(receipt.work)
     }
 
-    /// Punches a hole or records allocated zeros by stable file identity.
     #[napi]
     pub async fn zero_file_range_by_id(
         &self,
@@ -148,7 +142,6 @@ impl NativeCheckout {
         mutation_result(receipt.work)
     }
 
-    /// Allocates sparse holes without replacing existing content.
     #[napi]
     pub async fn preallocate_file(
         &self,
@@ -175,7 +168,6 @@ impl NativeCheckout {
         mutation_result(receipt.work)
     }
 
-    /// Allocates sparse holes by stable file identity.
     #[napi]
     pub async fn preallocate_file_by_id(
         &self,
@@ -202,7 +194,6 @@ impl NativeCheckout {
         mutation_result(receipt.work)
     }
 
-    /// Clones one logical range by immutable extent reference.
     #[napi]
     pub async fn clone_file_range(
         &self,
@@ -235,7 +226,6 @@ impl NativeCheckout {
         mutation_result(receipt.work)
     }
 
-    /// Clones one sparse range between stable file identities.
     #[napi]
     pub async fn clone_file_range_by_id(
         &self,

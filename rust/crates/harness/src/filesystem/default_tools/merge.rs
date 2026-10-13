@@ -68,7 +68,7 @@ where
                     .task_host()
                     .verify_dispatch_owner_with_native_work(
                         merge.caller,
-                        owner.journal_owner.task_binding().1,
+                        &owner.journal_owner.task_binding().1,
                         work,
                     )?
                     .await?;
@@ -130,7 +130,7 @@ where
                     .task_host()
                     .verify_dispatch_owner_with_native_work(
                         merge.caller,
-                        owner.journal_owner.task_binding().1,
+                        &owner.journal_owner.task_binding().1,
                         work,
                     )?
                     .await?;
@@ -268,7 +268,7 @@ where
             crate::executor::with_history_io(io, |work| crate::wire_codec::CodecQuota::produce(work, |quota| receipt.copy(quota)))?
                 .0;
         let receipt_copy = recursive_box(receipt_copy, io)?;
-        let key = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("recursive-merge-publication:{}", context.operation_id()), work))?;
+        let key = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("recursive-merge-publication:{}", context.operation_id()), work))?;
         let command = Command {
             operation_id: context.operation_id(),
             idempotency_key: IdempotencyKey(key),

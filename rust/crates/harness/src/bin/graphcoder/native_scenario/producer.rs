@@ -24,7 +24,7 @@ impl Producer {
         let owner = self
             .runtime
             .task_host()
-            .journal_owner_with_native_work(caller.task, &fence, &work)
+            .journal_owner(caller.task, &fence, Some(&crate::executor::PreparationIo::from_native_work(&work)?))
             .await?
             .into_native_shared(&work)?;
         let context = self
@@ -32,7 +32,7 @@ impl Producer {
             .task_context_with_native_work(caller.task, &fence, &work)
             .await?;
         let guards = [context
-            .volume_callback_guard_with_native_work(&owner, &work)
+            .volume_callback_guard(&owner, &work)
             .await?];
         let namespace = self.root.join("native-command-view");
         let preparation = self.root.join("native-command-preparation");
@@ -364,7 +364,7 @@ impl Producer {
             let owner = Arc::new(
                 self.runtime
                     .task_host()
-                    .journal_owner(parent.task, LeaseFence::from(&parent.lease.reservation))
+                    .journal_owner(parent.task, &(LeaseFence::from(&parent.lease.reservation)), None)
                     .await?
                     .with_invocation_cancellation(&self.cancellation),
             );
@@ -483,14 +483,7 @@ impl Producer {
             ));
         }
         let command_file = context
-            .stage_file_once(
-                OperationId::new(),
-                &format!(".qualification-forks/{operation}.json"),
-                &fork_bytes,
-                "application/json",
-                "fork-request.json",
-            )
-            .await?;
+            .stage_file_once(OperationId::new(), &format!(".qualification-forks/{operation}.json"), &fork_bytes, "application/json", "fork-request.json", None).await.map(|(file, _)| file)?;
         let command = WorkflowCommand {
             operation_id: operation,
             kind: FORK_PREPARE_TASK_COMMAND_KIND.into(),

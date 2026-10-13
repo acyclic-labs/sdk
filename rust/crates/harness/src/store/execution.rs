@@ -48,15 +48,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             let write = if let Some(owner) = owner {
                 match &command.action {
                     Action::OpenInteraction { .. } => {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        let io = work
-                            .as_deref()
-                            .and_then(|io| io.original_native_work())
-                            .map(crate::filesystem::PreparationIo::from_native_work)
-                            .transpose()?;
-                        #[cfg(target_arch = "wasm32")]
-                        let io = None;
-                        owner.require_interaction_grant(io.as_ref())?;
+                        owner.require_interaction_grant(work)?;
                         crate::distributed::JournalWrite::Fresh
                     }
                     Action::PlanEffect {

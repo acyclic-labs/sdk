@@ -328,7 +328,7 @@ impl SchedulerEvent {
             } => Self::WorkflowResumed {
                 operation_id: *operation_id,
                 workflow_revision: *workflow_revision,
-                input: crate::core::copy_file(input, quota)?,
+                input: input.clone_in_quota(quota)?,
             },
             Self::ReconciliationResumed {
                 operation_id,

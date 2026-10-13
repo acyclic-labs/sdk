@@ -59,9 +59,8 @@ fn validate_token_request(request: &wire::CreateTokenRequest) -> Result {
 fn request_json_append(input: &[u8]) -> Result<Value> {
     let request = wire::AppendRequest::decode(input).map_err(|_| "invalid_argument")?;
     let request = wire_codec::append_from_wire(request).map_err(|error| error.code())?;
-    memory::provider_result(memory::validate_records(&request.records, None))
-        .map_err(|error| error.code())?;
-    memory::validate_append_size(&request).map_err(|error| error.code())?;
+    crate::request::validate_records(&request.records).map_err(|error| error.code())?;
+    crate::request::validate_append_size(&request).map_err(|error| error.code())?;
     let values = request
         .records
         .iter()
@@ -84,7 +83,7 @@ fn request_json_fork(input: &[u8]) -> Result<Value> {
     if request.source == request.destination {
         return Err("invalid_argument");
     }
-    memory::validate_fork_size(&request).map_err(|error| error.code())?;
+    crate::request::validate_fork_size(&request).map_err(|error| error.code())?;
     let mut entries = vec![
         ("source", json_string(request.source.to_string())),
         ("destination", json_string(request.destination.to_string())),
@@ -100,10 +99,8 @@ fn request_json_commit(input: &[u8]) -> Result<Value> {
     let request = wire::CommitRequest::decode(input).map_err(|_| "invalid_argument")?;
     let deadline = request.deadline_unix_millis;
     let mut request = wire_codec::commit_from_wire(request).map_err(|error| error.code())?;
-    memory::provider_result(memory::normalize_commit(&mut request, None))
-        .map_err(|error| error.code())?;
-    memory::provider_result(memory::validate_commit_shape(&request, None))
-        .map_err(|error| error.code())?;
+    crate::request::normalize_commit(&mut request).map_err(|error| error.code())?;
+    crate::request::validate_commit_shape(&request).map_err(|error| error.code())?;
     let conditions = request
         .conditions
         .iter()
@@ -212,17 +209,6 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
         return Err("limit_exceeded");
     }
     match route {
-        "delivery/acknowledge" => {
-            let request =
-                wire::AcknowledgeDeliveryRequest::decode(input).map_err(|_| "invalid_argument")?;
-            if request.delivery_token.len() != 32 {
-                return Err("invalid_argument");
-            }
-            Ok(json_object(vec![(
-                "deliveryToken",
-                json_bytes(&request.delivery_token),
-            )]))
-        }
         "idempotency/inspect" => {
             let request =
                 wire::InspectIdempotencyRequest::decode(input).map_err(|_| "invalid_argument")?;
@@ -300,31 +286,6 @@ pub(crate) fn encode(route: &str, input: &[u8]) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn delivery_ack_projection_requires_exact_token_width()
-    -> std::result::Result<(), Box<dyn std::error::Error>> {
-        let route = "delivery/acknowledge";
-        let request = wire::AcknowledgeDeliveryRequest {
-            delivery_token: bytes::Bytes::from_static(&[0; 32]),
-        };
-        let projected: Value = serde_json::from_str(&encode(route, &request.encode_to_vec())?)?;
-        assert_eq!(
-            projected,
-            serde_json::json!({"deliveryToken": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
-        );
-        for length in [0, 1, 31, 33, 64] {
-            let invalid = wire::AcknowledgeDeliveryRequest {
-                delivery_token: bytes::Bytes::from(vec![0; length]),
-            };
-            assert_eq!(
-                encode(route, &invalid.encode_to_vec()),
-                Err("invalid_argument")
-            );
-        }
-        assert_eq!(encode(route, &[0xff]), Err("invalid_argument"));
-        Ok(())
-    }
 
     #[test]
     fn commit_projection_preserves_deadline_without_losing_uint64_precision()

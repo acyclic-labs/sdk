@@ -249,7 +249,7 @@ impl WorkspaceContextStore for LocalCoreStateStore {
                 }
                 let mut before = BTreeMap::new();
                 for (context_id, expected) in &expected_revisions {
-                    let current = log.get::<WorkspaceContext>(root, *context_id)?;
+                    let current = log.get::<WorkspaceContext>(root, *context_id, None)?;
                     if current.as_ref().map_or(0, Revisioned::revision) != *expected {
                         return Ok(false);
                     }
@@ -276,7 +276,7 @@ impl WorkspaceContextStore for LocalCoreStateStore {
                     .collect::<BTreeSet<_>>();
                 let mut children = WorkspaceContextChildren::new();
                 for &parent in &affected_parents {
-                    let current = log.get::<ContextChildren>(root, parent)?;
+                    let current = log.get::<ContextChildren>(root, parent, None)?;
                     children.insert(parent, current.unwrap_or_default().0);
                 }
                 for (context_id, replacement) in &after {
@@ -326,7 +326,7 @@ impl WorkspaceContextStore for LocalCoreStateStore {
                 if !context_children_index_ready(root_path, log)? {
                     return Ok(WorkspaceContextDiscardOutcome::IncompatibleState);
                 }
-                let root = log.get::<WorkspaceContext>(root_path, child)?;
+                let root = log.get::<WorkspaceContext>(root_path, child, None)?;
                 let discarded = match plan_local_context_subtree_discard(
                     root_path,
                     log,
@@ -340,7 +340,8 @@ impl WorkspaceContextStore for LocalCoreStateStore {
                 };
                 let mut records = BTreeMap::from_iter(root.map(|record| (child, record)));
                 for context_id in discarded.iter().copied().filter(|id| *id != child) {
-                    let Some(record) = log.get::<WorkspaceContext>(root_path, context_id)? else {
+                    let Some(record) = log.get::<WorkspaceContext>(root_path, context_id, None)?
+                    else {
                         return Ok(WorkspaceContextDiscardOutcome::IncompatibleState);
                     };
                     records.insert(context_id, record);
@@ -415,7 +416,7 @@ impl LocalCoreStateStore {
         {
             return Ok(residents.0[index].value.clone().and_then(T::from_value));
         }
-        self.transaction(move |root| root.with_log(|log| log.get::<T>(&root, id)))
+        self.transaction(move |root| root.with_log(|log| log.get::<T>(&root, id, None)))
             .await
     }
 
@@ -429,7 +430,12 @@ impl LocalCoreStateStore {
         self.transaction(move |root| {
             let root = &root;
             root.with_log(|log| {
-                if log.get::<T>(root, id)?.as_ref().map_or(0, T::revision) != expected_revision {
+                if log
+                    .get::<T>(root, id, None)?
+                    .as_ref()
+                    .map_or(0, T::revision)
+                    != expected_revision
+                {
                     return Ok(false);
                 }
                 let mut change = Change::default();
@@ -505,7 +511,7 @@ pub(super) fn context_children_index_ready(
     root: &Namespace,
     log: &mut CoreLog,
 ) -> Result<bool, LocalCoreStateStoreError> {
-    Ok(log.get::<ContextChildIndex>(root, ())?.is_some())
+    Ok(log.get::<ContextChildIndex>(root, (), None)?.is_some())
 }
 
 pub(super) fn plan_local_context_subtree_discard(
@@ -535,7 +541,7 @@ pub(super) fn plan_local_context_subtree_discard(
             return Ok(Err(WorkspaceContextDiscardOutcome::TraversalLimit));
         }
         let count = log
-            .get::<ContextChildCount>(root_path, context_id)?
+            .get::<ContextChildCount>(root_path, context_id, None)?
             .map_or(0, |count| count.0);
         let remaining = maximum.saturating_sub(seen.len() + pending.len());
         if count > remaining as u64 {
@@ -553,7 +559,7 @@ pub(super) fn plan_local_context_subtree_discard(
                 )
             })?;
         let descendants = log
-            .get_bounded::<ContextChildren>(root_path, context_id, Some(maximum_bucket_bytes))?
+            .get::<ContextChildren>(root_path, context_id, Some(maximum_bucket_bytes))?
             .unwrap_or_default()
             .0;
         if usize::try_from(count) != Ok(descendants.len()) {
@@ -597,7 +603,7 @@ pub(super) fn live_context_ids(
     }));
     let mut live = Vec::with_capacity(ids.len());
     for context_id in ids {
-        if let Some(context) = log.get::<WorkspaceContext>(root, context_id)? {
+        if let Some(context) = log.get::<WorkspaceContext>(root, context_id, None)? {
             if context.context_id != context_id {
                 return Err(LocalCoreStateStoreError::ContextTransaction(
                     "workspace context identity does not match its stored key".to_owned(),
@@ -617,7 +623,7 @@ pub(super) fn load_all_contexts(
     live_context_ids(root, log)?
         .into_iter()
         .map(|id| {
-            log.get::<WorkspaceContext>(root, id)?.ok_or_else(|| {
+            log.get::<WorkspaceContext>(root, id, None)?.ok_or_else(|| {
                 LocalCoreStateStoreError::ContextTransaction(
                     "workspace context disappeared during locked discovery".to_owned(),
                 )

@@ -567,7 +567,7 @@ pub(super) async fn execute(
             let bytes = native
                 .caller_context(request.caller, &request.lease)
                 .await?
-                .read_file(&request.file)
+                .read_file(&request.file, None)
                 .await?;
             let text = utf8(&bytes)?;
             let line = json_line(
@@ -594,8 +594,8 @@ pub(super) async fn execute(
             }
             let diff: Diff = read_json(path)?;
             let context = native.caller_context(diff.caller, &diff.lease).await?;
-            let before = context.read_file(&diff.before).await?;
-            let after = context.read_file(&diff.after).await?;
+            let before = context.read_file(&diff.before, None).await?;
+            let after = context.read_file(&diff.after, None).await?;
             Ok(format!(
                 "diff exact before={} after={}\n--- before\n{}\n+++ after\n{}\n",
                 terminal::text(diff.before.path()),

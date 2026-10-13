@@ -43,7 +43,7 @@ impl NativeResumableToolSession<'_> {
             });
         }
         let required = (std::mem::size_of::<Value>() as u64)
-            .checked_add(crate::contract::json_value_logical_owned_bytes(&input.0.1)?)
+            .checked_add(crate::executor::json::json_value_logical_owned_bytes(&input.0.1)?)
             .and_then(|bytes| bytes.checked_add(input.0.0.0.capacity() as u64))
             .ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
@@ -68,7 +68,7 @@ impl NativeResumableToolSession<'_> {
                     work,
                     |transition| {
                         if let MachineStatus::Completed { value } = &transition.status {
-                            crate::executor::with_history_io(Some(&io), |work| crate::contract::validate_json_schema_value(output_schema, value, "tool output", work))?;
+                            crate::executor::with_history_io(Some(&io), |work| crate::executor::validate_json_schema_value(output_schema, value, "tool output", work))?;
                         }
                         Ok(())
                     },
@@ -121,7 +121,7 @@ impl crate::filesystem::UploadRecord for WorkflowAdmission {
         crate::tool::tool_serde_diagnostic_label_bytes()
     }
     fn logical_owned_bytes(&self) -> Result<u64> {
-        let deep = crate::contract::json_value_logical_owned_bytes(&self.initial.state)?;
+        let deep = crate::executor::json::json_value_logical_owned_bytes(&self.initial.state)?;
         (self.initial.machine.name.capacity() as u64)
             .checked_add(self.initial.machine.version.capacity() as u64)
             .and_then(|bytes| bytes.checked_add(deep))

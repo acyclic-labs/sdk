@@ -2,18 +2,21 @@
 
 use std::{fmt, sync::Arc};
 
+use crate::OwnedBytes as Bytes;
 use async_trait::async_trait;
+use std::future::Future;
 use thiserror::Error;
 
 pub mod conformance;
 #[cfg(feature = "grpc")]
 pub mod grpc;
-#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
-pub mod http;
 pub mod http_response;
 pub mod persistence;
-mod preparation;
+pub mod preparation;
 pub mod request;
+// The WASM adapter consumes this module on browser builds; native builds keep
+#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
+pub mod http;
 // Request projection is shared by the native HTTP client and the browser adapter.
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod browser;
@@ -25,7 +28,7 @@ mod http_codec;
 mod http_validation;
 #[cfg(any(feature = "local", all(feature = "wasm", target_arch = "wasm32")))]
 mod journal;
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(feature = "local")]
 mod local;
 mod memory;
 #[cfg(all(
@@ -40,17 +43,10 @@ mod wasm;
 /// Conversion helpers between the canonical Rust domain types and generated wire messages.
 pub mod wire_codec;
 
-mod owned_bytes;
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod test_meter;
-pub use owned_bytes::OwnedBytes;
-#[cfg(not(target_arch = "wasm32"))]
-pub use owned_bytes::{PreparedOwnedBytes, PreparedOwnedBytesError, PreparedOwnedBytesFailure};
-
-/// Largest bearer credential, in bytes, that an SDK client accepts.
+/// Largest bearer credential, in bytes, that an SDK client accepts. It matches the
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
 
-/// Maximum caller-supplied private CA bundle bytes.
+/// Maximum caller-supplied private CA bundle bytes accepted by the HTTP and gRPC clients.
 pub const MAX_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
 
 /// Generated canonical Stream v1 protocol.
@@ -65,7 +61,7 @@ pub mod wire {
 }
 /// Canonical public descriptor set used by compatibility gates.
 pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("../proto/stream/v1/stream_descriptor.bin");
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(feature = "local")]
 pub use local::{
     LocalDurability, LocalStream, LocalStreamError, LocalStreamLimits, deferring_durability,
 };
@@ -79,6 +75,8 @@ const REPLAY_PAGE: u32 = 1_024;
 const _: () = assert!(REPLAY_PAGE as usize == MAX_ITEMS);
 /// Maximum canonical application command, including metadata.
 pub const MAX_COMMAND_BYTES: usize = wire::StreamLimit::MaxCommandBytes as usize;
+/// Historical minimum replay window, preserved for source compatibility.
+pub const MIN_IDEMPOTENCY_RETENTION_SECS: u64 = 24 * 60 * 60;
 /// Maximum caller retry-identity width.
 pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = wire::StreamLimit::MaxIdempotencyKeyBytes as usize;
 /// Maximum canonical path text accepted by the single-command wire format.
@@ -87,7 +85,6 @@ pub const MAX_PATH_BYTES: usize = wire::StreamLimit::MaxPathBytes as usize;
 /// Route-to-response families for the hosted HTTP projection.
 pub const HTTP_RESPONSE_CONTRACT: &[(&str, &str)] = &[
     ("idempotency/inspect", "observation"),
-    ("delivery/acknowledge", "empty"),
     ("tail", "sequence"),
     ("append", "append"),
     ("fork", "fork"),
@@ -104,22 +101,29 @@ pub const TOKEN_OPERATIONS: &[&str] = &[
     "list", "read", "follow", "append", "fork", "create", "commit",
 ];
 
-mod domain;
-mod error;
-mod path;
-mod provider;
-mod stream;
-pub use domain::*;
-pub use error::StreamError;
-pub use path::StreamPath;
-pub use provider::*;
-pub use stream::{Replay, Stream};
+include!("lib/path.rs");
+
+include!("lib/domain.rs");
+
+include!("lib/provider.rs");
+
+include!("lib/stream.rs");
+
+include!("lib/error.rs");
+
+include!("lib/tests.rs");
+
+mod owned_bytes;
+pub use owned_bytes::OwnedBytes;
+#[cfg(not(target_arch = "wasm32"))]
+pub use owned_bytes::{PreparedOwnedBytes, PreparedOwnedBytesError, PreparedOwnedBytesFailure};
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use native::{NativeCommitRecordSlot, capture_commit};
+
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::{
     NativeProviderFuture, NativeRecordStream, NativeStreamOutput, NativeStreamResult,
     PreparedNativeCommit,
 };
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod test_meter;

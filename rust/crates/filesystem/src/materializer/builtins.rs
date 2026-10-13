@@ -69,7 +69,7 @@ impl NativeMaterializationWork {
             guard().await?;
             let opened = self
                 .with_original_leaf(|state| {
-                    parent.open_child(Path::new(name), state)
+                    { #[cfg(unix)] { parent.open_child(Path::new(name), state) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new(name), state, |path, work| parent.open_child(path, work)) } }
                 })
                 .map_err(native_materialization_work_error);
             let checked = guard().await;
@@ -109,10 +109,7 @@ impl NativeMaterializationWork {
         identity: NativeRootIdentity,
     ) -> Result<(), NativeTreeMaterializationError> {
         let root = self.builtin_root(root, expected)?;
-        let parent = root.open_dir_held(
-            relative.parent().unwrap_or_else(|| Path::new("")),
-            &mut &*self,
-        )?;
+        let parent = { #[cfg(unix)] { root.open_dir_held(relative.parent().unwrap_or_else(|| Path::new("")), &mut &*self) } #[cfg(windows)] { crate::native_host::with_wide_path(relative.parent().unwrap_or_else(|| Path::new("")), &mut &*self, |path, work| root.open_dir_held(path, work)) } }?;
         let actual = crate::native_host::directory_identity(&parent, &mut &*self)?;
         if actual != parent_identity {
             return Err(NativeTreeMaterializationError::AllocationChanged {
@@ -264,7 +261,7 @@ impl NativeMaterializationWork {
         }
         let parent = self
             .with_original_leaf(|state| {
-                held.create_dir_all_held(relative.parent().unwrap_or_else(|| Path::new("")), state)
+                { #[cfg(unix)] { held.create_dir_all_held(relative.parent().unwrap_or_else(|| Path::new("")), state) } #[cfg(windows)] { crate::native_host::with_wide_path(relative.parent().unwrap_or_else(|| Path::new("")), state, |path, work| held.create_dir_all_held(path, work)) } }
             })
             .map_err(native_materialization_work_error)?;
         let leaf = Path::new(
@@ -273,13 +270,13 @@ impl NativeMaterializationWork {
                 .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
         );
         let directory = if require_new {
-            self.with_original_leaf(|state| parent.create_dir(leaf, state))
+            self.with_original_leaf(|state| { #[cfg(unix)] { parent.create_dir(leaf, state) } #[cfg(windows)] { crate::native_host::with_wide_path(leaf, state, |path, work| parent.create_dir(path, work)) } })
                 .map_err(native_materialization_work_error)?;
             crate::native_host::sync_directory_held(&parent.directory, &mut &*self)?;
-            self.with_original_leaf(|state| parent.open_child(leaf, state))
+            self.with_original_leaf(|state| { #[cfg(unix)] { parent.open_child(leaf, state) } #[cfg(windows)] { crate::native_host::with_wide_path(leaf, state, |path, work| parent.open_child(path, work)) } })
                 .map_err(native_materialization_work_error)?
         } else {
-            self.with_original_leaf(|state| parent.create_dir_all_held(leaf, state))
+            self.with_original_leaf(|state| { #[cfg(unix)] { parent.create_dir_all_held(leaf, state) } #[cfg(windows)] { crate::native_host::with_wide_path(leaf, state, |path, work| parent.create_dir_all_held(path, work)) } })
                 .map_err(native_materialization_work_error)?
         };
         Ok(directory.identity())

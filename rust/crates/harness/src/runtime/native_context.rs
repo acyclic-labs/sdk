@@ -438,7 +438,7 @@ impl ToolContext {
     ) -> Result<Self> {
         self.validate_stock_scope_with_native_work(requested, execution_limits, work)?;
         let original = self.effective_scope();
-        let grants = requested.grants.clone_with_native_work(work)?;
+        let grants = crate::Capabilities::copy(requested.grants.iter(), work)?;
         let mut narrowed = original.narrow_with_native_work(grants, execution_limits, work)?;
         narrowed.0 = narrowed.0.with_run_limits(
             requested.run_limits,

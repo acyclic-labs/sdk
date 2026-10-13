@@ -65,7 +65,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         })?;
         let hold;
         let absolute = crate::executor::with_history_io(Some(io), |work| {
-            crate::contract::preparation_format(format_args!("/{path}"), work)
+            crate::executor::preparation_format(format_args!("/{path}"), work)
         })?;
         hold = io.guard_owned(absolute.capacity() as u64)?;
         let bytes = source.backing.read(snapshot, &absolute, maximum, io)?.await;
@@ -219,7 +219,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             .ok_or_else(|| io.invalid("Root directory lacks its retained lazy backing"))?;
         let absolute_hold;
         let absolute = crate::executor::with_history_io(Some(io), |work| {
-            crate::contract::preparation_format(format_args!("/{path}"), work)
+            crate::executor::preparation_format(format_args!("/{path}"), work)
         })?;
         absolute_hold = io.guard_owned(absolute.capacity() as u64)?;
         let bound = (maximum as usize)
@@ -228,19 +228,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let mut entries: Vec<crate::conversation::PrivateDirectoryEntry> = Vec::new();
         let mut cursor = None;
         loop {
-            let page = io.receive_content(
-                source
-                    .backing
-                    .list(
-                        snapshot,
-                        &absolute,
-                        cursor,
-                        128,
-                        io.remaining()?,
-                        io.cancellation(),
-                    )
-                    .await,
-            )?;
+            let (page, _page_allocation) = source.backing.list(snapshot, &absolute, cursor, 128, io)?.await?;
             for entry in page.entries {
                 let kind = match entry.kind {
                     acyclic_fs::demand::SourceNodeKind::RegularFile => {
