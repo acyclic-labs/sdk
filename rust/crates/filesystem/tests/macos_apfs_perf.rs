@@ -2,17 +2,78 @@
 
 #![cfg(all(target_os = "macos", feature = "native-mount"))]
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
 use acyclic_fs::demand::native::NativeDemandSource;
+use acyclic_fs::kernel::KernelAccounting;
 use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
 use acyclic_fs::{
-    CancellationToken, Fs, LazyWorkspace, LocalOptions, MaterializeOptions,
-    MemoryLazyWorkspaceStore, MountPath, PublicationPermit, WorkBudget,
+    CancellationToken, Fs, LazyWorkspace, Lifecycle, LocalAuthorityBackend, LocalFs,
+    LocalObjectBackend, LocalOptions, MaterializeOptions, MemoryLazyWorkspaceStore, MountPath,
+    NativeMaterializationWork, OperationId, PublicationPermit, VolumeConfig, WorkBudget,
 };
 use acyclic_objects::LocalDurability;
 use serde_json::json;
+
+fn work(
+    cancel: &CancellationToken,
+) -> Result<NativeMaterializationWork, acyclic_fs::NativeTreeMaterializationError> {
+    NativeMaterializationWork::new(WorkBudget::UNBOUNDED, cancel).map_err(|(error, _)| error)
+}
+
+async fn open_source(path: &Path) -> Result<Arc<NativeDemandSource>, Box<dyn std::error::Error>> {
+    Ok(Arc::new(
+        NativeDemandSource::open(
+            std::borrow::Cow::Borrowed(path),
+            FilesystemProfile::Portable,
+            VolumeLimits::default(),
+            None,
+            None,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)?
+        .value,
+    ))
+}
+
+async fn attach(
+    fs: &LocalFs,
+    name: &str,
+    source: Arc<NativeDemandSource>,
+) -> Result<
+    LazyWorkspace<
+        LocalAuthorityBackend,
+        LocalObjectBackend,
+        NativeDemandSource,
+        MemoryLazyWorkspaceStore,
+    >,
+    Box<dyn std::error::Error>,
+> {
+    let cancel = CancellationToken::new();
+    let work = work(&cancel)?;
+    Ok(LazyWorkspace::attach(
+        fs,
+        name,
+        source,
+        MemoryLazyWorkspaceStore::default(),
+        VolumeConfig::portable(if fs.capabilities().durable {
+            Lifecycle::Durable
+        } else {
+            Lifecycle::Ephemeral
+        }),
+        OperationId::new(),
+        &mut KernelAccounting::NativeOriginal {
+            work: &work,
+            cancellation: &cancel,
+        },
+    )
+    .await?
+    .0)
+}
 
 fn component(value: &str) -> Vec<u8> {
     value.as_bytes().to_vec()
@@ -84,7 +145,7 @@ async fn report_macos_directory_rename_capture() -> Result<(), Box<dyn std::erro
     capture_baseline(
         &mut checkout,
         &options,
-        &crate::CapturePolicy::default(),
+        &acyclic_fs::CapturePolicy::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
     )
@@ -118,7 +179,7 @@ async fn report_macos_directory_rename_capture() -> Result<(), Box<dyn std::erro
             &mut checkout,
             batch,
             &options,
-            &crate::CapturePolicy::default(),
+            &acyclic_fs::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )
@@ -176,45 +237,29 @@ async fn report_apfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
     }
     let fs = Fs::local(local).await?;
     let started = Instant::now();
-    let demand = Arc::new(
-        NativeDemandSource::open(
-            std::borrow::Cow::Owned(std::path::Path::new(source.path()).to_path_buf()),
-            FilesystemProfile::Portable,
-            VolumeLimits::default(), None, None, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(),
-        )
-        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
-    );
-    let lazy = LazyWorkspace::attach(
-        &fs,
-        "macos-apfs-costs",
-        demand,
-        MemoryLazyWorkspaceStore::default(),
-    crate::VolumeConfig::portable(if (&fs).capabilities().durable {
-            crate::Lifecycle::Durable
-        } else {
-            crate::Lifecycle::Ephemeral
-        }),
-        crate::OperationId::new(),
-        &mut crate::kernel::KernelAccounting::Standalone {
-            allocations: Default::default(),
-            work: crate::WorkCounters::UNCHARGED,
-            budget: crate::WorkBudget::UNBOUNDED,
-            cancellation: &crate::CancellationToken::new(),
-        }, )
-    .await .map(|(lazy, _)| lazy) ?;
+    let demand = open_source(source.path()).await?;
+    let lazy = attach(&fs, "macos-apfs-costs", demand).await?;
     let attach_us = started.elapsed().as_micros();
 
     let started = Instant::now();
     let cancellation = CancellationToken::new();
-    let mut accounting = acyclic_fs::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-    lazy.exactify("/hot", PublicationPermit::Unrestricted, &mut accounting).await?;
+    let work = work(&cancellation)?;
+    lazy.exactify(
+        "/hot",
+        PublicationPermit::Unrestricted,
+        &mut KernelAccounting::NativeOriginal {
+            work: &work,
+            cancellation: &cancellation,
+        },
+    )
+    .await?;
     let exactify_us = started.elapsed().as_micros();
     eprintln!(
         "{}",
         json!({
             "attach_us": attach_us,
             "exactify_us": exactify_us,
-            "work": accounting.spent(),
+            "work": work.receipt(),
         })
     );
     if std::env::var_os("ACYCLIC_APFS_BENCH_EXACT_ONLY").is_some() {
@@ -231,12 +276,12 @@ async fn report_apfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
             &CancellationToken::new(),
             PublicationPermit::Unrestricted,
         )
-        .await?.value;
+        .await?;
     let preparation_us = started.elapsed().as_micros();
     eprintln!("apfs preparation_us={preparation_us}");
 
     let started = Instant::now();
-    working_set.validate_for_presentation().await?;
+    working_set.validate_for_presentation(&work).await?;
     let activation_us = started.elapsed().as_micros();
 
     let mut changed = Vec::with_capacity(CHANGES);
@@ -256,11 +301,13 @@ async fn report_apfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
         );
     }
     let started = Instant::now();
-    working_set.capture_host_paths(&changed).await?;
+    working_set.capture_host_paths(&changed, &work).await?;
     let capture_us = started.elapsed().as_micros();
     let started = Instant::now();
     working_set
-        .sync_with_permit(PublicationPermit::Unrestricted)
+        .sync_with_permit(PublicationPermit::Unrestricted, &work, |_| {
+            std::future::ready(Ok::<(), acyclic_fs::MountLifecycleError>(()))
+        })
         .await?;
     let sync_us = started.elapsed().as_micros();
 

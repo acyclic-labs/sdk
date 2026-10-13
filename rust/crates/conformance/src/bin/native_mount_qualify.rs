@@ -523,7 +523,7 @@ async fn rename_hydration_case() -> Result<(), Failure> {
         }
         #[cfg(windows)]
         if !matches!(
-            workspace.stat(&renamed).await?.metadata.windows_attributes,
+            workspace.stat(&renamed, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.metadata.windows_attributes,
             Some(attributes) if attributes & 1 != 0
         ) {
             return Err(format!("renamed metadata {index} was not published").into());
@@ -1006,7 +1006,7 @@ async fn verify_published_mutations(
         return Err("hard-link identity was not preserved".into());
     }
     if workspace.read_symbolic_link("/nested/symbolic.txt", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value.bytes).map_err(|failure| failure.error)?
-        != native_link_bytes("created.txt")
+        != native_link_bytes("created.txt").into()
     {
         return Err("symbolic-link target was not published".into());
     }

@@ -60,10 +60,9 @@ pub(super) fn verify_guard(
     work: Option<&Work>,
 ) -> Result<(), NativeMountError> {
     if let Some(guard) = guard {
-        crate::native_mount::adapter::CallbackRuntime::existing()?.verify_native_callback_guard(
-            guard.as_ref(),
-            work.ok_or(NativeMountError::ControlPending)?,
-        )?;
+        let work = work.ok_or(NativeMountError::ControlPending)?;
+        crate::native_mount::adapter::CallbackRuntime::existing()?
+            .verify_callback(work, || guard.check(work))?;
     }
     Ok(())
 }

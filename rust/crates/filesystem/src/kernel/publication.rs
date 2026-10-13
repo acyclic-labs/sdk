@@ -60,17 +60,6 @@ struct PublicationStepFailure<E> {
     work: Option<WorkCounters>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-enum NativePublicationOwnerFailure<E> {
-    Owner(E),
-    Authority(AuthorityStoreError),
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl<E> From<AuthorityStoreError> for NativePublicationOwnerFailure<E> {
-    fn from(error: AuthorityStoreError) -> Self { Self::Authority(error) }
-}
-
 enum PublicationAccounting<'a> {
     Standalone { work: WorkCounters, budget: WorkBudget, retained: u64, cancellation: &'a CancellationToken },
     #[cfg(not(target_arch = "wasm32"))]
@@ -470,6 +459,51 @@ where
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn native_publication_owner<E, F, Fut>(
+    original: crate::NativeMaterializationWork,
+    mut factory: F,
+) -> impl FnMut(&crate::NativeMaterializationWork)
+    -> futures::future::Either<std::future::Ready<Result<(), E>>, acyclic_stream::BoxProviderFuture<'static, Result<(), E>>>
+    + Clone + Send + 'static
+where
+    E: From<crate::FsError> + Send + 'static,
+    F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
+    Fut: Future<Output = Result<(), E>> + Send + 'static,
+{
+    move |work| {
+        let admitted = if original.shares_ledger(work) {
+            original.admit(WorkCounters::UNCHARGED).map_err(crate::FsError::from).map_err(E::from)
+        } else {
+            Err(E::from(crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout)))
+        };
+        match admitted {
+            Ok(()) => {
+                let boxed = crate::heap_future::in_heap_admitted(
+                    None,
+                    |allocation, bytes| {
+                        *allocation = Some(original.claim(bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED)
+                            .map_err(crate::FsError::from).map_err(E::from)?);
+                        Ok::<(), E>(())
+                    },
+                    |allocation| {
+                        let future = factory(work);
+                        async move {
+                            let _allocation = allocation;
+                            future.await
+                        }
+                    },
+                );
+                match boxed {
+                    Ok((future, _)) => futures::future::Either::Right(future),
+                    Err(error) => futures::future::Either::Left(std::future::ready(Err(error))),
+                }
+            }
+            Err(error) => futures::future::Either::Left(std::future::ready(Err(error))),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) async fn publish_generation_async_guarded_with_native_work<'a, O, A, E, F, Fut>(
     objects: &O,
     authority: &A,
@@ -490,32 +524,18 @@ where
     Fut: Future<Output = Result<(), E>> + Send + 'static,
 {
     let mut accounting = PublicationAccounting::Native(original);
-    let mut factory = before_publication.clone();
-    let owner_original = original.clone();
-    let owned_owner = move |same_original: &crate::NativeMaterializationWork| {
-        let admitted = if owner_original.shares_ledger(same_original) {
-            owner_original.admit(WorkCounters::UNCHARGED).map_err(crate::FsError::from).map_err(E::from)
-        } else {
-            Err(E::from(crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout)))
-        };
-        let future = admitted.map(|()| factory(same_original));
-        async move {
-            let future = future.map_err(NativePublicationOwnerFailure::Owner)?;
-            future.await.map_err(NativePublicationOwnerFailure::Owner)
-        }
-    };
+    let owned_owner = native_publication_owner(original.clone(), before_publication.clone());
     let mut dispatch = move |request: GuardedAppend, _: Option<WorkBudget>| {
-        let mut owner = owned_owner.clone();
+        let mut guard = crate::NativeAuthorityGuard(owned_owner.clone());
         async move {
-            let outcome =(async { let __authority_args = (request, original, cancellation, &mut owner,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.1, __authority_args.2); let __authority_result = authority.compare_and_append(__authority_args.0, &mut __authority_work, Some(&mut crate::NativeAuthorityGuard((__authority_args.3).clone()))).await.map_err(|error| error.into_error(NativePublicationOwnerFailure::Authority)); __authority_result }.await).map_err(|error| PublicationStepFailure {
-                cause: match error {
-                    NativePublicationOwnerFailure::Owner(error) => error,
-                    NativePublicationOwnerFailure::Authority(error) => {
-                            E::from(native_authority_error(error))
-                        }
-                    },
-                work: None,
-            })?;
+            let mut work = crate::AuthorityWork::native(original, cancellation);
+            let outcome = authority
+                .compare_and_append(request, &mut work, Some(&mut guard))
+                .await
+                .map_err(|error| PublicationStepFailure {
+                    cause: error.into_error(|error| E::from(native_authority_error(error))),
+                    work: None,
+                })?;
             Ok((outcome, None))
         }
     };

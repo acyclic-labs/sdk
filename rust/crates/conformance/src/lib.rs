@@ -42,7 +42,7 @@ pub async fn filesystem_smoke<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .map_err(|error| error.to_string())?;
     let observed = workspace.read("/answer", 2, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         .map_err(|error| error.to_string())?;
-    (observed == bytes::Bytes::from_static(b"42"))
+    (observed.as_ref() == b"42")
         .then_some(())
         .ok_or_else(|| "written value missing".into())
 }

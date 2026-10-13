@@ -1881,7 +1881,7 @@ impl NativeWatch {
         #[cfg(not(any(target_os = "linux", windows)))]
         if !self.recursive {
             if self.watched_directories.iter().any(|path| *path != self.root) {
-                work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })
+                work.started_io(WorkCounters { items_examined: 1, ..WorkCounters::default() })
                     .map_err(demand_watch_error)?;
                 work.check().map_err(demand_watch_error)?;
                 return Err(NativeWatchError::BoundedObservationUnavailable);

@@ -41,23 +41,6 @@ impl crate::pi_host::PiControlHost<'_> {
             .observe_allocation_with_native_work(attempt, work)
             .await?
             .ok_or_else(|| denied("Root freeze has no actual original created allocation"))?;
-        let mut guard = || async {
-            owner
-                .verify(
-                    false,
-                    &mut Some(&mut &PreparationIo::from_native_work(work)?),
-                )
-                .await?;
-            provider
-                .verify_created_source(key, &original.0.1, work)
-                .await?;
-            owner
-                .verify(
-                    false,
-                    &mut Some(&mut &PreparationIo::from_native_work(work)?),
-                )
-                .await
-        };
         if owner.task_id() != self.protected.policy().root_task
             || shared.durable_task_id() != Some(self.protected.policy().root_task)
         {
@@ -66,11 +49,15 @@ impl crate::pi_host::PiControlHost<'_> {
                 reason: "Root snapshot requires its actual original Root context and owner",
             });
         }
-        let observed = actual
-            .physical
-            .observe_with_native_work(work, &mut guard)
-            .await?;
-        guard().await?;
+        let observed = {
+            let mut guard = || verify_root_source(owner, &provider, key, &original.0.1, work);
+            let observed = actual
+                .physical
+                .observe_with_native_work(work, &mut guard)
+                .await?;
+            guard().await?;
+            observed
+        };
         let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
             work,
             cancellation: work.cancellation(),
@@ -80,7 +67,7 @@ impl crate::pi_host::PiControlHost<'_> {
             .state(&mut accounting)
             .await
             .map_err(native_lazy_error)?;
-        guard().await?;
+        verify_root_source(owner, &provider, key, &original.0.1, work).await?;
         if rebound.source != observed.0.source {
             return Err(Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Conflict,
@@ -92,7 +79,7 @@ impl crate::pi_host::PiControlHost<'_> {
             .snapshot(&mut accounting)
             .await
             .map_err(native_lazy_error)?;
-        guard().await?;
+        verify_root_source(owner, &provider, key, &original.0.1, work).await?;
         if frozen.source != observed.0.source {
             return Err(Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Conflict,
@@ -104,6 +91,30 @@ impl crate::pi_host::PiControlHost<'_> {
         Ok((frozen, observed.1))
     }
 }
+async fn verify_root_source<'a>(
+    owner: &'a TaskJournalOwner<LocalStream>,
+    provider: &'a crate::pi_root_provider::PiRootProvider,
+    key: &'a str,
+    allocation: &'a crate::pi_root_allocation::PiRootAllocation,
+    work: &'a NativeMaterializationWork,
+) -> Result<()> {
+    owner
+        .verify(
+            false,
+            &mut Some(&mut &PreparationIo::from_native_work(work)?),
+        )
+        .await?;
+    provider
+        .verify_created_source(key, allocation, work)
+        .await?;
+    owner
+        .verify(
+            false,
+            &mut Some(&mut &PreparationIo::from_native_work(work)?),
+        )
+        .await
+}
+
 /// Only an active source's ORIGINAL native view owner may checkpoint its dirty mounts.
 pub(crate) async fn freeze_child_source(
     context: &acyclic_harness::runtime::TaskContext,
