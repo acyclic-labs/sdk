@@ -158,7 +158,7 @@ pub(super) fn native_policy_fixture_inputs() -> (FixedPolicy, ToolDefinition, To
             digest: [9; 32],
         },
         decision: ToolPolicyDecision::RequireApproval {
-            prompt: "Approve ÃŽÂ» Ã°Å¸Â¦â‚¬?".into(),
+            prompt: "Approve ÃƒÅ½Ã‚Â» ÃƒÂ°Ã…Â¸Ã‚Â¦Ã¢â€šÂ¬?".into(),
         },
     };
     let definition = ToolDefinition {
@@ -173,7 +173,7 @@ pub(super) fn native_policy_fixture_inputs() -> (FixedPolicy, ToolDefinition, To
         operation_id: OperationId::new(),
         call_id: "provider-call".into(),
         name: definition.name.clone(),
-        arguments: serde_json::json!({"z":[true,null],"a":"ÃŽÂ»"}),
+        arguments: serde_json::json!({"z":[true,null],"a":"ÃƒÅ½Ã‚Â»"}),
     };
     (policy, definition, invocation)
 }
@@ -206,81 +206,12 @@ impl ResumableMachine for TestMachine {
     }
 }
 
-pub(super) struct IdentityHost {
-    pub(super) record: TaskAdmissionRecord,
-    pub(super) polls: Arc<AtomicUsize>,
-}
-
-impl DurableTaskHost for IdentityHost {}
-
-impl TaskSpawner for IdentityHost {
-    fn policy_identity(&self) -> Option<ComponentIdentity> {
-        TaskStateProvider::policy_identity(self)
-    }
-    fn reconcile_admission<'a>(
-        &'a self,
-        operation_id: OperationId,
-    ) -> BoxFuture<'a, Result<Option<(TaskId, TaskAdmissionRecord)>>> {
-        Box::pin(async move {
-            Ok(Some((
-                TaskId::from_bytes(operation_id.into_bytes()),
-                self.record.clone(),
-            )))
-        })
-    }
-    fn admit<'a>(
-        &'a self,
-        _request: TaskAdmissionRecord,
-    ) -> BoxFuture<'a, Result<Admission<TaskId>>> {
-        Box::pin(async {
-            Ok(Admission::Rejected {
-                reason: "unused".into(),
-            })
-        })
-    }
-}
-
-impl crate::runtime::TaskStateProvider for IdentityHost {
-    fn observe_admission<'a>(
-        &'a self,
-        _task_id: TaskId,
-    ) -> BoxFuture<'a, Result<TaskAdmissionRecord>> {
-        Box::pin(async { Ok(self.record.clone()) })
-    }
-    fn outcome<'a>(&'a self, _task_id: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
-        Box::pin(async move {
-            if self.polls.fetch_add(1, Ordering::SeqCst) == 0 {
-                Ok(None)
-            } else {
-                Ok(Some(Outcome::Succeeded(serde_json::json!(7))))
-            }
-        })
-    }
-    fn cancel<'a>(&'a self, _task_id: TaskId) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn policy_identity(&self) -> Option<ComponentIdentity> {
-        None
-    }
-
-    fn resume_scope<'a>(
-        &'a self,
-        _task_id: TaskId,
-        _operation_id: OperationId,
-    ) -> BoxFuture<'a, Result<RuntimeScope>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "durable task context authentication is not bound".into(),
-            ))
-        })
-    }
-}
-
 pub(super) struct SplitState {
     pub(super) task_id: TaskId,
     pub(super) record: TaskAdmissionRecord,
 }
+
+impl DurableTaskHost for SplitState {}
 
 impl TaskStateProvider for SplitState {
     fn policy_identity(&self) -> Option<ComponentIdentity> {

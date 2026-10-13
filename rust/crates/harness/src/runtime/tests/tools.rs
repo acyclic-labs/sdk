@@ -80,23 +80,13 @@ async fn scoped_live_policy_preserves_ancestor_and_blocks_denied_tool() -> Resul
             &cancellation,
         )
         .expect("native policy source ledger");
-        struct OpaqueCommandRouter;
-        impl InteractionRouter for OpaqueCommandRouter {
-            fn route<'a>(
-                &'a self,
-                _: OperationId,
-                _: Interaction,
-            ) -> BoxFuture<'a, Result<InteractionOutcome>> {
-                panic!("ordinary command route must not run");
-            }
-        }
         assert!(matches!(
             narrowed
                 .authorize_tool_policies(
                     &definition,
                     &invocation,
                     Some(&work),
-                    Some(&OpaqueCommandRouter),
+                    Some(&super::native::OpaqueRouter),
                     &narrowed.scope,
                 )
                 .await,
@@ -149,22 +139,14 @@ async fn scoped_live_policy_preserves_ancestor_and_blocks_denied_tool() -> Resul
         }
         impl ToolPolicy for ChangingPolicy {
             fn identity(&self) -> ComponentIdentity {
-                let mut identity = self.original.clone();
-                if self.changed.load(Ordering::SeqCst) {
-                    identity.digest[0] ^= 1;
-                }
-                identity
+                panic!("native policy must not use ordinary identity")
             }
             fn evaluate<'a>(
                 &'a self,
                 _: &'a ToolInvocation,
-                scope: &'a RuntimeScope,
+                _: &'a RuntimeScope,
             ) -> BoxFuture<'a, Result<ToolPolicyDecision>> {
-                Box::pin(async move {
-                    assert!(!scope.grants().contains("tool:call:test.echo"));
-                    self.changed.store(true, Ordering::SeqCst);
-                    Ok(ToolPolicyDecision::Allow)
-                })
+                panic!("native policy must not use ordinary evaluation")
             }
             fn supports_native_policy(
                 &self,
