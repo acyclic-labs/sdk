@@ -28,22 +28,21 @@ try {
   const service = stream.service.find(item => item.name === "StreamService");
   assert.ok(service, "StreamService is missing");
   assert.deepEqual(service.method.map(method => method.name), [
-    "InspectIdempotency", "Append", "Tail", "Fork", "Read", "Follow",
+    "InspectIdempotency", "Append", "Tail", "Fork", "Read", "Follow", "AcknowledgeDelivery",
     "Children", "ChildrenPage", "Commit", "ReadCommit",
   ]);
   assert.equal(service.method.find(method => method.name === "Read").serverStreaming, true);
   assert.equal(service.method.find(method => method.name === "Follow").serverStreaming, true);
 
   for (const name of ["TrimRequest", "TrimReceipt", "DeleteRequest", "DeleteReceipt",
-    "TrimMutation", "DeleteMutation", "CommittedTrim", "CommittedDelete", "RetiredCommitConflict",
-    "AcknowledgeDeliveryRequest", "AcknowledgeDeliveryResponse"]) {
+    "TrimMutation", "DeleteMutation", "CommittedTrim", "CommittedDelete", "RetiredCommitConflict"]) {
     assert.equal(messages.has(name), false, `${name} must not be published`);
   }
 
   const assertFields = (name, expected) => {
     const message = messages.get(name);
     assert.ok(message, `${name} is missing`);
-    assert.deepEqual(message.field.map(field => [field.name, field.number]), expected);
+    assert.deepEqual((message.field ?? []).map(field => [field.name, field.number]), expected);
   };
   const assertReserved = (name, numbers, names) => {
     const message = messages.get(name);
@@ -51,7 +50,9 @@ try {
     assert.deepEqual(message.reservedName, names);
   };
   assertFields("TailResponse", [["tail", 1]]);
-  assertFields("ReadResponse", [["codec", 2], ["data", 3], ["decoded_length", 4]]);
+  assertFields("ReadResponse", [["codec", 2], ["data", 3], ["decoded_length", 4], ["delivery_token", 5]]);
+  assertFields("AcknowledgeDeliveryRequest", [["delivery_token", 1]]);
+  assertFields("AcknowledgeDeliveryResponse", []);
   assertReserved("ReadResponse", [[1, 2]], ["record"]);
   assertFields("RecordBatch", [["records", 1]]);
   assertFields("Record", [["sequence", 1], ["value", 2], ["commit_id", 3], ["committed_at_micros", 4]]);
