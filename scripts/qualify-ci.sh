@@ -443,12 +443,22 @@ case "$lane" in
     fi
     source scripts/ensure-bun.sh
     cargo fetch --locked
-    background napi native_binding
     nextest --workspace --all-features --locked
     cargo test --workspace --all-features --locked --doc
-    finish napi
     native_mount_tests
     ;;
+  linux-arm64-bindings)
+    if ! command -v cc >/dev/null || ! command -v unzip >/dev/null || \
+      ! command -v pkg-config >/dev/null || ! pkg-config --exists fuse3; then
+      sudo apt-get update -qq
+      sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        --no-install-recommends build-essential pkg-config libfuse3-dev unzip
+    fi
+    source scripts/ensure-bun.sh
+    cargo fetch --locked
+    native_binding
+    ;;
+
   macos)
     bash scripts/test-ensure-rust-target.sh
     source scripts/ensure-bun.sh

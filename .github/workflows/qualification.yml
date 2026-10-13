@@ -126,6 +126,12 @@ jobs:
         with:
           path: .qualification/linux-arm64.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['linux-arm64'] }}
+      - name: Find linux-arm64-bindings marker
+        if: env.FORCE != 'true'
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .qualification/linux-arm64-bindings.json
+          key: ${{ fromJSON(steps.fingerprints.outputs.keys)['linux-arm64-bindings'] }}
       - name: Find linux-musl marker
         if: env.FORCE != 'true'
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
@@ -318,6 +324,12 @@ jobs:
         with:
           path: .qualification/linux-arm64.json
           key: ${{ fromJSON(needs.plan.outputs.keys)['linux-arm64'] }}
+      - name: Record linux-arm64-bindings
+        if: contains(fromJSON(steps.record.outputs.recorded), 'linux-arm64-bindings')
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .qualification/linux-arm64-bindings.json
+          key: ${{ fromJSON(needs.plan.outputs.keys)['linux-arm64-bindings'] }}
       - name: Record linux-musl
         if: contains(fromJSON(steps.record.outputs.recorded), 'linux-musl')
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5

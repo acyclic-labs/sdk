@@ -360,8 +360,8 @@ test("retained proof artifacts belong to the exact source run and attempt", () =
   assert.equal(lookup([]), "");
   assert.equal(lookup([null]), "");
   assert.equal(lookup(null), "");
-  const { matrix } = chooseLanes(lanes.filter(lane => lane.lane === "linux-arm64"), { mainPush: false, force: false, marker: () => source, retained: () => lookup([]) });
-  assert.deepEqual(matrix.map(lane => lane.lane), ["linux-arm64"]);
+  const { matrix } = chooseLanes(lanes.filter(lane => lane.lane === "linux-arm64-bindings"), { mainPush: false, force: false, marker: () => source, retained: () => lookup([]) });
+  assert.deepEqual(matrix.map(lane => lane.lane), ["linux-arm64-bindings"]);
 });
 
 test("the planner CLI promotes main proof and fails closed without changing PR/full policy", () => {
@@ -490,7 +490,7 @@ test("a lane whose artifact expired executes again", () => {
     force: false, mainPush: false, marker: everywhere,
     retained: (runId, prefix) => (prefix === "packages-linux-arm64" ? "" : retainedAll(runId, prefix)),
   });
-  assert.deepEqual(matrix.map(lane => lane.lane), ["linux-arm64"]);
+  assert.deepEqual(matrix.map(lane => lane.lane), ["linux-arm64-bindings"]);
 });
 
 test("ordinary main pushes keep downstream qualification off the routine path", () => {
@@ -572,4 +572,28 @@ test("the core lanes cover the Rust workspace, docs crate, and TypeScript worksp
   const generatedCommand = typescript.search(/^ +bun run check:generated$/m);
   assert.ok(testCommand >= 0, "TypeScript lane must run tests");
   assert.ok(generatedCommand > testCommand, "TypeScript generated check must follow tests");
+});
+
+test("ARM native binding production runs independently and all original ARM checks remain required",()=>{
+ const script=readFileSync("scripts/qualify-ci.sh","utf8").replaceAll("\r\n","\n");
+ const branch=name=>script.match(new RegExp("^  "+name+"\\)\\n([\\s\\S]*?)(?=^  \\S[^\\n]*\\)\\n|^esac\\b)","m"))?.[1];
+ const tests=branch("linux-arm64"),bindings=branch("linux-arm64-bindings");
+ assert.match(tests,/nextest --workspace --all-features --locked/);
+ assert.match(tests,/cargo test --workspace --all-features --locked --doc/);
+ assert.match(tests,/native_mount_tests/);
+ assert.doesNotMatch(tests,/native_binding|finish napi/);
+ assert.match(bindings,/cargo fetch --locked/);assert.match(bindings,/native_binding/);
+ for(const body of [tests,bindings])assert.match(body,/libfuse3-dev unzip/);
+ const matrix=chooseLanes(lanes,{force:true,marker:everywhere,retained:retainedAll}).matrix;
+ const producer=matrix.find(lane=>lane.lane==="linux-arm64-bindings");
+ assert.equal(producer.artifact,"packages-linux-arm64");assert.equal(producer.artifact_path,"packages");
+ assert.equal(producer.runner,"blacksmith-4vcpu-ubuntu-2404-arm");
+ assert.equal(matrix.filter(lane=>lane.artifact==="packages-linux-arm64").length,1);
+ assert.equal(matrix.find(lane=>lane.lane==="linux-arm64").artifact,"");
+ const workflow=readFileSync(".github/workflows/qualification.yml","utf8");
+ assert.match(workflow,/name: Find linux-arm64-bindings marker/);assert.match(workflow,/name: Record linux-arm64-bindings/);
+ assert.match(workflow,/needs: \[ plan, qualification \]/);assert.match(workflow,/test "\$RESULT" = success/);
+ assert.ok(matrix.length<=10,"all ARM work fits in the existing simultaneous matrix");
+ const action=readFileSync(".github/actions/qualification-lane/action.yml","utf8");
+ assert.match(action,/inputs\.lane == 'linux-arm64-bindings' && format\('sdk-sccache-v5-linux-arm64-/);
 });
