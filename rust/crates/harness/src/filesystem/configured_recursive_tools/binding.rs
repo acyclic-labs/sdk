@@ -29,7 +29,7 @@ where
             .ok_or_else(|| denied("configured tool has no admitted caller"))?;
         let caller = self.caller(task, io)?;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+        if io.and_then(PreparationIo::original_native_work).is_some() {
             let retained;
             let owner = match owner {
                 Some(owner) => owner,
@@ -38,7 +38,7 @@ where
                     &retained
                 }
             };
-            let binding = context.task().owned_task_binding_with_native_work(work)?;
+            let binding = context.task().owned_task_binding(io)?;
             owner.require_mail_scope(context.scope(), io)?;
             if owner.task_binding() != binding
                 || with_history_io(io, |work| owner.authenticated_binding_agent(work))?
@@ -234,15 +234,7 @@ where
                 "recursive source has no original admitted reader",
             )
         })?;
-        let ordinary;
-        let fence = 'fence: {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-                break 'fence context.owned_task_binding_with_native_work(work)?.1;
-            }
-            ordinary = context.owned_task_fence()?;
-            &ordinary
-        };
+        let fence = context.owned_task_binding(io)?.1;
         let owner = self
             .runtime(io)?
             .task_host()

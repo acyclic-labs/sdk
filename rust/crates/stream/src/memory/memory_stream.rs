@@ -25,6 +25,9 @@ impl MemoryStream {
     ) -> Result<Option<Record>, StreamError> {
         let state = self.state.read().await;
         let current = state.paths.get(path).ok_or(StreamError::NotFound)?;
+        if cursor.next > current.tail {
+            return Err(StreamError::OutOfRange);
+        }
         cursor.sync(current.history.as_ref(), current.tail);
         Ok(cursor.next_record())
     }

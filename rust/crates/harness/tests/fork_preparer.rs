@@ -21,7 +21,7 @@ use acyclic_harness::{
     resources::{ArtifactRef, ProviderRef, StreamRef},
     store::StreamAggregate,
 };
-use acyclic_stream::{MemoryStream};
+use acyclic_stream::MemoryStream;
 use futures::future::BoxFuture;
 use std::sync::{
     Arc,
@@ -74,8 +74,14 @@ impl ForkCaptureProvider for LostCaptureReply {
     reason = "one ordered scenario keeps each step next to the state it checks"
 )]
 async fn exact_fork_preparation_reconciles_without_allocating_another_child() -> Result<()> {
-    let provider = ProviderRef::new("fork-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let stream_provider = ProviderRef::new("fork-e2e".into(), "stream".into(), "2".into(), &mut None)?;
+    let provider = ProviderRef::new(
+        "fork-e2e".into(),
+        "filesystem".into(),
+        "2".into(),
+        &mut None,
+    )?;
+    let stream_provider =
+        ProviderRef::new("fork-e2e".into(), "stream".into(), "2".into(), &mut None)?;
     let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let parent = Authority {
         kind: AggregateKind::Conversation,
@@ -118,46 +124,75 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     )?;
     host.create_volume(&parent_private).await?;
     let issuer = AuthorityIssuer::new("fork-e2e", [7; 32], parent.clone());
-    let scope = issuer.issue("parent", &Capabilities::new([
-            "conversation:bind".to_owned(),
-            "conversation:append".to_owned(),
-            "fork:publish".to_owned(),
-            project.capability(VolumeOperation::Read, &mut None)?,
-            parent_private.capability(VolumeOperation::Read, &mut None)?,
-            parent_private.capability(VolumeOperation::Write, &mut None)?,
-        ]), Some(parent_agent), None, &mut None).expect("scope proof");
+    let scope = issuer
+        .issue(
+            "parent",
+            &Capabilities::new([
+                "conversation:bind".to_owned(),
+                "conversation:append".to_owned(),
+                "fork:publish".to_owned(),
+                project.capability(VolumeOperation::Read, &mut None)?,
+                parent_private.capability(VolumeOperation::Read, &mut None)?,
+                parent_private.capability(VolumeOperation::Write, &mut None)?,
+            ]),
+            Some(parent_agent),
+            None,
+            &mut None,
+        )
+        .expect("scope proof");
     let stream = Arc::new(MemoryStream::default());
-    let resolver = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 64 * 1_024, None)?;
+    let resolver = FilesystemContentVerifier::new(
+        host.clone(),
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &scope,
+        64 * 1_024,
+        None,
+    )?;
     let mut aggregate = StreamAggregate::open(
         &stream,
         parent.clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+        SchemaRegistry::new(),
+        None,
+        acyclic_harness::store::default_projection_read_limits(),
+        acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
+        None,
+        &mut None,
+    )
     .await?
     .with_content_verifier(resolver.clone())
-    .with_fork_verifier(CompositeForkVerifier::new(&[
-        FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
-        StreamHistoryForkVerifier::new(&stream_provider, &mut None)?,
-    ], &mut None)?);
+    .with_fork_verifier(CompositeForkVerifier::new(
+        &[
+            FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
+            StreamHistoryForkVerifier::new(&stream_provider, &mut None)?,
+        ],
+        &mut None,
+    )?);
     aggregate.set_resident_event_limit(1)?;
     aggregate
-        .execute(Command {
-            operation_id: OperationId::from_bytes([3; 16]),
-            idempotency_key: IdempotencyKey::new("bind-parent")?,
-            expected_revision: 0,
-            scope: scope.clone(),
-            causal_parent: None,
-            action: Action::BindConversation {
-                agent: parent_agent,
+        .execute(
+            Command {
+                operation_id: OperationId::from_bytes([3; 16]),
+                idempotency_key: IdempotencyKey::new("bind-parent")?,
+                expected_revision: 0,
+                scope: scope.clone(),
+                causal_parent: None,
+                action: Action::BindConversation {
+                    agent: parent_agent,
+                },
             },
-        }, #[cfg(feature = "filesystem")] None, &mut None)
+            #[cfg(feature = "filesystem")]
+            None,
+            &mut None,
+        )
         .await?;
     let parent_write = ContentGrant::verify(
         &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
         &parent_private,
         VolumeOperation::Write,
-        u64::MAX, &mut None,
+        u64::MAX,
+        &mut None,
     )?;
     let text = host
         .put_content(
@@ -169,7 +204,9 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             "request.txt",
             1_024,
             &IdempotencyKey::new("parent-message")?,
-         None, None)
+            None,
+            None,
+        )
         .await?;
     let attachment = host
         .put_content(
@@ -181,7 +218,9 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             "evidence.bin",
             1_024,
             &IdempotencyKey::new("parent-attachment")?,
-         None, None)
+            None,
+            None,
+        )
         .await?;
     let manifest_bytes = serde_json::to_vec(&vec![Attachment {
         file: attachment.clone(),
@@ -198,31 +237,38 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             "manifest.json",
             1_024,
             &IdempotencyKey::new("parent-manifest")?,
-         None, None)
+            None,
+            None,
+        )
         .await?;
     aggregate
-        .execute(Command {
-            operation_id: OperationId::from_bytes([5; 16]),
-            idempotency_key: IdempotencyKey::new("append-parent-message")?,
-            expected_revision: 1,
-            scope: scope.clone(),
-            causal_parent: None,
-            action: Action::AppendConversationMessage {
-                message: Box::new(ConversationMessage {
-                    id: Uuid::from_bytes([6; 16]),
-                    sequence: 1,
-                    kind: MessageKind::User,
-                    content: text.clone(),
-                    attachments: ReferencedAttachments::Manifest {
-                        manifest: manifest.clone(),
-                        item_count: 1,
-                    },
-                    reply_to: None,
-                    tool_call_id: None,
-                    extensions: Default::default(),
-                }),
+        .execute(
+            Command {
+                operation_id: OperationId::from_bytes([5; 16]),
+                idempotency_key: IdempotencyKey::new("append-parent-message")?,
+                expected_revision: 1,
+                scope: scope.clone(),
+                causal_parent: None,
+                action: Action::AppendConversationMessage {
+                    message: Box::new(ConversationMessage {
+                        id: Uuid::from_bytes([6; 16]),
+                        sequence: 1,
+                        kind: MessageKind::User,
+                        content: text.clone(),
+                        attachments: ReferencedAttachments::Manifest {
+                            manifest: manifest.clone(),
+                            item_count: 1,
+                        },
+                        reply_to: None,
+                        tool_call_id: None,
+                        extensions: Default::default(),
+                    }),
+                },
             },
-        }, #[cfg(feature = "filesystem")] None, &mut None)
+            #[cfg(feature = "filesystem")]
+            None,
+            &mut None,
+        )
         .await?;
     assert!(matches!(
         aggregate.reducer().events_after(0, 2),
@@ -236,7 +282,8 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     let restored_parent = Reducer::restore(
         aggregate.reducer().snapshot(usize::MAX, &mut None)?.0,
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(), &mut None,
+        SchemaRegistry::new(),
+        &mut None,
     )?;
     assert!(matches!(
         restored_parent.events_after(0, 2),
@@ -245,13 +292,21 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     assert_eq!(restored_parent.events_after(1, 2)?.len(), 1);
     let preparer = FilesystemForkPreparer::new(
         host.clone(),
-        restored_parent.clone(),
+        Reducer::restore(
+            restored_parent.snapshot(usize::MAX, &mut None)?.0,
+            issuer.verifier(&mut None)?,
+            SchemaRegistry::new(),
+            &mut None,
+        )?,
         issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         project.clone(),
         stream_provider.clone(),
         resolver.clone(),
-        None, None, #[cfg(not(target_arch = "wasm32"))] None,
+        None,
+        None,
+        #[cfg(not(target_arch = "wasm32"))]
+        None,
     )?;
     let request = ForkRequest {
         authorized_source: None,
@@ -304,7 +359,8 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         ],
         boundary: None,
     };
-    let request = request.with_history_policy(&restored_parent, ForkHistoryPolicy::default(), &mut None)?;
+    let request =
+        request.with_history_policy(&restored_parent, ForkHistoryPolicy::default(), &mut None)?;
     assert_eq!(request.preparation.inherited_through_sequence, 1);
     let mut stale = request.clone();
     stale.parent_revision = 0;
@@ -336,8 +392,11 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         VolumeOwner::Agent(child_agent),
         &mut None,
     )?;
-    let fresh_request =
-        fresh_request.with_history_policy(aggregate.reducer(), ForkHistoryPolicy::Fresh, &mut None)?;
+    let fresh_request = fresh_request.with_history_policy(
+        aggregate.reducer(),
+        ForkHistoryPolicy::Fresh,
+        &mut None,
+    )?;
     let fresh_report = aggregate
         .prepare_fork(&preparer, fresh_request.clone())
         .await?;
@@ -417,7 +476,8 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             .await
             .is_err()
     );
-    let objects_provider = ProviderRef::new("fork-e2e".into(), "objects".into(), "2".into(), &mut None)?;
+    let objects_provider =
+        ProviderRef::new("fork-e2e".into(), "objects".into(), "2".into(), &mut None)?;
     let lost_reply = Arc::new(LostCaptureReply {
         provider: objects_provider.clone(),
         capture_calls: AtomicUsize::new(0),
@@ -426,13 +486,21 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     });
     let composed = FilesystemForkPreparer::new(
         host.clone(),
-        aggregate.reducer().clone(),
+        Reducer::restore(
+            aggregate.reducer().snapshot(usize::MAX, &mut None)?.0,
+            issuer.verifier(&mut None)?,
+            SchemaRegistry::new(),
+            &mut None,
+        )?,
         issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         project.clone(),
         stream_provider.clone(),
         resolver.clone(),
-        None, None, #[cfg(not(target_arch = "wasm32"))] None,
+        None,
+        None,
+        #[cfg(not(target_arch = "wasm32"))]
+        None,
     )?
     .with_capture_provider(lost_reply.clone())?;
     let another_agent = AgentId::from_bytes([12; 16]);
@@ -488,14 +556,27 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     assert_eq!(recovered.attachment_manifests, vec![manifest.clone()]);
     let recovered_seed = recovered.clone().into_seed(&mut None)?;
     let readable = recovered_seed.reference_capabilities(attached_reader)?;
-    assert!(readable.contains(&text.read_capability( &mut None)?));
-    assert!(readable.contains(&attachment.read_capability( &mut None)?));
-    assert!(readable.contains(&manifest.read_capability( &mut None)?));
+    assert!(readable.contains(&text.read_capability(&mut None)?));
+    assert!(readable.contains(&attachment.read_capability(&mut None)?));
+    assert!(readable.contains(&manifest.read_capability(&mut None)?));
     assert!(!readable.contains(&parent_private.capability(VolumeOperation::Write, &mut None)?));
     let child_issuer = AuthorityIssuer::new("fork-e2e", [7; 32], uncertain.child.clone());
-    let reader_scope = child_issuer.issue("attached-reader", &readable, Some(attached_reader), None, &mut None).expect("scope proof");
-    let attached_resolver =
-        FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &reader_scope, 1_024, None)?;
+    let reader_scope = child_issuer
+        .issue(
+            "attached-reader",
+            &readable,
+            Some(attached_reader),
+            None,
+            &mut None,
+        )
+        .expect("scope proof");
+    let attached_resolver = FilesystemContentVerifier::new(
+        host.clone(),
+        &child_issuer.verifier(&mut None).expect("verifier copy"),
+        &reader_scope,
+        1_024,
+        None,
+    )?;
     attached_resolver
         .verify_manifest(&manifest, 1, &Limits::default(), None)?
         .await?;
@@ -509,13 +590,21 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     );
     let resumed_uncertain = FilesystemForkPreparer::new(
         host.clone(),
-        aggregate.reducer().clone(),
+        Reducer::restore(
+            aggregate.reducer().snapshot(usize::MAX, &mut None)?.0,
+            issuer.verifier(&mut None)?,
+            SchemaRegistry::new(),
+            &mut None,
+        )?,
         issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         project.clone(),
         stream_provider.clone(),
         resolver.clone(),
-        None, None, #[cfg(not(target_arch = "wasm32"))] None,
+        None,
+        None,
+        #[cfg(not(target_arch = "wasm32"))]
+        None,
     )?
     .with_capture_provider(lost_reply.clone())?;
     assert_eq!(
@@ -527,7 +616,10 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     assert_eq!(
         host.resolve(&workspace_ref(
             provider.clone(),
-            &uncertain.preparation.child_private_volume.storage_name(&mut None)?,
+            &uncertain
+                .preparation
+                .child_private_volume
+                .storage_name(&mut None)?,
         )?)
         .await?
         .generation,
@@ -535,7 +627,13 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     );
     assert_eq!(lost_reply.capture_calls.load(Ordering::SeqCst), 1);
     aggregate
-        .publish_fork_report(report.clone(), scope.clone(), #[cfg(feature = "filesystem")] None, &mut None)
+        .publish_fork_report(
+            report.clone(),
+            scope.clone(),
+            #[cfg(feature = "filesystem")]
+            None,
+            &mut None,
+        )
         .await?;
     let mut later_message = aggregate
         .reducer()
@@ -546,22 +644,29 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     later_message.id = Uuid::from_bytes([52; 16]);
     later_message.sequence = 2;
     aggregate
-        .execute(Command {
-            operation_id: OperationId::from_bytes([53; 16]),
-            idempotency_key: IdempotencyKey::new("later-parent-message")?,
-            expected_revision: aggregate.reducer().revision(),
-            scope: scope.clone(),
-            causal_parent: None,
-            action: Action::AppendConversationMessage {
-                message: Box::new(later_message),
+        .execute(
+            Command {
+                operation_id: OperationId::from_bytes([53; 16]),
+                idempotency_key: IdempotencyKey::new("later-parent-message")?,
+                expected_revision: aggregate.reducer().revision(),
+                scope: scope.clone(),
+                causal_parent: None,
+                action: Action::AppendConversationMessage {
+                    message: Box::new(later_message),
+                },
             },
-        }, #[cfg(feature = "filesystem")] None, &mut None)
+            #[cfg(feature = "filesystem")]
+            None,
+            &mut None,
+        )
         .await?;
     assert_eq!(report.inherited_through_sequence, 1);
     assert!(matches!(
-        request
-            .clone()
-            .with_history_policy(aggregate.reducer(), ForkHistoryPolicy::default(), &mut None),
+        request.clone().with_history_policy(
+            aggregate.reducer(),
+            ForkHistoryPolicy::default(),
+            &mut None
+        ),
         Err(Error::Conflict(_))
     ));
     let mut bounded_later = request.clone();
@@ -583,13 +688,21 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     );
     let restarted = FilesystemForkPreparer::new(
         host,
-        aggregate.reducer().clone(),
+        Reducer::restore(
+            aggregate.reducer().snapshot(usize::MAX, &mut None)?.0,
+            issuer.verifier(&mut None)?,
+            SchemaRegistry::new(),
+            &mut None,
+        )?,
         issuer.verifier(&mut None).expect("verifier copy"),
         scope,
         project,
         stream_provider,
         resolver,
-        None, None, #[cfg(not(target_arch = "wasm32"))] None,
+        None,
+        None,
+        #[cfg(not(target_arch = "wasm32"))]
+        None,
     )?;
     assert_eq!(
         aggregate.reconcile_fork(&restarted, request).await?,

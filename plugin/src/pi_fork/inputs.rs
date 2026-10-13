@@ -62,7 +62,10 @@ impl<'a> PiForkCoordinator<'a> {
             .await?;
         return actual
             .1
-            .read_file(reference, Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?))
+            .read_file(
+                reference,
+                Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
+            )
             .await;
     }
 
@@ -71,7 +74,9 @@ impl<'a> PiForkCoordinator<'a> {
         context: &acyclic_harness::runtime::TaskContext,
     ) -> Result<()> {
         let native = {
-            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?);
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?,
+            );
             let value = self.owner.policy().journal.directory_read_capability(
                 crate::pi_root_inputs::ROOT_INPUT_DIRECTORY,
                 &mut Some(&mut io),
@@ -91,7 +96,7 @@ impl<'a> PiForkCoordinator<'a> {
     pub(super) fn decode_original_input<T: serde::de::DeserializeOwned>(
         &self,
         bytes: &[u8],
-        value_schema: acyclic_harness::JsonValueSchema,
+        value_schema: &'static acyclic_harness::JsonValueSchema,
         schema_label_bytes: u64,
     ) -> Result<(T, acyclic_fs::NativeAllocation)> {
         let work = &self.work;
@@ -109,7 +114,7 @@ impl<'a> PiForkCoordinator<'a> {
     pub(super) fn decode_input_value<T: serde::de::DeserializeOwned>(
         &self,
         value: &serde_json::Value,
-        schema: acyclic_harness::JsonValueSchema,
+        schema: &'static acyclic_harness::JsonValueSchema,
         labels: u64,
     ) -> Result<(T, acyclic_fs::NativeAllocation)> {
         let work = &self.work;

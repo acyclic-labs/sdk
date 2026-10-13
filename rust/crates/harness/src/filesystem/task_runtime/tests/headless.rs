@@ -455,13 +455,9 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
         selected_context: None,
         max_steps: 1,
     };
-    assert!(execution.resolve_model_tools(&input, 0).await.is_err());
     let events = execution.model_step(&input, 0, &[]).await?;
     assert_eq!(events, execution.model_step(&input, 0, &[]).await?);
     assert_eq!(provider.0.load(Ordering::SeqCst), 1);
-    assert!(
-        matches!(execution.resolve_model_tools(&input, 0).await?, crate::executor::ExecutionProgress::Ready(messages) if messages.is_empty())
-    );
     let mut changed = input.clone();
     changed.operation_id = OperationId::from_bytes([131; 16]);
     assert!(matches!(

@@ -51,24 +51,17 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
 
     pub(super) async fn is_retired(
         &self,
-        authority_id: AuthorityId,
+        authority: AuthorityId,
     ) -> Result<bool, AuthorityStoreError> {
-        let path = stream_path(authority_id, "/retirement")?;
-        match self.provider.tail(path.clone()).await {
-            Err(acyclic_stream::StreamError::NotFound) => Ok(false),
-            Ok(1) => {
-                let marker = read_one(self.provider.as_ref(), path, 0).await?;
-                if marker.value.as_ref() != AUTHORITY_RETIRED {
-                    return Err(AuthorityStoreError::Corrupt(
-                        "filesystem retirement marker is invalid".to_owned(),
-                    ));
-                }
-                Ok(true)
+        let cancellation = CancellationToken::new();
+        let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        match self.authority_require_live(authority, &mut work).await {
+            Ok(()) => Ok(false),
+            Err(AuthorityStoreError::Retired) => Ok(true),
+            Err(AuthorityStoreError::CorruptStatic(message)) => {
+                Err(AuthorityStoreError::Corrupt(message.to_owned()))
             }
-            Ok(_) => Err(AuthorityStoreError::Corrupt(
-                "filesystem retirement marker has an invalid tail".to_owned(),
-            )),
-            Err(error) => Err(map_stream_error(error)),
+            Err(error) => Err(error),
         }
     }
 

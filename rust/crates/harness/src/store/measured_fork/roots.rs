@@ -3,38 +3,26 @@ use super::*;
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry() -> Result<()> {
-    use crate::durable_host::tests::fixture::Fixture;
-    use acyclic_fs::{Fs, NativeMaterializationWork, NativeTreeMaterializationError, WorkError};
-    let fixture = Fixture::new(
-        Arc::new(MemoryStream::default()),
-        Fs::memory(),
-        serde_json::json!({"type":"integer"}),
-        None,
-        &[],
-    )
-    .await?;
-    fixture
-        .host
-        .admit(fixture.admission(80, serde_json::json!(0)))
-        .await?;
-    let lease = fixture.claim(80, "original").await?;
+    use acyclic_fs::{NativeMaterializationWork, NativeTreeMaterializationError, WorkError};
+    let fixture = crate::durable_host::tests::created_fixture::CreationFixture::new().await?;
     let cancellation = CancellationToken::new();
     let native = NativeMaterializationWork::new(guarded_publication_budget(), &cancellation)?;
     let owner_io = crate::filesystem::PreparationIo::from_native_work(&native)?;
     let owner = fixture
         .host
         .journal_owner(
-            crate::TaskId::from_bytes([80; 16]),
-            &((&lease.reservation).into()),
+            fixture.root,
+            &((&fixture.root_lease.reservation).into()),
             Some(&owner_io),
         )
-        .await?;
+        .await?
+        .into_native_shared(&native)?;
     let agent = owner.authenticated_binding_agent(&mut None)?.unwrap();
     let audience = Authority {
         kind: AggregateKind::Conversation,
         id: "original-native-root-conversation".into(),
     };
-    let issuer = crate::core::AuthorityIssuer::new("fixture", [7; 32], audience.clone());
+    let issuer = crate::core::AuthorityIssuer::new("created-owner", [80; 32], audience.clone());
     let command = Command {
         operation_id: OperationId::from_bytes([124; 16]),
         idempotency_key: IdempotencyKey::new("original-native-root-bind")?,
@@ -132,7 +120,8 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
         authority: audience.clone(),
         revision: 1,
     });
-    let wrong_issuer = crate::core::AuthorityIssuer::new("fixture", [8; 32], audience.clone());
+    let wrong_issuer =
+        crate::core::AuthorityIssuer::new("created-owner", [81; 32], audience.clone());
     let mut wrong_scope = command.clone();
     wrong_scope.scope = wrong_issuer.issue(
         "root-bind",
@@ -206,7 +195,11 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
         .root_bootstrap_context(&original, &bootstrap.0, &native)
         .await?;
     assert_ne!(owner.root_bootstrap_owner(), &audience);
-    let creator = &fixture.issuer;
+    let creator = crate::core::AuthorityIssuer::new(
+        "created-owner",
+        [80; 32],
+        owner.root_bootstrap_owner().clone(),
+    );
     owner
         .authenticate_root_bootstrap_creator_with_native_work(
             &creator.verifier(&mut None)?,
@@ -217,7 +210,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
         .root_bootstrap_publication_lease_with_native_work(&native)
         .await?;
     let native_io = crate::filesystem::PreparationIo::from_native_work(&native)?;
-    publication.verify_with_io(&native_io)?.await?;
+    publication.verify(Some(&native_io))?.await?;
     for allowed in [true, false] {
         let io = crate::filesystem::PreparationIo::from_budget(
             WorkBudget {
@@ -230,17 +223,14 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
             },
             &cancellation,
         )?;
-        let future = publication.verify_with_io(&io)?;
-        let crate::store::HistoryContentFuture::Ordinary { frame_bytes, .. } = &future else {
-            panic!("ordinary content verification");
-        };
-        let held = *frame_bytes;
-        assert_eq!(future.await.is_ok(), allowed);
-        io.release(held)?;
+        assert_eq!(publication.verify(Some(&io))?.await.is_ok(), allowed);
     }
     drop(publication);
-    let wrong_creator =
-        crate::core::AuthorityIssuer::new("fixture", [8; 32], owner.root_bootstrap_owner().clone());
+    let wrong_creator = crate::core::AuthorityIssuer::new(
+        "created-owner",
+        [81; 32],
+        owner.root_bootstrap_owner().clone(),
+    );
     let query = &native;
     assert_eq!(
         owner
@@ -265,15 +255,18 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
             .code(),
         crate::wire::ErrorCode::Unauthorized
     );
-    let foreign = Fixture::new(
-        Arc::new(MemoryStream::default()),
-        Fs::memory(),
-        serde_json::json!({"type":"integer"}),
-        None,
-        &["foreign:bootstrap"],
-    )
+    let foreign = crate::durable_host::tests::created_fixture::CreationFixture::new_with_grants(&[
+        "foreign:bootstrap",
+    ])
     .await?;
-    let foreign_owner = foreign.running(80).await?;
+    let foreign_owner = foreign
+        .host
+        .journal_owner(
+            foreign.root,
+            &((&foreign.root_lease.reservation).into()),
+            None,
+        )
+        .await?;
     assert_eq!(
         foreign_owner
             .root_bootstrap_context(&original, &bootstrap.0, query)

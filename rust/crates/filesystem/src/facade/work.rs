@@ -131,19 +131,6 @@ pub(crate) fn measured<T, E>(
         .map_err(|error| OperationFailure::new(error, work))
 }
 
-pub(super) fn remaining_owned(
-    work: WorkCounters,
-    budget: WorkBudget,
-    live_bytes: u64,
-) -> Result<WorkBudget, OperationFailure<FsError>> {
-    let mut remaining = work
-        .remaining(budget)
-        .map_err(|error| OperationFailure::new(error.into(), work))?;
-    // The ledger already admitted these live bytes within the same permit.
-    remaining.peak_allocation_bytes -= live_bytes;
-    Ok(remaining)
-}
-
 pub(super) fn authority_work<'a>(
     accounting: &KernelAccounting<'a>,
     cancellation: &'a CancellationToken,

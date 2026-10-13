@@ -42,7 +42,7 @@ where
         }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            reader.owned_task_binding_with_native_work(work)?;
+            reader.owned_task_binding(Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
             if !reconciliation_only {
                 reader.require_original_native_dispatch(work)?;
             }

@@ -23,7 +23,7 @@ pub(crate) struct PluginGitExecutor<'a> {
     pub(crate) fs: &'a LocalFs,
     pub(crate) store: &'a LocalCoreStateStore,
     pub(crate) current: LocalWorkspace,
-    pub(crate) lazy_current: LocalLazyWorkspace,
+    pub(crate) lazy_current: &'a LocalLazyWorkspace,
     pub(crate) repository_id: acyclic_fs::WorkspaceId,
     pub(crate) ignore: GitIgnorePolicy,
     pub(crate) permit: PublicationPermit,
@@ -42,7 +42,7 @@ impl PluginGitExecutor<'_> {
         self.switched
             .lock()
             .map_err(|_| Self::error("Git workspace switch lock is unavailable"))
-            .map(|workspace| workspace.clone())
+            .map(|mut workspace| workspace.take())
     }
 
     pub(crate) async fn workspace(
@@ -321,11 +321,17 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 let workspace = self
                     .lazy_current
                     .fork(
-                        destination,
+                        &destination,
                         IdempotencyKey::from_bytes(operation_id.into_bytes()),
+                        &mut acyclic_fs::kernel::KernelAccounting::Standalone {
+                            allocations: Default::default(),
+                            work: acyclic_fs::WorkCounters::UNCHARGED,
+                            budget: WorkBudget::UNBOUNDED,
+                            cancellation: &CancellationToken::new(),
+                        },
                     )
                     .await
-                    .map_err(display)?;
+                    .map_err(display)?.0;
                 WorkspaceGraph::new(self.store.clone())
                     .register_existing_child(
                         self.lazy_current.workspace(),
@@ -334,16 +340,15 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                     )
                     .await
                     .map_err(display)?;
+                let workspace_id = workspace.workspace().id();
                 if *switch {
                     *self
                         .switched
                         .lock()
                         .map_err(|_| Self::error("Git workspace switch lock is unavailable"))? =
-                        Some(workspace.clone());
+                        Some(workspace);
                 }
-                Ok(GitFilesystemResult::Forked {
-                    workspace_id: workspace.workspace().id(),
-                })
+                Ok(GitFilesystemResult::Forked { workspace_id })
             }
             GitFilesystemAction::SwitchWorkspace { workspace_id } => {
                 let workspace = self.workspace(*workspace_id).await?;
@@ -612,12 +617,12 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 if *rebase {
                     builder = builder.history(acyclic_fs::JoinHistory::Rebase);
                 }
-                let plan = builder.plan().await.map_err(display)?;
+                let plan = builder.plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| display(failure.error))?;
                 let options = ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::from_bytes(operation_id.into_bytes()),
                 };
-                let initial = plan.apply(options, self.permit).await.map_err(display)?;
+                let initial = plan.apply(options, BTreeMap::new(), self.permit).await.map_err(display)?;
                 let mut projected_conflicts = None;
                 let outcome = if let JoinOutcome::Conflicted {
                     conflicts,
@@ -625,7 +630,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 } = initial
                 {
                     let typed = plan
-                        .describe_conflicts(&conflicts, truncated)
+                        .describe_conflicts(conflicts, truncated)
                         .await
                         .map_err(display)?;
                     let typed_json = serde_json::to_string(&typed).map_err(display)?;
@@ -1069,10 +1074,10 @@ impl RootMaterializingGitExecutor<'_> {
         operation_id: OperationId,
         from: LocalGeneration,
     ) -> Result<(), PluginGitError> {
-        let target = self.inner.switched_workspace()?.map_or_else(
-            || self.inner.current.clone(),
-            |lazy| lazy.workspace().clone(),
-        );
+        let target = self.inner.switched.lock()
+            .map_err(|_| PluginGitExecutor::error("Git workspace switch lock is unavailable"))?
+            .as_ref()
+            .map_or_else(|| self.inner.current.clone(), |lazy| lazy.workspace().clone());
         let to = target
             .head(
                 acyclic_fs::WorkBudget::UNBOUNDED,
@@ -1130,7 +1135,7 @@ impl RootMaterializingGitExecutor<'_> {
         self.store
             .remove_materialization_async(operation_id)
             .await
-            .map_err(|(cause, _)| display(cause))?;
+            .map_err(display)?;
         remove_tree_checked(
             &root_materialization_root(self.root).map_err(PluginGitError)?,
             &operation_directory,

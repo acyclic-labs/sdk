@@ -898,7 +898,9 @@ pub(crate) async fn dispatch_control_request(
             "unsupported Acyclic control request".to_owned(),
         ));
     }
-    control.dispatch_request(request, original_native_work).await
+    control
+        .dispatch_request(request, original_native_work)
+        .await
 }
 
 #[tracing::instrument(
@@ -928,11 +930,7 @@ pub(crate) async fn dispatch_control_envelope(
     ) {
         let result =
             dispatch_control_request(control, envelope.request, original_native_work).await;
-        return control_response_for(
-            &request_id,
-            result,
-            original_native_work.as_ref(),
-        );
+        return control_response_for(&request_id, result, original_native_work.as_ref());
     }
     // Ledger transitions are single unflushed appends, cheaper than handing
     // them to a blocking worker.
@@ -944,12 +942,9 @@ pub(crate) async fn dispatch_control_envelope(
         ),
         Ok(LedgerDecision::Completed(response)) => Ok((response, None, None)),
         Ok(LedgerDecision::Execute) => {
-            let result = dispatch_control_request(
-                control,
-                envelope.request.clone(),
-                original_native_work,
-            )
-            .await;
+            let result =
+                dispatch_control_request(control, envelope.request.clone(), original_native_work)
+                    .await;
             // The ledger records exactly the bounded bytes that are sent.
             // Custody survives both journaling and the final asynchronous response write.
             let encoded = control_response_for(&request_id, result, original_native_work.as_ref())?;
@@ -975,28 +970,10 @@ pub(crate) async fn dispatch_control_envelope(
     }
 }
 
-pub(crate) trait ControlRequestDispatcher: Send {
-    fn dispatch_request(
-        &mut self,
-        request: ControlRequest,
-        original_native_work: &mut Option<acyclic_fs::NativeMaterializationWork>,
-    ) -> impl Future<Output = acyclic_harness::Result<ControlDispatchResponse>> + Send;
-}
-
 pub(crate) trait ConcurrentControlRequestDispatcher: Send + Sync {
     fn dispatch_request(
         &self,
         request: ControlRequest,
         original_native_work: &mut Option<acyclic_fs::NativeMaterializationWork>,
     ) -> impl Future<Output = acyclic_harness::Result<ControlDispatchResponse>> + Send;
-}
-
-impl<T: ControlRequestDispatcher + Send> ConcurrentControlRequestDispatcher for AsyncMutex<T> {
-    async fn dispatch_request(
-        &self,
-        request: ControlRequest,
-        original_native_work: &mut Option<acyclic_fs::NativeMaterializationWork>,
-    ) -> acyclic_harness::Result<ControlDispatchResponse> {
-        self.lock().await.dispatch_request(request, original_native_work).await
-    }
 }

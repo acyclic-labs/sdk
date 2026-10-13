@@ -87,17 +87,6 @@ async fn pinned_reader_batches_ranges_in_request_order() -> TestResult {
             .collect::<Vec<_>>(),
         vec![b"234".as_slice(), b"bcde"]
     );
-    let descriptions = reader
-        .describe_files(
-            &[path("first")?, path("second")?, path("first")?],
-            B,
-            &cancel,
-        )
-        .await?
-        .value;
-    assert_eq!(descriptions.len(), 3);
-    assert!(descriptions.iter().all(Option::is_some));
-    assert_eq!(descriptions[0], descriptions[2]);
     assert_eq!(
         first
             .read_range(requests[1].range, B, &cancel)
@@ -167,29 +156,6 @@ async fn pinned_reader_batches_ranges_in_request_order() -> TestResult {
             ..
         })
     ));
-    let pages = reader
-        .list_directory_pages(
-            &[
-                DirectoryPageRequest {
-                    path: path("second-directory")?,
-                    after: None,
-                    maximum_entries: 8,
-                },
-                DirectoryPageRequest {
-                    path: path("first-directory")?,
-                    after: Some(LogicalName::new(NameEncoding::Utf8, b"a".to_vec(), 255)?),
-                    maximum_entries: 1,
-                },
-            ],
-            2,
-            B,
-            &cancel,
-        )
-        .await?
-        .value;
-    assert_eq!(pages[0].entries[0].name.as_bytes(), b"c");
-    assert_eq!(pages[1].entries[0].name.as_bytes(), b"b");
-    assert!(pages.iter().all(|page| !page.has_more));
     let page = reader
         .resolve_directory_page(&path("first-directory")?, None, 1, B, &cancel)
         .await?
@@ -215,12 +181,6 @@ async fn pinned_reader_batches_ranges_in_request_order() -> TestResult {
             .bytes
             .as_ref(),
         b"x"
-    );
-    assert!(
-        reader
-            .list_directory_pages(&[], 0, B, &cancel)
-            .await
-            .is_err()
     );
     let one = reader
         .read_file_range(&path("second")?, requests[0].range, B, &cancel)

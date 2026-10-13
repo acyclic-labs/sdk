@@ -8,7 +8,6 @@ pub(super) enum CreatedFilesystemAccess<A, O> {
         origin: ResourceCreationOrigin,
         generation: GenerationRef,
         prepared_generation: GenerationRef,
-        creation_operation: acyclic_fs::OperationId,
         reader: Arc<FilesystemContentVerifier<A, O>>,
         writer: Arc<FilesystemContentPublisher<A, O>>,
     },
