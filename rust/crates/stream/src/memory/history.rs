@@ -2,13 +2,6 @@ struct RecordBatch {
     records: Vec<Record>,
     _allocation: Allocation,
 }
-impl std::ops::Deref for RecordBatch {
-    type Target = [Record];
-    fn deref(&self) -> &[Record] {
-        &self.records
-    }
-}
-
 enum History {
     Batch {
         parent: Option<Arc<Self>>,
@@ -70,7 +63,7 @@ impl<'a> Iterator for HistoryWalk<'a> {
                 parent, records, ..
             } => {
                 self.next = parent.as_ref();
-                if let Some(first) = records.first() {
+                if let Some(first) = records.records.first() {
                     self.ceiling = self.ceiling.min(first.sequence);
                 }
             }
@@ -100,8 +93,9 @@ fn collect_history_windows(
 }
 
 fn history_window(records: Arc<RecordBatch>, ceiling: u64, from: u64) -> Option<HistoryWindow> {
-    let first = records.first()?.sequence;
+    let first = records.records.first()?.sequence;
     let batch_end = records
+        .records
         .len()
         .try_into()
         .ok()
