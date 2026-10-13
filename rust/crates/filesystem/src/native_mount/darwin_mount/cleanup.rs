@@ -56,7 +56,7 @@ impl DirectDetach {
 
     pub(super) fn poll(
         &mut self,
-        work: &ProbeWork<'_, '_>,
+        work: &ProbeWork<'_>,
     ) -> Result<Poll<Result<(), NativeMountError>>, NativeMountError> {
         work.check()?;
         self.started = true;
@@ -173,7 +173,7 @@ impl DarwinRecoveryControl {
         destination: &Path,
         name: Option<&CStr>,
         probe: &mut MountProbe,
-        work: &ProbeWork<'_, '_>,
+        work: &ProbeWork<'_>,
     ) -> Result<bool, NativeMountError> {
         let mounted = probe.mounted(destination, work)?;
         self.detached = !mounted;
@@ -295,7 +295,7 @@ impl DarwinRecoveryControl {
         Ok(true)
     }
 
-    pub(super) fn poll_direct(&mut self, work: &ProbeWork<'_, '_>) -> Result<(), NativeMountError> {
+    pub(super) fn poll_direct(&mut self, work: &ProbeWork<'_>) -> Result<(), NativeMountError> {
         if let Some(task) = &mut self.direct {
             if let Poll::Ready(result) = task.poll(work)? {
                 self.direct = None;

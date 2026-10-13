@@ -2,7 +2,7 @@ use super::*;
 use crate::kernel::{FileMetadata, MetadataField};
 use windows::Wdk::Storage::FileSystem::FileBasicInformation;
 
-pub(crate) fn apply_windows_metadata<W: NativeHostWork<Error = DemandError>>(
+pub(crate) fn apply_metadata<W: NativeHostWork<Error = DemandError>>(
     file: cap_std::fs::File,
     metadata: FileMetadata,
     work: &mut W,

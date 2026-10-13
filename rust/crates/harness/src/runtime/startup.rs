@@ -18,26 +18,6 @@ impl AgentHarness {
         Ok(Arc::new(child))
     }
 
-    /// Selects a different qualified execution route for newly admitted work under attenuated authority.
-    pub fn scoped_execution(
-        self: &Arc<Self>,
-        grants: Capabilities,
-        limits: Limits,
-        execution: Arc<dyn ExecutionProvider>,
-    ) -> Result<Arc<Self>> {
-        let identity = execution.identity();
-        validate_policy_identity(&identity, None)?;
-        let mut routed = self.as_ref().clone();
-        routed.scope = self.scope.narrow(grants, limits)?;
-        routed.fork_preparer = None;
-        routed.host = None;
-        routed.state = Some(execution.state());
-        routed.spawner = Some(execution.spawner());
-        routed.execution = Some(execution);
-        routed.assert_durable_policy_bindings(None)?;
-        Ok(Arc::new(routed))
-    }
-
     /// Submits one signed decision for the ticket's exact approved intent.
     pub async fn resolve_approval(
         &self,

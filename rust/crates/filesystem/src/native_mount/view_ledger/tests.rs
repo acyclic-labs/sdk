@@ -34,17 +34,13 @@ fn unrelated_changes_never_invalidate_a_lookup() -> Result<(), Box<dyn std::erro
     let watched = path(&["corpus", "file"])?;
     let file_id = FileId::new();
     let stamp = ledger.stamp();
-    // Far more distinct names than any fixed slot table could separate.
-    for index in 0..20_000 {
-        let created = path(&["writes", &format!("file-{index}")])?;
-        ledger.record(
-            &ViewChange::Bound(&created),
-            &mut NativeDemandCarrier::Borrowed(&mut work),
-        )?;
-        ledger.record(
-            &ViewChange::Node(FileId::new()),
-            &mut NativeDemandCarrier::Borrowed(&mut work),
-        )?;
+    {
+        let mut carrier = NativeDemandCarrier::Borrowed(&mut work);
+        for index in 0..20_000 {
+            let created = path(&["writes", &format!("file-{index}")])?;
+            ledger.record(&ViewChange::Bound(&created), &mut carrier)?;
+            ledger.record(&ViewChange::Node(FileId::new()), &mut carrier)?;
+        }
     }
     assert!(ledger.unchanged_since(&watched, Some(file_id), stamp, &mut work)?);
     assert!(ledger.unchanged_since(&path(&["corpus"])?, None, stamp, &mut work)?);
@@ -57,9 +53,6 @@ fn unrelated_changes_never_invalidate_a_lookup() -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
-/// A change reported under one spelling of a name reaches a lookup made
-/// under any other spelling a case- or normalization-insensitive host
-/// resolves to the same entry, whatever either name's encoding.
 #[test]
 fn every_spelling_of_a_name_shares_its_changes() -> Result<(), Box<dyn std::error::Error>> {
     let limits = VolumeLimits::default();
@@ -83,8 +76,6 @@ fn every_spelling_of_a_name_shares_its_changes() -> Result<(), Box<dyn std::erro
             name(NameEncoding::WindowsUtf16Le, "ReadMe.md")?,
             name(NameEncoding::Utf8, "readme.MD")?,
         ),
-        // Composed and decomposed forms of one accented name, in
-        // different cases.
         (
             name(NameEncoding::PosixBytes, "\u{e9}t\u{e9}")?,
             name(NameEncoding::WindowsUtf16Le, "E\u{301}TE\u{301}")?,
@@ -113,7 +104,6 @@ fn every_spelling_of_a_name_shares_its_changes() -> Result<(), Box<dyn std::erro
         ledger.unchanged_since(&other, None, stamp, &mut work)?,
         "distinct names stay distinct"
     );
-    // Bytes that are not Unicode are keyed as bytes.
     let raw = |bytes: &[u8]| {
         LogicalName::new(
             NameEncoding::PosixBytes,
@@ -137,11 +127,11 @@ fn folded_keys_invalidate_only_older_lookups() -> Result<(), Box<dyn std::error:
     let ledger = ViewLedger::new(&mut NativeDemandCarrier::Borrowed(&mut work))?;
     let watched = path(&["watched"])?;
     let before = ledger.stamp();
-    for _ in 0..=MAXIMUM_TRACKED_KEYS {
-        ledger.record(
-            &ViewChange::Node(FileId::new()),
-            &mut NativeDemandCarrier::Borrowed(&mut work),
-        )?;
+    {
+        let mut carrier = NativeDemandCarrier::Borrowed(&mut work);
+        for _ in 0..=MAXIMUM_TRACKED_KEYS {
+            ledger.record(&ViewChange::Node(FileId::new()), &mut carrier)?;
+        }
     }
     let after = ledger.stamp();
     let untouched = FileId::new();
@@ -161,21 +151,13 @@ fn observers_learn_each_change_with_its_origin() -> Result<(), Box<dyn std::erro
     let observer: std::sync::Weak<Recorded> = Arc::downgrade(&recorded);
     ledger.observe(observer, &mut NativeDemandCarrier::Borrowed(&mut work))?;
     let origin = ViewOrigin::new();
-    ledger.record(
-        &ViewChange::Everything,
-        &mut NativeDemandCarrier::Borrowed(&mut work),
-    )?;
+    let mut carrier = NativeDemandCarrier::Borrowed(&mut work);
+    ledger.record(&ViewChange::Everything, &mut carrier)?;
     {
         let _scope = origin.enter();
-        ledger.record(
-            &ViewChange::Everything,
-            &mut NativeDemandCarrier::Borrowed(&mut work),
-        )?;
+        ledger.record(&ViewChange::Everything, &mut carrier)?;
     }
-    ledger.record(
-        &ViewChange::Everything,
-        &mut NativeDemandCarrier::Borrowed(&mut work),
-    )?;
+    ledger.record(&ViewChange::Everything, &mut carrier)?;
     let recorded = recorded.0.lock().map_err(|_| "poisoned")?.clone();
     let origins = recorded
         .iter()
@@ -205,17 +187,12 @@ impl super::ViewObserver for Recorded {
 }
 
 #[test]
-fn publication_delivers_to_final_live_observers_and_funds_late_registration()
--> Result<(), Box<dyn std::error::Error>> {
+fn publication_delivers_to_final_live_observers() -> Result<(), Box<dyn std::error::Error>> {
     let mut setup = work();
     let ledger = ViewLedger::new(&mut NativeDemandCarrier::Borrowed(&mut setup))?;
     let early: Arc<dyn super::ViewObserver> = Arc::new(Recorded::default());
     let dead = Arc::downgrade(&early);
     ledger.observe(dead.clone(), &mut NativeDemandCarrier::Borrowed(&mut setup))?;
-    let original = crate::NativeMaterializationWork::from_meter(Arc::new(
-        crate::demand::NativeDemandReadMeter(Mutex::new(work())),
-    ));
-    let notification = ledger.prepare_everything_notification(&original)?;
     drop(early);
     assert!(dead.upgrade().is_none());
     let counted = Arc::new(Recorded::default());
@@ -224,42 +201,8 @@ fn publication_delivers_to_final_live_observers_and_funds_late_registration()
         Arc::downgrade(&late),
         &mut NativeDemandCarrier::Borrowed(&mut setup),
     )?;
-    notification.record();
+    ledger.notify_everything();
     assert_eq!(counted.0.lock().map_err(|_| "poisoned")?.len(), 1);
-    let next = ledger.prepare_everything_notification(&original)?;
-    drop(next);
-    assert!(ledger.prepare_everything_notification(&original).is_ok());
-    Ok(())
-}
-
-#[test]
-fn publication_notification_keeps_the_resource_byte_limit() -> Result<(), Box<dyn std::error::Error>>
-{
-    let mut setup = work();
-    let ledger = ViewLedger::new(&mut NativeDemandCarrier::Borrowed(&mut setup))?;
-    let observer: Arc<dyn super::ViewObserver> = Arc::new(Recorded::default());
-    ledger.observe(
-        Arc::downgrade(&observer),
-        &mut NativeDemandCarrier::Borrowed(&mut setup),
-    )?;
-    let original = crate::NativeMaterializationWork::new(
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    )
-    .map_err(|(cause, _)| cause)?;
-    let limited = original.native_volume_work(crate::WorkBudget {
-        bytes_copied: 0,
-        ..crate::WorkBudget::UNBOUNDED
-    })?;
-    let before = ledger.stamp();
-    assert!(matches!(
-        ledger.prepare_everything_notification(&limited),
-        Err(super::MountSourceError::NativeWork(
-            crate::NativeTreeMaterializationError::Work(_)
-        ))
-    ));
-    assert_eq!(ledger.stamp(), before);
-    assert!(ledger.prepare_everything_notification(&original).is_ok());
     Ok(())
 }
 

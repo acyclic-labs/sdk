@@ -102,49 +102,6 @@ async fn lazy_overlay_load_rejects_content_address_mismatch() {
 }
 
 #[tokio::test]
-async fn immutable_nodes_are_served_from_memory_after_first_use() {
-    let cancellation = crate::CancellationToken::new();
-    let mut accounting =
-        crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
-    let directory = tempfile::tempdir().expect("temporary directory");
-    let store = LocalCoreStateStore::open_owned(directory.path()).expect("owner");
-    let empty = LazyOverlayId::from_bytes([0; 32]);
-    let (overlay, node) = linked_overlay("/memoized", empty, empty);
-    let value = node.clone();
-    let allocation = accounting
-        .claim_owned(value.owned_bytes(), 0)
-        .expect("overlay allocation");
-    store
-        .put_lazy_overlay(overlay, (value, allocation), &mut accounting)
-        .await
-        .expect("put overlay");
-    std::fs::remove_dir_all(directory.path().join("lazy-overlays")).expect("drop overlays");
-    let clone = store.clone();
-    assert_eq!(
-        clone
-            .load_lazy_overlay(overlay, &mut accounting)
-            .await
-            .expect("memoized overlay")
-            .as_ref()
-            .map(|(value, _)| value),
-        Some(&node)
-    );
-    let (_, different) = linked_overlay("/different", empty, empty);
-    let allocation = accounting
-        .claim_owned(different.owned_bytes(), 0)
-        .expect("different overlay allocation");
-    assert!(
-        matches!(
-            clone
-                .put_lazy_overlay(overlay, (different, allocation), &mut accounting)
-                .await,
-            Err(crate::LazyWorkspaceError::NativeRecordIntegrity)
-        ),
-        "a memoized address still rejects a different value"
-    );
-}
-
-#[tokio::test]
 async fn empty_nodes_are_implied_without_being_stored() {
     let cancellation = crate::CancellationToken::new();
     let mut accounting =

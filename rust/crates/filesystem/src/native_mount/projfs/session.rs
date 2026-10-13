@@ -239,10 +239,10 @@ impl ProjFsSession {
                 .sdk_stop_credit
                 .as_mut()
                 .ok_or(NativeMountError::ControlPending)?;
-            credit.loan(None).started_io(crate::WorkCounters {
+            credit.started_io(crate::WorkCounters {
                 backend_write_operations: 1,
                 ..crate::WorkCounters::UNCHARGED
-            })?;
+            }, None)?;
             // SAFETY: the projection loop has drained; SDK stop drains every callback.
             unsafe { PrjStopVirtualizing(context) };
             self.context = None;
@@ -254,11 +254,10 @@ impl ProjFsSession {
                 .and_then(|(directory, mut credit)| {
                     let result = delete_through(&directory, || {
                         credit
-                            .loan(None)
                             .started_io(crate::WorkCounters {
                                 backend_write_operations: 1,
                                 ..crate::WorkCounters::UNCHARGED
-                            })
+                            }, None)
                             .map_err(NativeMountError::from)
                     });
                     credit.started_drop_io(crate::WorkCounters {
