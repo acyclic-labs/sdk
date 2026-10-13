@@ -208,7 +208,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         OperationId::from_bytes(self.task_id().into_bytes())
     }
 
-    pub(super) async fn condition(
+    pub(crate) async fn condition(
         &self,
         write: crate::distributed::JournalWrite,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
