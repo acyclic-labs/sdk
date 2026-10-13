@@ -36,10 +36,13 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
             return Err(denied());
         }
         let io = PreparationIo::from_native_work(work)?;
-        let (observed, custody) = self
+        let observed = self
             .host
-            .readonly_admission(self.admission_operation(), &io)
+            .admission(self.admission_operation(), Some(&io))
             .await?;
+        let custody = io.take_native_custody(
+            std::mem::size_of::<TaskAdmissionRecord>() as u64 + observed.logical_owned_bytes()?,
+        )?;
         if observed != self.admission {
             return Err(denied());
         }
@@ -121,12 +124,12 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
         let mut observer: Option<&mut dyn HistoryIo> = Some(&mut history);
         request.validate(&mut observer)?;
         let admitted = self.admission.canonical_digest_with_work(&mut observer)?;
-        let original = crate::contract::canonical_json_digest(
+        let original = crate::executor::json::canonical_json_digest(
             &self.admission.input,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             &mut observer,
         )?;
-        let supplied = crate::contract::canonical_json_digest(
+        let supplied = crate::executor::json::canonical_json_digest(
             request,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             &mut observer,
@@ -172,7 +175,11 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
-            let (admission, mut custody) = self.readonly_admission(query.id(), &io).await?;
+            let admission = self.admission(query.id(), Some(&io)).await?;
+            let mut custody = io.take_native_custody(
+                std::mem::size_of::<TaskAdmissionRecord>() as u64
+                    + admission.logical_owned_bytes()?,
+            )?;
             let access = query.scope().created_access();
             let scratch = if admission.parent.is_none() && admission.resource_proofs.is_empty() {
                 None
@@ -204,100 +211,5 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             witness.require_query(query, work)?;
             Ok(witness)
         })
-    }
-
-    pub(super) async fn readonly_admission(
-        &self,
-        operation: OperationId,
-        io: &PreparationIo,
-    ) -> Result<(TaskAdmissionRecord, NativeAllocation)> {
-        let mut history = io.history_io();
-        let mut work: Option<&mut dyn HistoryIo> = Some(&mut history);
-        let key = crate::contract::preparation_format(
-            format_args!("task-admission:{operation}"),
-            &mut work,
-        )?;
-        let mut quota =
-            crate::wire_codec::CodecQuota::from_retained(&mut work, key.capacity() as u64);
-        let key = IdempotencyKey::new(key)?;
-        let spec = match crate::distributed::observe_declaration(
-            &self.stream,
-            &self.owner,
-            &self.owner_scope,
-            &self.verifier,
-            operation,
-            &key,
-            quota.work(),
-        )
-        .await?
-        {
-            Some(spec) => spec,
-            None => {
-                let mut coordinator = self.coordinator.lock().await;
-                coordinator.refresh(quota.work()).await?;
-                coordinator
-                    .observe_operation(
-                        &self.owner,
-                        &self.owner_scope,
-                        &self.verifier,
-                        operation,
-                        quota.work(),
-                    )?
-                    .spec
-                    .clone_with_work(quota.work())?
-            }
-        };
-        quota.adopt(spec.logical_owned_bytes()?)?;
-        spec.state.validate(quota.work())?;
-        if spec.state.descriptor().media_type() != "application/json" {
-            return Err(denied());
-        }
-        let bytes = self
-            .reader
-            .read(&spec.state, spec.state.descriptor().byte_length(), Some(io))?
-            .await?;
-        spec.state.descriptor().verify(&bytes, quota.work())?;
-        let value: Value = io.decode_json(&bytes)?;
-        quota.adopt(crate::contract::json_value_logical_owned_bytes(&value)?)?;
-        let canonical = io.encode(&value, spec.state.descriptor().byte_length(), true)?;
-        if canonical.as_ref() != bytes.as_ref() {
-            return Err(denied());
-        }
-        let (admission, held) = TaskAdmissionRecord::from_canonical_value(value, quota.work())?;
-        quota.adopt(held)?;
-        if admission.operation_id != operation
-            || admission.task.name != spec.entrypoint.name
-            || admission.task.version != spec.entrypoint.version
-            || admission.task.digest != spec.entrypoint.digest
-            || admission.output_schema != spec.entrypoint.result_schema
-            || admission
-                .parent
-                .map(|task| OperationId::from_bytes(task.into_bytes()))
-                != spec.parent.as_ref().map(|parent| parent.operation_id)
-            || spec.parent.as_ref().is_some_and(|parent| {
-                parent.slot
-                    != key
-                        .as_str()
-                        .strip_prefix("task-admission:")
-                        .expect("admission key prefix")
-            })
-            || admission.machine.name != admission.task.name
-            || admission.machine.version != admission.task.version
-            || admission.policy != self.policy.as_ref().map(|policy| policy.identity())
-            || admission.extensions.as_ref() != self.root_scope.extensions()
-        {
-            return Err(denied());
-        }
-        let retained = (std::mem::size_of::<TaskAdmissionRecord>() as u64)
-            .checked_add(admission.logical_owned_bytes()?)
-            .ok_or_else(denied)?;
-        if retained > quota.retained() {
-            return Err(denied());
-        }
-        drop((spec, key, bytes, canonical));
-        quota.replace(retained)?;
-        let custody = io.take_native_custody(retained)?;
-        quota.transfer();
-        Ok((admission, custody))
     }
 }

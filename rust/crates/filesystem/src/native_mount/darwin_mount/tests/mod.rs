@@ -418,7 +418,6 @@ fn renaming_over_an_open_file_keeps_it_for_its_handles() -> TestResult {
                 std::ptr::from_ref(&context) as usize,
                 from.as_ptr(),
                 c"/replaced".as_ptr(),
-                0,
             )
         }
     };
@@ -718,64 +717,44 @@ fn macos_mode_bits_deny_access() -> TestResult {
 }
 
 #[test]
-fn directory_page_rejects_a_native_mutation_between_reads() -> TestResult {
-    let (source, context, work) = checkout_context(MountPublication::Manual)?;
-    source.create_file(
-        &MountPath::root().child(b"in-page".to_vec()),
-        FileMetadata::default(),
-        None,
-        &work,
-    )?;
-    let root = MountPath::root();
-    let mut directory = DirectoryHandle::new(
-        clone_path(&root, &work)?,
-        source.binding_epoch(),
-        context.cache_epochs(&work)?,
-    );
-    advance_directory_to_offset(&context, &mut directory, 3, &work)?;
-    source.create_file(
-        &MountPath::root().child(b"after-page".to_vec()),
-        FileMetadata::default(),
-        None,
-        &work,
-    )?;
-    assert_eq!(
-        directory
-            .keep_current(&context, &work)
-            .err()
-            .as_ref()
-            .map(callback_errno),
-        Some(libc::ESTALE)
-    );
-    assert_eq!(
-        ensure_directory_page(&context, &mut directory, &work)
-            .err()
-            .as_ref()
-            .map(callback_errno),
-        Some(libc::ESTALE)
-    );
-    Ok(())
-}
-
-#[test]
-fn a_listing_that_delivered_nothing_restarts_in_the_new_view() -> TestResult {
-    let (source, context, work) = checkout_context(MountPublication::Manual)?;
-    let root = MountPath::root();
-    let mut directory = DirectoryHandle::new(
-        clone_path(&root, &work)?,
-        source.binding_epoch(),
-        context.cache_epochs(&work)?,
-    );
-    ensure_directory_page(&context, &mut directory, &work)?;
-    source.create_file(
-        &MountPath::root().child(b"after-page".to_vec()),
-        FileMetadata::default(),
-        None,
-        &work,
-    )?;
-    // Only `.` and `..` were delivered: the listing starts again.
-    directory.keep_current(&context, &work)?;
-    ensure_directory_page(&context, &mut directory, &work)?;
+fn directory_mutations_restart_only_before_entries_were_delivered() -> TestResult {
+    for delivered in [false, true] {
+        let (source, context, work) = checkout_context(MountPublication::Manual)?;
+        let root = MountPath::root();
+        if delivered {
+            source.create_file(
+                &root.child(b"in-page".to_vec()),
+                FileMetadata::default(),
+                None,
+                &work,
+            )?;
+        }
+        let mut directory =
+            DirectoryRead::new(clone_path(&root, &work)?, context.cache_epochs(&work)?);
+        if delivered {
+            advance_directory_to_offset(&context, &mut directory, 3, &work)?;
+        } else {
+            ensure_directory_page(&context, &mut directory, &work)?;
+        }
+        source.create_file(
+            &root.child(b"after-page".to_vec()),
+            FileMetadata::default(),
+            None,
+            &work,
+        )?;
+        let refreshed = directory.keep_current(&context, &work);
+        let read = ensure_directory_page(&context, &mut directory, &work);
+        if delivered {
+            assert_eq!(
+                refreshed.err().as_ref().map(callback_errno),
+                Some(libc::ESTALE)
+            );
+            assert_eq!(read.err().as_ref().map(callback_errno), Some(libc::ESTALE));
+        } else {
+            refreshed?;
+            read?;
+        }
+    }
     Ok(())
 }
 
@@ -787,19 +766,10 @@ fn directory_continuation_requires_its_listing_and_binding_unchanged() -> TestRe
     let epochs = context
         .cache_epochs(&work)?
         .ok_or("checkout has no view stamp")?;
-    let root = DirectoryHandle::new(
-        DarwinOwned::empty(MountPath::root()),
-        Some(epochs.binding),
-        Some(epochs),
-    );
-    let directory = DirectoryHandle::new(
+    let root = DirectoryRead::new(DarwinOwned::empty(MountPath::root()), Some(epochs));
+    let directory = DirectoryRead::new(clone_path(&nested, &work)?, Some(epochs));
+    let rebound = DirectoryRead::new(
         clone_path(&nested, &work)?,
-        Some(epochs.binding),
-        Some(epochs),
-    );
-    let rebound = DirectoryHandle::new(
-        clone_path(&nested, &work)?,
-        Some(epochs.binding + 1),
         Some(CacheEpochs {
             binding: epochs.binding + 1,
             ..epochs
@@ -825,16 +795,12 @@ fn directory_continuation_requires_its_listing_and_binding_unchanged() -> TestRe
     )?;
     assert!(!directory.is_current(&context, &work)?);
 
-    let unrecorded = DirectoryHandle::new(
-        clone_path(&nested, &work)?,
-        source.binding_epoch(),
-        context.cache_epochs(&work)?,
-    );
+    let unrecorded = DirectoryRead::new(clone_path(&nested, &work)?, context.cache_epochs(&work)?);
     assert!(unrecorded.is_current(&context, &work)?);
     context.forget_view();
     assert!(!unrecorded.is_current(&context, &work)?);
 
-    let epochless = DirectoryHandle::new(DarwinOwned::empty(MountPath::root()), None, None);
+    let epochless = DirectoryRead::new(DarwinOwned::empty(MountPath::root()), None);
     assert!(!epochless.is_current(&context, &work)?);
     Ok(())
 }

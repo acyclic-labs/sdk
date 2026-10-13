@@ -380,7 +380,7 @@ where
             .await?;
         let admission = self
             .host
-            .observe_admission_with_native_work(source, work)
+            .observe_admission_with_native_work(source, work)?
             .await?;
         owner
             .verify(

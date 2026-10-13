@@ -158,7 +158,7 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
             if !owner.native_shared_work_matches(work) {
-                return Err(stock_boundary(io, crate::wire::ErrorCode::Unauthorized,
+                return Err(observation_boundary(io, crate::wire::ErrorCode::Unauthorized,
                     "workflow owner belongs to another native ledger"));
             }
         }
@@ -270,7 +270,7 @@ where
         if io.is_some() {
             #[cfg(not(target_arch = "wasm32"))]
             if io.and_then(PreparationIo::original_native_work).is_some() {
-                return self.owner.as_ref().map_or(Ok(()), |owner| owner.host.machines.require_native_work(&owner.workflow_admission().initial.machine));
+                return self.owner.as_ref().map_or(Ok(()), |owner| owner.require_native_workflow_validation());
             }
             return Err(observation_boundary(io, crate::wire::ErrorCode::Unsupported,
                 "finite workflow replay requires a native machine callback"));
@@ -787,10 +787,8 @@ where
                 io.preflight(step)?;
                 io.charge(step)?;
             }
-            if let Some(owner) = &self.owner
-                && owner.verify_created_input_with_io(&command.payload, io).await?
-            {
-                continue;
+            if let Some(owner) = &self.owner {
+                owner.validate_input_file(&command.payload, io)?;
             }
             if command.payload.volume() != &self.volume {
                 return Err(observation_boundary(io, crate::wire::ErrorCode::Unauthorized,
@@ -1033,7 +1031,7 @@ where
             let work = io.original_native_work().ok_or_else(|| observation_boundary(
                 Some(io), crate::wire::ErrorCode::Unsupported, "native replay requires original work",
             ))?;
-            if let Some(owner) = &self.owner { owner.host.machines.require_native_work(&owner.workflow_admission().initial.machine)?; }
+            if let Some(owner) = &self.owner { owner.require_native_workflow_validation()?; }
             return crate::NativeFutureBundle::new(work, || async move {
                 let io = PreparationIo::from_native_work(work)?;
                 if let Some(owner) = &self.owner { self.verify_observation_owner(owner, Some(&io)).await?; }
@@ -1056,7 +1054,7 @@ where
         &'a self, expected_revision: u64, idempotency_key: IdempotencyKey,
         record: WorkflowRecord, work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (WorkflowRecord, acyclic_fs::NativeAllocation)>> {
-        if let Some(owner) = &self.owner { owner.host.machines.require_native_work(&owner.workflow_admission().initial.machine)?; }
+        if let Some(owner) = &self.owner { owner.require_native_workflow_validation()?; }
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             let outcome = self.commit_with_io(expected_revision, idempotency_key, record, Some(&io)).await?;
