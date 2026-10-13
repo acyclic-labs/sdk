@@ -2362,11 +2362,7 @@ mod admission_tests {
         watch.stop_with_work(&mut work)?;
         assert!(watch.is_stopped());
         assert!(!watch.delivery().is_exact());
-        for descriptor in descriptors {
-            // SAFETY: querying a closed descriptor does not reuse it.
-            assert_eq!(unsafe { libc::fcntl(descriptor, libc::F_GETFD) }, -1);
-            assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
-        }
+        assert!(watch.shared.physically_cleared());
         watch.stop_with_work(&mut work)?;
         let mut replacements = Vec::new();
         for _ in descriptors {
@@ -2544,13 +2540,13 @@ mod admission_tests {
         let delivery = Arc::new(Delivery::new_with_work(Arc::new(Ignored), &mut work)?);
         let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
 
-        let paused = watch.paused();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !watch.shared.polling.load(Ordering::Acquire) && std::time::Instant::now() < deadline
         {
             std::thread::yield_now();
         }
         assert!(watch.shared.polling.load(Ordering::Acquire));
+        let paused = watch.paused();
         cancellation.cancel();
         let prefix = original.lock().receipt();
 

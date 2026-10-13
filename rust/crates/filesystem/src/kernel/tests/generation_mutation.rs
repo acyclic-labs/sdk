@@ -2715,14 +2715,8 @@ async fn original_generation_denies_identity_scratch_before_provider_calls()
     let store = MemoryObjectStore::default();
     let fixture = fixture(&store).await?;
     let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(
-        WorkBudget {
-            allocation_operations: 1,
-            ..WorkBudget::UNBOUNDED
-        },
-        &cancellation,
-    )
-    .map_err(|(error, _)| error)?;
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let source = [Mutation::File {
@@ -2730,6 +2724,12 @@ async fn original_generation_denies_identity_scratch_before_provider_calls()
         mutation: FileMutation::ValidateRegular,
     }];
     let (operations, input_guard) = original_identity_operations(&source, &mut accounting)?;
+    drop(accounting);
+    let limited = original.native_volume_work(WorkBudget {
+        allocation_operations: 0,
+        ..WorkBudget::UNBOUNDED
+    })?;
+    let mut accounting = KernelAccounting::native(&limited, &cancellation);
     let before = original.receipt();
     let error = (apply_generation_mutations_retaining_with_accounting(
         &NoGenerationCalls,
@@ -2751,6 +2751,8 @@ async fn original_generation_denies_identity_scratch_before_provider_calls()
     assert_eq!(original.receipt(), before);
     drop(error);
     drop(input_guard);
+    drop(accounting);
+    drop(limited);
     assert_eq!(original.live_allocation_bytes(), baseline);
     Ok(())
 }
