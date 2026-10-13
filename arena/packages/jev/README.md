@@ -188,7 +188,7 @@ hook contract: any error or timeout answers `allow` and exits 0. Denying is opt-
 
 ```
 jev gate --print-hook-snippet          # the settings.json entry to add
-echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf build"}}' | jev gate --backend http://gpu:8788
+echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf build"}}' | jev gate --backend http://localhost:8788
 ```
 
 With `--checkpoint` and an acyclic daemon, a "checkpoint first: yes" runs `acyclic checkpoint --no-wait`.
@@ -200,7 +200,7 @@ The shared Space is too slow and too quota-bound for a hook on every tool call; 
 ```
 JEV_SERVE_TOKEN=<secret> jev serve --backend local --host 0.0.0.0 --port 8788   # on a GPU box; clients send Authorization: Bearer <secret>
 # Off loopback the server refuses to start without a token. Bodies (1 MiB), questions (64), options (64) and state (200k chars) are capped.
-jev decide --backend http://gpu:8788 ...                   # anywhere else
+jev decide --backend http://localhost:8788 ...                   # anywhere else
 ```
 
 `HttpBackend` and the server are stdlib only. The server takes one batch at a time per GPU.

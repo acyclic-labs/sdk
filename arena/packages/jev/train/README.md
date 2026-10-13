@@ -16,7 +16,7 @@ Afterwards:
 
 ```
 SYSTEM_ONE_ADAPTER=/path/to/run SYSTEM_ONE_TEMPERATURE=1.9 jev serve --backend local
-jev eval cases.jsonl --backend http://gpu:8788 --log evals.jsonl     # your own labelled cases
+jev eval cases.jsonl --backend http://localhost:8788 --log evals.jsonl     # your own labelled cases
 ```
 
 This has not been run: the machine this was written on has no GPU.
