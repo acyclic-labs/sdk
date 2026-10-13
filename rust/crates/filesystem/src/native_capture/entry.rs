@@ -385,33 +385,28 @@ pub async fn capture_baseline<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
     let native = capture_work(budget, cancellation)?;
-    let work = &native;
-    let meter = &work.state;
-    let completed = { meter.lock().work };
     if checkout.has_pending_mutations() {
         return Err(OperationFailure::new(
             CaptureError::DirtyCheckout,
-            completed,
+            native.receipt(),
         ));
     }
     if options.maximum_paths == 0 || options.maximum_extent_spans == 0 {
         return Err(OperationFailure::new(
             CaptureError::InvalidOptions,
-            completed,
+            native.receipt(),
         ));
     }
     cancellation
         .check()
-        .map_err(|error| OperationFailure::new(error.into(), completed))?;
-    let (checked, completed) = {
-        let held = meter.lock();
-        (held.check(), held.work)
-    };
-    checked.map_err(|error| OperationFailure::new(capture_demand_error(error), completed))?;
+        .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
+    native
+        .with_original_leaf(|work| work.check())
+        .map_err(|error| OperationFailure::new(capture_demand_error(error), native.receipt()))?;
     let mut candidate = checkout
-        .private_candidate(work, cancellation)
-        .map_err(|error| OperationFailure::new(CaptureError::from(error), work.receipt()))?;
-    let scope = CaptureWorkScope::new(work)?;
+        .private_candidate(&native, cancellation)
+        .map_err(|error| OperationFailure::new(CaptureError::from(error), native.receipt()))?;
+    let scope = CaptureWorkScope::new(&native)?;
     let meter = &scope;
     let result = (async {
         let maximum =
@@ -461,7 +456,7 @@ pub async fn capture_baseline<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let receipt = capture_scope_result(scope, result)?;
     cancellation
         .commit_if_live(|| *checkout = candidate)
-        .map_err(|error| OperationFailure::new(error.into(), work.receipt()))?;
+        .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
     Ok(receipt)
 }
 

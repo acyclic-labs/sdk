@@ -289,7 +289,9 @@ pub(super) fn append_final_state(
             return Err(CaptureError::UnsupportedKind);
         }
     }
-    let observed = capture_stat(source_root, host_path, meter).map_err(capture_demand_error)?;
+    let observed = source_root
+        .stat(host_path, &mut meter.native.clone())
+        .map_err(capture_demand_error)?;
     ensure_same_host_node(&snapshot, &observed)?;
     meter.native.clone().check().map_err(capture_demand_error)
 }

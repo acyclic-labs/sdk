@@ -1,13 +1,5 @@
 use super::*;
 
-pub(super) fn capture_stat(
-    root: &HostRoot,
-    path: &CaptureHostPath,
-    meter: &CaptureWorkScope,
-) -> Result<HostStat, DemandError> {
-    root.stat(path, &mut meter.native.clone())
-}
-
 pub(super) fn collect_host_walk_measured(
     root: &HostRoot,
     profile: FilesystemProfile,
@@ -149,7 +141,9 @@ pub(super) fn collect_host_walk_measured(
             let host_child = namespace_to_host_path_measured(&child, meter)?;
             let stat = match entry.stat {
                 Some(stat) => stat,
-                None => capture_stat(root, &host_child, meter).map_err(capture_demand_error)?,
+                None => root
+                    .stat(&host_child, &mut meter.native.clone())
+                    .map_err(capture_demand_error)?,
             };
             let recurse = stat.is_dir() && !stat.file_type().is_symlink();
             let observed_path = clone_capture_path(&child, meter)?;
@@ -209,7 +203,7 @@ pub(super) fn observe_host_path(
     host_path: &CaptureHostPath,
     meter: &CaptureWorkScope,
 ) -> Result<Option<HostStat>, CaptureError> {
-    classify_host_observation(capture_stat(source_root, host_path, meter))
+    classify_host_observation(source_root.stat(host_path, &mut meter.native.clone()))
 }
 
 pub(super) fn classify_host_observation(

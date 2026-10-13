@@ -8,12 +8,12 @@ pub(super) struct HostSnapshot {
 }
 
 impl HostSnapshot {
-    pub(super) fn from_metadata(metadata: &HostStat) -> Result<Self, CaptureError> {
-        Ok(Self {
+    pub(super) fn from_metadata(metadata: &HostStat) -> Self {
+        Self {
             identity: metadata.identity(),
             length: metadata.len(),
             metadata: capture_metadata(metadata),
-        })
+        }
     }
 }
 
@@ -21,7 +21,7 @@ pub(super) fn ensure_same_host_node(
     expected: &HostSnapshot,
     observed: &HostStat,
 ) -> Result<(), CaptureError> {
-    ensure_same_host_snapshot(expected, &HostSnapshot::from_metadata(observed)?)
+    ensure_same_host_snapshot(expected, &HostSnapshot::from_metadata(observed))
 }
 
 pub(super) fn ensure_same_host_snapshot(
@@ -67,7 +67,9 @@ pub(super) fn ensure_current_host_node(
 ) -> Result<(), CaptureError> {
     cancellation.check()?;
     meter.native.clone().check().map_err(capture_demand_error)?;
-    let observed = capture_stat(source_root, host_path, meter).map_err(capture_demand_error)?;
+    let observed = source_root
+        .stat(host_path, &mut meter.native.clone())
+        .map_err(capture_demand_error)?;
     ensure_same_host_node(expected, &observed)?;
     cancellation.check()?;
     meter.native.clone().check().map_err(capture_demand_error)
