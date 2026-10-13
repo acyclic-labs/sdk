@@ -197,14 +197,17 @@ where
         task: TaskId,
         fence: LeaseFence,
     ) -> Result<Arc<FilesystemWorkflowJournal<P, A, O>>> {
-        let admission = self.host.observe_admission(task).await?;
+        let owner = self.host.journal_owner(task, &fence, None).await?;
+        let maximum = self
+            .maximum_payload_bytes
+            .min(owner.input_limits().file_bytes);
         FilesystemWorkflowJournal::for_task(
-            self.host.journal_owner(task, &(fence), None).await?,
+            owner,
             self.filesystem.clone(),
             &self.volume,
             &self.verifier,
             &self.signed,
-            self.maximum_payload_bytes.min(admission.limits.file_bytes),
+            maximum,
             None,
         )
     }
@@ -218,7 +221,6 @@ where
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Arc<FilesystemWorkflowJournal<P, A, O>>> {
         let io = super::super::PreparationIo::from_native_work(work)?;
-        let admission = self.admission_observed(task, Some(&io)).await?;
         let owner = self
             .host
             .journal_owner(
@@ -227,13 +229,16 @@ where
                 Some(&crate::executor::PreparationIo::from_native_work(work)?),
             )
             .await?;
+        let maximum = self
+            .maximum_payload_bytes
+            .min(owner.input_limits().file_bytes);
         FilesystemWorkflowJournal::for_task(
             owner,
             Arc::clone(&self.filesystem),
             &self.volume,
             &self.verifier,
             &self.signed,
-            self.maximum_payload_bytes.min(admission.limits.file_bytes),
+            maximum,
             Some(&io),
         )
     }
@@ -245,27 +250,17 @@ where
         task: TaskId,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Arc<FilesystemWorkflowJournal<P, A, O>>> {
-        let io = super::super::PreparationIo::from_native_work(work)?;
-        let admission = self.admission_observed(task, Some(&io)).await?;
-        self.readonly_workflow_journal_observed(task, &admission, work)
-            .await
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(super) async fn readonly_workflow_journal_observed(
-        &self,
-        task: TaskId,
-        admission: &TaskAdmissionRecord,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Arc<FilesystemWorkflowJournal<P, A, O>>> {
         let owner = self.host.readonly_journal_owner(task, work).await?;
+        let maximum = self
+            .maximum_payload_bytes
+            .min(owner.input_limits().file_bytes);
         FilesystemWorkflowJournal::for_task(
             owner,
             Arc::clone(&self.filesystem),
             &self.volume,
             &self.verifier,
             &self.signed,
-            self.maximum_payload_bytes.min(admission.limits.file_bytes),
+            maximum,
             Some(&super::super::PreparationIo::from_native_work(work)?),
         )
     }
