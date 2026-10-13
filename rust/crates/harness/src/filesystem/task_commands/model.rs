@@ -149,7 +149,7 @@ where
                 let context = match &command.selected_output_volume {
                     Some(volume) => {
                         context
-                            .with_output_volume_with_native_work(volume, work)
+                            .with_output_volume(volume)
                             .await?
                     }
                     None => context,

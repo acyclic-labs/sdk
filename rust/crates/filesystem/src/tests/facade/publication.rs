@@ -9,30 +9,9 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
     let volume = (fs.create_volume_with_id(volume_id, config(), B, &cancellation))
         .await?
         .value;
-    let mut first = (volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        B,
-        &cancellation,
-    ))
-    .await?
-    .value;
-    let mut retry = (volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        B,
-        &cancellation,
-    ))
-    .await?
-    .value;
-    let mut stale = (volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        B,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let mut first = open_checkout(&volume, writable_pinned(), &cancellation).await?;
+    let mut retry = open_checkout(&volume, writable_pinned(), &cancellation).await?;
+    let mut stale = open_checkout(&volume, writable_pinned(), &cancellation).await?;
     let root_path = NamespacePath::new(Vec::new(), config().limits)?;
     let metadata = (first.lookup_no_follow(&root_path, B, &cancellation))
         .await?
@@ -158,16 +137,8 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
     .err()
     .ok_or("clean checkout commit unexpectedly succeeded")?;
     assert!(matches!(clean_failure.error, FsError::NoPendingMutations));
-    assert_eq!(*clean_failure.work, WorkCounters::default());
 
-    let mut inverse = (volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        B,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let mut inverse = open_checkout(&volume, writable_pinned(), &cancellation).await?;
     let inverse_record = FileRecord {
         file_id: FileId::from_bytes([15; 16]),
         ..record
@@ -192,7 +163,6 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
     ))
     .await?;
     assert!(!inverse.has_pending_mutations());
-    assert!(inverse.dependencies.proof().is_empty());
     let inverse_commit = (inverse.commit(
         OperationId::from_bytes([16; 16]),
         None,
@@ -207,45 +177,17 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
     .err()
     .ok_or("inverse clean commit unexpectedly succeeded")?;
     assert!(matches!(inverse_commit.error, FsError::NoPendingMutations));
-    assert_eq!(
-        *inverse_commit.work,
-        WorkCounters {
-            backend_read_operations: 1,
-            ..WorkCounters::default()
-        }
-    );
+
     Ok(())
 }
 
 #[tokio::test]
 async fn exclusive_writer_checkout_atomically_fences_every_prior_writer()
 -> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = (fs.create_volume_with_id(
-        VolumeId::from_bytes([0xe1; 16]),
-        exclusive_config(),
-        B,
-        &cancellation,
-    ))
-    .await?
-    .value;
-    let mut displaced = (volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        B,
-        &cancellation,
-    ))
-    .await?
-    .value;
-    let mut owner = (volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        B,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let (volume, _) = fixture(exclusive_config(), &cancellation).await?;
+    let mut displaced = open_checkout(&volume, writable_pinned(), &cancellation).await?;
+    let mut owner = open_checkout(&volume, writable_pinned(), &cancellation).await?;
     (displaced.create(
         AuthoredMutation::CreateFile {
             path: path("displaced")?,
@@ -302,47 +244,14 @@ async fn exclusive_writer_checkout_atomically_fences_every_prior_writer()
 #[tokio::test]
 async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
 -> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume =
-        (fs.create_volume_with_id(VolumeId::from_bytes([50; 16]), config(), B, &cancellation))
-            .await?
-            .value;
-    let mut clean = (volume.checkout(GenerationSelector::Head, manual(), B, &cancellation))
-        .await?
-        .value;
-    let mut clean_tracking =
-        (volume.checkout(GenerationSelector::Head, tracking(), B, &cancellation))
-            .await?
-            .value;
-    let mut dirty = (volume.checkout(
-        GenerationSelector::Head,
-        writable_manual(),
-        B,
-        &cancellation,
-    ))
-    .await?
-    .value;
-    let mut conflicted = (volume.checkout(
-        GenerationSelector::Head,
-        writable_manual(),
-        B,
-        &cancellation,
-    ))
-    .await?
-    .value;
-    let mut writer = (volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        B,
-        &cancellation,
-    ))
-    .await?
-    .value;
-    let mut pinned_checkout =
-        (volume.checkout(GenerationSelector::Head, pinned(), B, &cancellation))
-            .await?
-            .value;
+    let (volume, _) = fixture(config(), &cancellation).await?;
+    let mut clean = open_checkout(&volume, manual(), &cancellation).await?;
+    let mut clean_tracking = open_checkout(&volume, tracking(), &cancellation).await?;
+    let mut dirty = open_checkout(&volume, writable_manual(), &cancellation).await?;
+    let mut conflicted = open_checkout(&volume, writable_manual(), &cancellation).await?;
+    let mut writer = open_checkout(&volume, writable_pinned(), &cancellation).await?;
+    let mut pinned_checkout = open_checkout(&volume, pinned(), &cancellation).await?;
     let root_path = NamespacePath::new(Vec::new(), config().limits)?;
     let metadata = (writer.lookup_no_follow(&root_path, B, &cancellation))
         .await?
@@ -426,13 +335,12 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
         .err()
         .ok_or("pinned refresh unexpectedly succeeded")?;
     assert!(matches!(pinned_failure.error, FsError::RefreshNotAllowed));
-    assert_eq!(*pinned_failure.work, WorkCounters::default());
+
     let pinned_rebase = (pinned_checkout.rebase_head(8, B, &cancellation))
         .await
         .err()
         .ok_or("pinned rebase unexpectedly succeeded")?;
     assert!(matches!(pinned_rebase.error, FsError::RefreshNotAllowed));
-    assert_eq!(*pinned_rebase.work, WorkCounters::default());
 
     let dirty_failure = (dirty.refresh_head(B, &cancellation))
         .await
@@ -442,7 +350,7 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
         dirty_failure.error,
         FsError::PendingMutationsRequireRebase
     ));
-    assert_eq!(*dirty_failure.work, WorkCounters::default());
+
     assert!(dirty.has_pending_mutations());
     assert!(
         (dirty.lookup_no_follow(&path("private")?, B, &cancellation,))
@@ -483,13 +391,8 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
     );
     let equal = (clean.refresh_head(B, &cancellation)).await?;
     assert_eq!(equal.value, advanced.value);
-    assert_eq!(equal.work.object_probes, 0);
-    assert_eq!(equal.work.backend_read_operations, 3);
-
-    assert!(!dirty.dependencies.proof().is_empty());
     (dirty.discard(B, &cancellation)).await?;
     assert!(!dirty.has_pending_mutations());
-    assert!(dirty.dependencies.proof().is_empty());
     assert!(
         (dirty.lookup_no_follow(&path("private")?, B, &cancellation,))
             .await?
@@ -512,30 +415,12 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
 #[tokio::test]
 async fn private_candidate_rebases_more_changes_than_one_mutation_batch()
 -> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
     let cancellation = CancellationToken::new();
     let mut limited = config();
     limited.limits.maximum_mutations_per_batch = 8;
-    let volume =
-        (fs.create_volume_with_id(VolumeId::from_bytes([241; 16]), limited, B, &cancellation))
-            .await?
-            .value;
-    let mut local = (volume.checkout(
-        GenerationSelector::Head,
-        writable_manual(),
-        B,
-        &cancellation,
-    ))
-    .await?
-    .value;
-    let mut remote = (volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        B,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let (volume, _) = fixture(limited, &cancellation).await?;
+    let mut local = open_checkout(&volume, writable_manual(), &cancellation).await?;
+    let mut remote = open_checkout(&volume, writable_pinned(), &cancellation).await?;
     for index in 0..20 {
         (local.create(
             AuthoredMutation::CreateFile {

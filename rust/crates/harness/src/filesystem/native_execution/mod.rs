@@ -1,5 +1,4 @@
-//! Optional native command composition over existing task, effect and workspace owners.
-
+//! Native commands over the existing task and SDK workspace owners.
 use super::{
     FilesystemHost, NativeViewManifest, NativeViewOptions, NativeVolumeMapping,
     NativeVolumeNamespace, PreparationIo,
@@ -20,27 +19,17 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-
-mod lazy;
-pub use lazy::NativeExistingLazyVolume;
 mod allocation;
-mod preparation;
-pub use allocation::NativePreparationRoot;
 mod completion;
-pub(crate) use completion::NativePreparationCompletionTemplate;
-mod preparation_record;
-pub use preparation_record::NativeRecordedPreparation;
-mod inspection;
 pub(super) mod journal;
-pub use inspection::observe_preparation;
+mod preparation;
+mod preparation_record;
 mod publication;
+pub use allocation::NativePreparationRoot;
+pub(crate) use completion::NativePreparationCompletionTemplate;
 pub use publication::NativeViewPublicationError;
-mod root_output;
-pub use root_output::NativeRootOutputSource;
-mod working_files;
-pub use working_files::NativeTaskWorkingView;
 
-/// Borrowed selection of one exact generation and publication permit.
+/// Selection of one exact generation and publication permit.
 pub struct BorrowedNativeVolumeBinding<'a, A, O> {
     /// Filesystem provider.
     pub host: &'a FilesystemHost<A, O>,
@@ -50,7 +39,7 @@ pub struct BorrowedNativeVolumeBinding<'a, A, O> {
     pub generation: &'a GenerationRef,
     /// Declared namespace.
     pub namespace: &'a NativeVolumeNamespace,
-    /// Relative path below the namespace root.
+    /// Relative directory below the namespace root.
     pub path: &'a str,
     /// Whether edits may publish.
     pub writable: bool,
@@ -62,20 +51,18 @@ pub struct BorrowedNativeVolumeBinding<'a, A, O> {
     pub publication: PublicationPermit,
 }
 
-enum PreparedVolume<A, O> {
-    Materialized {
-        view: NativeWorkingSet<A, O>,
-        publication: PublicationPermit,
-        work: NativeMaterializationWork,
-        callback: Arc<dyn crate::runtime::NativeVolumePublicationGuard>,
-    },
-    Lazy(Arc<NativeExistingLazyVolume>),
+struct PreparedVolume<A, O> {
+    view: NativeWorkingSet<A, O>,
+    publication: PublicationPermit,
+    work: NativeMaterializationWork,
+    callback: Arc<dyn acyclic_fs::native_mount::NativeMountCallbackGuard>,
 }
 
 /// SDK namespace and its protected original preparation.
 pub struct NativeVolumeView<A, O> {
     volumes: Vec<PreparedVolume<A, O>>,
-    preparation: NativeRecordedPreparation,
+    preparation: preparation_record::Intent,
+    custody: NativeAllocation,
 }
 
 impl<A, O> NativeVolumeView<A, O>
@@ -85,50 +72,29 @@ where
 {
     /// Original task work ledger.
     pub fn work(&self) -> &NativeMaterializationWork {
-        self.preparation.custody.work()
+        self.custody.work()
     }
 
-    /// Exact request/approval manifest.
-    #[must_use]
+    /// Exact request and approval manifest.
     pub const fn manifest(&self) -> &NativeViewManifest {
         &self.preparation.manifest
     }
 
-    /// Original protected journal and selection.
-    pub fn preparation(&self) -> &NativeRecordedPreparation {
-        &self.preparation
-    }
-
-    /// Rechecks the original physical views and immutable source selections.
+    /// Rechecks the physical views and immutable source selections.
     pub async fn validate_for_dispatch(&self) -> Result<()> {
-        for (volume, mapping) in self.volumes.iter().zip(&self.manifest().volumes) {
-            match volume {
-                PreparedVolume::Materialized { view, work, .. } => {
-                    view.validate_for_presentation(work)
-                        .await?;
-                    view.verify_unchanged(work)
-                        .await?;
-                }
-                PreparedVolume::Lazy(lazy) => {
-                    let actual = lazy.backend.snapshot(lazy.custody.work())?.await?;
-                    if mapping.namespace != (NativeVolumeNamespace::LazyMount { snapshot: actual })
-                    {
-                        return Err(
-                            acyclic_fs::NativeTreeMaterializationError::InvalidLayout.into()
-                        );
-                    }
-                }
-            }
+        for volume in &self.volumes {
+            volume.view.validate_for_presentation(&volume.work).await?;
+            volume.view.verify_unchanged(&volume.work).await?;
         }
         Ok(())
     }
 
-    /// Publishes authorized destinations, retaining every SDK result through failure.
+    /// Publishes authorized destinations, retaining SDK acknowledgements through failure.
     pub async fn publish<P: StreamProvider>(
         &self,
         owner: &TaskJournalOwner<P>,
     ) -> Result<(
-        Vec<super::native_process::NativeProcessPublishedVolume>,
+        Vec<(usize, acyclic_fs::NativePublicationSnapshot)>,
         NativeAllocation,
     )> {
         use acyclic_fs::native_mount::NativeMountPublicationFailure;
@@ -150,58 +116,44 @@ where
             acyclic_fs::WorkCounters::UNCHARGED,
         )?;
         let result = async {
-            // Validate all immutable sources before any destination publishes.
-            let volumes = self
-                .volumes
-                .iter()
-                .zip(&self.manifest().volumes)
-                .enumerate();
-            for (index, (volume, mapping)) in volumes
-                .clone()
-                .filter(|(_, (_, mapping))| !mapping.writable)
-                .chain(volumes.filter(|(_, (_, mapping))| mapping.writable))
-            {
-                if mapping.writable {
-                    owner
-                        .verify(false, &mut Some(&mut io.history_io()))
-                        .await
-                        .map_err(failure)?;
+            // All immutable sources pass before any destination publishes.
+            for writable in [false, true] {
+                for (index, (volume, _)) in self
+                    .volumes
+                    .iter()
+                    .zip(&self.manifest().volumes)
+                    .enumerate()
+                    .filter(|(_, (_, mapping))| mapping.writable == writable)
+                {
+                    let snapshot = if writable {
+                        owner
+                            .verify(false, &mut Some(&mut io.history_io()))
+                            .await
+                            .map_err(failure)?;
+                        let callback = Arc::clone(&volume.callback);
+                        volume
+                                .view
+                                .sync_with_permit(
+                                    volume.publication,
+                                    &volume.work,
+                                    move |actual: &NativeMaterializationWork| {
+                                        let actual = actual.clone();
+                                        let callback = Arc::clone(&callback);
+                                        async move {
+                                            callback.check(&actual)?.await.map_err(Error::from)
+                                        }
+                                    },
+                                )
+                                .await?
+                    } else {
+                        volume
+                            .view
+                            .verify_unchanged(&volume.work)
+                            .await
+                            .map_err(|cause| failure(cause.into()))?
+                    };
+                    published.push((index, snapshot));
                 }
-                let snapshot = match volume {
-                    PreparedVolume::Materialized { view, work, .. } if !mapping.writable => view
-                        .verify_unchanged(work)
-                        .await
-                        .map_err(|cause| failure(cause.into()))?,
-                    PreparedVolume::Materialized {
-                        view,
-                        work,
-                        callback,
-                        publication,
-                        ..
-                    } => {
-                        let callback = Arc::clone(callback);
-                        view.sync_with_permit(
-                            *publication,
-                            work,
-                            move |actual: &NativeMaterializationWork| {
-                                let actual = actual.clone();
-                                let callback = Arc::clone(&callback);
-                                async move { callback.check(&actual)?.await }
-                            },
-                        )
-                        .await?
-                    }
-                    PreparedVolume::Lazy(lazy) => {
-                        let snapshot = if mapping.writable {
-                            lazy.backend.publish(lazy.publication, lazy.custody.work())
-                        } else {
-                            lazy.backend.qualify(lazy.custody.work())
-                        };
-                        snapshot.map_err(failure)?.await.map_err(failure)??
-                    }
-                };
-                published
-                    .push(super::native_process::NativeProcessPublishedVolume { index, snapshot });
             }
             Ok::<_, NativeMountPublicationFailure<Error>>(())
         }
@@ -214,8 +166,7 @@ where
                 failure: Box::new(NativeViewPublicationError {
                     cause,
                     published,
-                    diagnostic: None,
-                    custody: Some(custody),
+                    custody,
                 }),
                 custody: Some(failure_slot),
             }),

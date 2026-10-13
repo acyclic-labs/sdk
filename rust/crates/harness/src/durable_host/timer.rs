@@ -1,115 +1,156 @@
-//! Main durable task operations.
+//! Durable timer publication and bounded replay on the existing IO context.
 use super::*;
 
+#[cfg(feature = "filesystem")]
+impl crate::filesystem::UploadRecord for TimerEvent {
+    fn logical_owned_bytes(&self) -> Result<u64> {
+        Ok(0)
+    }
+}
+
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
-    /// Durably retains one timer identity without holding a waiting future.
-    /// The existing owner-authenticated workflow wake supplies later admission.
+    /// Retains the exact timer identity under the current task fence.
     #[cfg(feature = "filesystem")]
     pub async fn poll_timer(
         self: &Arc<Self>,
         task: TaskId,
-        fence: crate::scheduler::LeaseFence,
+        fence: &crate::scheduler::LeaseFence,
         operation: OperationId,
         deadline_unix_ms: u64,
+        io: Option<&crate::executor::PreparationIo>,
     ) -> Result<bool> {
         if deadline_unix_ms == 0 {
             return Err(Error::Invalid("timer deadline is invalid".into()));
         }
-        let owner = self.journal_owner(task, &(fence.clone()), None).await?;
-        if !owner.admission.grants.contains("timer:wait") {
+        let owner = self.journal_owner(task, fence, io).await?;
+        if !owner.admission.grants.contains(capability::TIMER_WAIT) {
             return Err(Error::Unauthorized("task scope lacks timer:wait".into()));
         }
-        let path = acyclic_stream::StreamPath::new(format!("harness/v2/timers/{task}"))?;
-        let key = Self::event_key("timers", task, operation)?;
-        let bytes = OwnedBytes::from(crate::contract::canonical_json_bytes(&TimerEvent {
+        let mut history = io.map(|io| io.history_io());
+        let mut work = history
+            .as_mut()
+            .map(|io| io as &mut dyn crate::store::HistoryIo);
+        let text = crate::executor::preparation_format(
+            format_args!("harness/v2/timers/{task}"),
+            &mut work,
+        )?;
+        let mut quota =
+            crate::wire_codec::CodecQuota::from_retained(&mut work, text.capacity() as u64);
+        let path = acyclic_stream::StreamPath::new(text)?;
+        let (key, retained) = Self::event_key("timers", task, operation, quota.work())?;
+        quota.adopt(retained)?;
+        let event = TimerEvent {
             task_id: task,
             operation_id: operation,
             deadline_unix_ms,
-        })?);
-        // Only the selected timer is retained. Paging bounds resident records;
-        // no session-wide history ceiling is imposed.
+        };
+        let bytes = canonical_payload(&event, acyclic_stream::MAX_RECORD_BYTES as u64, io)?;
         loop {
-            self.verify_owner(task, &fence, false).await?;
-            let (tail, found) = self.timer_state(task, operation, deadline_unix_ms).await?;
-            if found {
-                self.verify_owner(task, &fence, false).await?;
-                return Ok(self.clock.now_unix_millis() >= deadline_unix_ms);
-            }
-            if owner
-                .append(
-                    path.clone(),
-                    tail,
-                    &key,
-                    bytes.clone(),
-                    crate::distributed::JournalWrite::Fresh,
-                    &mut None,
-                )
-                .await?
+            self.verify_owner(task, fence, false, quota.work()).await?;
+            let (tail, found) = self
+                .timer_state(task, operation, deadline_unix_ms, quota.work())
+                .await?;
+            if found
+                || owner
+                    .append(
+                        path.clone(),
+                        tail,
+                        &key,
+                        bytes.clone(),
+                        crate::distributed::JournalWrite::Fresh,
+                        quota.work(),
+                    )
+                    .await?
             {
-                self.verify_owner(task, &fence, false).await?;
-                return Ok(self.clock.now_unix_millis() >= deadline_unix_ms);
+                self.verify_owner(task, fence, false, quota.work()).await?;
+                return Ok(self.now_unix_millis() >= deadline_unix_ms);
             }
         }
     }
 
-    /// Readiness requires the exact timer already retained by owned dispatch.
+    /// Requires the exact retained timer before reporting readiness.
     #[cfg(feature = "filesystem")]
     pub(crate) async fn timer_ready(
         &self,
         task: TaskId,
         operation: OperationId,
         deadline: u64,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<bool> {
-        let (_, retained) = self.timer_state(task, operation, deadline).await?;
-        Ok(retained && self.clock.now_unix_millis() >= deadline)
+        let (_, retained) = self.timer_state(task, operation, deadline, work).await?;
+        Ok(retained && self.now_unix_millis() >= deadline)
     }
 
-    pub(super) fn timer_stream(&self, task_id: TaskId) -> Result<acyclic_stream::Stream<P>> {
-        acyclic_stream::Stream::new(self.stream.clone(), format!("harness/v2/timers/{task_id}"))
-            .map_err(|error| Error::Invalid(error.to_string()))
+    pub(super) fn timer_stream(&self, task: TaskId) -> Result<acyclic_stream::Stream<P>> {
+        acyclic_stream::Stream::new(self.stream.clone(), format!("harness/v2/timers/{task}"))
+            .map_err(Into::into)
     }
 
     pub(super) async fn timer_state(
         &self,
         task: TaskId,
         operation: OperationId,
-        deadline_unix_ms: u64,
+        deadline: u64,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<(u64, bool)> {
-        let stream = self.timer_stream(task)?;
-        let tail = match stream.bounds().await {
-            Ok(bounds) => bounds.tail,
-            Err(StreamError::NotFound) => 0,
-            Err(error) => return Err(error.into()),
-        };
+        let io = operation_io(work)?;
+        let text =
+            crate::executor::preparation_format(format_args!("harness/v2/timers/{task}"), work)?;
+        let mut quota = crate::wire_codec::CodecQuota::from_retained(work, text.capacity() as u64);
+        let path = acyclic_stream::StreamPath::new(text)?;
+        let tail =
+            match crate::store::operations::bounds_with_work(&self.stream, &path, quota.work())
+                .await?
+            {
+                Ok(bounds) => bounds.tail,
+                Err(StreamError::NotFound) => 0,
+                Err(error) => {
+                    return Err(crate::store::operations::stream_error_with_work(
+                        error,
+                        quota.work(),
+                    ));
+                }
+            };
         let mut after = 0;
         let mut found = false;
         while after < tail {
-            let page = stream
-                .read(after, (tail - after).min(64) as u32)
-                .await?
-                .try_collect::<Vec<_>>()
-                .await?;
-            if page.is_empty() || page.len() > 64 {
-                return Err(Error::Storage("invalid timer replay page".into()));
-            }
-            for record in page {
-                if record.sequence != after || after >= tail {
+            let end = after + (tail - after).min(64);
+            let mut page = crate::store::operations::read_records(
+                &self.stream,
+                &path,
+                after,
+                (end - after) as u32,
+                quota.work(),
+            )
+            .await?
+            .map_err(|error| {
+                crate::store::operations::stream_error_with_work(error, quota.work())
+            })?;
+            while let Some(record) = page.next(quota.work()).await? {
+                if record.sequence != after || after >= end {
                     return Err(Error::Storage("timer replay sequence differs".into()));
                 }
-                let event: TimerEvent = crate::contract::json_from_slice(&record.value)
-                    .map_err(|error| Error::Storage(error.to_string()))?;
+                let event: TimerEvent = match &io {
+                    #[cfg(feature = "filesystem")]
+                    Some(io) => io.decode_json(&record.value)?,
+                    _ => crate::contract::json_from_slice(&record.value)
+                        .map_err(|error| Error::Storage(error.to_string()))?,
+                };
                 if event.task_id != task || event.deadline_unix_ms == 0 {
                     return Err(Error::Conflict(
                         "timer history belongs to another task".into(),
                     ));
                 }
                 if event.operation_id == operation {
-                    if found || event.deadline_unix_ms != deadline_unix_ms {
+                    if found || event.deadline_unix_ms != deadline {
                         return Err(Error::Conflict("timer identity reused".into()));
                     }
                     found = true;
                 }
                 after += 1;
+            }
+            if after != end {
+                return Err(Error::Storage("timer replay page is incomplete".into()));
             }
         }
         Ok((tail, found))

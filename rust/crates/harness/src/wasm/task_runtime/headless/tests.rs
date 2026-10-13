@@ -79,7 +79,7 @@ async fn public_browser_selected_inspection_and_custom_loop_use_real_owner_and_p
         Some(Function::new_no_args("return {context_tokens:131072,output_tokens:8192};")),
         Some(Function::new_with_args("bytes,request_digest", "return {request_digest,fixed_tokens:bytes.byteLength,message_tokens:JSON.parse(new TextDecoder().decode(bytes)).messages.map(()=>0)};")),
         to_js(&crate::context::CompactionPolicy::Disabled)?)?;
-    let lease = match runtime.runtime.task_host().pull_work(&Worker { id:"headless".into(), available:Default::default(), labels:Default::default() }).await.map_err(js_error)? {
+    let lease = match runtime.runtime.task_host().pull_work(&Worker { id:"headless".into(), available:Default::default(), labels:Default::default() }, None, &mut None).await.map_err(js_error)? {
         WorkPull::Claimed(lease) => lease,
         _ => return Err(JsValue::from_str("headless lease unavailable")),
     };

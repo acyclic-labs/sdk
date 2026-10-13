@@ -129,8 +129,7 @@ impl TaskContext {
 }
 
 impl TaskContext {
-    /// Selects an existing authenticated output writer without widening scope.
-    pub async fn with_output_volume_with_native_work(
+    pub(super) async fn project_output_volume(
         self: &Arc<Self>,
         volume: &crate::conversation::VolumeRef,
         work: &NativeMaterializationWork,

@@ -361,7 +361,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
                 }),
                 ..Default::default()
             },
-            bytes::Bytes::from_static(b"corrupt replacement"),
+            acyclic_stream::OwnedBytes::from_static(b"corrupt replacement"),
         )
         .await
         .map_err(storage)?;

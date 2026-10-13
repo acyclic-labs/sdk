@@ -282,12 +282,12 @@ async fn check_context_dispatch(task: TaskContext, tool: &Tool) -> Result<()> {
         "call":"provider-call", "serverGrant":true, "durableTask":null});
     let result = tool
         .executor
-        .execute_with_context(context.clone(), invocation.clone())
+        .execute(invocation.clone(), Some(context.clone()))
         .await?;
     assert_eq!(result.value["_meta"], expected);
     let recovered = tool
         .executor
-        .reconcile_with_context(context.clone(), invocation.clone())
+        .reconcile(invocation.clone(), Some(context.clone()))
         .await?
         .ok_or_else(|| Error::NotFound("context result".into()))?;
     assert_eq!(recovered.value["_meta"], expected);
@@ -303,13 +303,13 @@ async fn check_context_dispatch(task: TaskContext, tool: &Tool) -> Result<()> {
     ] {
         assert!(matches!(
             tool.executor
-                .execute_with_context(wrong.clone(), invocation.clone())
+                .execute(invocation.clone(), Some(wrong.clone()))
                 .await,
             Err(Error::Unauthorized(_))
         ));
         assert!(matches!(
             tool.executor
-                .reconcile_with_context(wrong, invocation.clone())
+                .reconcile(invocation.clone(), Some(wrong))
                 .await,
             Err(Error::Unauthorized(_))
         ));
@@ -317,7 +317,7 @@ async fn check_context_dispatch(task: TaskContext, tool: &Tool) -> Result<()> {
     let mut invalid = invocation;
     invalid.arguments = json!({"value":"wrong"});
     assert!(matches!(
-        tool.executor.execute_with_context(context, invalid).await,
+        tool.executor.execute(invalid, Some(context)).await,
         Err(Error::Invalid(_))
     ));
     Ok(())
@@ -385,10 +385,15 @@ async fn search_grants_no_authority_and_reconciliation_never_dispatches() -> Res
     assert!(tool.executor.authorize(Some(&scope), &invocation).is_err());
     let scope = RuntimeScope::new(Capabilities::new(["mcp:call:fixture"]), Limits::default())?;
     tool.executor.authorize(Some(&scope), &invocation)?;
-    assert!(tool.executor.reconcile(invocation.clone()).await?.is_none());
+    assert!(
+        tool.executor
+            .reconcile(invocation.clone(), None)
+            .await?
+            .is_none()
+    );
     assert_eq!(transport.0.load(Ordering::SeqCst), 0);
     assert_eq!(
-        tool.executor.execute(invocation).await?.value["structuredContent"]["value"],
+        tool.executor.execute(invocation, None).await?.value["structuredContent"]["value"],
         1
     );
     assert_eq!(transport.0.load(Ordering::SeqCst), 1);
@@ -474,7 +479,7 @@ async fn reload_during_remote_call_retains_admitted_transport() -> Result<()> {
     };
     let scope = RuntimeScope::new(Capabilities::new(["mcp:call:fixture"]), Limits::default())?;
     admitted.executor.authorize(Some(&scope), &invocation)?;
-    let mut call = admitted.executor.execute(invocation.clone());
+    let mut call = admitted.executor.execute(invocation.clone(), None);
     assert!(futures::poll!(&mut call).is_pending());
     catalog("2", &["a"]).install(
         &mut registry,
@@ -493,7 +498,7 @@ async fn reload_during_remote_call_retains_admitted_transport() -> Result<()> {
         .ok_or_else(|| Error::NotFound("fixture".into()))?;
     assert_eq!(next.definition.revision, "2");
     assert_eq!(
-        next.executor.execute(invocation).await?.value["structuredContent"]["value"],
+        next.executor.execute(invocation, None).await?.value["structuredContent"]["value"],
         1
     );
     Ok(())

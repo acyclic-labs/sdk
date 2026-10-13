@@ -19,7 +19,12 @@ impl TextTool {
         invocation: &ToolInvocation,
     ) -> Result<FileRef> {
         ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), &mut None)?;
-        crate::executor::json::json_byte_length(&invocation.arguments, scope.limits().file_bytes, &mut None).map(|_| ())?;
+        crate::executor::json::json_byte_length(
+            &invocation.arguments,
+            scope.limits().file_bytes,
+            &mut None,
+        )
+        .map(|_| ())?;
         let result_bound = self.maximum_result_bytes.min(scope.limits().file_bytes);
         let file = match self.kind {
             TextKind::Read(options) => {
@@ -234,38 +239,33 @@ impl ToolExecutor for TextTool {
         self.preflight_with_context(context, invocation).map(|_| ())
     }
 
-    fn execute<'a>(&'a self, _: ToolInvocation) -> BoxProviderFuture<'a, Result<ToolResult>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "text tool requires owner-bound task context".into(),
-            ))
-        })
-    }
-
-    fn execute_with_context<'a>(
+    fn execute<'a>(
         &'a self,
-        context: ToolContext,
         invocation: ToolInvocation,
+        context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
+        let Some(context) = context else {
+            return Box::pin(async {
+                Err(Error::Unsupported(
+                    "text tool requires owner-bound task context".into(),
+                ))
+            });
+        };
         Box::pin(self.run(context, invocation))
     }
 
     fn reconcile<'a>(
         &'a self,
-        _: ToolInvocation,
-    ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "text reconciliation requires owner-bound task context".into(),
-            ))
-        })
-    }
-
-    fn reconcile_with_context<'a>(
-        &'a self,
-        context: ToolContext,
         invocation: ToolInvocation,
+        context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
+        let Some(context) = context else {
+            return Box::pin(async {
+                Err(Error::Unsupported(
+                    "text reconciliation requires owner-bound task context".into(),
+                ))
+            });
+        };
         // Immutable reads have no publication effect; retry uses the same pinned source.
         Box::pin(async move { self.run(context, invocation).await.map(Some) })
     }
@@ -288,7 +288,10 @@ impl TextTool {
             TextKind::Read(options) => {
                 let input = super::decode::<ReadInput>(&invocation.arguments, Some(work))?;
                 let read = context
-                    .read_file(&input.0.file, Some(&crate::executor::PreparationIo::from_native_work(work)?))
+                    .read_file(
+                        &input.0.file,
+                        Some(&crate::executor::PreparationIo::from_native_work(work)?),
+                    )
                     .await?;
                 let source = std::str::from_utf8(read.as_ref())
                     .map_err(|_| native::invalid("text tool requires UTF-8 content"))?;
@@ -310,7 +313,10 @@ impl TextTool {
             TextKind::Search(options) => {
                 let input = super::decode::<SearchInput>(&invocation.arguments, Some(work))?;
                 let read = context
-                    .read_file(&input.0.file, Some(&crate::executor::PreparationIo::from_native_work(work)?))
+                    .read_file(
+                        &input.0.file,
+                        Some(&crate::executor::PreparationIo::from_native_work(work)?),
+                    )
                     .await?;
                 let source = std::str::from_utf8(read.as_ref())
                     .map_err(|_| native::invalid("text tool requires UTF-8 content"))?;

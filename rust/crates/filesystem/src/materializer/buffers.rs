@@ -1,17 +1,12 @@
 use super::*;
 
-pub(super) fn push_buffer<T>(
+pub(super) fn reserve_buffer<T>(
     values: &mut Vec<T>,
-    value: T,
+    capacity: usize,
     allocation: &mut NativeAllocation,
 ) -> Result<(), NativeTreeMaterializationError> {
-    if values.len() == values.capacity() {
+    if capacity > values.capacity() {
         let work = allocation.work().clone();
-        let capacity = values
-            .capacity()
-            .checked_mul(2)
-            .and_then(|size| size.checked_add(1))
-            .ok_or(crate::WorkError::Overflow)?;
         let prior = owned_size(values.capacity(), std::mem::size_of::<T>())?;
         let copied =
             NativeResourceCredit::Copy.delta(owned_size(values.len(), std::mem::size_of::<T>())?);
@@ -22,6 +17,22 @@ pub(super) fn push_buffer<T>(
         allocation.release(prior)?;
         allocation.absorb(&mut storage)?;
         copying.record_completed(copied)?;
+    }
+    Ok(())
+}
+
+pub(super) fn push_buffer<T>(
+    values: &mut Vec<T>,
+    value: T,
+    allocation: &mut NativeAllocation,
+) -> Result<(), NativeTreeMaterializationError> {
+    if values.len() == values.capacity() {
+        let capacity = values
+            .capacity()
+            .checked_mul(2)
+            .and_then(|size| size.checked_add(1))
+            .ok_or(crate::WorkError::Overflow)?;
+        reserve_buffer(values, capacity, allocation)?;
     }
     values.push(value);
     Ok(())
@@ -252,16 +263,7 @@ impl ImageWriter {
             .len()
             .checked_add(copied)
             .ok_or(crate::WorkError::Overflow)?;
-        if length > self.bytes.capacity() {
-            self.allocation
-                .grow((length - self.bytes.capacity()) as u64)?;
-            let attempted = self.bytes.try_reserve_exact(length - self.bytes.len());
-            let reconciled = self
-                .allocation
-                .reconcile_capacity(self.bytes.capacity() as u64);
-            attempted.map_err(NativeTreeMaterializationError::AllocationFailed)?;
-            reconciled?;
-        }
+        reserve_buffer(&mut self.bytes, length, &mut self.allocation)?;
         self.bytes.extend_from_slice(&bytes[..copied]);
         reserved.record_completed(delta)?;
         if copied != bytes.len() {

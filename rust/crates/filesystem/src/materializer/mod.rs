@@ -57,37 +57,11 @@ mod runtime_meter;
     feature = "native-mount",
     not(target_arch = "wasm32")
 ))]
-mod preflight;
-#[cfg(all(
-    feature = "local",
-    feature = "native-mount",
-    not(target_arch = "wasm32")
-))]
-mod publication;
-#[cfg(all(
-    feature = "local",
-    feature = "native-mount",
-    not(target_arch = "wasm32")
-))]
-use preflight::*;
-#[cfg(all(
-    feature = "local",
-    feature = "native-mount",
-    not(target_arch = "wasm32")
-))]
-mod planning;
-#[cfg(all(
-    feature = "local",
-    feature = "native-mount",
-    not(target_arch = "wasm32")
-))]
-use planning::*;
-#[cfg(all(
-    feature = "local",
-    feature = "native-mount",
-    not(target_arch = "wasm32")
-))]
-pub use publication::*;
+native_modules! {
+    preflight;
+    pub publication;
+    planning;
+}
 
 #[cfg(test)]
 mod tests;

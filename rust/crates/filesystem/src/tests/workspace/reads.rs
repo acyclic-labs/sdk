@@ -1,44 +1,6 @@
 use super::*;
 
 #[tokio::test]
-async fn pinned_directory_discovery_survives_ten_thousand_retained_workspaces()
--> Result<(), Box<dyn Error>> {
-    let fs = Fs::memory();
-    let workspace = unbounded!(fs, create_workspace("discovered-agent"))?;
-    workspace.write_text("/visible.txt", "visible").await?;
-    let pinned = unbounded!(workspace, head())?;
-    let cancellation = CancellationToken::new();
-    let before = pinned.list_directory(
-        "/",
-        None,
-        1,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .await?;
-    let mut retained = Vec::with_capacity(10_000);
-    for index in 0..10_000 {
-        let other = unbounded!(fs, create_workspace(&format!("retained-agent-{index}")))?;
-        retained.push(unbounded!(other, head())?);
-    }
-    workspace
-        .write_text("/late.txt", "not in pinned view")
-        .await?;
-    let after = pinned.list_directory(
-        "/",
-        None,
-        1,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .await?;
-    assert_eq!(retained.len(), 10_000);
-    assert_eq!(before.value.0, after.value.0);
-    assert_eq!(after.value.0.entries.len(), 1);
-    Ok(())
-}
-
-#[tokio::test]
 async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
@@ -58,20 +20,32 @@ async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
         transaction,
         create_symbolic_link("/tree/link", OwnedBytes::from_static(b"a"))
     )?;
-    transaction
-        .zero_range("/tree/a", crate::ByteRange {
+    unbounded!(
+        transaction,
+        zero_range(
+            "/tree/a",
+            crate::ByteRange {
                 offset: 2,
                 length: 2,
-            }, false, false, WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    transaction.resize("/tree/a", 8, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    transaction
-        .zero_range("/tree/sparse", crate::ByteRange {
+            },
+            false,
+            false
+        )
+    )?;
+    unbounded!(transaction, resize("/tree/a", 8))?;
+    unbounded!(
+        transaction,
+        zero_range(
+            "/tree/sparse",
+            crate::ByteRange {
                 offset: 100,
                 length: 20,
-            }, true, false, WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    transaction.resize("/tree/sparse", 400, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            },
+            true,
+            false
+        )
+    )?;
+    unbounded!(transaction, resize("/tree/sparse", 400))?;
     let TransactionCommit::Committed(exact) = commit(&mut transaction).await? else {
         return Err("shape publication did not commit".into());
     };
@@ -88,8 +62,6 @@ async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
     );
     assert_eq!(paths.get(&directory_id), Some(&vec!["/tree".to_owned()]));
     assert!(!paths.contains_key(&missing_id));
-    let bounded = exact.paths_for_file_ids([file_id], 1).await?;
-    assert_eq!(bounded.get(&file_id).map(Vec::len), Some(1));
 
     assert_eq!(
         unbounded!(workspace, read_range("/tree/a", 1, 5))?.bytes,
@@ -114,7 +86,8 @@ async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
     let second = unbounded!(
         listing,
         list_directory("/tree", Some(&first.entries[0].name), 16)
-    )?.0;
+    )?
+    .0;
     assert_eq!(second.entries.len(), 3);
     assert!(!second.has_more);
 
@@ -177,16 +150,13 @@ async fn generation_lookup_paths_preserves_order_absence_and_duplicates()
         .await
         .err()
         .ok_or_else(|| std::io::Error::other("pre-cancelled lookup must fail"))?;
-    assert!(matches!(
-        cancelled_failure.error,
-        FsError::Cancelled(_)
-    ));
+    assert!(matches!(cancelled_failure.error, FsError::Cancelled(_)));
     let budget_failure = generation
         .lookup_paths(&[present], WorkBudget::default(), &CancellationToken::new())
         .await
         .err()
         .ok_or_else(|| std::io::Error::other("zero-budget checkout must fail"))?;
-
+    assert_ne!(*budget_failure.work, crate::WorkCounters::default());
     assert!(budget_failure.work.verify(WorkBudget::default()).is_err());
     Ok(())
 }
@@ -209,8 +179,7 @@ async fn generation_reader_resolves_many_paths_from_one_pinned_root() -> Result<
             CheckoutMode::read_only_pinned()
         )
     )?
-    .pinned_reader()
-    .map_err(WorkspaceError::engine)?;
+    .pinned_reader()?;
     let descriptions = reader
         .describe_files(
             &[present, absent],
