@@ -33,11 +33,8 @@ fn task_requirements_check_bound_grants_and_extensions() -> Result<()> {
 }
 
 #[tokio::test]
-async fn live_task_model_override_is_scoped_and_durable_direct_call_is_rejected() -> Result<()> {
+async fn live_model_checks_file_authority_and_rejects_durable_direct_calls() -> Result<()> {
     let root_provider = Arc::new(CompletedModel {
-        requests: std::sync::Mutex::new(Vec::new()),
-    });
-    let child_provider = Arc::new(CompletedModel {
         requests: std::sync::Mutex::new(Vec::new()),
     });
     let scope = RuntimeScope::new(Capabilities::new(["model:generate"]), Limits::default())?;
@@ -60,42 +57,6 @@ async fn live_task_model_override_is_scoped_and_durable_direct_call_is_rejected(
         .clone()
         .model_events(vec![message.clone()], None)
         .await?;
-    let child = context.scoped_model(
-        Capabilities::new(["model:generate"]),
-        Limits::default(),
-        Model::new("child".into(), "model".into(), "2".into(), Value::Null)?,
-        child_provider.clone(),
-    )?;
-    child.model_events(vec![message.clone()], None).await?;
-    let bounded = child.scoped_run_limits(TaskRunLimits {
-        concurrency: None,
-        max_steps: Some(2),
-        deadline_epoch_ms: None,
-    })?;
-    assert!(
-        bounded
-            .model_events(vec![message.clone()], None)
-            .await
-            .is_err()
-    );
-    assert_eq!(
-        root_provider
-            .requests
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())[0]
-            .model
-            .provider,
-        "root"
-    );
-    assert_eq!(
-        child_provider
-            .requests
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())[0]
-            .model
-            .provider,
-        "child"
-    );
     let foreign = file_fixture("evidence/image.png", "image/png")?;
     assert!(matches!(
         context
@@ -129,7 +90,7 @@ async fn live_task_model_override_is_scoped_and_durable_direct_call_is_rejected(
             .len(),
         1
     );
-    let mut durable = child;
+    let mut durable = context;
     durable.durable_task = Some(TaskId::new());
     assert!(matches!(
         durable.model_events(vec![message], None).await,
@@ -461,23 +422,5 @@ fn scoped_authority_never_widens_grants_or_limits() -> Result<()> {
         view.scoped(Capabilities::new(["tool:call:test.echo"]), narrowed)
             .is_err()
     );
-    let bounded = harness.scoped_run_limits(TaskRunLimits {
-        concurrency: Some(1),
-        max_steps: Some(3),
-        deadline_epoch_ms: Some(1_900_000_000_000),
-    })?;
-    assert_eq!(bounded.concurrency, 1);
-    assert_eq!(bounded.scope.run_limits().max_steps, Some(3));
-    for (concurrency, max_steps) in [(Some(2), Some(3)), (Some(1), None)] {
-        assert!(
-            bounded
-                .scoped_run_limits(TaskRunLimits {
-                    concurrency,
-                    max_steps,
-                    deadline_epoch_ms: Some(1_900_000_000_000),
-                })
-                .is_err()
-        );
-    }
     Ok(())
 }

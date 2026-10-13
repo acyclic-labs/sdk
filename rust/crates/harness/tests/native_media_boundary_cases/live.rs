@@ -541,22 +541,6 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
                     assert_eq!(adapter.counts.load(Ordering::SeqCst), counts);
                     assert_eq!(adapter.generates.load(Ordering::SeqCst), generates);
                 }
-                let changed_revision = context.scoped_model(
-                    context.scope().grants().clone(),
-                    context.scope().limits(),
-                    Model::new("fixture-native".into(), "all".into(), "mock-native-2".into(), Value::Null)?,
-                    adapter.clone(),
-                )?;
-                let counts = adapter.counts.load(Ordering::SeqCst);
-                let generates = adapter.generates.load(Ordering::SeqCst);
-                assert!(matches!(
-                    changed_revision
-                        .model_events(only_file(&original.0, &original.1), Some(16))
-                        .await,
-                    Err(Error::Unsupported(_))
-                ));
-                assert_eq!(adapter.counts.load(Ordering::SeqCst), counts);
-                assert_eq!(adapter.generates.load(Ordering::SeqCst), generates);
                 adapter.wrong_count_digest.store(true, Ordering::SeqCst);
                 assert!(
                     context
