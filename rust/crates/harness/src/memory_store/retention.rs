@@ -24,33 +24,7 @@ impl MemoryStore {
         if is_internal_path(path) {
             return Err(Error::Invalid("internal storage paths are reserved".into()));
         }
-        #[cfg(feature = "filesystem")]
-        let file_key = match io {
-            Some(io) => {
-                let encoded = io.encode(
-                    &(reference.volume(), reference.path(), reference.version()),
-                    io.remaining()?.bytes_encoded,
-                    true,
-                )?;
-                let hold = io.guard_bytes(&encoded)?;
-                let text = std::str::from_utf8(encoded.as_ref()).map_err(|error| {
-                    Error::Invalid(format!("file reference is not UTF-8: {error}"))
-                })?;
-                let mut key = String::new();
-                use crate::store::history::HistoryIo as _;
-                let mut observer = io.history_io();
-                observer.admit_copy(text.len() as u64)?;
-                observer.reserve_text(&mut key, text.len())?;
-                key.push_str(text);
-                observer.copy_bytes(text.len() as u64)?;
-                drop(encoded);
-                drop(hold);
-                key
-            }
-            None => Self::file_key(reference)?,
-        };
-        #[cfg(not(feature = "filesystem"))]
-        let file_key = Self::file_key(reference)?;
+        let file_key = Self::file_key(reference, io)?;
         #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             let examine = acyclic_fs::WorkCounters {
@@ -226,7 +200,7 @@ impl MemoryStore {
         if file.volume() != &self.volume {
             return Err(Error::Unauthorized("file belongs to another volume".into()));
         }
-        let key = Self::file_key(file)?;
+        let key = Self::file_key(file, None)?;
         self.files
             .get(&key)
             .filter(|stored| stored.reference == *file)
@@ -246,14 +220,30 @@ impl MemoryStore {
         if file.volume() != &self.volume {
             return Ok(false);
         }
-        let key = Self::file_key(file)?;
+        let key = Self::file_key(file, None)?;
         Ok(self
             .files
             .get(&key)
             .is_some_and(|stored| stored.reference == *file))
     }
 
-    fn file_key(file: &FileRef) -> Result<String> {
+    fn file_key(file: &FileRef, io: Option<&PreparationIo>) -> Result<String> {
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            let encoded = io.encode(
+                &(file.volume(), file.path(), file.version()),
+                io.remaining()?.bytes_encoded,
+                true,
+            )?;
+            let hold = io.guard_bytes(&encoded)?;
+            let text = std::str::from_utf8(encoded.as_ref())
+                .map_err(|error| Error::Invalid(format!("file reference is not UTF-8: {error}")))?;
+            let key = crate::executor::stock_string_copy(text, Some(io))?;
+            drop(encoded);
+            drop(hold);
+            return Ok(key);
+        }
+        let _ = io;
         String::from_utf8(crate::contract::canonical_json_bytes(&(
             file.volume(),
             file.path(),

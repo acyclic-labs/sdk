@@ -341,7 +341,7 @@ async fn oauth_discovery_pkce_host_interaction_refresh_and_private_restart() -> 
         let context = admitted_context(
             scope.clone(),
             Arc::new(Participant {
-                journal: disk,
+                journal: Arc::downgrade(&disk),
                 issuer,
             }),
             None,
@@ -431,6 +431,7 @@ async fn oauth_discovery_pkce_host_interaction_refresh_and_private_restart() -> 
             assert!(first.is_err());
         }
         drop(context);
+        drop(disk);
         let private: Value = load_json(&receipt)
             .await
             .map_err(|error| Error::Storage(error.to_string()))?
@@ -439,7 +440,7 @@ async fn oauth_discovery_pkce_host_interaction_refresh_and_private_restart() -> 
         let context = admitted_context(
             scope,
             Arc::new(Participant {
-                journal: disk,
+                journal: Arc::downgrade(&disk),
                 issuer,
             }),
             None,

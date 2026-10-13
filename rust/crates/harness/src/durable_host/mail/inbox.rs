@@ -18,6 +18,13 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             ));
         }
         let recipient = self.mail_admission(task, io).await?;
+        if !recipient.grants.contains(capability::MAIL_READ) {
+            return Err(boundary(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "recipient scope lacks mail:read",
+            ));
+        }
         #[cfg(feature = "filesystem")]
         let mut observer = io.map(PreparationIo::history_io);
         #[cfg(feature = "filesystem")]

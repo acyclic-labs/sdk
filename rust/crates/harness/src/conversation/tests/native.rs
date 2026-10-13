@@ -51,13 +51,9 @@ fn native_file_validation_and_descriptor_hash_use_original_static_denials() -> R
         source
             .descriptor()
             .verify(b"hello", &mut Some(&mut denied_io)),
-        Err(Error::NativeWork {
-            cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
-                counter: "bytes_hashed",
-                ..
-            }),
-            ..
-        })
+        Err(Error::NativeFilesystem { source, .. }) if matches!(*source,
+                acyclic_fs::FsError::NativeKernel(NativeTreeMaterializationError::Work(
+                    WorkError::BudgetExceeded { counter: "bytes_hashed", .. })))
     ));
     assert_eq!(denied.receipt().bytes_hashed, 0);
     Ok(())
@@ -83,13 +79,9 @@ fn native_file_clone_partial_failure_retires_only_its_actual_strings() -> Result
     let held = io.clone_text("held")?;
     assert!(matches!(
         source.copy(&mut Some(&mut io)),
-        Err(Error::NativeWork {
-            cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
-                counter: "bytes_copied",
-                ..
-            }),
-            ..
-        })
+        Err(Error::NativeFilesystem { source, .. }) if matches!(*source,
+                acyclic_fs::FsError::NativeKernel(NativeTreeMaterializationError::Work(
+                    WorkError::BudgetExceeded { counter: "bytes_copied", .. })))
     ));
     let guard = io.into_custody()?;
     assert_eq!(
@@ -226,13 +218,9 @@ fn native_append_failed_hash_and_growth_preserve_actual_state() -> Result<()> {
     );
     assert!(matches!(
         state.append(message(&content, 5), &mut Some(&mut io)),
-        Err(Error::NativeWork {
-            cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
-                counter: "bytes_hashed",
-                ..
-            }),
-            ..
-        })
+        Err(Error::NativeFilesystem { source, .. }) if matches!(*source,
+                acyclic_fs::FsError::NativeKernel(NativeTreeMaterializationError::Work(
+                    WorkError::BudgetExceeded { counter: "bytes_hashed", .. })))
     ));
     assert_eq!(denied.receipt().bytes_hashed, 0);
     drop(io);
@@ -367,11 +355,11 @@ fn admitted_conversation_rebuild_observes_original_digests_and_negative_work() -
     assert_eq!(failed.work.bytes_hashed, 0);
     assert!(failed.work.bytes_encoded > 0);
     assert_eq!(failed.work.output_bytes, 0);
-    cancellation.cancel();
     let mut work = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
         budget,
         &cancellation,
     )?);
+    cancellation.cancel();
     let wire = crate::contract::json_from_slice(&bytes)
         .map_err(|error| Error::Storage(error.to_string()))?;
     let result = ConversationState::from_wire(wire, bytes.len() as u64, &mut Some(&mut work));

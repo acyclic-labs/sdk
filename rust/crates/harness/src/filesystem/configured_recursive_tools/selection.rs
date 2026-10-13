@@ -247,7 +247,7 @@ where
             .map(|authorization| {
                 crate::executor::with_history_io(io, |work| {
                     authorization
-                        .clone_with_work_and_custody(work)
+                        .copy(work)
                         .map(|(authorization, _)| authorization)
                 })
             })

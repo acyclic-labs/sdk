@@ -15,6 +15,7 @@ use bytes::Bytes;
 use acyclic_stream::OwnedBytes;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Cursor;
+use std::ops::Bound;
 use thiserror::Error;
 
 const LIST_PAGE_ENTRIES: u32 = 256;
@@ -458,8 +459,7 @@ enum ListingTask {
         path: NamespacePath,
         key_prefix: String,
         name_prefix: Option<String>,
-        after: Option<LogicalName>,
-        inclusive: bool,
+        after: Bound<LogicalName>,
     },
     Object {
         key: String,
@@ -484,7 +484,7 @@ fn direct_child_seek(
     options: &S3ListOptions,
     limits: crate::model::VolumeLimits,
     frontier_key: &str,
-) -> Option<(LogicalName, bool)> {
+) -> Option<Bound<LogicalName>> {
     let Some(cursor) = &options.continuation else {
         return None;
     };
@@ -513,7 +513,13 @@ fn direct_child_seek(
         limits.maximum_component_bytes,
     )
     .ok()
-    .map(|name| (name, !cursor.after_prefix))
+    .map(|name| {
+        if cursor.after_prefix {
+            Bound::Excluded(name)
+        } else {
+            Bound::Included(name)
+        }
+    })
 }
 
 /// Merges directory-page lower bounds and object keys in flattened UTF-8 order.
@@ -543,8 +549,7 @@ async fn list_objects_lazy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             path: frontier,
             key_prefix: frontier_key,
             name_prefix: frontier_name_prefix,
-            after: seek.as_ref().map(|(name, _)| name.clone()),
-            inclusive: seek.as_ref().is_some_and(|(_, inclusive)| *inclusive),
+            after: seek.unwrap_or(Bound::Unbounded),
         },
     )?;
     let maximum = usize::try_from(options.maximum_keys).map_err(|_| S3Error::ListLimit)?;
@@ -558,7 +563,6 @@ async fn list_objects_lazy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 key_prefix,
                 name_prefix,
                 after,
-                inclusive,
             } => {
                 let remaining = options.maximum_entries_examined - examined;
                 if remaining == 0 {
@@ -567,29 +571,17 @@ async fn list_objects_lazy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 let page_limit = LIST_PAGE_ENTRIES
                     .min(remaining)
                     .min(options.maximum_keys.saturating_add(1));
-                let page = if inclusive {
-                    checkout
-                        .list_directory_records(
-                            &path,
-                            std::ops::Bound::Included(after.as_ref().ok_or(S3Error::InvalidContinuation)?),
-                            page_limit,
-                            WorkBudget::UNBOUNDED,
-                            &CancellationToken::new(),
-                        )
-                        .await
-                } else {
-                    checkout
-                        .list_directory_records(
-                            &path,
-                            after.as_ref().map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
-                            page_limit,
-                            WorkBudget::UNBOUNDED,
-                            &CancellationToken::new(),
-                        )
-                        .await
-                }
-                .map_err(|failure| S3Error::Workspace(WorkspaceError::engine(failure)))?
-                .value;
+                let page = checkout
+                    .list_directory_records(
+                        &path,
+                        after.as_ref(),
+                        page_limit,
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
+                    )
+                    .await
+                    .map_err(|failure| S3Error::Workspace(WorkspaceError::engine(failure)))?
+                    .value;
                 examined = examined
                     .checked_add(u32::try_from(page.entries.len()).map_err(|_| S3Error::ListLimit)?)
                     .ok_or(S3Error::ListLimit)?;
@@ -629,8 +621,7 @@ async fn list_objects_lazy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                                     path: child,
                                     key_prefix: child_key,
                                     name_prefix: None,
-                                    after: None,
-                                    inclusive: false,
+                                    after: Bound::Unbounded,
                                 },
                             )?;
                         }
@@ -655,8 +646,7 @@ async fn list_objects_lazy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                             path,
                             key_prefix,
                             name_prefix,
-                            after: Some(last_name),
-                            inclusive: false,
+                            after: Bound::Excluded(last_name),
                         },
                     )?;
                 }

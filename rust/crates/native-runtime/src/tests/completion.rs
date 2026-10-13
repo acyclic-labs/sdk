@@ -107,7 +107,7 @@ fn host_task_panic_preserves_payload_and_retires_controls() -> io::Result<()> {
             match entered.try_recv() {
                 Ok(()) => break,
                 Err(mpsc::TryRecvError::Empty) if Instant::now() < deadline => {
-                    std::thread::park_timeout(Duration::from_millis(1))
+                    std::thread::park_timeout(Duration::from_millis(1));
                 }
                 Err(error) => return Err(io::Error::other(error)),
             }

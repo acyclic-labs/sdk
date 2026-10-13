@@ -126,6 +126,7 @@ async fn accepted_materialization_completion_survives_cancellation_and_restart()
             path: "file.txt".to_owned(),
             image: vec![1],
         });
+    assert!(journal.is_valid_for(operation));
     assert!(
         MaterializationJournalStore::compare_and_swap(&store, operation, 0, journal)
             .await

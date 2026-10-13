@@ -180,10 +180,7 @@ async fn native_publication_phase_survives_receiver_denial_and_original_ack_reco
         let mut prepared = commit_request(key, retained, &mut work);
         add_condition(
             &mut prepared,
-            acyclic_stream::CommitCondition::Tail {
-                path: path.clone(),
-                expected: 0,
-            },
+            acyclic_stream::CommitCondition::Absent { path: path.clone() },
         )
         .expect("original guarded condition");
         add_record(
