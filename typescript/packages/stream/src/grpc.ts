@@ -74,13 +74,20 @@ export class GrpcStreamProvider implements StreamProvider {
   async *read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> {
     const request = { kind: "read" as const, path, from: options.from, limit: options.limit };
     await validateWireRequest(request);
-    yield* this.#frames("read", this.#client.read(fromBinary(wire.ReadRequestSchema, wireRequest(request))), request.from, request.limit);
+    const controller = new AbortController();
+    try {
+      yield* this.#frames("read", this.#client.read(fromBinary(wire.ReadRequestSchema, wireRequest(request)), { signal: controller.signal }), request.from, request.limit);
+    } finally { controller.abort(); }
   }
   async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
     const request = { kind: "follow" as const, path, from: options.from };
     await validateWireRequest(request);
     if (options.signal?.aborted) return;
-    yield* this.#frames("follow", this.#client.follow(fromBinary(wire.FollowRequestSchema, wireRequest(request)), options.signal === undefined ? {} : { signal: options.signal }), request.from, undefined, options.signal);
+    const controller = new AbortController();
+    const signal = options.signal === undefined ? controller.signal : AbortSignal.any([options.signal, controller.signal]);
+    try {
+      yield* this.#frames("follow", this.#client.follow(fromBinary(wire.FollowRequestSchema, wireRequest(request)), { signal }), request.from, undefined, signal);
+    } finally { controller.abort(); }
   }
   async *#frames(operation: string, frames: AsyncIterable<wire.ReadResponse>, next: bigint,
     remaining?: number, signal?: AbortSignal): AsyncIterable<EncodedRecord> {
