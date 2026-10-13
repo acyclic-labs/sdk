@@ -70,14 +70,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
             }
             let custody = Checkout::<A, O>::checkout_custody(&mut accounting, cancellation)?;
             let captured_bytes = usize_to_u64(CheckoutDependencies::empty_logical_owned_bytes());
-            let mut captured_allocation = accounting.claim_owned(captured_bytes, 1)?;
+            let captured_allocation = accounting.claim_owned(captured_bytes, 1)?;
             let captured = CheckoutDependencies::new(
                 std::iter::empty(),
                 std::iter::empty(),
                 self.config.limits.maximum_checkout_dependencies,
             )?;
             let proof_bytes = usize_to_u64(size_of::<Mutex<Proof>>());
-            let mut proof_allocation = accounting.claim_owned(proof_bytes, 1)?;
+            let proof_allocation = accounting.claim_owned(proof_bytes, 1)?;
             let (base_root, root, dependencies) = match allocation {
                 #[cfg(not(target_arch = "wasm32"))]
                 KernelOwnedAllocation::NativeOriginal(mut root_allocation) => {
