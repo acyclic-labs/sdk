@@ -175,21 +175,21 @@ impl ViewGateReadAdmissions {
             }
         }
         if let Some(index) = found {
-            return Ok(if index == 0 {
-                self.first.as_mut().expect("first gate admission")
+            return if index == 0 {
+                self.first.as_mut()
             } else {
-                &mut self.more[index - 1]
-            });
+                self.more.get_mut(index - 1)
+            }
+            .ok_or(MountSourceError::Work(crate::WorkError::Overflow));
         }
         if self.first.is_none() {
-            self.first = Some(ReadAdmission {
+            return Ok(self.first.insert(ReadAdmission {
                 gate: Arc::clone(gate),
                 slot: None,
                 registry: None,
                 finished: 0,
                 payload_finished: 0,
-            });
-            return Ok(self.first.as_mut().expect("new first admission"));
+            }));
         }
         if self.more.len() == self.more.capacity() {
             let count = self
@@ -235,7 +235,9 @@ impl ViewGateReadAdmissions {
             finished: 0,
             payload_finished: 0,
         });
-        Ok(self.more.last_mut().expect("new gate admission"))
+        self.more
+            .last_mut()
+            .ok_or(MountSourceError::Work(crate::WorkError::Overflow))
     }
 }
 

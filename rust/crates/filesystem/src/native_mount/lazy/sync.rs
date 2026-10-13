@@ -247,7 +247,11 @@ where
                     bytes.extend_from_slice(path.as_bytes());
                     input.record(copied)?;
                     paths.push((
-                        String::from_utf8(bytes).expect("copied String is UTF-8"),
+                        String::from_utf8(bytes).map_err(|_| {
+                            MountSourceError::NativeWork(
+                                crate::NativeTreeMaterializationError::InvalidLayout,
+                            )
+                        })?,
                         *id,
                     ));
                 }
