@@ -232,7 +232,7 @@ impl<'a> PiControlHost<'a> {
             .runtime
             .runtime
             .task_host()
-            .observe_admission_with_native_work(task, work)
+            .observe_admission_with_native_work(task, work)?
             .await?;
         if admission.0.task_id() != task
             || admission.0.task != *self.runtime.definition.identity()
@@ -291,7 +291,7 @@ impl<'a> PiControlHost<'a> {
             .runtime
             .runtime
             .task_host()
-            .observe_admission_with_native_work(task, work)
+            .observe_admission_with_native_work(task, work)?
             .await?;
         if admission.0.task_id() != task {
             return Err(denied(

@@ -271,7 +271,7 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         b"user.identity-fault-cut".to_vec(),
         config().limits.maximum_component_bytes,
     )?;
-    through_every_object_cut!(checkout.change_named_attribute_by_id(
+    through_every_object_cut!(checkout.change_named_attribute(
         large_id,
         &identity_attribute,
         Some((
@@ -282,7 +282,7 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         &cancellation
     ));
     assert_eq!(
-        through_every_object_cut!(checkout.read_named_attribute_by_id(
+        through_every_object_cut!(checkout.read_named_attribute(
             large_id,
             &identity_attribute,
             B,
@@ -292,7 +292,7 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         .map(|chunk| chunk.bytes),
         Some(OwnedBytes::from_static(b"identity-fault-checked-value"))
     );
-    let identity_attributes = through_every_object_cut!(checkout.list_named_attributes_by_id(
+    let identity_attributes = through_every_object_cut!(checkout.list_named_attributes(
         large_id,
         None,
         8,
@@ -300,7 +300,7 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         &cancellation,
     ));
     assert_eq!(identity_attributes.value.entries.len(), 2);
-    through_every_object_cut!(checkout.change_named_attribute_by_id(
+    through_every_object_cut!(checkout.change_named_attribute(
         large_id,
         &identity_attribute,
         None,

@@ -496,14 +496,14 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate() ->
     ));
     assert!(
         checkout
-            .read_named_attribute_by_id(id, &attribute, B, &cancel)
+            .read_named_attribute(id, &attribute, B, &cancel)
             .await?
             .value
             .is_none()
     );
     assert!(
         checkout
-            .list_named_attributes_by_id(id, None, 8, B, &cancel)
+            .list_named_attributes(id, None, 8, B, &cancel)
             .await?
             .value
             .entries
@@ -515,7 +515,7 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate() ->
     ] {
         if mode == NamedAttributeWriteMode::Create {
             checkout
-                .change_named_attribute_by_id(
+                .change_named_attribute(
                     id,
                     &attribute,
                     Some((&OwnedBytes::from_static(b"first"), mode)),
@@ -526,7 +526,7 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate() ->
         }
         assert!(matches!(
             checkout
-                .change_named_attribute_by_id(
+                .change_named_attribute(
                     id,
                     &attribute,
                     Some((&OwnedBytes::from_static(b"second"), mode)),
@@ -542,7 +542,7 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate() ->
     }
     assert_eq!(
         checkout
-            .read_named_attribute_by_id(id, &attribute, B, &cancel)
+            .read_named_attribute(id, &attribute, B, &cancel)
             .await?
             .value
             .unwrap()
@@ -551,11 +551,11 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate() ->
         b"first"
     );
     checkout
-        .change_named_attribute_by_id(id, &attribute, None, B, &cancel)
+        .change_named_attribute(id, &attribute, None, B, &cancel)
         .await?;
     assert!(matches!(
         checkout
-            .change_named_attribute_by_id(id, &attribute, None, B, &cancel)
+            .change_named_attribute(id, &attribute, None, B, &cancel)
             .await,
         Err(OperationFailure {
             error: FsError::NotFound,
@@ -673,13 +673,13 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate() ->
     );
     assert!(
         checkout
-            .read_named_attribute_by_id(unknown, &attribute, B, &cancel)
+            .read_named_attribute(unknown, &attribute, B, &cancel)
             .await
             .is_err()
     );
     assert!(
         checkout
-            .list_named_attributes_by_id(unknown, None, 8, B, &cancel)
+            .list_named_attributes(unknown, None, 8, B, &cancel)
             .await
             .is_err()
     );
@@ -700,7 +700,7 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate() ->
     );
     assert!(
         checkout
-            .change_named_attribute_by_id(unknown, &attribute, None, B, &cancel)
+            .change_named_attribute(unknown, &attribute, None, B, &cancel)
             .await
             .is_err()
     );

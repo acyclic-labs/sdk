@@ -17,12 +17,7 @@ mod host_file_race_tests {
         let expected = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("current"))?)?;
         std::fs::rename(&current, temporary.path().join("displaced"))?;
         std::fs::rename(&replacement, &current)?;
-        let opened = root
-            .open_file(
-                Path::new("current"),
-                &mut crate::native_host::ordinary_work(),
-            )
-            .map_err(crate::native_host::ordinary_error)?;
+        let opened = test_open_file(&root, Path::new("current"))?;
         assert!(matches!(
             ensure_same_host_node(&expected, &test_held_stat(&root, &opened)?),
             Err(CaptureError::Kernel(crate::FsError::SourceSnapshotStale))
@@ -38,12 +33,7 @@ mod host_file_race_tests {
         let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
             .map_err(crate::native_host::ordinary_error)?;
         let expected = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("current"))?)?;
-        let opened = root
-            .open_file(
-                Path::new("current"),
-                &mut crate::native_host::ordinary_work(),
-            )
-            .map_err(crate::native_host::ordinary_error)?;
+        let opened = test_open_file(&root, Path::new("current"))?;
         ensure_same_host_node(&expected, &test_held_stat(&root, &opened)?)?;
         std::fs::write(&current, b"changed body")?;
         assert!(matches!(
@@ -64,12 +54,7 @@ mod host_file_race_tests {
         let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
             .map_err(crate::native_host::ordinary_error)?;
         let expected = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("current"))?)?;
-        let opened = root
-            .open_file(
-                Path::new("current"),
-                &mut crate::native_host::ordinary_work(),
-            )
-            .map_err(crate::native_host::ordinary_error)?;
+        let opened = test_open_file(&root, Path::new("current"))?;
         ensure_same_host_node(&expected, &test_held_stat(&root, &opened)?)?;
         std::fs::set_permissions(&current, std::fs::Permissions::from_mode(0o600))?;
         assert!(matches!(

@@ -109,11 +109,13 @@ impl DarwinMountSession {
                 work.charge(WRITE_WORK)?;
                 context.forget_view();
                 // SAFETY: this owner retains the SDK; the bridge ignores the name.
+                let native = self
+                    .unmount
+                    .native
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
                 let status = unsafe {
-                    acyclic_fs_darwin_mount_invalidate(
-                        self.unmount.pointer() as *mut c_void,
-                        ptr::null(),
-                    )
+                    acyclic_fs_darwin_mount_invalidate(native.value as *mut c_void, ptr::null())
                 };
                 if status == 0 {
                     Ok(())
@@ -269,7 +271,7 @@ impl DarwinMountSession {
             events.wait_until(STOP_POLL_INTERVAL, |_| thread.is_finished());
         }
         if self.thread.is_some() {
-            events.start_join(wait)?;
+            events.sdk_credit.loan(Some(wait)).started_io(READ_WORK)?;
             self.loop_result = Some(
                 self.thread
                     .take()

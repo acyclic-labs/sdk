@@ -464,7 +464,7 @@ if let Some(io) = Some(io) { io.retain_owned(reference.logical_owned_bytes()?)?;
             .as_mut()
             .map(|work| work as &mut dyn crate::store::history::HistoryIo);
         if let Some((owner, _)) = &self.owner {
-            owner.require_interaction_grant(io)?;
+            owner.require_interaction_grant(&mut work)?;
             owner.verify(true, &mut work).await?;
         }
         host.verify_approval_with_io(id, operation, digest, io)

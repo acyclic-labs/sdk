@@ -1,10 +1,11 @@
 //! Optional persistent task composition using the existing runtime authorities.
 
 use super::{
-    FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost,
+    PreparationIo, FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost,
     FilesystemInteractionHost, FilesystemSchedulerPayloadStore, FilesystemWorkflowJournal,
 };
 use crate::runtime::TaskStateProvider;
+use crate::store::history::HistoryIo as _;
 use crate::{
     Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
     context::ContextPipeline,
@@ -279,7 +280,7 @@ struct TaskJournalMailbox<P: StreamProvider> {
 
 impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJournalMailbox<P> {
     fn validate_scope(&self, scope: &RuntimeScope) -> Result<()> {
-        self.owner.as_ref().require_mail_scope(scope, &mut None)
+        self.owner.as_ref().require_mail_scope(scope, None)
     }
     fn task_binding(&self) -> (TaskId, &LeaseFence) {
         self.owner.as_ref().task_binding()
@@ -305,7 +306,7 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
         }
         self.owner
             .as_ref()
-            .require_mail_scope(scope, &mut Some(&mut crate::store::HistoryWork::new(PreparationIo::from_native_work(work)?)))
+            .require_mail_scope(scope, Some(&crate::executor::PreparationIo::from_native_work(work)?))
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn send_with_native_work<'a>(
@@ -1433,7 +1434,7 @@ where
             .await?;
         let owner = Arc::new(owner);
         let mailbox: Arc<dyn OwnedTaskMailbox> = {
-            if !std::ptr::eq(owner.host.as_ref(), self.host.as_ref()) {
+            if !owner.original_host_binding_matches(self.host.as_ref()) {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unauthorized,
                     reason: "native mailbox owner belongs to another original host",
@@ -1937,7 +1938,7 @@ where
         cursor: Option<TaskWakeCursor>,
         maximum_events: u32,
     ) -> Result<TaskWakePage> {
-        let crate::durable_host::WorkflowWaitPage { next_revision, through_revision, events_read, tasks } = self
+        let (next_revision, through_revision, events_read, tasks) = self
             .host
             .workflow_wait_page(
                 cursor.map_or(0, |cursor| cursor.after_revision),
@@ -2221,11 +2222,12 @@ where
                     .await
             } else {
                 self.host
-                    .suspend_workflow_command_guarded(
+                    .suspend_workflow(
                         task,
                         fence,
                         revision,
                         Some(command),
+                        None,
                         None,
                         &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
                     )
@@ -2239,7 +2241,7 @@ where
                 .await
         } else {
             self.host
-                .suspend_workflow_command_guarded(task, fence, revision, Some(command), None, &mut None)
+                .suspend_workflow(task, fence, revision, Some(command), None, None, &mut None)
                 .await
         }
     }
@@ -2449,10 +2451,11 @@ where
                         std::mem::take(value)
                     } else {
                         self.task_host()
-                            .suspend_workflow_command_guarded(
+                            .suspend_workflow(
                                 task,
                                 fence,
                                 revision,
+                                None,
                                 None,
                                 None,
                                 &mut observed::history(io)?
@@ -2464,10 +2467,11 @@ where
                     }
                 } else {
                     self.task_host()
-                        .suspend_workflow_command_guarded(
+                        .suspend_workflow(
                             task,
                             fence,
                             revision,
+                            None,
                             None,
                             None,
                             &mut observed::history(io)?
@@ -2971,7 +2975,7 @@ where
         if self
             .run_limits
             .deadline_epoch_ms
-            .is_some_and(|deadline| self.host.clock.now_unix_millis() >= deadline)
+            .is_some_and(|deadline| self.host.now_unix_millis() >= deadline)
         {
             self.host
                 .expire_task_deadline(self.task, Some(&self.fence), &mut None)

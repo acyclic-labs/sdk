@@ -53,7 +53,7 @@ impl TaskContext {
         }
         let io = PreparationIo::from_native_work(work)?;
         owner.require_task_context_binding(self, Some(&io))?;
-        owner.require_mail_scope_with_native_work(self.scope(), work)?;
+        owner.require_mail_scope(self.scope(), Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
         owner.verify(false, &mut Some(&mut io.history_io())).await?;
         Ok(NativeVolumeCallbackGuard {
             context: Arc::clone(self),
@@ -136,7 +136,7 @@ impl<P: StreamProvider + 'static> VolumeCallback<P> {
         work: &'a NativeMaterializationWork,
         require_write: bool,
     ) -> std::result::Result<NativeMountCallbackFuture<'a>, NativeMountError> {
-        NativeMountCallbackFuture::new_guarded::<Error, _, _>(work, || async move {
+        NativeMountCallbackFuture::new_guarded::<Error, _, _>(work, move || async move {
             if require_write && !self.writable {
                 return Err(denied("read-only callback cannot authorize writes"));
             }

@@ -96,7 +96,7 @@ impl PiSession {
             .runtime
             .runtime
             .task_host()
-            .observe_admission_with_native_work(caller, query_work)
+            .observe_admission_with_native_work(caller, query_work)?
             .await?;
         if !caller_admission.0.grants.contains("operation:cancel") {
             return Err(Error::Invalid(
@@ -162,7 +162,7 @@ impl PiSession {
                 .runtime
                 .runtime
                 .task_host()
-                .outcome_with_native_work(*task, &work)
+                .outcome_with_native_work(*task, &work)?
                 .await
             {
                 Ok(receipt) => Some(receipt),
@@ -729,7 +729,7 @@ async fn original_native_first_dispatch_pending(
 ) -> RootResult<bool> {
     let task = plan.commit.child.task_id;
     let host = runtime.runtime.task_host();
-    let admission_receipt = host.observe_admission_with_native_work(task, work).await?;
+    let admission_receipt = host.observe_admission_with_native_work(task, work)?.await?;
     let admission = &admission_receipt.0;
     if admission != &plan.request.child {
         return Err(Error::Invalid(
@@ -748,8 +748,8 @@ async fn original_native_first_dispatch_pending(
     if !matches!(&reservation.0, WorkPull::Idle) {
         return Ok(false);
     }
-    let outcome = host.outcome_with_native_work(task, work).await?;
-    if host.cancellation_requested(task, Some(work)).await? || outcome.0.is_some() {
+    let outcome = host.outcome_with_native_work(task, work)?.await?;
+    if host.cancellation_requested(task, Some(&acyclic_harness::executor::PreparationIo::from_native_work(work)?)).await? || outcome.0.is_some() {
         return Ok(false);
     }
     let limits = acyclic_harness::store::HistoryReadLimits {
