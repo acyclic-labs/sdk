@@ -35,9 +35,29 @@ where
                 reason: "native task context differs from original task lease",
             });
         }
-        let journal = self
-            .workflow_journal_with_native_work(task, fence, work)
-            .await?;
+        let mailbox = context
+            .owned_mailbox
+            .as_ref()
+            .ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native task context has no original owner",
+            })?;
+        let mailbox = (mailbox.as_ref() as &dyn std::any::Any)
+            .downcast_ref::<TaskJournalMailbox<P>>()
+            .ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native task context belongs to another runtime",
+            })?;
+        let journal = FilesystemWorkflowJournal::for_task(
+            Arc::clone(&mailbox.owner),
+            Arc::clone(&self.filesystem),
+            &self.volume,
+            &self.verifier,
+            &self.signed,
+            self.maximum_payload_bytes
+                .min(mailbox.owner.input_limits().file_bytes),
+            Some(&super::super::PreparationIo::from_native_work(work)?),
+        )?;
         self.harness
             .open_registered_task(task, fence, journal, Some(context))
             .await

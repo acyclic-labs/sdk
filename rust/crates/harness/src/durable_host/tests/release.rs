@@ -6,8 +6,12 @@ fn work(
     budget: acyclic_fs::WorkBudget,
     token: &acyclic_fs::CancellationToken,
 ) -> Result<acyclic_fs::NativeMaterializationWork> {
-    acyclic_fs::NativeMaterializationWork::new(budget, token)
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) })
+    acyclic_fs::NativeMaterializationWork::new(budget, token).map_err(|(cause, work)| {
+        Error::NativeConstruction {
+            cause,
+            work: Box::new(work),
+        }
+    })
 }
 
 impl<P, A, O> Fixture<P, A, O>
@@ -171,7 +175,7 @@ async fn b20_public_release_rejects_foreign_bindings() -> Result<()> {
             .is_err()
     );
     let other_volume = crate::filesystem::FilesystemWorkflowJournal::for_task(
-        f.owner(1).await?,
+        Arc::new(f.owner(1).await?),
         f.files.clone(),
         &f.destination,
         &f.issuer.verifier(&mut None)?,

@@ -2,7 +2,7 @@ use super::content_write::bound_content_writer;
 use super::*;
 
 /// One admitted task's mailbox borrowed from its current owner token.
-pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
+pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform + Any {
     fn validate_scope(
         &self,
         scope: &RuntimeScope,

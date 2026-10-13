@@ -100,7 +100,7 @@ where
             )
             .await?;
         let scope = owner.scope(work).await?;
-        let owner = Arc::new(owner);
+        let owner = owner.into_native_shared(work)?;
         let mailbox: Arc<dyn OwnedTaskMailbox> = {
             if !owner.original_host_binding_matches(self.host.as_ref()) {
                 return Err(Error::NativeBoundary {

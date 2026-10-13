@@ -162,6 +162,13 @@ where
         let maximum_payload_bytes = self
             .maximum_payload_bytes
             .min(owner.input_limits().file_bytes);
+        #[cfg(not(target_arch = "wasm32"))]
+        let owner = match io.and_then(super::super::PreparationIo::original_native_work) {
+            Some(work) => owner.into_native_shared(work)?,
+            None => Arc::new(owner),
+        };
+        #[cfg(target_arch = "wasm32")]
+        let owner = Arc::new(owner);
         FilesystemWorkflowJournal::for_task(
             owner,
             self.filesystem.clone(),
@@ -202,7 +209,7 @@ where
             .maximum_payload_bytes
             .min(owner.input_limits().file_bytes);
         FilesystemWorkflowJournal::for_task(
-            owner,
+            Arc::new(owner),
             self.filesystem.clone(),
             &self.volume,
             &self.verifier,
@@ -233,7 +240,7 @@ where
             .maximum_payload_bytes
             .min(owner.input_limits().file_bytes);
         FilesystemWorkflowJournal::for_task(
-            owner,
+            owner.into_native_shared(work)?,
             Arc::clone(&self.filesystem),
             &self.volume,
             &self.verifier,
@@ -255,7 +262,7 @@ where
             .maximum_payload_bytes
             .min(owner.input_limits().file_bytes);
         FilesystemWorkflowJournal::for_task(
-            owner,
+            owner.into_native_shared(work)?,
             Arc::clone(&self.filesystem),
             &self.volume,
             &self.verifier,
