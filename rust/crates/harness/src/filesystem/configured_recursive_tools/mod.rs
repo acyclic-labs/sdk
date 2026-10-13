@@ -353,7 +353,7 @@ where
     ) -> BoxProviderFuture<'a, Result<RetainedSourceBinding<A, O>>> {
         Box::pin(async move {
             self.preparation_source(
-                &WorkerContext::Ordinary(context.clone()),
+&WorkerContext::Ordinary(Arc::new(context.clone())),
                 token,
                 cancellation,
                 false,

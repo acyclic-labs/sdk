@@ -43,7 +43,7 @@ async fn scoped_live_policy_preserves_ancestor_and_blocks_denied_tool() -> Resul
         output_content: None,
         model_steps: Arc::new((AtomicUsize::new(0), None)),
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        native_metadata_source: None,
+        native_purpose: None,
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         native_custody: None,
     };
@@ -329,7 +329,7 @@ async fn tool_approval_binds_runtime_action_and_accepts_provider_call_names() ->
         output_content: None,
         model_steps: Arc::new((AtomicUsize::new(0), None)),
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        native_metadata_source: None,
+        native_purpose: None,
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         native_custody: None,
     };

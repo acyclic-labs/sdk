@@ -294,7 +294,7 @@ impl Bindings {
         let dependency_observer = dependency_io.as_ref();
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let dependency_observer = None;
-        validate_task_dependencies(&self, dependency_observer)?;
+        super::dependencies::validate_task_dependencies(&self, dependency_observer)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         drop(dependency_io);
         let execution = self.execution;

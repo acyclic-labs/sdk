@@ -1670,9 +1670,8 @@ async fn genuine_stock_native_context_preserves_mcp_current_and_settlement_sourc
     assert_eq!(work.receipt(), before);
     let read = runtime
         .harness()
-        .durable_context_with_native_work(task, operation, &work)
+        .durable_context(task, operation, Some(&crate::filesystem::PreparationIo::from_native_work(&work)?))
         .await?;
-    let read = read.0.into_native_shared(read.1, &work)?;
     let read_tool =
         ToolContext::new_with_native_work(read, operation, "read-context-control", &work)?;
     assert!(matches!(
