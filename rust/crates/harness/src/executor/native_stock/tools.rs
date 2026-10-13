@@ -201,7 +201,7 @@ pub(in crate::executor) fn stock_task_interaction_id(
     if let Some(io) = io {
         io.preflight(hashed)?;
     }
-    let id = crate::durable_host::task_interaction_id(task, operation);
+    let id = crate::durable_host::task_interaction_id(task, operation, &mut None)?;
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         io.spent(hashed)?;

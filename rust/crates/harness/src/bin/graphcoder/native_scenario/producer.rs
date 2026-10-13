@@ -24,7 +24,7 @@ impl Producer {
         let owner = self
             .runtime
             .task_host()
-            .journal_owner_with_native_work(caller.task, &fence, &work)
+            .journal_owner(caller.task, &fence, Some(&crate::executor::PreparationIo::from_native_work(&work)?))
             .await?
             .into_native_shared(&work)?;
         let context = self
@@ -364,7 +364,7 @@ impl Producer {
             let owner = Arc::new(
                 self.runtime
                     .task_host()
-                    .journal_owner(parent.task, LeaseFence::from(&parent.lease.reservation))
+                    .journal_owner(parent.task, &(LeaseFence::from(&parent.lease.reservation)), None)
                     .await?
                     .with_invocation_cancellation(&self.cancellation),
             );

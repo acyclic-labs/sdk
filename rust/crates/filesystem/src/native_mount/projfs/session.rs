@@ -384,7 +384,7 @@ impl ProjFsSession {
                 let mut exact = Vec::new();
                 for (path, subtree) in paths {
                     let _guard = MetadataProbeGuard::enter(&runtime.metadata_probes, path);
-                    let present = match crate::native_host::with_wide_path(&host_relative_path(path)?, &mut &*work, |name, work| runtime.metadata_root.stat(name, work))
+                    let present = match crate::native_host::with_wide_path(&host_relative_path(path)?, &mut &*work, |path, work| runtime.metadata_root.stat(path, work))
                     {
                         Ok(_) => {
                             capture_missing_host_ancestors(runtime, path, work)?;

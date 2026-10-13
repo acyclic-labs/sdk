@@ -114,9 +114,9 @@ pub(super) async fn capture<P: StreamProvider + 'static>(
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
             let mut process = None;
-            if let Err(error) = acyclic_native_runtime::spawn_process_tree_with_meter_custody(
+            if let Err(error) = acyclic_native_runtime::ProcessTree::spawn_controlled(
                 &mut command,
-                original.runtime_meter().as_ref(),
+                Some(original.runtime_meter().as_ref()),
                 &mut process,
             ) {
                 *active

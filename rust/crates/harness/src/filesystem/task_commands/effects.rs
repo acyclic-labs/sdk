@@ -40,12 +40,12 @@ where
                 break 'owner self
                     .runtime
                     .task_host()
-                    .journal_owner_with_native_work(task, fence, work)
+                    .journal_owner(task, fence, Some(&crate::executor::PreparationIo::from_native_work(work)?))
                     .await?;
             }
             self.runtime
                 .task_host()
-                .journal_owner(task, fence.clone())
+                .journal_owner(task, fence, io)
                 .await?
         };
         let (status, custody) = if reconciliation_only {
