@@ -4,39 +4,22 @@ use serde_json::json;
 #[test]
 fn response_moves_original_payload_and_matches_exact_uuid() {
     let operation = OperationId::from_bytes([7; 16]);
-    let payload = String::from("original response");
-    let mut value = json!({"jsonrpc":"2.0","id":operation.to_string()});
-    value
-        .as_object_mut()
-        .expect("envelope")
-        .insert("result".into(), Value::String(payload));
-    let result = rpc_result(value, operation, None).expect("matching response");
-    assert_eq!(result, Value::String("original response".into()));
-    let foreign = OperationId::from_bytes([8; 16]);
-    assert!(
+    assert_eq!(
         rpc_result(
-            json!({"jsonrpc":"2.0","id":foreign.to_string(),"result":null}),
+            json!({"jsonrpc":"2.0","id":operation,"result":"original response"}),
             operation,
             None
         )
-        .is_err()
+        .unwrap(),
+        json!("original response")
     );
-    assert!(
-        rpc_result(
-            json!({"jsonrpc":"2.0","id":operation.to_string(),"result":null,"error":{}}),
-            operation,
-            None
-        )
-        .is_err()
-    );
-    assert!(
-        rpc_result(
-            json!({"jsonrpc":"1.0","id":operation.to_string(),"result":null}),
-            operation,
-            None
-        )
-        .is_err()
-    );
+    for value in [
+        json!({"jsonrpc":"2.0","id":OperationId::from_bytes([8;16]),"result":null}),
+        json!({"jsonrpc":"2.0","id":operation,"result":null,"error":{}}),
+        json!({"jsonrpc":"1.0","id":operation,"result":null}),
+    ] {
+        assert!(rpc_result(value, operation, None).is_err());
+    }
 }
 
 #[test]

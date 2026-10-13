@@ -31,9 +31,9 @@ use crate::{
     resources::{ProviderRef, ResourceRef},
     runtime::{
         BatchGroupPolicy, DurableBatchRequest, TaskAdmissionRecord, TaskChild, TaskChildrenPage,
-        TaskDependencyEnvironment, TaskRunLimits, batch_member_operation_id,
-        task_admission_identities, task_definition_digest, validate_children_page,
-        validate_children_request, validate_task_requirements,
+        TaskRunLimits, batch_member_operation_id, dependency_target, task_admission_identities,
+        task_definition_digest, validate_children_page, validate_children_request,
+        validate_task_dependencies,
     },
     tool::ToolDefinition,
     turn::prepare_turn,

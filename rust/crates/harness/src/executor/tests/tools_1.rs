@@ -114,11 +114,15 @@ async fn stock_approval_wait_distinguishes_pending_and_known_rejection() -> Resu
             &'a self,
             _: &'a ToolInvocation,
             _: &'a RuntimeScope,
-        ) -> BoxFuture<'a, Result<ToolPolicyDecision>> {
-            Box::pin(async {
-                Ok(ToolPolicyDecision::RequireApproval {
-                    prompt: "Approve echo".into(),
-                })
+            _io: Option<&'a crate::executor::PreparationIo>,
+        ) -> Result<crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>> {
+            Ok(crate::store::HistoryContentFuture::Ordinary {
+                future: Box::pin(async {
+                    Ok((ToolPolicyDecision::RequireApproval {
+                        prompt: "Approve echo".into(),
+                    }, None))
+                }),
+                frame_bytes: 0,
             })
         }
     }

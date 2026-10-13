@@ -56,18 +56,10 @@ pub(super) fn capture_excludes(
             meter,
             WorkCounters {
                 items_examined: 1,
+                source_path_components: prefix.depth().min(path.depth()) as u64,
                 ..WorkCounters::UNCHARGED
             },
         )?;
-        for _ in prefix.components().iter().zip(path.components()) {
-            capture_charge(
-                meter,
-                WorkCounters {
-                    source_path_components: 1,
-                    ..WorkCounters::UNCHARGED
-                },
-            )?;
-        }
         if path.is_within(prefix) {
             return Ok(true);
         }

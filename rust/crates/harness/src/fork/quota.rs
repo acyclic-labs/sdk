@@ -62,15 +62,6 @@ impl<'a, 'b> CodecQuota<'a, 'b> {
         Ok(bytes)
     }
 
-    pub(super) fn file_digest(&mut self, file: &FileRef) -> Result<[u8; 32]> {
-        file.validate(self.work())?;
-        crate::executor::json::canonical_json_digest(
-            file,
-            crate::store::default_projection_read_limits().maximum_bytes,
-            self.work(),
-        )
-    }
-
     pub(in crate::fork) fn stream_path(&mut self, authority: &Authority) -> Result<String> {
         let path = authority.stream_path(self.work())?;
         self.adopt(path.capacity() as u64)?;

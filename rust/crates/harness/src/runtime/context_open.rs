@@ -219,7 +219,7 @@ impl AgentHarness {
                     descendants,
                     Arc::new((AtomicUsize::new(0), None)),
                     None,
-                    None,
+                    None::<NativeCustody>,
                     IssuedContextPurpose::Read,
                 )
             }
@@ -237,7 +237,7 @@ impl AgentHarness {
                 let mailbox = match purpose {
                     NativeContextPurpose::Read => None,
                     NativeContextPurpose::Dispatch { fence, mailbox } => {
-                        if !mailbox.matches_task_binding(task, fence) {
+                        if mailbox.task_binding() != (task, fence) {
                             return Err(Error::NativeBoundary {
                                 code: crate::wire::ErrorCode::Unauthorized,
                                 reason: "dispatch mailbox differs from the original task and fence",
@@ -247,7 +247,7 @@ impl AgentHarness {
                         Some(mailbox)
                     }
                     NativeContextPurpose::Reconciliation { fence, mailbox } => {
-                        if !mailbox.matches_task_binding(task, fence) {
+                        if mailbox.task_binding() != (task, fence) {
                             return Err(Error::NativeBoundary {
                                 code: crate::wire::ErrorCode::Unauthorized,
                                 reason: "reconciliation mailbox differs from the original task and fence",
@@ -274,7 +274,7 @@ impl AgentHarness {
                 admitted.0.extension_schemas = self.scope.extension_schemas.clone();
                 admitted.0.extensions_sealed = true;
                 if let Some(mailbox) = &mailbox {
-                    mailbox.validate_scope_with_native_work(&admitted.0, work)?;
+                    mailbox.validate_scope(&admitted.0, Some(&io))?;
                 }
                 custody.absorb(&mut admitted.1)?;
                 let bound = admitted.0.concurrency_bound(self.concurrency);

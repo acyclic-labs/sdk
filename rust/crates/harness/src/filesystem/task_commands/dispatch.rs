@@ -8,7 +8,7 @@ where
 {
     pub(super) async fn execute_observed(
         &self,
-        context: WorkerContext,
+        context: Arc<TaskContext>,
         fence: LeaseFence,
         command: WorkflowCommand,
         payload: Value,
@@ -19,13 +19,12 @@ where
         use crate::wire::ErrorCode;
         mail::require_native_observer(io)?;
         let task = context
-            .context()
             .durable_task_id()
             .ok_or_else(|| boundary(io, ErrorCode::Unauthorized, "command has no admitted task"))?;
         let admission = self.runtime.admission_observed(task, io).await?;
-        if context.context().scope().grants() != &admission.grants
-            || context.context().scope().limits() != admission.limits
-            || context.context().scope().run_limits() != admission.run_limits
+        if context.as_ref().scope().grants() != &admission.grants
+            || context.as_ref().scope().limits() != admission.limits
+            || context.as_ref().scope().run_limits() != admission.run_limits
         {
             return Err(boundary(
                 io,
@@ -41,8 +40,8 @@ where
             ));
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if let WorkerContext::Native(shared) = &context {
-            if !shared.as_ref().original_task_binding_matches(task, &fence) {
+        if io.is_some() {
+            if !context.original_task_binding_matches(task, &fence) {
                 return Err(boundary(
                     io,
                     ErrorCode::Unauthorized,
@@ -105,7 +104,7 @@ where
             TASK_ADMIT_COMMAND_KIND | TASK_OBSERVE_COMMAND_KIND => {
                 self.task_command(
                     task,
-                    context.context(),
+                    context.as_ref(),
                     &fence,
                     &command,
                     payload,
@@ -246,22 +245,14 @@ where
                 let ready = self
                     .runtime
                     .tool_approval_ready(context, definition, &invocation, io);
-                #[cfg(not(target_arch = "wasm32"))]
-                if io.is_some() {
-                    return ready.await;
-                }
-                Box::pin(ready).await
+                ready.await
             }
             MODEL_TASK_COMMAND_KIND => {
                 let input: ModelTaskCommand = mail::decode_command(payload, io)?;
                 let ready =
                     self.runtime
                         .model_approval_ready(context, command.operation_id, &input, io);
-                #[cfg(not(target_arch = "wasm32"))]
-                if io.is_some() {
-                    return ready.await;
-                }
-                Box::pin(ready).await
+                ready.await
             }
             _ => Ok(false),
         }

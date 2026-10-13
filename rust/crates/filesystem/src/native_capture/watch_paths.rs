@@ -8,14 +8,12 @@ pub(super) enum CurrentRecord {
 
 /// What a hinted path held before this batch: a renamed record, nothing if it was moved away, or the checkout's current binding.
 pub(super) fn current_record(
-    rename_records: &Vec<(NamespacePath, FileRecord)>,
-    moved_away: &Vec<(NamespacePath, ())>,
+    rename_records: &[(NamespacePath, Option<FileRecord>)],
     path: &NamespacePath,
     meter: &NativeMaterializationWork,
 ) -> Result<CurrentRecord, CaptureError> {
     Ok(match capture_position(rename_records, path, meter)? {
-        Ok(index) => CurrentRecord::Known(Some(rename_records[index].1)),
-        Err(_) if capture_position(moved_away, path, meter)?.is_ok() => CurrentRecord::Known(None),
+        Ok(index) => CurrentRecord::Known(rename_records[index].1),
         Err(_) => CurrentRecord::Lookup,
     })
 }
@@ -23,7 +21,8 @@ pub(super) fn current_record(
 pub(super) fn watch_ancestor_candidates<'a>(
     paths: impl Iterator<Item = &'a NamespacePath>,
     ordinary: &Vec<(NamespacePath, (CurrentRecord, CaptureIntent))>,
-    rename_records: &Vec<(NamespacePath, FileRecord)>,
+    rename_records: &Vec<(NamespacePath, Option<FileRecord>)>,
+    renamed_paths: usize,
     policy: &CapturePolicy,
     maximum_paths: usize,
     limits: crate::model::VolumeLimits,
@@ -34,13 +33,14 @@ pub(super) fn watch_ancestor_candidates<'a>(
         for depth in (1..path.depth()).rev() {
             let parent = clone_capture_prefix(path, depth, limits, meter)?;
             if capture_position(ordinary, &parent, meter)?.is_err()
-                && capture_position(rename_records, &parent, meter)?.is_err()
+                && !capture_position(rename_records, &parent, meter)?
+                    .is_ok_and(|index| rename_records[index].1.is_some())
                 && !capture_excludes(policy, &parent, meter)?
                 && capture_position(&ancestors, &parent, meter)?.is_err()
             {
                 if combined_path_count_exceeds(
                     ancestors.len() + ordinary.len(),
-                    rename_records.len() + 1,
+                    renamed_paths + 1,
                     maximum_paths,
                 ) {
                     return Err(CaptureError::InvalidOptions);

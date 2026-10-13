@@ -12,44 +12,6 @@ fn work(cancellation: &acyclic_fs::CancellationToken) -> Result<NativeMaterializ
 }
 
 #[tokio::test]
-async fn protected_tool_acceptance_enables_original_admission() -> Result<()> {
-    use crate::durable_host::tests::created_resource_access::{
-        NativeCustomerFixture, NativeCustomerRuntime,
-    };
-    let fixture =
-        NativeCustomerFixture::new_with_grants(&[], crate::tool::ToolRegistry::default()).await?;
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let original = work(&cancellation)?;
-    let io = crate::filesystem::PreparationIo::from_native_work(&original)?;
-    let fence =
-        NativeCustomerRuntime::original_lease_fence_with_io(&fixture.creation.root_lease, &io)?;
-    let shared = fixture
-        .runtime
-        .task_context_with_native_work(fixture.creation.root, &fence, &original)
-        .await?;
-    let tool = ToolContext::new(
-        shared,
-        crate::OperationId::from_bytes([122; 16]),
-        "protected-admission",
-        Some(&io),
-    )?;
-    assert!(matches!(
-        tool.original_admission_with_native_work(&original),
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            ..
-        })
-    ));
-    tool.record_native_tool_acceptance(&original)?;
-    let (admission, _custody) = tool.original_admission_with_native_work(&original)?.await?;
-    assert_eq!(
-        admission.operation_id,
-        fixture.creation.root_lease.operation.operation_id
-    );
-    Ok(())
-}
-
-#[tokio::test]
 async fn cancelled_shared_context_preserves_original_cause_and_metadata_custody() -> Result<()> {
     let fixture = CreationFixture::new().await?;
     let cancellation = acyclic_fs::CancellationToken::new();
@@ -109,20 +71,6 @@ async fn shared_native_content_uses_original_owner_and_keeps_real_output_custody
         .durable_context(task, created.request.child.operation_id, Some(&io))
         .await?;
     let content_io = crate::executor::PreparationIo::from_native_work(&original)?;
-    let tool = ToolContext::new(
-        Arc::clone(&shared),
-        crate::OperationId::from_bytes([120; 16]),
-        "readonly-admission",
-        Some(&content_io),
-    )?;
-    assert!(matches!(
-        tool.original_admission_with_native_work(&original),
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            ..
-        })
-    ));
-    drop(tool);
     let owner = fixture
         .host
         .journal_owner(task, &fence, Some(&io))

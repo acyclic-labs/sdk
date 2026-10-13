@@ -5,7 +5,7 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
     stager: &Checkout<A, O>,
     source_root: &HostRoot,
     host_path: &CaptureHostPath,
-    snapshot: &HostSnapshot,
+    snapshot: &HostStat,
     maximum_extent_spans: u32,
     meter: &NativeMaterializationWork,
     staged_file_bytes: &mut u64,
@@ -82,7 +82,6 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
         .stat(host_path, &mut meter.clone())
         .map_err(capture_demand_error)?;
     ensure_same_host_node(snapshot, &current)?;
-    meter.cancellation().check()?;
     meter.clone().check().map_err(capture_demand_error)?;
     let bytes = vector_bytes(&ranges)
         .checked_add(native_bytes)

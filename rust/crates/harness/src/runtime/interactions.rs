@@ -181,7 +181,7 @@ impl TaskContext {
         let mailbox = self.owned_mailbox.as_ref().ok_or_else(|| {
             Error::Unauthorized("mail requires a retained task mailbox owner".into())
         })?;
-        mailbox.validate_scope(&self.scope)?;
+        mailbox.validate_scope(&self.scope, None)?;
         mailbox.send(recipient, message_id, payload).await
     }
 
@@ -209,7 +209,7 @@ impl TaskContext {
         let mailbox = self.owned_mailbox.as_ref().ok_or_else(|| {
             Error::Unauthorized("parcel read requires a retained mailbox owner".into())
         })?;
-        mailbox.validate_scope(&self.scope)?;
+        mailbox.validate_scope(&self.scope, None)?;
         mailbox.read_received(receive_operation, item).await
     }
 
@@ -221,7 +221,7 @@ impl TaskContext {
         let mailbox = self.owned_mailbox.as_ref().ok_or_else(|| {
             Error::Unauthorized("inbox requires a retained task mailbox owner".into())
         })?;
-        mailbox.validate_scope(&self.scope)?;
+        mailbox.validate_scope(&self.scope, None)?;
         mailbox.inbox(after, limit).await
     }
 
@@ -230,7 +230,7 @@ impl TaskContext {
         &self,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<&Arc<dyn OwnedTaskMailbox>> {
-        self.owned_task_binding_with_native_work(work)?;
+        self.owned_task_binding(Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
         self.owned_mailbox.as_ref().ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized,
             reason: "mail requires an original native task mailbox owner",

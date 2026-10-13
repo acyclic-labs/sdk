@@ -22,7 +22,7 @@ where
         check_cancellation(cancellation, io)?;
         let owner = self.source_owner(context.task(), cancellation, io).await?;
         let caller = self
-            .authenticate_caller(context.task(), Some(&owner), true, io)
+            .authenticate(context, Some(&owner), true, cancellation, io)
             .await?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io {
@@ -61,51 +61,29 @@ where
         let allocation = allocation.ok_or_else(|| {
             stock_boundary(io, ErrorCode::Unauthorized, "merge has no notice binding")
         })?;
-        let runtime = self.runtime(io)?;
-        let ordinary;
-        #[cfg(not(target_arch = "wasm32"))]
-        let native;
-        let snapshots = 'snapshots: {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-                native = {
-                    let io = crate::executor::PreparationIo::from_native_work(work)?;
-                    let (snapshots, retained) = runtime
-                        .task_host()
-                        .observe_volume_snapshots(arguments.source, &mut Some(&mut io.history_io()))
-                        .await?;
-                    (snapshots, io.take_native_custody(retained)?)
-                };
-                break 'snapshots native.0.as_slice();
-            }
-            ordinary = runtime
-                .inspect_source(caller.task, arguments.source)
-                .await?;
-            if ordinary
-                .volumes()
+        let (snapshots, _hold) = self.snapshots(arguments.source, io).await?;
+        if io.is_none()
+            && (snapshots
                 .iter()
                 .filter(|snapshot| snapshot.volume == source.private_volume)
                 .count()
                 != 1
                 || source.result_volume.as_ref().is_some_and(|result| {
-                    ordinary
-                        .volumes()
+                    snapshots
                         .iter()
                         .filter(|snapshot| &snapshot.volume == result)
                         .count()
                         != 1
-                })
-            {
-                return Err(stock_boundary(
-                    io,
-                    ErrorCode::Unauthorized,
-                    "merge source differs from its admitted allocation",
-                ));
-            }
-            ordinary.volumes()
-        };
+                }))
+        {
+            return Err(stock_boundary(
+                io,
+                ErrorCode::Unauthorized,
+                "merge source differs from its admitted allocation",
+            ));
+        }
         let mut selected = None;
-        for snapshot in snapshots {
+        for snapshot in &snapshots {
             crate::model::charge_items(io, 1)?;
             if snapshot.volume.class() == crate::conversation::VolumeClass::Project
                 && (snapshot.volume != source.project || selected.replace(snapshot).is_some())

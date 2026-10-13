@@ -263,13 +263,13 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                     );
                     let (admission, custody) = runtime
                         .harness()
-                        .registered_child_admission_with_native_work(
+                        .registered_admission(
                             operation,
                             "acyclic.fork_preparation",
                             "1",
                             input,
-                            caller,
-                            context.scope(),
+                            Some((caller, context.scope())),
+                            None,
                             work,
                         )?;
                     io.expect("native admission")

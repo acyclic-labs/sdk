@@ -36,43 +36,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         })
     }
 
-    pub(crate) async fn apply_group_with_accounting(
-        &mut self,
-        input: Owned<Vec<GroupedChange>>,
-        accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<Owned<Vec<Result<GroupedOutcome, FsError>>>, FsError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = accounting.native_work() {
-            let expected = input
-                .value
-                .capacity()
-                .checked_mul(size_of::<GroupedChange>())
-                .ok_or(WorkError::Overflow)? as u64;
-            let KernelOwnedAllocation::NativeOriginal(guard) = &input.allocation else {
-                return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
-            };
-            if guard.bytes() != expected
-                || !guard.work().shares_ledger(original)
-                || !guard.work().shares_resource_allowance(original)
-            {
-                return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
-            }
-        }
-        let mut output =
-            Owned::<Vec<Result<GroupedOutcome, FsError>>>::allocate(input.value.len(), accounting)?;
-        let mut input = input;
-        let mut metadata = AuthoredMetadataCache::new();
-        for change in input.value.drain(..) {
-            output.value.push(
-                self.apply_grouped_change(change, &mut metadata, accounting, cancellation)
-                    .await,
-            );
-        }
-        input.retire(accounting)?;
-        Ok(output)
-    }
-
     async fn apply_grouped_change(
         &mut self,
         change: GroupedChange,

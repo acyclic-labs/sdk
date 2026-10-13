@@ -48,7 +48,10 @@ impl ForkToolArguments {
     ) -> Result<TaskId> {
         limits.validate(work)?;
         if let Some(observer) = work.as_deref_mut() {
-            observer.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+            observer.codec_charge(crate::executor::json::JsonCodecCharge::Work {
+                bytes: 0,
+                items: 1,
+            })?;
         }
         if self.msg.len() as u64 > limits.file_bytes {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -126,4 +129,27 @@ pub struct ForkPreparationLimits {
     pub work: u64,
     /// Complete canonical request and provider IO allowance.
     pub bytes: u64,
+}
+
+pub(in crate::filesystem) fn derive_operation(
+    domain: &[u8],
+    fields: &[[u8; 16]],
+    io: Option<&crate::filesystem::PreparationIo>,
+) -> Result<OperationId> {
+    if let Some(io) = io {
+        let hashed = acyclic_fs::WorkCounters {
+            bytes_hashed: domain.len() as u64 + fields.len() as u64 * 16,
+            ..Default::default()
+        };
+        io.preflight(hashed)?;
+        io.charge(hashed)?;
+    }
+    let mut hash = blake3::Hasher::new();
+    hash.update(domain);
+    for field in fields {
+        hash.update(field);
+    }
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+    Ok(OperationId::from_bytes(bytes))
 }

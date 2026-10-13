@@ -67,12 +67,11 @@ pub(super) fn await_recovery_worker(
     let shared = Arc::clone(&owner.shared);
     drop(owner);
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !shared
-        .mailbox
+    while shared
+        .state
         .lock()
         .unwrap_or_else(|error| error.into_inner())
-        .snapshot
-        .is_none()
+        .is_some()
     {
         if Instant::now() >= deadline {
             return Err("actual administrative state did not retire".into());

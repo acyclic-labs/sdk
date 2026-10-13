@@ -12,8 +12,7 @@ use acyclic_harness::{
     filesystem::{FilesystemExecutionJournal, FilesystemHost},
     interaction::{Interaction, InteractionOutcome, InteractionResponse},
     mcp::{
-        McpCatalog, McpDiscoveryPolicy, McpSchemaExposure,
-        McpToolDefinition, McpToolTransport,
+        McpCatalog, McpDiscoveryPolicy, McpSchemaExposure, McpToolDefinition, McpToolTransport,
         http::{HttpMcpTransport, NativeMcpHttpProvider},
     },
     resources::ProviderRef,
@@ -118,23 +117,29 @@ impl ExecutionJournal for FaultJournal {
             self.inner.stage(op, key, bytes, media, io)?.await
         })
     }
-    fn load<'a>(&'a self, file: &'a FileRef,
+    fn load<'a>(
+        &'a self,
+        file: &'a FileRef,
         io: Option<&'a acyclic_harness::conversation::ContentIo>,
-    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
+    {
         self.inner.load(file, io)
     }
     fn open_interaction<'a>(
         &'a self,
         id: InteractionId,
-        interaction: Interaction,
-    ) -> BoxFuture<'a, Result<()>> {
-        self.inner.open_interaction(id, interaction)
+        interaction: &'a Interaction,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, ()>> {
+        self.inner.open_interaction(id, interaction, io)
     }
     fn interaction_outcome<'a>(
         &'a self,
         id: InteractionId,
-    ) -> BoxFuture<'a, Result<Option<InteractionOutcome>>> {
-        self.inner.interaction_outcome(id)
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, Option<InteractionOutcome>>>
+    {
+        self.inner.interaction_outcome(id, io)
     }
 }
 
@@ -145,23 +150,27 @@ impl TaskStateProvider for AdmittedTask {
     fn policy_identity(&self) -> Option<acyclic_harness::registry::ComponentIdentity> {
         None
     }
-    async fn observe_admission(&self, _: TaskId) -> Result<TaskAdmissionRecord> { Err(Error::Unsupported("fixture scope already admitted".into()))
+    async fn observe_admission(&self, _: TaskId) -> Result<TaskAdmissionRecord> {
+        Err(Error::Unsupported("fixture scope already admitted".into()))
     }
-    async fn resume_scope(
-        &self,
-        _: TaskId,
-        _: OperationId,
-    ) -> Result<RuntimeScope> { Ok(self.0.clone())
+    async fn resume_scope(&self, _: TaskId, _: OperationId) -> Result<RuntimeScope> {
+        Ok(self.0.clone())
     }
-    async fn outcome(&self, _: TaskId) -> Result<Option<Outcome<Value>>> { Ok(None)
+    async fn outcome(&self, _: TaskId) -> Result<Option<Outcome<Value>>> {
+        Ok(None)
     }
-    async fn cancel(&self, _: TaskId) -> Result<()> { Ok(())
+    async fn cancel(&self, _: TaskId) -> Result<()> {
+        Ok(())
     }
 }
 struct Projection;
 impl ToolProjection for Projection {
-    fn project(&self, _: &ToolInvocation, result: &ToolResult,
-        work: acyclic_harness::NativeWork<'_>) -> Result<(Value, acyclic_harness::NativeCustody)> {
+    fn project(
+        &self,
+        _: &ToolInvocation,
+        result: &ToolResult,
+        work: acyclic_harness::NativeWork<'_>,
+    ) -> Result<(Value, acyclic_harness::NativeCustody)> {
         self.supports_native_projection(work)?;
         Ok((json!({"kind":"json","value":result.value}), None))
     }
@@ -183,10 +192,16 @@ fn verify_transport_context(context: &ToolContext) -> Result<()> {
 }
 
 impl McpToolTransport for ScopedHttp {
-    fn call<'a>(&'a self, operation: OperationId, name: &'a str, arguments: Value,
-        context: Option<ToolContext>) -> BoxFuture<'a, Result<Value>> {
+    fn call<'a>(
+        &'a self,
+        operation: OperationId,
+        name: &'a str,
+        arguments: Value,
+        context: Option<ToolContext>,
+    ) -> BoxFuture<'a, Result<Value>> {
         Box::pin(async move {
-            let context = context.ok_or_else(|| Error::Unsupported("durable task context required".into()))?;
+            let context = context
+                .ok_or_else(|| Error::Unsupported("durable task context required".into()))?;
             if context.operation_id() != operation {
                 return Err(Error::Unauthorized("durable MCP operation changed".into()));
             }
@@ -194,10 +209,14 @@ impl McpToolTransport for ScopedHttp {
             self.0.call(operation, name, arguments, Some(context)).await
         })
     }
-    fn reconcile<'a>(&'a self, operation: OperationId, context: Option<ToolContext>)
-        -> BoxFuture<'a, Result<Option<Value>>> {
+    fn reconcile<'a>(
+        &'a self,
+        operation: OperationId,
+        context: Option<ToolContext>,
+    ) -> BoxFuture<'a, Result<Option<Value>>> {
         Box::pin(async move {
-            let context = context.ok_or_else(|| Error::Unsupported("durable task context required".into()))?;
+            let context = context
+                .ok_or_else(|| Error::Unsupported("durable task context required".into()))?;
             if context.operation_id() != operation {
                 return Err(Error::Unauthorized("durable MCP operation changed".into()));
             }
@@ -242,28 +261,53 @@ async fn bind_conversation(
             id: "mcp-fault".into(),
         },
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+        SchemaRegistry::new(),
+        None,
+        acyclic_harness::store::default_projection_read_limits(),
+        acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
+        None,
+        &mut None,
+    )
     .await?;
     aggregate
-        .execute(Command {
-            operation_id: OperationId::from_bytes([45; 16]),
-            idempotency_key: IdempotencyKey::new("bind:mcp-fault")?,
-            expected_revision: 0,
-            scope: issuer.issue("owner", &Capabilities::new(["conversation:bind"]), None, None, &mut None).expect("scope proof"),
-            causal_parent: None,
-            action: Action::BindConversation { agent },
-        }, #[cfg(feature = "filesystem")] None, &mut None)
+        .execute(
+            Command {
+                operation_id: OperationId::from_bytes([45; 16]),
+                idempotency_key: IdempotencyKey::new("bind:mcp-fault")?,
+                expected_revision: 0,
+                scope: issuer
+                    .issue(
+                        "owner",
+                        &Capabilities::new(["conversation:bind"]),
+                        None,
+                        None,
+                        &mut None,
+                    )
+                    .expect("scope proof"),
+                causal_parent: None,
+                action: Action::BindConversation { agent },
+            },
+            #[cfg(feature = "filesystem")]
+            None,
+            &mut None,
+        )
         .await?;
     Ok(())
 }
 
 async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, AuthorityIssuer, Scope)> {
-    let provider = ProviderRef::new("mcp-fault".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let provider = ProviderRef::new(
+        "mcp-fault".into(),
+        "filesystem".into(),
+        "2".into(),
+        &mut None,
+    )?;
     let host = FilesystemHost::new(
         Fs::local(LocalOptions::new(root.join("fs")))
             .await
             .map_err(|error| Error::Storage(error.to_string()))?,
-        &provider, None,
+        &provider,
+        None,
     )?;
     let agent = AgentId::from_bytes([41; 16]);
     let private = VolumeRef::new(
@@ -271,6 +315,7 @@ async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, Author
         "scratch",
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent),
+        &mut None,
     )?;
     if create {
         host.create_volume(&private).await?;
@@ -283,17 +328,25 @@ async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, Author
             id: "mcp-fault".into(),
         },
     );
-    let signed = issuer.issue("agent", &Capabilities::new([
-            private.capability(VolumeOperation::Read)?,
-            private.capability(VolumeOperation::Write)?,
-            "mcp:install:fixture".into(),
-            "interaction:open".into(),
-            "interaction:resolve".into(),
-            format!(
-                "interaction:respond:{}",
-                InteractionId::from_bytes([47; 16])
-            ),
-        ]), Some(agent), None, &mut None).expect("scope proof");
+    let signed = issuer
+        .issue(
+            "agent",
+            &Capabilities::new([
+                private.capability(VolumeOperation::Read, &mut None)?,
+                private.capability(VolumeOperation::Write, &mut None)?,
+                "mcp:install:fixture".into(),
+                "interaction:open".into(),
+                "interaction:resolve".into(),
+                format!(
+                    "interaction:respond:{}",
+                    InteractionId::from_bytes([47; 16])
+                ),
+            ]),
+            Some(agent),
+            None,
+            &mut None,
+        )
+        .expect("scope proof");
     let stream = Arc::new(
         LocalStream::open(root.join("stream"), LocalStreamLimits::default())
             .await
@@ -306,9 +359,11 @@ async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, Author
         stream,
         host,
         &private,
-        &issuer.verifier(&mut None).expect("verifier copy"), &acyclic_harness::core::SchemaRegistry::new(),
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &acyclic_harness::core::SchemaRegistry::new(),
         &signed,
-        8192, None,
+        8192,
+        None,
     )?);
     if create {
         let operation = OperationId::from_bytes([46; 16]);
@@ -316,12 +371,13 @@ async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, Author
         journal
             .open_interaction(
                 interaction,
-                Interaction::approval(
+                &Interaction::approval(
                     "Install this exact MCP catalog".into(),
                     operation,
                     catalog().installation_digest(None, 1, 8192)?,
                 )?,
-            )
+                None,
+            )?
             .await?;
         journal
             .resolve_interaction(
@@ -487,11 +543,12 @@ async fn phase(
                 name: definition.name.clone(),
                 arguments: json!({}),
             },
-            &ToolContext::new(std::sync::Arc::new(context), op, &(op.to_string()), None)?,
+            &ToolContext::new(context, op, &(op.to_string()), None)?,
             None,
             false,
         )?
-        .await.map(|result| result.0)
+        .await
+        .map(|result| result.0)
 }
 
 #[tokio::test]
