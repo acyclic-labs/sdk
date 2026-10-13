@@ -78,7 +78,7 @@ pub(super) fn host_windows_metadata(
             device: u64::from(metadata.volume_serial_number),
             object: u64::from_ne_bytes(metadata.raw.FileId.to_ne_bytes()),
         },
-        links: Some(u32::try_from(metadata.nlink()).map_err(|_| crate::WorkError::Overflow)?),
+        links: Some(metadata.raw.NumberOfLinks),
         size: metadata.len(),
         attributes: metadata.raw.FileAttributes,
         created: if metadata.raw.CreationTime < 0 {
