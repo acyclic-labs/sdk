@@ -59,6 +59,7 @@ test('release whitespace preserves byte-exact transport artifacts and generated 
   'patches/example.patch':'@@ -1 +1 @@\n \n',
   'rust/crates/harness-codex/fixtures/codex-0.155.1/help-exec.txt':'Usage\n          \n',
   'typescript/packages/actors/src/generated/ErrorMetadata.ts':'export type ErrorMetadata = { \ncode: string, \n};\n',
+  'typescript/packages/actors/src/generated/semantic/actors/ActorId.ts':'export type ActorId = { \nvalue: string, \n};\n',
  };
  for(const [path,bytes] of Object.entries(artifacts)){mkdirSync(join(root,path,'..'),{recursive:true});writeFileSync(join(root,path),bytes);}
  commit('record producer artifacts');commit('later source');
@@ -70,4 +71,10 @@ test('artifact whitespace rules still reject handwritten source errors',()=>fixt
  git('tag','acyclic-v0.1.0');mkdirSync(join(root,'typescript/packages/actors/src'),{recursive:true});
  writeFileSync(join(root,'typescript/packages/actors/src/client.ts'),'export const value=1; \n');commit('source whitespace');commit('later commit');
  const result=check();assert.notEqual(result.status,0);assert.match(result.stdout,/client\.ts.*trailing whitespace/);
+}));
+
+test('generated declaration whitespace still rejects extra blank lines at EOF',()=>fixture(({root,git,commit,check})=>{
+ git('tag','acyclic-v0.1.0');mkdirSync(join(root,'typescript/packages/actors/src/generated/semantic/actors'),{recursive:true});
+ writeFileSync(join(root,'typescript/packages/actors/src/generated/semantic/actors/ActorId.ts'),'export type ActorId = string; \n\n');commit('generated EOF error');commit('later commit');
+ const result=check();assert.notEqual(result.status,0);assert.match(result.stdout,/ActorId\.ts.*new blank line at EOF/);
 }));
