@@ -49,7 +49,10 @@ pub(super) fn write_all_batch_owned(file: &File, writes: Vec<OwnedWrite>) -> io:
     Ok(())
 }
 
-#[allow(unsafe_code)]
+#[allow(
+    unsafe_code,
+    reason = "fsync and the durability barrier act only on the held descriptor"
+)]
 pub(super) fn sync_once(file: &File, durability: crate::Durability) -> io::Result<()> {
     use std::os::fd::AsRawFd as _;
     // SAFETY: both operations act only on the live descriptor.
@@ -59,7 +62,11 @@ pub(super) fn sync_once(file: &File, durability: crate::Durability) -> io::Resul
             crate::Durability::Barrier => libc::fcntl(file.as_raw_fd(), libc::F_BARRIERFSYNC),
         }
     };
-    if result == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 #[cfg(test)]

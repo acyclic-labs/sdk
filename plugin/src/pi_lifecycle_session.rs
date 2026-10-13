@@ -109,7 +109,7 @@ impl PiSession {
             ));
         };
         let _caller_source = if caller != root.task_id {
-            let live = host.live_source(caller, &work).await?.ok_or_else(|| {
+            let live = host.live_source(caller, work).await?.ok_or_else(|| {
                 Error::Invalid(
                     "Pi cancellation caller has no current original native owner".to_owned(),
                 )
@@ -155,7 +155,7 @@ impl PiSession {
                 .runtime
                 .runtime
                 .task_host()
-                .outcome_with_native_work(*task, &work)?
+                .outcome_with_native_work(*task, work)?
                 .await
             {
                 Ok(receipt) => Some(receipt),
@@ -171,12 +171,12 @@ impl PiSession {
                 )
             });
             if !terminal {
-                retain_first_failure(&mut failure, host.signal_stop_child(*task, &work).await);
+                retain_first_failure(&mut failure, host.signal_stop_child(*task, work).await);
             }
             if !self.native_jobs.contains_key(task) {
                 match async {
                     let mut io = acyclic_harness::store::HistoryWork::new(
-                        PreparationIo::from_native_work(&work)?,
+                        PreparationIo::from_native_work(work)?,
                     );
                     HistoryIo::retain_owned(
                         &mut io,
@@ -214,16 +214,16 @@ impl PiSession {
             }
         }
         for task in tasks {
-            if let Err(error) = host.signal_stop_child(*task, &work).await {
+            if let Err(error) = host.signal_stop_child(*task, work).await {
                 retain_first_failure(&mut failure, Err(error));
             }
         }
-        self.join_native_jobs(&tasks, &mut failure).await;
+        self.join_native_jobs(tasks, &mut failure).await;
         self.drain_native_tasks(
             &host,
-            &tasks,
+            tasks,
             Some(RouteLifecycle::Frozen),
-            &work,
+            work,
             &mut failure,
         )
         .await;
@@ -401,7 +401,7 @@ impl PiSession {
     ) -> RootResult<()> {
         let mut failure = None;
         let graph =
-            pi_recovery::observe_pi_session(&self.runtime.runtime, &self.state, &work).await;
+            pi_recovery::observe_pi_session(&self.runtime.runtime, &self.state, work).await;
         let authenticated = graph.is_ok();
         let _graph_receipt = match graph {
             Ok(receipt) => Some(receipt),
@@ -445,7 +445,7 @@ impl PiSession {
         let native = if tasks.is_empty() {
             None
         } else {
-            match self.native_host_with_native_work(&work) {
+            match self.native_host_with_native_work(work) {
                 Ok(native) => Some(native),
                 Err(error) => {
                     retain_first_failure(&mut failure, Err(error));
@@ -479,7 +479,7 @@ impl PiSession {
         }
         if let Some(native) = &native {
             for task in &tasks {
-                if let Err(error) = native.signal_stop_child(*task, &work).await {
+                if let Err(error) = native.signal_stop_child(*task, work).await {
                     retain_first_failure(&mut failure, Err(error));
                 }
             }
@@ -490,7 +490,7 @@ impl PiSession {
                 native,
                 &tasks,
                 (deactivate && authenticated).then_some(RouteLifecycle::Frozen),
-                &work,
+                work,
                 &mut failure,
             )
             .await;
@@ -599,11 +599,10 @@ impl PiSession {
 }
 
 fn retain_first_failure(failure: &mut Option<Error>, result: RootResult<()>) {
-    if failure.is_none() {
-        if let Err(error) = result {
+    if failure.is_none()
+        && let Err(error) = result {
             *failure = Some(error);
         }
-    }
 }
 
 fn finish_native_drain(failure: Option<Error>) -> RootResult<()> {
@@ -641,7 +640,7 @@ fn validate_created_native_route(
         || !binding.project_volumes.contains_key(&key)
         || route.roots.len() != 1
         || !route.roots.contains_key(&key)
-        || route.context_id != pi_fork::derived(plan.original, "fork", &work)?.into_bytes()
+        || route.context_id != pi_fork::derived(plan.original, "fork", work)?.into_bytes()
         || !matches!(binding.scratch.allocation, PiScratchAllocation::Created(_))
         || binding
             .results
@@ -754,7 +753,7 @@ async fn original_native_first_dispatch_pending(
     let pin = history.pin(0, Some(&mut io)).await?;
     let effect = acyclic_harness::effect_host::task_effect_id(
         task,
-        pi_fork::derived(plan.original, "native-effect", &work)?,
+        pi_fork::derived(plan.original, "native-effect", work)?,
         &mut Some(&mut &PreparationIo::from_native_work(work)?),
     )?;
     let observed = history.effect(&pin, effect, limits, Some(&mut io)).await?;

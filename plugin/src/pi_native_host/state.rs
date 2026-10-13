@@ -111,8 +111,6 @@ impl NativeGate {
 
 pub(super) struct BoundEffect {
     pub(super) staged: Option<WorkflowCommand>,
-    pub(super) provider:
-        Arc<NativeProcessProvider<LocalStream, LocalAuthorityBackend, LocalObjectBackend>>,
     pub(super) work: NativeMaterializationWork,
     pub(super) effects: Arc<Effects>,
     pub(super) owner: Arc<TaskJournalOwner<LocalStream>>,
@@ -170,7 +168,7 @@ pub(super) struct NativeEntry {
     pub(super) run: tokio::sync::Mutex<()>,
     pub(super) operation_cancellation: CancellationToken,
     // Every physical payload and retained SDK proof drops before its birth custody.
-    pub(super) native_custody: NativeAllocation,
+    pub(super) _native_custody: NativeAllocation,
 }
 
 impl NativeEntry {
@@ -189,7 +187,7 @@ impl NativeEntry {
             handles: tokio::sync::Mutex::new(LiveHandles::default()),
             run: tokio::sync::Mutex::new(()),
             operation_cancellation: CancellationToken::new(),
-            native_custody: custody,
+            _native_custody: custody,
         })
     }
 }
@@ -229,12 +227,12 @@ impl PiNativeCommandHost {
 
     pub(super) fn prepared(&self, task: TaskId) -> Option<Arc<PreparedPiFork>> {
         let entry = self.find_entry(task)?;
-        let prepared = entry
+
+        entry
             .prepared
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        prepared
+            .clone()
     }
 
     pub(super) async fn bind_invocation_work(

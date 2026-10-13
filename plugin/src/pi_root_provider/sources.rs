@@ -55,8 +55,8 @@ pub(crate) async fn guard_root_preparation_source_with_native_work(
         )
         .await?;
     let identity = work.root_identity(Path::new(path))?;
-    if let Some(expected) = expected {
-        if identity != expected {
+    if let Some(expected) = expected
+        && identity != expected {
             return Err(Error::NativeWork {
                 cause: NativeTreeMaterializationError::AllocationChanged {
                     expected,
@@ -65,7 +65,6 @@ pub(crate) async fn guard_root_preparation_source_with_native_work(
                 custody: None,
             });
         }
-    }
     current_owner
         .verify(
             false,
@@ -298,44 +297,28 @@ pub(crate) async fn prove_root_project_source_with_native_work(
     Ok(())
 }
 impl PiRootProvider {
-    pub(super) async fn acquire_original_source_with_native_work(
-        &self,
-        key: &str,
-        path: &str,
+    pub(super) fn acquire_original_source_with_native_work<'a>(
+        &'a self,
+        key: &'a str,
+        path: &'a str,
         admission: SharedRootAdmission,
         expected: Option<acyclic_fs::NativeRootIdentity>,
-        work: &NativeMaterializationWork,
-    ) -> Result<Arc<SharedPhysicalRoot>> {
-        let owner = self.execution_owner()?;
-        let pinned = std::sync::Mutex::new(expected);
-        self.shared_roots
-            .acquire_with_native_work(Path::new(path), admission, work, || {
-                let pinned = &pinned;
-                async move {
-                    let previous = *pinned.lock().map_err(|_| {
-                        Self::native_failure("root source identity guard is poisoned")
-                    })?;
-                    let identity = guard_root_preparation_source_with_native_work(
+        work: &'a NativeMaterializationWork,
+    ) -> impl std::future::Future<Output = Result<Arc<SharedPhysicalRoot>>> + Send + 'a {
+        async move {
+            let owner = self.execution_owner()?;
+            self.shared_roots
+                .acquire_with_native_work(Path::new(path), admission, work, || {
+                    guard_root_preparation_source_with_native_work(
                         self.preparation.context.as_ref(),
                         owner,
                         &self.preparation,
                         key,
-                        previous,
+                        expected,
                         work,
                     )
-                    .await?;
-                    let mut original = pinned.lock().map_err(|_| {
-                        Self::native_failure("root source identity guard is poisoned")
-                    })?;
-                    if original.is_some_and(|previous| previous != identity) {
-                        return Err(Self::native_failure(
-                            "root identity changed between original source guards",
-                        ));
-                    }
-                    *original = Some(identity);
-                    Ok(identity)
-                }
-            })
-            .await
+                })
+                .await
+        }
     }
 }

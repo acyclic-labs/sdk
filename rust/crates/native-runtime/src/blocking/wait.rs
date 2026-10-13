@@ -79,7 +79,7 @@ pub(crate) fn measured_completion_meter<T>(
 
 pub(crate) fn wait_measured_completion<T>(
     task: impl Future<Output = io::Result<T>>,
-    meter: Arc<dyn NativeReadMeter>,
+    meter: &Arc<dyn NativeReadMeter>,
     prepared_wake: Option<Arc<BlockingWaitWake>>,
     mut deadline: Option<std::time::Instant>,
     cancellation: impl Future<Output = ()>,
@@ -87,7 +87,7 @@ pub(crate) fn wait_measured_completion<T>(
 ) -> io::Result<T> {
     let wake = match prepared_wake {
         Some(wake) => wake,
-        None => allocate_blocking_wait_wake(&meter)?,
+        None => allocate_blocking_wait_wake(meter)?,
     };
     let waker = Waker::from(Arc::clone(&wake));
     let mut context = Context::from_waker(&waker);

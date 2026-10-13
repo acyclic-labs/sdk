@@ -68,7 +68,6 @@ pub(super) fn shared_sources(
     config: crate::model::VolumeConfig,
 ) -> Result<(MemorySource, MemorySource), Box<dyn std::error::Error>> {
     use crate::model::{AccessMode, CheckoutMode, ConsistencyMode, MutationMode};
-    acyclic_native_runtime::initialize_native_io_services()?;
     let checkouts = memory_checkout(
         config,
         CheckoutMode {
@@ -118,7 +117,6 @@ impl crate::native_mount::NativeMountCallbackGuard for FuseWriteGuard {
 #[test]
 pub(super) fn installed_write_denial_preserves_reads_and_post_effect_prefix()
 -> Result<(), Box<dyn std::error::Error>> {
-    acyclic_native_runtime::initialize_native_io_services()?;
     let config = posix_config();
     let checkouts = memory_checkout(
         config,

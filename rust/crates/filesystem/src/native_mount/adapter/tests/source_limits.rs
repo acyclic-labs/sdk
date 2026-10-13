@@ -121,7 +121,6 @@ fn native_source_io_control(
 #[test]
 fn source_io_limit_cancellation_and_retirement_cases() -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_native_runtime::{NativeFile, NativeFileMeter};
-    acyclic_native_runtime::initialize_native_io_services()?;
     let borrowed = source(FilesystemProfile::Portable)?;
     let fixture = tempfile::tempdir()?;
     let path = fixture.path().join("payload");
@@ -219,7 +218,6 @@ fn source_io_limit_cancellation_and_retirement_cases() -> Result<(), Box<dyn std
 #[test]
 fn native_source_io_projection_rejects_foreign_root_and_resource_before_allocation()
 -> Result<(), Box<dyn std::error::Error>> {
-    acyclic_native_runtime::initialize_native_io_services()?;
     let borrowed = source(FilesystemProfile::Portable)?;
     let cancellation = CancellationToken::new();
     let root = capture_meter(BOUNDARY_BUDGET, &cancellation)?;
@@ -250,7 +248,6 @@ fn native_source_io_projection_rejects_foreign_root_and_resource_before_allocati
 #[test]
 fn native_source_io_last_physical_lease_retires_after_poll_bank_exhaustion()
 -> Result<(), Box<dyn std::error::Error>> {
-    acyclic_native_runtime::initialize_native_io_services()?;
     let borrowed = source(FilesystemProfile::Portable)?;
     let root_stop = CancellationToken::new();
     let root = capture_meter(BOUNDARY_BUDGET, &root_stop)?;
@@ -329,7 +326,6 @@ fn detached_construction_uses_the_callers_memory_limit() -> Result<(), Box<dyn s
 #[test]
 fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
 -> Result<(), Box<dyn std::error::Error>> {
-    acyclic_native_runtime::initialize_native_io_services()?;
     let borrowed = source(FilesystemProfile::Portable)?;
     let workspace_id = crate::WorkspaceId::from_bytes(borrowed.volume_id()?.into_bytes());
     let config = VolumeConfig::portable(Lifecycle::Ephemeral);

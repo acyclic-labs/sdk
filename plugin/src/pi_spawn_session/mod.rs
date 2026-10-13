@@ -276,7 +276,7 @@ impl PiSession {
             .spawn_step(
                 &native,
                 live.as_ref(),
-                &command.0,
+                command.0.clone(),
                 &payload,
                 live.is_some() && plan.is_some(),
                 &work,
@@ -287,7 +287,7 @@ impl PiSession {
         if newly_saved || (saved_pending && acknowledgement.is_none()) {
             drop(acknowledgement.take());
             let result = self
-                .spawn_step(&native, live.as_ref(), &command.0, &payload, true, &work)
+                .spawn_step(&native, live.as_ref(), command.0.clone(), &payload, true, &work)
                 .await?;
             acknowledgement = result.0;
             self.spawn_save_pending(result.1, commit, operations, &work)?;
@@ -364,7 +364,7 @@ impl PiSession {
         &self,
         native: &Arc<PiNativeCommandHost>,
         live: Option<&PiNativeLiveSource>,
-        command: &WorkflowCommand,
+        command: WorkflowCommand,
         input: &pi_fork_host::PiForkCommand,
         retry: bool,
         work: &NativeMaterializationWork,
@@ -394,7 +394,7 @@ impl PiSession {
                         .owned_task_binding(Some(&PreparationIo::from_native_work(work)?))?
                         .1
                         .clone(),
-                    command.clone(),
+                    command,
                     payload.0,
                     retry,
                     work,
@@ -414,7 +414,7 @@ impl PiSession {
                 TaskCommandProgress::Pending | TaskCommandProgress::Indeterminate => None,
             }
         } else {
-            host.control_step_with_native_work(command.clone(), retry)
+            host.control_step_with_native_work(command, retry)
                 .await?
         };
         Ok((reply, host.pending_to_save()?))

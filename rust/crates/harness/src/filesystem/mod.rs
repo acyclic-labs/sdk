@@ -159,7 +159,6 @@ pub use parent::{InheritedContextCapture, ParentMergePlan, ParentProjectControll
 
 #[cfg(not(target_arch = "wasm32"))]
 mod source_publication;
-#[cfg(not(target_arch = "wasm32"))]
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     async fn content_for_operation_impl(
@@ -306,7 +305,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             .operation_generation(key, original, io.cancellation())
                             .await
                             .map_err(|source| Error::NativeWorkspace {
-                                source,
+                                source: Box::new(source),
                                 custody: None,
                             })?
                     } else {
@@ -447,7 +446,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             bytes: receipt_bytes,
         });
         let generation = self.apply_generation(
-            &workspace, expected_generation, &mutations, idempotency_key, io, None,
+            &workspace, expected_generation, &mutations, IdempotencyKey(stock_string_copy(idempotency_key.as_str(), io)?), io, None,
         ).await?;
         let generation_reference =
             (self).generation_ref_id(generation.id(), io)?;
@@ -527,7 +526,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .read(&path, maximum_bytes, original, io.cancellation())
                 .await
                 .map_err(|source| Error::NativeWorkspace {
-                    source,
+                    source: Box::new(source),
                     custody: None,
                 })?;
             fork_preparer_io::retain(&pinned, Some(io)).await?;

@@ -23,7 +23,7 @@ impl<M: std::ops::Deref<Target: NativeReadMeter>> NativeOperationReservation<M> 
         self.remaining = self
             .remaining
             .checked_sub(1)
-            .expect("a physical native operation owns an admitted request credit");
+            .unwrap_or_else(|| std::process::abort());
         let recorded = self.meter.record_reserved_operation(self.kind);
         (operation(), recorded)
     }
@@ -57,23 +57,17 @@ impl<M: std::ops::Deref<Target: NativeReadMeter>> NativeByteReservation<M> {
 
     /// Records the terminal transfer and refunds its unused maximum.
     pub fn record(&mut self, actual: usize) -> io::Result<()> {
-        let maximum = self
-            .maximum
-            .take()
-            .expect("a native byte reservation is consumed exactly once");
+        let maximum = self.maximum.take().ok_or(io::ErrorKind::InvalidInput)?;
         self.meter
             .record_reserved_bytes(self.kind, maximum, actual as u64)
     }
 
     /// Records a completed prefix while retaining its unused credit.
     pub fn record_partial(&mut self, actual: usize) -> io::Result<()> {
-        let maximum = self
-            .maximum
-            .as_mut()
-            .expect("native byte allowance is still owned");
+        let maximum = self.maximum.as_mut().ok_or(io::ErrorKind::InvalidInput)?;
         *maximum = maximum
             .checked_sub(actual as u64)
-            .expect("physical prefix fits this request's owned byte allowance");
+            .ok_or(io::ErrorKind::InvalidData)?;
         self.meter
             .record_reserved_bytes(self.kind, actual as u64, actual as u64)
     }

@@ -16,7 +16,7 @@ impl PiControlHost<'_> {
         let owner = &source.owner;
         let key = source.key.as_str();
         let binding = self.root_binding()?;
-        let volume = binding
+        binding
             .project_volumes
             .get(key)
             .ok_or_else(|| denied("Root lacks this project"))?;
@@ -106,7 +106,7 @@ impl PiControlHost<'_> {
                         crate::pi_fork_host::native_lazy_error(source)
                     }
                     source => Error::NativeWorkspacePublication {
-                        source: acyclic_fs::NativeWorkspacePublicationError::State(source),
+                        source: Box::new(acyclic_fs::NativeWorkspacePublicationError::State(source)),
                         custody: None,
                     },
                 })?;

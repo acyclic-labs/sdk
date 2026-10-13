@@ -1496,10 +1496,10 @@ impl NativeWatch {
                         Ok(observed) => observed,
                         Err(DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
                         Err(DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotADirectory => {
-                            return Err(DemandError::Observation(NativeWatchError::ObservedPathNotDirectory));
+                            return Err(DemandError::from(NativeWatchError::ObservedPathNotDirectory));
                         }
                         Err(DemandError::InvalidRequest) => {
-                            return Err(DemandError::Observation(NativeWatchError::SymbolicLinkDirectory));
+                            return Err(DemandError::from(NativeWatchError::SymbolicLinkDirectory));
                         }
                         Err(error) => return Err(error),
                     };
@@ -1881,7 +1881,7 @@ impl NativeWatch {
         #[cfg(not(any(target_os = "linux", windows)))]
         if !self.recursive {
             if self.watched_directories.iter().any(|path| *path != self.root) {
-                work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })
+                work.started_io(WorkCounters { items_examined: 1, ..WorkCounters::default() })
                     .map_err(demand_watch_error)?;
                 work.check().map_err(demand_watch_error)?;
                 return Err(NativeWatchError::BoundedObservationUnavailable);
@@ -2928,7 +2928,7 @@ impl From<std::io::Error> for NativeWatchError {
 
 fn demand_watch_error(error: crate::demand::DemandError) -> NativeWatchError {
     match error {
-        crate::demand::DemandError::Observation(error) => error,
+        crate::demand::DemandError::Observation(error) => *error,
         crate::demand::DemandError::Work(error) => NativeWatchError::Work(error),
         crate::demand::DemandError::Cancelled => NativeWatchError::Cancelled(CancellationError),
         crate::demand::DemandError::Io(error) => error.into(),
@@ -2947,7 +2947,7 @@ fn demand_watch_error(error: crate::demand::DemandError) -> NativeWatchError {
         crate::demand::DemandError::Allocation(error) => NativeWatchError::NativeWork(crate::NativeTreeMaterializationError::AllocationFailed(error)),
         crate::demand::DemandError::NativeWorkUnavailable => NativeWatchError::NativeWorkUnavailable,
         #[cfg(feature = "native-mount")]
-        crate::demand::DemandError::Mount(error) => NativeWatchError::Mount(error),
+        crate::demand::DemandError::Mount(error) => NativeWatchError::Mount(*error),
         #[cfg(all(any(target_os = "linux", target_os = "macos", windows), any(feature = "native-mount", test)))]
         crate::demand::DemandError::NativeMetadata(error) => NativeWatchError::Metadata(error),
     }
@@ -2990,7 +2990,7 @@ mod demand_admission_tests {
         let failure = observed(&watch, &namespace("/a")?, WorkBudget::UNBOUNDED,
             &CancellationToken::new()).expect_err("opaque nonrecursive admission is not bounded");
         assert!(matches!(failure.error,
-            DemandError::Observation(NativeWatchError::BoundedObservationUnavailable)));
+            DemandError::Observation(error) if matches!(error.as_ref(), NativeWatchError::BoundedObservationUnavailable)));
         assert_eq!(*failure.work, WorkCounters::default());
         Ok(())
     }

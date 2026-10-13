@@ -66,8 +66,8 @@ pub enum Error {
         /// The actual rejection, without constructing an owned diagnostic.
         #[source]
         cause: acyclic_fs::NativeTreeMaterializationError,
-        /// The actual constructor work prefix, held inline without a receipt box.
-        work: acyclic_fs::WorkCounters,
+        /// The actual constructor work prefix.
+        work: Box<acyclic_fs::WorkCounters>,
     },
     /// A fixed native boundary rejection that needs no diagnostic allocation.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -121,7 +121,7 @@ pub enum Error {
         code: ErrorCode,
         /// The original validator cause, including its instance and locations.
         #[source]
-        source: jsonschema::ValidationError<'static>,
+        source: Box<jsonschema::ValidationError<'static>>,
         /// Allowance admitted before validation, released after the cause.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
@@ -153,7 +153,7 @@ pub enum Error {
     NativeSource {
         /// The original source error.
         #[source]
-        source: acyclic_fs::LazyWorkspaceError,
+        source: Box<acyclic_fs::LazyWorkspaceError>,
         /// Existing custody for any SDK-owned diagnostic payload.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
@@ -167,7 +167,7 @@ pub enum Error {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
         /// A distinct retention failure after the primary proof failure, if both occurred.
-        retention_failure: Option<acyclic_fs::LazyWorkspaceError>,
+        retention_failure: Option<Box<acyclic_fs::LazyWorkspaceError>>,
         /// Original slot custody, released after both original causes are dropped.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
@@ -177,7 +177,7 @@ pub enum Error {
     NativeWorkspace {
         /// The original workspace cause.
         #[source]
-        source: acyclic_fs::WorkspaceError,
+        source: Box<acyclic_fs::WorkspaceError>,
         /// Existing custody, released after the original cause is dropped.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
@@ -195,7 +195,7 @@ pub enum Error {
     NativeDrivenJoin {
         /// The complete planning, resolution or publication failure.
         #[source]
-        source: acyclic_fs::DrivenJoinError,
+        source: Box<acyclic_fs::DrivenJoinError>,
         /// Existing custody, released after the original cause.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
@@ -217,7 +217,7 @@ pub enum Error {
     NativeFilesystem {
         /// The complete filesystem cause, including any existing payload custody.
         #[source]
-        source: acyclic_fs::FsError,
+        source: Box<acyclic_fs::FsError>,
         /// Existing additional diagnostic custody, released after the cause.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
@@ -227,7 +227,7 @@ pub enum Error {
     NativeView {
         /// The original lifecycle failure and its actual cleanup ownership.
         #[source]
-        cause: acyclic_fs::native_mount::MountLifecycleError,
+        cause: Box<acyclic_fs::native_mount::MountLifecycleError>,
         /// Existing custody for SDK-owned diagnostic payloads.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
@@ -251,7 +251,7 @@ pub enum Error {
     NativeWorkspacePublication {
         /// The original publication cause and any physical cleanup ownership.
         #[source]
-        source: acyclic_fs::NativeWorkspacePublicationError,
+        source: Box<acyclic_fs::NativeWorkspacePublicationError>,
         /// Existing custody, released after the original cause is dropped.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
@@ -386,7 +386,7 @@ impl From<acyclic_fs::FsError> for Error {
         #[cfg(not(target_arch = "wasm32"))]
         {
             Self::NativeFilesystem {
-                source,
+                source: Box::new(source),
                 custody: None,
             }
         }
@@ -404,7 +404,7 @@ impl From<acyclic_fs::WorkspaceError> for Error {
         #[cfg(not(target_arch = "wasm32"))]
         {
             Self::NativeWorkspace {
-                source,
+                source: Box::new(source),
                 custody: None,
             }
         }
@@ -420,7 +420,7 @@ impl From<acyclic_fs::WorkspaceError> for Error {
 impl From<acyclic_fs::DrivenJoinError> for Error {
     fn from(source: acyclic_fs::DrivenJoinError) -> Self {
         Self::NativeDrivenJoin {
-            source,
+            source: Box::new(source),
             custody: None,
         }
     }
@@ -433,7 +433,7 @@ impl From<acyclic_fs::LazyWorkspaceError> for Error {
         #[cfg(not(target_arch = "wasm32"))]
         {
             Self::NativeSource {
-                source,
+                source: Box::new(source),
                 custody: None,
             }
         }
@@ -449,7 +449,7 @@ impl From<acyclic_fs::LazyWorkspaceError> for Error {
 impl From<acyclic_fs::native_mount::MountLifecycleError> for Error {
     fn from(cause: acyclic_fs::native_mount::MountLifecycleError) -> Self {
         Self::NativeView {
-            cause,
+            cause: Box::new(cause),
             custody: None,
         }
     }
@@ -460,18 +460,18 @@ impl From<acyclic_fs::native_mount::MountLifecycleError> for Error {
 impl From<acyclic_fs::native_mount::MountSourceError> for Error {
     fn from(cause: acyclic_fs::native_mount::MountSourceError) -> Self {
         Self::NativeView {
-            cause: acyclic_fs::native_mount::MountLifecycleError::Source(cause),
+            cause: Box::new(acyclic_fs::native_mount::MountLifecycleError::Source(cause)),
             custody: None,
         }
     }
 }
 
-/// Wraps the actual mount cause in the existing lifecycle error, without allocation.
+/// Wraps the actual mount cause in the existing lifecycle error.
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 impl From<acyclic_fs::native_mount::NativeMountError> for Error {
     fn from(cause: acyclic_fs::native_mount::NativeMountError) -> Self {
         Self::NativeView {
-            cause: acyclic_fs::native_mount::MountLifecycleError::Native(cause),
+            cause: Box::new(acyclic_fs::native_mount::MountLifecycleError::Native(cause)),
             custody: None,
         }
     }

@@ -25,13 +25,14 @@ impl crate::pi_host::PiControlHost<'_> {
         )
         .await?;
         let PiOperatorBody::Approval {
-            mut prepared,
+            prepared,
             digest,
             decision,
         } = request.body
         else {
             return Err(denied("inspect cannot dispatch a Root command"));
         };
+        let mut prepared = *prepared;
         drop(request.operator);
         drop(request.session_id);
         let root = self.protected.policy().root_task;
@@ -88,7 +89,7 @@ impl crate::pi_host::PiControlHost<'_> {
         }
         if decision == PiOperatorDecision::Decline {
             let outcome = journal.interaction_outcome(id, Some(&io))?.await?;
-            if !matches!(outcome, Some(InteractionOutcome::Declined)) {
+            if !matches!(outcome, Some(InteractionOutcome::Declined {})) {
                 return Ok(TaskCommandProgress::Pending);
             }
             return ready(&status_response(&prepared, "declined", None), work);

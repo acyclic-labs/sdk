@@ -51,7 +51,7 @@ impl NativeSession {
                         .as_ref()
                         .and_then(|(_, resolution)| resolution.as_ref())
                         .is_some_and(|resolution| {
-                            resolution.outcome == InteractionOutcome::Approved
+                            resolution.outcome == (InteractionOutcome::Approved {})
                         }) =>
             {
                 "/publication-apply"

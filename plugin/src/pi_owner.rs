@@ -138,25 +138,16 @@ impl PiOwnerConfig {
             key,
             policy: policy.0,
             native_runtime: runtime,
-            _native_custody: Some(custody),
+            _native_custody: None,
         };
         key.fill(0);
-        // Complete data precedes every source guard on a failed transfer.
-        let mut owned = (owner, policy.1, runtime_custody);
-        owned
-            .0
-            ._native_custody
-            .as_mut()
-            .unwrap()
-            .absorb(&mut owned.1)?;
-        if let Some(runtime_custody) = &mut owned.2 {
-            owned
-                .0
-                ._native_custody
-                .as_mut()
-                .unwrap()
-                .absorb(runtime_custody)?;
+        // Data drops before its original custody on a failed transfer.
+        let mut owned = (owner, custody, policy.1, runtime_custody);
+        owned.1.absorb(&mut owned.2)?;
+        if let Some(runtime_custody) = &mut owned.3 {
+            owned.1.absorb(runtime_custody)?;
         }
+        owned.0._native_custody = Some(owned.1);
         if let Some(runtime) = owned.0.native_runtime.take() {
             owned.0.native_runtime = Some(runtime.sanitize(work)?);
         }
@@ -572,10 +563,6 @@ fn native_owner_io(source: io::Error) -> Error {
     acyclic_harness::Error::from(acyclic_fs::NativeTreeMaterializationError::Io(source))
 }
 
-fn invalid(message: &str) -> Error {
-    Error::Invalid(message.to_owned())
-}
-
 #[cfg(test)]
 #[path = "pi_owner_tests.rs"]
 pub(crate) mod tests;
@@ -611,8 +598,7 @@ pub(crate) fn root_effects_with_native_work<P: StreamProvider + 'static>(
         providers,
         Some(custody),
         Some(work),
-    )?
-    .into_arc(work)
+    )
 }
 
 // Drop tuple payloads before their allocation guards.

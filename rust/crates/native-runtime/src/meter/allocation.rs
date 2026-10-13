@@ -19,7 +19,7 @@ impl ReadAllocationReservation {
 
     /// Records the accepted allocation and transfers its exact original custody.
     pub fn allocate(mut self) -> io::Result<ReadAllocation> {
-        let bytes = self.bytes.expect("allocation credit is still held");
+        let bytes = self.bytes.ok_or(io::ErrorKind::InvalidInput)?;
         self.meter.record_reserved_allocation(bytes)?;
         self.bytes = None;
         let mut allocation = ReadAllocation::empty(&self.meter);

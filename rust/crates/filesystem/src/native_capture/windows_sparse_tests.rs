@@ -129,7 +129,7 @@ async fn written_zeros_in_a_sparse_file_capture_as_holes() -> std::io::Result<()
     };
     assert!(matches!(
         scan(short, CancellationToken::new()).await,
-        Err(failure) if matches!(failure.error, CaptureError::Kernel(crate::FsError::Work(_) | crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_))))
+        Err(failure) if matches!(failure.error, CaptureError::Kernel(error) if matches!(*error, crate::FsError::Work(_) | crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_))))
     ));
     let cancelled = CancellationToken::new();
     cancelled.cancel();

@@ -222,7 +222,7 @@ impl PiRootProvider {
         effect: EffectId,
         attempt: EffectAttemptId,
         name: &str,
-        value: &impl Serialize,
+        value: &(impl Serialize + Sync),
         work: &NativeMaterializationWork,
     ) -> Result<(FileRef, NativeAllocation)> {
         let coordinates = self.artifact_with_native_work(effect, attempt, name, work)?;
@@ -355,6 +355,7 @@ impl PiRootProvider {
         Ok(state)
     }
 
+    #[cfg(test)]
     pub(crate) fn cancel(&self) {
         self.creation_cancelled
             .store(true, std::sync::atomic::Ordering::SeqCst);

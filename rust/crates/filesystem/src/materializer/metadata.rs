@@ -64,11 +64,11 @@ fn hash_native_metadata_edit(
 ) -> Result<(), NativeTreeMaterializationError> {
     let kind = metadata.file_type();
     hash_bytes(
-        if (kind == crate::demand::SourceNodeKind::SymbolicLink) {
+        if kind == crate::demand::SourceNodeKind::SymbolicLink {
             b"link"
-        } else if (kind == crate::demand::SourceNodeKind::Directory) {
+        } else if kind == crate::demand::SourceNodeKind::Directory {
             b"directory"
-        } else if (kind == crate::demand::SourceNodeKind::RegularFile) {
+        } else if kind == crate::demand::SourceNodeKind::RegularFile {
             b"file"
         } else {
             b"special"
@@ -132,12 +132,12 @@ fn hash_native_entry(
         (metadata.raw.st_mtime_nsec as i64) as u64,
     ];
     #[cfg(windows)]
-    let facts = [metadata.len(), (metadata.raw.LastWriteTime as u64)];
+    let facts = [metadata.len(), metadata.raw.LastWriteTime as u64];
     for value in facts {
         hash_bytes(&value.to_le_bytes(), hasher, work)?;
     }
     let kind = metadata.file_type();
-    if (kind == crate::demand::SourceNodeKind::SymbolicLink) {
+    if kind == crate::demand::SourceNodeKind::SymbolicLink {
         let (target, _allocation) =
             root.read_link(path, work.remaining()?.source_bytes_read, &mut &*work)?;
         #[cfg(unix)]
@@ -146,7 +146,7 @@ fn hash_native_entry(
         for unit in target {
             hash_bytes(&unit.to_le_bytes(), hasher, work)?;
         }
-    } else if (kind == crate::demand::SourceNodeKind::Directory) {
+    } else if kind == crate::demand::SourceNodeKind::Directory {
         let directory = root.open_dir_held(path, &mut &*work)?;
         let identity = crate::native_host::directory_identity(&directory, &mut &*work)?;
         if identity != metadata.identity() {
@@ -184,7 +184,7 @@ fn hash_native_entry(
             let metadata = root.stat(path, &mut &*work)?;
             hash_native_entry(&root, path, &metadata, hasher, work)?;
         }
-    } else if (kind == crate::demand::SourceNodeKind::RegularFile) {
+    } else if kind == crate::demand::SourceNodeKind::RegularFile {
         let file = root
             .open_file(
                 path,

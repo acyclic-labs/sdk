@@ -67,16 +67,13 @@ pub(crate) fn issue(
         MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
         work,
     )?;
-    let identity_text = match std::str::from_utf8(&identity.0) {
-        Ok(text) => text,
-        Err(_) => {
-            drop(identity.0);
-            drop(identity.1);
-            return Err(acyclic_harness::Error::NativeBoundary {
-                code: acyclic_harness::wire::ErrorCode::Invalid,
-                reason: "Pi caller claims have invalid UTF-8",
-            });
-        }
+    let identity_text = if let Ok(text) = std::str::from_utf8(&identity.0) { text } else {
+        drop(identity.0);
+        drop(identity.1);
+        return Err(acyclic_harness::Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Invalid,
+            reason: "Pi caller claims have invalid UTF-8",
+        });
     };
     let capabilities = Capabilities::copy([CALLER_CAPABILITY], work)?;
     let mut io = acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);

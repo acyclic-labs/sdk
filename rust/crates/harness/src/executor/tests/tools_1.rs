@@ -126,7 +126,7 @@ async fn stock_approval_wait_distinguishes_pending_and_known_rejection() -> Resu
             })
         }
     }
-    for outcome in [InteractionOutcome::Approved, InteractionOutcome::Denied] {
+    for outcome in [InteractionOutcome::Approved {}, InteractionOutcome::Denied {}] {
         let model = Arc::new(ScriptedModel::default());
         let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
         let tools = echo_tools(
@@ -192,7 +192,7 @@ async fn stock_approval_wait_distinguishes_pending_and_known_rejection() -> Resu
             .get_mut(&id)
             .ok_or_else(|| Error::NotFound("approval".into()))?
             .1 = Some(outcome.clone());
-        if outcome == InteractionOutcome::Approved {
+        if outcome == (InteractionOutcome::Approved {}) {
             assert!(matches!(
                 executor.execute_progress(input.clone(), &journal).await?,
                 ExecutionProgress::Ready(TurnOutput { steps: 2, .. })

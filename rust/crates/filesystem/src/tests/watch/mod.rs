@@ -468,6 +468,7 @@ fn bounded_callback_overflow_invalidates_instead_of_dropping_silently()
         },
         profile: FilesystemProfile::Portable,
         limits: VolumeLimits::default(),
+        #[cfg(any(target_os = "linux", windows))]
         maximum_queued_changes: 1,
     };
     for name in ["a", "b"] {

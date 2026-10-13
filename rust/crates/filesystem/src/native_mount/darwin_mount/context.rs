@@ -295,7 +295,7 @@ impl DarwinMountContext {
         }
         if let Some(guard) = &self.callback_guard {
             crate::native_mount::adapter::CallbackRuntime::existing()?
-                .verify_native_callback_write_guard(guard.as_ref(), work)?;
+                .verify_callback(work, || guard.check_write(work))?;
         }
         Ok(work.admit(WorkCounters::UNCHARGED)?)
     }

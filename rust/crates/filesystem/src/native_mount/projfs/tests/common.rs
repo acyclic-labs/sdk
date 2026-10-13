@@ -160,7 +160,6 @@ pub(super) async fn writes_only_promised_content(
 }
 
 pub(super) fn setup_work() -> Result<crate::NativeMaterializationWork, Box<dyn std::error::Error>> {
-    acyclic_native_runtime::initialize_native_io_services()?;
     crate::initialize_native_mount_services()?;
     Ok(
         crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())

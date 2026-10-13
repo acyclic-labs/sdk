@@ -35,15 +35,7 @@ where
             .task_host()
             .journal_owner(task, fence, io)
             .await?;
-        let (status, custody) = if reconciliation_only {
-            effects
-                .reconcile_task_effect(&owner, command, &plan, work)
-                .await?
-        } else {
-            effects
-                .run_task_effect(&owner, command, &plan, work)
-                .await?
-        };
+        let (status, custody) = effects.run_task_effect(&owner, command, &plan, work, reconciliation_only).await?;
         #[cfg(not(target_arch = "wasm32"))]
         match io {
             Some(io) => io.absorb_native_custody(custody.ok_or(Error::NativeBoundary {

@@ -128,13 +128,39 @@ impl PiNativeCommandHost {
         &self,
         context: &TaskContext,
         input: &PiTaskInput,
+        work: &NativeMaterializationWork,
     ) -> Result<ContentBindings> {
         let result = input
             .binding
             .results
             .as_ref()
             .ok_or_else(|| unauthorized("Pi child has no original result selection"))?;
-        context.created_content_bindings(&result.volume)
+        let volume = &result.volume;
+        let mut io =
+            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
+        volume.validate(&mut Some(&mut io))?;
+        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+            if !context
+                .scope()
+                .grants()
+                .contains(&volume.capability(operation, &mut Some(&mut io))?)
+            {
+                return Err(unauthorized(
+                    "Pi result lacks its original read/write grant",
+                ));
+            }
+        }
+        context
+            .scope()
+            .created_content(Some(volume))
+            .filter(|binding| {
+                binding
+                    .writer
+                    .as_ref()
+                    .is_some_and(|writer| writer.volume() == volume)
+            })
+            .cloned()
+            .ok_or_else(|| unauthorized("Pi result has no authenticated created writer"))
     }
 
     pub(super) async fn journal(
@@ -207,7 +233,7 @@ impl PiNativeCommandHost {
         journal: Arc<Journal>,
         work: &NativeMaterializationWork,
     ) -> Result<NativeProcessAuthority> {
-        let bindings = self.result_bindings(context, input)?;
+        let bindings = self.result_bindings(context, input, work)?;
         let conversation = self.protected.conversation_authority_with_native_work(
             input.binding.task_id,
             input.binding.agent_id,
@@ -240,7 +266,7 @@ impl PiNativeCommandHost {
         >,
         work: &NativeMaterializationWork,
     ) -> Result<Arc<Effects>> {
-        let content = self.result_bindings(context, input)?.reader;
+        let content = self.result_bindings(context, input, work)?.reader;
         let authorization = self.protected.conversation_authority_with_native_work(
             input.binding.task_id,
             input.binding.agent_id,
@@ -260,8 +286,7 @@ impl PiNativeCommandHost {
             registry,
             Some(custody),
             Some(work),
-        )?
-        .into_arc(work)
+        )
     }
 
     pub(super) async fn original_effect(
@@ -366,7 +391,6 @@ impl PiNativeCommandHost {
         );
         let effects = self.effects(context, input, &provider, work)?;
         let bound = Arc::new(BoundEffect {
-            provider,
             work: work.clone(),
             effects,
             owner,

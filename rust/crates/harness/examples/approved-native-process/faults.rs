@@ -351,7 +351,7 @@ async fn verify_pending_task(
     }
     let (owner, effects, _) = super::recovery::effects(stream, files, &task, seed, &issuer).await?;
     if effects
-        .reconcile_task_effect(&owner, seed.command, &seed.plan, None)
+        .run_task_effect(&owner, seed.command, &seed.plan, None, true)
         .await
         .map(|result| result.0)?
         != EffectStatus::Indeterminate

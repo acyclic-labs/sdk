@@ -78,7 +78,7 @@ pub(super) async fn observe_writeback(
                 crate::pi_fork_host::native_lazy_error(source)
             }
             source => Error::NativeWorkspacePublication {
-                source: acyclic_fs::NativeWorkspacePublicationError::State(source),
+                source: Box::new(acyclic_fs::NativeWorkspacePublicationError::State(source)),
                 custody: None,
             },
         })?;
@@ -114,8 +114,8 @@ pub(super) async fn observe_writeback(
     } else {
         let io = PreparationIo::from_native_work(work)?;
         match journal.interaction_outcome(id, Some(&io))?.await? {
-            Some(InteractionOutcome::Declined) => "declined",
-            Some(InteractionOutcome::Approved) => "pending",
+            Some(InteractionOutcome::Declined {}) => "declined",
+            Some(InteractionOutcome::Approved {}) => "pending",
             _ if native
                 .as_ref()
                 .is_some_and(|journal| journal.phase == MaterializationPhase::Prepared) =>

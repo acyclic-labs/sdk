@@ -35,8 +35,22 @@ fn read_link_buffer<W: NativeHostWork>(
                 work.admit(reading)?;
                 work.started_io(READ)?;
                 #[cfg(unix)]
-                let read = rustix::fs::readlinkat_raw(parent, name, &mut bytes[..size])
-                    .map_err(io::Error::from);
+                let read = {
+                    // SAFETY: held parent, leaf name and admitted output remain live for the syscall.
+                    let count = unsafe {
+                        libc::readlinkat(
+                            parent.as_raw_fd(),
+                            name.as_ptr(),
+                            bytes.as_mut_ptr().cast(),
+                            size,
+                        )
+                    };
+                    if count < 0 {
+                        Err(io::Error::last_os_error())
+                    } else {
+                        Ok(count as usize)
+                    }
+                };
                 #[cfg(windows)]
                 let read = {
                     use std::os::windows::io::AsRawHandle as _;
@@ -153,9 +167,10 @@ pub(crate) fn read_link_held<W: NativeHostWork>(
     maximum: u64,
     work: &mut W,
 ) -> Result<(Vec<NativeUnit>, W::Allocation), W::Error> {
-    let (mut bytes, target, allocation) = read_link_buffer(parent, name, maximum, work)?;
+    let (bytes, target, allocation) = read_link_buffer(parent, name, maximum, work)?;
     #[cfg(unix)]
     {
+        let mut bytes = bytes;
         bytes.truncate(target.end);
         Ok((bytes, allocation))
     }

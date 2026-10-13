@@ -82,9 +82,9 @@ where
             return Err(Error::Invalid("interaction is not an approval".into()));
         }
         let outcome = if approved {
-            InteractionOutcome::Approved
+            InteractionOutcome::Approved {}
         } else {
-            InteractionOutcome::Declined
+            InteractionOutcome::Declined {}
         };
         let response = InteractionResponse::Approval { approved, reason };
         let detail = Some(
@@ -198,7 +198,7 @@ where
                 "tool installation lacks a resolved approval",
             ));
         };
-        if resolution.outcome != InteractionOutcome::Approved
+        if resolution.outcome != (InteractionOutcome::Approved {})
             || !ticket.approval.as_ref().is_some_and(|binding| {
                 binding.operation_id == operation && binding.action_digest == digest
             })

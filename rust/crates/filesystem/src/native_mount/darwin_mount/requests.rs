@@ -3,8 +3,8 @@ use super::*;
 pub(super) fn callback_errno(error: &NativeMountError) -> i32 {
     match error {
         NativeMountError::CallbackDenied { .. } => libc::EACCES,
-        NativeMountError::Source(error)
-        | NativeMountError::Demand(crate::DemandError::Mount(error)) => source_errno(error),
+        NativeMountError::Source(error) => source_errno(error),
+        NativeMountError::Demand(crate::DemandError::Mount(error)) => source_errno(error),
         NativeMountError::Materialization(crate::NativeTreeMaterializationError::Cancelled) => {
             libc::ECANCELED
         }
@@ -60,8 +60,12 @@ pub(super) fn fatal(error: &NativeMountError) -> bool {
         NativeMountError::Materialization(error) => {
             crate::native_mount::native_materialization_failure_is_fatal(error)
         }
-        NativeMountError::Source(error)
-        | NativeMountError::Demand(crate::DemandError::Mount(error)) => {
+        NativeMountError::Source(_) | NativeMountError::Demand(crate::DemandError::Mount(_)) => {
+            let error = match error {
+                NativeMountError::Source(error) => error,
+                NativeMountError::Demand(crate::DemandError::Mount(error)) => error.as_ref(),
+                _ => unreachable!(),
+            };
             match error.semantic_error() {
                 MountSourceError::NativeWork(error) => {
                     crate::native_mount::native_materialization_failure_is_fatal(error)

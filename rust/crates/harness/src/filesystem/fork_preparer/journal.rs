@@ -88,7 +88,7 @@ pub(super) async fn write_record<A: AsyncAuthorityStore, O: AsyncObjectStore, T:
                 path: stock_string_copy(path, io)?,
                 bytes,
             }],
-            key,
+            IdempotencyKey(stock_string_copy(key.as_str(), io)?),
             io,
             preparation.map(Arc::as_ref),
         )
@@ -283,10 +283,9 @@ pub(super) fn journal_absent(error: &Error) -> bool {
     match error {
         Error::NotFound(_) => true,
         #[cfg(not(target_arch = "wasm32"))]
-        Error::NativeWorkspace {
-            source: acyclic_fs::WorkspaceError::NotFound,
-            ..
-        } => true,
+        Error::NativeWorkspace { source, .. } => {
+            matches!(source.as_ref(), acyclic_fs::WorkspaceError::NotFound)
+        }
         _ => false,
     }
 }

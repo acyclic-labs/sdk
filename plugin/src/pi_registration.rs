@@ -295,7 +295,7 @@ pub(crate) async fn register(
     };
     let filesystem = acyclic_harness::filesystem::FilesystemHost::new(
         resources.fs.clone(),
-        &provider,
+        provider,
         Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
     )?;
     let journal_name = {
@@ -317,7 +317,7 @@ pub(crate) async fn register(
         )
         .await
         .map_err(|source| acyclic_harness::Error::NativeWorkspace {
-            source,
+            source: Box::new(source),
             custody: None,
         })?;
     drop(journal_generation);
@@ -337,7 +337,7 @@ pub(crate) async fn register(
     let runtime = pi_runtime::PiTaskRuntime::open_with_native_work(
         stream,
         filesystem.clone(),
-        &journal,
+        journal,
         owner.authority(work)?,
         work,
     )

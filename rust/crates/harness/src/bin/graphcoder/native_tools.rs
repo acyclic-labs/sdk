@@ -192,7 +192,7 @@ impl super::native::NativeSession {
             self.config.tools.content_budget,
             &cancellation,
         )
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) })?;
         let io = PreparationIo::from_native_work(&work)?;
         let binding = self.caller_binding(caller).await?;
         let issuer = AuthorityIssuer::new(&binding.issuer, binding.key, binding.authority.clone());
@@ -386,7 +386,7 @@ impl super::native::NativeSession {
             None,
         )?;
         let (status, _status_custody) = effects
-            .run_task_effect(&owner, operation, &configured.plan, None)
+            .run_task_effect(&owner, operation, &configured.plan, None, false)
             .await?;
         super::native::json_line("command", &status)
     }

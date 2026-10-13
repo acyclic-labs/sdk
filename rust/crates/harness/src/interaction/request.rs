@@ -121,7 +121,7 @@ impl Interaction {
                 response_schema,
             } => {
                 nonempty(prompt, "question prompt is empty", work)?;
-                validate_schema(response_schema, work)?;
+                crate::executor::compile_json_schema(response_schema, "interaction", work)?;
             }
             Self::Choice {
                 prompt,
@@ -134,21 +134,13 @@ impl Interaction {
                     || min_selections > max_selections
                     || *max_selections as usize > options.len()
                 {
-                    return Err(interaction_denial(
-                        work,
-                        crate::wire::ErrorCode::Invalid,
-                        "invalid choice selection bounds",
-                    ));
+                    return Err(boundary(work, Invalid, "invalid choice selection bounds"));
                 }
                 let slots = if work.is_some() {
                     (options.len() as u64)
                         .checked_mul(std::mem::size_of::<&str>() as u64)
                         .ok_or_else(|| {
-                            interaction_denial(
-                                work,
-                                crate::wire::ErrorCode::Invalid,
-                                "choice identity custody overflows",
-                            )
+                            boundary(work, Invalid, "choice identity custody overflows")
                         })?
                 } else {
                     0
@@ -173,9 +165,9 @@ impl Interaction {
                         custody.work(),
                     )?;
                     if !ids.insert(option.id.as_str()) {
-                        return Err(interaction_denial(
+                        return Err(boundary(
                             custody.work(),
-                            crate::wire::ErrorCode::Invalid,
+                            Invalid,
                             "duplicate choice option identity",
                         ));
                     }
@@ -183,7 +175,7 @@ impl Interaction {
             }
             Self::Form { title, schema } => {
                 nonempty(title, "form title is empty", work)?;
-                validate_schema(schema, work)?;
+                crate::executor::compile_json_schema(schema, "interaction", work)?;
             }
             Self::Approval {
                 prompt,
@@ -192,11 +184,7 @@ impl Interaction {
             } => {
                 nonempty(prompt, "approval prompt is empty", work)?;
                 if action_digest == &[0; 32] {
-                    return Err(interaction_denial(
-                        work,
-                        crate::wire::ErrorCode::Invalid,
-                        "approval action digest is empty",
-                    ));
+                    return Err(boundary(work, Invalid, "approval action digest is empty"));
                 }
             }
         }
@@ -225,7 +213,12 @@ impl Interaction {
                     ..
                 },
                 InteractionResponse::Form { value },
-            ) => crate::executor::validate_json_schema_value(response_schema, value, "interaction response", work),
+            ) => crate::executor::validate_json_schema_value(
+                response_schema,
+                value,
+                "interaction response",
+                work,
+            ),
             (
                 Self::Choice {
                     options,
@@ -239,11 +232,7 @@ impl Interaction {
                     (option_ids.len() as u64)
                         .checked_mul(2 * std::mem::size_of::<&str>() as u64)
                         .ok_or_else(|| {
-                            interaction_denial(
-                                work,
-                                crate::wire::ErrorCode::Invalid,
-                                "choice response custody overflows",
-                            )
+                            boundary(work, Invalid, "choice response custody overflows")
                         })?
                 } else {
                     0
@@ -263,29 +252,18 @@ impl Interaction {
                         .iter()
                         .any(|id| !options.iter().any(|option| option.id == *id))
                 {
-                    return Err(interaction_denial(
-                        custody.work(),
-                        crate::wire::ErrorCode::Invalid,
-                        "invalid choice response",
-                    ));
+                    return Err(boundary(custody.work(), Invalid, "invalid choice response"));
                 }
                 Ok(())
             }
             (Self::Approval { .. }, InteractionResponse::Approval { .. }) => Ok(()),
-            _ => Err(interaction_denial(
+            _ => Err(boundary(
                 work,
-                crate::wire::ErrorCode::Invalid,
+                Invalid,
                 "interaction response type does not match its request",
             )),
         }
     }
-}
-
-fn validate_schema(
-    schema: &Value,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<()> {
-    crate::executor::compile_json_schema(schema, "interaction", work).map(drop)
 }
 
 fn nonempty(
@@ -294,11 +272,7 @@ fn nonempty(
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
     if value.trim().is_empty() {
-        Err(interaction_denial(
-            work,
-            crate::wire::ErrorCode::Invalid,
-            reason,
-        ))
+        Err(boundary(work, Invalid, reason))
     } else {
         Ok(())
     }

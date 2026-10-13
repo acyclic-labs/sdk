@@ -255,7 +255,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                 result_schema: schema,
             },
             None,
-        )
+         false)
         .await?;
     aggregate = StreamAggregate::open(
         &stream,
