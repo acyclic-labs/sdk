@@ -75,46 +75,42 @@ pub(crate) fn reserve_vector<T>(
     Ok(())
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn clone_retention_native(
-    retention: &CompactionRetention,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(CompactionRetention, acyclic_fs::NativeAllocation)> {
-    use acyclic_fs::WorkCounters;
-    use std::mem::size_of;
-    let copied = retention
-        .roles
-        .len()
-        .checked_mul(size_of::<crate::model::ModelRole>())
-        .ok_or_else(|| Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid,
-            reason: "context clone storage overflows",
-        })? as u64;
-    work.admit(WorkCounters {
-        bytes_copied: copied,
-        allocation_operations: u64::from(!retention.roles.is_empty()),
-        ..WorkCounters::default()
-    })
-    .map_err(|cause| Error::NativeWork {
-        cause,
-        custody: None,
-    })?;
-    let mut roles = Vec::new();
-    let guard = super::super::reserve_context_vec_native(&mut roles, retention.roles.len(), work)?;
-    work.charge(WorkCounters {
-        bytes_copied: copied,
-        ..WorkCounters::default()
-    })
-    .map_err(|cause| Error::NativeWork {
-        cause,
-        custody: None,
-    })?;
-    roles.extend_from_slice(&retention.roles);
-    Ok((
-        CompactionRetention {
-            roles,
-            native_media: retention.native_media,
-        },
-        guard,
-    ))
+impl CompactionRetention {
+    /// Copies retention roles on the optional original preparation ledger.
+    pub(crate) fn copy(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Self> {
+        if io.is_none() {
+            return Ok(self.clone());
+        }
+        crate::executor::with_history_io(io, |work| {
+            let bytes = self
+                .roles
+                .len()
+                .checked_mul(std::mem::size_of::<crate::model::ModelRole>())
+                .ok_or_else(|| {
+                    crate::executor::stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Invalid,
+                        "context clone storage overflows",
+                    )
+                })? as u64;
+            if let Some(work) = work.as_deref() {
+                work.admit_copy(bytes)?;
+            }
+            let mut roles = Vec::new();
+            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+            reserve_vector(&mut roles, self.roles.len(), quota.work())?;
+            quota.adopt(
+                (roles.capacity() * std::mem::size_of::<crate::model::ModelRole>()) as u64,
+            )?;
+            if let Some(work) = quota.work().as_deref_mut() {
+                work.copy_bytes(bytes)?;
+            }
+            roles.extend_from_slice(&self.roles);
+            quota.transfer();
+            Ok(Self {
+                roles,
+                native_media: self.native_media,
+            })
+        })
+    }
 }

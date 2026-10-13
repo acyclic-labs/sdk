@@ -135,13 +135,7 @@ impl ContextStage for SourceStage {
             revision: &self.revision,
             placement: self.placement,
         };
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
-            let (value, custody) = context_contract_native(&contract, work)?;
-            io.expect("native ledger").absorb_native_custody(custody)?;
-            return Ok(value);
-        }
-        serde_json::to_value(contract).map_err(|error| crate::Error::Invalid(error.to_string()))
+        context_contract(&contract, io)
     }
 
     fn apply<'a>(

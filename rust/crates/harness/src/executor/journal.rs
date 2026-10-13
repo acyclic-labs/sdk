@@ -1,5 +1,23 @@
 use super::*;
 
+pub(super) fn validate_journal(
+    journal: &dyn ExecutionJournal,
+    io: Option<&PreparationIo>,
+) -> Result<()> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(work) = io.and_then(PreparationIo::original_native_work)
+        && !journal.supports_native_execution(work)?
+    {
+        return Err(stock_boundary(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "native execution journal is unavailable",
+        ));
+    }
+    let _ = (journal, io);
+    Ok(())
+}
+
 /// Durable host services available to an executor; policy remains executor-owned.
 pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     /// Authenticated canonical aggregate whose selections this journal publishes.

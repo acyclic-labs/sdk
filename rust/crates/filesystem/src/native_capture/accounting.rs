@@ -104,148 +104,6 @@ pub(super) fn capture_demand_error(error: DemandError) -> CaptureError {
     }
 }
 
-pub(super) struct CaptureMap<V> {
-    pub(super) entries: Vec<(NamespacePath, V)>,
-}
-
-impl<V> CaptureMap<V> {
-    pub(super) const fn new() -> Self {
-        Self {
-            entries: Vec::new(),
-        }
-    }
-    pub(super) fn len(&self) -> usize {
-        self.entries.len()
-    }
-    pub(super) fn storage_bytes(&self) -> u64 {
-        self.entries.capacity() as u64 * std::mem::size_of::<(NamespacePath, V)>() as u64
-    }
-    pub(super) fn position_measured(
-        &self,
-        key: &NamespacePath,
-        meter: &CaptureWorkScope,
-    ) -> Result<Result<usize, usize>, CaptureError> {
-        let (mut low, mut high) = (0, self.entries.len());
-        while low < high {
-            capture_charge(
-                meter,
-                WorkCounters {
-                    items_examined: 2,
-                    ..WorkCounters::UNCHARGED
-                },
-            )?;
-            let middle = low + (high - low) / 2;
-            match self.entries[middle].0.cmp(key) {
-                std::cmp::Ordering::Less => low = middle + 1,
-                std::cmp::Ordering::Greater => high = middle,
-                std::cmp::Ordering::Equal => return Ok(Ok(middle)),
-            }
-        }
-        Ok(Err(low))
-    }
-    pub(super) fn contains_key_measured(
-        &self,
-        key: &NamespacePath,
-        meter: &CaptureWorkScope,
-    ) -> Result<bool, CaptureError> {
-        Ok(self.position_measured(key, meter)?.is_ok())
-    }
-    pub(super) fn get_measured(
-        &self,
-        key: &NamespacePath,
-        meter: &CaptureWorkScope,
-    ) -> Result<Option<&V>, CaptureError> {
-        Ok(self
-            .position_measured(key, meter)?
-            .ok()
-            .map(|index| &self.entries[index].1))
-    }
-    pub(super) fn insert_at(
-        &mut self,
-        index: usize,
-        key: NamespacePath,
-        value: V,
-        meter: &CaptureWorkScope,
-    ) -> Result<(), CaptureError> {
-        let copied = (self.entries.len() - index)
-            .checked_mul(std::mem::size_of::<(NamespacePath, V)>())
-            .ok_or(CaptureError::from(WorkError::Overflow))? as u64;
-        let delta = WorkCounters {
-            bytes_copied: copied,
-            ..WorkCounters::UNCHARGED
-        };
-        capture_reserve(&mut self.entries, 1, meter)?;
-        capture_charge(meter, delta)?;
-        self.entries.insert(index, (key, value));
-        Ok(())
-    }
-    pub(super) fn insert_measured(
-        &mut self,
-        key: NamespacePath,
-        value: V,
-        meter: &CaptureWorkScope,
-    ) -> Result<Option<V>, CaptureError> {
-        match self.position_measured(&key, meter)? {
-            Ok(index) => {
-                let bytes = key.retained_bytes();
-                drop(key);
-                meter
-                    .native
-                    .with_original_leaf(|work| work.release(bytes))
-                    .map_err(capture_demand_error)?;
-                Ok(Some(std::mem::replace(&mut self.entries[index].1, value)))
-            }
-            Err(index) => {
-                self.insert_at(index, key, value, meter)?;
-                Ok(None)
-            }
-        }
-    }
-    pub(super) fn get_or_insert_measured(
-        &mut self,
-        key: NamespacePath,
-        value: V,
-        meter: &CaptureWorkScope,
-    ) -> Result<&mut V, CaptureError> {
-        let index = match self.position_measured(&key, meter)? {
-            Ok(index) => {
-                let bytes = key.retained_bytes();
-                drop(key);
-                meter
-                    .native
-                    .with_original_leaf(|work| work.release(bytes))
-                    .map_err(capture_demand_error)?;
-                index
-            }
-            Err(index) => {
-                self.insert_at(index, key, value, meter)?;
-                index
-            }
-        };
-        Ok(&mut self.entries[index].1)
-    }
-    pub(super) fn remove_measured(
-        &mut self,
-        key: &NamespacePath,
-        meter: &CaptureWorkScope,
-    ) -> Result<Option<(NamespacePath, V)>, CaptureError> {
-        let Ok(index) = self.position_measured(key, meter)? else {
-            return Ok(None);
-        };
-        let copied = (self.entries.len() - index - 1)
-            .checked_mul(std::mem::size_of::<(NamespacePath, V)>())
-            .ok_or(CaptureError::from(WorkError::Overflow))? as u64;
-        capture_charge(
-            meter,
-            WorkCounters {
-                bytes_copied: copied,
-                ..WorkCounters::UNCHARGED
-            },
-        )?;
-        Ok(Some(self.entries.remove(index)))
-    }
-}
-
 pub(super) fn capture_sort_by<T>(
     values: &mut [T],
     mut compare: impl FnMut(&T, &T) -> std::cmp::Ordering,
@@ -403,4 +261,105 @@ pub(super) fn capture_reserve<T>(
         .native
         .with_original_leaf(|work| work.release(old as u64))
         .map_err(capture_demand_error)
+}
+
+pub(super) fn vector_bytes<T>(values: &Vec<T>) -> u64 {
+    (values.capacity() * std::mem::size_of::<T>()) as u64
+}
+pub(super) fn capture_position<V>(
+    entries: &[(NamespacePath, V)],
+    key: &NamespacePath,
+    meter: &CaptureWorkScope,
+) -> Result<Result<usize, usize>, CaptureError> {
+    let (mut low, mut high) = (0, entries.len());
+    while low < high {
+        capture_charge(
+            meter,
+            WorkCounters {
+                items_examined: 2,
+                ..WorkCounters::UNCHARGED
+            },
+        )?;
+        let middle = low + (high - low) / 2;
+        match entries[middle].0.cmp(key) {
+            std::cmp::Ordering::Less => low = middle + 1,
+            std::cmp::Ordering::Greater => high = middle,
+            std::cmp::Ordering::Equal => return Ok(Ok(middle)),
+        }
+    }
+    Ok(Err(low))
+}
+pub(super) fn capture_insert_at<V>(
+    entries: &mut Vec<(NamespacePath, V)>,
+    index: usize,
+    key: NamespacePath,
+    value: V,
+    meter: &CaptureWorkScope,
+) -> Result<(), CaptureError> {
+    let copied = (entries.len() - index)
+        .checked_mul(std::mem::size_of::<(NamespacePath, V)>())
+        .ok_or(WorkError::Overflow)? as u64;
+    capture_reserve(entries, 1, meter)?;
+    capture_charge(
+        meter,
+        WorkCounters {
+            bytes_copied: copied,
+            ..WorkCounters::UNCHARGED
+        },
+    )?;
+    entries.insert(index, (key, value));
+    Ok(())
+}
+pub(super) fn capture_replace<V>(
+    entries: &mut Vec<(NamespacePath, V)>,
+    key: NamespacePath,
+    value: V,
+    meter: &CaptureWorkScope,
+) -> Result<(), CaptureError> {
+    match capture_position(entries, &key, meter)? {
+        Ok(index) => {
+            capture_drop_path(key, meter)?;
+            entries[index].1 = value;
+            Ok(())
+        }
+        Err(index) => capture_insert_at(entries, index, key, value, meter),
+    }
+}
+pub(super) fn capture_entry<'a, V>(
+    entries: &'a mut Vec<(NamespacePath, V)>,
+    key: NamespacePath,
+    value: V,
+    meter: &CaptureWorkScope,
+) -> Result<&'a mut V, CaptureError> {
+    let index = match capture_position(entries, &key, meter)? {
+        Ok(index) => {
+            capture_drop_path(key, meter)?;
+            index
+        }
+        Err(index) => {
+            capture_insert_at(entries, index, key, value, meter)?;
+            index
+        }
+    };
+    Ok(&mut entries[index].1)
+}
+pub(super) fn capture_remove<V>(
+    entries: &mut Vec<(NamespacePath, V)>,
+    key: &NamespacePath,
+    meter: &CaptureWorkScope,
+) -> Result<Option<(NamespacePath, V)>, CaptureError> {
+    let Ok(index) = capture_position(entries, key, meter)? else {
+        return Ok(None);
+    };
+    let copied = (entries.len() - index - 1)
+        .checked_mul(std::mem::size_of::<(NamespacePath, V)>())
+        .ok_or(WorkError::Overflow)? as u64;
+    capture_charge(
+        meter,
+        WorkCounters {
+            bytes_copied: copied,
+            ..WorkCounters::UNCHARGED
+        },
+    )?;
+    Ok(Some(entries.remove(index)))
 }

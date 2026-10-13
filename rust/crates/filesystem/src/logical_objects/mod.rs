@@ -4,7 +4,7 @@ use crate::storage::{
     ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectStoreError, ObjectWrite,
     object_digest,
 };
-use crate::{AsyncObjectStore, AuthorityWork, CancellationToken, WorkCounters, WorkError};
+use crate::{AsyncObjectStore, AuthorityWork, WorkCounters, WorkError};
 use acyclic_objects::v1::{Error, Object, ObjectsProvider, wire};
 use acyclic_stream::OwnedBytes;
 use std::{fmt::Write as _, sync::Arc};

@@ -37,22 +37,17 @@ async fn merge_drivers_resolve_and_publish_real_workspace_joins() -> Result<(), 
     agent.write_text("/shared", "agent").await?;
     main.write_text("/shared", "main").await?;
 
-    let plan = agent.join_into(&main).plan().await?;
+    let plan = agent.join_into(&main).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut registry = crate::MergeDriverRegistry::new();
     registry.register("theirs", Arc::new(SelectTheirsDriver))?;
     registry.set_default("theirs")?;
     let mut cache = crate::MemoryMergeResolutionCache::default();
     let join_key = IdempotencyKey::new();
     let outcome = plan
-        .apply_with_drivers(
-            ApplyOptions {
+        .apply_with_drivers(ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: join_key,
-            },
-            &registry,
-            &mut cache,
-            false,
-        )
+            }, &registry, &mut cache, false, crate::PublicationPermit::Unrestricted)
         .await?;
     let JoinOutcome::Applied(application) = outcome else {
         return Err("resolved join did not publish".into());
@@ -63,8 +58,8 @@ async fn merge_drivers_resolve_and_publish_real_workspace_joins() -> Result<(), 
             join_key,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new()
-        ))?)
-        .await?
+        ))?, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
     );
     assert_eq!(
         unbounded!(main, read("/shared", 16))?,
@@ -87,23 +82,20 @@ async fn default_text_driver_projects_markers_and_publishes_them() -> Result<(),
     agent.write_text("/shared", "agent\n").await?;
     main.write_text("/shared", "main\n").await?;
 
-    let plan = agent.join_into(&main).plan().await?;
+    let plan = agent.join_into(&main).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let JoinOutcome::Conflicted {
         conflicts,
         truncated,
     } = plan
-        .apply(
-            ApplyOptions {
+        .apply(ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new(),
-            },
-            crate::PublicationPermit::Unrestricted,
-        )
+            }, BTreeMap::new(), crate::PublicationPermit::Unrestricted)
         .await?
     else {
         return Err("text join did not expose its conflict".into());
     };
-    let described = plan.describe_conflicts(&conflicts, truncated).await?;
+    let described = plan.describe_conflicts(conflicts, truncated).await?;
     assert_eq!(described.conflicts.len(), 1);
     assert_eq!(described.conflicts[0].path.as_deref(), Some("/shared"));
     assert_eq!(described.conflicts[0].kind, crate::ConflictKind::Text);
@@ -116,15 +108,10 @@ async fn default_text_driver_projects_markers_and_publishes_them() -> Result<(),
     registry.set_default("text")?;
     let mut cache = crate::MemoryMergeResolutionCache::default();
     let outcome = plan
-        .apply_with_drivers(
-            ApplyOptions {
+        .apply_with_drivers(ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new(),
-            },
-            &registry,
-            &mut cache,
-            false,
-        )
+            }, &registry, &mut cache, false, crate::PublicationPermit::Unrestricted)
         .await?;
     assert!(matches!(outcome, JoinOutcome::Applied(_)));
     let merged = String::from_utf8(unbounded!(main, read("/shared", 1024))?.to_vec())?;

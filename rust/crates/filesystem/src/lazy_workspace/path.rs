@@ -10,7 +10,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
     ) -> Result<Owned<String>, LazyWorkspaceError> {
         PortablePath::validate(path, self.workspace.limits())
             .map_err(crate::kernel::NamespacePathError::Path)?;
-        let bytes = copy_bytes(path.as_bytes(), ctx)?;
+        let mut bytes = Owned::allocate(path.len(), ctx)?;
+        let work = WorkCounters {
+            bytes_copied: path.len() as u64,
+            ..WorkCounters::UNCHARGED
+        };
+        if let Err(error) = ctx.admit(work) {
+            bytes.retire(ctx)?;
+            return Err(error.into());
+        }
+        bytes.value.extend_from_slice(path.as_bytes());
+        if let Err(error) = ctx.record_completed(work) {
+            bytes.retire(ctx)?;
+            return Err(error.into());
+        }
         Ok(Owned::new(
             String::from_utf8(bytes.value).expect("validated UTF-8"),
             bytes.allocation,

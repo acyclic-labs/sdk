@@ -23,15 +23,12 @@ async fn sibling_directories_created_independently_merge_by_path() -> Result<(),
         forks.push(fork);
     }
     for fork in &forks {
-        let plan = fork.join_into(&main).plan().await?;
+        let plan = fork.join_into(&main).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         match plan
-            .apply(
-                ApplyOptions {
+            .apply(ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::new(),
-                },
-                crate::PublicationPermit::Unrestricted,
-            )
+                }, BTreeMap::new(), crate::PublicationPermit::Unrestricted)
             .await?
         {
             JoinOutcome::Applied(_) => {}
@@ -97,15 +94,12 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
         commit(&mut transaction).await?;
     }
     for fork in [&first, &second] {
-        let plan = fork.join_into(&main).plan().await?;
+        let plan = fork.join_into(&main).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let outcome = plan
-            .apply(
-                ApplyOptions {
+            .apply(ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::new(),
-                },
-                crate::PublicationPermit::Unrestricted,
-            )
+                }, BTreeMap::new(), crate::PublicationPermit::Unrestricted)
             .await?;
         if let JoinOutcome::Conflicted { conflicts, .. } = outcome {
             let described = plan.describe_conflicts(&conflicts, false).await?;
@@ -131,18 +125,15 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
         unbounded!(transaction, set_metadata("/pkg", touch(40, mode)))?;
         commit(&mut transaction).await?;
     }
-    let plan = third.join_into(&main).plan().await?;
+    let plan = third.join_into(&main).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let JoinOutcome::Conflicted {
         conflicts,
         truncated,
     } = plan
-        .apply(
-            ApplyOptions {
+        .apply(ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new(),
-            },
-            crate::PublicationPermit::Unrestricted,
-        )
+            }, BTreeMap::new(), crate::PublicationPermit::Unrestricted)
         .await?
     else {
         return Err("a mode conflict on the shared directory was not reported".into());

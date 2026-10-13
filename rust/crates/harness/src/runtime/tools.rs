@@ -367,7 +367,7 @@ impl ToolContext {
                 })?;
             (call_id, Some(custody))
         } else {
-            if task.native_metadata_source.is_some() {
+            if task.native_custody.is_some() {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unsupported,
                     reason: "native tool context requires its original work",
@@ -505,10 +505,7 @@ impl ToolContext {
     /// Checks the SDK-issued native dispatch context before MCP allocation or IO.
     pub fn validate_native_mcp_context(&self, work: &NativeWork) -> Result<()> {
         let context = self.validate_native_bound_context(work)?;
-        if !context
-            .native_metadata_source
-            .as_ref()
-            .is_some_and(|source| source.purpose == IssuedContextPurpose::Dispatch)
+        if context.native_purpose != Some(IssuedContextPurpose::Dispatch)
         {
             return Err(native_context::boundary(
                 crate::wire::ErrorCode::Unauthorized,

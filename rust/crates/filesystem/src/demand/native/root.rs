@@ -42,38 +42,6 @@ impl NativeDemandSource {
         self.inner.root.identity()
     }
 
-    #[cfg(test)]
-    pub(super) async fn occupy_all_requests(
-        &self,
-    ) -> Result<tokio::sync::OwnedSemaphorePermit, tokio::sync::AcquireError> {
-        self.inner.requests.clone().acquire_many_owned(64).await
-    }
-
-    #[cfg(test)]
-    pub(super) async fn wait_for_cancelled_worker(
-        &self,
-        started: tokio::sync::oneshot::Sender<()>,
-        stopped: tokio::sync::oneshot::Sender<()>,
-    ) {
-        let path = NamespacePath::new(Vec::new(), self.inner.limits).expect("root path");
-        let cancellation = CancellationToken::new();
-        let _ = self
-            .request(
-                &path,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-                move |_, _, context| {
-                    let _ = started.send(());
-                    while context.check().is_ok() {
-                        std::thread::yield_now();
-                    }
-                    let _ = stopped.send(());
-                    Ok(())
-                },
-            )
-            .await;
-    }
-
     /// Opens only the root, with its optional durable identity and observer.
     pub async fn open<W: FsWork + Send>(
         path: std::borrow::Cow<'_, Path>,

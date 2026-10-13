@@ -99,28 +99,17 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
                 | MaterializationPreparationObservation::Identical(_)
         ) {
             #[cfg(not(target_arch = "wasm32"))]
-            self.backend
-                .native_work(|work| {
-                    let count = journal.preimages.len();
-                    let mut allocation = work.claim(
-                        owned_size(count, std::mem::size_of::<MaterializationObservation>())?,
-                        u64::from(count != 0),
-                        crate::WorkCounters::UNCHARGED,
-                    )?;
-                    observations
-                        .try_reserve_exact(count)
-                        .map_err(NativeTreeMaterializationError::AllocationFailed)?;
-                    allocation.reconcile_capacity(owned_size(
-                        observations.capacity(),
-                        std::mem::size_of::<MaterializationObservation>(),
-                    )?)?;
-                    journal
-                        .custody
-                        .as_mut()
-                        .ok_or(NativeTreeMaterializationError::MissingCustody)?
-                        .absorb(&mut allocation)
-                })
-                .map_err(MaterializationError::Backend)?;
+            if let Some(work) = self.backend.native_work() {
+                let (capacity, mut allocation) =
+                    crate::native_host::buffer(journal.preimages.len(), &mut &*work)
+                        .map_err(MaterializationError::Native)?;
+                observations = capacity;
+                journal
+                    .custody
+                    .as_mut()
+                    .ok_or(NativeTreeMaterializationError::MissingCustody)?
+                    .absorb(&mut allocation)?;
+            }
             for (edit, preimage) in journal.plan.edits.iter().zip(&journal.preimages) {
                 observations.push(
                     self.backend

@@ -444,8 +444,12 @@ impl Namespace {
         let previous = entry(".previous.json")?;
         let temporary = entry(".next.json")?;
         let lock = entry(".lock")?;
+        let directory_bytes = directory.capacity() as u64;
+        drop(directory);
+        if let Some(allocation) = &mut allocation {
+            allocation.release(directory_bytes)?;
+        }
         Ok(RecordPaths {
-            directory,
             current,
             previous,
             temporary,

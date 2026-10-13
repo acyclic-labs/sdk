@@ -433,7 +433,7 @@ impl Fixture {
         command: Value,
     ) -> Result<OperationId> {
         let operation = OperationId::from_bytes([104; 16]);
-        let payloads = FilesystemSchedulerPayloadStore::new(
+        let payloads = FilesystemContentPublisher::new(
             self.filesystem.clone(),
             &(self.volume),
             &self.issuer.verifier(&mut None).expect("verifier copy"),
@@ -935,7 +935,7 @@ async fn cancelled_mail_reconciles_original_atomic_send_without_republication() 
     let fixture = Fixture::new().await?;
     let runtime = fixture.runtime().await?;
     let task = TaskId::from_bytes([104; 16]);
-    let payloads = FilesystemSchedulerPayloadStore::new(
+    let payloads = FilesystemContentPublisher::new(
         fixture.filesystem.clone(),
         &(fixture.volume),
         &fixture.issuer.verifier(&mut None).expect("verifier copy"),
@@ -1670,9 +1670,8 @@ async fn genuine_stock_native_context_preserves_mcp_current_and_settlement_sourc
     assert_eq!(work.receipt(), before);
     let read = runtime
         .harness()
-        .durable_context_with_native_work(task, operation, &work)
+        .durable_context(task, operation, Some(&crate::filesystem::PreparationIo::from_native_work(&work)?))
         .await?;
-    let read = read.0.into_native_shared(read.1, &work)?;
     let read_tool =
         ToolContext::new_with_native_work(read, operation, "read-context-control", &work)?;
     assert!(matches!(

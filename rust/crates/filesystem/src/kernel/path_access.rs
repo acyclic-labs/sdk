@@ -12,7 +12,7 @@ use crate::model::FilesystemProfile;
 use crate::model::{VolumeConfig, VolumeConfigError};
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest,
-    ObjectReadRetention, ObjectResult, ObjectStoreError};
+    ObjectReadRetention, ObjectStoreError};
 use acyclic_stream::OwnedBytes;
 use std::cmp::Ordering;
 use std::mem::size_of;
@@ -1206,13 +1206,6 @@ pub(crate) async fn observe_paths_async_with_accounting<S: AsyncObjectStore>(
         PathBatchMode::NoFollow).await
 }
 
-pub(crate) async fn observe_path_refs_async_with_accounting<S: AsyncObjectStore>(
-    store: &S, generation: &super::GenerationRoot, paths: &[&NamespacePath], config: VolumeConfig,
-    accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken, custody: Option<&super::ProofDataCustody>,
-) -> Result<AccountedPath<ObservedPathBatch>, crate::FsError> {
-    path_queries_with_accounting(store, generation, PathQueries::Borrowed(paths), true, config, accounting, cancellation, custody,
-        PathBatchMode::NoFollow).await
-}
 async fn lookup_path_queries_async<S: AsyncObjectStore>(
     store: &S, generation: &super::GenerationRoot, paths: PathQueries<'_>, observe: bool, config: VolumeConfig,
     budget: WorkBudget, cancellation: &CancellationToken, data_custody: Option<&super::ProofDataCustody>, mode: PathBatchMode,
