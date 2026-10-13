@@ -71,8 +71,8 @@
   },
   {
     "lane": "linux-arm64",
-    "runner": "blacksmith-16vcpu-ubuntu-2404-arm",
-    "workers": 16,
+    "runner": "blacksmith-32vcpu-ubuntu-2404-arm",
+    "workers": 32,
     "artifact": "",
     "artifact_path": "",
     "inputs": "rust",
@@ -121,8 +121,8 @@
   },
   {
     "lane": "windows-rust",
-    "runner": "blacksmith-16vcpu-windows-2025",
-    "workers": 16,
+    "runner": "blacksmith-32vcpu-windows-2025",
+    "workers": 32,
     "artifact": "",
     "artifact_path": "",
     "inputs": "rust",

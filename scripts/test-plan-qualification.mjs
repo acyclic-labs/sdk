@@ -665,8 +665,8 @@ test("Windows native audits are independent required lanes without moving public
 test("ARM workspace compilation uses the larger runner's complete CPU allocation", () => {
   const matrix = chooseLanes(lanes, { mainPush: false, force: true, marker: everywhere, retained: retainedAll }).matrix;
   const arm = matrix.find(lane => lane.lane === "linux-arm64");
-  assert.equal(arm.runner, "blacksmith-16vcpu-ubuntu-2404-arm");
-  assert.equal(arm.workers, 16);
+  assert.equal(arm.runner, "blacksmith-32vcpu-ubuntu-2404-arm");
+  assert.equal(arm.workers, 32);
   assert.equal(arm.scope, "full");
   assert.equal(arm.artifact, "");
   for (const name of ["linux-arm64-bindings", "linux-arm64-musl"]) {

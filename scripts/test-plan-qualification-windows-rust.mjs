@@ -12,8 +12,9 @@ test("Windows Rust tests run independently without changing workspace or ignored
     retained: () => "retained",
   }).matrix;
   const rust = matrix.find(lane => lane.lane === "windows-rust");
-  assert.equal(rust.runner, "blacksmith-16vcpu-windows-2025");
-  assert.equal(rust.workers, 16);
+  assert.equal(rust.runner, "blacksmith-32vcpu-windows-2025");
+  assert.equal(rust.workers, 32);
+  assert.ok(readFileSync(".github/actionlint.yaml", "utf8").includes(rust.runner));
   assert.equal(rust.source_bound, true);
   assert.equal(rust.scope, "full");
   assert.equal(rust.inputs, "rust");
