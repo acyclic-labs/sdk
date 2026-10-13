@@ -4,62 +4,80 @@ use super::*;
 pub(super) type Journal =
     FilesystemExecutionJournal<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
 pub(super) type Effects = ConversationEffectHost<LocalStream>;
-pub(super) type Reservation = (
-    acyclic_fs::PublicationPermit,
-    NativePublicationCleanup<LocalAuthorityBackend, LocalObjectBackend>,
-);
-
 #[derive(Default)]
 pub(super) struct NativeGate {
-    pub(super) reservation: Option<Reservation>,
-    // Readiness only. Failure capabilities belong to the returned SDK Root error.
-    pub(super) requires_original_recovery: bool,
+    pub(super) reservation: Option<(
+        crate::LocalWorkspace,
+        acyclic_fs::OperationId,
+        Option<acyclic_fs::PublicationReservation>,
+    )>,
+}
+
+fn publication_permit(reservation: acyclic_fs::PublicationReservation) -> PublicationPermit {
+    PublicationPermit::Reservation {
+        operation_id: reservation.operation_id.into_bytes(),
+        gate_tail: reservation.gate_tail,
+        expected: reservation.expected,
+    }
 }
 
 impl NativeGate {
-    pub(super) fn is_settled(&self) -> bool {
-        self.reservation.is_none() && !self.requires_original_recovery
-    }
-
     pub(super) async fn reserve(
         &mut self,
         owner: &TaskJournalOwner<LocalStream>,
-        workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
+        workspace: &crate::LocalWorkspace,
         volume: &acyclic_harness::conversation::VolumeRef,
         generation: GenerationId,
         command: OperationId,
         meter: &NativeMaterializationWork,
         cancellation: &CancellationToken,
-        cleanup_cancellation: &CancellationToken,
         existing_only: bool,
     ) -> Result<PublicationPermit> {
-        if let Some(reservation) = self.reservation.as_ref() {
-            owner
-                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?)))
-                .await?;
-            owner.require_volume_grant(volume, VolumeOperation::Write, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?)))?;
-            return Ok(reservation.0);
+        let io = PreparationIo::from_native_work(meter)?;
+        owner.verify(false, &mut Some(&mut &io)).await?;
+        owner.require_volume_grant(volume, VolumeOperation::Write, &mut Some(&mut &io))?;
+        if volume.storage_name(&mut Some(&mut &io))? != workspace.name().as_str() {
+            return Err(unauthorized("Pi publication selected another volume"));
         }
-        let recover_original = existing_only || self.requires_original_recovery;
-        self.requires_original_recovery = true;
-        let original = acyclic_fs::OperationId::from_bytes(command.into_bytes());
-        let acquired = owner
-            .publication(
-                workspace,
-                volume,
-                generation,
-                original,
-                meter,
-                cancellation,
-                cleanup_cancellation,
-                recover_original,
-            )
-            .await?;
-        let reservation = acquired.ok_or(Error::Indeterminate(command))?;
-        let permit = reservation.0;
-        self.reservation = Some(reservation);
-        remaining(meter)?;
-        Ok(permit)
+        let operation = acyclic_fs::OperationId::from_bytes(command.into_bytes());
+        if let Some((actual, original, reservation)) = &self.reservation {
+            if actual.id() != workspace.id() || *original != operation {
+                return Err(unauthorized(
+                    "Pi publication substituted its retained reservation",
+                ));
+            }
+            if let Some(reservation) = reservation {
+                return Ok(publication_permit(*reservation));
+            }
+        }
+        let recover = existing_only || self.reservation.is_some();
+        self.reservation = Some((workspace.clone(), operation, None));
+        let reservation = match workspace
+            .publication_reservation(operation, meter, cancellation)
+            .await
+            .map_err(Error::from)?
+        {
+            Some(reservation) => reservation,
+            None if recover => return Err(Error::Indeterminate(command)),
+            None => workspace
+                .reserve_publication(operation, meter, cancellation)
+                .await
+                .map_err(Error::from)?,
+        };
+        self.reservation.as_mut().expect("retained publication").2 = Some(reservation);
+        if workspace
+            .head(meter, cancellation)
+            .await
+            .map_err(Error::from)?
+            .id()
+            != generation
+        {
+            return Err(unauthorized(
+                "Pi publication changed its selected generation",
+            ));
+        }
+        owner.verify(false, &mut Some(&mut &io)).await?;
+        Ok(publication_permit(reservation))
     }
 
     pub(super) async fn release(
@@ -67,18 +85,26 @@ impl NativeGate {
         owner: &TaskJournalOwner<LocalStream>,
         meter: &NativeMaterializationWork,
         cancellation: &CancellationToken,
-        command: OperationId,
     ) -> Result<()> {
-        let Some(reservation) = self.reservation.take() else {
-            return if self.requires_original_recovery {
-                Err(Error::Indeterminate(command))
-            } else {
-                Ok(())
-            };
+        let Some((workspace, operation, retained)) = &self.reservation else {
+            return Ok(());
         };
-        reservation.1.release(owner, meter, cancellation).await?;
-        self.requires_original_recovery = false;
-        remaining(meter)?;
+        let io = PreparationIo::from_native_work(meter)?;
+        owner.verify(true, &mut Some(&mut &io)).await?;
+        let reservation = match retained {
+            Some(reservation) => Some(*reservation),
+            None => workspace
+                .publication_reservation(*operation, meter, cancellation)
+                .await
+                .map_err(Error::from)?,
+        };
+        if let Some(reservation) = reservation {
+            workspace
+                .release_publication(reservation, meter, cancellation)
+                .await
+                .map_err(Error::from)?;
+        }
+        self.reservation = None;
         Ok(())
     }
 }
@@ -86,7 +112,8 @@ impl NativeGate {
 pub(super) struct BoundEffect {
     pub(super) staged: Option<WorkflowCommand>,
     pub(super) plan: (TaskEffectPlan, NativeAllocation),
-    pub(super) provider: Arc<NativeProcessProvider<LocalStream>>,
+    pub(super) provider:
+        Arc<NativeProcessProvider<LocalStream, LocalAuthorityBackend, LocalObjectBackend>>,
     pub(super) work: NativeMaterializationWork,
     pub(super) effects: Arc<Effects>,
     pub(super) owner: Arc<TaskJournalOwner<LocalStream>>,
@@ -115,40 +142,14 @@ pub(super) struct LiveHandles {
     pub(super) project: Option<Arc<LocalSingleMount>>,
     pub(super) project_allocation: Option<acyclic_fs::NativeAllocation>,
     pub(super) project_work: Option<NativeMaterializationWork>,
-    pub(super) project_startup_owner: Option<NativeMountSession>,
     pub(super) effect: Option<Arc<BoundEffect>>,
     pub(super) scratch_gate: NativeGate,
     pub(super) project_gate: NativeGate,
-    pub(super) mounts_drained: bool,
-    pub(super) scratch_released: bool,
-    pub(super) dispose_requested: bool,
     pub(super) preparation_owner: Option<(
         Arc<TaskJournalOwner<LocalStream>>,
         Arc<TaskContext>,
         OperationId,
     )>,
-    // The actual SDK proof owns its original view and intrinsic allocation custody.
-    pub(super) process_drained: Option<NativeProcessDrainProof>,
-    pub(super) drained: Option<NativeTaskViewDrainReceipt>,
-}
-
-impl LiveHandles {
-    pub(super) fn stop_startup_mount(&mut self, command: OperationId) -> Result<()> {
-        if let Some(session) = self.project_startup_owner.as_mut() {
-            let volume_work = self
-                .project_work
-                .as_ref()
-                .ok_or(Error::Indeterminate(command))?;
-            let stopped = session.stop_with_meter(&volume_work).map_err(|cause| {
-                Error::from(acyclic_fs::native_mount::MountLifecycleError::Native(cause))
-            })?;
-            if !stopped || !session.cleanup_state().cleanup_complete() {
-                return Err(Error::Indeterminate(command));
-            }
-            self.project_startup_owner = None;
-        }
-        Ok(())
-    }
 }
 
 pub(super) struct NativeEntry {
@@ -159,7 +160,6 @@ pub(super) struct NativeEntry {
     pub(super) handles: tokio::sync::Mutex<LiveHandles>,
     pub(super) run: tokio::sync::Mutex<()>,
     pub(super) operation_cancellation: CancellationToken,
-    pub(super) cleanup_cancellation: CancellationToken,
     // Every physical payload and retained SDK proof drops before its birth custody.
     pub(super) native_custody: NativeAllocation,
 }
@@ -181,7 +181,6 @@ impl NativeEntry {
             handles: tokio::sync::Mutex::new(LiveHandles::default()),
             run: tokio::sync::Mutex::new(()),
             operation_cancellation: CancellationToken::new(),
-            cleanup_cancellation: CancellationToken::new(),
             native_custody: custody,
         })
     }

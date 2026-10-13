@@ -47,6 +47,7 @@ pub(crate) fn write_json_with_backup(path: &Path, value: &Value) -> Result<(), S
         &temporary,
         path,
         acyclic_native_runtime::RenameMode::Replace,
+        None,
     )
     .map_err(display)
 }
@@ -70,6 +71,7 @@ pub(crate) fn write_text_with_backup(path: &Path, value: &str) -> Result<(), Str
         &temporary,
         path,
         acyclic_native_runtime::RenameMode::Replace,
+        None,
     )
     .map_err(display)
 }

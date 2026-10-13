@@ -137,7 +137,7 @@ impl StockExecution<'_> {
                     if self.stock.policy_identity.as_ref() != Some(&policy.identity()) {
                         return Err(Error::Conflict("stock policy changed after binding".into()));
                     }
-                    let decision = policy.evaluate(&invocation, scope).await?;
+                    let decision = policy.evaluate(&invocation, scope, None)?.await?.0;
                     if self.stock.policy_identity.as_ref() != Some(&policy.identity()) {
                         return Err(Error::Conflict(
                             "stock policy changed during evaluation".into(),
@@ -237,7 +237,7 @@ impl StockExecution<'_> {
                                         "native tool acceptance has no issued context",
                                     )
                                 })?
-                                .record_native_tool_acceptance(work)?;
+                                .validate_native_mcp_context(work)?;
                         }
                         true
                     }
@@ -248,11 +248,30 @@ impl StockExecution<'_> {
                 }
             };
             let execution = if claimed {
-                stock_execute_tool(tool, &mut context, &invocation, self.io)
-                    .await
-                    .map(Some)
+                stock_tool_call(
+                    &mut context,
+                    self.io,
+                    |context| tool.executor.execute(invocation.clone(), context),
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    |context, work| {
+                        tool.executor
+                            .execute_with_native_context(context, &invocation, work)
+                    },
+                )
+                .await
+                .map(Some)
             } else {
-                stock_reconcile_tool(tool, &mut context, &invocation, self.io).await
+                stock_tool_call(
+                    &mut context,
+                    self.io,
+                    |context| tool.executor.reconcile(invocation.clone(), context),
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    |context, work| {
+                        tool.executor
+                            .reconcile_with_native_context(context, &invocation, work)
+                    },
+                )
+                .await
             };
             let result = match execution {
                 Ok(Some(result)) => result,

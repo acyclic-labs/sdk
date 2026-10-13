@@ -78,7 +78,7 @@ fn publication_budget() -> WorkBudget {
 
 #[cfg(feature = "filesystem")]
 struct GuardedForkFixture {
-    fixture: crate::durable_host::tests::created_resource_access::CreationFixture,
+    fixture: crate::durable_host::tests::created_fixture::CreationFixture,
     owner: Arc<crate::durable_host::TaskJournalOwner<MemoryStream>>,
     lease: crate::distributed::WorkLease,
     parent: StreamAggregate<MemoryStream>,
@@ -100,8 +100,7 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
         CompositeForkVerifier, ForkPreparer, ResourceRevision, StreamHistoryForkVerifier,
     };
     use crate::resources::StreamRef;
-    let fixture =
-        crate::durable_host::tests::created_resource_access::CreationFixture::new().await?;
+    let fixture = crate::durable_host::tests::created_fixture::CreationFixture::new().await?;
     let created = fixture
         .create_filesystem_child_with_grants(&["fork:publish", "conversation:bind"])
         .await?;
@@ -305,7 +304,7 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     let child_scope = child_issuer
         .issue(
             "measured-fork-child",
-            &Capabilities::new(["conversation:bind".into()]),
+            &Capabilities::new(["conversation:bind".to_owned()]),
             Some(child_agent),
             None,
             &mut None,
@@ -346,19 +345,5 @@ fn guarded_publication_budget() -> WorkBudget {
     }
 }
 
-fn projection_codec_budget() -> WorkBudget {
-    WorkBudget {
-        items_examined: 1_048_576,
-        allocation_operations: 1_048_576,
-        peak_allocation_bytes: 16 * 1_048_576,
-        bytes_copied: 16 * 1_048_576,
-        bytes_encoded: 16 * 1_048_576,
-        bytes_hashed: 16 * 1_048_576,
-        output_bytes: 16 * 1_048_576,
-        ..publication_budget()
-    }
-}
-
-mod projections;
 mod publication;
 mod roots;

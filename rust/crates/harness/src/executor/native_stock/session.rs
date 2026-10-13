@@ -75,47 +75,47 @@ pub(in crate::executor) fn native_execution_supported(
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
     work.remaining()?;
+    let io = PreparationIo::from_native_work(work)?;
+    let operation = stock
+        .task_context
+        .as_ref()
+        .map_or(context.id(), |(_, operation)| *operation);
+    let session = StockExecution {
+        context: Some((context, operation)),
+        io: Some(&io),
+        ..StockExecution::ordinary(stock)
+    };
     if !context.native_metadata_matches(work) {
-        return Err(crate::Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            reason: "stock context lacks its original native custody",
-        });
+        return Err(stock_boundary(
+            Some(&io),
+            crate::wire::ErrorCode::Unauthorized,
+            "stock context lacks its original native custody",
+        ));
     }
+    session.verify_task_context_binding(operation)?;
     if !journal.supports_native_execution(work)? || !stock.provider.supports_native_model(work)? {
-        return Err(crate::Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "native stock producer is unavailable",
-        });
+        return Err(stock_boundary(
+            Some(&io),
+            crate::wire::ErrorCode::Unsupported,
+            "native stock producer is unavailable",
+        ));
     }
-    if context.as_ref().durable_task_id() != stock.task.as_ref().map(|(_, task, _)| *task) {
-        return Err(crate::Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            reason: "stock owner differs from the issued context",
-        });
+    if let Some((host, _, _)) = &stock.task
+        && !host.supports_native_execution(work)?
+    {
+        return Err(stock_boundary(
+            Some(&io),
+            crate::wire::ErrorCode::Unsupported,
+            "native stock task owner is unavailable",
+        ));
     }
-    if let Some((host, task, fence)) = stock.task.as_ref() {
-        if !context.original_task_binding_matches(*task, fence) {
-            return Err(crate::Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "stock execution owner differs from the issued context",
-            });
-        }
-        if !host.supports_native_execution(work)? {
-            return Err(crate::Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "native stock task owner is unavailable",
-            });
-        }
-    }
-    stock
-        .context
-        .validate(Some(&PreparationIo::from_native_work(work)?))?;
+    stock.context.validate(Some(&io))?;
     for (_, policy) in context
         .stock_tool_policy_binding()
         .into_iter()
         .chain(context.as_ref().stock_tool_policy_overrides())
     {
-        policy.supports_native_policy(work)?;
+        policy.identity_with_native_work(work)?;
     }
     if let Some(policy) = &stock.policy {
         let Some((_, original)) = context.as_ref().stock_tool_policy_binding() else {
@@ -136,60 +136,26 @@ pub(in crate::executor) fn native_execution_supported(
         stock.limits,
         work,
     )?;
-    if context.as_ref().scope().run_limits() != stock.tool_scope.run_limits()
-        || context.as_ref().scope().extensions() != stock.tool_scope.extensions()
-    {
-        return Err(crate::Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            reason: "stock task context differs from execution binding",
-        });
-    }
     Ok(())
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(in crate::executor) fn native_session<'a>(
-    stock: &'a StockExecutor,
-    context: &'a Arc<crate::runtime::TaskContext>,
-    operation: OperationId,
-    io: &'a PreparationIo,
-    interactions: Option<&'a Arc<dyn crate::runtime::InteractionRouter>>,
-) -> StockExecution<'a> {
-    StockExecution {
-        stock,
-        context: Some((context, operation)),
-        io: Some(io),
-        interactions,
-        summary: None,
+pub(in crate::executor) async fn native_result<T>(
+    io: &PreparationIo,
+    operation: impl std::future::Future<Output = Result<T>>,
+    owned_bytes: impl FnOnce(&T) -> Result<u64>,
+) -> Result<(T, acyclic_fs::NativeAllocation)> {
+    io.retain_owned(std::mem::size_of::<T>() as u64)?;
+    let output = operation.await?;
+    let retained = owned_bytes(&output)?;
+    io.original_native_work()
+        .expect("native result ledger")
+        .remaining()?;
+    let owned = io.owned_bytes()?;
+    if retained > owned {
+        io.retain_owned(retained - owned)?;
     }
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(in crate::executor) fn native_progress<'a>(
-    stock: &'a StockExecutor,
-    context: &'a Arc<crate::runtime::TaskContext>,
-    input: &'a TurnInput,
-    journal: &'a dyn ExecutionJournal,
-    work: &'a acyclic_fs::NativeMaterializationWork,
-    interactions: Option<&'a Arc<dyn crate::runtime::InteractionRouter>>,
-) -> Result<
-    crate::NativeFutureBundle<'a, (ExecutionProgress<TurnOutput>, acyclic_fs::NativeAllocation)>,
-> {
-    crate::NativeFutureBundle::new(work, || async move {
-        let io = PreparationIo::from_native_work(work)?;
-        io.absorb_native_custody(work.claim(
-            std::mem::size_of::<ExecutionProgress<TurnOutput>>() as u64,
-            0,
-            acyclic_fs::WorkCounters::default(),
-        )?)?;
-        let progress = {
-            let session = native_session(stock, context, input.operation_id, &io, interactions);
-            session.execute_progress(input, journal).await?
-        };
-        let retained = native_progress_owned_bytes(&progress)?;
-        work.remaining()?;
-        Ok((progress, io.into_native_custody(retained)?))
-    })
+    Ok((output, io.take_native_custody(retained)?))
 }
 
 impl StockExecutor {
@@ -288,7 +254,7 @@ impl StockExecutor {
             return Ok(false);
         }
         if let Some(policy) = &self.policy {
-            policy.supports_native_policy(work)?;
+            policy.identity_with_native_work(work)?;
         }
         Ok(true)
     }

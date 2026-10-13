@@ -6,11 +6,10 @@ export function clientReadable<Value>(store: ClientSnapshot<Value>): {
 } {
   return {
     subscribe(run) {
-      let initial = true;
-      const unsubscribe = store.subscribe(() => {
-        if (!initial) run(store.getSnapshot());
+      let unsubscribe: (() => void) | undefined;
+      unsubscribe = store.subscribe(() => {
+        if (unsubscribe !== undefined) run(store.getSnapshot());
       });
-      initial = false;
       try { run(store.getSnapshot()); }
       catch (error) { unsubscribe(); throw error; }
       return unsubscribe;

@@ -5,34 +5,16 @@ pub(in crate::executor) fn stock_tool_definitions(
     scope: &RuntimeScope,
     io: Option<&PreparationIo>,
 ) -> Result<Vec<crate::tool::ToolDefinition>> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io
-        && io.original_native_work().is_some()
-    {
-        let definitions = registry.definitions(Some(io))?;
-        let mut selected = Vec::new();
-        for definition in definitions {
-            let key = with_history_io(Some(io), |work| {
-                crate::executor::preparation_format(
-                    format_args!("tool:call:{}", definition.name),
-                    work,
-                )
-            })?;
-            if scope.grants().contains(&key) {
-                stock_vec_push(&mut selected, definition, Some(io))?;
-            }
+    let mut selected = Vec::new();
+    for definition in registry.definitions(io)? {
+        let key = with_history_io(io, |work| {
+            preparation_format(format_args!("tool:call:{}", definition.name), work)
+        })?;
+        if scope.grants().contains(&key) {
+            stock_vec_push(&mut selected, definition, io)?;
         }
-        return Ok(selected);
     }
-    Ok(registry
-        .definitions(None)?
-        .into_iter()
-        .filter(|definition| {
-            scope
-                .grants()
-                .contains(&capability::tool_call(&definition.name))
-        })
-        .collect())
+    Ok(selected)
 }
 
 pub(in crate::executor) fn stock_is_native(io: Option<&PreparationIo>) -> bool {
@@ -52,18 +34,13 @@ pub(in crate::executor) fn stock_tool_lookup<'a>(
     name: &str,
     io: Option<&PreparationIo>,
 ) -> Result<&'a crate::tool::Tool> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if io.and_then(PreparationIo::original_native_work).is_some() {
-        return registry
-            .get(name, None, io)?
-            .ok_or_else(|| crate::Error::NativeBoundary {
-                code: crate::wire::ErrorCode::NotFound,
-                reason: "tool is not bound to this stock composition",
-            });
-    }
-    registry
-        .get(name, None, io)?
-        .ok_or_else(|| Error::NotFound(format!("tool {name}")))
+    registry.get(name, None, io)?.ok_or_else(|| {
+        stock_boundary(
+            io,
+            crate::wire::ErrorCode::NotFound,
+            "tool is not bound to this stock composition",
+        )
+    })
 }
 
 pub(in crate::executor) fn stock_authorize_tool(
@@ -89,60 +66,35 @@ pub(in crate::executor) fn stock_authorize_tool(
     }
 }
 
-pub(in crate::executor) async fn stock_execute_tool(
-    tool: &crate::tool::Tool,
-    context: &mut Option<crate::runtime::ToolContext>,
-    invocation: &ToolInvocation,
-    io: Option<&PreparationIo>,
-) -> Result<ToolResult> {
+pub(in crate::executor) async fn stock_tool_call<'a, T>(
+    context: &'a mut Option<crate::runtime::ToolContext>,
+    io: Option<&'a PreparationIo>,
+    ordinary: impl FnOnce(Option<crate::runtime::ToolContext>) -> BoxFuture<'a, Result<T>>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] native: impl FnOnce(
+        &'a crate::runtime::ToolContext,
+        &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<
+        crate::NativeFutureBundle<'a, (T, acyclic_fs::NativeAllocation)>,
+    >,
+) -> Result<T> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io
         && let Some(work) = io.original_native_work()
     {
-        let context = context
-            .as_ref()
-            .ok_or_else(|| crate::Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "native tool execution has no issued context",
-            })?;
-        let (result, custody) = tool
-            .executor
-            .execute_with_native_context(context, invocation, work)?
-            .await?;
+        let context = context.as_ref().ok_or_else(|| {
+            stock_boundary(
+                Some(io),
+                crate::wire::ErrorCode::Unauthorized,
+                "native tool call has no issued context",
+            )
+        })?;
+        let (result, custody) = native(context, work)?.await?;
         io.absorb_native_custody(custody)?;
         return Ok(result);
     }
-    tool.executor
-        .execute(invocation.clone(), context.take())
-        .await
-}
-
-pub(in crate::executor) async fn stock_reconcile_tool(
-    tool: &crate::tool::Tool,
-    context: &mut Option<crate::runtime::ToolContext>,
-    invocation: &ToolInvocation,
-    io: Option<&PreparationIo>,
-) -> Result<Option<ToolResult>> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io
-        && let Some(work) = io.original_native_work()
-    {
-        let context = context
-            .as_ref()
-            .ok_or_else(|| crate::Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "native tool reconciliation has no issued context",
-            })?;
-        let (result, custody) = tool
-            .executor
-            .reconcile_with_native_context(context, invocation, work)?
-            .await?;
-        io.absorb_native_custody(custody)?;
-        return Ok(result);
-    }
-    tool.executor
-        .reconcile(invocation.clone(), context.take())
-        .await
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    let _ = io;
+    ordinary(context.take()).await
 }
 
 pub(in crate::executor) fn stock_project_tool(
@@ -153,28 +105,24 @@ pub(in crate::executor) fn stock_project_tool(
     io: Option<&PreparationIo>,
 ) -> Result<(Value, crate::model::ToolResultContent)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io
-        && let Some(work) = io.original_native_work()
-    {
-        let (value, custody) = tool.projection.project(invocation, result, Some(work))?;
-        let custody = custody.ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "tool projection has no native producer",
-        })?;
-        io.absorb_native_custody(custody)?;
-        let content = tool
-            .definition
-            .validate_projection(&value, limits, Some(io))?;
-        io.check_json_byte_bound(&value, limits.render_bytes)?;
-        return Ok((value, content));
+    let work = io.and_then(PreparationIo::original_native_work);
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    let work = None;
+    let (value, custody) = tool.projection.project(invocation, result, work)?;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(io) = io.filter(|_| work.is_some()) {
+        io.absorb_native_custody(custody.ok_or_else(|| {
+            stock_boundary(
+                Some(io),
+                crate::wire::ErrorCode::Unsupported,
+                "tool projection has no native producer",
+            )
+        })?)?;
     }
-    let value = tool.projection.project(invocation, result, None)?.0;
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    let _ = custody;
     let content = tool.definition.validate_projection(&value, limits, io)?;
-    if crate::contract::canonical_json_bytes(&value)?.len() as u64 > limits.render_bytes {
-        return Err(Error::Invalid(
-            "tool projection exceeds render limit".into(),
-        ));
-    }
+    stock_json_bound(&value, limits.render_bytes, io)?;
     Ok((value, content))
 }
 
@@ -196,24 +144,27 @@ impl StockExecution<'_> {
             reason: "stock policy has no issued task",
         })?;
         let io = self.io.expect("native execution ledger");
-        for (_, policy) in context
+        context.require_original_native_work(work)?;
+        context.require_native_scope_restriction(&self.stock.tool_scope, work)?;
+        for (identity, policy) in context
             .stock_tool_policy_binding()
             .into_iter()
             .chain(context.stock_tool_policy_overrides())
         {
             let Some(((approval_operation, request), custody)) = context
-                .stock_policy_approval(
+                .policy_approval(
                     policy.as_ref(),
-                    &self.stock.tool_scope,
+                    Some(identity),
                     definition,
                     invocation,
-                    work,
+                    Some(work),
+                    &self.stock.tool_scope,
                 )
                 .await?
             else {
                 continue;
             };
-            io.absorb_native_custody(custody)?;
+            io.absorb_native_custody(custody.expect("native approval retains its prompt"))?;
             if let Some(progress) = self
                 .settle_approval(
                     journal,

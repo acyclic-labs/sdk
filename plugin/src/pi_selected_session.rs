@@ -198,7 +198,6 @@ impl PiSession {
             paths,
             confirm,
             approval_digest,
-            import_operation: None,
         };
         let (reference, mut reference_custody) = pi_root_provider::stage_pi_input(
             owner,

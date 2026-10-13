@@ -14,10 +14,10 @@ use std::fs;
 use std::{collections::BTreeMap, path::PathBuf};
 
 async fn resources(data: &Path) -> (crate::service_process::ServiceLock, ServiceResources) {
-    let (lock, configured, private, work) = crate::tests::configured_test_service_bootstrap(data)
+    let (lock, configured, work) = crate::tests::configured_test_service_bootstrap(data)
         .await
         .unwrap();
-    let (resources, _) = ServiceResources::open(data.to_path_buf(), configured, private, &work)
+    let (resources, _) = ServiceResources::open(data.to_path_buf(), configured, &work)
         .await
         .unwrap();
     (lock, resources)
@@ -49,7 +49,7 @@ async fn prepare(
         stream,
         Arc::new(filesystem),
         &owner.policy.journal,
-        owner.authority_with_native_work(&work).unwrap(),
+        owner.authority(&work).unwrap(),
         &work,
     )
     .await
@@ -118,11 +118,15 @@ async fn cold_reopen_observes_pending_and_reserved_without_native_access() {
             let WorkPull::Claimed(lease) = runtime
                 .runtime
                 .task_host()
-                .pull_work(&Worker {
-                    id: "pi-service-original".into(),
-                    available: Default::default(),
-                    labels: Default::default(),
-                }, None, &mut None)
+                .pull_work(
+                    &Worker {
+                        id: "pi-service-original".into(),
+                        available: Default::default(),
+                        labels: Default::default(),
+                    },
+                    None,
+                    &mut None,
+                )
                 .await
                 .unwrap()
             else {
@@ -136,7 +140,7 @@ async fn cold_reopen_observes_pending_and_reserved_without_native_access() {
                 .unwrap();
         }
         drop(runtime);
-        let private = resources.private_state_root.clone();
+        let private = resources.data.clone();
         let session = resources.session_directory(&state.root_session_id);
         let controller = SessionController::open(session.clone(), &resources, &work())
             .await
@@ -178,7 +182,7 @@ async fn cold_reopen_observes_pending_and_reserved_without_native_access() {
             serde_json::to_value(&state).unwrap()
         );
         let configured = ServiceResources::configure(&data).await.unwrap();
-        let reopened = ConcurrentServiceControl::open(data, configured, private, &work())
+        let reopened = ConcurrentServiceControl::open(data, configured, &work())
             .await
             .unwrap();
         assert_eq!(
@@ -213,11 +217,15 @@ async fn deactivation_cancels_before_persisting_inactive_state() {
     let WorkPull::Claimed(lease) = runtime
         .runtime
         .task_host()
-        .pull_work(&Worker {
-            id: "pi-service-original".into(),
-            available: Default::default(),
-            labels: Default::default(),
-        }, None, &mut None)
+        .pull_work(
+            &Worker {
+                id: "pi-service-original".into(),
+                available: Default::default(),
+                labels: Default::default(),
+            },
+            None,
+            &mut None,
+        )
         .await
         .unwrap()
     else {
@@ -230,7 +238,7 @@ async fn deactivation_cancels_before_persisting_inactive_state() {
         .await
         .unwrap();
     drop(runtime);
-    let private = resources.private_state_root.clone();
+    let private = resources.data.clone();
     let session = resources.session_directory(&state.root_session_id);
     let controller = SessionController::open(session.clone(), &resources, &work())
         .await
@@ -246,7 +254,7 @@ async fn deactivation_cancels_before_persisting_inactive_state() {
     assert!(!load_saved_state(&session).unwrap().active);
     let configured = ServiceResources::configure(directory.path()).await.unwrap();
     let (resources, sessions) =
-        ServiceResources::open(directory.path().into(), configured, private, &work())
+        ServiceResources::open(directory.path().into(), configured, &work())
             .await
             .unwrap();
     assert!(sessions.is_empty());
@@ -296,11 +304,15 @@ async fn recovery_preserves_missing_storage_and_rejects_a_foreign_valid_owner() 
     let WorkPull::Claimed(lease) = runtime
         .runtime
         .task_host()
-        .pull_work(&Worker {
-            id: "pi-service-original".into(),
-            available: Default::default(),
-            labels: Default::default(),
-        }, None, &mut None)
+        .pull_work(
+            &Worker {
+                id: "pi-service-original".into(),
+                available: Default::default(),
+                labels: Default::default(),
+            },
+            None,
+            &mut None,
+        )
         .await
         .unwrap()
     else {
@@ -332,8 +344,8 @@ async fn recovery_preserves_missing_storage_and_rejects_a_foreign_valid_owner() 
         .unwrap(),
     )
     .unwrap();
-    PiOwnerConfig::load_readonly_with_native_work(
-        &resources.private_state_root,
+    PiOwnerConfig::load(
+        &resources.data,
         resources.private_session_data(&session).unwrap(),
         &work(),
     )

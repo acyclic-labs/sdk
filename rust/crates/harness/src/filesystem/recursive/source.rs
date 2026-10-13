@@ -219,6 +219,83 @@ where
             &mut observer,
         )
         .await?;
+    let summary = if let Some(selection) = &request.preparation.summary {
+        let journal = crate::filesystem::FilesystemExecutionJournal::new(
+            Arc::clone(stream),
+            Arc::clone(&filesystem),
+            selection.checkpoint.volume(),
+            verifier,
+            &crate::core::SchemaRegistry::default(),
+            signed,
+            selection.limits.file_bytes,
+            io,
+        )?
+        .with_input_verifier(Arc::clone(&resolver));
+        #[cfg(not(target_arch = "wasm32"))]
+        let journal: Arc<dyn crate::executor::ExecutionJournal> = match work.as_ref() {
+            Some(work) => journal.into_native_shared(work)?,
+            None => Arc::new(journal),
+        };
+        #[cfg(target_arch = "wasm32")]
+        let journal: Arc<dyn crate::executor::ExecutionJournal> = Arc::new(journal);
+        #[cfg(not(target_arch = "wasm32"))]
+        let (scope, _scope_custody) = match work.as_ref() {
+            Some(work) => {
+                let (scope, custody) = crate::runtime::RuntimeScope::new_with_native_work(
+                    crate::Capabilities::copy(signed.capabilities().iter(), work)?,
+                    selection.limits,
+                    work,
+                )?;
+                (scope, Some(custody))
+            }
+            None => (
+                crate::runtime::RuntimeScope::new(signed.capabilities().clone(), selection.limits)?,
+                None,
+            ),
+        };
+        #[cfg(target_arch = "wasm32")]
+        let scope =
+            crate::runtime::RuntimeScope::new(signed.capabilities().clone(), selection.limits)?;
+        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+        let mut cursor = reader
+            .pin(
+                0,
+                observer
+                    .as_mut()
+                    .map(|observer| &mut **observer as &mut dyn crate::store::HistoryIo),
+            )
+            .await?;
+        let _cursor_hold = io
+            .map(|io| io.guard_owned(io.owned_bytes()? - before))
+            .transpose()?;
+        cursor.through_revision = parent.0.revision();
+        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+        let prepared = crate::fork::prepare_summary_fork_context_with_io(
+            &parent.0,
+            crate::fork::SummaryForkSelection {
+                checkpoint: crate::model::clone_file(&selection.checkpoint, io)?,
+                limits: selection.limits,
+                history_limits: selection.history_limits,
+            },
+            journal.as_ref(),
+            &scope,
+            &reader,
+            &cursor,
+            resolver.as_ref(),
+            io,
+        )
+        .await?;
+        Some((
+            prepared,
+            journal,
+            #[cfg(not(target_arch = "wasm32"))]
+            io.filter(|io| io.original_native_work().is_some())
+                .map(|io| io.take_native_custody(io.owned_bytes()? - before))
+                .transpose()?,
+        ))
+    } else {
+        None
+    };
     drop(reader);
     drop(held);
     check()?;
@@ -262,6 +339,15 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         custody.zip(work.as_ref()),
     )?;
+    let preparer = match summary {
+        Some(summary) => preparer.with_summary_context(
+            summary.0,
+            summary.1,
+            #[cfg(not(target_arch = "wasm32"))]
+            summary.2,
+        )?,
+        None => preparer,
+    };
     #[cfg(not(target_arch = "wasm32"))]
     let preparer = match work.as_ref() {
         Some(work) => preparer.into_native_shared(work)?,

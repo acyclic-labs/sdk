@@ -232,8 +232,6 @@ async fn measured_checkpoint_cancellation_stops_before_next_sdk_call() -> Result
         let failure = open_history(
             &provider,
             authority(),
-            issuer().verifier(&mut None).expect("verifier copy"),
-            schemas(),
             None,
             crate::store::default_projection_read_limits(),
             work_budget,
@@ -258,8 +256,6 @@ async fn measured_checkpoint_cancellation_stops_before_next_sdk_call() -> Result
     let failure = open_history(
         &provider,
         authority(),
-        issuer().verifier(&mut None).expect("verifier copy"),
-        schemas(),
         None,
         crate::store::default_projection_read_limits(),
         budget(),
@@ -279,8 +275,6 @@ async fn measured_checkpoint_cancellation_stops_before_next_sdk_call() -> Result
     let failure = open_history(
         &provider,
         other,
-        issuer().verifier(&mut None).expect("verifier copy"),
-        schemas(),
         None,
         crate::store::default_projection_read_limits(),
         budget(),
@@ -296,8 +290,6 @@ async fn measured_checkpoint_cancellation_stops_before_next_sdk_call() -> Result
     let receipt = open_history(
         &empty,
         authority(),
-        issuer().verifier(&mut None).expect("verifier copy"),
-        schemas(),
         None,
         crate::store::default_projection_read_limits(),
         budget(),

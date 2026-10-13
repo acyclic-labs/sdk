@@ -1,12 +1,11 @@
 //! Explicit authenticated provider bindings for the shared portable default tools.
 use crate::store::history::HistoryIo;
 use crate::{
-    Capabilities, Error, OperationId, Result, TaskId,
+    Capabilities, Error, Result, TaskId,
     conversation::{
         ContentGrant, ConversationMessage, Limits, VolumeOperation, VolumeOwner, VolumeRef,
     },
     core::{Authority, AuthorityIssuer, AuthorityVerifier, Reducer, SchemaRegistry, Scope},
-    durable_tool::ResumableTool,
     filesystem::{
         FilesystemContentVerifier, FilesystemForkVerifier, FilesystemHost,
         FilesystemProjectMergeVerifier, FilesystemTaskRuntime, ForkPreparationLimits,
@@ -22,7 +21,6 @@ use crate::{
         ProjectSourceReadHandle, ProjectSourceSnapshot, RootProjectSourceProvider,
     },
     store::{HistoryReadLimits, StreamAggregate},
-    tool::ToolInvocation,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, CancellationToken, WorkBudget};
 use acyclic_stream::StreamProvider;
@@ -43,7 +41,7 @@ pub use config::{
 };
 
 use crate::executor::stock_boundary as failure;
-use crate::filesystem::{PreparationIo, task_runtime::WorkerContext};
+use crate::filesystem::PreparationIo;
 use crate::wire::ErrorCode;
 
 /// Portable source factory using the runtime's actual Filesystem and Stream.
@@ -83,92 +81,84 @@ where
                 "configured recursive configuration must have finite producer bounds".into(),
             ));
         }
-        let volumes = |binding: &ConfiguredRecursiveAuthorityBinding,
-                       project: &VolumeRef,
-                       private: &VolumeRef,
-                       result: Option<&VolumeRef>|
-         -> Result<crate::AgentId> {
+        let denied = |reason: &str| Error::Unauthorized(reason.into());
+        let bindings = config
+            .callers
+            .iter()
+            .map(|caller| {
+                (
+                    &caller.owner,
+                    &caller.project,
+                    &caller.private_volume,
+                    caller.result_volume.as_ref(),
+                )
+            })
+            .chain(config.forks.iter().map(|fork| {
+                (
+                    &fork.child,
+                    &fork.project,
+                    &fork.private_volume,
+                    fork.result_volume.as_ref(),
+                )
+            }));
+        for (binding, project, private, result) in bindings {
             verifier(binding)?;
-            project.validate(&mut None)?;
-            private.validate(&mut None)?;
-            let agent = binding.scope.agent().ok_or_else(|| {
-                Error::Unauthorized("configured binding has no signed agent".into())
-            })?;
-            if let Some(result) = result {
-                validate_result_volume(result, private, agent, provider)?;
+            let agent = binding
+                .scope
+                .agent()
+                .ok_or_else(|| denied("configured binding has no signed agent"))?;
+            for volume in [project, private].into_iter().chain(result) {
+                volume.validate(&mut None)?;
+                if volume.provider() != provider {
+                    return Err(denied("configured volume belongs to another provider"));
+                }
             }
             if private.owner() != &VolumeOwner::Agent(agent)
-                || project.provider() != provider
-                || private.provider() != provider
+                || result.is_some_and(|result| {
+                    result == private
+                        || result.owner() != &VolumeOwner::Agent(agent)
+                        || result.class() != crate::conversation::VolumeClass::AgentPrivate
+                })
             {
-                return Err(Error::Unauthorized(
-                    "configured volume differs from its signed provider binding".into(),
+                return Err(denied(
+                    "configured private/result volume differs from its signed owner",
                 ));
             }
-            Ok(agent)
-        };
-        for (index, caller) in config.callers.iter().enumerate() {
-            volumes(
-                &caller.owner,
-                &caller.project,
-                &caller.private_volume,
-                caller.result_volume.as_ref(),
-            )?;
+        }
+        let mut callers = std::collections::BTreeSet::new();
+        for caller in &config.callers {
             if let Some(native) = &caller.native_snapshot {
                 crate::executor::json::json_byte_length(native, limits.file_bytes, &mut None)?;
             }
-            if config.callers[..index]
-                .iter()
-                .any(|previous| previous.task == caller.task)
-            {
-                return Err(Error::Unauthorized(
-                    "configured caller is not a unique signed provider binding".into(),
-                ));
+            if !callers.insert(caller.task) {
+                return Err(denied("configured caller is not unique"));
             }
         }
-        for (index, fork) in config.forks.iter().enumerate() {
-            let agent = volumes(
-                &fork.child,
-                &fork.project,
-                &fork.private_volume,
-                fork.result_volume.as_ref(),
-            )?;
+        let mut children = std::collections::BTreeSet::new();
+        for fork in &config.forks {
             fork.admission.validate(&mut None)?;
             if fork.admission.parent != Some(fork.caller)
-                || !config
-                    .callers
-                    .iter()
-                    .any(|caller| caller.task == fork.caller)
-                || config.forks[..index].iter().any(|previous| {
-                    previous.caller == fork.caller && previous.child.scope.agent() == Some(agent)
-                })
+                || !callers.contains(&fork.caller)
+                || !children.insert((fork.caller, fork.child.scope.agent()))
                 || fork.limits.resources == 0
-                || fork.limits.work == 0
-                || fork.limits.bytes == 0
-                || fork.limits.work == u64::MAX
-                || fork.limits.bytes == u64::MAX
+                || [fork.limits.work, fork.limits.bytes]
+                    .into_iter()
+                    .any(|limit| limit == 0 || limit == u64::MAX)
             {
-                return Err(Error::Unauthorized(
-                    "configured child allocation is not a unique bounded caller request".into(),
+                return Err(denied(
+                    "configured child is not a unique bounded caller request",
                 ));
             }
         }
-        for (index, merge) in config.merges.iter().enumerate() {
+        let mut merges = std::collections::BTreeSet::new();
+        for merge in &config.merges {
             merge.notice.validate(&mut None)?;
-            if !config
-                .callers
-                .iter()
-                .any(|caller| caller.task == merge.caller)
-                || !config
-                    .callers
-                    .iter()
-                    .any(|caller| caller.task == merge.source)
-                || config.merges[..index].iter().any(|previous| {
-                    previous.caller == merge.caller && previous.source == merge.source
-                })
+            if !callers.contains(&merge.caller)
+                || !callers.contains(&merge.source)
+                || !merges.insert((merge.caller, merge.source))
             {
-                return Err(Error::Unauthorized(
-                    "configured merge lacks unique configured caller/source bindings".into(),
+                return Err(denied(
+                    "configured merge lacks unique caller/source bindings",
                 ));
             }
         }
@@ -287,48 +277,14 @@ where
     pub(in crate::filesystem) async fn owner(
         &self,
         context: &ToolContext,
-        tool: &ResumableTool,
-        invocation: &ToolInvocation,
         cancellation: &CancellationToken,
         io: Option<&PreparationIo>,
-    ) -> Result<(
-        Arc<FilesystemTaskRuntime<P, A, O>>,
-        Arc<crate::filesystem::FilesystemWorkflowJournal<P, A, O>>,
-    )> {
+    ) -> Result<(Arc<FilesystemTaskRuntime<P, A, O>>, Arc<crate::durable_host::TaskJournalOwner<P>>)> {
         native_io(io)?;
-        if io.is_none() {
-            self.authenticate_caller(context.task(), None, false, None)
-                .await?;
-        }
-        let owner = self
-            .runtime(io)?
-            .recursive_tool_owner(context, tool, invocation, cancellation, io)
-            .await?;
-        if io.is_some() {
-            self.authenticate_caller(context.task(), owner.1.owner.as_deref(), false, io)
-                .await?;
-        }
-        Ok(owner)
+        let owner = self.source_owner(context.task(), cancellation, io).await?;
+        self.authenticate(context, Some(&owner), false, cancellation, io).await?;
+        Ok((self.runtime(io)?, owner))
     }
-}
-
-fn validate_result_volume(
-    result: &VolumeRef,
-    private: &VolumeRef,
-    agent: crate::AgentId,
-    provider: &ProviderRef,
-) -> Result<()> {
-    result.validate(&mut None)?;
-    if result == private
-        || result.provider() != provider
-        || result.owner() != &VolumeOwner::Agent(agent)
-        || result.class() != crate::conversation::VolumeClass::AgentPrivate
-    {
-        return Err(Error::Unauthorized(
-            "result is not a distinct actual child-owned output namespace".into(),
-        ));
-    }
-    Ok(())
 }
 
 fn verifier(binding: &ConfiguredRecursiveAuthorityBinding) -> Result<AuthorityVerifier> {
@@ -382,14 +338,6 @@ fn allocation_digest(
     digest
 }
 
-fn checkpoint_operation(effect: OperationId) -> OperationId {
-    let mut hash = blake3::Hasher::new();
-    hash.update(b"harness/v2/configured-recursive-checkpoint\0");
-    hash.update(&effect.into_bytes());
-    let mut bytes = [0; 16];
-    bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
-    OperationId::from_bytes(bytes)
-}
 fn invalid_json(error: serde_json::Error) -> Error {
     Error::Invalid(error.to_string())
 }

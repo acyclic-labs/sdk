@@ -147,7 +147,7 @@ impl StateSlots {
             .write(true)
             .open(data.join(ADAPTER_STATE_SLOTS[2]))
             .map_err(display)?;
-        sync_file(&file, Durability::Full).map_err(display)?;
+        sync_file(&file, Durability::Full, None).map_err(display)?;
         if !self.durable_entry[2] {
             sync_parent(data, Durability::Full).map_err(display)?;
             self.durable_entry[2] = true;
@@ -205,7 +205,7 @@ impl StateSlots {
             self.flushed.get_mut(target),
             self.durable_entry.get_mut(target),
         ) {
-            sync_file(&file, Durability::Full).map_err(display)?;
+            sync_file(&file, Durability::Full, None).map_err(display)?;
             if !*durable_entry {
                 sync_parent(data, Durability::Full).map_err(display)?;
                 *durable_entry = true;

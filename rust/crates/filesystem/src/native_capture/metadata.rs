@@ -1,35 +1,11 @@
 use super::*;
 
-#[derive(Clone, Copy)]
-pub(super) struct HostSnapshot {
-    pub(super) identity: NativeRootIdentity,
-    pub(super) length: u64,
-    pub(super) metadata: FileMetadata,
-}
-
-impl HostSnapshot {
-    pub(super) fn from_metadata(metadata: &HostStat) -> Self {
-        Self {
-            identity: metadata.identity(),
-            length: metadata.len(),
-            metadata: capture_metadata(metadata),
-        }
-    }
-}
-
 pub(super) fn ensure_same_host_node(
-    expected: &HostSnapshot,
+    expected: &HostStat,
     observed: &HostStat,
 ) -> Result<(), CaptureError> {
-    ensure_same_host_snapshot(expected, &HostSnapshot::from_metadata(observed))
-}
-
-pub(super) fn ensure_same_host_snapshot(
-    expected: &HostSnapshot,
-    observed: &HostSnapshot,
-) -> Result<(), CaptureError> {
-    let mut expected_metadata = expected.metadata;
-    let mut observed_metadata = observed.metadata;
+    let mut expected_metadata = capture_metadata(expected);
+    let mut observed_metadata = capture_metadata(observed);
     // Reading the file can legitimately update its access time.
     expected_metadata.accessed_ns = MetadataField::Unavailable;
     observed_metadata.accessed_ns = MetadataField::Unavailable;
@@ -49,8 +25,8 @@ pub(super) fn ensure_same_host_snapshot(
     {
         observed_metadata.windows_attributes = expected_metadata.windows_attributes;
     }
-    if expected.identity != observed.identity
-        || expected.length != observed.length
+    if expected.identity() != observed.identity()
+        || expected.len() != observed.len()
         || expected_metadata != observed_metadata
     {
         return Err(CaptureError::Kernel(crate::FsError::SourceSnapshotStale));
@@ -61,16 +37,14 @@ pub(super) fn ensure_same_host_snapshot(
 pub(super) fn ensure_current_host_node(
     source_root: &HostRoot,
     host_path: &CaptureHostPath,
-    expected: &HostSnapshot,
+    expected: &HostStat,
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
-    meter.cancellation().check()?;
     meter.clone().check().map_err(capture_demand_error)?;
     let observed = source_root
         .stat(host_path, &mut meter.clone())
         .map_err(capture_demand_error)?;
     ensure_same_host_node(expected, &observed)?;
-    meter.cancellation().check()?;
     meter.clone().check().map_err(capture_demand_error)
 }
 
@@ -111,32 +85,21 @@ pub(super) fn test_host_path(path: &Path) -> CaptureHostPath {
 }
 
 pub(super) fn host_kind(metadata: &HostStat) -> Result<FileKind, CaptureError> {
-    let kind = metadata.file_type();
-    if (kind == crate::demand::SourceNodeKind::RegularFile) {
-        return Ok(FileKind::Regular);
-    }
-    if (kind == crate::demand::SourceNodeKind::Directory) {
-        return Ok(FileKind::Directory);
-    }
-    if (kind == crate::demand::SourceNodeKind::SymbolicLink) {
-        return Ok(FileKind::SymbolicLink);
-    }
-    #[cfg(unix)]
-    {
-        if (kind == crate::demand::SourceNodeKind::Fifo) {
-            return Ok(FileKind::Fifo);
-        }
-        if (kind == crate::demand::SourceNodeKind::Socket) {
-            return Ok(FileKind::Socket);
-        }
-        if (kind == crate::demand::SourceNodeKind::CharacterDevice) {
-            return Ok(FileKind::CharacterDevice);
-        }
-        if (kind == crate::demand::SourceNodeKind::BlockDevice) {
-            return Ok(FileKind::BlockDevice);
-        }
-    }
-    Err(CaptureError::UnsupportedKind)
+    use crate::demand::SourceNodeKind as Kind;
+    Ok(match metadata.file_type() {
+        Kind::RegularFile => FileKind::Regular,
+        Kind::Directory => FileKind::Directory,
+        Kind::SymbolicLink => FileKind::SymbolicLink,
+        #[cfg(unix)]
+        Kind::Fifo => FileKind::Fifo,
+        #[cfg(unix)]
+        Kind::Socket => FileKind::Socket,
+        #[cfg(unix)]
+        Kind::CharacterDevice => FileKind::CharacterDevice,
+        #[cfg(unix)]
+        Kind::BlockDevice => FileKind::BlockDevice,
+        _ => return Err(CaptureError::UnsupportedKind),
+    })
 }
 
 #[cfg(unix)]
@@ -177,36 +140,31 @@ pub(super) fn capture_metadata(metadata: &HostStat) -> FileMetadata {
 }
 
 pub(super) fn preserve_unobserved_metadata(
-    observed: FileMetadata,
+    mut observed: FileMetadata,
     prior: FileMetadata,
 ) -> FileMetadata {
-    FileMetadata {
-        posix_mode: preserve_field(observed.posix_mode, prior.posix_mode),
-        posix_uid: preserve_field(observed.posix_uid, prior.posix_uid),
-        posix_gid: preserve_field(observed.posix_gid, prior.posix_gid),
-        posix_flags: preserve_field(observed.posix_flags, prior.posix_flags),
-        windows_attributes: preserve_field(observed.windows_attributes, prior.windows_attributes),
-        created_ns: preserve_field(observed.created_ns, prior.created_ns),
-        modified_ns: preserve_field(observed.modified_ns, prior.modified_ns),
-        accessed_ns: preserve_field(observed.accessed_ns, prior.accessed_ns),
-        changed_ns: preserve_field(observed.changed_ns, prior.changed_ns),
-        named_attributes: preserve_field(observed.named_attributes, prior.named_attributes),
-        acl: preserve_field(observed.acl, prior.acl),
-        security_descriptor: preserve_field(
-            observed.security_descriptor,
-            prior.security_descriptor,
-        ),
+    macro_rules! preserve {
+        ($($field:ident),+) => {$(
+            if matches!(observed.$field, MetadataField::Unavailable) {
+                observed.$field = prior.$field;
+            }
+        )+};
     }
-}
-
-pub(super) fn preserve_field<T: Copy>(
-    observed: MetadataField<T>,
-    prior: MetadataField<T>,
-) -> MetadataField<T> {
-    match observed {
-        MetadataField::Unavailable => prior,
-        MetadataField::Value(_) => observed,
-    }
+    preserve!(
+        posix_mode,
+        posix_uid,
+        posix_gid,
+        posix_flags,
+        windows_attributes,
+        created_ns,
+        modified_ns,
+        accessed_ns,
+        changed_ns,
+        named_attributes,
+        acl,
+        security_descriptor
+    );
+    observed
 }
 
 #[allow(clippy::needless_pass_by_value)]

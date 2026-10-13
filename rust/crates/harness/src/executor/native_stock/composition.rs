@@ -61,7 +61,7 @@ impl NativeStockExecutor {
                     "stock policy is not issued by this context",
                 ));
             }
-            policy.supports_native_policy(work)?;
+            policy.identity_with_native_work(work)?;
         }
         if let Some(interactions) = &interactions {
             interactions.supports_native_interactions(work)?;
@@ -151,13 +151,20 @@ impl NativeStockExecutor {
             });
         }
         native_execution_supported(&self.stock, context, journal, work)?;
-        native_progress(
-            &self.stock,
-            context,
-            input,
-            journal,
-            work,
-            self.interactions.as_ref(),
-        )
+        crate::NativeFutureBundle::new(work, || async move {
+            let io = PreparationIo::from_native_work(work)?;
+            let session = StockExecution {
+                io: Some(&io),
+                context: Some((context, input.operation_id)),
+                interactions: self.interactions.as_ref(),
+                ..StockExecution::ordinary(&self.stock)
+            };
+            native_result(
+                &io,
+                session.execute_progress(input, journal),
+                native_progress_owned_bytes,
+            )
+            .await
+        })
     }
 }

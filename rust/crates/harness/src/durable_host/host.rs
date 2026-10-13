@@ -71,10 +71,6 @@ impl<P: StreamProvider> crate::runtime::TaskSpawner for CoordinatorTaskHost<P> {
         TaskStateProvider::policy_identity(self)
     }
 
-    fn supports_batch_cancellation(&self) -> bool {
-        true
-    }
-
     async fn reconcile_admission(
         &self,
         operation_id: OperationId,

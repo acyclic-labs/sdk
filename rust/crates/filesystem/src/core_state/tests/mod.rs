@@ -1,7 +1,46 @@
 use super::collection::content_address;
 use super::*;
 use crate::lazy_workspace::MemoryLazyNode;
-use crate::{Digest, WorkspaceContextRoot, WorkspaceContextState, WorkspaceName, WorkspaceRootId};
+use crate::{Digest, WorkspaceContextRoot, WorkspaceContextState, WorkspaceRootId};
+
+pub(super) fn unbounded_accounting(
+    cancellation: &crate::CancellationToken,
+) -> crate::kernel::KernelAccounting<'_> {
+    crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, cancellation)
+}
+
+pub(super) fn workspace() -> WorkspaceId {
+    WorkspaceId::from_bytes([4; 16])
+}
+
+pub(super) async fn swap_binding(
+    store: &LocalCoreStateStore,
+    expected: u64,
+    state: LazyWorkspaceState,
+) -> bool {
+    store
+        .compare_and_swap_lazy_workspace(
+            state.workspace_id,
+            expected,
+            state,
+            &mut unbounded_accounting(&crate::CancellationToken::new()),
+        )
+        .await
+        .unwrap()
+}
+
+pub(super) async fn load_binding(
+    store: &LocalCoreStateStore,
+    id: WorkspaceId,
+) -> Option<LazyWorkspaceState> {
+    store
+        .load_lazy_workspace(
+            id,
+            &mut unbounded_accounting(&crate::CancellationToken::new()),
+        )
+        .await
+        .unwrap()
+}
 
 const CRASH_PARENT: WorkspaceContextId = WorkspaceContextId::from_bytes([0x41; 16]);
 const CRASH_CHILD: WorkspaceContextId = WorkspaceContextId::from_bytes([0x42; 16]);
@@ -9,38 +48,15 @@ const CRASH_WORKSPACE: WorkspaceId = WorkspaceId::from_bytes([0x43; 16]);
 const CRASH_GROUPS: [std::ops::Range<usize>; 6] = [0..1, 1..2, 2..5, 5..6, 6..7, 7..8];
 
 pub(super) fn context_paths(namespace: &Namespace, id: WorkspaceContextId) -> RecordPaths<'_> {
-    RecordKey::Context(id)
-        .paths(namespace)
-        .expect("record paths")
+    RecordKey::Context(id).paths(namespace).unwrap()
 }
 
 pub(super) fn children_paths(namespace: &Namespace, id: WorkspaceContextId) -> RecordPaths<'_> {
-    RecordKey::Children(id)
-        .paths(namespace)
-        .expect("record paths")
+    RecordKey::Children(id).paths(namespace).unwrap()
 }
 
 pub(super) fn count_paths(namespace: &Namespace, id: WorkspaceContextId) -> RecordPaths<'_> {
-    RecordKey::ChildCount(id)
-        .paths(namespace)
-        .expect("record paths")
-}
-
-pub(super) fn workspace() -> WorkspaceId {
-    WorkspaceId::derive(
-        [4; 16],
-        &WorkspaceName::new(
-            "durable",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .expect("valid workspace")
-        .value,
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    )
-    .expect("unbounded workspace identity")
-    .value
+    RecordKey::ChildCount(id).paths(namespace).unwrap()
 }
 
 pub(super) fn workspace_context(
@@ -96,8 +112,6 @@ pub(super) fn materialization_journal(operation_id: OperationId) -> Materializat
         restored: 0,
     }
 }
-
-/// Canonical root binding without original fork evidence.
 pub(super) fn lazy_state(workspace_id: WorkspaceId, revision: u64) -> LazyWorkspaceState {
     let shadows = [3_u8; 32];
     serde_json::from_value(serde_json::json!({
@@ -112,7 +126,7 @@ pub(super) fn lazy_state(workspace_id: WorkspaceId, revision: u64) -> LazyWorksp
         "shadows": shadows,
         "pending_remove": null,
     }))
-    .expect("lazy binding fixture")
+    .unwrap()
 }
 
 pub(super) fn is_ownership_conflict<T>(result: &Result<T, LocalCoreStateStoreError>) -> bool {
@@ -151,30 +165,25 @@ pub(super) fn ownership_child(root: &Path) -> Result<std::process::Command, std:
         .env("ACYCLIC_CORE_STATE_CHILD_ROOT", root);
     Ok(child)
 }
-
-/// Rewrites the log's only frame with `edit` and a matching checksum.
 pub(super) fn rewrite_intact_frame(
     root: &Path,
     edit: impl FnOnce(&mut serde_json::Value),
 ) -> Vec<u8> {
     let log = {
         let store = LocalCoreStateStore::new(root);
-        let namespace = store.namespace().expect("admitted namespace");
-        &namespace
-            .record(CORE_LOG_FAMILY, &[0; 16])
-            .expect("record paths")
-            .current
+        let namespace = store.namespace().unwrap();
+        &namespace.record(CORE_LOG_FAMILY, &[0; 16]).unwrap().current
     };
-    let bytes = std::fs::read(&log).expect("read core log");
-    let line = bytes.strip_suffix(b"\n").expect("one complete frame");
-    let mut frame: serde_json::Value = serde_json::from_slice(&line[65..]).expect("frame json");
+    let bytes = std::fs::read(&log).unwrap();
+    let line = bytes.strip_suffix(b"\n").unwrap();
+    let mut frame: serde_json::Value = serde_json::from_slice(&line[65..]).unwrap();
     edit(&mut frame);
-    let frame = serde_json::to_vec(&frame).expect("encode frame");
+    let frame = serde_json::to_vec(&frame).unwrap();
     let mut rewritten = blake3::hash(&frame).to_hex().as_bytes().to_vec();
     rewritten.push(b' ');
     rewritten.extend_from_slice(&frame);
     rewritten.push(b'\n');
-    std::fs::write(&log, &rewritten).expect("rewrite core log");
+    std::fs::write(&log, &rewritten).unwrap();
     rewritten
 }
 
@@ -191,8 +200,6 @@ pub(super) fn crash_lineage() -> WorkspaceLineageRecord {
         initial_generation: crate::GenerationId::new(Digest::from_bytes([6; 32])),
     }
 }
-
-/// Every logged record the crash script changes.
 #[derive(Debug, PartialEq)]
 pub(super) struct CoreSnapshot {
     pub(super) contexts: Vec<WorkspaceContext>,
@@ -202,10 +209,8 @@ pub(super) struct CoreSnapshot {
     pub(super) lineage: Option<WorkspaceLineageRecord>,
     pub(super) lazy: Option<LazyWorkspaceState>,
 }
-
-/// Recovers the namespace through `store` and reads every scripted record.
 pub(super) fn core_snapshot(store: &LocalCoreStateStore) -> CoreSnapshot {
-    let namespace = store.namespace().expect("admitted namespace");
+    let namespace = store.namespace().unwrap();
     namespace
         .with_log(|log| {
             Ok(CoreSnapshot {
@@ -225,10 +230,8 @@ pub(super) fn core_snapshot(store: &LocalCoreStateStore) -> CoreSnapshot {
                     .map(|(value, _)| value),
             })
         })
-        .expect("recovered snapshot")
+        .unwrap()
 }
-
-/// Runs one commit of the crash script: index, register a parent, register its child with the child's lineage and binding, freeze the child, advance the binding, discard the child.
 pub(super) fn crash_step(store: &LocalCoreStateStore, step: usize) {
     let source = std::env::temp_dir();
     let parent = workspace_context(&source, CRASH_PARENT, 1, WorkspaceContextState::Active);
@@ -260,10 +263,7 @@ pub(super) fn crash_step(store: &LocalCoreStateStore, step: usize) {
                     CRASH_WORKSPACE,
                     0,
                     lazy_state(CRASH_WORKSPACE, 1),
-                    &mut crate::kernel::KernelAccounting::standalone(
-                        crate::WorkBudget::UNBOUNDED,
-                        &crate::CancellationToken::new(),
-                    ),
+                    &mut unbounded_accounting(&crate::CancellationToken::new()),
                 )
                 .await
                 .map_err(LocalCoreStateStoreError::LazyWork),
@@ -279,10 +279,7 @@ pub(super) fn crash_step(store: &LocalCoreStateStore, step: usize) {
                     CRASH_WORKSPACE,
                     1,
                     lazy_state(CRASH_WORKSPACE, 2),
-                    &mut crate::kernel::KernelAccounting::standalone(
-                        crate::WorkBudget::UNBOUNDED,
-                        &crate::CancellationToken::new(),
-                    ),
+                    &mut unbounded_accounting(&crate::CancellationToken::new()),
                 )
                 .await
                 .map_err(LocalCoreStateStoreError::LazyWork),
@@ -291,13 +288,13 @@ pub(super) fn crash_step(store: &LocalCoreStateStore, step: usize) {
                 .map(|outcome| matches!(outcome, WorkspaceContextDiscardOutcome::Discarded(_))),
         }
     })
-    .expect("crash script step");
+    .unwrap();
     assert!(committed, "crash script step {step} was rejected");
 }
 
 pub(super) fn crash_store(root: &Path, owned: bool) -> LocalCoreStateStore {
     if owned {
-        LocalCoreStateStore::open_owned(root).expect("owner")
+        LocalCoreStateStore::open_owned(root).unwrap()
     } else {
         LocalCoreStateStore::new(root)
     }
@@ -329,46 +326,46 @@ pub(super) fn core_crash_child_runs_until_its_crash_point() -> Result<(), Box<dy
     }
     Ok(())
 }
-
-/// Simulates losing every write not yet flushed: the log keeps its durable prefix and half of the next frame, and every record a durable frame names reads back torn.
 pub(super) fn lose_unflushed_writes(root: &Path, flushed: usize) {
     let store = LocalCoreStateStore::new(root);
-    let namespace = store.namespace().expect("admitted namespace");
-    let log = &namespace
-        .record(CORE_LOG_FAMILY, &[0; 16])
-        .expect("record paths")
-        .current;
-    let mut bytes = std::fs::read(&log).expect("read core log");
+    let namespace = store.namespace().unwrap();
+    let log = &namespace.record(CORE_LOG_FAMILY, &[0; 16]).unwrap().current;
+    let mut bytes = std::fs::read(&log).unwrap();
     let torn = flushed + (bytes.len().saturating_sub(flushed)) / 2;
     bytes.truncate(torn);
-    std::fs::write(&log, &bytes).expect("tear unflushed frames");
-    for change in replayable_changes(bytes.get(..flushed).unwrap_or(&bytes)).expect("decodable log")
+    std::fs::write(&log, &bytes).unwrap();
+    for line in bytes
+        .get(..flushed)
+        .unwrap_or(&bytes)
+        .split_inclusive(|byte| *byte == b'\n')
     {
-        for record in change.0 {
+        let Some(line) = line.strip_suffix(b"\n") else {
+            break;
+        };
+        let frame: LogFrame<Change> = serde_json::from_slice(&line[65..]).unwrap();
+        for record in frame.change.0 {
             let key = record.key;
-            let paths = key.paths(&namespace).expect("record paths");
-            std::fs::create_dir_all(paths.directory()).expect("record directory");
-            std::fs::write(paths.current, b"{\"torn").expect("tear unflushed record");
+            let paths = key.paths(&namespace).unwrap();
+            std::fs::create_dir_all(paths.directory()).unwrap();
+            std::fs::write(paths.current, b"{\"torn").unwrap();
         }
     }
 }
 
 pub(super) fn copy_tree(from: &Path, to: &Path) {
-    std::fs::create_dir_all(to).expect("copy directory");
-    for entry in std::fs::read_dir(from).expect("read copied directory") {
-        let entry = entry.expect("copied entry");
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
         let target = to.join(entry.file_name());
-        if entry.file_type().expect("copied entry type").is_dir() {
+        if entry.file_type().unwrap().is_dir() {
             copy_tree(&entry.path(), &target);
         } else {
-            std::fs::copy(entry.path(), target).expect("copy file");
+            std::fs::copy(entry.path(), target).unwrap();
         }
     }
 }
-
-/// Kills a writer at every crash point of every commit, then recovers both what the killed process left and what a power loss would leave.
 pub(super) fn assert_core_commits_are_crash_atomic(owned: bool) {
-    let directory = tempfile::tempdir().expect("temporary directory");
+    let directory = tempfile::tempdir().unwrap();
     let reference_store = crash_store(&directory.path().join("reference"), owned);
     let mut snapshots = vec![core_snapshot(&reference_store)];
     for step in 0..CRASH_GROUPS[CRASH_GROUPS.len() - 1].end {
@@ -377,7 +374,7 @@ pub(super) fn assert_core_commits_are_crash_atomic(owned: bool) {
     }
     drop(reference_store);
 
-    let executable = std::env::current_exe().expect("test executable");
+    let executable = std::env::current_exe().unwrap();
     let mut crashes = 0;
     for point in 1.. {
         assert!(point < 1_000, "crash script never completed");
@@ -385,7 +382,7 @@ pub(super) fn assert_core_commits_are_crash_atomic(owned: bool) {
         let root = run.join("state");
         let acknowledged = run.join("acknowledged");
         let report = run.join("crash-point");
-        std::fs::create_dir_all(&run).expect("run directory");
+        std::fs::create_dir_all(&run).unwrap();
         let mut child = std::process::Command::new(&executable);
         child
             .args([
@@ -404,7 +401,7 @@ pub(super) fn assert_core_commits_are_crash_atomic(owned: bool) {
         }
         let status =
             acyclic_native_runtime::process_status(&mut child, std::time::Duration::from_secs(120))
-                .expect("crash child");
+                .unwrap();
         if status.success() {
             assert!(
                 !report.exists(),
@@ -417,15 +414,15 @@ pub(super) fn assert_core_commits_are_crash_atomic(owned: bool) {
             break;
         }
         crashes += 1;
-        let report = std::fs::read_to_string(&report).expect("crash point report");
-        let (label, flushed) = report.split_once('\n').expect("crash point fields");
-        let flushed = flushed.parse().expect("durable log length");
-        let done: usize = std::fs::read_to_string(&acknowledged)
-            .map_or(0, |count| count.parse().expect("acknowledged count"));
+        let report = std::fs::read_to_string(&report).unwrap();
+        let (label, flushed) = report.split_once('\n').unwrap();
+        let flushed = flushed.parse().unwrap();
+        let done: usize =
+            std::fs::read_to_string(&acknowledged).map_or(0, |count| count.parse().unwrap());
         let in_flight = CRASH_GROUPS
             .iter()
             .find(|group| group.start == done)
-            .expect("in-flight group");
+            .unwrap();
         let lost = run.join("power-loss");
         copy_tree(&root, &lost);
         lose_unflushed_writes(&lost, flushed);
@@ -439,8 +436,6 @@ pub(super) fn assert_core_commits_are_crash_atomic(owned: bool) {
     }
     assert!(crashes > 16, "crash points were not exercised");
 }
-
-/// A treap node over `left` and `right`, as mutations build them.
 pub(super) fn linked_overlay(
     path: &str,
     left: LazyOverlayId,
@@ -455,27 +450,23 @@ pub(super) fn linked_overlay(
             "right": right
         }
     }))
-    .expect("overlay node");
-    let id = LazyOverlayId::from_bytes(content_address(&node).expect("overlay address"));
+    .unwrap();
+    let id = LazyOverlayId::from_bytes(content_address(&node).unwrap());
     (id, node)
 }
 
 pub(super) async fn origin_parent_fixture(store: &LocalCoreStateStore) -> LazyWorkspaceState {
     let cancellation = crate::CancellationToken::new();
-    let mut accounting =
-        crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
-    let empty = LazyOverlayId::from_bytes(content_address(&LazyOverlay::Empty).expect("empty"));
+    let mut accounting = unbounded_accounting(&cancellation);
+    let empty = LazyOverlayId::from_bytes(content_address(&LazyOverlay::Empty).unwrap());
     let (overlay, node) = linked_overlay("/original", empty, empty);
-    let allocation = accounting
-        .claim_owned(node.owned_bytes(), 0)
-        .expect("overlay allocation");
+    let allocation = accounting.claim_owned(node.owned_bytes(), 0).unwrap();
     store
         .put_lazy_overlay(overlay, (node, allocation), &mut accounting)
         .await
-        .expect("original overlay");
-    let empty_shadows = crate::LazyShadowId::from_bytes(
-        content_address(&crate::LazyShadow::Empty).expect("empty shadows"),
-    );
+        .unwrap();
+    let empty_shadows =
+        crate::LazyShadowId::from_bytes(content_address(&crate::LazyShadow::Empty).unwrap());
     let shadow = crate::LazyShadow::Node {
         file_id: crate::FileId::from_bytes([0xa1; 16]),
         priority: 0,
@@ -484,14 +475,12 @@ pub(super) async fn origin_parent_fixture(store: &LocalCoreStateStore) -> LazyWo
         left: empty_shadows,
         right: empty_shadows,
     };
-    let shadows = crate::LazyShadowId::from_bytes(content_address(&shadow).expect("shadow"));
-    let allocation = accounting
-        .claim_owned(shadow.owned_bytes(), 0)
-        .expect("shadow allocation");
+    let shadows = crate::LazyShadowId::from_bytes(content_address(&shadow).unwrap());
+    let allocation = accounting.claim_owned(shadow.owned_bytes(), 0).unwrap();
     store
         .put_lazy_shadow(shadows, (shadow, allocation), &mut accounting)
         .await
-        .expect("original shadows");
+        .unwrap();
     let parent = LazyWorkspaceState {
         overlay,
         shadows,
@@ -506,7 +495,7 @@ pub(super) async fn origin_parent_fixture(store: &LocalCoreStateStore) -> LazyWo
                 &mut accounting,
             )
             .await
-            .expect("parent binding")
+            .unwrap()
     );
     parent
 }
@@ -541,9 +530,9 @@ pub(super) fn advanced_origin_parent(parent: &LazyWorkspaceState) -> LazyWorkspa
             epoch: parent.source.epoch + 1,
             ..parent.source
         },
-        overlay: LazyOverlayId::from_bytes(content_address(&LazyOverlay::Empty).expect("empty")),
+        overlay: LazyOverlayId::from_bytes(content_address(&LazyOverlay::Empty).unwrap()),
         shadows: crate::LazyShadowId::from_bytes(
-            content_address(&crate::LazyShadow::Empty).expect("empty shadows"),
+            content_address(&crate::LazyShadow::Empty).unwrap(),
         ),
         ..parent.clone()
     }
@@ -556,31 +545,3 @@ mod log;
 mod native;
 mod nodes;
 mod ownership;
-
-/// Decodes the log's valid prefix: frames of the first frame's epoch in
-pub(super) fn replayable_changes(bytes: &[u8]) -> Result<Vec<Change>, serde_json::Error> {
-    let mut changes = Vec::new();
-    let mut epoch = None;
-    for line in bytes.split_inclusive(|byte| *byte == b'\n') {
-        let Some(line) = line.strip_suffix(b"\n") else {
-            break;
-        };
-        let Some((checksum, frame)) = line.split_first_chunk::<64>() else {
-            break;
-        };
-        let Some(frame) = frame.strip_prefix(b" ") else {
-            break;
-        };
-        if blake3::hash(frame).to_hex().as_bytes() != checksum {
-            break;
-        }
-        let frame = serde_json::from_slice::<LogFrame<Change>>(frame)?;
-        if *epoch.get_or_insert(frame.epoch) != frame.epoch
-            || frame.sequence != changes.len() as u64
-        {
-            break;
-        }
-        changes.push(frame.change);
-    }
-    Ok(changes)
-}

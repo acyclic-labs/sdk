@@ -33,6 +33,15 @@ fn filetime_conversions_cover_their_extremes() {
     assert_eq!(filetime_to_unix_nanoseconds(i64::MAX), None);
     assert_eq!(filetime_to_unix_nanoseconds(i64::MIN), None);
     assert_eq!(filetime_to_unix_nanoseconds(0), None);
+    let ticks = 1_000_000_000_000_000_000_u64;
+    let value = windows_time(UNIX_EPOCH_FILETIME as u64 + ticks).into_std();
+    assert_eq!(
+        value
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+        u128::from(ticks) * 100
+    );
 }
 use bytes::Bytes;
 use std::io::{Read, Seek, SeekFrom, Write};

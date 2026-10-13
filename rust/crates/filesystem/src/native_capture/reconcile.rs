@@ -6,49 +6,19 @@ pub(super) async fn capture_observed_paths_from_root<
 >(
     checkout: &mut Checkout<A, O>,
     observed: (Vec<Option<HostStat>>, Vec<NamespacePath>),
+    batch_size: usize,
     maximum_extent_spans: u32,
     source_root: &HostRoot,
     baseline: Option<&NativeViewBaseline>,
     meter: &NativeMaterializationWork,
 ) -> Result<CaptureReceipt, CaptureError> {
-    let states = lookup_capture_states(checkout, observed, usize::MAX, meter).await?;
+    let states = lookup_capture_states(checkout, observed, batch_size, meter).await?;
+    let bytes = vector_bytes(&states);
+    let count = states.len();
     let mut host_links = Vec::new();
-    let captured = capture_ranked_paths_from_root(
-        checkout,
-        states,
-        &mut host_links,
-        maximum_extent_spans,
-        source_root,
-        baseline,
-        meter,
-    )
-    .await;
-    let cleanup = release_host_links(host_links, meter);
-    match captured {
-        Ok(captured) => {
-            cleanup?;
-            Ok(captured)
-        }
-        Err(error) => Err(error),
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn capture_ranked_paths_from_root<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    checkout: &mut Checkout<A, O>,
-    states: Vec<CapturePathState>,
-    host_links: &mut Vec<([u8; 16], NamespacePath)>,
-    maximum_extent_spans: u32,
-    source_root: &HostRoot,
-    baseline: Option<&NativeViewBaseline>,
-    meter: &NativeMaterializationWork,
-) -> Result<CaptureReceipt, CaptureError> {
-    let states_bytes = states.capacity() as u64 * std::mem::size_of::<CapturePathState>() as u64;
-    meter.cancellation().check()?;
-    meter.clone().check().map_err(capture_demand_error)?;
     let mut receipt = CaptureReceipt::default();
     let mut mutations = Vec::new();
-    for (observation, path, current) in states {
+    for (index, (observation, path, current)) in states.into_iter().enumerate() {
         prepare_final_path(
             checkout,
             path,
@@ -56,7 +26,7 @@ pub(super) async fn capture_ranked_paths_from_root<A: AsyncAuthorityStore, O: As
             CaptureIntent::Complete,
             source_root,
             observation,
-            host_links,
+            &mut host_links,
             None,
             baseline,
             &mut mutations,
@@ -65,20 +35,14 @@ pub(super) async fn capture_ranked_paths_from_root<A: AsyncAuthorityStore, O: As
             meter,
         )
         .await?;
+        if (index + 1) % batch_size == 0 && index + 1 < count {
+            apply_capture_transaction(checkout, std::mem::take(&mut mutations), meter).await?;
+        }
     }
-    {
-        meter
-            .clone()
-            .release(states_bytes)
-            .map_err(capture_demand_error)?;
-    }
+    meter.clone().release(bytes).map_err(capture_demand_error)?;
     apply_capture_transaction(checkout, mutations, meter).await?;
-    {
-        meter
-            .receipt()
-            .verify(meter.with_original_leaf(|work| work.budget))
-            .map_err(CaptureError::from)?;
-    }
+    release_host_links(host_links, meter)?;
+    meter.clone().check().map_err(capture_demand_error)?;
     Ok(receipt)
 }
 
@@ -188,21 +152,16 @@ pub(super) async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectSto
     let host_path = namespace_to_host_path_measured(&path, meter)?;
     let observation = match observation {
         Some(observation) => Some(observation),
-        None => {
-            let observed = observe_host_path(source_root, &host_path, meter);
-            observed?
-        }
+        None => observe_host_path(source_root, &host_path, meter)?,
     };
     match observation {
-        Some(observation) => {
-            let metadata = observation;
+        Some(metadata) => {
             let host_kind = host_kind(&metadata)?;
-            let snapshot = HostSnapshot::from_metadata(&metadata);
             let linked_regular = host_kind == FileKind::Regular
                 && checkout.volume_config().hard_links
                 && metadata.nlink() > 1;
             if linked_regular {
-                let identity = snapshot.identity.to_bytes();
+                let identity = metadata.identity().to_bytes();
                 let mut source = None;
                 for (node, path) in host_links.iter() {
                     capture_charge(
@@ -218,7 +177,7 @@ pub(super) async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectSto
                     }
                 }
                 if let Some(source) = source {
-                    ensure_current_host_node(source_root, &host_path, &snapshot, meter)?;
+                    ensure_current_host_node(source_root, &host_path, &metadata, meter)?;
                     receipt.changed_paths = checked_increment(receipt.changed_paths)?;
                     receipt.examined_paths = checked_increment(receipt.examined_paths)?;
                     capture_drop_host_path(host_path, meter)?;
@@ -264,13 +223,11 @@ pub(super) async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectSto
             let mut canonical_metadata = if host_kind == FileKind::SymbolicLink && cfg!(unix) {
                 FileMetadata::default()
             } else {
-                snapshot.metadata
+                capture_metadata(&metadata)
             };
             let mut prior_metadata = None;
-            if let Some(record) = current.filter(|record| {
-                exists_with_kind
-                    && record.kind == host_kind
-                    && (host_kind != FileKind::SymbolicLink || cfg!(windows))
+            if let Some(record) = current.filter(|_| {
+                exists_with_kind && (host_kind != FileKind::SymbolicLink || cfg!(windows))
             }) {
                 let lookup_cancellation =
                     meter.with_original_leaf(|work| work.cancellation().clone());
@@ -306,7 +263,7 @@ pub(super) async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectSto
                 None
             };
             if intent == CaptureIntent::MetadataOnly && exists_with_kind {
-                ensure_current_host_node(source_root, &host_path, &snapshot, meter)?;
+                ensure_current_host_node(source_root, &host_path, &metadata, meter)?;
                 capture_reserve(mutations, 1, meter)?;
                 mutations.push(AuthoredMutation::SetMetadata {
                     path,
@@ -319,14 +276,14 @@ pub(super) async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectSto
                     checkout,
                     source_root,
                     &host_path,
-                    &snapshot,
+                    &metadata,
                     maximum_extent_spans,
                     meter,
                     &mut receipt.staged_file_bytes,
                 )
                 .await?;
                 capture_drop_host_path(host_path, meter)?;
-                let logical_bytes = snapshot.length;
+                let logical_bytes = metadata.len();
                 let ranges = staged;
                 let ranges_bytes = ranges.capacity() as u64
                     * std::mem::size_of::<(HostDataRange, StagedContent)>() as u64;
@@ -430,13 +387,13 @@ pub(super) async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectSto
                         return Err(CaptureError::UnsupportedKind);
                     }
                 }
-                ensure_current_host_node(source_root, &host_path, &snapshot, meter)?;
+                ensure_current_host_node(source_root, &host_path, &metadata, meter)?;
                 capture_drop_host_path(host_path, meter)?;
             };
             receipt.changed_paths = checked_increment(receipt.changed_paths)?;
             if let Some(linked_path) = linked_path {
                 capture_reserve(host_links, 1, meter)?;
-                host_links.push((snapshot.identity.to_bytes(), linked_path));
+                host_links.push((metadata.identity().to_bytes(), linked_path));
             }
             receipt.examined_paths = checked_increment(receipt.examined_paths)?;
             return Ok(());

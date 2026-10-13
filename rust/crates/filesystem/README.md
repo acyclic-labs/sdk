@@ -74,10 +74,6 @@ and copy-on-write admit the new actual backing before replacement; a prepared
 node-change permit reserves the existing ledger slot and observer work before
 the held body is edited. Terminal recording commits the accepted slot even after
 late cancellation, and releases the node lock before observer callbacks.
-`GroupedChange::CreateFile` carries `OwnedBytes`: promotion transfers the original
-body allocation guard, so restored pending and backend aliases share custody
-until their last physical drop. A rejected promotion preserves the original
-mutable vector and guard without resetting already reached allocation attempts.
 Ordinary write/resize calls on a funded pending body borrow its same original
 meter, resource allowance and cancellation token; only genuinely ordinary
 unfunded bodies keep the ordinary path. The stored alias is accounting custody,

@@ -17,26 +17,29 @@ pub(super) fn collect_host_walk_measured(
     pending.push(volume_root);
     while let Some(parent) = pending.pop() {
         let host_path = namespace_to_host_path_measured(&parent, meter)?;
-        let (mut reader, allocation) = root
-            .read_dir_stats(&host_path, &mut meter.clone())
+        let mut reader = root
+            .read_dir_stats(&host_path, &mut &*meter)
+            .map_err(crate::native_name::original_name_error)
             .map_err(capture_demand_error)?;
         capture_drop_host_path(host_path, meter)?;
-        while let Some((entry, name_allocation)) = reader
-            .next(&mut meter.clone())
+        while let Some(mut entry) = reader
+            .0
+            .next(&mut &*meter)
+            .map_err(crate::native_name::original_name_error)
             .map_err(capture_demand_error)?
         {
             let (encoding, bytes) = meter
                 .with_original_leaf(|work| {
                     #[cfg(unix)]
                     let name = crate::native_name::host_name_bytes_with_source_work(
-                        &entry.name,
+                        &entry.0.name,
                         profile,
                         limits.maximum_component_bytes,
                         work,
                     );
                     #[cfg(windows)]
                     let name = crate::native_name::host_wide_name_bytes_with_source_work(
-                        &entry.name,
+                        &entry.0.name,
                         profile,
                         limits.maximum_component_bytes,
                         work,
@@ -47,18 +50,15 @@ pub(super) fn collect_host_walk_measured(
                     DemandError::InvalidRequest => CaptureError::UnrepresentablePath,
                     error => capture_demand_error(error),
                 })?;
-            drop(entry.name);
-            meter
-                .clone()
-                .release(name_allocation)
-                .map_err(capture_demand_error)?;
+            let stat = entry.0.stat.take();
+            drop(entry);
             let name = LogicalName::new(encoding, bytes, limits.maximum_component_bytes)?;
             let child = append_path_measured(&parent, name, limits, meter)?;
             if capture_excludes(policy, &child, meter)? {
                 capture_drop_path(child, meter)?;
                 continue;
             }
-            let stat = match entry.stat {
+            let stat = match stat {
                 Some(stat) => stat,
                 None => {
                     let host_path = namespace_to_host_path_measured(&child, meter)?;
@@ -79,10 +79,6 @@ pub(super) fn collect_host_walk_measured(
             }
         }
         drop(reader);
-        meter
-            .clone()
-            .release(allocation)
-            .map_err(capture_demand_error)?;
         capture_drop_path(parent, meter)?;
     }
     release_capture_paths(pending, meter)

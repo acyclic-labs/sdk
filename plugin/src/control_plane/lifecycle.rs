@@ -49,7 +49,7 @@ impl ControlPlane {
                 .map_err(display)?;
             let store = LocalCoreStateStore::open_owned(data.join("core-state")).map_err(display)?;
             let mut control =
-                Self::open_with(data.clone(), data, fs, store, SharedRootRegistry::default()).await?;
+                Box::pin(Self::open_with(data.clone(), data, fs, store, SharedRootRegistry::default())).await?;
             control.owns_local_root = true;
             Ok(control)
         }
@@ -219,7 +219,7 @@ impl ControlPlane {
                         }
                         continue;
                     }
-                    if let Err(error) = mount.unmount().await {
+                    if let Err(error) = Box::pin(mount.unmount()).await {
                         first_error.get_or_insert_with(|| {
                             format!("cannot unmount agent '{agent_id}' during shutdown: {error}")
                         });
@@ -227,7 +227,7 @@ impl ControlPlane {
                 }
                 let pending_mounts = std::mem::take(&mut self.pending_mounts);
                 for (key, mount) in pending_mounts {
-                    if let Err(error) = mount.unmount().await {
+                    if let Err(error) = Box::pin(mount.unmount()).await {
                         first_error.get_or_insert_with(|| {
                             format!(
                                 "cannot unmount prepared spawn '{}' during shutdown: {error}",

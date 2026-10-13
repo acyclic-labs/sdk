@@ -5,17 +5,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         &self,
         source: &crate::Generation<A, O>,
         destination_id: crate::WorkspaceId,
-        config: VolumeConfig,
-        paths: Option<Vec<String>>,
+        mut paths: Owned<Option<Vec<String>>>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(Owned<VerifiedPublication<A, O>>, ObjectId), WorkspaceError> {
-        let path_bytes = paths.as_ref().map_or(Ok(0), |paths| {
-            crate::workspace::workspace_owned_strings_bytes(paths)
-        })?;
-        let (path_allocation, admitted) = accounting.record_actual_owned(path_bytes)?;
-        let mut paths = (paths, path_allocation);
-        admitted?;
+        let config = source.workspace.volume.config;
         accounting.check()?;
         let proven_at = self.inner.objects.collection_sweeps();
         let source_object = ObjectId {
@@ -35,8 +29,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         if source_root.value.volume_id != source.workspace.volume.id {
             return Err(WorkspaceError::ForeignGeneration);
         }
-        let file_table = if let Some(selected) = paths.0.take() {
-            accounting.release_owned(&mut paths.1, path_bytes)?;
+        let file_table = if let Some(selected) = paths.value.take() {
+            let selected = Owned::new(selected, paths.allocation, paths.bytes);
             self.select_fork_paths(
                 source,
                 &source_root.value,
@@ -46,16 +40,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             )
             .await?
         } else {
+            paths.retire(accounting)?;
             source_root.value.file_table
         };
         let mut parents = Owned::<Vec<GenerationId>>::allocate(1, accounting)?;
-        let copied = WorkCounters {
-            bytes_copied: size_of::<GenerationId>() as u64,
-            ..WorkCounters::UNCHARGED
-        };
-        accounting.admit(copied)?;
-        parents.value.push(source.id);
-        accounting.record_completed(copied)?;
+        fork_selection::selection_push(&mut parents, source.id, 1, accounting)?;
         let required_features = source_root.value.continuation_features()
             | if file_table == source_root.value.file_table {
                 0
@@ -195,124 +184,99 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 crate::workspace::workspace_owned_strings_bytes(paths)
             })?;
             let (path_allocation, admitted) = accounting.record_actual_owned(path_bytes)?;
-            let mut paths = (paths, path_allocation);
+            let paths = Owned::new(paths, path_allocation, path_bytes);
             admitted?;
             if !self.same_deployment(&source.workspace.volume.fs) {
                 return Err(WorkspaceError::ForeignGeneration.into());
             }
-            accounting.check()?;
-            let destination_id = self.derive_fork_workspace_id_with_accounting(
-                &destination,
-                accounting,
-                cancellation,
-            )?;
+            let destination_id =
+                self.workspace_id_for_name(&destination, accounting, cancellation)?;
             let volume_id = destination_id.volume_id();
             let source_volume = &source.workspace.volume;
             let config = source_volume.config;
-            let selected = paths.0.take();
-            accounting.release_owned(&mut paths.1, path_bytes)?;
             let (fork_root, source_root) = self
                 .materialize_forked_generation_root(
                     source,
                     destination_id,
-                    config,
-                    selected,
+                    paths,
                     accounting,
                     cancellation,
                 )
                 .await?;
-            match self
+            let original_root = fork_root.value.generation_root;
+            let (created, operation) = match self
                 .read_creation(volume_id, accounting, cancellation)
                 .await
                 .map_err(WorkspaceError::from)
             {
-                Ok((created, operation)) => {
-                    if operation != idempotency_key.operation_id()
-                        || created.volume_id != volume_id
-                        || created.config != config
-                        || created.initial_generation_root != fork_root.value.generation_root
-                    {
-                        return Err(WorkspaceError::from(FsError::CreationRejected).into());
-                    }
-                    fork_root.retire(accounting)?;
-                    return Ok(crate::Workspace {
-                        name: destination,
-                        id: destination_id,
-                        volume: Volume {
-                            fs: self.clone(),
-                            id: volume_id,
-                            config,
-                        },
-                        #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-                        source: None,
-                    });
-                }
+                Ok(created) => created,
                 Err(WorkspaceError::Filesystem(FsError::Authority(
                     AuthorityStoreError::Missing,
-                ))) => accounting.check()?,
+                ))) => {
+                    let lineage = self
+                        .fork_lineage_with_accounting(source, accounting, cancellation)
+                        .await?;
+                    let (retention, retained, creation, payload_bytes) =
+                        fork_records_with_accounting(
+                            source_volume,
+                            source_root,
+                            destination_id,
+                            fork_root.value.generation_root,
+                            idempotency_key.operation_id(),
+                            accounting,
+                        )?;
+                    let fork = crate::WorkspaceForkCommit {
+                        lineage,
+                        destination: volume_authority_id(volume_id),
+                        creation,
+                        retention,
+                        retained,
+                    };
+                    let hold = self
+                        .flush_publication(
+                            crate::PublicationScope::Closure {
+                                objects: &fork_root.value.objects,
+                                proven_at: fork_root.value.proven_at,
+                            },
+                            accounting,
+                            cancellation,
+                        )
+                        .await?;
+                    accounting.check()?;
+                    let mut authority = authority_work(accounting, cancellation)?;
+                    let result = self
+                        .inner
+                        .authority
+                        .fork_workspace(fork, permit, &mut authority, guard)
+                        .await;
+                    record_authority_work(accounting, &authority)?;
+                    if readonly_standalone_live(accounting).is_some() {
+                        accounting
+                            .release_owned(&mut KernelOwnedAllocation::Standalone, payload_bytes)?;
+                    }
+                    drop(hold);
+                    let outcome = result.map_err(|error| match error {
+                        crate::AuthorityError::Authority(error) => E::from(FsError::from(error)),
+                        crate::AuthorityError::Owner(error) => error.into(),
+                    })?;
+                    match outcome {
+                        crate::WorkspaceForkOutcome::Committed => {}
+                        crate::WorkspaceForkOutcome::RetentionConflict => {
+                            return Err(WorkspaceError::RetentionConflict.into());
+                        }
+                        crate::WorkspaceForkOutcome::CreationRejected => {
+                            return Err(WorkspaceError::from(FsError::CreationRejected).into());
+                        }
+                    }
+                    self.read_creation(volume_id, accounting, cancellation)
+                        .await
+                        .map_err(WorkspaceError::from)?
+                }
                 Err(error) => return Err(error.into()),
-            }
-            let lineage = self
-                .fork_lineage_with_accounting(source, accounting, cancellation)
-                .await?;
-            let (retention, retained, creation, payload_bytes) = fork_records_with_accounting(
-                source_volume,
-                source_root,
-                destination_id,
-                fork_root.value.generation_root,
-                idempotency_key.operation_id(),
-                accounting,
-                cancellation,
-            )?;
-            let fork = crate::WorkspaceForkCommit {
-                lineage,
-                destination: volume_authority_id(volume_id),
-                creation,
-                retention,
-                retained,
             };
-            let original_root = fork_root.value.generation_root;
-            let hold = self
-                .flush_publication(
-                    crate::PublicationScope::Closure {
-                        objects: &fork_root.value.objects,
-                        proven_at: fork_root.value.proven_at,
-                    },
-                    accounting,
-                    cancellation,
-                )
-                .await?;
-            accounting.check()?;
-            let mut authority = authority_work(accounting, cancellation)?;
-            let result = self
-                .inner
-                .authority
-                .fork_workspace(fork, permit, &mut authority, guard)
-                .await;
-            record_authority_work(accounting, &authority)?;
-            if readonly_standalone_live(accounting).is_some() {
-                accounting.release_owned(&mut KernelOwnedAllocation::Standalone, payload_bytes)?;
-            }
-            drop(hold);
-            let outcome = result.map_err(|error| match error {
-                crate::AuthorityError::Authority(error) => E::from(FsError::from(error)),
-                crate::AuthorityError::Owner(error) => error.into(),
-            })?;
-            match outcome {
-                crate::WorkspaceForkOutcome::Committed => {}
-                crate::WorkspaceForkOutcome::RetentionConflict => {
-                    return Err(WorkspaceError::RetentionConflict.into());
-                }
-                crate::WorkspaceForkOutcome::CreationRejected => {
-                    return Err(WorkspaceError::from(FsError::CreationRejected).into());
-                }
-            }
             fork_root.retire(accounting)?;
-            let (created, operation) = self
-                .read_creation(volume_id, accounting, cancellation)
-                .await
-                .map_err(WorkspaceError::from)?;
             if operation != idempotency_key.operation_id()
+                || created.volume_id != volume_id
                 || created.config != config
                 || created.initial_generation_root != original_root
             {
@@ -334,38 +298,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget.finish(result, &accounting)
     }
 
-    pub(super) fn derive_fork_workspace_id_with_accounting(
-        &self,
-        destination: &crate::WorkspaceName,
-        accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<crate::WorkspaceId, WorkspaceError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = accounting.native_work() {
-            return crate::WorkspaceId::derive(
-                self.inner.workspace_namespace,
-                destination,
-                original,
-                cancellation,
-            );
-        }
-        let derived = crate::WorkspaceId::derive(
-            self.inner.workspace_namespace,
-            destination,
-            accounting.remaining()?,
-            cancellation,
-        );
-        let work = match &derived {
-            Ok(receipt) => receipt.work,
-            Err(failure) => *failure.work,
-        };
-        merge_fork_backend_work(accounting, work)?;
-        derived
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-    }
-
-    /// The source lineage a fork's authority starts from: the published
     pub(super) async fn fork_lineage_with_accounting(
         &self,
         source: &crate::Generation<A, O>,
@@ -380,19 +312,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .volume
             .resolve_head_generation(accounting, cancellation)
             .await?;
-        let (decoded, allocation) = read_generation_root_with_accounting(
-            &self.inner.objects,
-            root,
-            source.workspace.volume.config,
-            accounting,
-            cancellation,
-        )
-        .await?;
-        if decoded.volume_id != source.workspace.volume.id {
-            return Err(FsError::VolumeMismatch.into());
-        }
-        let bytes = root_parent_bytes(&decoded)?;
-        Owned::new(decoded, allocation, bytes).retire(accounting)?;
+        self.initial_generation(source.workspace.clone(), root, accounting, cancellation)
+            .await?;
         Ok(Some(crate::GenerationForkSource {
             authority: volume_authority_id(source.workspace.volume.id),
             generation: source.id,
@@ -405,7 +326,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 }
 
-/// A fork's two first records: the retention of its source generation, under
 pub(super) fn fork_records_with_accounting<A, O>(
     source: &Volume<A, O>,
     source_root: ObjectId,
@@ -413,10 +333,7 @@ pub(super) fn fork_records_with_accounting<A, O>(
     fork_root: ObjectId,
     operation_id: OperationId,
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-    cancellation: &CancellationToken,
 ) -> Result<(crate::AuthorityId, ProposedCommit, ProposedCommit, u64), FsError> {
-    accounting.check()?;
-    cancellation.check()?;
     let mut label = crate::kernel::Owned::<Vec<u8>>::allocate(32, accounting)?;
     let encoding = WorkCounters {
         bytes_encoded: 32,
@@ -478,23 +395,4 @@ pub(super) fn fork_records_with_accounting<A, O>(
         .checked_add(creation_bytes)
         .ok_or(WorkError::Overflow)?;
     Ok((retention, retained, creation, payload_bytes))
-}
-
-pub(super) fn merge_fork_backend_work(
-    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-    backend: WorkCounters,
-) -> Result<(), crate::workspace::WorkspaceError> {
-    let (allocations, work, budget, _) = accounting
-        .standalone_parts()
-        .ok_or(FsError::HandleAllocationFailed)?;
-    let prior = *work;
-    *work = prior
-        .with_backend(backend, allocations.live_bytes())
-        .map_err(|error| crate::workspace::WorkspaceError::WorkMerge {
-            prior,
-            backend,
-            error,
-        })?;
-    work.verify(budget)?;
-    Ok(())
 }

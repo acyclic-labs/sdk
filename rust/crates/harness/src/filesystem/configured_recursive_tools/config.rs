@@ -83,8 +83,6 @@ pub struct ConfiguredRecursiveMerge {
 pub struct ConfiguredRecursiveToolsConfig {
     pub callers: Vec<ConfiguredRecursiveCaller>,
     pub forks: Vec<ConfiguredRecursiveFork>,
-    #[serde(default)]
-    pub project_policy_graph_root: Option<TaskId>,
     pub merges: Vec<ConfiguredRecursiveMerge>,
     pub stream_provider: ProviderRef,
     pub history_limits: HistoryReadLimits,

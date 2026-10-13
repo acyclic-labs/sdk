@@ -65,7 +65,7 @@ pub(crate) fn install_pi_at(
         Ok(mut file) => {
             let publish = (|| {
                 file.write_all(source.as_bytes())?;
-                sync_file(&file, Durability::Full)?;
+                sync_file(&file, Durability::Full, None)?;
                 drop(file);
                 durable_rename(&temporary, &extension, RenameMode::NoReplace, None)
             })();

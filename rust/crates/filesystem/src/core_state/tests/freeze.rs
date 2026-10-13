@@ -1,9 +1,7 @@
 use super::*;
-use crate::kernel::KernelAccounting;
-use crate::{CancellationToken, WorkBudget};
 
 #[tokio::test(flavor = "multi_thread")]
-async fn first_prepared_freeze_rejects_concurrent_source_update_and_collected_roots() {
+async fn prepared_freeze_authenticates_each_source_component() {
     for component in 0..3 {
         let directory = tempfile::tempdir().unwrap();
         let store = LocalCoreStateStore::open_owned(directory.path()).unwrap();
@@ -21,52 +19,13 @@ async fn first_prepared_freeze_rejects_concurrent_source_update_and_collected_ro
         }
         let updater = store.clone();
         let update = updated.clone();
-        let expected = parent.revision;
         assert!(
-            tokio::spawn(async move {
-                let cancellation = CancellationToken::new();
-                let mut accounting =
-                    KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-                updater
-                    .compare_and_swap_lazy_workspace(
-                        update.workspace_id,
-                        expected,
-                        update,
-                        &mut accounting,
-                    )
-                    .await
-                    .unwrap()
-            })
-            .await
-            .unwrap()
+            tokio::spawn(async move { swap_binding(&updater, parent.revision, update).await })
+                .await
+                .unwrap()
         );
-        assert_eq!(
-            store.collect_lazy_nodes().await.unwrap(),
-            u64::from(component != 0)
-        );
-        let cancellation = CancellationToken::new();
-        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-        if component == 1 {
-            assert!(
-                store
-                    .load_lazy_overlay(parent.overlay, &mut accounting)
-                    .await
-                    .unwrap()
-                    .is_none()
-            );
-        } else if component == 2 {
-            assert!(
-                store
-                    .load_lazy_shadow(parent.shadows, &mut accounting)
-                    .await
-                    .unwrap()
-                    .is_none()
-            );
-        }
-
-        let rejection_cancellation = CancellationToken::new();
-        let mut rejected =
-            KernelAccounting::standalone(WorkBudget::UNBOUNDED, &rejection_cancellation);
+        let cancellation = crate::CancellationToken::new();
+        let mut rejected = unbounded_accounting(&cancellation);
         assert!(
             !store
                 .compare_and_swap_lazy_workspace(
@@ -80,94 +39,31 @@ async fn first_prepared_freeze_rejects_concurrent_source_update_and_collected_ro
         );
         assert!(rejected.spent().items_examined > 0);
         assert_eq!(rejected.spent().object_bytes_written, 0);
-        assert!(
-            store
-                .load_lazy_workspace(prepared.workspace_id, &mut accounting)
-                .await
-                .unwrap()
-                .is_none()
-        );
-        let refreshed = prepared_origin_fixture(&updated);
-        assert!(
-            store
-                .compare_and_swap_lazy_workspace(
-                    refreshed.workspace_id,
-                    0,
-                    refreshed,
-                    &mut accounting
-                )
-                .await
-                .unwrap()
-        );
+        assert!(load_binding(&store, prepared.workspace_id).await.is_none());
+        assert!(swap_binding(&store, 0, prepared_origin_fixture(&updated)).await);
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn original_freeze_recovers_without_ack_and_retains_roots_after_parent_changes() {
-    let cancellation = CancellationToken::new();
-    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+#[tokio::test]
+async fn freeze_survives_lost_acknowledgement_and_keeps_its_origin_immutable() {
     let directory = tempfile::tempdir().unwrap();
     let store = LocalCoreStateStore::open_owned(directory.path()).unwrap();
     let parent = origin_parent_fixture(&store).await;
     let prepared = prepared_origin_fixture(&parent);
-    // Recover from the durable write without consuming its acknowledgement.
-    let _ = store
-        .compare_and_swap_lazy_workspace(
-            prepared.workspace_id,
-            0,
-            prepared.clone(),
-            &mut accounting,
-        )
-        .await
-        .unwrap();
+    let _ = swap_binding(&store, 0, prepared.clone()).await;
     drop(store);
     let store = LocalCoreStateStore::open_owned(directory.path()).unwrap();
     assert_eq!(
-        store
-            .load_lazy_workspace(prepared.workspace_id, &mut accounting)
-            .await
-            .unwrap(),
+        load_binding(&store, prepared.workspace_id).await,
         Some(prepared.clone())
     );
     let updated = advanced_origin_parent(&parent);
-    assert!(
-        store
-            .compare_and_swap_lazy_workspace(
-                parent.workspace_id,
-                parent.revision,
-                updated.clone(),
-                &mut accounting
-            )
-            .await
-            .unwrap()
-    );
-    assert_eq!(store.collect_lazy_nodes().await.unwrap(), 0);
-    assert!(
-        !store
-            .compare_and_swap_lazy_workspace(
-                prepared.workspace_id,
-                0,
-                prepared.clone(),
-                &mut accounting
-            )
-            .await
-            .unwrap()
-    );
-
+    assert!(swap_binding(&store, parent.revision, updated.clone()).await);
+    assert!(!swap_binding(&store, 0, prepared.clone()).await);
     let mut committed = prepared.clone();
     committed.revision += 1;
     committed.fork_origin.as_mut().unwrap().phase = crate::LazyForkPhase::Committed;
-    assert!(
-        store
-            .compare_and_swap_lazy_workspace(
-                committed.workspace_id,
-                prepared.revision,
-                committed.clone(),
-                &mut accounting
-            )
-            .await
-            .unwrap()
-    );
+    assert!(swap_binding(&store, prepared.revision, committed.clone()).await);
     let child = LazyWorkspaceState {
         revision: committed.revision + 1,
         source: updated.source,
@@ -175,32 +71,7 @@ async fn original_freeze_recovers_without_ack_and_retains_roots_after_parent_cha
         shadows: updated.shadows,
         ..committed.clone()
     };
-    assert!(
-        store
-            .compare_and_swap_lazy_workspace(
-                child.workspace_id,
-                committed.revision,
-                child.clone(),
-                &mut accounting
-            )
-            .await
-            .unwrap()
-    );
-    assert_eq!(store.collect_lazy_nodes().await.unwrap(), 0);
-    assert!(
-        store
-            .load_lazy_overlay(parent.overlay, &mut accounting)
-            .await
-            .unwrap()
-            .is_some()
-    );
-    assert!(
-        store
-            .load_lazy_shadow(parent.shadows, &mut accounting)
-            .await
-            .unwrap()
-            .is_some()
-    );
+    assert!(swap_binding(&store, committed.revision, child.clone()).await);
     let mut replacements: [_; 6] = std::array::from_fn(|_| LazyWorkspaceState {
         revision: child.revision + 1,
         ..child.clone()
@@ -224,23 +95,7 @@ async fn original_freeze_recovers_without_ack_and_retains_roots_after_parent_cha
     replacements[4].parent_workspace_id = Some(WorkspaceId::from_bytes([0xb2; 16]));
     replacements[5].fork_origin.as_mut().unwrap().phase = crate::LazyForkPhase::Prepared;
     for replacement in replacements {
-        assert!(
-            !store
-                .compare_and_swap_lazy_workspace(
-                    child.workspace_id,
-                    child.revision,
-                    replacement,
-                    &mut accounting
-                )
-                .await
-                .unwrap()
-        );
+        assert!(!swap_binding(&store, child.revision, replacement).await);
     }
-    assert_eq!(
-        store
-            .load_lazy_workspace(child.workspace_id, &mut accounting)
-            .await
-            .unwrap(),
-        Some(child)
-    );
+    assert_eq!(load_binding(&store, child.workspace_id).await, Some(child));
 }

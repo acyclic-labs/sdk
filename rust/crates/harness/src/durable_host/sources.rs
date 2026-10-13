@@ -42,17 +42,17 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let bound = match native {
             Some(native) => {
                 self.require_mail_scope(context.scope(), io)?;
-                context.owned_task_binding_with_native_work(native)?
+                context.owned_task_binding(Some(&crate::executor::PreparationIo::from_native_work(native)?))?
                     == (self.task_id(), &self.fence)
             }
             None => {
                 context.durable_task_id() == Some(self.task_id())
-                    && context.owned_task_fence()? == self.fence
+                    && context.owned_task_binding(None)?.1 == &self.fence
             }
         };
         #[cfg(target_arch = "wasm32")]
         let bound = context.durable_task_id() == Some(self.task_id())
-            && context.owned_task_fence()? == self.fence;
+            && context.owned_task_binding(None)?.1 == &self.fence;
         if !bound
             || context.scope().grants() != &self.admission.grants
             || maximum_work == 0

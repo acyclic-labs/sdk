@@ -50,68 +50,6 @@ impl PiNativeCommandHost {
         Ok((admission.0, input.0, admission.1))
     }
 
-    pub(super) async fn original_never_started(
-        &self,
-        task: TaskId,
-        meter: &NativeMaterializationWork,
-    ) -> Result<bool> {
-        let admission = self.child_admission(task, meter).await?;
-        let input = &admission.1;
-        let PiTaskExecution::Child { launch } = &input.execution else {
-            unreachable!()
-        };
-        let entry = self.registered_entry(task)?;
-        {
-            let handles = entry.handles.lock().await;
-            if handles.effect.is_some()
-                || handles.preparation_owner.is_some()
-                || handles.root.is_some()
-                || handles.project.is_some()
-                || handles.project_allocation.is_some()
-                || handles.project_startup_owner.is_some()
-                || !handles.scratch_gate.is_settled()
-                || !handles.project_gate.is_settled()
-                || self.live_view(task).is_some()
-            {
-                return Ok(false);
-            }
-        }
-        let observed = {
-            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(meter)?);
-            HistoryIo::retain_owned(
-                &mut io,
-                std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>())
-                    as u64,
-            )?;
-            let value = self
-                .runtime
-                .runtime
-                .task_host()
-                .recover_work(task, &mut Some(&mut io))
-                .await?;
-            (value, io.into_custody()?)
-        };
-        let lease = match observed.0 {
-            WorkPull::Claimed(lease) => lease,
-            WorkPull::Unresolved { error, .. } => return Err(error),
-            WorkPull::Idle => return Ok(false),
-        };
-        let fence = LeaseFence::from(&lease.reservation);
-        let owner = self
-            .runtime
-            .runtime
-            .task_host()
-            .journal_owner(task, &fence, Some(&acyclic_harness::executor::PreparationIo::from_native_work(meter)?))
-            .await?;
-        match self
-            .observe_preparation_journal(task, &owner, meter)
-            .await?
-        {
-            Some(_) => Ok(false),
-            None => Err(Error::Indeterminate(launch.operation_id)),
-        }
-    }
-
     pub(super) async fn authenticated_command(
         &self,
         context: &TaskContext,
@@ -170,11 +108,20 @@ impl PiNativeCommandHost {
             .runtime
             .runtime
             .task_host()
-            .journal_owner(task, fence, Some(&acyclic_harness::executor::PreparationIo::from_native_work(work)?))
+            .journal_owner(
+                task,
+                fence,
+                Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
+            )
             .await?
             .into_native_shared(work)?;
         owner
-            .verify(recovery, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
+            .verify(
+                recovery,
+                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                    acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+                )),
+            )
             .await?;
         Ok(((admitted.1, admitted.2), owner, original))
     }
@@ -208,7 +155,9 @@ impl PiNativeCommandHost {
             work,
         )?;
         let interaction_verifier = {
-            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
             let value = conversation.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody()?)
         };
@@ -221,11 +170,17 @@ impl PiNativeCommandHost {
             .runtime
             .runtime
             .task_host()
-            .journal_owner(owner.task_id(), &context.owned_task_fence()?, Some(&acyclic_harness::executor::PreparationIo::from_native_work(work)?))
+            .journal_owner(
+                owner.task_id(),
+                &context.owned_task_fence()?,
+                Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
+            )
             .await?;
-        Journal::for_task_with_native_work(
+        let io = PreparationIo::from_native_work(work)?;
+        Journal::for_task(
             journal_owner,
             command,
+            context.id(),
             self.filesystem.clone(),
             &self.protected.policy().journal,
             &storage.verifier,
@@ -234,14 +189,14 @@ impl PiNativeCommandHost {
                 .policy()
                 .maximum_payload_bytes
                 .min(context.scope().limits().file_bytes),
-            work,
+            Some(&io),
         )?
-        .with_interaction_owner_with_native_work(
+        .with_interaction_owner(
             &interaction_verifier.0,
             &SchemaRegistry::new(),
             &conversation.0.2,
             &result.volume,
-            work,
+            Some(&io),
         )?
         .into_native_shared(work)
     }
@@ -261,7 +216,9 @@ impl PiNativeCommandHost {
             work,
         )?;
         let verifier = {
-            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
             let value = conversation.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody()?)
         };
@@ -283,7 +240,9 @@ impl PiNativeCommandHost {
         &self,
         context: &TaskContext,
         input: &PiTaskInput,
-        provider: &Arc<NativeProcessProvider<LocalStream>>,
+        provider: &Arc<
+            NativeProcessProvider<LocalStream, LocalAuthorityBackend, LocalObjectBackend>,
+        >,
         work: &NativeMaterializationWork,
     ) -> Result<Arc<Effects>> {
         let content = self.result_bindings(context, input)?.reader;
@@ -293,11 +252,10 @@ impl PiNativeCommandHost {
             context.scope().grants(),
             work,
         )?;
-        let mut registry = EffectRegistry::new(Some(work))?
-            .with_result_resolver_with_native_work(content.clone(), work)?;
-        registry.register_with_native_work(provider.clone(), work)?;
+        let mut registry = EffectRegistry::new(Some(work), Some(content.clone()))?;
+        registry.register(provider.clone(), Some(work))?;
         let ((audience, issuer, scope), custody) = authorization;
-        Effects::new_with_native_work(
+        Effects::new(
             self.stream.clone(),
             audience,
             issuer,
@@ -305,10 +263,10 @@ impl PiNativeCommandHost {
             SchemaRegistry::new(),
             content,
             registry,
-            custody,
-            work,
+            Some(custody),
+            Some(work),
         )?
-        .into_arc_with_native_work(work)
+        .into_arc(work)
     }
 
     pub(super) async fn original_effect(
@@ -325,7 +283,9 @@ impl PiNativeCommandHost {
             work,
         )?;
         let verifier = {
-            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
             let value = conversation.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody()?)
         };
@@ -342,7 +302,9 @@ impl PiNativeCommandHost {
         let effect = acyclic_harness::effect_host::task_effect_id(
             input.binding.task_id,
             command,
-            &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)),
+            &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            )),
         )?;
         let mut io = acyclic_harness::store::HistoryWork::new(
             acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
@@ -396,7 +358,13 @@ impl PiNativeCommandHost {
             owner.clone(),
             command,
             &plan.0,
-            task_interaction_id(input.binding.task_id, command, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?,
+            task_interaction_id(
+                input.binding.task_id,
+                command,
+                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                    acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+                )),
+            )?,
             authority,
             work,
         )
@@ -437,9 +405,8 @@ impl PiNativeCommandHost {
         };
         let retained = {
             let handles = entry.handles.lock().await;
-            if handles.scratch_gate.reservation.is_none()
-                || handles.project_gate.reservation.is_none()
-                || handles.mounts_drained
+            if !matches!(&handles.scratch_gate.reservation, Some((_, _, Some(_))))
+                || !matches!(&handles.project_gate.reservation, Some((_, _, Some(_))))
             {
                 return Ok(None);
             }
@@ -462,14 +429,6 @@ impl PiNativeCommandHost {
             return Err(unauthorized(
                 "Pi Planned effect differs from its original retained SDK launch",
             ));
-        }
-        if bound
-            .provider
-            .receipt(bound.provider.original_attempt(), &bound.work, None)
-            .await?
-            .is_some()
-        {
-            return Ok(None);
         }
         Ok(Some(bound))
     }

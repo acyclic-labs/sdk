@@ -520,15 +520,6 @@ impl RuntimeScope {
             .map(|binding| &binding.binding)
     }
 
-    pub(super) fn created_artifact_content(&self) -> Option<&ContentBindings> {
-        self.created_access
-            .as_ref()?
-            .content
-            .iter()
-            .find(|binding| binding.artifact_writer)
-            .map(|binding| &binding.binding)
-    }
-
     /// Finds only an exact provider-authenticated, owner-consumed reference.
     pub(crate) fn created_reference(
         &self,

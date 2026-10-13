@@ -5,10 +5,34 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         &self,
         request: WorkspaceJoinRequest<'_, A, O>,
     ) -> Result<WorkspaceJoinOutcome, WorkspaceError> {
-        let cancellation = CancellationToken::new();
-        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        let token = CancellationToken::new();
+        let cancellation = &token;
+        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation);
         let output = self
-            .apply_workspace_join_with_accounting(request, &mut accounting, &cancellation, &mut ())
+            .apply_workspace_join_with_accounting(
+                request,
+                &mut accounting,
+                &cancellation,
+                |request, intent, limits, budget| async move {
+                    publish_generation_async_with_permit(
+                        &self.inner.objects,
+                        &self.inner.authority,
+                        request,
+                        intent,
+                        limits,
+                        budget,
+                        &cancellation,
+                    )
+                    .await
+                    .map(|receipt| OperationReceipt {
+                        value: checkout_commit_outcome(&receipt),
+                        work: receipt.work,
+                    })
+                    .map_err(|failure| {
+                        failure.map_error(|error| WorkspaceError::from(FsError::from(error)))
+                    })
+                },
+            )
             .await?;
         Ok(output.value)
     }
@@ -35,7 +59,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 request,
                 &mut accounting,
                 cancellation,
-                &mut (original, before_publication),
+                |request, intent, limits, _budget| async move {
+                    let (receipt, allocation) = publish_generation_async_guarded_with_native_work(
+                        &self.inner.objects,
+                        &self.inner.authority,
+                        request,
+                        intent,
+                        limits,
+                        original,
+                        cancellation,
+                        before_publication,
+                        None,
+                        None,
+                    )
+                    .await
+                    .map_err(|error| OperationFailure::new(error, original.receipt()))?;
+                    let result = OperationReceipt {
+                        value: checkout_commit_outcome(&receipt),
+                        work: receipt.work,
+                    };
+                    drop(receipt);
+                    drop(allocation);
+                    Ok(result)
+                },
             )
             .await?;
         match output.allocation {
@@ -46,15 +92,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         }
     }
 
-    pub(super) async fn apply_workspace_join_with_accounting<P>(
+    pub(super) async fn apply_workspace_join_with_accounting<E, Fut>(
         &self,
         request: WorkspaceJoinRequest<'_, A, O>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-        publication: &mut P,
-    ) -> Result<Owned<WorkspaceJoinOutcome>, P::Error>
+        publication: impl FnOnce(
+            PublishGenerationRequest,
+            PublicationIntent,
+            ClosureLimits,
+            WorkBudget,
+        ) -> Fut
+        + ProviderTask,
+    ) -> Result<Owned<WorkspaceJoinOutcome>, E>
     where
-        P: WorkspaceJoinPublication<A, O>,
+        E: From<FsError> + From<WorkspaceError> + Send,
+        Fut: Future<Output = MeasuredResult<OperationReceipt<LivePublicationObservation>, E>>
+            + ProviderTask,
     {
         use Owned;
         accounting.check()?;
@@ -163,7 +217,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     WorkspaceJoinOutcome::NoChanges(current_target),
                     accounting,
                 )
-                .map_err(P::Error::from);
+                .map_err(E::from);
             }
             let merge_request = crate::kernel::MergeGenerationBorrowedRequest {
                 base_generation: normalized_base_object,
@@ -232,7 +286,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     WorkspaceJoinOutcome::NoChanges(current_target),
                     accounting,
                 )
-                .map_err(P::Error::from);
+                .map_err(E::from);
             }
             // This immutable normalized history parent is outside the candidate's
             let _source_hold = if history == crate::workspace::JoinHistory::Merge {
@@ -247,25 +301,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             } else {
                 None
             };
-            let published = publication
-                .publish(
-                    &self.inner.objects,
-                    &self.inner.authority,
-                    PublishGenerationRequest {
-                        authority_id: volume_authority_id(target.id),
-                        volume_id: target.id,
-                        epoch: expected_head.epoch,
-                        expected: expected_head,
-                        operation_id,
-                        generation_root: candidate,
-                    },
-                    PublicationIntent::guarded(Some(operation_context), permit),
-                    closure_limits(target.config),
-                    accounting,
-                    cancellation,
-                )
-                .await?;
-            let outcome = match published {
+            let published = publication(
+                PublishGenerationRequest {
+                    authority_id: volume_authority_id(target.id),
+                    volume_id: target.id,
+                    epoch: expected_head.epoch,
+                    expected: expected_head,
+                    operation_id,
+                    generation_root: candidate,
+                },
+                PublicationIntent::guarded(Some(operation_context), permit),
+                closure_limits(target.config),
+                accounting.remaining()?,
+            )
+            .await;
+            if accounting.standalone_parts().is_some() {
+                let spent = match &published {
+                    Ok(receipt) => receipt.work,
+                    Err(failure) => *failure.work,
+                };
+                merge_creation_backend_work(accounting, spent)?;
+            }
+            let outcome = match published.map_err(|failure| failure.error)?.value {
                 LivePublicationObservation::Committed {
                     generation_id: id, ..
                 } => WorkspaceJoinOutcome::Joined(id, resolutions_digest),
@@ -282,7 +339,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     WorkspaceJoinOutcome::IdempotencyConflict
                 }
             };
-            workspace_join_scalar(outcome, accounting).map_err(P::Error::from)
+            workspace_join_scalar(outcome, accounting).map_err(E::from)
         }
         .await;
         target_root.retire(accounting)?;

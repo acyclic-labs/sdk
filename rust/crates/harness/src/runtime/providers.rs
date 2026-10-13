@@ -238,14 +238,6 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
     ) -> Result<()> {
         Err(unbound("durable timers are not bound"))
     }
-    /// Observes one recorded effect without redispatching it.
-    async fn reconcile_effect(
-        &self,
-        _task_id: TaskId,
-        _effect_id: EffectId,
-    ) -> Result<crate::core::EffectStatus> {
-        Err(unbound("durable effect reconciliation is not bound"))
-    }
 }
 
 /// Independently replaceable durable admission boundary.
@@ -341,10 +333,6 @@ pub trait TaskSpawner: acyclic_stream::ProviderPlatform {
     /// Retains an idempotent cancellation declaration at the batch owner.
     async fn cancel_batch(&self, _batch_id: BatchId) -> Result<Option<BatchCancellationReport>> {
         Err(unbound("durable batch cancellation is not bound"))
-    }
-    /// Whether this spawner can retain a cancellation declaration.
-    fn supports_batch_cancellation(&self) -> bool {
-        false
     }
 }
 

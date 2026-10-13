@@ -20,7 +20,6 @@ pub(crate) struct Fixture<
     pub(crate) signed: Scope,
     pub(crate) scope: RuntimeScope,
     pub(crate) host: Arc<CoordinatorTaskHost<P>>,
-    pub(crate) source: VolumeRef,
     pub(crate) destination: VolumeRef,
     pub(crate) storage: VolumeRef,
     pub(crate) reader: Arc<FilesystemContentVerifier<A, O>>,
@@ -90,7 +89,6 @@ where
     }
 
     pub(crate) async fn replace(&self, byte: u8) -> Result<TaskJournalOwner<P>> {
-        use crate::conversation::ContentPublisher;
         let task = TaskId::from_bytes([byte; 16]);
         self.host
             .suspend_workflow(
@@ -151,16 +149,9 @@ where
                 &mut None,
             )
         };
-        let source = VolumeRef::new(
-            provider.clone(),
-            "source".into(),
-            VolumeClass::Project,
-            VolumeOwner::Project("fixture-project".into()),
-            &mut None,
-        )?;
         let destination = volume("destination")?;
         let storage = volume("storage")?;
-        for volume in [&source, &destination, &storage] {
+        for volume in [&destination, &storage] {
             let reference = crate::resources::WorkspaceRef::new(
                 provider.clone(),
                 volume.storage_name(&mut None)?.into_bytes(),
@@ -202,7 +193,7 @@ where
         .map(str::to_owned)
         .collect();
         grants.extend(extra.iter().map(|grant| (*grant).to_owned()));
-        for volume in [&source, &destination, &storage] {
+        for volume in [&destination, &storage] {
             grants.push(volume.capability(VolumeOperation::Read, &mut None)?);
         }
         for volume in [&destination, &storage] {
@@ -290,7 +281,6 @@ where
             signed,
             scope,
             host: Arc::new(host),
-            source,
             destination,
             storage,
             reader,
@@ -421,9 +411,9 @@ pub(super) async fn fixture() -> Result<Fixture> {
     .await
 }
 
-struct FixtureMachine {
-    identity: MachineIdentity,
-    schema: Value,
+pub(super) struct FixtureMachine {
+    pub(super) identity: MachineIdentity,
+    pub(super) schema: Value,
 }
 impl ResumableMachine for FixtureMachine {
     fn identity(&self) -> &MachineIdentity {
