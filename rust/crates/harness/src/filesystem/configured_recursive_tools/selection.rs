@@ -75,31 +75,29 @@ where
                 drop((grant, hold));
             }
         }
-        for file in &allocation.input_files {
-            drop(context.read_file(file, io).await?);
-            let grant = crate::executor::with_history_io(io, |work| file.read_capability(work))?;
-            let hold = io
-                .map(|io| io.guard_owned(grant.capacity() as u64))
-                .transpose()?;
-            append(&mut grants, &grant)?;
-            append(&mut scoped, &grant)?;
-            drop((grant, hold));
-        }
-        for reference in &references {
-            if reference.reader != arguments.id {
+        let files = allocation
+            .input_files
+            .iter()
+            .map(|file| (arguments.id, file, None))
+            .chain(references.iter().map(|reference| {
+                (
+                    reference.reader,
+                    &reference.file,
+                    reference.attachment_manifest.as_ref(),
+                )
+            }));
+        for (reader, file, manifest) in files {
+            if reader != arguments.id {
                 return Err(failure(
                     io,
                     crate::wire::ErrorCode::Unauthorized,
                     "inherited reference targets another child reader",
                 ));
             }
-            for file in
-                std::iter::once(&reference.file).chain(reference.attachment_manifest.as_ref())
-            {
+            for file in std::iter::once(file).chain(manifest) {
                 drop(context.read_file(file, io).await?);
             }
-            let grant =
-                crate::executor::with_history_io(io, |work| reference.file.read_capability(work))?;
+            let grant = crate::executor::with_history_io(io, |work| file.read_capability(work))?;
             let hold = io
                 .map(|io| io.guard_owned(grant.capacity() as u64))
                 .transpose()?;
