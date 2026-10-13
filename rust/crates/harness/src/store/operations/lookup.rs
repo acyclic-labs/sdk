@@ -1,11 +1,4 @@
 use super::*;
-use crate::{
-    store::{HistoryIo, guarded_boundary as boundary},
-    wire::ErrorCode::{Invalid, Storage},
-    wire_codec::CodecQuota,
-};
-use std::sync::Arc;
-
 pub(crate) async fn find_operation_bounded_with_work<P: StreamProvider>(
     client: &Arc<P>,
     authority: &Authority,
@@ -49,42 +42,17 @@ pub(crate) async fn bounded_operation_with_retained_quota<P: StreamProvider>(
     let (path, held) = publication_path(
         authority,
         "harness/v2/aggregate-operations/",
-        Some((&operation, 36)),
+        Some(&operation),
         quota.work(),
     )?;
     quota.adopt(held)?;
-    let Some(index) = one_record(client, &path, 0, quota.work()).await? else {
-        return match tail_optional_with_work(client, &path, quota.work()).await? {
-            None => Ok((None, 0)),
-            Some(_) => Err(boundary(
-                quota.work(),
-                Storage,
-                "operation location is missing before its committed tail",
-            )),
-        };
+    let Some(index) = index_record(client, &path, None, maximum_bytes, &mut quota).await? else {
+        return Ok((None, 0));
     };
     let raw_owned = sdk_record_retained_bytes(&index, quota.work());
-    quota.adopt(raw_owned)?;
-    if index.value.len() as u64 >= maximum_bytes {
-        return Err(boundary(
-            quota.work(),
-            Invalid,
-            "operation lookup exceeds byte bound",
-        ));
-    }
-    if tail_with_work(client, &path, quota.work()).await? != 1 {
-        return Err(boundary(
-            quota.work(),
-            Storage,
-            "operation location is not a single immutable record",
-        ));
-    }
     let location = decode_location_with_work(&index.value, quota.work())?;
     quota.adopt(location.authority.id.capacity() as u64)?;
-    if &location.authority != authority
-        || location.operation_id != operation
-        || location.revision == 0
-    {
+    if location.operation_id != operation {
         return Err(boundary(
             quota.work(),
             Storage,
@@ -125,13 +93,7 @@ pub(in crate::store) async fn verify_operation_locator<P: StreamProvider>(
     let mut quota = CodecQuota::new(work, 0)?;
     verifier.verify_audience(authority, quota.work())?;
     let index_bytes = index.value.len() as u64;
-    if index_bytes >= maximum_bytes {
-        return Err(boundary(
-            quota.work(),
-            Invalid,
-            "operation lookup exceeds byte bound",
-        ));
-    }
+    // Callers bound the locator before decoding it.
     if &location.authority != authority || location.revision == 0 {
         return Err(boundary(
             quota.work(),
@@ -187,158 +149,80 @@ pub(in crate::store) fn verify_operation_binding(
     Ok(())
 }
 
+pub(crate) enum MessageKey {
+    Id(uuid::Uuid),
+    Sequence(u64),
+    Head,
+}
+
+impl From<uuid::Uuid> for MessageKey {
+    fn from(id: uuid::Uuid) -> Self {
+        Self::Id(id)
+    }
+}
+
 pub(crate) async fn find_message_with_work<P: StreamProvider>(
     client: &Arc<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
-    message_id: uuid::Uuid,
+    key: impl Into<MessageKey>,
     through_revision: u64,
     maximum_bytes: u64,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
-    verifier.verify_audience(authority, work)?;
-    let path = publication_path(
-        authority,
-        "harness/v2/conversation-messages/",
-        Some((&message_id, 36)),
-        work,
-    )?;
-    find_message_at_locator_with_work(
-        client,
-        authority,
-        verifier,
-        path,
-        Some(message_id),
-        None,
-        through_revision,
-        maximum_bytes,
-        work,
-    )
-    .await
-}
-
-pub(crate) async fn find_message_sequence_with_work<P: StreamProvider>(
-    client: &Arc<P>,
-    authority: &Authority,
-    verifier: &AuthorityVerifier,
-    sequence: u64,
-    through_revision: u64,
-    maximum_bytes: u64,
-    work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
-    verifier.verify_audience(authority, work)?;
-    if sequence == 0 {
-        return Err(boundary(
-            work,
-            Invalid,
-            "message sequence index requires a positive conversation sequence",
-        ));
-    }
-    let path = publication_path(
-        authority,
-        "harness/v2/conversation-sequences/",
-        Some((&sequence, 20)),
-        work,
-    )?;
-    find_message_at_locator_with_work(
-        client,
-        authority,
-        verifier,
-        path,
-        None,
-        Some(sequence),
-        through_revision,
-        maximum_bytes,
-        work,
-    )
-    .await
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn find_message_at_locator_with_work<P: StreamProvider>(
-    client: &Arc<P>,
-    authority: &Authority,
-    verifier: &AuthorityVerifier,
-    stream: (StreamPath, u64),
-    expected_id: Option<uuid::Uuid>,
-    expected_sequence: Option<u64>,
-    through_revision: u64,
-    maximum_bytes: u64,
-    work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
-    let (path, held) = stream;
-    let mut quota = CodecQuota::from_retained(work, held);
-    if maximum_bytes == 0 {
+    let key = key.into();
+    let mut quota = CodecQuota::new(work, 0)?;
+    verifier.verify_audience(authority, quota.work())?;
+    if maximum_bytes == 0 || matches!(key, MessageKey::Sequence(0)) {
         return Err(boundary(
             quota.work(),
             Invalid,
-            "message lookup byte bound must be positive",
+            "message lookup bounds are invalid",
         ));
     }
-    let Some(index) = one_record(client, &path, 0, quota.work()).await? else {
-        return match tail_optional_with_work(client, &path, quota.work()).await? {
-            None => Ok((None, 0)),
-            Some(_) => Err(boundary(
-                quota.work(),
-                Storage,
-                "message location is missing before its committed tail",
-            )),
-        };
+    let (prefix, suffix): (_, Option<&dyn std::fmt::Display>) = match &key {
+        MessageKey::Id(id) => ("harness/v2/conversation-messages/", Some(id)),
+        MessageKey::Sequence(sequence) => ("harness/v2/conversation-sequences/", Some(sequence)),
+        MessageKey::Head => ("harness/v2/conversation-heads/", None),
     };
-    let raw_owned = sdk_record_retained_bytes(&index, quota.work());
-    quota.adopt(raw_owned)?;
-    if index.value.len() as u64 > maximum_bytes {
-        return Err(boundary(
-            quota.work(),
-            Invalid,
-            "message lookup exceeds byte bound",
-        ));
-    }
-    if tail_with_work(client, &path, quota.work()).await? != 1 {
-        return Err(boundary(
-            quota.work(),
-            Storage,
-            "message location is not immutable",
-        ));
-    }
+    let (path, held) = publication_path(authority, prefix, suffix, quota.work())?;
+    quota.adopt(held)?;
+    let sequence = if matches!(key, MessageKey::Head) {
+        match tail_optional_with_work(client, &path, quota.work()).await? {
+            Some(0) => return Err(boundary(quota.work(), Storage, "message head is empty")),
+            Some(tail) => tail - 1,
+            None => {
+                let (canonical, held) =
+                    publication_path(authority, "harness/v2/", None, quota.work())?;
+                quota.adopt(held)?;
+                return match tail_optional_with_work(client, &canonical, quota.work()).await? {
+                    None | Some(0) => Ok((None, 0)),
+                    Some(_) => Err(boundary(
+                        quota.work(),
+                        Storage,
+                        "message head is absent for a nonempty aggregate",
+                    )),
+                };
+            }
+        }
+    } else {
+        0
+    };
+    let at = matches!(key, MessageKey::Head).then_some(sequence);
+    let Some(index) = index_record(client, &path, at, maximum_bytes, &mut quota).await? else {
+        return Ok((None, 0));
+    };
+    let index_bytes = index.value.len() as u64;
     drop(path);
     quota.relinquish(held)?;
-    verify_message_locator(
-        client,
-        authority,
-        verifier,
-        &index,
-        expected_id,
-        expected_sequence,
-        through_revision,
-        maximum_bytes,
-        quota.work(),
-    )
-    .await
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn verify_message_locator<P: StreamProvider>(
-    client: &Arc<P>,
-    authority: &Authority,
-    verifier: &AuthorityVerifier,
-    index: &Record,
-    expected_id: Option<uuid::Uuid>,
-    expected_sequence: Option<u64>,
-    through_revision: u64,
-    maximum_bytes: u64,
-    work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
-    let mut quota = CodecQuota::new(work, 0)?;
     let location = decode_message_location_with_work(&index.value, quota.work())?;
-    let held = location.location.authority.id.capacity() as u64;
-    quota.adopt(held)?;
-    if &location.location.authority != authority
-        || expected_id.is_some_and(|id| location.message_id != id)
-        || expected_sequence.is_some_and(|sequence| location.sequence != sequence)
-        || location.location.revision == 0
-        || (location.sequence == 0 && expected_sequence != Some(0))
-    {
+    quota.adopt(location.location.authority.id.capacity() as u64)?;
+    let identity = match key {
+        MessageKey::Id(id) => location.message_id == id && location.sequence > 0,
+        MessageKey::Sequence(sequence) => location.sequence == sequence,
+        MessageKey::Head => location.sequence == sequence,
+    };
+    if &location.location.authority != authority || !identity || location.location.revision == 0 {
         return Err(boundary(
             quota.work(),
             Storage,
@@ -349,7 +233,7 @@ pub(super) async fn verify_message_locator<P: StreamProvider>(
         client,
         authority,
         verifier,
-        index,
+        &index,
         &location.location,
         maximum_bytes,
         quota.work(),
@@ -361,10 +245,8 @@ pub(super) async fn verify_message_locator<P: StreamProvider>(
     }
     if location.sequence == 0 {
         return if location.message_id.is_nil()
-            && matches!(
-                event.payload,
-                crate::core::EventPayload::ConversationBound { .. }
-            ) {
+            && matches!(event.payload, EventPayload::ConversationBound { .. })
+        {
             Ok((None, bytes))
         } else {
             Err(boundary(
@@ -375,8 +257,8 @@ pub(super) async fn verify_message_locator<P: StreamProvider>(
         };
     }
     let message = match event.payload {
-        crate::core::EventPayload::ConversationMessageAppended { message } => *message,
-        crate::core::EventPayload::ProjectMergePublished { receipt } => receipt.notice,
+        EventPayload::ConversationMessageAppended { message } => *message,
+        EventPayload::ProjectMergePublished { receipt } => receipt.notice,
         _ => {
             return Err(boundary(
                 quota.work(),
@@ -397,63 +279,45 @@ pub(super) async fn verify_message_locator<P: StreamProvider>(
     }
     if let Some(io) = quota.work().as_deref_mut() {
         io.check_cancellation()?;
-        io.stage_output(bytes - index.value.len() as u64, 1)?;
+        io.stage_output(bytes - index_bytes, 1)?;
     }
     drop(event.scope);
     drop(event.causal_parent);
     drop(location);
-    quota.relinquish(held)?;
+    drop(index);
+    quota.replace(owned)?;
     quota.transfer();
     Ok((Some(message), bytes))
 }
 
-/// Reads main's atomic logical head without replaying a reducer.
-pub(crate) async fn latest_message<P: StreamProvider>(
+async fn index_record<P: StreamProvider>(
     client: &Arc<P>,
-    authority: &Authority,
-    verifier: &AuthorityVerifier,
+    path: &StreamPath,
+    at: Option<u64>,
     maximum_bytes: u64,
-) -> Result<Option<crate::conversation::ConversationMessage>> {
-    let mut work = None;
-    verifier.verify_audience(authority, &mut work)?;
-    if maximum_bytes == 0 {
-        return Err(Error::Invalid(
-            "message lookup byte bound must be positive".into(),
+    quota: &mut CodecQuota<'_, '_>,
+) -> Result<Option<ObservedRecord>> {
+    let Some(index) = one_record(client, path, at.unwrap_or(0), quota.work()).await? else {
+        return match tail_optional_with_work(client, path, quota.work()).await? {
+            None if at.is_none() => Ok(None),
+            _ => Err(boundary(
+                quota.work(),
+                Storage,
+                "index is missing before its committed tail",
+            )),
+        };
+    };
+    let raw_owned = sdk_record_retained_bytes(&index, quota.work());
+    quota.adopt(raw_owned)?;
+    if index.value.len() as u64 >= maximum_bytes {
+        return Err(boundary(
+            quota.work(),
+            Invalid,
+            "indexed event exceeds byte bound",
         ));
     }
-    let path = publication_path(authority, "harness/v2/conversation-heads/", None, &mut work)?.0;
-    let through = match tail_optional_with_work(client, &path, &mut work).await? {
-        Some(0) => return Err(Error::Storage("message head is empty".into())),
-        Some(through) => through,
-        None => {
-            let canonical = publication_path(authority, "harness/v2/", None, &mut work)?.0;
-            return match tail_optional_with_work(client, &canonical, &mut work).await? {
-                None | Some(0) => Ok(None),
-                Some(_) => Err(Error::Storage(
-                    "message head is absent for a nonempty aggregate".into(),
-                )),
-            };
-        }
-    };
-    let index = one_record(client, &path, through - 1, &mut work)
-        .await?
-        .ok_or_else(|| {
-            Error::Storage("message head is missing before its committed tail".into())
-        })?;
-    if index.value.len() as u64 > maximum_bytes {
-        return Err(Error::Invalid("message lookup exceeds byte bound".into()));
+    if at.is_none() && tail_with_work(client, path, quota.work()).await? != 1 {
+        return Err(boundary(quota.work(), Storage, "index is not immutable"));
     }
-    verify_message_locator(
-        client,
-        authority,
-        verifier,
-        &index,
-        None,
-        Some(through - 1),
-        u64::MAX,
-        maximum_bytes,
-        &mut work,
-    )
-    .await
-    .map(|(message, _)| message)
+    Ok(Some(index))
 }

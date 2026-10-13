@@ -154,7 +154,7 @@ pub(in crate::store) async fn publication_with_work<P: StreamProvider>(
                 let path = operations::publication_path(
                     reducer.authority(),
                     "harness/v3/projection-chunks/",
-                    Some((&hash, hash.len())),
+                    Some(&hash),
                     quota.work(),
                 )?;
                 let copied = CodecQuota::produce(quota.work(), |copy| {
@@ -173,10 +173,11 @@ pub(in crate::store) async fn publication_with_work<P: StreamProvider>(
             let retained = quota.retained() - manifest_owned;
             quota.transfer();
             quota.adopt(retained)?;
-            publication.add_derived_index_with_work(
+            let manifest = operations::owned_bytes_from_retained_vec(manifest, quota.work());
+            publication.add_index(
                 path,
                 event.revision / u64::from(DEFAULT_PROJECTION_EVENTS) - 1,
-                Ok(manifest),
+                manifest,
                 quota.work(),
             )
         }

@@ -161,7 +161,7 @@ pub(super) async fn load_with_work<P: StreamProvider>(
     let location: ProjectionLocation = operations::decode_index(
         &index.value,
         acyclic_stream::MAX_RECORD_BYTES as u64,
-        &["ProjectionLocation", "Vec", "u8", "u64", "bytes", "chunks"],
+        "ProjectionLocation Vec u8 u64 bytes chunks",
         |shape, _| {
             shape
                 .lexical_items()
@@ -298,7 +298,7 @@ async fn load_chunks<P: StreamProvider>(
         let path = operations::publication_path(
             authority,
             "harness/v3/projection-chunks/",
-            Some((&digest.to_hex(), 64)),
+            Some(&digest.to_hex()),
             quota.work(),
         )?;
         let mut received = CodecQuota::from_retained(quota.work(), 0);

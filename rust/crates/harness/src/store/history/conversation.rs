@@ -6,13 +6,17 @@ impl<P: StreamProvider> HistoryReader<P> {
         &self,
         maximum_bytes: u64,
     ) -> Result<Option<crate::conversation::ConversationMessage>> {
-        crate::store::operations::latest_message(
+        crate::store::operations::find_message_with_work(
             &self.client,
             self.verifier.audience(),
             &self.verifier,
+            crate::store::operations::MessageKey::Head,
+            u64::MAX,
             maximum_bytes,
+            &mut None,
         )
         .await
+        .map(|(message, _)| message)
     }
 
     /// Resolves one message at the pinned boundary using its atomic locator.
@@ -49,47 +53,23 @@ impl<P: StreamProvider> HistoryReader<P> {
         selection: &crate::conversation::ModelContextSelection,
         limits: HistoryReadLimits,
     ) -> Result<crate::conversation::ConversationState> {
-        self.verifier
-            .verify_audience(&cursor.authority, &mut None)?;
-        if limits.maximum_events == 0
-            || limits.maximum_bytes == 0
-            || selection.message_ids.len() as u64 > u64::from(limits.maximum_events)
-            || cursor.after_revision > cursor.through_revision
-        {
+        if selection.message_ids.len() as u64 > u64::from(limits.maximum_events) {
             return Err(Error::Invalid(
-                "selected history bounds or cursor are invalid".into(),
+                "selected history exceeds event bound".into(),
             ));
         }
-        if cursor.through_revision > self.committed_tail_with_work(&mut None).await? {
-            return Err(Error::Invalid(
-                "selected history exceeds committed cutoff".into(),
-            ));
-        }
-        let mut consumed = 0_u64;
-        let mut messages = Vec::with_capacity(selection.message_ids.len());
-        for id in &selection.message_ids {
-            let remaining = limits
-                .maximum_bytes
-                .checked_sub(consumed)
-                .filter(|remaining| *remaining > 0)
-                .ok_or_else(|| Error::Invalid("selected history exceeds byte bound".into()))?;
-            let (message, bytes) = crate::store::operations::find_message_with_work(
-                &self.client,
-                &cursor.authority,
-                &self.verifier,
-                *id,
-                cursor.through_revision,
-                remaining,
+        let messages = self
+            .indexed_messages(
+                cursor,
+                selection
+                    .message_ids
+                    .iter()
+                    .copied()
+                    .map(crate::store::operations::MessageKey::Id),
+                limits,
                 &mut None,
             )
             .await?;
-            consumed = consumed
-                .checked_add(bytes)
-                .ok_or_else(|| Error::Invalid("selected history byte count overflows".into()))?;
-            messages.push(message.ok_or_else(|| {
-                Error::Storage("selected history message is missing at its pinned cutoff".into())
-            })?);
-        }
         let view = crate::conversation::ConversationState::from_wire(
             crate::conversation::ConversationStateWire {
                 agent: None,
@@ -118,39 +98,54 @@ impl<P: StreamProvider> HistoryReader<P> {
         limits: HistoryReadLimits,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Vec<crate::conversation::ConversationMessage>> {
+        if after_sequence > through_sequence
+            || through_sequence - after_sequence > u64::from(limits.maximum_events)
+        {
+            return Err(Error::Invalid(
+                "conversation range bounds are invalid".into(),
+            ));
+        }
+        self.indexed_messages(
+            cursor,
+            (after_sequence..through_sequence)
+                .map(|sequence| crate::store::operations::MessageKey::Sequence(sequence + 1)),
+            limits,
+            work,
+        )
+        .await
+    }
+
+    async fn indexed_messages(
+        &self,
+        cursor: &HistoryCursor,
+        keys: impl Iterator<Item = crate::store::operations::MessageKey>,
+        limits: HistoryReadLimits,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<Vec<crate::conversation::ConversationMessage>> {
         self.verifier
             .verify_audience(&cursor.authority, &mut None)?;
         if limits.maximum_events == 0
             || limits.maximum_bytes == 0
-            || after_sequence > through_sequence
-            || through_sequence - after_sequence > u64::from(limits.maximum_events)
             || cursor.after_revision > cursor.through_revision
+            || cursor.through_revision > self.committed_tail_with_work(work).await?
         {
             return Err(Error::Invalid(
-                "conversation range bounds or cursor are invalid".into(),
-            ));
-        }
-        if cursor.through_revision > self.committed_tail_with_work(work).await? {
-            return Err(Error::Invalid(
-                "conversation range exceeds committed event cutoff".into(),
+                "indexed history bounds or cursor are invalid".into(),
             ));
         }
         let mut messages = Vec::new();
         let mut consumed = 0_u64;
-        if after_sequence == through_sequence {
-            return Ok(messages);
-        }
-        for sequence in after_sequence + 1..=through_sequence {
+        for key in keys {
             let remaining = limits
                 .maximum_bytes
                 .checked_sub(consumed)
-                .filter(|bytes| *bytes > 0)
-                .ok_or_else(|| Error::Invalid("conversation range exceeds byte bound".into()))?;
-            let (message, bytes) = crate::store::operations::find_message_sequence_with_work(
+                .filter(|remaining| *remaining > 0)
+                .ok_or_else(|| Error::Invalid("indexed history exceeds byte bound".into()))?;
+            let (message, bytes) = crate::store::operations::find_message_with_work(
                 &self.client,
                 &cursor.authority,
                 &self.verifier,
-                sequence,
+                key,
                 cursor.through_revision,
                 remaining,
                 work,
@@ -158,7 +153,7 @@ impl<P: StreamProvider> HistoryReader<P> {
             .await?;
             consumed = consumed
                 .checked_add(bytes)
-                .ok_or_else(|| Error::Invalid("conversation range byte count overflows".into()))?;
+                .ok_or_else(|| Error::Invalid("indexed history byte count overflows".into()))?;
             if let Some(work) = work.as_deref_mut() {
                 crate::store::history::ensure_slot(
                     &mut messages,
@@ -167,7 +162,7 @@ impl<P: StreamProvider> HistoryReader<P> {
                 )?;
             }
             messages.push(message.ok_or_else(|| {
-                Error::Storage("conversation range is incomplete at its pinned cutoff".into())
+                Error::Storage("indexed history is missing at its pinned cutoff".into())
             })?);
         }
         Ok(messages)

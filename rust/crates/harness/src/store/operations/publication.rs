@@ -16,9 +16,9 @@ impl IndexedPublication {
         event: &Event,
         bytes: Vec<u8>,
         effect_position: Option<u64>,
-        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Self> {
-        let mut quota = crate::wire_codec::CodecQuota::from_retained(work, 0);
+        let mut quota = CodecQuota::from_retained(work, 0);
         let (bytes, retained) = owned_bytes_from_retained_vec(bytes, quota.work())?;
         quota.adopt(retained)?;
         if let Some(io) = quota.work().as_deref() {
@@ -39,50 +39,44 @@ impl IndexedPublication {
             retained_payload_bytes: quota.retained(),
         };
         quota.transfer();
+        drop(quota);
         let result = (|| {
             let location = OperationLocation {
-                authority: match quota.work().as_deref_mut() {
-                    Some(io) => io.clone_authority(authority)?,
-                    None => authority.clone(),
-                },
+                authority,
                 operation_id: event.operation_id,
                 revision: event.revision,
                 intent_digest: event.intent_digest,
                 effect_position,
             };
-            quota.adopt(location.authority.id.capacity() as u64)?;
             let operation = publication_path(
                 authority,
                 "harness/v2/aggregate-operations/",
-                Some((&event.operation_id, 36)),
-                quota.work(),
+                Some(&event.operation_id),
+                work,
             )?;
             let encoded = crate::store::history::canonical_bytes_with_work(
                 &location,
                 acyclic_stream::MAX_RECORD_BYTES as u64,
-                quota.work(),
-            );
-            publication.add_derived_index_with_work(operation, 0, encoded, quota.work())?;
+                work,
+            )
+            .and_then(|bytes| owned_bytes_from_retained_vec(bytes, work));
+            publication.add_index(operation, 0, encoded, work)?;
             let message = match &event.payload {
-                crate::core::EventPayload::ConversationBound { .. } => Some((uuid::Uuid::nil(), 0)),
-                crate::core::EventPayload::ConversationMessageAppended { message } => {
+                EventPayload::ConversationBound { .. } => Some((uuid::Uuid::nil(), 0)),
+                EventPayload::ConversationMessageAppended { message } => {
                     Some((message.id, message.sequence))
                 }
-                crate::core::EventPayload::ProjectMergePublished { receipt } => {
+                EventPayload::ProjectMergePublished { receipt } => {
                     Some((receipt.notice.id, receipt.notice.sequence))
                 }
                 _ => None,
             };
             if let Some((message_id, sequence)) = message {
-                if sequence == 0
-                    && !matches!(
-                        event.payload,
-                        crate::core::EventPayload::ConversationBound { .. }
-                    )
+                if sequence == 0 && !matches!(event.payload, EventPayload::ConversationBound { .. })
                 {
-                    return Err(crate::store::guarded_boundary(
-                        quota.work(),
-                        crate::wire::ErrorCode::Invalid,
+                    return Err(boundary(
+                        work,
+                        Invalid,
                         "message sequence index requires a positive conversation sequence",
                     ));
                 }
@@ -91,18 +85,15 @@ impl IndexedPublication {
                     message_id,
                     sequence,
                 };
-                let head = publication_path(
-                    authority,
-                    "harness/v2/conversation-heads/",
-                    None,
-                    quota.work(),
-                )?;
+                let head =
+                    publication_path(authority, "harness/v2/conversation-heads/", None, work)?;
                 let encoded = crate::store::history::canonical_bytes_with_work(
                     &location,
                     acyclic_stream::MAX_RECORD_BYTES as u64,
-                    quota.work(),
-                );
-                publication.add_derived_index_with_work(head, sequence, encoded, quota.work())?;
+                    work,
+                )
+                .and_then(|bytes| owned_bytes_from_retained_vec(bytes, work));
+                publication.add_index(head, sequence, encoded, work)?;
                 if sequence > 0 {
                     let bytes = publication
                         .indexes
@@ -113,15 +104,15 @@ impl IndexedPublication {
                     for (prefix, key) in [
                         (
                             "harness/v2/conversation-messages/",
-                            (&message_id as &dyn std::fmt::Display, 36),
+                            &message_id as &dyn std::fmt::Display,
                         ),
                         (
                             "harness/v2/conversation-sequences/",
-                            (&sequence as &dyn std::fmt::Display, 20),
+                            &sequence as &dyn std::fmt::Display,
                         ),
                     ] {
-                        let path = publication_path(authority, prefix, Some(key), quota.work())?;
-                        publication.push_index(path, 0, bytes.clone(), 0, quota.work())?;
+                        let path = publication_path(authority, prefix, Some(key), work)?;
+                        publication.add_index(path, 0, Ok((bytes.clone(), 0)), work)?;
                     }
                 }
             }
@@ -132,7 +123,7 @@ impl IndexedPublication {
             Err(error) => {
                 let owned = publication.retained_owned();
                 drop(publication);
-                release_owned_after_drop(Err(error), owned, quota.work())
+                release_owned_after_drop(Err(error), owned, work)
             }
         }
     }
@@ -143,55 +134,32 @@ impl IndexedPublication {
                 as u64
     }
 
-    pub(in crate::store) fn add_derived_index_with_work(
+    pub(in crate::store) fn add_index(
         &mut self,
         path: (StreamPath, u64),
         tail: u64,
-        bytes: Result<Vec<u8>>,
-        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+        bytes: Result<(OwnedBytes, u64)>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
-        let encoded = bytes.and_then(|bytes| owned_bytes_from_retained_vec(bytes, work));
-        match encoded {
-            Ok((bytes, retained)) => self.push_index(path, tail, bytes, retained, work),
-            Err(error) => {
-                let (path, retained) = path;
-                drop(path);
-                release_owned_after_drop(Err(error), retained, work)
-            }
-        }
-    }
-
-    pub(in crate::store) fn push_index(
-        &mut self,
-        path: (StreamPath, u64),
-        tail: u64,
-        bytes: OwnedBytes,
-        retained: u64,
-        work: &mut Option<&mut dyn crate::store::HistoryIo>,
-    ) -> Result<()> {
-        let (path, path_owned) = path;
-        if let Some(io) = work.as_deref_mut() {
+        let mut quota = CodecQuota::from_retained(work, path.1);
+        let (bytes, retained) = bytes?;
+        quota.adopt(retained)?;
+        if let Some(io) = quota.work().as_deref_mut() {
             let capacity = self.indexes.len() + 1;
-            if let Err(error) = crate::store::history::reserve(&mut self.indexes, capacity, io) {
-                drop(path);
-                drop(bytes);
-                return release_owned_after_drop(Err(error), retained + path_owned, work);
-            }
+            crate::store::history::reserve(&mut self.indexes, capacity, io)?;
         }
-        self.retained_payload_bytes += retained + path_owned;
-        self.indexes.push((path, tail, bytes));
+        self.retained_payload_bytes += quota.retained();
+        self.indexes.push((path.0, tail, bytes));
+        quota.transfer();
         Ok(())
     }
 
     pub(crate) async fn request<'a, 'b, P: StreamProvider>(
         &self,
-        client: &std::sync::Arc<P>,
+        client: &Arc<P>,
         key: IdempotencyKey,
-        work: &'a mut Option<&'b mut dyn crate::store::HistoryIo>,
-    ) -> Result<(
-        acyclic_stream::CommitRequest,
-        crate::wire_codec::CodecQuota<'a, 'b>,
-    )> {
+        work: &'a mut Option<&'b mut dyn HistoryIo>,
+    ) -> Result<(CommitRequest, CodecQuota<'a, 'b>)> {
         let key_owned = if work
             .as_deref()
             .is_some_and(|io| !original_native_decode_mode(io))
@@ -204,37 +172,25 @@ impl IndexedPublication {
         if let Some(io) = request.1.work().as_deref() {
             io.check_cancellation()?;
         }
-        let target = match bounds_with_work(client, &self.path, request.1.work()).await? {
-            Ok(_) => CommitCondition::Tail {
-                path: self.path.clone(),
-                expected: self.expected_tail,
-            },
-            Err(error)
-                if error == acyclic_stream::StreamError::NotFound && self.expected_tail == 0 =>
-            {
-                drop(error);
-                CommitCondition::Absent {
-                    path: self.path.clone(),
-                }
-            }
-            Err(error) => {
-                return Err(crate::store::operations::stream_error_with_work(
-                    error,
-                    request.1.work(),
-                ));
-            }
+        let absent = match bounds_with_work(client, &self.path, request.1.work()).await? {
+            Ok(_) => false,
+            Err(StreamError::NotFound) if self.expected_tail == 0 => true,
+            Err(error) => return Err(stream_error_with_work(error, request.1.work())),
         };
-        crate::distributed::add_condition(&mut request, target)?;
-        crate::distributed::add_record(&mut request, self.path.clone(), self.bytes.clone())?;
-        for (path, tail, bytes) in &self.indexes {
+        let appends = std::iter::once((&self.path, self.expected_tail, &self.bytes, absent)).chain(
+            self.indexes
+                .iter()
+                .map(|(path, tail, bytes)| (path, *tail, bytes, *tail == 0)),
+        );
+        for (path, tail, bytes, absent) in appends {
             crate::distributed::add_condition(
                 &mut request,
-                if *tail == 0 {
+                if absent {
                     CommitCondition::Absent { path: path.clone() }
                 } else {
                     CommitCondition::Tail {
                         path: path.clone(),
-                        expected: *tail,
+                        expected: tail,
                     }
                 },
             )?;
@@ -245,65 +201,41 @@ impl IndexedPublication {
     pub(crate) fn verify(
         &self,
         envelope: &CommittedEnvelope,
-        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
-        if let Some(io) = work.as_deref() {
-            io.check_cancellation()?;
-        }
-        if envelope.mutations.len() != 1 + self.indexes.len() {
-            return Err(crate::store::guarded_boundary(
-                work,
-                crate::wire::ErrorCode::Storage,
-                "indexed publication has invalid mutation count",
-            ));
-        }
-        for (path, tail, bytes) in std::iter::once((&self.path, self.expected_tail, &self.bytes))
-            .chain(
-                self.indexes
-                    .iter()
-                    .map(|(path, tail, bytes)| (path, *tail, bytes)),
-            )
-        {
+        let appends = std::iter::once((&self.path, self.expected_tail, &self.bytes)).chain(
+            self.indexes
+                .iter()
+                .map(|(path, tail, bytes)| (path, *tail, bytes)),
+        );
+        let mut valid = envelope.mutations.len() == 1 + self.indexes.len();
+        for (path, tail, bytes) in appends {
             if let Some(io) = work.as_deref() {
                 io.check_cancellation()?;
             }
-            let append = envelope
+            valid &= envelope
                 .mutations
                 .iter()
                 .find_map(|mutation| match mutation {
                     CommittedMutation::Append(append) if &append.path == path => Some(append),
                     _ => None,
                 })
-                .ok_or_else(|| {
-                    crate::store::guarded_boundary(
-                        work,
-                        crate::wire::ErrorCode::Storage,
-                        "indexed publication is missing an append",
-                    )
-                })?;
-            let end = tail.checked_add(1).ok_or_else(|| {
-                crate::store::guarded_boundary(
-                    work,
-                    crate::wire::ErrorCode::Storage,
-                    "indexed publication tail overflows",
-                )
-            })?;
-            if append.start != tail
-                || append.end != end
-                || append.tail != end
-                || append.records.len() != 1
-                || append.records.first().is_none_or(|record| {
-                    record.sequence != tail
-                        || record.value != *bytes
-                        || record.commit_id != envelope.commit_id
-                })
-            {
-                return Err(crate::store::guarded_boundary(
-                    work,
-                    crate::wire::ErrorCode::Storage,
-                    "indexed publication append is invalid",
-                ));
-            }
+                .is_some_and(|append| {
+                    tail.checked_add(1).is_some_and(|end| {
+                        (append.start, append.end, append.tail, append.records.len())
+                            == (tail, end, end, 1)
+                            && append.records[0].sequence == tail
+                            && append.records[0].value == *bytes
+                            && append.records[0].commit_id == envelope.commit_id
+                    })
+                });
+        }
+        if !valid {
+            return Err(boundary(
+                work,
+                Storage,
+                "indexed publication append is invalid",
+            ));
         }
         Ok(())
     }

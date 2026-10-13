@@ -17,7 +17,7 @@ async fn native_message_lookup_provider_corruption_bound_and_cancellation_releas
     let path = publication_path(
         &authority,
         "harness/v2/conversation-messages/",
-        Some((&id, 36)),
+        Some(&id),
         &mut None,
     )?
     .0;

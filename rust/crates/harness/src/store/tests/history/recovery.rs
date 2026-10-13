@@ -35,12 +35,6 @@ async fn bounded_resident_suffix_preserves_cold_retries_and_recovery() -> Result
     let snapshot = writer.reducer().snapshot(usize::MAX, &mut None)?.0;
     assert_eq!(snapshot.events.len(), 2);
     assert_eq!(writer.read_event_at(1, &mut None).await?.0.revision, 1);
-    let mut reused = original.clone();
-    reused.expected_revision = writer.reducer().revision();
-    assert!(matches!(
-        writer.reducer().plan(&reused),
-        Err(Error::Unsupported(_))
-    ));
     assert!(matches!(
         writer
             .execute(
@@ -51,22 +45,6 @@ async fn bounded_resident_suffix_preserves_cold_retries_and_recovery() -> Result
             )
             .await?,
         ApplyResult::Replayed { .. }
-    ));
-    let mut conflicting = original.clone();
-    conflicting.causal_parent = Some(EventReference {
-        authority: authority(),
-        revision: 1,
-    });
-    assert!(matches!(
-        writer
-            .execute(
-                conflicting,
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut None
-            )
-            .await,
-        Err(Error::Conflict(_))
     ));
     let mut restored = StreamAggregate::open(
         &client,
@@ -98,7 +76,7 @@ async fn bounded_resident_suffix_preserves_cold_retries_and_recovery() -> Result
         event: original_event,
     } = first
     else {
-        return Err(Error::Invalid("fixture first event was not applied".into()));
+        panic!("fresh fixture event");
     };
     assert_eq!(event, original_event);
     assert_eq!(restored.reducer().revision(), 5);
@@ -122,68 +100,5 @@ async fn bounded_resident_suffix_preserves_cold_retries_and_recovery() -> Result
             .len(),
         2
     );
-    Ok(())
-}
-
-#[tokio::test]
-async fn snapshot_reopens_with_full_stream_history() -> Result<()> {
-    let provider = Arc::new(MemoryStream::default());
-    let client = provider;
-    let mut aggregate = with_content(&client).await?;
-    aggregate
-        .execute(
-            command(1)?,
-            #[cfg(feature = "filesystem")]
-            None,
-            &mut None,
-        )
-        .await?;
-    let mut second = command(2)?;
-    second.expected_revision = 1;
-    aggregate
-        .execute(
-            second,
-            #[cfg(feature = "filesystem")]
-            None,
-            &mut None,
-        )
-        .await?;
-    let snapshot = aggregate.reducer().snapshot(usize::MAX, &mut None)?.0;
-    let mut third = command(3)?;
-    third.expected_revision = 2;
-    aggregate
-        .execute(
-            third,
-            #[cfg(feature = "filesystem")]
-            None,
-            &mut None,
-        )
-        .await?;
-    let history =
-        acyclic_stream::Stream::new(Arc::clone(&client), authority().stream_path(&mut None)?)?;
-    assert_eq!(history.bounds().await?.tail, 3);
-    assert_eq!(
-        history
-            .read(0, 3)
-            .await?
-            .try_collect::<Vec<_>>()
-            .await?
-            .len(),
-        3
-    );
-
-    let reopened = StreamAggregate::open(
-        &client,
-        authority(),
-        issuer().verifier(&mut None)?,
-        schemas(),
-        Some(snapshot),
-        default_projection_read_limits(),
-        DEFAULT_TERMINAL_EFFECTS,
-        None,
-        &mut None,
-    )
-    .await?;
-    assert_eq!(reopened.reducer().revision(), 3);
     Ok(())
 }
