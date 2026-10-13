@@ -24,7 +24,7 @@ jobs:
             const { owner, repo } = context.repo;
 
             const files = await github.paginate(github.rest.pulls.listFiles, { owner, repo, pull_number: pr.number });
-            const readmes = files.map(f => f.filename).filter(f => /(^|\/)README[^/]*$/i.test(f));
+            const readmes = files.map(f => f.filename).filter(f => /(^|\/)README(\.[A-Za-z]+)?$/i.test(f));
             if (readmes.length === 0) return core.info('No README changes.');
             core.info(`README changes: ${readmes.join(', ')}`);
 
