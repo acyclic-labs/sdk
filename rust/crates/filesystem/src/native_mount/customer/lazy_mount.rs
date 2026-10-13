@@ -88,7 +88,11 @@ where
         before_publication: F,
     ) -> Result<crate::NativePublicationSnapshot, NativeMountPublicationFailure<E>>
     where
-        E: From<MountLifecycleError> + From<MountSourceError> + From<crate::FsError> + Send + 'static,
+        E: From<MountLifecycleError>
+            + From<MountSourceError>
+            + From<crate::FsError>
+            + Send
+            + 'static,
         F: for<'m> FnMut(&'m NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
@@ -143,7 +147,11 @@ where
         before_publication: F,
     ) -> impl Future<Output = Result<crate::LazySnapshotRef, E>> + Send + 'a
     where
-        E: From<MountLifecycleError> + From<MountSourceError> + From<crate::FsError> + Send + 'static,
+        E: From<MountLifecycleError>
+            + From<MountSourceError>
+            + From<crate::FsError>
+            + Send
+            + 'static,
         F: for<'m> FnMut(&'m NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
@@ -305,10 +313,10 @@ where
             drop(owner.take());
             Ok(proof)
         })();
-        if result.is_err() {
-            if let Some(session) = owner.as_mut() {
-                session.record_measured_cleanup_failure();
-            }
+        if result.is_err()
+            && let Some(session) = owner.as_mut()
+        {
+            session.record_measured_cleanup_failure();
         }
         result
     }

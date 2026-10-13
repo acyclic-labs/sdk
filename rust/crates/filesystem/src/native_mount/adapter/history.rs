@@ -30,7 +30,8 @@ impl<A, O> CheckoutMountSource<A, O> {
         if !self.folds_names() {
             return Ok(None);
         }
-        let result = carrier.with_work(|leaf| {
+
+        carrier.with_work(|leaf| {
             let mut carrier = NativeDemandCarrier::Borrowed(leaf);
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let mut components = inputs.vec(path.components().len())?;
@@ -82,7 +83,6 @@ impl<A, O> CheckoutMountSource<A, O> {
             let bytes = inputs.bytes;
             inputs.retain();
             Ok(Some((MountPath { components }, bytes)))
-        });
-        result
+        })
     }
 }

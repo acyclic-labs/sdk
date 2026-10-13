@@ -321,37 +321,35 @@ where
                 drop(file);
             }
             #[cfg(any(target_os = "macos", windows))]
-            if cloned {
-                if mode == MaterializeMode::DurableOutput {
-                    #[cfg(target_os = "macos")]
-                    let file = host_root
-                        .0
-                        .open_file(super::work::host_path(&host_path.0), &mut work)
-                        .map_err(MaterializeError::from)?
-                        .into_std();
-                    #[cfg(windows)]
-                    let file = host_root
-                        .0
-                        .open_file(
-                            &host_path.0,
-                            windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0),
-                            &mut work,
-                        )
-                        .map_err(MaterializeError::from)?
-                        .into_std();
-                    let meter = receipt.custody.work().runtime_meter();
-                    let file = acyclic_native_runtime::NativeFile::from_file(
-                        file,
-                        Some(acyclic_native_runtime::NativeFileMeter::Owned(meter)),
+            if cloned && mode == MaterializeMode::DurableOutput {
+                #[cfg(target_os = "macos")]
+                let file = host_root
+                    .0
+                    .open_file(super::work::host_path(&host_path.0), &mut work)
+                    .map_err(MaterializeError::from)?
+                    .into_std();
+                #[cfg(windows)]
+                let file = host_root
+                    .0
+                    .open_file(
+                        &host_path.0,
+                        windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0),
+                        &mut work,
                     )
-                    .map_err(|(error, file)| {
-                        drop(file);
-                        error
-                    })
-                    .map_err(MaterializeError::from)?;
-                    sync_generation_file(&file, receipt, before_effect).await?;
+                    .map_err(MaterializeError::from)?
+                    .into_std();
+                let meter = receipt.custody.work().runtime_meter();
+                let file = acyclic_native_runtime::NativeFile::from_file(
+                    file,
+                    Some(acyclic_native_runtime::NativeFileMeter::Owned(meter)),
+                )
+                .map_err(|(error, file)| {
                     drop(file);
-                }
+                    error
+                })
+                .map_err(MaterializeError::from)?;
+                sync_generation_file(&file, receipt, before_effect).await?;
+                drop(file);
             }
             account_file(receipt, logical_bytes, 0)?;
             #[cfg(any(target_os = "macos", windows))]

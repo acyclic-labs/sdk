@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) struct ProofContext<'a, S> {
+pub(crate) struct ProofContext<'a, S> {
     store: &'a S,
     limits: ClosureLimits,
     objects: ProofVec<'a, ObjectId>,
@@ -12,7 +12,7 @@ pub(super) struct ProofContext<'a, S> {
 }
 
 impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
-    pub(super) fn new(store: &'a S, limits: ClosureLimits, meter: ProofMeter<'a>) -> Self {
+    pub(crate) fn new(store: &'a S, limits: ClosureLimits, meter: ProofMeter<'a>) -> Self {
         Self {
             store,
             limits,
@@ -46,7 +46,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         objects.into_parts()
     }
 
-    pub(super) async fn prove(
+    pub(crate) async fn prove(
         &mut self,
         generation_root: ObjectId,
     ) -> Result<(GenerationProof, ProofGuard), crate::FsError> {

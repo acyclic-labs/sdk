@@ -204,7 +204,7 @@ where
                 if !acknowledged.is_some_and(|snapshot| {
                     snapshot.operation() == Some(operation) && snapshot.generation() == generation
                 }) {
-                    return Err(MountSourceError::Indeterminate.into());
+                    return Err(MountSourceError::Indeterminate);
                 }
             }
             self.lazy

@@ -154,7 +154,7 @@ pub enum ClosureError {
     #[error(transparent)]
     BlobRead(#[from] crate::kernel::BlobReadError),
 }
-fn closure_error(error: crate::FsError) -> ClosureError {
+pub(crate) fn closure_error(error: crate::FsError) -> ClosureError {
     match error {
         crate::FsError::Closure(error) => error,
         crate::FsError::Object(error) => ClosureError::Storage(error),
@@ -176,10 +176,10 @@ fn closure_error(error: crate::FsError) -> ClosureError {
 }
 
 mod memory;
-pub(crate) use memory::ProofGuard;
-use memory::*;
+pub(crate) use memory::{ProofGuard, ProofMeter};
+use memory::{ProofVec, map_get, map_insert, set_insert};
 mod walk;
-use walk::*;
+pub(crate) use walk::ProofContext;
 
 /// Proves the complete immutable object closure and namespace/file-table consistency.
 pub async fn prove_generation_closure<S: crate::AsyncObjectStore>(
@@ -189,20 +189,6 @@ pub async fn prove_generation_closure<S: crate::AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<GenerationProof, GenerationProofFailure> {
-    let (proof, guard) =
-        prove_generation_closure_owned_async(store, generation_root, limits, budget, cancellation)
-            .await?;
-    drop(guard);
-    Ok(proof)
-}
-
-pub(crate) async fn prove_generation_closure_owned_async<S: crate::AsyncObjectStore>(
-    store: &S,
-    generation_root: ObjectId,
-    limits: ClosureLimits,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<(GenerationProof, ProofGuard), GenerationProofFailure> {
     if generation_root.kind != ObjectKind::GenerationRoot {
         return Err(OperationFailure::before_work(ClosureError::WrongObjectKind));
     }
@@ -215,30 +201,14 @@ pub(crate) async fn prove_generation_closure_owned_async<S: crate::AsyncObjectSt
         ));
     }
     let meter = ProofMeter::standalone(budget, cancellation)
-        .map_err(|error| OperationFailure::new(closure_error(error), WorkCounters::default()))?;
-    let mut context = ProofContext::new(store, limits, meter);
-    context
+        .map_err(|error| OperationFailure::new(closure_error(error), WorkCounters::UNCHARGED))?;
+    let result = ProofContext::new(store, limits, meter.clone())
         .prove(generation_root)
-        .await
-        .map_err(|error| OperationFailure::new(closure_error(error), context.meter.work()))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) async fn prove_generation_closure_with_native_work<S: crate::AsyncObjectStore>(
-    store: &S,
-    generation_root: ObjectId,
-    limits: ClosureLimits,
-    original: &crate::NativeMaterializationWork,
-    cancellation: &CancellationToken,
-) -> Result<(GenerationProof, crate::NativeAllocation), crate::FsError> {
-    let meter = ProofMeter::Native {
-        original,
-        cancellation,
-    };
-    let mut context = ProofContext::new(store, limits, meter);
-    let mut owned = context.prove(generation_root).await?;
-    let allocation = owned.1.take_native()?;
-    Ok((owned.0, allocation))
+        .await;
+    let (proof, guard) =
+        result.map_err(|error| OperationFailure::new(closure_error(error), meter.work()))?;
+    drop(guard);
+    Ok(proof)
 }
 
 #[cfg(feature = "s3-http")]
