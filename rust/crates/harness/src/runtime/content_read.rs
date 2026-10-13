@@ -1,3 +1,4 @@
+use super::content_write::bound_content_writer;
 use super::*;
 use crate::conversation::BoundedContentFuture;
 use crate::conversation::{ContentIo, content_error};
@@ -5,11 +6,11 @@ use crate::wire::ErrorCode;
 use acyclic_stream::OwnedBytes;
 
 #[cfg(feature = "filesystem")]
-pub(super) struct ContextContentVerifier<P: acyclic_stream::StreamProvider> {
-    pub(super) context: Arc<TaskContext>,
-    pub(super) owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
+struct ContextContentVerifier<P: acyclic_stream::StreamProvider> {
+    context: Arc<TaskContext>,
+    owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
     #[cfg(not(target_arch = "wasm32"))]
-    pub(super) _custody: Option<acyclic_fs::NativeAllocation>,
+    _custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 /// Retains an issued context's content reader under its exact original owner.
@@ -52,29 +53,6 @@ where
 }
 
 #[cfg(feature = "filesystem")]
-impl<P> ContextContentVerifier<P>
-where
-    P: acyclic_stream::StreamProvider,
-{
-    pub(super) async fn authorize(
-        &self,
-        reference: &FileRef,
-        io: Option<&ContentIo>,
-    ) -> Result<()> {
-        self.owner.require_task_context_binding(&self.context, io)?;
-        self.owner.validate_input_file(reference, io)?;
-        let mut history = io.map(ContentIo::history_io);
-        self.owner
-            .verify_read_access(
-                &mut history
-                    .as_mut()
-                    .map(|history| history as &mut dyn crate::store::HistoryIo),
-            )
-            .await
-    }
-}
-
-#[cfg(feature = "filesystem")]
 impl<P> ContentResidencyVerifier for ContextContentVerifier<P>
 where
     P: acyclic_stream::StreamProvider + 'static,
@@ -113,9 +91,15 @@ where
                 ));
             }
             self.supports_read(reference.volume(), io)?;
-            self.authorize(reference, io).await?;
+            let mut history = io.map(ContentIo::history_io);
+            let mut history = history
+                .as_mut()
+                .map(|history| history as &mut dyn crate::store::HistoryIo);
+            self.owner.validate_input_file(reference, io)?;
+            self.owner.verify_read_access(&mut history).await?;
             let bytes = self.context.read_file(reference, io).await?;
-            self.authorize(reference, io).await?;
+            self.owner.validate_input_file(reference, io)?;
+            self.owner.verify_read_access(&mut history).await?;
             Ok(bytes)
         })
     }
@@ -336,7 +320,7 @@ impl TaskContext {
         io: Option<&ContentIo>,
         scope: &RuntimeScope,
     ) -> Result<(Option<FileRef>, u64)> {
-        let writer = self.bound_content_writer(self.content_binding(None), scope, io)?;
+        let writer = bound_content_writer(self.content_binding(None), scope, io)?;
         if io.is_some() {
             self.scope.verify_created_write(writer.volume(), io).await?;
         }
