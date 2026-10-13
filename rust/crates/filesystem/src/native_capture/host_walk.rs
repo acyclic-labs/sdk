@@ -5,14 +5,7 @@ pub(super) fn capture_stat(
     path: &CaptureHostPath,
     meter: &CaptureWorkScope,
 ) -> Result<HostStat, DemandError> {
-    #[cfg(unix)]
-    {
-        root.stat(path, &mut meter.native.clone())
-    }
-    #[cfg(windows)]
-    {
-        root.stat(path, &mut meter.native.clone())
-    }
+    root.stat(path, &mut meter.native.clone())
 }
 
 pub(super) fn collect_host_walk_measured(
@@ -30,20 +23,11 @@ pub(super) fn collect_host_walk_measured(
     pending.push((host_root, volume_root));
     while let Some((host_parent, volume_parent)) = pending.pop() {
         meter.native.clone().check().map_err(capture_demand_error)?;
-        #[cfg(unix)]
-        let (mut reader, reader_allocation) = root
-            .read_dir_stats(&host_parent, &mut meter.native.clone())
-            .map_err(capture_demand_error)?;
-        #[cfg(windows)]
+
         let (mut reader, reader_allocation) = root
             .read_dir_stats(&host_parent, &mut meter.native.clone())
             .map_err(capture_demand_error)?;
         loop {
-            #[cfg(unix)]
-            let entry = reader
-                .next(&mut meter.native.clone())
-                .map_err(capture_demand_error)?;
-            #[cfg(windows)]
             let entry = reader
                 .next(&mut meter.native.clone())
                 .map_err(capture_demand_error)?;
@@ -240,13 +224,13 @@ pub(super) fn classify_host_observation(
 }
 
 pub(super) fn insert_host_observation(
-    observed: &mut CaptureMap<Option<HostStat>>,
+    observed: &mut Vec<(NamespacePath, Option<HostStat>)>,
     path: NamespacePath,
     metadata: HostStat,
     maximum: usize,
     meter: &CaptureWorkScope,
 ) -> Result<(), CaptureError> {
-    if !observed.contains_key_measured(&path, meter)? && observed.len() >= maximum {
+    if capture_position(observed, &path, meter)?.is_err() && observed.len() >= maximum {
         return Err(CaptureError::InvalidOptions);
     }
     capture_charge(
@@ -256,7 +240,7 @@ pub(super) fn insert_host_observation(
             ..WorkCounters::UNCHARGED
         },
     )?;
-    observed.insert_measured(path, Some(metadata), meter)?;
+    capture_replace(observed, path, Some(metadata), meter)?;
     Ok(())
 }
 
@@ -268,7 +252,7 @@ pub(super) fn collect_host_subtree_roots(
     maximum: usize,
     roots: &[NamespacePath],
     policy: &CapturePolicy,
-    observed: &mut CaptureMap<Option<HostStat>>,
+    observed: &mut Vec<(NamespacePath, Option<HostStat>)>,
     meter: &CaptureWorkScope,
 ) -> Result<(), CaptureError> {
     for root in roots {

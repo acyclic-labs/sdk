@@ -24,23 +24,10 @@ impl ContentPublisher for MemoryContentPublisher {
         io: Option<&'a crate::filesystem::PreparationIo>,
     ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
         BoundedContentFuture::new(io, || async move {
-            let persisted = self
+            let (persisted, hold) = self
                 .files
-                .publish(
-                    operation_id,
-                    None,
-                    path,
-                    bytes,
-                    media_type,
-                    display_name,
-                    io,
-                    None,
-                    None,
-                )
+                .stage_once(operation_id, path, bytes, media_type, display_name, io)?
                 .await?;
-            let hold = io
-                .map(|io| io.guard_owned(persisted.logical_owned_bytes()?))
-                .transpose()?;
             self.retain(&persisted, bytes, io)?;
             Ok((persisted, hold))
         })
@@ -64,23 +51,10 @@ impl ContentPublisher for MemoryContentPublisher {
         io: Option<&'a crate::filesystem::PreparationIo>,
     ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
         BoundedContentFuture::new(io, || async move {
-            let persisted = self
+            let (persisted, hold) = self
                 .files
-                .publish(
-                    operation_id,
-                    Some(source),
-                    source.path(),
-                    bytes,
-                    source.descriptor().media_type(),
-                    source.display_name(),
-                    io,
-                    None,
-                    None,
-                )
+                .stage_at(operation_id, source, bytes, io)?
                 .await?;
-            let hold = io
-                .map(|io| io.guard_owned(persisted.logical_owned_bytes()?))
-                .transpose()?;
             self.retain(&persisted, bytes, io)?;
             Ok((persisted, hold))
         })

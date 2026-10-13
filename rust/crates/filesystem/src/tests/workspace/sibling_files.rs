@@ -22,15 +22,12 @@ async fn sibling_forks_adding_distinct_files_join_in_sequence() -> Result<(), Bo
     second.write_text("/b.rs", "b\n").await?;
 
     for (label, fork) in [("first", &first), ("second", &second)] {
-        let plan = fork.join_into(&main).plan().await?;
+        let plan = fork.join_into(&main).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let outcome = plan
-            .apply(
-                ApplyOptions {
+            .apply(ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::new(),
-                },
-                crate::PublicationPermit::Unrestricted,
-            )
+                }, BTreeMap::new(), crate::PublicationPermit::Unrestricted)
             .await?;
         let applied = match outcome {
             JoinOutcome::Applied(_) => true,
@@ -80,16 +77,13 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
     }
     let mut outcomes = Vec::new();
     for fork in &forks {
-        let plan = fork.join_into(&main).plan().await?;
+        let plan = fork.join_into(&main).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         outcomes.push(
             match plan
-                .apply(
-                    ApplyOptions {
+                .apply(ApplyOptions {
                         if_target: plan.target_head(),
                         idempotency_key: IdempotencyKey::new(),
-                    },
-                    crate::PublicationPermit::Unrestricted,
-                )
+                    }, BTreeMap::new(), crate::PublicationPermit::Unrestricted)
                 .await?
             {
                 JoinOutcome::Applied(_) => Vec::new(),
@@ -113,15 +107,12 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
     )
     .await?;
     fork.write_text("/same.rs", "same\n").await?;
-    let plan = fork.join_into(&main).plan().await?;
+    let plan = fork.join_into(&main).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     match plan
-        .apply(
-            ApplyOptions {
+        .apply(ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new(),
-            },
-            crate::PublicationPermit::Unrestricted,
-        )
+            }, BTreeMap::new(), crate::PublicationPermit::Unrestricted)
         .await?
     {
         JoinOutcome::NoChanges(_) => {}

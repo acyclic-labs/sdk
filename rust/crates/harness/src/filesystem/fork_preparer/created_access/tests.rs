@@ -102,7 +102,7 @@ async fn source_requires_its_current_protected_original_root_record() -> Result<
     let bare = crate::filesystem::root_source::FsRootProjectSourceProvider::new(
         fixture.filesystem.clone(),
         creator.issuer.audience(),
-        fixture.root,
+        fixture.root, None,
         Some(&PreparationIo::from_native_work(&work)?),
     )?;
     let selection = ProjectSourceSnapshot {
@@ -127,7 +127,7 @@ async fn source_requires_its_current_protected_original_root_record() -> Result<
             Err(_) => true,
         }
     );
-    let policy = bare.with_bootstrap_source_with_native_work(token, &work)?;
+    let policy = crate::filesystem::root_source::FsRootProjectSourceProvider::new(fixture.filesystem.clone(), creator.issuer.audience(), fixture.root, Some(token), Some(&PreparationIo::from_native_work(&work)?))?;
     policy
         .verify_with_native_work(context(), &selection, &work)?
         .await?;

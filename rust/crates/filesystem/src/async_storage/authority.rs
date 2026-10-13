@@ -11,11 +11,13 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
     /// Creates an authority, sealing publication and recovery.
     fn create_authority<G: AuthorityGuard>(
         &self,
-        authority: AuthorityId,
-        epoch: Epoch,
-        work: &mut AuthorityWork<'_>,
-        guard: Option<&mut G>,
-    ) -> impl Future<Output = Result<CreateAuthorityOutcome, AuthorityError<G::Error>>> + ProviderTask;
+        _authority: AuthorityId,
+        _epoch: Epoch,
+        _work: &mut AuthorityWork<'_>,
+        _guard: Option<&mut G>,
+    ) -> impl Future<Output = Result<CreateAuthorityOutcome, AuthorityError<G::Error>>> + ProviderTask {
+        std::future::ready(Err(crate::AuthorityStoreError::Retired.into()))
+    }
 
     /// Creates an authority rooted at one source generation.
     fn fork_authority<G: AuthorityGuard>(
@@ -103,10 +105,12 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
     /// Compares and appends under the caller's publication permit and guard.
     fn compare_and_append<G: AuthorityGuard>(
         &self,
-        request: GuardedAppend,
-        work: &mut AuthorityWork<'_>,
-        guard: Option<&mut G>,
-    ) -> impl Future<Output = Result<AppendOutcome, AuthorityError<G::Error>>> + ProviderTask;
+        _request: GuardedAppend,
+        _work: &mut AuthorityWork<'_>,
+        _guard: Option<&mut G>,
+    ) -> impl Future<Output = Result<AppendOutcome, AuthorityError<G::Error>>> + ProviderTask {
+        std::future::ready(Err(crate::AuthorityStoreError::Retired.into()))
+    }
 
     /// Reads an existing reservation for the exact operation identity.
     fn publication_reservation(
@@ -193,19 +197,23 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
     /// Advances a writer fence.
     fn fence(
         &self,
-        authority: AuthorityId,
-        expected: Head,
-        work: &mut AuthorityWork<'_>,
-    ) -> impl Future<Output = Result<FenceOutcome, crate::AuthorityStoreError>> + ProviderTask;
+        _authority: AuthorityId,
+        _expected: Head,
+        _work: &mut AuthorityWork<'_>,
+    ) -> impl Future<Output = Result<FenceOutcome, crate::AuthorityStoreError>> + ProviderTask {
+        std::future::ready(Err(crate::AuthorityStoreError::Retired))
+    }
 
     /// Resolves an idempotent operation.
     fn find_operation(
         &self,
-        authority: AuthorityId,
-        operation: OperationId,
-        work: &mut AuthorityWork<'_>,
+        _authority: AuthorityId,
+        _operation: OperationId,
+        _work: &mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<Option<crate::DurableCommit>, crate::AuthorityStoreError>>
-    + ProviderTask;
+    + ProviderTask {
+        std::future::ready(Err(crate::AuthorityStoreError::Retired))
+    }
 }
 
 }

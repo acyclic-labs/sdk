@@ -20,7 +20,7 @@ mod accounting;
 mod capture_policy_tests;
 mod entry;
 mod model;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod native_view_baseline_tests;
 use accounting::*;
 mod sparse;
@@ -53,13 +53,13 @@ use metadata::*;
 mod host_file_race_tests;
 #[cfg(test)]
 mod native_range_tests;
-#[cfg(test)]
+#[cfg(all(test, unix, feature = "native-mount"))]
 mod root_capture_regression;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod unix_name_tests;
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod windows_name_tests;
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod windows_sparse_tests;
 
 #[cfg(feature = "native-mount")]

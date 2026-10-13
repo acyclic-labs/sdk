@@ -11,23 +11,13 @@ pub(super) fn authority_corrupt(
     }
 }
 
-pub(super) fn authority_stream_error(
-    error: &AuthorityStoreError,
-) -> Option<&acyclic_stream::StreamError> {
-    match error {
-        AuthorityStoreError::NativeStream(error) => Some(error),
-        _ => None,
-    }
-}
-
 pub(super) fn authority_missing(error: &AuthorityStoreError) -> bool {
-    matches!(error, AuthorityStoreError::Missing)
-        || matches!(
-            authority_stream_error(error),
-            Some(acyclic_stream::StreamError::NotFound)
-        )
+    matches!(
+        error,
+        AuthorityStoreError::Missing
+            | AuthorityStoreError::NativeStream(acyclic_stream::StreamError::NotFound)
+    )
 }
-
 pub(super) fn authority_decode_borrowed<'a>(
     authority: AuthorityId,
     encoded: &'a [u8],
@@ -72,66 +62,25 @@ pub(super) enum AuthorityRead {
     Native((acyclic_stream::NativeRecordStream, ProviderAllocation)),
 }
 
-#[derive(Clone, Copy, PartialEq)]
-pub(super) enum ReadKind {
-    Exact,
-    Replay,
-    Accounting,
-}
-
 impl AuthorityRead {
     pub(super) async fn next(
         &mut self,
-        meter: &mut AuthorityWork<'_>,
-        kind: ReadKind,
+        work: &AuthorityWork<'_>,
     ) -> Result<Option<(acyclic_stream::Record, ProviderAllocation)>, AuthorityStoreError> {
-        if kind == ReadKind::Replay {
-            meter.check()?;
-        }
-        if kind == ReadKind::Accounting {
-            meter
-                .cancellation
-                .check()
-                .map_err(|_| AuthorityStoreError::Cancelled)?;
-        }
-        let value = match self {
+        match self {
             Self::Plain(stream) => stream
                 .next()
                 .await
                 .map(|record| record.map(|value| (value, None)).map_err(map_stream_error))
-                .transpose()?,
+                .transpose(),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native(stream) => stream
                 .0
                 .next()
                 .await
-                .map(|record| meter.result(record))
-                .transpose()?,
-        };
-        if kind == ReadKind::Replay {
-            meter.check()?;
+                .map(|record| work.result(record))
+                .transpose(),
         }
-        if let Some(record) = &value {
-            let delta = WorkCounters {
-                authority_records_read: 1,
-                authority_bytes_read: record.0.value.len() as u64,
-                ..WorkCounters::default()
-            };
-            if kind != ReadKind::Replay && !meter.is_native() {
-                meter.work = meter.spent().checked_add(delta)?;
-                meter
-                    .cancellation
-                    .check()
-                    .map_err(|_| AuthorityStoreError::Cancelled)?;
-                if kind == ReadKind::Exact {
-                    meter.spent().verify(meter.budget)?;
-                }
-            } else {
-                meter.admit(delta)?;
-                meter.charge(delta)?;
-            }
-        }
-        Ok(value)
     }
 }
 
@@ -139,79 +88,29 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
     pub(super) async fn authority_read(
         &self,
         request: acyclic_stream::ReadRequest,
-        meter: &mut AuthorityWork<'_>,
-        kind: ReadKind,
+        work: &AuthorityWork<'_>,
     ) -> Result<AuthorityRead, AuthorityStoreError> {
-        if kind == ReadKind::Replay || meter.is_native() {
-            meter.check()?;
-        }
-        let admission = WorkCounters {
-            authority_records_read: u64::from(request.limit),
-            authority_bytes_read: STREAM_RECORD_LIMIT.saturating_mul(u64::from(request.limit)),
-            backend_read_operations: u64::from(!meter.is_native()),
-            ..WorkCounters::default()
-        };
         #[cfg(not(target_arch = "wasm32"))]
-        if meter.is_native() {
-            if kind == ReadKind::Exact {
-                meter.admit(admission)?;
-            }
-            let result = self
-                .provider
-                .native_read(request, meter.native_meter())
-                .await;
-            let stream = meter.result(result).map(AuthorityRead::Native)?;
-            if kind == ReadKind::Exact {
-                meter.check()?;
-            }
-            return Ok(stream);
+        if work.is_native() {
+            return work
+                .result(
+                    self.provider
+                        .native_read(request, work.native_meter())
+                        .await,
+                )
+                .map(AuthorityRead::Native);
         }
-        if kind != ReadKind::Replay {
-            if kind == ReadKind::Exact {
-                let peak = meter
-                    .allocations
-                    .live_bytes()
-                    .checked_add(STREAM_RECORD_LIMIT)
-                    .ok_or(crate::WorkError::Overflow)?;
-                meter.admit(WorkCounters {
-                    peak_allocation_bytes: peak,
-                    ..WorkCounters::default()
-                })?;
-            }
-            meter.admit(admission)?;
-            meter.work.backend_read_operations += 1;
-        } else {
-            meter.admit(admission)?;
-            meter.charge(WorkCounters {
-                backend_read_operations: 1,
-                ..WorkCounters::default()
-            })?;
-        }
-        let result = self
-            .provider
+        self.provider
             .read(request)
             .await
             .map(AuthorityRead::Plain)
-            .map_err(map_stream_error);
-        if kind != ReadKind::Replay {
-            let stream = result?;
-            if kind == ReadKind::Exact {
-                meter
-                    .cancellation
-                    .check()
-                    .map_err(|_| AuthorityStoreError::Cancelled)?;
-            }
-            Ok(stream)
-        } else {
-            meter.check()?;
-            result
-        }
+            .map_err(map_stream_error)
     }
 
     pub(super) async fn authority_inspect(
         &self,
         key: acyclic_stream::IdempotencyKey,
-        meter: &mut AuthorityWork<'_>,
+        work: &mut AuthorityWork<'_>,
     ) -> Result<
         (
             Option<acyclic_stream::IdempotencyObservation>,
@@ -219,29 +118,136 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         ),
         AuthorityStoreError,
     > {
-        meter.check()?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if meter.is_native() {
-            let result = self
-                .provider
-                .native_inspect_idempotency(key, meter.native_meter())
-                .await;
-            let observation = meter.result(result)?;
-            meter.check()?;
-            return Ok(observation);
+        work.check()?;
+        let result = 'inspect: {
+            #[cfg(not(target_arch = "wasm32"))]
+            if work.is_native() {
+                break 'inspect work.result(
+                    self.provider
+                        .native_inspect_idempotency(key, work.native_meter())
+                        .await,
+                );
+            }
+            work.charge(WorkCounters {
+                backend_read_operations: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+            self.provider
+                .inspect_idempotency(key)
+                .await
+                .map(|value| (value, None))
+                .map_err(map_stream_error)
+        };
+        // Native failures retain their original error before checking late cancellation.
+        if work.is_native() {
+            let output = result?;
+            work.check()?;
+            Ok(output)
+        } else {
+            work.check()?;
+            result
         }
-        meter.charge(WorkCounters {
-            backend_read_operations: 1,
-            ..WorkCounters::default()
+    }
+
+    pub(super) async fn record(
+        &self,
+        path: acyclic_stream::StreamPath,
+        from: u64,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(acyclic_stream::Record, ProviderAllocation), AuthorityStoreError> {
+        if !work.is_native() {
+            work.admit(WorkCounters {
+                peak_allocation_bytes: work
+                    .allocations
+                    .live_bytes()
+                    .checked_add(STREAM_RECORD_LIMIT)
+                    .ok_or(crate::WorkError::Overflow)?,
+                ..WorkCounters::UNCHARGED
+            })?;
+        }
+        work.admit(WorkCounters {
+            authority_records_read: 1,
+            authority_bytes_read: STREAM_RECORD_LIMIT,
+            backend_read_operations: u64::from(!work.is_native()),
+            ..WorkCounters::UNCHARGED
         })?;
-        let result = self
-            .provider
-            .inspect_idempotency(key)
-            .await
-            .map(|value| (value, None))
-            .map_err(map_stream_error);
-        meter.check()?;
-        result
+        work.record(WorkCounters {
+            backend_read_operations: u64::from(!work.is_native()),
+            ..WorkCounters::UNCHARGED
+        })?;
+        let mut stream = self
+            .authority_read(
+                acyclic_stream::ReadRequest {
+                    path,
+                    from,
+                    limit: 1,
+                },
+                work,
+            )
+            .await?;
+        if work.is_native() {
+            work.check()?;
+        }
+        work.cancellation
+            .check()
+            .map_err(|_| AuthorityStoreError::Cancelled)?;
+        let record = stream.next(work).await?.ok_or_else(|| {
+            authority_corrupt(
+                if work.is_native() {
+                    "Stream authority path is missing its record"
+                } else {
+                    "Stream returned an empty exact read"
+                },
+                work,
+            )
+        })?;
+        let completed = WorkCounters {
+            authority_records_read: 1,
+            authority_bytes_read: record.0.value.len() as u64,
+            ..WorkCounters::UNCHARGED
+        };
+        if work.is_native() {
+            work.admit(completed)?;
+            work.charge(completed)?;
+        } else {
+            work.record(completed)?;
+            work.cancellation
+                .check()
+                .map_err(|_| AuthorityStoreError::Cancelled)?;
+            work.spent().verify(work.budget)?;
+        }
+        if !work.is_native() && record.0.sequence != from {
+            return Err(authority_corrupt(
+                "Stream returned a non-contiguous record",
+                work,
+            ));
+        }
+        Ok(record)
+    }
+
+    pub(super) async fn tail(
+        &self,
+        path: acyclic_stream::StreamPath,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<u64, AuthorityStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if work.is_native() {
+            work.check()?;
+            return work
+                .result(self.provider.native_tail(path, work.native_meter()).await)
+                .map(|value| value.0);
+        }
+        let read = WorkCounters {
+            backend_read_operations: 1,
+            ..WorkCounters::UNCHARGED
+        };
+        work.admit(read)?;
+        work.record(read)?;
+        let result = self.provider.tail(path).await;
+        work.cancellation
+            .check()
+            .map_err(|_| AuthorityStoreError::Cancelled)?;
+        result.map_err(map_stream_error)
     }
 
     pub(super) async fn commit<G: AuthorityGuard>(
@@ -295,64 +301,5 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         result
             .map(|value| (value, None))
             .map_err(|error| AuthorityError::Authority(AuthorityStoreError::NativeStream(error)))
-    }
-
-    pub(super) async fn record(
-        &self,
-        path: acyclic_stream::StreamPath,
-        from: u64,
-        meter: &mut AuthorityWork<'_>,
-    ) -> Result<(acyclic_stream::Record, ProviderAllocation), AuthorityStoreError> {
-        let mut stream = self
-            .authority_read(
-                acyclic_stream::ReadRequest {
-                    path,
-                    from,
-                    limit: 1,
-                },
-                meter,
-                ReadKind::Exact,
-            )
-            .await?;
-        let record = stream.next(meter, ReadKind::Exact).await?.ok_or_else(|| {
-            if meter.is_native() {
-                AuthorityStoreError::CorruptStatic("Stream authority path is missing its record")
-            } else {
-                AuthorityStoreError::Corrupt("Stream returned an empty exact read".to_owned())
-            }
-        })?;
-        if !meter.is_native() && record.0.sequence != from {
-            return Err(authority_corrupt(
-                "Stream returned a non-contiguous record",
-                meter,
-            ));
-        }
-        Ok(record)
-    }
-
-    pub(super) async fn tail(
-        &self,
-        path: acyclic_stream::StreamPath,
-        meter: &mut AuthorityWork<'_>,
-    ) -> Result<u64, AuthorityStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if meter.is_native() {
-            meter.check()?;
-            let result = self.provider.native_tail(path, meter.native_meter()).await;
-            let tail = meter.result(result)?;
-            return Ok(tail.0);
-        }
-        let read = WorkCounters {
-            backend_read_operations: 1,
-            ..WorkCounters::UNCHARGED
-        };
-        meter.admit(read)?;
-        meter.record(read)?;
-        let result = self.provider.tail(path).await;
-        meter
-            .cancellation
-            .check()
-            .map_err(|_| AuthorityStoreError::Cancelled)?;
-        result.map_err(map_stream_error)
     }
 }

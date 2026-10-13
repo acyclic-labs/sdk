@@ -73,11 +73,11 @@ impl Clone for AgentHarness {
 impl ForkBinding {
     pub(super) fn new(
         preparer: Arc<dyn crate::fork::ForkPreparer>,
-        startup: StartupIo<'_>,
+        startup: Option<&crate::executor::PreparationIo>,
     ) -> Result<Self> {
         let (parent, revision) = preparer.parent_snapshot();
         if parent.kind != crate::core::AggregateKind::Conversation || revision == 0 {
-            return Err(native_startup::error(
+            return Err(crate::conversation::content_error(
                 startup,
                 crate::wire::ErrorCode::Invalid,
                 "fork preparer needs a bound parent conversation revision",
@@ -195,14 +195,14 @@ impl Bindings {
         }
         let native = task_original_work(startup)?;
         if self.fork_preparer.is_some() && !self.scope.grants().contains(capability::FORK_PUBLISH) {
-            return Err(native_startup::error(
+            return Err(crate::conversation::content_error(
                 startup,
                 crate::wire::ErrorCode::Unauthorized,
                 "fork preparer requires fork:publish in the root scope",
             ));
         }
         if self.execution.is_some() && self.durable_host.is_some() {
-            return Err(native_startup::error(
+            return Err(crate::conversation::content_error(
                 startup,
                 crate::wire::ErrorCode::Conflict,
                 "execution route and durable host are both bound",
@@ -212,12 +212,91 @@ impl Bindings {
             && self.execution.is_some()
             && (self.state.is_none() || self.spawner.is_none())
         {
-            return Err(native_startup::error(
+            return Err(crate::conversation::content_error(
                 startup,
                 crate::wire::ErrorCode::Unsupported,
                 "native route requires owned state and spawner bindings",
             ));
         }
+        let durable_ready = self.durable_host.is_some()
+            || self.execution.is_some()
+            || (self.state.is_some() && self.spawner.is_some());
+        if self.concurrency == 0 {
+            return Err(crate::conversation::content_error(
+                startup,
+                crate::wire::ErrorCode::Invalid,
+                "runtime concurrency must be positive",
+            ));
+        }
+        crate::model::charge_items(startup, 1)?;
+        crate::executor::with_history_io(startup, |work| self.scope.run_limits().validate(work))?;
+        let mut policy_identity = self
+            .policy
+            .as_ref()
+            .filter(|_| native.is_none())
+            .map(|policy| policy.identity());
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let (Some(work), Some(policy)) = (native, &self.policy) {
+            policy.supports_native_policy(work)?;
+            let identity = policy.identity_with_native_work(work)?;
+            validate_policy_identity_with_native_work(&identity.0, &identity.1, work)?;
+            startup
+                .expect("native startup observer")
+                .absorb_native_custody(identity.1)?;
+            policy_identity = Some(identity.0);
+        }
+        if native.is_none()
+            && let Some(identity) = &policy_identity
+        {
+            validate_policy_identity(identity, startup)?;
+        }
+        if self.resumable_tools.definitions().next().is_some() && !durable_ready {
+            return Err(crate::conversation::content_error(
+                startup,
+                crate::wire::ErrorCode::Invalid,
+                "resumable tools require durable task admission and state",
+            ));
+        }
+        for definition in self.resumable_tools.definitions() {
+            crate::model::charge_items(startup, 1)?;
+            if let Some(adapter) =
+                self.tools
+                    .get(&definition.name, Some(&definition.revision), startup)?
+            {
+                let pinned = crate::executor::with_history_io(startup, |work| {
+                    self.resumable_tools
+                        .get(&definition.name, &definition.revision, work)
+                })?
+                .ok_or_else(|| {
+                    crate::conversation::content_error(
+                        startup,
+                        crate::wire::ErrorCode::Invalid,
+                        "resumable registry differs from its definitions",
+                    )
+                })?;
+                let machine = task_machine_identity(pinned.machine.as_ref(), startup)?;
+                if adapter.definition != *definition
+                    || adapter.executor.resumable_machine_identity(native)? != Some(machine)
+                {
+                    return Err(crate::conversation::content_error(
+                        startup,
+                        crate::wire::ErrorCode::Conflict,
+                        "live and resumable implementations differ",
+                    ));
+                }
+            }
+        }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let dependency_io = native
+            .map(crate::filesystem::PreparationIo::from_native_work)
+            .transpose()?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let dependency_observer = dependency_io.as_ref();
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let dependency_observer = None;
+        validate_task_dependencies(&self, dependency_observer)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        drop(dependency_io);
         let execution = self.execution;
         let bound_state = self
             .state
@@ -225,10 +304,6 @@ impl Bindings {
         let bound_spawner = self
             .spawner
             .or_else(|| execution.as_ref().map(|route| route.spawner()));
-        let host_available = self.durable_host.is_some();
-        let state_available = host_available || bound_state.is_some();
-        let spawner_available = host_available || bound_spawner.is_some();
-        let durable_ready = host_available || (state_available && spawner_available);
         let Self {
             tasks,
             tools,
@@ -245,92 +320,7 @@ impl Bindings {
             workspaces,
             ..
         } = self;
-        if concurrency == 0 {
-            return Err(native_startup::error(
-                startup,
-                crate::wire::ErrorCode::Invalid,
-                "runtime concurrency must be positive",
-            ));
-        }
-        scope.run_limits().validate_observed(startup)?;
         let concurrency = scope.concurrency_bound(concurrency);
-        let mut policy_identity = policy
-            .as_ref()
-            .filter(|_| native.is_none())
-            .map(|policy| policy.identity());
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let (Some(work), Some(policy)) = (native, &policy) {
-            policy.supports_native_policy(work)?;
-            let identity = policy.identity_with_native_work(work)?;
-            validate_policy_identity_with_native_work(&identity.0, &identity.1, work)?;
-            startup
-                .expect("native startup observer")
-                .absorb_native_custody(identity.1)?;
-            policy_identity = Some(identity.0);
-        }
-        if native.is_none()
-            && let Some(identity) = &policy_identity
-        {
-            validate_policy_identity(identity, startup)?;
-        }
-        if resumable_tools.definitions().next().is_some() && !durable_ready {
-            return Err(native_startup::error(
-                startup,
-                crate::wire::ErrorCode::Invalid,
-                "resumable tools require durable task admission and state",
-            ));
-        }
-        for definition in resumable_tools.definitions() {
-            native_startup::item(startup, 0)?;
-            if let Some(adapter) =
-                tools.get(&definition.name, Some(&definition.revision), startup)?
-            {
-                let pinned = crate::executor::with_history_io(startup, |work| {
-                    resumable_tools.get(&definition.name, &definition.revision, work)
-                })?
-                .ok_or_else(|| {
-                    native_startup::error(
-                        startup,
-                        crate::wire::ErrorCode::Invalid,
-                        "resumable registry differs from its definitions",
-                    )
-                })?;
-                let machine = task_machine_identity(pinned.machine.as_ref(), startup)?;
-                if adapter.definition != *definition
-                    || adapter.executor.resumable_machine_identity(native)? != Some(machine)
-                {
-                    return Err(native_startup::error(
-                        startup,
-                        crate::wire::ErrorCode::Conflict,
-                        "live and resumable implementations differ",
-                    ));
-                }
-            }
-        }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let dependency_io = native
-            .map(crate::filesystem::PreparationIo::from_native_work)
-            .transpose()?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let dependency_observer = dependency_io.as_ref();
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let dependency_observer = None;
-        validate_task_dependencies(
-            &tasks,
-            &tools,
-            &resumable_tools,
-            &scope,
-            durable_ready,
-            state_available,
-            spawner_available,
-            interactions.is_some(),
-            content.as_ref(),
-            artifacts.as_ref(),
-            policy.is_some(),
-            dependency_observer,
-        )?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        drop(dependency_io);
         let spawner = bound_spawner.or_else(|| {
             host.as_ref()
                 .map(|host| Arc::clone(host) as Arc<dyn TaskSpawner>)
@@ -340,7 +330,7 @@ impl Bindings {
                 .map(|host| Arc::clone(host) as Arc<dyn TaskStateProvider>)
         });
         if spawner.is_some() && state.is_none() {
-            return Err(native_startup::error(
+            return Err(crate::conversation::content_error(
                 startup,
                 crate::wire::ErrorCode::Invalid,
                 "durable spawner requires a state/observation host",
@@ -360,7 +350,7 @@ impl Bindings {
             if !scope.grants().contains(capability::FORK_PUBLISH)
                 && !scope.grants().contains(capability::PROJECT_MERGE)
             {
-                return Err(native_startup::error(
+                return Err(crate::conversation::content_error(
                     startup,
                     crate::wire::ErrorCode::Unauthorized,
                     "project workspaces require fork:publish or project:merge",
@@ -373,7 +363,7 @@ impl Bindings {
             if workspaces.project().class() != crate::conversation::VolumeClass::Project
                 || workspaces.project().provider() != workspaces.provider()
             {
-                return Err(native_startup::error(
+                return Err(crate::conversation::content_error(
                     startup,
                     crate::wire::ErrorCode::Invalid,
                     "workspace binding is not a project",

@@ -12,6 +12,7 @@ use super::{
     ViewObserver, ViewOrigin, ViewStamp, create_metadata, metadata_or, system_time_ns,
 };
 use crate::kernel::{FileMetadata, MetadataField};
+use crate::materializer::NativeResourceCredit::{Copy, Items};
 use crate::model::AccessMode;
 use fuser::{
     BsdFileFlags, Config, CopyFileRangeFlags, Errno, FileAttr, FileHandle as FuseFileHandle,
@@ -74,7 +75,6 @@ fn pause_test_write() {
 const ROOT_INODE: u64 = 1;
 static ROOT_PATH: MountPath = MountPath::root();
 const CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
-const PAGE_STORE_LIMIT: u64 = 128 * 1024;
 const MAXIMUM_NEGATIVE_ENTRIES_PER_DIRECTORY: usize = 1024;
 const REQUESTED_CAPABILITIES: InitFlags = InitFlags::FUSE_DO_READDIRPLUS
     .union(InitFlags::FUSE_PARALLEL_DIROPS)
@@ -107,14 +107,10 @@ use state::*;
 mod core;
 pub use core::NativeMountWorkScope;
 use core::*;
-mod retirement;
-use retirement::*;
 mod errors;
 use errors::*;
 mod lookup;
 use lookup::*;
-mod mount;
-use mount::*;
 mod session;
 pub(super) use session::FuseSession;
 use session::*;

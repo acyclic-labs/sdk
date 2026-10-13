@@ -75,12 +75,12 @@ impl WasmTaskRuntime {
                 if let Some(graph_root) = graph_root {
                     source.with_project_source_policy(
                         owner.issuer.clone(),
-                        Arc::new(crate::filesystem::FsRootProjectSourceProvider::new(
+                        crate::filesystem::FsRootProjectSourceProvider::new(
                             filesystem.clone(),
                             &owner.issuer.audience(),
-                            graph_root,
+                            graph_root, None,
                             None,
-                        )?),
+                        )?,
                     )?;
                 }
                 Ok::<_, Error>(source)
