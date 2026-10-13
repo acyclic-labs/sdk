@@ -487,7 +487,7 @@ impl MemoryHarnessStorage {
         FilesystemContentVerifier::new(
             self.host.clone(),
             &self.issuer.verifier(&mut None).expect("verifier copy"),
-            &scope,
+            scope,
             self.maximum_file_bytes,
             None,
         )

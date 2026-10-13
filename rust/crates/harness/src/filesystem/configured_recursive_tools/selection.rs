@@ -141,7 +141,9 @@ where
         let project = self.project_generation(&caller.project, io).await?;
         let private = self.project_generation(&caller.private_volume, io).await?;
         let selected = arguments.source.unwrap_or(caller.task);
-        let source_read = if selected != caller.task {
+        let source_read = if selected == caller.task {
+            None
+        } else {
             let (issuer, provider) = self.project_policy.get().ok_or_else(|| {
                 failure(
                     io,
@@ -194,8 +196,6 @@ where
                     )
                     .await?,
             )
-        } else {
-            None
         };
         let limits = if io.is_some() {
             context.effective_scope().limits()

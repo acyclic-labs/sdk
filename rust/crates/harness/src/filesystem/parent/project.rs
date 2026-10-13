@@ -177,24 +177,21 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let cancellation = acyclic_fs::CancellationToken::new();
         #[cfg(not(target_arch = "wasm32"))]
         let native = native_io.is_some();
-        let io = match native_io {
-            Some(io) => io,
-            None => {
-                self.require(capability::PROJECT_MERGE, VolumeOperation::Write, None)?;
-                if !selected {
-                    ContentGrant::verify(
-                        &self.verifier,
-                        &self.scope,
-                        source,
-                        VolumeOperation::Read,
-                        u64::MAX,
-                        &mut None,
-                    )?;
-                }
-                source.validate(&mut None)?;
-                self.host.validate_provider(source.provider())?;
-                PreparationIo::for_unmeasured(&cancellation)?
+        let io = if let Some(io) = native_io { io } else {
+            self.require(capability::PROJECT_MERGE, VolumeOperation::Write, None)?;
+            if !selected {
+                ContentGrant::verify(
+                    &self.verifier,
+                    &self.scope,
+                    source,
+                    VolumeOperation::Read,
+                    u64::MAX,
+                    &mut None,
+                )?;
             }
+            source.validate(&mut None)?;
+            self.host.validate_provider(source.provider())?;
+            PreparationIo::for_unmeasured(&cancellation)?
         };
         guard().await?;
         let source_ref =
@@ -571,4 +568,4 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     }
 }
 
-use crate::executor::{stock_boundary, stock_string_copy};
+use crate::executor::stock_boundary;

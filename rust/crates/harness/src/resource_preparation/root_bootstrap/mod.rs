@@ -24,11 +24,11 @@ impl<'a> RootBootstrapContentContext<'a> {
     pub const fn owner(&self) -> &'a Authority {
         self.owner
     }
-    /// Canonical RootBind audience.
+    /// Canonical `RootBind` audience.
     pub fn audience(&self) -> &'a Authority {
         self.binding.audience()
     }
-    /// Canonical RootBind agent.
+    /// Canonical `RootBind` agent.
     pub fn agent(&self) -> AgentId {
         self.binding.agent()
     }

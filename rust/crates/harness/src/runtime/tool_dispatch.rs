@@ -250,15 +250,14 @@ impl TaskContext {
         }
         let future = policy.evaluate(invocation, scope, io.as_ref())?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = work {
-            if !matches!(&future, crate::store::HistoryContentFuture::Native(future) if future.work().shares_ledger(work))
+        if let Some(work) = work
+            && !matches!(&future, crate::store::HistoryContentFuture::Native(future) if future.work().shares_ledger(work))
             {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Conflict,
                     reason: "policy evaluator belongs to another ledger",
                 });
             }
-        }
         let decision = future.await?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {

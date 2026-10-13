@@ -2,7 +2,7 @@
 
 use super::{
     FilesystemContentPublisher, FilesystemContentVerifier, FilesystemExecutionJournal,
-    FilesystemHost, FilesystemInteractionHost, FilesystemWorkflowJournal, PreparationIo,
+    FilesystemHost, FilesystemInteractionHost, FilesystemWorkflowJournal,
 };
 use crate::runtime::TaskStateProvider;
 use crate::store::HistoryIo as _;
@@ -14,11 +14,11 @@ use crate::{
     distributed::DistributedCoordinator,
     durable_host::CoordinatorTaskHost,
     durable_tool::ResumableToolRegistry,
-    executor::{ExecutionJournal, ExecutionProgress, StockExecutor, TurnInput, TurnOutput},
+    executor::{ExecutionProgress, StockExecutor, TurnInput, TurnOutput},
     interaction::Interaction,
     model::{Model, ModelProvider},
     runtime::{
-        AgentHarness, ContentBindings, DurableTaskHost, InteractionRouter, OwnedTaskMailbox,
+        AgentHarness, ContentBindings, InteractionRouter, OwnedTaskMailbox,
         ResumableTaskSession, RuntimeScope, TaskAdmissionRecord, TaskContext, TaskRegistry,
         TaskRunLimits, ToolPolicy,
     },
@@ -279,14 +279,13 @@ struct TaskJournalMailbox<P: StreamProvider> {
 impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJournalMailbox<P> {
     fn validate_scope(&self, scope: &RuntimeScope, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.and_then(|io| io.original_native_work()) {
-            if !self.native_custody.as_ref().is_some_and(|custody| custody.work().shares_allocation_context(work)) {
+        if let Some(work) = io.and_then(|io| io.original_native_work())
+            && !self.native_custody.as_ref().is_some_and(|custody| custody.work().shares_allocation_context(work)) {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unauthorized,
                     reason: "mailbox metadata differs from original work",
                 });
             }
-        }
         self.owner.as_ref().require_mail_scope(scope, io)
     }
     fn task_binding(&self) -> (TaskId, &LeaseFence) {
@@ -2149,8 +2148,7 @@ where
                     .suspend_workflow(
                         task,
                         fence,
-                        revision,
-                        Some(command),
+                        (revision, Some(command)),
                         None,
                         None,
                         &mut Some(
@@ -2168,7 +2166,7 @@ where
                 .await
         } else {
             self.host
-                .suspend_workflow(task, fence, revision, Some(command), None, None, &mut None)
+                .suspend_workflow(task, fence, (revision, Some(command)), None, None, &mut None)
                 .await
         }
     }
@@ -2274,7 +2272,7 @@ where
                 let _transition_custody;
                 #[cfg(not(target_arch = "wasm32"))]
                 let mut transition = if let Some(io) = io {
-                    let work = io.original_native_work().ok_or(Error::NativeBoundary {
+                    let _work = io.original_native_work().ok_or(Error::NativeBoundary {
                         code: crate::wire::ErrorCode::Unsupported,
                         reason: "native transition requires original observer",
                     })?;
@@ -2381,8 +2379,7 @@ where
                             .suspend_workflow(
                                 task,
                                 fence,
-                                revision,
-                                None,
+                                (revision, None),
                                 None,
                                 None,
                                 &mut observed::history(io)?
@@ -2396,8 +2393,7 @@ where
                         .suspend_workflow(
                             task,
                             fence,
-                            revision,
-                            None,
+                            (revision, None),
                             None,
                             None,
                             &mut observed::history(io)?
@@ -2760,16 +2756,15 @@ fn native_step_key_with_custody(
                 Ok(held) => held,
                 Err(_) => return Err(Error::NativeWork { cause, custody }),
             };
-            if let Some(mut incoming) = custody {
-                if !held.work().shares_ledger(incoming.work())
-                    || held.absorb(&mut incoming).is_err()
+            if let Some(mut incoming) = custody
+                && (!held.work().shares_ledger(incoming.work())
+                    || held.absorb(&mut incoming).is_err())
                 {
                     return Err(Error::NativeWork {
                         cause,
                         custody: Some(incoming),
                     });
                 }
-            }
             return Err(Error::NativeWork {
                 cause,
                 custody: Some(held),
@@ -2956,7 +2951,7 @@ async fn verify_native_model_files(
     for part in content.parts() {
         match part {
             ModelContentPart::File { file, policy } => {
-                verify_native_model_file(context, file, policy, work).await?
+                verify_native_model_file(context, file, policy, work).await?;
             }
             ModelContentPart::ToolResult {
                 content: ToolResultContent::Parts { parts },

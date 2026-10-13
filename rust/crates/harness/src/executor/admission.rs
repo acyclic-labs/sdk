@@ -121,13 +121,13 @@ impl ModelEventAdmission {
                     (self.calls.len() - position) as u64 * std::mem::size_of::<String>() as u64;
                 with_history_io(io, |work| {
                     if let Some(work) = work.as_deref_mut() {
-                        work.admit_copy(bytes)?
+                        work.admit_copy(bytes)?;
                     }
                     let call = stock_string_copy(call_id, io)?;
                     stock_vec_push(&mut self.calls, call, io)?;
                     self.calls[position..].rotate_right(1);
                     if let Some(work) = work.as_deref_mut() {
-                        work.copy_bytes(bytes)?
+                        work.copy_bytes(bytes)?;
                     }
                     Ok::<_, Error>(())
                 })?;

@@ -2668,7 +2668,7 @@ mod tests {
             kind: if sequence % 2 == 1 { MessageKind::User } else { MessageKind::Assistant },
             content: content.clone(),
             attachments: ReferencedAttachments::Inline { items: Vec::new() },
-            reply_to: (sequence % 2 == 0).then(|| Uuid::from_u128(u128::from(sequence - 1))),
+            reply_to: sequence.is_multiple_of(2).then(|| Uuid::from_u128(u128::from(sequence - 1))),
             tool_call_id: None, extensions: BTreeMap::new(),
         }
     }
@@ -2735,7 +2735,7 @@ mod tests {
     #[test]
     fn admitted_conversation_rebuild_observes_original_digests_and_negative_work() -> Result<()> {
         use acyclic_fs::{CancellationToken, WorkBudget};
-        use crate::store::history::HistoryWork;
+
         let agent = AgentId::from_bytes([8; 16]);
         let content = file(agent, "observed-rebuild.txt")?;
         let mut original = ConversationState::default();

@@ -207,14 +207,14 @@ impl EffectRegistry {
         let source = provider.id();
         if source.trim().is_empty() {
             return Err(crate::store::guarded_boundary(
-                &mut observed,
+                &observed,
                 crate::wire::ErrorCode::Invalid,
                 "effect provider identity is empty",
             ));
         }
         if self.providers.contains_key(source) {
             return Err(crate::store::guarded_boundary(
-                &mut observed,
+                &observed,
                 crate::wire::ErrorCode::Conflict,
                 "effect provider is already registered",
             ));

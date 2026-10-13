@@ -38,7 +38,7 @@ fn field_copy_receipt() -> Result<ProjectMergeReceipt> {
     receipt
         .notice
         .extensions
-        .insert("merge-proof".into(), receipt.notice.content.clone());
+        .insert("merge.proof".into(), receipt.notice.content.clone());
     receipt.validate_shape(&mut None)?;
     Ok(receipt)
 }
@@ -59,7 +59,7 @@ fn field_copy_budget() -> acyclic_fs::WorkBudget {
 #[cfg(feature = "filesystem")]
 #[test]
 fn owned_merge_copy_uses_physical_fields_and_finite_inspection() -> Result<()> {
-    use crate::store::history::{HistoryIo as _, HistoryWork};
+    use crate::store::history::HistoryIo as _;
     let receipt = field_copy_receipt()?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let mut io = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(

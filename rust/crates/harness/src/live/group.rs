@@ -92,10 +92,10 @@ impl TaskGroup {
         let admission = locked(&self.state.admission);
         let mut children = locked(&self.state.children);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = work {
-            if children.len() == children.capacity() {
+        if let Some(work) = work
+            && children.len() == children.capacity() {
                 let old = children.capacity();
-                let target = old.checked_mul(2).unwrap_or(usize::MAX).max(4);
+                let target = old.saturating_mul(2).max(4);
                 let bytes = target
                     .checked_sub(old)
                     .and_then(|slots| slots.checked_mul(std::mem::size_of::<Weak<GroupState>>()))
@@ -164,7 +164,6 @@ impl TaskGroup {
                         custody: None,
                     })?;
             }
-        }
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let _ = work;
         children.push(Arc::downgrade(&child.state));

@@ -119,7 +119,6 @@ impl MemoryStore {
 
 mod directory;
 mod retention;
-pub(crate) use directory::{MemoryStoreEntry, MemoryStoreEntryKind, MemoryStorePage};
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use retention::native_cache_custody;
 #[cfg(test)]

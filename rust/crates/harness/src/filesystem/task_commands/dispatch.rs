@@ -40,15 +40,14 @@ where
             ));
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if io.is_some() {
-            if !context.original_task_binding_matches(task, &fence) {
+        if io.is_some()
+            && !context.original_task_binding_matches(task, &fence) {
                 return Err(boundary(
                     io,
                     ErrorCode::Unauthorized,
                     "command differs from original task binding",
                 ));
             }
-        }
         self.runtime
             .owner_observed(task, &fence, reconciliation_only, io)
             .await?;

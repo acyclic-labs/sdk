@@ -65,13 +65,17 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         {
             command
         } else {
-            let results = latest.input["commands"].as_array().ok_or_else(|| {
-                crate::store::guarded_boundary(
-                    &work,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "parcel receive result is not committed",
-                )
-            })?;
+            let results = latest
+                .input
+                .get("commands")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    crate::store::guarded_boundary(
+                        &work,
+                        crate::wire::ErrorCode::Unauthorized,
+                        "parcel receive result is not committed",
+                    )
+                })?;
             let [result] = results.as_slice() else {
                 return Err(crate::store::guarded_boundary(
                     &work,

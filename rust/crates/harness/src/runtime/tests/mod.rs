@@ -2,7 +2,6 @@ use super::*;
 
 use crate::model::{ModelContent, ModelContentPart};
 
-use std::collections::BTreeSet;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 

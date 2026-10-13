@@ -91,7 +91,7 @@ async fn concurrent_session_claims_cannot_overspend_after_reopen() -> Result<()>
         (two, "budget-two", one)
     };
     let mut reopened = open(&client).await?;
-    assert_eq!(publish(&mut reopened, &(key), winner.clone()).await?, false);
+    assert!(!publish(&mut reopened, &(key), winner.clone()).await?);
     assert!(
         publish(&mut reopened, "budget-loser-retry", loser.clone())
             .await
@@ -133,7 +133,7 @@ async fn concurrent_session_claims_cannot_overspend_after_reopen() -> Result<()>
     )
     .await?;
     assert!(
-        publish(&mut reopened, &(key), winner.clone())
+        publish(&mut reopened, (key), winner.clone())
             .await
             .is_err(),
         "an exact accounting retry cannot bypass cancellation"
@@ -227,8 +227,8 @@ async fn root_declaration_and_shared_limits_are_atomic() -> Result<()> {
         .await?
         .ok_or_else(|| Error::NotFound("atomic root lease".into()))?;
     assert_eq!(lease.operation.operation_id, root);
-    assert_eq!(
-        recovered
+    assert!(
+        !recovered
             .declare_session(
                 &owner,
                 &signed,
@@ -238,8 +238,7 @@ async fn root_declaration_and_shared_limits_are_atomic() -> Result<()> {
                 IdempotencyKey::new(key)?,
                 &mut None
             )
-            .await?,
-        false
+            .await?
     );
     assert!(
         recovered
@@ -385,8 +384,8 @@ async fn root_limits_reconcile_a_lost_atomic_append_acknowledgement() -> Result<
             recovered.scheduler().session_limits(root, &mut None)?,
             limits
         );
-        assert_eq!(
-            recovered
+        assert!(
+            !recovered
                 .declare_session(
                     &owner,
                     &signed,
@@ -396,8 +395,7 @@ async fn root_limits_reconcile_a_lost_atomic_append_acknowledgement() -> Result<
                     IdempotencyKey::new("lost-root")?,
                     &mut None
                 )
-                .await?,
-            false
+                .await?
         );
         assert_eq!(read_coordinator_event_page(&client, 0, 64).await?.len(), 2);
     }

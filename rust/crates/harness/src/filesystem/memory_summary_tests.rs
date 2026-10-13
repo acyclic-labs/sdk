@@ -3,7 +3,7 @@ use crate::model::{Model, ModelProvider};
 use crate::runtime::TaskSpawner as _;
 use super::*;
 use crate::runtime::TaskStateProvider;
-use crate::filesystem::{PreparationIo, workspace_ref};
+use crate::filesystem::workspace_ref;
 use crate::context::{Context, ModelContextCapacity, ModelTokenCount};
 use crate::filesystem::{FilesystemForkPreparer, FilesystemForkVerifier};
 use crate::fork::{

@@ -1,6 +1,8 @@
 //! Native controls exercise the ordinary admitted runtime and real journals.
 
 use super::*;
+#[cfg(feature = "native-execution")]
+use crate::filesystem::PreparationIo;
 use crate::runtime::TaskStateProvider;
 use crate::{
     Admission, AgentId, Capabilities,
@@ -305,7 +307,7 @@ impl Fixture {
         tasks.register(TaskDefinition::<Value, Value>::resumable(
             machine.clone(),
             json!({"type":"object"}),
-            json!({}),
+            json!({"type":"string"}),
         )?)?;
         let mut machines = MachineRegistry::default();
         machines.register(machine.clone(), &mut None)?;

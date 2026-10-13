@@ -180,10 +180,10 @@ impl MemoryStore {
                 crate::filesystem::UploadRecord::logical_owned_bytes(&retained_reference)?,
             )?;
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            let key_custody = if !self.paths.contains_key(path) {
-                native_cache_custody(io, path.len() as u64)?
-            } else {
+            let key_custody = if self.paths.contains_key(path) {
                 None
+            } else {
+                native_cache_custody(io, path.len() as u64)?
             };
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let capacity_custody = match growth {

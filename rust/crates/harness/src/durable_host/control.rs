@@ -41,23 +41,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         let operation = OperationId::from_bytes(task.into_bytes());
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let native = work
-            .as_deref()
-            .and_then(|io| io.original_native_work())
-            .cloned();
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let io = native
-            .as_ref()
-            .map(crate::executor::PreparationIo::from_native_work)
-            .transpose()?;
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let io: Option<crate::executor::PreparationIo> = None;
-        if work.is_some() && io.is_none() {
-            return Err(Error::Unsupported(
-                "deadline observation requires original IO".into(),
-            ));
-        }
+        let io = operation_io(work)?;
         #[cfg(feature = "filesystem")]
         let mut admission_history = io.as_ref().map(|io| io.history_io());
         #[cfg(feature = "filesystem")]
@@ -91,14 +75,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         {
             return Ok(());
         }
-        if let Some(fence) = fence {
-            if state.reservation.as_ref().is_none_or(|lease| {
+        if let Some(fence) = fence
+            && state.reservation.as_ref().is_none_or(|lease| {
                 lease.id != fence.reservation_id || lease.placement != fence.placement
-            }) {
-                return Err(Error::Conflict(
-                    "deadline observer does not own current reservation".into(),
-                ));
-            }
+            })
+        {
+            return Err(Error::Conflict(
+                "deadline observer does not own current reservation".into(),
+            ));
         }
         if state.cancellation_requested {
             return Ok(());

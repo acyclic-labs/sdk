@@ -171,15 +171,12 @@ pub(super) async fn validate_fork_binding<
         io,
     )?;
     let ordinary;
-    let observer = match io {
-        Some(io) => io,
-        None => {
-            ordinary = PreparationIo::from_budget(
-                acyclic_fs::performance::work_budget(binding.limits.work, binding.limits.bytes),
-                cancellation,
-            )?;
-            &ordinary
-        }
+    let observer = if let Some(io) = io { io } else {
+        ordinary = PreparationIo::from_budget(
+            acyclic_fs::performance::work_budget(binding.limits.work, binding.limits.bytes),
+            cancellation,
+        )?;
+        &ordinary
     };
     let bytes = context.read_file(&file, Some(observer)).await?;
     if let Some(pointer) = &binding.child_message_file_pointer {

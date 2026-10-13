@@ -155,7 +155,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                 if let Some(io) = io {
                     return Err(Error::NativeDiagnostic {
                         code: crate::wire::ErrorCode::Conflict,
-                        message: message,
+                        message,
                         custody: io.take_native_custody(io.owned_bytes()?)?,
                     });
                 }
@@ -181,18 +181,15 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             report.copy(work).map(|(report, _)| report)
         })?;
         let owned_io;
-        let publication_io = match io {
-            Some(io) => io,
-            None => {
-                owned_io = super::super::PreparationIo::from_budget(
-                    acyclic_fs::performance::work_budget(
-                        fork.request.maximum_work,
-                        fork.request.maximum_bytes,
-                    ),
-                    cancellation,
-                )?;
-                &owned_io
-            }
+        let publication_io = if let Some(io) = io { io } else {
+            owned_io = super::super::PreparationIo::from_budget(
+                acyclic_fs::performance::work_budget(
+                    fork.request.maximum_work,
+                    fork.request.maximum_bytes,
+                ),
+                cancellation,
+            )?;
+            &owned_io
         };
         let mut history = publication_io.history_io();
         binding

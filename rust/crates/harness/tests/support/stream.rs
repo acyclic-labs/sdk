@@ -773,11 +773,10 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
             } else {
                 None
             };
-            if let Some(commit) = head_race {
-                if let Err(error) = self.inner.commit(commit).await {
+            if let Some(commit) = head_race
+                && let Err(error) = self.inner.commit(commit).await {
                     return Ok(Err(error));
                 }
-            }
             let hidden = (request.path.as_str().contains("/effect-heads/")
                 && request.path.as_str().contains("/nodes/")
                 && self.hide_effect_node_read.load(Ordering::SeqCst))
@@ -1117,12 +1116,6 @@ impl<P: StreamProvider> LostSessionAck<P> {
         })
     }
 }
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-#[path = "stream/no_native.rs"]
-mod no_native;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub use no_native::NoNative;
 
 fn corrupt_aggregate_receipt(outcome: &mut acyclic_stream::CommitOutcome, aggregate_fault: u8) {
     if let acyclic_stream::CommitOutcome::Committed(envelope) = outcome {
