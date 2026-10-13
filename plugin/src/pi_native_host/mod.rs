@@ -11,8 +11,8 @@ use crate::{
 };
 use acyclic_fs::NativeAllocation;
 use acyclic_fs::{
-    CancellationToken, Digest, GenerationId, LazySnapshotRef, MeasuredResult,
-    NativeMaterializationWork, OperationReceipt, PublicationPermit, WorkBudget, WorkCounters,
+    CancellationToken, Digest, GenerationId, LazySnapshotRef, NativeMaterializationWork,
+    PublicationPermit, WorkBudget, WorkCounters,
 };
 use acyclic_harness::filesystem::PreparationIo;
 use acyclic_harness::runtime::TaskStateProvider;

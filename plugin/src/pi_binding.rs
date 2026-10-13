@@ -83,21 +83,8 @@ pub(crate) struct PiScratchCreation {
 
 impl PiScratchCreation {
     pub(crate) fn validate(&self, volume: &VolumeRef) -> acyclic_harness::Result<()> {
-        self.validate_inner(volume, None)
-    }
-
-    fn validate_inner(
-        &self,
-        volume: &VolumeRef,
-        work: Option<&acyclic_fs::NativeMaterializationWork>,
-    ) -> acyclic_harness::Result<()> {
-        binding_validation_step(work, 1)?;
-        match work {
-            Some(work) => self
-                .generation
-                .validate(&mut Some(&mut &PreparationIo::from_native_work(work)?))?,
-            None => self.generation.validate(&mut None)?,
-        }
+        binding_validation_step(None, 1)?;
+        self.generation.validate(&mut None)?;
         if self.workspace_id == [0; 16]
             || self.generation.as_resource().provider() != volume.provider()
             || self.generation.as_resource().key().len() != 32
