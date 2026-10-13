@@ -286,22 +286,18 @@ mod tests {
 
     #[test]
     fn ordered_hunks_preserve_exact_context_utf8_and_line_endings() -> Result<()> {
+        let mut work = AlgorithmWork::new(None, 0)?;
         assert_eq!(
             apply_update(
                 "a\r\n🦀\r\nb\r\nc",
                 "@@\n a\n-🦀\n+日本語\n@@\n-b\n+B\n",
                 LIMITS,
-                &mut AlgorithmWork::ordinary(),
+                &mut work,
             )?,
             "a\r\n日本語\r\nB\r\nc"
         );
         assert_eq!(
-            apply_update(
-                "head\ntail\n",
-                "@@ head\n+middle\n",
-                LIMITS,
-                &mut AlgorithmWork::ordinary()
-            )?,
+            apply_update("head\ntail\n", "@@ head\n+middle\n", LIMITS, &mut work)?,
             "head\nmiddle\ntail\n"
         );
         assert_eq!(
@@ -309,21 +305,13 @@ mod tests {
                 "a\na\n",
                 "@@\n-a\n+last\n*** End of File\n",
                 LIMITS,
-                &mut AlgorithmWork::ordinary()
+                &mut work
             )?,
             "a\nlast\n"
         );
+        assert_eq!(apply_update("", "@@\n+new\n", LIMITS, &mut work)?, "new\n");
         assert_eq!(
-            apply_update("", "@@\n+new\n", LIMITS, &mut AlgorithmWork::ordinary())?,
-            "new\n"
-        );
-        assert_eq!(
-            apply_update(
-                "head",
-                "@@ head\n+next\n",
-                LIMITS,
-                &mut AlgorithmWork::ordinary()
-            )?,
+            apply_update("head", "@@ head\n+next\n", LIMITS, &mut work)?,
             "head\nnext\n"
         );
         assert_eq!(
@@ -331,7 +319,7 @@ mod tests {
                 "a\nb\nc\n",
                 "@@\n-a\n+A\n b\n@@\n-c\n+C\n",
                 LIMITS,
-                &mut AlgorithmWork::ordinary()
+                &mut work
             )?,
             "A\nb\nC\n"
         );
@@ -340,6 +328,7 @@ mod tests {
 
     #[test]
     fn malformed_ambiguous_out_of_order_and_unbounded_patches_fail() {
+        let mut work = AlgorithmWork::new(None, 0).unwrap();
         for (source, diff) in [
             ("a\na\n", "@@\n-a\n+x\n"),
             ("a \n", "@@\n-a\n+x\n"),
@@ -349,7 +338,7 @@ mod tests {
             ("a\n", "@@\n a\n"),
             ("a\n", "@@\n-a\n+x\n*** End of File\n+extra\n"),
         ] {
-            assert!(apply_update(source, diff, LIMITS, &mut AlgorithmWork::ordinary()).is_err());
+            assert!(apply_update(source, diff, LIMITS, &mut work).is_err());
         }
         for limits in [
             PatchLimits {
@@ -389,15 +378,7 @@ mod tests {
                 ..LIMITS
             },
         ] {
-            assert!(
-                apply_update(
-                    "a\nb\n",
-                    "@@\n-a\n+A\n@@\n-b\n+B\n",
-                    limits,
-                    &mut AlgorithmWork::ordinary()
-                )
-                .is_err()
-            );
+            assert!(apply_update("a\nb\n", "@@\n-a\n+A\n@@\n-b\n+B\n", limits, &mut work).is_err());
         }
         // Input and diff each fit, but their combined output exceeds the cap.
         let source = format!("a\n{}", "z".repeat(29));
@@ -409,7 +390,7 @@ mod tests {
                     maximum_bytes: 32,
                     ..LIMITS
                 },
-                &mut AlgorithmWork::ordinary(),
+                &mut work,
             )
             .is_err()
         );
@@ -417,6 +398,7 @@ mod tests {
 
     #[test]
     fn bounded_single_line_oracle_rejects_every_ambiguous_source() -> Result<()> {
+        let mut work = AlgorithmWork::new(None, 0)?;
         for length in 0..=6 {
             for bits in 0..(1 << length) {
                 let lines: Vec<_> = (0..length)
@@ -432,8 +414,7 @@ mod tests {
                 for needle in ["a\n", "🦀\n"] {
                     let count = lines.iter().filter(|line| **line == needle).count();
                     let diff = format!("@@\n-{}\n+X\n", needle.trim_end_matches('\n'));
-                    let result =
-                        apply_update(&source, &diff, LIMITS, &mut AlgorithmWork::ordinary());
+                    let result = apply_update(&source, &diff, LIMITS, &mut work);
                     if count == 1 {
                         assert_eq!(result?, source.replacen(needle, "X\n", 1));
                     } else {
