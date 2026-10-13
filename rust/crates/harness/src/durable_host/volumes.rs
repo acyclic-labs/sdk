@@ -17,21 +17,6 @@ pub struct TaskVolumeSnapshot {
 }
 
 #[cfg(feature = "filesystem")]
-pub(super) fn copy_generation(
-    source: &GenerationRef,
-    work: &mut Option<&mut dyn crate::store::HistoryIo>,
-) -> Result<GenerationRef> {
-    if work.is_none() {
-        return Ok(source.clone());
-    }
-    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-    let reference = crate::core::copy_resource(source.as_resource(), &mut quota)?;
-    let generation = GenerationRef::from_resource_with_work(reference, quota.work())?;
-    quota.transfer();
-    Ok(generation)
-}
-
-#[cfg(feature = "filesystem")]
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
     /// Observes immutable snapshots and their retained output extent.
     pub async fn observe_volume_snapshots(
@@ -159,8 +144,11 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 }
                 let volume = content.volume.copy(quota.work())?;
                 quota.adopt(volume.logical_owned_bytes()?)?;
-                let generation = copy_generation(&receipt.allocation_generation, quota.work())?;
-                quota.adopt(generation.logical_owned_bytes()?)?;
+                let reference = crate::core::copy_resource(
+                    receipt.allocation_generation.as_resource(),
+                    &mut quota,
+                )?;
+                let generation = GenerationRef::from_resource_with_work(reference, quota.work())?;
                 let snapshot = (origin, TaskVolumeSnapshot { volume, generation });
                 if !Self::proof_contains(&snapshots, &snapshot, quota.work())? {
                     let retained = Self::reserve_proof_slots(&mut snapshots, quota.work())?;
