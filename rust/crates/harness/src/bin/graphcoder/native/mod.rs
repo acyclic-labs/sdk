@@ -23,9 +23,9 @@ use acyclic_harness::{
         FilesystemContentPublisher, FilesystemContentVerifier, FilesystemForkVerifier,
         FilesystemHost, FilesystemProjectMergeVerifier, FilesystemResourceCreationProvider,
         FilesystemTaskRuntime, ForkPreparationMachine, MailboxModelMachine, StockTurnMachine,
-        StreamHistoryForkVerifier, TaskWorkerAttempt, TaskWorkerOutcome,
+        TaskWorkerAttempt, TaskWorkerOutcome,
     },
-    fork::{CompositeForkVerifier, ForkReport},
+    fork::{CompositeForkVerifier, ForkReport, StreamHistoryForkVerifier},
     model::{ModelContent, ModelMessage, ModelRole},
     resource_preparation::ResourcePreparationRequest,
     resources::ProviderRef,
@@ -208,7 +208,8 @@ pub(super) async fn runtime(
         let policy = acyclic_harness::filesystem::FsRootProjectSourceProvider::new(
             files.clone(),
             &config.owner.authority,
-            graph_root, None,
+            graph_root,
+            None,
             None,
         )?;
         source.with_project_source_policy(issuer, policy)?;
@@ -243,23 +244,24 @@ pub(super) async fn runtime(
     let scope = RuntimeScope::new(config.owner.scope.capabilities().clone(), config.limits)?
         .with_run_limits(config.run_limits, &mut None)?;
     let runtime = Arc::new(
-        Runtime::open_with_creation_providers(
+        Runtime::open(
             stream,
             files,
-            config.private_volume.clone(),
-            verifier,
-            config.owner.scope.clone(),
-            scope,
-            tasks,
-            machines,
-            toolset.tools,
+            &config.private_volume,
+            &verifier,
+            &config.owner.scope,
+            &scope,
+            &tasks,
+            &machines,
+            &toolset.tools,
             config.session_limits,
             config.concurrency,
             MAX_FRAME_BYTES as u64,
             Arc::new(acyclic_stream::SystemUnixMillisClock),
             None,
-            vec![creation],
-            toolset.resumable_tools,
+            &[creation],
+            &toolset.resumable_tools,
+            None,
         )
         .await?
         .with_recursive_source(source.clone()),

@@ -37,7 +37,7 @@ pub struct Config {
     #[serde(default)]
     pub deterministic_delay_ms: u32,
     #[serde(default)]
-    pub fork_sources: Vec<ForkSourceConfig>,
+    pub fork_sources: Vec<Arc<ForkSourceConfig>>,
     #[serde(default)]
     pub tools: crate::native_tools::NativeToolsConfig,
     #[serde(default)]
@@ -91,7 +91,7 @@ impl Config {
                 ));
             }
             acyclic_harness::core::Reducer::restore(
-                source.snapshot.clone(),
+                source.snapshot.copy(&mut None)?,
                 verifier,
                 SchemaRegistry::default(),
                 &mut None,
@@ -104,7 +104,7 @@ impl Config {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ForkSourceConfig {
     pub caller: TaskId,

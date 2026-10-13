@@ -405,7 +405,7 @@ async fn stock_mutations_cannot_consume_promised_capacity_and_drop_releases_it()
                 .finish(OwnedBytes::from_static(b"settled"))
                 .await??;
             assert!(matches!(completion.value(), CommitOutcome::Committed(_)));
-            assert_eq!(provider.state.read().await.commits.len(), 3);
+            assert_eq!(provider.append(append).await, Err(StreamError::Capacity));
         }
         drop(provider);
         meter.assert_refunded();
