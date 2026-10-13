@@ -1,5 +1,9 @@
 use super::*;
 
+fn unbound<'a, T>(reason: &'static str) -> BoxFuture<'a, Result<T>> {
+    Box::pin(async move { Err(Error::Unsupported(reason.into())) })
+}
+
 /// Provider boundary for stable durable admission and outcome observation.
 pub trait DurableTaskHost: TaskStateProvider + TaskSpawner {
     /// Requires the current uncancelled running lease before a fresh task step or dispatch.
@@ -8,11 +12,7 @@ pub trait DurableTaskHost: TaskStateProvider + TaskSpawner {
         _task_id: TaskId,
         _fence: crate::scheduler::LeaseFence,
     ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "durable dispatch ownership is not bound".into(),
-            ))
-        })
+        unbound("durable dispatch ownership is not bound")
     }
 
     /// Checks that this lease still owns execution or reconciliation.
@@ -21,11 +21,7 @@ pub trait DurableTaskHost: TaskStateProvider + TaskSpawner {
         _task_id: TaskId,
         _fence: crate::scheduler::LeaseFence,
     ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "durable execution ownership is not bound".into(),
-            ))
-        })
+        unbound("durable execution ownership is not bound")
     }
 
     /// Native execution support is an allocation-free preflight, not authority.
@@ -46,11 +42,7 @@ pub trait DurableTaskHost: TaskStateProvider + TaskSpawner {
         _request_digest: [u8; 32],
         _fence: crate::scheduler::LeaseFence,
     ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "durable model accounting is not bound".into(),
-            ))
-        })
+        unbound("durable model accounting is not bound")
     }
 
     /// Claims the same durable model attempt on its original native ledger.
@@ -128,11 +120,7 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
         _after_slot: Option<String>,
         _maximum: usize,
     ) -> BoxFuture<'a, Result<TaskChildrenPage>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "durable task hierarchy is not bound".into(),
-            ))
-        })
+        unbound("durable task hierarchy is not bound")
     }
     /// Authenticates and reconstructs the admitted scope after process restart.
     fn resume_scope<'a>(
@@ -220,11 +208,7 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
         _operation_id: OperationId,
         _interaction: Interaction,
     ) -> BoxFuture<'a, Result<InteractionOutcome>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "durable interaction routing is not bound".into(),
-            ))
-        })
+        unbound("durable interaction routing is not bound")
     }
 
     /// Pure discovery before request validation or future construction.
@@ -264,7 +248,7 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
         _message_id: OperationId,
         _payload: FileRef,
     ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async { Err(Error::Unsupported("durable task mail is not bound".into())) })
+        unbound("durable task mail is not bound")
     }
     /// Reads a bounded ordered inbox page.
     fn inbox<'a>(
@@ -273,7 +257,7 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
         _after: u64,
         _limit: usize,
     ) -> BoxFuture<'a, Result<Vec<InboxItem>>> {
-        Box::pin(async { Err(Error::Unsupported("durable task inbox is not bound".into())) })
+        unbound("durable task inbox is not bound")
     }
     /// Retains or reconciles an absolute timer wait.
     fn wait_until<'a>(
@@ -282,7 +266,7 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
         _operation_id: OperationId,
         _deadline_unix_ms: u64,
     ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async { Err(Error::Unsupported("durable timers are not bound".into())) })
+        unbound("durable timers are not bound")
     }
     /// Observes one recorded effect without redispatching it.
     fn reconcile_effect<'a>(
@@ -290,11 +274,7 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
         _task_id: TaskId,
         _effect_id: EffectId,
     ) -> BoxFuture<'a, Result<crate::core::EffectStatus>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "durable effect reconciliation is not bound".into(),
-            ))
-        })
+        unbound("durable effect reconciliation is not bound")
     }
 }
 
@@ -339,11 +319,7 @@ pub trait TaskSpawner: acyclic_stream::ProviderPlatform {
         _request: TaskAdmissionRecord,
         _fence: crate::scheduler::LeaseFence,
     ) -> BoxFuture<'a, Result<Admission<TaskId>>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "owned child spawner is not bound".into(),
-            ))
-        })
+        unbound("owned child spawner is not bound")
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -367,11 +343,7 @@ pub trait TaskSpawner: acyclic_stream::ProviderPlatform {
         &'a self,
         _operation_id: OperationId,
     ) -> BoxFuture<'a, Result<Option<(TaskId, TaskAdmissionRecord)>>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "durable admission reconciliation is not bound".into(),
-            ))
-        })
+        unbound("durable admission reconciliation is not bound")
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -399,44 +371,28 @@ pub trait TaskSpawner: acyclic_stream::ProviderPlatform {
         &'a self,
         _request: DurableBatchRequest,
     ) -> BoxFuture<'a, Result<Vec<Admission<TaskId>>>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "durable batch admission is not bound".into(),
-            ))
-        })
+        unbound("durable batch admission is not bound")
     }
     /// Observes the original batch and current indexed admissions only.
     fn reconcile_batch<'a>(
         &'a self,
         _request: DurableBatchRequest,
     ) -> BoxFuture<'a, Result<Option<Vec<Admission<TaskId>>>>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "durable batch reconciliation is not bound".into(),
-            ))
-        })
+        unbound("durable batch reconciliation is not bound")
     }
     /// Loads a retained request by identity after the caller loses its inputs.
     fn load_batch<'a>(
         &'a self,
         _batch_id: BatchId,
     ) -> BoxFuture<'a, Result<Option<DurableBatchRequest>>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "durable batch lookup is not bound".into(),
-            ))
-        })
+        unbound("durable batch lookup is not bound")
     }
     /// Retains an idempotent cancellation declaration at the batch owner.
     fn cancel_batch<'a>(
         &'a self,
         _batch_id: BatchId,
     ) -> BoxFuture<'a, Result<Option<BatchCancellationReport>>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "durable batch cancellation is not bound".into(),
-            ))
-        })
+        unbound("durable batch cancellation is not bound")
     }
     /// Whether this spawner can retain a cancellation declaration.
     fn supports_batch_cancellation(&self) -> bool {
