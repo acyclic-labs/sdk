@@ -81,9 +81,9 @@ async fn owned_child_declaration_rechecks_parent_and_recovers_tail_conflict() ->
             assert!(retry.is_err());
             assert!(first.scheduler().operation(child_id).is_none());
         } else {
-            assert_eq!(retry?, true);
-            assert_eq!(
-                first
+            assert!(retry?);
+            assert!(
+                !first
                     .declare_operation(
                         &owner,
                         &signed,
@@ -93,8 +93,7 @@ async fn owned_child_declaration_rechecks_parent_and_recovers_tail_conflict() ->
                         Some(fence.clone()),
                         &mut None
                     )
-                    .await?,
-                false
+                    .await?
             );
             assert_eq!(first.scheduler().children(parent).count(), 1);
             publish(
@@ -291,7 +290,7 @@ async fn selected_command_wake_rechecks_wait_and_recovers_tail_conflict() -> Res
                     .await
                     .is_err()
             );
-            assert_eq!(
+            assert!(
                 first
                     .resume_workflow(
                         &owner,
@@ -304,8 +303,7 @@ async fn selected_command_wake_rechecks_wait_and_recovers_tail_conflict() -> Res
                         Some(next),
                         &mut None
                     )
-                    .await?,
-                true
+                    .await?
             );
             publish(
                 &mut first,
@@ -406,7 +404,7 @@ async fn passive_suspension_atomically_fences_execution_and_recovers_commit_ack(
             } else if mode == 2 {
                 assert!(matches!(result, Err(Error::Indeterminate(id)) if id == task));
             } else {
-                assert_eq!(result?, true);
+                assert!(result?);
             }
             let reopened = open(&client).await?;
             let retained = reopened

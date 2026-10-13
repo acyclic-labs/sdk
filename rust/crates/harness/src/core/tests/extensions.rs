@@ -130,12 +130,12 @@ fn extension_activation_requires_exact_acyclic_dependencies() -> Result<()> {
     install(&mut registry, &alpha, vec![beta.clone()])?;
     assert!(
         registry
-            .activation_order(&[alpha.clone()], &mut None)
+            .activation_order(std::slice::from_ref(&alpha), &mut None)
             .is_err()
     );
     install(&mut registry, &beta, vec![])?;
     assert_eq!(
-        registry.activation_order(&[alpha.clone()], &mut None)?.0,
+        registry.activation_order(std::slice::from_ref(&alpha), &mut None)?.0,
         vec![beta.clone(), alpha.clone()]
     );
     let other = dependency(&beta.name, 3);

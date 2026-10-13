@@ -38,7 +38,7 @@ impl NativePreparationCompletionTemplate {
         output.resize(output.capacity(), 0);
         let output_custody = io.take_native_custody(output.capacity() as u64)?;
         let output =
-            acyclic_stream::PreparedOwnedBytes::new(output, output_custody, work.runtime_meter())
+            acyclic_stream::PreparedOwnedBytes::new(output, output_custody, &work.runtime_meter())
                 .map_err(|failure| match failure.into_error() {
                 acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
                     Error::from(work.runtime_error(error))

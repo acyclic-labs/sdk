@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn reserve_buffer<T>(
+pub(crate) fn reserve_buffer<T>(
     values: &mut Vec<T>,
     capacity: usize,
     allocation: &mut NativeAllocation,

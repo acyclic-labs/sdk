@@ -47,7 +47,7 @@ pub struct RootProjectSourceContext<'a> {
     pub created_project_authenticated: bool,
 }
 
-/// Explicit trusted RootService policy and genuine backend snapshot verifier.
+/// Explicit trusted `RootService` policy and genuine backend snapshot verifier.
 pub trait RootProjectSourceProvider: acyclic_stream::ProviderPlatform {
     /// Authenticates backend evidence and explicitly approves this project read.
     fn verify<'a>(

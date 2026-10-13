@@ -166,7 +166,7 @@ impl PiSession {
                         .0
                         .session_file
                         .parent()
-                        .expect("planned scratch parent"),
+                        .ok_or_else(|| invalid("planned scratch parent is absent"))?,
                 },
                 source: Source { task: source },
             },
@@ -207,7 +207,11 @@ impl PiSession {
         {
             return Err(invalid("Pi SDK child session or alias belongs to another task"));
         }
-        let project = &self.binding(source_task)?.project_volumes[key];
+        let project = self
+            .binding(source_task)?
+            .project_volumes
+            .get(key)
+            .ok_or_else(|| invalid("Pi selected project is absent from its source binding"))?;
         if project.provider() != parent.scratch.volume.provider()
             || project.provider() != owner.policy().journal.provider()
         {

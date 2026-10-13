@@ -88,6 +88,7 @@ fn authority_object_error(error: crate::AuthorityStoreError) -> crate::ObjectSto
     }
 }
 
+#[cfg(feature = "memory")]
 pub(crate) fn merge_completed_object_read(
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     completed: crate::performance::WorkCounters,

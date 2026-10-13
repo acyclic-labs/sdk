@@ -73,12 +73,9 @@ where
             }
         }
         let ordinary;
-        let observer = match io {
-            Some(io) => io,
-            None => {
-                ordinary = PreparationIo::from_budget(self.config.content_budget, cancellation)?;
-                &ordinary
-            }
+        let observer = if let Some(io) = io { io } else {
+            ordinary = PreparationIo::from_budget(self.config.content_budget, cancellation)?;
+            &ordinary
         };
         let parent = self
             .open(
@@ -113,55 +110,52 @@ where
             &[context.operation_id().into_bytes()],
             io,
         )?;
-        let source_checkpoint = match original {
-            Some(original) => crate::executor::with_history_io(io, |work| {
-                original
-                    .request
-                    .source_checkpoint
-                    .as_ref()
-                    .ok_or_else(|| {
-                        stock_boundary(
-                            io,
-                            ErrorCode::Unauthorized,
-                            "original fork has no source checkpoint",
-                        )
-                    })?
-                    .copy(work)
-            })?,
-            None => {
-                let bytes = observer.encode(
-                    intent,
-                    context.effective_scope().limits().file_bytes,
-                    false,
-                )?;
-                let bytes_hold = observer.guard_bytes(&bytes)?;
-                let path = crate::executor::with_history_io(io, |work| {
-                    crate::executor::preparation_format(
-                        format_args!(
-                            "recursive-tools/{}/source-checkpoint.json",
-                            context.operation_id()
-                        ),
-                        work,
+        let source_checkpoint = if let Some(original) = original { crate::executor::with_history_io(io, |work| {
+            original
+                .request
+                .source_checkpoint
+                .as_ref()
+                .ok_or_else(|| {
+                    stock_boundary(
+                        io,
+                        ErrorCode::Unauthorized,
+                        "original fork has no source checkpoint",
                     )
-                })?;
-                let path_hold = io
-                    .map(|io| io.guard_owned(path.capacity() as u64))
-                    .transpose()?;
-                let (file, _) = context
-                    .stage_file_once(
-                        operation,
-                        &path,
-                        &bytes,
-                        "application/json",
-                        "source-checkpoint.json",
-                        Some(observer),
-                    )
-                    .await?;
-                drop((path, path_hold));
-                drop(bytes);
-                drop(bytes_hold);
-                file
-            }
+                })?
+                .copy(work)
+        })? } else {
+            let bytes = observer.encode(
+                intent,
+                context.effective_scope().limits().file_bytes,
+                false,
+            )?;
+            let bytes_hold = observer.guard_bytes(&bytes)?;
+            let path = crate::executor::with_history_io(io, |work| {
+                crate::executor::preparation_format(
+                    format_args!(
+                        "recursive-tools/{}/source-checkpoint.json",
+                        context.operation_id()
+                    ),
+                    work,
+                )
+            })?;
+            let path_hold = io
+                .map(|io| io.guard_owned(path.capacity() as u64))
+                .transpose()?;
+            let (file, _) = context
+                .stage_file_once(
+                    operation,
+                    &path,
+                    &bytes,
+                    "application/json",
+                    "source-checkpoint.json",
+                    Some(observer),
+                )
+                .await?;
+            drop((path, path_hold));
+            drop(bytes);
+            drop(bytes_hold);
+            file
         };
         let bytes = context
             .read_file(&source_checkpoint, Some(observer))

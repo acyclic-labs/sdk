@@ -71,7 +71,7 @@ fn scan(
             (Carrier::Envelope, 4 | 5 | 8 | 9 | 10)
                 | (Carrier::Protocol, 1 | 2)
                 | (Carrier::Authority, 2)
-                | (Carrier::Scope, 1 | 2 | 3 | 4)
+                | (Carrier::Scope, 1..=4)
         );
         let mut charged = before - input.len();
         if kind == WireType::LengthDelimited && (nested.is_some() || owned) {

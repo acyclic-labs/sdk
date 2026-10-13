@@ -252,7 +252,7 @@ async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Resu
 #[tokio::test]
 async fn scheduler_native_stage_preserves_original_key_receipt_and_finite_hash_guard() -> Result<()>
 {
-    use crate::distributed::SchedulerPayloadStore as _;
+
     let storage = MemoryHarnessStorage::new(AgentId::new(), 1024).await?;
     let scheduler = crate::filesystem::FilesystemContentPublisher::new(
         storage.host.clone(),

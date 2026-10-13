@@ -63,7 +63,7 @@ impl AsyncObjectStore for OwnedNativeStore {
         let (mut bytes, allocation) = original.copy_bytes(&source.bytes)?;
         bytes.resize(bytes.capacity(), 0);
         let prepared =
-            acyclic_stream::PreparedOwnedBytes::new(bytes, allocation, original.runtime_meter())
+            acyclic_stream::PreparedOwnedBytes::new(bytes, allocation, &original.runtime_meter())
                 .map_err(|failure| match failure.into_error() {
                     acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
                         original.runtime_error(error).into()

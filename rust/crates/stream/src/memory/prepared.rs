@@ -41,37 +41,8 @@ impl MemoryStream {
         ),
         StreamError,
     > {
-        if maximum > MAX_RECORD_BYTES {
-            return Err(StreamError::LimitExceeded);
-        }
-        normalize_commit(&mut request)?;
-        validate_commit_shape(&request)?;
-        let [CommitMutation::Append { path, records }] = request.mutations.as_slice() else {
-            return Err(StreamError::InvalidArgument);
-        };
-        if request.conditions.len() != 2
-            || request
-                .conditions
-                .iter()
-                .any(|condition| !matches!(condition, CommitCondition::Tail { .. }))
-            || records.len() != 1
-            || !records[0].is_empty()
-        {
-            return Err(StreamError::InvalidArgument);
-        }
-        let expected = request
-            .conditions
-            .iter()
-            .find_map(|condition| match condition {
-                CommitCondition::Tail {
-                    path: guarded,
-                    expected,
-                } if guarded == path => Some(*expected),
-                _ => None,
-            })
-            .expect("target guard");
-        let work = self.work.as_ref().expect("prepared context");
-        let meter = Arc::clone(&work.meter);
+        let expected = prepared_tail(&mut request, maximum)?;
+        let work = self.work.as_ref().ok_or(StreamError::Unavailable)?;
         let input = self.request_claim(&request)?;
         let maximum_hash = commit_hash_bytes(&request) + maximum as u64;
         let mut state = self.state.write().await;
@@ -117,9 +88,14 @@ impl MemoryStream {
             append.start = expected;
             append.end = expected.checked_add(1).ok_or(StreamError::LimitExceeded)?;
             append.tail = append.end;
-            append.records[0].sequence = expected;
+            append
+                .records
+                .first_mut()
+                .ok_or(StreamError::Unavailable)?
+                .sequence = expected;
         }
-        history_record(&mut plan.histories[0]).sequence = expected;
+        history_record(plan.histories.first_mut().ok_or(StreamError::Unavailable)?)?.sequence =
+            expected;
         let conflict = self.vector(2)?;
         let (cached_conflicts, conflict_claim) = self.vector(2)?;
         let prototype = self.copy_commit(&plan.result)?;
@@ -132,8 +108,39 @@ impl MemoryStream {
         drop(request.mutations);
         drop(input);
         let key = request.idempotency_key;
-        let recovery_key = key.clone();
-        let recovery_conditions = conditions.clone();
+        let recovery = self.prepare_recovery(
+            key.clone(),
+            conditions.clone(),
+            maximum,
+            maximum_hash,
+            prototype,
+            recovery_conflicts,
+        )?;
+        work.record(work.meter.check())?;
+        Ok((
+            PreparedCommit {
+                provider: self.clone(),
+                conditions,
+                key,
+                plan,
+                conflicts: [conflict, (cached_conflicts, conflict_claim)],
+                capacity,
+                inventory,
+            },
+            recovery,
+        ))
+    }
+    fn prepare_recovery(
+        &self,
+        recovery_key: IdempotencyKey,
+        recovery_conditions: [CommitCondition; 2],
+        maximum: usize,
+        maximum_hash: u64,
+        prototype: (CommitOutcome, Allocation),
+        recovery_conflicts: (Vec<CommitConflict>, Allocation),
+    ) -> Result<NativeProviderFuture<'static, Option<IdempotencyObservation>>, StreamError> {
+        let work = self.work.as_ref().ok_or(StreamError::Unavailable)?;
+        let meter = Arc::clone(&work.meter);
         let mut read = work.record(NativeOperationReservation::new(
             Arc::clone(&meter),
             NativeOperationKind::Read,
@@ -181,8 +188,15 @@ impl MemoryStream {
                     .err());
                 if let CommitOutcome::Committed(_) = &value {
                     let append = append(&value);
-                    let (digest, hashed) =
-                        digest(&recovery_conditions, &append.path, &append.records[0].value);
+                    let (digest, hashed) = digest(
+                        &recovery_conditions,
+                        &append.path,
+                        &append
+                            .records
+                            .first()
+                            .ok_or(StreamError::Unavailable)?
+                            .value,
+                    );
                     observed = observed
                         .take()
                         .or(recovery_meter.record_codec(0, 0, hashed).err());
@@ -211,19 +225,7 @@ impl MemoryStream {
                 )
             }))
         }))?;
-        work.record(meter.check())?;
-        Ok((
-            PreparedCommit {
-                provider: self.clone(),
-                conditions,
-                key,
-                plan,
-                conflicts: [conflict, (cached_conflicts, conflict_claim)],
-                capacity,
-                inventory,
-            },
-            recovery,
-        ))
+        Ok(recovery)
     }
 }
 
@@ -232,7 +234,12 @@ impl PreparedCommit {
         mut self,
         body: Bytes,
     ) -> Result<(CommitOutcome, Allocation), StreamError> {
-        let work = Arc::clone(self.provider.work.as_ref().expect("prepared context"));
+        let work = Arc::clone(
+            self.provider
+                .work
+                .as_ref()
+                .ok_or(StreamError::Unavailable)?,
+        );
         let (digest, hashed) = digest(&self.conditions, &append(&self.plan.result).path, &body);
         let _ = work.record(work.meter.record_codec(0, 0, hashed));
         let mut state = self.provider.state.write().await;
@@ -267,7 +274,7 @@ impl PreparedCommit {
             }
             drop(self.capacity.take());
             if state.retained.len() == state.retained.capacity() {
-                let (mut buffer, claim) = self.inventory.take().expect("reserved inventory");
+                let (mut buffer, claim) = self.inventory.take().ok_or(StreamError::Unavailable)?;
                 buffer.append(&mut state.retained);
                 state.retained = buffer;
                 state.retained_allocation = claim;
@@ -284,16 +291,26 @@ impl PreparedCommit {
                     );
                     let id = commit_identity(decision, digest);
                     for value in [&mut self.plan.result, &mut self.plan.cached] {
-                        append_mut(value).records[0].value = body.clone();
+                        append_mut(value)
+                            .records
+                            .first_mut()
+                            .ok_or(StreamError::Unavailable)?
+                            .value = body.clone();
                     }
-                    history_record(&mut self.plan.histories[0]).value = body;
-                    self.plan.bind(id, time);
+                    history_record(
+                        self.plan
+                            .histories
+                            .first_mut()
+                            .ok_or(StreamError::Unavailable)?,
+                    )?
+                    .value = body;
+                    self.plan.bind(id, time)?;
                     let _ = work.record(work.meter.record_codec(
                         0,
                         3 * std::mem::size_of::<Record>() as u64,
                         identity_bytes(),
                     ));
-                    Ok(self.plan.publish(&mut state, self.key, digest, time))
+                    self.plan.publish(&mut state, self.key, digest, time)
                 } else {
                     let value = CommitOutcome::Conflict(conflicts);
                     let _ = work.record(work.meter.record_codec(0, 2 * copied_bytes(&value), 0));
@@ -303,12 +320,8 @@ impl PreparedCommit {
                         Some(self.key),
                         digest,
                         IdempotencyOutcome::Commit(CommitOutcome::Conflict(cached)),
+                        resident,
                     );
-                    state
-                        .retained
-                        .last_mut()
-                        .expect("retained conflict")
-                        ._allocation = resident;
                     Ok((value, output_claim))
                 }
             })
@@ -340,11 +353,13 @@ fn append_mut(value: &mut CommitOutcome) -> &mut crate::CommittedAppend {
     };
     append
 }
-fn history_record(history: &mut Arc<History>) -> &mut Record {
-    let History::Batch { records, .. } = Arc::get_mut(history).expect("unpublished history") else {
-        unreachable!()
+fn history_record(history: &mut Arc<History>) -> Result<&mut Record, StreamError> {
+    let Some(History::Batch { records, .. }) = Arc::get_mut(history) else {
+        return Err(StreamError::Unavailable);
     };
-    &mut Arc::get_mut(records).expect("unpublished records").records[0]
+    Arc::get_mut(records)
+        .and_then(|batch| batch.records.first_mut())
+        .ok_or(StreamError::Unavailable)
 }
 fn digest(conditions: &[CommitCondition; 2], path: &StreamPath, body: &Bytes) -> ([u8; 32], u64) {
     let mut hash = request_hasher(b"commit");
@@ -396,7 +411,7 @@ fn copy_outcome(
             if record.value.len() > maximum {
                 return Err(StreamError::LimitExceeded);
             }
-            target.records[0] = record.clone();
+            *target.records.first_mut().ok_or(StreamError::Unavailable)? = record.clone();
             let CommitOutcome::Committed(output_envelope) = &mut output else {
                 unreachable!()
             };
@@ -429,4 +444,36 @@ fn copied_bytes(value: &CommitOutcome) -> u64 {
             (conflicts.len() * std::mem::size_of::<CommitConflict>()) as u64
         }
     }
+}
+
+fn prepared_tail(request: &mut CommitRequest, maximum: usize) -> Result<u64, StreamError> {
+    if maximum > MAX_RECORD_BYTES {
+        return Err(StreamError::LimitExceeded);
+    }
+    normalize_commit(request)?;
+    validate_commit_shape(request)?;
+    let [CommitMutation::Append { path, records }] = request.mutations.as_slice() else {
+        return Err(StreamError::InvalidArgument);
+    };
+    if request.conditions.len() != 2
+        || request
+            .conditions
+            .iter()
+            .any(|condition| !matches!(condition, CommitCondition::Tail { .. }))
+        || records.len() != 1
+        || !records.first().is_some_and(Bytes::is_empty)
+    {
+        return Err(StreamError::InvalidArgument);
+    }
+    request
+        .conditions
+        .iter()
+        .find_map(|condition| match condition {
+            CommitCondition::Tail {
+                path: guarded,
+                expected,
+            } if guarded == path => Some(*expected),
+            _ => None,
+        })
+        .ok_or(StreamError::InvalidArgument)
 }

@@ -19,12 +19,9 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     io: Option<&PreparationIo>,
 ) -> Result<AuthenticatedAllocation> {
     let owned;
-    let io = match io {
-        Some(io) => io,
-        None => {
-            owned = PreparationIo::new(request, &CancellationToken::new())?;
-            &owned
-        }
+    let io = if let Some(io) = io { io } else {
+        owned = PreparationIo::new(request, &CancellationToken::new())?;
+        &owned
     };
     request.validate(&mut Some(&mut io.history_io()))?;
     proof.provider.validate(&mut None)?;

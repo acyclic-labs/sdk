@@ -365,7 +365,11 @@ impl PiNativeInvocation {
             })
             || self.builtin_tools.iter().enumerate().any(|(index, name)| {
                 !matches!(name.as_str(), "read" | "write" | "edit")
-                    || self.builtin_tools[..index].contains(name)
+                    || self
+                        .builtin_tools
+                        .iter()
+                        .take(index)
+                        .any(|previous| previous == name)
             })
         {
             return Err(invalid(
@@ -476,18 +480,32 @@ impl Serialize for PiNativeArgv<'_> {
             sequence.serialize_element("--no-builtin-tools")?;
         } else {
             let mut tools = [0_u8; 15];
-            let mut length = 0;
+            let mut remaining = tools.as_mut_slice();
             for (index, tool) in invocation.builtin_tools.iter().enumerate() {
-                if index != 0 {
-                    tools[length] = b',';
-                    length += 1;
+                let separator = if index == 0 {
+                    b"".as_slice()
+                } else {
+                    b",".as_slice()
+                };
+                for bytes in [separator, tool.as_bytes()] {
+                    let (target, tail) =
+                        remaining.split_at_mut_checked(bytes.len()).ok_or_else(|| {
+                            <S::Error as serde::ser::Error>::custom(
+                                "Pi builtin names exceed their buffer",
+                            )
+                        })?;
+                    target.copy_from_slice(bytes);
+                    remaining = tail;
                 }
-                tools[length..length + tool.len()].copy_from_slice(tool.as_bytes());
-                length += tool.len();
             }
+            let unused = remaining.len();
+            let length = tools.len() - unused;
             sequence.serialize_element("--tools")?;
             sequence.serialize_element(
-                std::str::from_utf8(&tools[..length]).expect("validated builtin names are ASCII"),
+                std::str::from_utf8(tools.get(..length).ok_or_else(|| {
+                    <S::Error as serde::ser::Error>::custom("Pi builtin buffer length differs")
+                })?)
+                .map_err(<S::Error as serde::ser::Error>::custom)?,
             )?;
         }
         if let Some(extension) = &runtime.provider_extension {

@@ -48,7 +48,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         let early = |error: MountSourceError| (E::from(error), None);
         let projection = state
             .checkout
-            .private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(work, cancellation), cancellation)
+            .private_candidate(
+                &mut crate::kernel::allocation::KernelAccounting::native(work, cancellation),
+                cancellation,
+            )
             .map_err(MountSourceError::from)
             .map_err(early)?;
         let projected = SharedCheckoutState {
@@ -61,9 +64,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         };
         carrier.check(cancellation, lifetime).map_err(early)?;
         self.publishing.store(true, Ordering::Release);
+        let mut original = std::mem::replace(&mut *state.state, projected);
+        // Publish the candidate bound to this invocation; readers keep the prior checkout.
+        std::mem::swap(&mut original.checkout, &mut state.state.checkout);
         let mut publication = Publication {
             shared: self,
-            original: Some(std::mem::replace(&mut *state.state, projected)),
+            original: Some(original),
         };
         drop(state);
         let mut before_publication = before_publication.clone();
@@ -146,14 +152,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             if let Some(context) = context {
                 *acknowledged = Some(match operation {
                     Some(operation) => crate::NativePublicationSnapshot {
-                        context: context,
+                        context,
                         operation: Some(operation),
-                        generation: generation,
+                        generation,
                     },
                     None => crate::NativePublicationSnapshot {
-                        context: context,
+                        context,
                         operation: None,
-                        generation: generation,
+                        generation,
                     },
                 });
             }

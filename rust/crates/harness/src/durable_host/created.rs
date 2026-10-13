@@ -42,11 +42,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if values.len() < values.capacity() {
             return Ok(0);
         }
-        let target = values
-            .capacity()
-            .checked_mul(2)
-            .unwrap_or(usize::MAX)
-            .max(4);
+        let target = values.capacity().saturating_mul(2).max(4);
         let bytes = target
             .checked_sub(values.capacity())
             .and_then(|slots| slots.checked_mul(std::mem::size_of::<T>()))
@@ -98,11 +94,11 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(false)
     }
 
-    pub(super) fn created_access<'a, 'b>(
+    pub(super) fn created_access<'a>(
         &'a self,
         admission: &'a TaskAdmissionRecord,
         visited: &'a mut Vec<OperationId>,
-        work: &'a mut Option<&'b mut dyn crate::store::history::HistoryIo>,
+        work: &'a mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> impl std::future::Future<
         Output = Result<Option<crate::resource_preparation::CreatedResourceAccess>>,
     > + acyclic_stream::ProviderTask

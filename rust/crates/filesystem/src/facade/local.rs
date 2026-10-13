@@ -1,3 +1,4 @@
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use super::*;
 
 /// Bounded self-contained local backend options.

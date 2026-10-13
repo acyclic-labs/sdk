@@ -1334,6 +1334,7 @@ fn native_backend(
     let operation = directory.join("operation");
     std::fs::create_dir(&root).expect("fixture source root");
     std::fs::create_dir_all(operation.join("target")).expect("fixture target");
+    std::fs::create_dir(operation.join("backup")).expect("fixture backup");
     std::fs::write(root.join("file"), b"before").expect("fixture source bytes");
     std::fs::write(operation.join("target/file"), b"target").expect("fixture target bytes");
     let (root, custody) = work.path(&root, None).expect("funded backend root path");

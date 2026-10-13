@@ -201,50 +201,13 @@ pub(super) fn write_segment_inner<B: AsRef<[u8]>>(
     {
         return Err(invalid());
     }
-    let count = u32::try_from(bodies.len()).map_err(|_| invalid())?;
-    let table_bytes = bodies
-        .len()
-        .checked_mul(SEGMENT_RECORD_BYTES)
-        .ok_or_else(invalid)?;
-    let metadata_capacity = SEGMENT_HEADER_BYTES
-        .checked_add(table_bytes)
-        .ok_or_else(invalid)?;
-    let mut offsets = Vec::new();
-    publication.reserve(&mut offsets, bodies.len())?;
-    let mut metadata = Vec::new();
-    publication.reserve(&mut metadata, metadata_capacity)?;
-    publication.codec(metadata_capacity, metadata_capacity, 0, || {
-        metadata.extend_from_slice(SEGMENT_MAGIC);
-        metadata.extend_from_slice(&count.to_le_bytes());
-        for (digest, body) in bodies {
-            metadata.extend_from_slice(digest);
-            metadata.extend_from_slice(&(body.as_ref().len() as u64).to_le_bytes());
-        }
-    })?;
-    let mut position = metadata_capacity as u64;
-    for (_, body) in bodies {
-        offsets.push(position);
-        position = position
-            .checked_add(body.as_ref().len() as u64)
-            .ok_or_else(invalid)?;
-    }
-    let mut hasher = blake3::Hasher::new();
-    publication.codec(0, 0, metadata.len(), || {
-        hasher.update(&metadata);
-    })?;
-    for (_, body) in bodies {
-        publication.codec(0, 0, body.as_ref().len(), || {
-            hasher.update(body.as_ref());
-        })?;
-    }
-    let id = *hasher.finalize().as_bytes();
+    let (id, metadata, offsets, position) = segment_metadata(bodies, publication)?;
     let parent = publication_path(root, "segments", publication)?;
     let mut identity = publication_string(64, publication)?;
     publication.codec(64, 0, 0, || {
-        const DIGITS: &[u8; 16] = b"0123456789abcdef";
+        use std::fmt::Write as _;
         for byte in id {
-            identity.push(char::from(DIGITS[usize::from(byte >> 4)]));
-            identity.push(char::from(DIGITS[usize::from(byte & 15)]));
+            let _ = write!(identity, "{byte:02x}");
         }
     })?;
     let mut name = publication_string(72, publication)?;
@@ -265,46 +228,7 @@ pub(super) fn write_segment_inner<B: AsRef<[u8]>>(
             {}
         Err(error) => return Err(error),
     }
-    let mut opened = None;
-    for _ in 0..1_024 {
-        use std::fmt::Write as _;
-        let nonce = TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let pid = std::process::id();
-        let name_length = 1
-            + 64
-            + 1
-            + (pid.max(1).ilog10() as usize + 1)
-            + 1
-            + (nonce.max(1).ilog10() as usize + 1)
-            + 4;
-        let mut temporary_name = publication_string(name_length, publication)?;
-        publication.codec(name_length, name_length, 0, || {
-            let _ = write!(temporary_name, ".{identity}.{pid}-{nonce}.tmp");
-        })?;
-        let temporary = publication_path(&parent, &temporary_name, publication)?;
-        let result = publication_namespace(publication, || {
-            let mut options = OpenOptions::new();
-            options.create_new(true).write(true);
-            #[cfg(windows)]
-            if publication.native.is_some() {
-                use std::os::windows::fs::OpenOptionsExt as _;
-                options.custom_flags(0x4000_0000);
-            }
-            options.open(&temporary)
-        });
-        match result {
-            Ok(file) => {
-                opened = Some((temporary, file));
-                break;
-            }
-            Err(error)
-                if !error.has_payload()
-                    && matches!(&error.cause, NativeObjectsCause::Admission(cause) if cause.kind() == std::io::ErrorKind::AlreadyExists) =>
-                {}
-            Err(error) => return Err(error),
-        }
-    }
-    let (temporary, mut file) = opened.ok_or_else(invalid)?;
+    let (temporary, mut file) = open_segment_temporary(&parent, &identity, publication)?;
     let write_result = (|| -> Result<(), NativeObjectsError> {
         if let Some((meter, _)) = &publication.native {
             acyclic_native_runtime::write_all_at(
@@ -346,7 +270,7 @@ pub(super) fn write_segment_inner<B: AsRef<[u8]>>(
             if !error.has_payload()
                 && matches!(&error.cause, NativeObjectsCause::Admission(cause) if cause.kind() == std::io::ErrorKind::AlreadyExists) =>
         {
-            validate_segment_publication(&destination, &id, position, publication)?
+            validate_segment_publication(&destination, &id, position, publication)?;
         }
         Err(error) => {
             let _ = publication_namespace(publication, || fs::remove_file(&temporary));
@@ -415,4 +339,99 @@ pub(crate) fn native_durability(durability: LocalDurability) -> acyclic_native_r
 pub(super) fn sync_parent(path: &Path, durability: LocalDurability) -> Result<(), PhysicalError> {
     acyclic_native_runtime::sync_parent(path, native_durability(durability))?;
     Ok(())
+}
+
+type SegmentMetadata = ([u8; 32], Vec<u8>, Vec<u64>, u64);
+
+fn segment_metadata<B: AsRef<[u8]>>(
+    bodies: &[([u8; 32], B)],
+    publication: &mut Publication,
+) -> Result<SegmentMetadata, NativeObjectsError> {
+    let invalid = || native_write_error(PhysicalError::Invalid("invalid object segment"));
+    let count = u32::try_from(bodies.len()).map_err(|_| invalid())?;
+    let table_bytes = bodies
+        .len()
+        .checked_mul(SEGMENT_RECORD_BYTES)
+        .ok_or_else(invalid)?;
+    let metadata_capacity = SEGMENT_HEADER_BYTES
+        .checked_add(table_bytes)
+        .ok_or_else(invalid)?;
+    let mut offsets = Vec::new();
+    publication.reserve(&mut offsets, bodies.len())?;
+    let mut metadata = Vec::new();
+    publication.reserve(&mut metadata, metadata_capacity)?;
+    publication.codec(metadata_capacity, metadata_capacity, 0, || {
+        metadata.extend_from_slice(SEGMENT_MAGIC);
+        metadata.extend_from_slice(&count.to_le_bytes());
+        for (digest, body) in bodies {
+            metadata.extend_from_slice(digest);
+            metadata.extend_from_slice(&(body.as_ref().len() as u64).to_le_bytes());
+        }
+    })?;
+    let mut position = metadata_capacity as u64;
+    for (_, body) in bodies {
+        offsets.push(position);
+        position = position
+            .checked_add(body.as_ref().len() as u64)
+            .ok_or_else(invalid)?;
+    }
+    let mut hasher = blake3::Hasher::new();
+    publication.codec(0, 0, metadata.len(), || {
+        hasher.update(&metadata);
+    })?;
+    for (_, body) in bodies {
+        publication.codec(0, 0, body.as_ref().len(), || {
+            hasher.update(body.as_ref());
+        })?;
+    }
+    let id = *hasher.finalize().as_bytes();
+    Ok((id, metadata, offsets, position))
+}
+
+fn open_segment_temporary(
+    parent: &Path,
+    identity: &str,
+    publication: &mut Publication,
+) -> Result<(PathBuf, File), NativeObjectsError> {
+    let invalid = || native_write_error(PhysicalError::Invalid("invalid object segment"));
+    let mut opened = None;
+    for _ in 0..1_024 {
+        use std::fmt::Write as _;
+        let nonce = TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
+        let name_length = 1
+            + 64
+            + 1
+            + (pid.max(1).ilog10() as usize + 1)
+            + 1
+            + (nonce.max(1).ilog10() as usize + 1)
+            + 4;
+        let mut temporary_name = publication_string(name_length, publication)?;
+        publication.codec(name_length, name_length, 0, || {
+            let _ = write!(temporary_name, ".{identity}.{pid}-{nonce}.tmp");
+        })?;
+        let temporary = publication_path(parent, &temporary_name, publication)?;
+        let result = publication_namespace(publication, || {
+            let mut options = OpenOptions::new();
+            options.create_new(true).write(true);
+            #[cfg(windows)]
+            if publication.native.is_some() {
+                use std::os::windows::fs::OpenOptionsExt as _;
+                options.custom_flags(0x4000_0000);
+            }
+            options.open(&temporary)
+        });
+        match result {
+            Ok(file) => {
+                opened = Some((temporary, file));
+                break;
+            }
+            Err(error)
+                if !error.has_payload()
+                    && matches!(&error.cause, NativeObjectsCause::Admission(cause) if cause.kind() == std::io::ErrorKind::AlreadyExists) =>
+                {}
+            Err(error) => return Err(error),
+        }
+    }
+    opened.ok_or_else(invalid)
 }

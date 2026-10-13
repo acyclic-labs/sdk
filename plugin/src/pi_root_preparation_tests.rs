@@ -91,8 +91,7 @@ impl Fixture {
 
     async fn load(&self) -> Result<PiRootPreparation> {
         PiRootPreparation::load(
-            &self.private,
-            Path::new(""),
+            (&self.private, Path::new("")),
             &self.runtime,
             &self.filesystem,
             &self.request.binding,
@@ -206,7 +205,7 @@ impl Fixture {
                 } else {
                     let encoded = serde_json::to_vec(&schema.0).unwrap();
                     let mut duplicate = br#"{"type":"object","#.to_vec();
-                    duplicate.extend_from_slice(&encoded[1..]);
+                    duplicate.extend_from_slice(encoded.get(1..).unwrap());
                     duplicate
                 };
                 plan.result_schema = self
@@ -336,8 +335,7 @@ async fn pi_preparation_reads_original_pins_after_changed_heads_and_cold_reopen(
     assert_eq!(loaded.command, fixture.command);
     assert_eq!(loaded.request, fixture.request);
     let supplied = PiRootPreparation::load(
-        &fixture.private,
-        Path::new(""),
+        (&fixture.private, Path::new("")),
         &fixture.runtime,
         &fixture.filesystem,
         &fixture.request.binding,
@@ -451,14 +449,13 @@ async fn pi_preparation_rejects_other_original_keys_and_any_policy_drift() {
         let private = other.path();
         assert!(matches!(
             PiRootPreparation::load(
-                private,
-                Path::new(""),
+                (private, Path::new("")),
                 &fixture.runtime,
                 &fixture.filesystem,
                 &fixture.request.binding,
                 crate::pi_recovery::PiTaskOrigin::Root(&fixture.request.root),
                 None,
-                &fixture.work
+                &fixture.work,
             )
             .await,
             Err(Error::Unauthorized(_))

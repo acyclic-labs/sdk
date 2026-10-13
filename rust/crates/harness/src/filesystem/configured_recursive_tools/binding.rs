@@ -31,12 +31,9 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         if io.and_then(PreparationIo::original_native_work).is_some() {
             let retained;
-            let owner = match owner {
-                Some(owner) => owner,
-                None => {
-                    retained = self.source_owner(context.task(), cancellation, io).await?;
-                    &retained
-                }
+            let owner = if let Some(owner) = owner { owner } else {
+                retained = self.source_owner(context.task(), cancellation, io).await?;
+                &retained
             };
             let binding = context.task().owned_task_binding(io)?;
             owner.require_mail_scope(context.scope(), io)?;

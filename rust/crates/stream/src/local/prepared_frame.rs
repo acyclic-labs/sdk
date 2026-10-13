@@ -102,7 +102,12 @@ impl PreparedFrame {
         self.encoded.extend_from_slice(&length);
         self.encoded.extend_from_slice(&time.to_le_bytes());
         command.encode(&mut self.encoded);
-        let checksum = frame_checksum(&length, &self.encoded[4..]);
+        let checksum = frame_checksum(
+            &length,
+            self.encoded
+                .get(4..)
+                .ok_or(LocalStreamError::IncompleteFrame)?,
+        );
         self.encoded.extend_from_slice(&checksum);
         if let Some(work) = &self.work {
             let hashed = b"acyclic-stream-local-frame-v1\0".len() + 4 + FRAME_TIME_BYTES + size;
@@ -123,14 +128,14 @@ impl PreparedFrame {
         let (result, observed) = self
             .operation
             .as_mut()
-            .expect("funded journal write")
+            .ok_or(LocalStreamError::IncompleteFrame)?
             .attempt(|| writer.write(&self.encoded));
         let _ = work.record(observed);
         let actual = result.as_ref().copied().unwrap_or(0);
         let _ = work.record(
             self.transfer
                 .as_mut()
-                .expect("funded journal bytes")
+                .ok_or(LocalStreamError::IncompleteFrame)?
                 .record(actual),
         );
         match result {

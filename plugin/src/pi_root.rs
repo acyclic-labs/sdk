@@ -23,14 +23,13 @@ pub(crate) enum PiRootIntent {
 
 pub(crate) fn root_identity_key_matches(key: &str, identity: &[u8; 16]) -> bool {
     let mut canonical = [0; 32];
-    hex::encode_to_slice(identity, &mut canonical).expect("fixed root identity extent");
-    key.as_bytes() == canonical
+    hex::encode_to_slice(identity, &mut canonical).is_ok() && key.as_bytes() == canonical
 }
 
 fn root_selected_identity(paths: &BTreeMap<String, String>, identity: &[u8; 16]) -> bool {
     let mut key = [0u8; 32];
-    hex::encode_to_slice(identity, &mut key).expect("fixed root identity extent");
-    std::str::from_utf8(&key).is_ok_and(|key| paths.contains_key(key))
+    hex::encode_to_slice(identity, &mut key).is_ok()
+        && std::str::from_utf8(&key).is_ok_and(|key| paths.contains_key(key))
 }
 
 fn root_validation_error(reason: &'static str) -> acyclic_harness::Error {
@@ -104,13 +103,21 @@ mod identity_key_tests {
         for offset in 0..16 {
             for byte in 0..=255u8 {
                 let mut identity = [1u8; 16];
-                identity[offset] = byte;
+                for (index, slot) in identity.iter_mut().enumerate() {
+                    if index == offset {
+                        *slot = byte;
+                    }
+                }
                 let canonical = hex::encode(identity);
                 assert!(root_identity_key_matches(&canonical, &identity));
                 let paths = BTreeMap::from([(canonical.clone(), "original-root".to_owned())]);
                 assert!(root_selected_identity(&paths, &identity));
                 let mut substituted = identity;
-                substituted[offset] ^= 1;
+                for (index, slot) in substituted.iter_mut().enumerate() {
+                    if index == offset {
+                        *slot ^= 1;
+                    }
+                }
                 assert!(!root_selected_identity(&paths, &substituted));
                 if canonical.bytes().any(|byte| byte.is_ascii_lowercase()) {
                     assert!(!root_identity_key_matches(
@@ -118,7 +125,11 @@ mod identity_key_tests {
                         &identity
                     ));
                 }
-                assert!(!root_identity_key_matches(&canonical[..31], &identity));
+                assert!(
+                    canonical
+                        .get(..31)
+                        .is_some_and(|key| !root_identity_key_matches(key, &identity))
+                );
             }
         }
     }

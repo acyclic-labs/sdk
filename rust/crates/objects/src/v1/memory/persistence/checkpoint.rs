@@ -87,24 +87,16 @@ impl Journal {
                 #[cfg(test)]
                 self.checkpoint_fault(3)
                     .map_err(|_| Error::from(Unavailable))?;
-                if let Err(error) = self.root.replace_journal(|| match &publication.native {
-                    Some((meter, _)) => acyclic_native_runtime::durable_rename(
+                if let Err(error) = self.root.replace_journal(|| {
+                    acyclic_native_runtime::durable_rename(
                         &temporary.value,
                         &destination.value,
                         acyclic_native_runtime::RenameMode::Replace,
-                        Some(meter),
-                    ),
-                    None => acyclic_native_runtime::durable_rename(
-                        &temporary.value,
-                        &destination.value,
-                        acyclic_native_runtime::RenameMode::Replace,
-                        None,
-                    ),
+                        publication.native.as_ref().map(|(meter, _)| meter),
+                    )
                 }) {
                     self.poisoned.store(true, Ordering::Release);
-                    return Err(NativeObjectsError::from(NativeObjectsCause::Admission(
-                        error,
-                    )));
+                    return Err(error.into());
                 }
                 #[cfg(test)]
                 self.checkpoint_fault(4)

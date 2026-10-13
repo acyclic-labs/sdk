@@ -52,14 +52,13 @@ impl TaskContext {
                 reason: "interaction request belongs to another original ledger",
             });
         }
-        if let Interaction::Approval { prompt, .. } = &paid.0 {
-            if paid.1.bytes() < prompt.capacity() as u64 {
+        if let Interaction::Approval { prompt, .. } = &paid.0
+            && paid.1.bytes() < prompt.capacity() as u64 {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Conflict,
                     reason: "approval request does not retain its original prompt",
                 });
             }
-        }
         let router = command_router.or_else(|| {
             if self.durable_task.is_some() {
                 self.owned_interactions

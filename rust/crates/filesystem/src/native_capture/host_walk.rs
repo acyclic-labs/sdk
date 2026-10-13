@@ -145,17 +145,16 @@ pub(super) fn insert_host_observation(
     capture_replace(observed, path, Some(metadata), meter)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn collect_host_subtree_roots(
     source_root: &HostRoot,
-    profile: FilesystemProfile,
-    limits: crate::model::VolumeLimits,
+    volume: (FilesystemProfile, crate::model::VolumeLimits),
     maximum: usize,
     roots: &[NamespacePath],
     policy: &CapturePolicy,
     observed: &mut Vec<(NamespacePath, Option<HostStat>)>,
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
+    let (profile, limits) = volume;
     for root in roots {
         let host_root = namespace_to_host_path_measured(root, meter)?;
         let observation = observe_host_path(source_root, &host_root, meter)?;

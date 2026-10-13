@@ -149,8 +149,8 @@ fn encode_original_fields(
     encoder.fixed(append.commit.fingerprint.as_bytes());
     encoder.fixed(&request.volume_id.into_bytes());
     encoder.fixed(&logical_file_bytes.to_le_bytes());
-    encoder.bounded_bytes(&manifest)?;
-    encoder.bounded_bytes(&root)?;
+    encoder.bounded_bytes(manifest)?;
+    encoder.bounded_bytes(root)?;
     encoder.bounded_bytes(&append.commit.payload)?;
     encoder.bounded_bytes(&permit)?;
     let bytes = Bytes::from(encoder.finish());

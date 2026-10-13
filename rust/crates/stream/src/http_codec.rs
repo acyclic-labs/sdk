@@ -13,14 +13,17 @@ fn options(
     if sequence.is_none() && key.is_none() {
         return None;
     }
-    let mut value = json!({});
+    let mut value = serde_json::Map::from_iter([]);
     if let Some(sequence) = sequence {
-        value[name] = json!(sequence.to_string());
+        value.insert(name.into(), json!(sequence.to_string()));
     }
     if let Some(key) = key {
-        value["idempotencyKey"] = json!(STANDARD.encode(key.as_bytes()));
+        value.insert(
+            "idempotencyKey".into(),
+            json!(STANDARD.encode(key.as_bytes())),
+        );
     }
-    Some(value)
+    Some(Value::Object(value))
 }
 
 fn valid_token_expiry(value: &str) -> bool {
@@ -61,14 +64,14 @@ fn request_json_append(input: &[u8]) -> Result<Value> {
         .iter()
         .map(|value| STANDARD.encode(value))
         .collect();
-    let mut value = json!({
-        "path": request.path.to_string(),
-        "values": values,
-    });
+    let mut value = serde_json::Map::from_iter([
+        ("path".into(), json!(request.path.to_string())),
+        ("values".into(), json!(values)),
+    ]);
     if let Some(options) = options("ifTail", request.if_tail, request.idempotency_key.as_ref()) {
-        value["options"] = options;
+        value.insert("options".into(), options);
     }
-    Ok(value)
+    Ok(Value::Object(value))
 }
 
 fn request_json_fork(input: &[u8]) -> Result<Value> {
@@ -78,14 +81,14 @@ fn request_json_fork(input: &[u8]) -> Result<Value> {
         return Err("invalid_argument");
     }
     crate::request::validate_fork_size(&request).map_err(|error| error.code())?;
-    let mut value = json!({
-        "source": request.source.to_string(),
-        "destination": request.destination.to_string(),
-    });
+    let mut value = serde_json::Map::from_iter([
+        ("source".into(), json!(request.source.to_string())),
+        ("destination".into(), json!(request.destination.to_string())),
+    ]);
     if let Some(options) = options("atTail", request.at_tail, request.idempotency_key.as_ref()) {
-        value["options"] = options;
+        value.insert("options".into(), options);
     }
-    Ok(value)
+    Ok(Value::Object(value))
 }
 
 fn request_json_commit(input: &[u8]) -> Result<Value> {
@@ -124,30 +127,47 @@ fn request_json_commit(input: &[u8]) -> Result<Value> {
             },
         }),
     }).collect();
-    let mut value = json!({
+    let mut commit_options = serde_json::Map::from_iter([(
+        "idempotencyKey".into(),
+        json!(STANDARD.encode(request.idempotency_key.as_bytes())),
+    )]);
+    if let Some(deadline) = deadline {
+        commit_options.insert("deadlineUnixMillis".into(), json!(deadline.to_string()));
+    }
+    let value = json!({
         "request": {
             "conditions": conditions,
             "mutations": mutations,
         },
-        "options": { "idempotencyKey": STANDARD.encode(request.idempotency_key.as_bytes()) },
+        "options": commit_options,
     });
-    if let Some(deadline) = deadline {
-        value["options"]["deadlineUnixMillis"] = json!(deadline.to_string());
-    }
     Ok(value)
 }
 
 fn request_json_tokens_create(input: &[u8]) -> Result<Value> {
     let request = wire::CreateTokenRequest::decode(input).map_err(|_| "invalid_argument")?;
     validate_token_request(&request)?;
-    let allow = request.allow.iter().map(|grant| {
-        let mut value = json!({
-            "path": wire_codec::path(grant.path.clone()).map_err(|error| error.code())?.to_string(),
-            "operations": grant.operations,
-        });
-        if let Some(subtree) = grant.subtree { value["subtree"] = json!(subtree); }
-        Ok(value)
-    }).collect::<Result<Vec<_>>>()?;
+    let allow = request
+        .allow
+        .iter()
+        .map(|grant| {
+            let mut value = serde_json::Map::from_iter([
+                (
+                    "path".into(),
+                    json!(
+                        wire_codec::path(grant.path.clone())
+                            .map_err(|error| error.code())?
+                            .to_string()
+                    ),
+                ),
+                ("operations".into(), json!(grant.operations)),
+            ]);
+            if let Some(subtree) = grant.subtree {
+                value.insert("subtree".into(), json!(subtree));
+            }
+            Ok(Value::Object(value))
+        })
+        .collect::<Result<Vec<_>>>()?;
     Ok(json!({
         "expiresIn": request.expires_in,
         "allow": allow,
@@ -195,11 +215,11 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
             let request = wire::ChildrenRequest::decode(input).map_err(|_| "invalid_argument")?;
             let request = wire_codec::children_from_wire(request).map_err(|error| error.code())?;
             memory::validate_limit(request.limit).map_err(|error| error.code())?;
-            let mut value = json!({ "limit": request.limit });
+            let mut value = serde_json::Map::from_iter([("limit".into(), json!(request.limit))]);
             if let Some(parent) = request.parent {
-                value["parent"] = json!(parent.to_string());
+                value.insert("parent".into(), json!(parent.to_string()));
             }
-            Ok(value)
+            Ok(Value::Object(value))
         }
         "children/page" => {
             let request =
@@ -210,17 +230,20 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
                 return Err("invalid_argument");
             }
             memory::validate_limit(request.limit).map_err(|error| error.code())?;
-            let mut value = json!({ "limit": request.limit });
+            let mut value = serde_json::Map::from_iter([("limit".into(), json!(request.limit))]);
             if let Some(parent) = request.parent {
-                value["parent"] = json!(parent.to_string());
+                value.insert("parent".into(), json!(parent.to_string()));
             }
             if let Some(after) = request.after {
-                value["after"] = json!(after.to_string());
+                value.insert("after".into(), json!(after.to_string()));
             }
             if let Some(version) = request.hierarchy_version {
-                value["hierarchyVersion"] = json!(STANDARD.encode(version.as_bytes()));
+                value.insert(
+                    "hierarchyVersion".into(),
+                    json!(STANDARD.encode(version.as_bytes())),
+                );
             }
-            Ok(value)
+            Ok(Value::Object(value))
         }
         "commit" => request_json_commit(input),
         "commits/read" => {

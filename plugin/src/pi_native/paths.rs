@@ -57,19 +57,17 @@ pub(super) fn native_root_route(
     let mut identity = [0; 16];
     hex::decode_to_slice(key, &mut identity).map_err(|_| reject())?;
     let mut canonical = [0; 32];
-    hex::encode_to_slice(identity, &mut canonical).expect("exact root identity hexadecimal extent");
+    hex::encode_to_slice(identity, &mut canonical).map_err(|_| reject())?;
     if key.as_bytes() != canonical {
         return Err(reject());
     }
     let mut route = [0_u8; 23];
-    route[0] = b'r';
+    let [prefix, tail @ ..] = &mut route;
+    *prefix = b'r';
     base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode_slice(identity, &mut route[1..])
-        .expect("exact root identity route extent");
-    pi_native_string(
-        std::str::from_utf8(&route).expect("root route uses ASCII encoding"),
-        work,
-    )
+        .encode_slice(identity, tail)
+        .map_err(|_| reject())?;
+    pi_native_string(std::str::from_utf8(&route).map_err(|_| reject())?, work)
 }
 
 fn native_task_directory(

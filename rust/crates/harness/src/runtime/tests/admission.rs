@@ -104,7 +104,7 @@ fn created_resource_proofs_are_exact_canonical_child_data() -> Result<()> {
     let mut admission = TaskAdmissionRecord::from_canonical_value(wire.clone(), &mut None)?.0;
     let provider = ProviderRef::new("test".into(), "creator".into(), "1".into(), &mut None)?;
     let resource = |kind, id: &[u8]| {
-        ResourceRef::new(kind, provider.clone(), id.to_vec().into(), None, &mut None)
+        ResourceRef::new(kind, provider.clone(), id.to_vec(), None, &mut None)
     };
     let proof = ResourceCreationProofRef {
         provider: provider.clone(),
@@ -132,7 +132,7 @@ fn created_resource_proofs_are_exact_canonical_child_data() -> Result<()> {
     );
     let mut changed = proof;
     changed.preparation = TaskId::from_bytes([73; 16]);
-    let changed_child = child.clone().with_resource_proofs(vec![changed])?;
+    let changed_child = child.with_resource_proofs(vec![changed])?;
     assert_ne!(
         crate::executor::preparation_digest(&canonical, None)?,
         crate::executor::preparation_digest(&changed_child.canonical_value(), None)?

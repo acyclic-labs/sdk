@@ -343,7 +343,7 @@ async fn b17_seventy_event_replay_and_completion() -> Result<()> {
         .stage(
             attempt,
             "request",
-            &(request.bytes().to_vec()),
+            request.bytes(),
             "application/json",
             None,
         )?

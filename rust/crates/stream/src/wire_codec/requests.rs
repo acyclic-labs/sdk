@@ -70,26 +70,31 @@ pub(crate) fn commit_len(request: &CommitRequest) -> usize {
         + block_len(request.idempotency_key.as_bytes().len())
 }
 
+#[cfg(any(feature = "local", all(feature = "wasm", target_arch = "wasm32")))]
 pub(crate) fn header(out: &mut Vec<u8>, tag: u32, length: usize) {
     prost::encoding::encode_key(tag, prost::encoding::WireType::LengthDelimited, out);
     prost::encoding::encode_varint(length as u64, out);
 }
+#[cfg(any(feature = "local", all(feature = "wasm", target_arch = "wasm32")))]
 fn bytes(out: &mut Vec<u8>, tag: u32, value: &[u8]) {
     header(out, tag, value.len());
     out.extend_from_slice(value);
 }
+#[cfg(any(feature = "local", all(feature = "wasm", target_arch = "wasm32")))]
 fn uint(out: &mut Vec<u8>, tag: u32, value: Option<u64>) {
     if let Some(value) = value {
         prost::encoding::encode_key(tag, prost::encoding::WireType::Varint, out);
         prost::encoding::encode_varint(value, out);
     }
 }
+#[cfg(any(feature = "local", all(feature = "wasm", target_arch = "wasm32")))]
 fn records(out: &mut Vec<u8>, tag: u32, values: &[OwnedBytes]) {
     for value in values {
         bytes(out, tag, value);
     }
 }
 
+#[cfg(any(feature = "local", all(feature = "wasm", target_arch = "wasm32")))]
 pub(crate) fn append(out: &mut Vec<u8>, request: &AppendRequest) {
     bytes(out, 1, request.path.as_str().as_bytes());
     records(out, 2, &request.records);
@@ -98,6 +103,7 @@ pub(crate) fn append(out: &mut Vec<u8>, request: &AppendRequest) {
         bytes(out, 4, key.as_bytes());
     }
 }
+#[cfg(any(feature = "local", all(feature = "wasm", target_arch = "wasm32")))]
 pub(crate) fn fork(out: &mut Vec<u8>, request: &ForkRequest) {
     bytes(out, 1, request.source.as_str().as_bytes());
     bytes(out, 2, request.destination.as_str().as_bytes());
@@ -106,6 +112,7 @@ pub(crate) fn fork(out: &mut Vec<u8>, request: &ForkRequest) {
         bytes(out, 4, key.as_bytes());
     }
 }
+#[cfg(any(feature = "local", all(feature = "wasm", target_arch = "wasm32")))]
 pub(crate) fn commit(out: &mut Vec<u8>, request: &CommitRequest) {
     for condition in &request.conditions {
         header(out, 1, condition_len(condition));

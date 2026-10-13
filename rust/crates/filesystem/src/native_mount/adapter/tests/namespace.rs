@@ -224,7 +224,13 @@ fn concurrent_observations_never_see_a_mutation_half_applied()
                                 None,
                             )
                             .await?;
-                        let mut checkout = observation.observer(&mut crate::kernel::allocation::KernelAccounting::native(&work, work.cancellation()), work.cancellation())?;
+                        let mut checkout = observation.observer(
+                            &mut crate::kernel::allocation::KernelAccounting::native(
+                                &work,
+                                work.cancellation(),
+                            ),
+                            work.cancellation(),
+                        )?;
                         let mut values = [0; 2];
                         for (value, path) in values.iter_mut().zip(&pair) {
                             *value = checkout
@@ -444,12 +450,14 @@ fn an_unrecorded_checkout_change_invalidates_every_lookup() -> Result<(), Box<dy
     let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
     let untouched = native_test_path("untouched");
     let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
-    let (namespace, _allocation) = source.namespace_path(
-        &path,
-        &mut NativeDemandCarrier::Native(&work),
-    )?;
+    let (namespace, _allocation) =
+        source.namespace_path(&path, &mut NativeDemandCarrier::Native(&work))?;
     source.runtime.wait(|| async {
         let mut checkout = source.checkout.lock().await;
+        checkout.checkout = checkout.checkout.private_candidate(
+            &mut crate::kernel::KernelAccounting::native(&work, work.cancellation()),
+            work.cancellation(),
+        )?;
         apply_authored(
             &mut checkout.checkout,
             &AuthoredMutation::CreateFile {
