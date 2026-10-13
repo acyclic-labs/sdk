@@ -441,6 +441,31 @@ impl ToolContext {
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl ToolContext {
+    /// Observes this issued tool's original task admission on the supplied ledger.
+    pub async fn admission(
+        &self,
+        work: &NativeWork,
+    ) -> Result<(TaskAdmissionRecord, acyclic_fs::NativeAllocation)> {
+        self.validate_native_mcp_context(work)?;
+        let context = self.task();
+        let host = context.harness.host.as_ref().ok_or_else(|| native_context::boundary(
+            crate::wire::ErrorCode::Unsupported,
+            "original admission has no durable host",
+        ))?;
+        context.verify_original_execution_owner(work).await?;
+        let observed = host.observe_admission_with_native_work(
+            context.durable_task_id().expect("validated durable tool context"), work,
+        )?.await?;
+        if observed.0.operation_id != context.task_id {
+            return Err(native_context::boundary(
+                crate::wire::ErrorCode::Unauthorized,
+                "observed input differs from the original issued task",
+            ));
+        }
+        context.verify_original_execution_owner(work).await?;
+        Ok(observed)
+    }
+
     /// Checks the SDK-issued native dispatch context before MCP allocation or IO.
     pub fn validate_native_mcp_context(&self, work: &NativeWork) -> Result<()> {
         let context = self.validate_native_bound_context(work)?;
