@@ -1,4 +1,5 @@
 use super::*;
+use crate::wire::ErrorCode::{Conflict, Invalid, Storage, Unauthorized, Unsupported};
 
 /// Finds the canonical base published by this execution's first response step.
 pub async fn canonical_checkpoint_for_operation(
@@ -8,7 +9,7 @@ pub async fn canonical_checkpoint_for_operation(
     io: Option<&PreparationIo>,
 ) -> Result<Option<FileRef>> {
     #[cfg(feature = "filesystem")]
-    let before = io.map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
+    let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
     #[cfg(feature = "filesystem")]
     let _records_hold;
     let (_, records) = replay_execution(
@@ -36,7 +37,7 @@ pub async fn canonical_checkpoint_for_operation(
     else {
         return Err(stock_boundary(
             io,
-            crate::wire::ErrorCode::Storage,
+            Storage,
             "canonical publication event is invalid",
         ));
     };
@@ -47,13 +48,13 @@ pub async fn canonical_checkpoint_for_operation(
         if projection.0.canonical.is_some() {
             return Err(stock_boundary(
                 io,
-                crate::wire::ErrorCode::Storage,
+                Storage,
                 "canonical publication has no checkpoint",
             ));
         }
         return Ok(None);
     };
-    validate_checkpoint_json_reference(&reference, limits, io)?;
+    validate_checkpoint_json_reference(reference, limits, io)?;
     let envelope =
         load_json::<crate::context::CanonicalContextCheckpoint>(journal, reference, io).await?;
     envelope.0.validate(limits, io)?;
@@ -63,7 +64,7 @@ pub async fn canonical_checkpoint_for_operation(
     {
         return Err(stock_boundary(
             io,
-            crate::wire::ErrorCode::Storage,
+            Storage,
             "checkpoint differs from its committed publication",
         ));
     }
@@ -90,163 +91,131 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
     if maximum_history_bytes == 0 || cursor.after_revision > cursor.through_revision {
         return Err(stock_boundary(
             io,
-            crate::wire::ErrorCode::Invalid,
+            Invalid,
             "checkpoint history bounds are invalid",
         ));
     }
     let owner = journal.canonical_authority().ok_or_else(|| {
         stock_boundary(
             io,
-            crate::wire::ErrorCode::Unsupported,
+            Unsupported,
             "checkpoint journal has no bound canonical owner",
         )
     })?;
     if owner != &cursor.authority {
         return Err(stock_boundary(
             io,
-            crate::wire::ErrorCode::Unauthorized,
+            Unauthorized,
             "checkpoint journal belongs to another owner",
         ));
     }
     #[cfg(feature = "filesystem")]
-    let _committed_hold;
-    let committed = match io {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        Some(io) if io.original_native_work().is_some() => {
-            let before = io.owned_bytes()?;
-            let mut observer = crate::store::HistoryWork::new(PreparationIo::from_native_work(
-                io.original_native_work()
-                    .expect("native branch retains original work"),
-            )?);
-            let cursor = history.pin(0, Some(&mut observer)).await?;
-            observer.return_staged_output()?;
-            io.absorb_native_custody(observer.into_custody()?)?;
-            _committed_hold = Some(io.guard_owned(io.owned_bytes()? - before)?);
-            cursor
-        }
-        #[cfg(feature = "filesystem")]
-        Some(io) => {
-            let mut read_work = crate::store::HistoryWork::new(PreparationIo::from_budget(
-                io.remaining()?,
-                io.cancellation(),
-            )?);
-            let result = async {
-                read_work.preflight()?;
-                history.pin(0, Some(&mut read_work)).await
+    let begin = || {
+        io.map(|io| {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = io.original_native_work() {
+                return PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new);
             }
-            .await;
-            let receipt = read_work.finish(result);
-            let held = receipt
-                .as_ref()
-                .map_or(0, |receipt| receipt.work.peak_allocation_bytes);
-            let value = io.receive_content(receipt)?;
-            io.retain_owned(held)?;
-            _committed_hold = Some(io.guard_owned(held)?);
-            value
-        }
-        _ => {
-            #[cfg(feature = "filesystem")]
-            {
-                _committed_hold = None;
-            }
-            history.pin(0, None).await?
-        }
+            PreparationIo::from_budget(io.remaining()?, io.cancellation())
+                .map(crate::store::HistoryWork::new)
+        })
+        .transpose()
     };
-    if cursor.authority != committed.authority {
-        return Err(stock_boundary(
-            io,
-            crate::wire::ErrorCode::Unauthorized,
-            "checkpoint history belongs to another owner",
-        ));
+    #[cfg(feature = "filesystem")]
+    let mut observer = begin()?;
+    #[cfg(feature = "filesystem")]
+    let mut work = observer
+        .as_mut()
+        .map(|work| work as &mut dyn crate::store::history::HistoryIo);
+    #[cfg(not(feature = "filesystem"))]
+    let mut work = None;
+    let pinned = async {
+        let committed = history.pin(0, work.take()).await?;
+        if cursor.authority != committed.authority {
+            return Err(stock_boundary(
+                io,
+                Unauthorized,
+                "checkpoint history belongs to another owner",
+            ));
+        }
+        if cursor.through_revision > committed.through_revision {
+            return Err(stock_boundary(
+                io,
+                Invalid,
+                "checkpoint history cut is not committed",
+            ));
+        }
+        Ok(())
     }
-    if cursor.through_revision > committed.through_revision {
-        return Err(stock_boundary(
-            io,
-            crate::wire::ErrorCode::Invalid,
-            "checkpoint history cut is not committed",
-        ));
+    .await;
+    #[cfg(feature = "filesystem")]
+    {
+        drop(work);
+        if let Some(observer) = observer {
+            if stock_is_native(io) {
+                pinned?;
+            } else {
+                io.expect("history observer has an original IO")
+                    .receive_content(observer.finish(pinned))?;
+            }
+        } else {
+            pinned?;
+        }
     }
+    #[cfg(not(feature = "filesystem"))]
+    pinned?;
     let (envelope, retained) =
         load_canonical_checkpoint(journal, reference, limits, Some(scope), io).await?;
     #[cfg(feature = "filesystem")]
-    let _selection_hold;
-    let (selection, consumed) = match io {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        Some(io) if io.original_native_work().is_some() => {
-            let before = io.owned_bytes()?;
-            let mut observer =
-                crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(
-                    io.original_native_work()
-                        .expect("native branch retains original work"),
-                )?);
-            let selection = history
-                .operation_event(
-                    envelope.operation_id,
-                    maximum_history_bytes,
-                    &mut Some(&mut observer),
-                )
-                .await?;
-            observer.return_staged_output()?;
-            io.absorb_native_custody(observer.into_custody()?)?;
-            _selection_hold = Some(io.guard_owned(io.owned_bytes()? - before)?);
-            selection
-        }
-        #[cfg(feature = "filesystem")]
-        Some(io) => {
-            let mut read_work = crate::store::HistoryWork::new(PreparationIo::from_budget(
-                io.remaining()?,
-                io.cancellation(),
-            )?);
-            let result = async {
-                read_work.preflight()?;
-                history
-                    .operation_event(
-                        envelope.operation_id,
-                        maximum_history_bytes,
-                        &mut Some(&mut read_work),
-                    )
-                    .await
+    let mut observer = begin()?;
+    #[cfg(feature = "filesystem")]
+    let mut work = observer
+        .as_mut()
+        .map(|work| work as &mut dyn crate::store::history::HistoryIo);
+    #[cfg(not(feature = "filesystem"))]
+    let mut work = None;
+    let result = async {
+        let (selection, consumed) = history
+            .operation_event(envelope.operation_id, maximum_history_bytes, &mut work)
+            .await?;
+        let selection = selection.ok_or_else(|| {
+            stock_boundary(io, Conflict, "checkpoint has no owning canonical selection")
+        })?;
+        let matches = match &selection.payload {
+            crate::core::EventPayload::ModelContextSelected { selection } => {
+                selection == &envelope.selection
             }
-            .await;
-            let receipt = read_work.finish(result);
-            let held = receipt
-                .as_ref()
-                .map_or(0, |receipt| receipt.work.peak_allocation_bytes);
-            let value = io.receive_content(receipt)?;
-            io.retain_owned(held)?;
-            _selection_hold = Some(io.guard_owned(held)?);
-            value
+            _ => false,
+        };
+        if selection.revision <= cursor.after_revision
+            || selection.revision > cursor.through_revision
+            || !matches
+        {
+            return Err(stock_boundary(
+                io,
+                Conflict,
+                "checkpoint selection differs from its history cut",
+            ));
         }
-        _ => {
-            #[cfg(feature = "filesystem")]
-            {
-                _selection_hold = None;
-            }
-            history
-                .operation_event(envelope.operation_id, maximum_history_bytes, &mut None)
-                .await?
-        }
-    };
-    let selection = selection.ok_or_else(|| {
-        stock_boundary(
-            io,
-            crate::wire::ErrorCode::Conflict,
-            "checkpoint has no owning canonical selection",
-        )
-    })?;
-    if selection.revision <= cursor.after_revision
-        || selection.revision > cursor.through_revision
-        || !matches!(&selection.payload,
-            crate::core::EventPayload::ModelContextSelected { selection }
-                if selection == &envelope.selection)
-    {
-        return Err(stock_boundary(
-            io,
-            crate::wire::ErrorCode::Conflict,
-            "checkpoint selection differs from its history cut",
-        ));
+        Ok((envelope, retained, consumed))
     }
-    Ok((envelope, retained, consumed))
+    .await;
+    #[cfg(feature = "filesystem")]
+    {
+        drop(work);
+        if let Some(mut observer) = observer {
+            let io = io.expect("history observer has an original IO");
+            #[cfg(not(target_arch = "wasm32"))]
+            if io.original_native_work().is_some() {
+                if result.is_ok() {
+                    observer.return_staged_output()?;
+                }
+                return result;
+            }
+            return io.receive_content(observer.finish(result));
+        }
+    }
+    result
 }
 
 pub(super) fn validate_checkpoint_json_reference(
@@ -258,7 +227,7 @@ pub(super) fn validate_checkpoint_json_reference(
     if reference.descriptor().byte_length() > limits.render_bytes {
         return Err(stock_boundary(
             io,
-            crate::wire::ErrorCode::Invalid,
+            Invalid,
             "checkpoint JSON exceeds effective render limit",
         ));
     }
