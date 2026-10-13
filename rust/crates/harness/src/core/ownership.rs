@@ -1,6 +1,5 @@
 //! Logical ownership of the main reducer's records.
 use super::*;
-use std::io::Write;
 
 pub(crate) fn owned_sum(parts: impl IntoIterator<Item = u64>) -> Result<u64> {
     parts.into_iter().try_fold(0_u64, |sum, bytes| {
@@ -25,61 +24,29 @@ pub(crate) fn owned_vector<T>(
         })
 }
 
-#[derive(Default)]
-struct LogicalSize {
-    bytes: u64,
-    nodes: u64,
-    depth: u32,
-    quoted: bool,
-    escaped: bool,
-}
-impl Write for LogicalSize {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        let invalid = || std::io::Error::from(std::io::ErrorKind::InvalidData);
-        self.bytes = self
-            .bytes
-            .checked_add(bytes.len() as u64)
-            .ok_or_else(invalid)?;
-        for byte in bytes {
-            if self.quoted {
-                if self.escaped {
-                    self.escaped = false;
-                } else if *byte == b'\\' {
-                    self.escaped = true;
-                } else if *byte == b'"' {
-                    self.quoted = false;
-                }
-                continue;
-            }
-            match byte {
-                b'"' => self.quoted = true,
-                b'{' | b'[' => {
-                    self.depth += 1;
-                    if self.depth > 256 {
-                        return Err(invalid());
-                    }
-                    self.nodes = self.nodes.checked_add(1).ok_or_else(invalid)?;
-                }
-                b'}' | b']' => self.depth -= 1,
-                b':' | b',' => self.nodes = self.nodes.checked_add(1).ok_or_else(invalid)?,
-                _ => {}
-            }
-        }
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-/// Conservative closed-DTO admission; strings are counted without building a second DTO.
+/// Conservative closed-DTO admission without building a second DTO.
 pub(crate) fn owned_bytes<T: Serialize + ?Sized>(value: &T) -> Result<u64> {
-    let mut size = LogicalSize::default();
-    serde_json::to_writer(&mut size, value)
-        .map_err(|_| Error::Invalid("record ownership cannot be bounded".into()))?;
-    size.bytes
+    use crate::executor::json::{JsonBounds, JsonCodecCharge, count_json_bytes_trusted};
+    let mut nodes = 0_u64;
+    let bytes = count_json_bytes_trusted(
+        value,
+        JsonBounds {
+            maximum_bytes: u64::MAX,
+            maximum_items: u64::MAX,
+            maximum_depth: 256,
+        },
+        None,
+        &mut |charge| {
+            if let JsonCodecCharge::Work { items, .. } = charge {
+                nodes = owned_sum([nodes, items])?;
+            }
+            Ok(())
+        },
+    )?;
+    bytes
         .checked_mul(2)
         .and_then(|bytes| {
-            size.nodes
+            nodes
                 .checked_mul(Snapshot::LOGICAL_SCHEMA_SLOT_BYTES)
                 .and_then(|slots| bytes.checked_add(slots))
         })
@@ -96,39 +63,6 @@ pub(in crate::core) fn owned_effect(effect: &EffectState) -> Result<u64> {
         owned_bytes(&effect.status)?,
         owned_buffer::<EffectAttemptId>(effect.attempts.capacity())?,
     ])
-}
-// Match ConversationState::copy's existing message claims.
-pub(in crate::core) fn owned_message(message: &ConversationMessage) -> Result<u64> {
-    let attachments = match &message.attachments {
-        crate::conversation::ReferencedAttachments::Inline { items } => {
-            owned_vector(items, |item| {
-                owned_sum([
-                    item.file.logical_owned_bytes()?,
-                    item.label.as_ref().map_or(0, |text| text.capacity() as u64),
-                ])
-            })?
-        }
-        crate::conversation::ReferencedAttachments::Manifest { manifest, .. } => {
-            manifest.logical_owned_bytes()?
-        }
-    };
-    let mut bytes = owned_sum([
-        message.content.logical_owned_bytes()?,
-        attachments,
-        message
-            .tool_call_id
-            .as_ref()
-            .map_or(0, |text| text.capacity() as u64),
-    ])?;
-    for (key, file) in &message.extensions {
-        bytes = owned_sum([
-            bytes,
-            std::mem::size_of::<(String, FileRef)>() as u64,
-            key.capacity() as u64,
-            file.logical_owned_bytes()?,
-        ])?;
-    }
-    Ok(bytes)
 }
 /// Retained scope, causal parent and payload storage.
 pub(crate) fn event_owned_bytes(event: &Event) -> Result<u64> {
@@ -227,7 +161,7 @@ pub(crate) fn inspect_metadata<T: Serialize + ?Sized>(
     if work.is_none() {
         return Ok(());
     }
-    crate::contract::json_byte_length(source, u64::MAX, work).map(|_| ())
+    crate::executor::json::json_byte_length(source, u64::MAX, work).map(|_| ())
 }
 
 #[cfg(feature = "filesystem")]

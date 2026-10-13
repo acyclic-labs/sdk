@@ -170,7 +170,7 @@ async fn windows_reparse_payload_round_trips_without_interpretation()
     .await?;
     let empty_reparse_read =
         (checkout.read_reparse_point(&empty_reparse, B, &cancellation)).await?;
-    assert!(empty_reparse_read.value.bytes.is_empty());
+    assert!(empty_reparse_read.value.is_empty());
 
     let empty_link = path("empty-link")?;
     (checkout.create(

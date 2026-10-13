@@ -130,7 +130,7 @@ impl FileTool {
         let scope = scope.ok_or_else(|| {
             Error::Unauthorized("file tool requires original runtime scope".into())
         })?;
-        crate::contract::json_byte_length(
+        crate::executor::json::json_byte_length(
             &invocation.arguments,
             scope.limits().file_bytes,
             &mut None,

@@ -58,9 +58,9 @@ where
                     "model is outside the committed outbox",
                 ));
             }
-            let recorded = if stock && !latest.next.state["mail"].is_null() {
+            let recorded = if stock && !latest.transition.state["mail"].is_null() {
                 Some(
-                    OperationId::deserialize(&latest.next.state["receive"]["operation_id"])
+                    OperationId::deserialize(&latest.transition.state["receive"]["operation_id"])
                         .map_err(|error| Error::Invalid(error.to_string()))?,
                 )
             } else {
@@ -138,7 +138,10 @@ where
             selected_context: command.selected_context,
             max_steps: command.max_steps,
         };
-        let result: Result<(crate::executor::ExecutionProgress<crate::executor::TurnOutput>, crate::NativeCustody)> = match context {
+        let result: Result<(
+            crate::executor::ExecutionProgress<crate::executor::TurnOutput>,
+            crate::NativeCustody,
+        )> = match context {
             #[cfg(not(target_arch = "wasm32"))]
             WorkerContext::Native(context) => {
                 let io = io.expect("native observer");
@@ -152,28 +155,27 @@ where
                     None => context,
                 };
                 let journal = journal.as_ref().expect("native journal");
-                let executor = self
-                    .runtime
-                    .stock_executor_with_native_work(
-                        task,
-                        fence,
-                        operation,
-                        &context,
-                        &binding.model,
-                        Arc::clone(&binding.provider),
-                        &binding.context,
-                        journal,
-                        work,
-                    )?
-                    .with_compaction_policy_with_native_work(&binding.compaction, work)?;
-                let executor = match command.max_output_tokens {
-                    Some(maximum) => executor.with_max_output_tokens(maximum)?,
-                    None => executor,
+                let executor = self.runtime.stock_executor_with_native_work(
+                    task,
+                    fence,
+                    operation,
+                    &context,
+                    &binding.model,
+                    Arc::clone(&binding.provider),
+                    &binding.context,
+                    journal,
+                    work,
+                    &binding.compaction,
+                    command.max_output_tokens,
+                )?;
+                let executor = if reconciliation_only {
+                    executor.into_reconciliation()
+                } else {
+                    executor
                 };
-                let executor = if reconciliation_only { executor.into_reconciliation() } else { executor };
-                let result = executor.execute_progress_with_native_context(
-                    &context, &input, journal.as_ref(), work,
-                )?.await;
+                let result = executor
+                    .execute_progress_with_native_context(&context, &input, journal.as_ref(), work)?
+                    .await;
                 result.map(|(progress, custody)| (progress, Some(custody)))
             }
             WorkerContext::Ordinary(_) => {
@@ -228,7 +230,9 @@ where
         #[cfg(target_arch = "wasm32")]
         let _ = custody;
         match progress {
-            crate::executor::ExecutionProgress::Ready(output) => ready(Outcome::Succeeded(output), io),
+            crate::executor::ExecutionProgress::Ready(output) => {
+                ready(Outcome::Succeeded(output), io)
+            }
             crate::executor::ExecutionProgress::Pending(_) => Ok(TaskCommandProgress::Pending),
             crate::executor::ExecutionProgress::Rejected(reason) => rejected(reason, io),
         }
@@ -290,9 +294,9 @@ where
                     .map(|work| work as &mut dyn crate::store::history::HistoryIo),
             )
             .await?;
-        let operation = crate::durable_host::received_copy_operation(task, receive, io)?;
+        let operation = mail::received_copy_operation(task, receive, io)?;
         let path = crate::executor::with_history_io(io, |work| {
-            crate::contract::preparation_format(format_args!("mailbox/{receive}/parcel"), work)
+            crate::executor::preparation_format(format_args!("mailbox/{receive}/parcel"), work)
         })?;
         let _path = io
             .map(|io| io.guard_owned(path.capacity() as u64))

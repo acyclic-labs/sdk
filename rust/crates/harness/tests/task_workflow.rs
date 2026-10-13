@@ -54,7 +54,6 @@ use acyclic_stream::{
 };
 use futures::{future::BoxFuture, stream::BoxStream};
 use serde_json::{Value, json};
-use sha2::{Digest as _, Sha256};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::{collections::BTreeMap, sync::{Arc, Mutex}};
 
@@ -2013,10 +2012,9 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         let input = json!(acyclic_fs::encode_merge_candidate(&candidate).map_err(|e| Error::Invalid(e.to_string()))?);
         let state = json!({"candidate":input});
         resolution_record = WorkflowRecord { operation_id: OperationId::from_bytes([146; 16]),
-            idempotency_key: IdempotencyKey::new("driver-result")?, input_digest: acyclic_harness::contract::canonical_json_digest(&input, u64::MAX, &mut None)?,
+            idempotency_key: IdempotencyKey::new("driver-result")?,
             prior: admission.initial.clone(), input,
-            transition: MachineTransition { state: state.clone(), commands: Vec::new(), status: MachineStatus::Suspended },
-            next: MachineCheckpoint { machine: admission.initial.machine.clone(), revision: 1, state } };
+            transition: MachineTransition { state, commands: Vec::new(), status: MachineStatus::Suspended } };
         journal.commit(0, resolution_record.idempotency_key.clone(), resolution_record.clone()).await?;
     }
     let calls = driver.0.load(Ordering::SeqCst);
@@ -2025,12 +2023,12 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         let host = FilesystemHost::new(Fs::local(options.clone()).await.map_err(|e| Error::Storage(e.to_string()))?, &provider, None)?;
         let journal = FilesystemWorkflowJournal::new(Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await
             .map_err(|e| Error::Storage(e.to_string()))?), host.clone(), "custom-merge", &private, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?;
-        let retained = journal.admission().await?.ok_or_else(|| Error::NotFound("merge admission".into()))?;
+        let retained = journal.admission(None)?.await?.0.ok_or_else(|| Error::NotFound("merge admission".into()))?;
         assert_eq!(retained, admission);
-        let records = journal.replay(0, 1).await?;
+        let records = journal.replay(0, 1, None)?.await?.0;
         assert_eq!(records, vec![resolution_record.clone()]);
         let record = records.first().ok_or_else(|| Error::NotFound("driver result".into()))?;
-        let candidate = acyclic_fs::decode_merge_candidate(record.next.state["candidate"].as_str()
+        let candidate = acyclic_fs::decode_merge_candidate(record.transition.state["candidate"].as_str()
             .ok_or_else(|| Error::Invalid("candidate missing".into()))?).map_err(|e| Error::Invalid(e.to_string()))?;
         let controller = ParentProjectController::new(&host, &parent, &issuer.verifier(&mut None).expect("verifier copy"), &signed, &project, None)?;
         let plan = controller.prepare_project_import(&source, &source_head, Some(&target_head)).await?;
@@ -2555,21 +2553,15 @@ async fn stock_restart_with_publication_fault(
             assert!(session.latest_transition().await?.is_none());
             let invalid_input = json!("bad");
             let prior = session.checkpoint().clone();
-            let (next, transition, _, _) = machines.step(
+            let (_, transition, _, _) = machines.step(
                 &prior, std::borrow::Cow::Borrowed(&invalid_input), None,
             )?;
             let invalid_record = WorkflowRecord {
                 operation_id: OperationId::from_bytes([8; 16]),
                 idempotency_key: IdempotencyKey::new("direct-invalid-output")?,
-                input_digest: Sha256::digest(
-                    serde_json::to_vec(&invalid_input)
-                        .map_err(|error| Error::Invalid(error.to_string()))?,
-                )
-                .into(),
                 prior,
                 input: invalid_input,
                 transition,
-                next,
             };
             assert!(
                 journal
@@ -2577,7 +2569,7 @@ async fn stock_restart_with_publication_fault(
                     .await
                     .is_err()
             );
-            assert!(journal.replay(0, 64).await?.is_empty());
+            assert!(journal.replay(0, 64, None)?.await?.0.is_empty());
             assert!(
                 session
                     .step(
@@ -2598,7 +2590,7 @@ async fn stock_restart_with_publication_fault(
             MachineStatus::Suspended
         );
         assert_eq!(session.checkpoint().revision, 1);
-        assert_eq!(journal.replay(0, 64).await?.len(), 1);
+        assert_eq!(journal.replay(0, 64, None)?.await?.0.len(), 1);
         assert!(
             session
                 .step(step, IdempotencyKey::new("suspend")?, json!(9))
@@ -2653,7 +2645,7 @@ async fn stock_restart_with_publication_fault(
                     .await
                     .is_err()
             );
-            assert_eq!(recovery_journal.replay(0, 64).await?.len(), 2);
+            assert_eq!(recovery_journal.replay(0, 64, None)?.await?.0.len(), 2);
         }
         previous_lease = Some(lease);
     }
@@ -2744,9 +2736,9 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
         }
         if phase == 1 || phase == 2 {
             let journal = runtime.workflow_journal(task, LeaseFence::from(&lease.reservation)).await?;
-            let record = journal.replay(0, 8).await?.pop().unwrap();
+            let record = journal.replay(0, 8, None)?.await?.0.pop().unwrap();
             assert_eq!(record.transition.commands, vec![admitted_model.clone().unwrap()]);
-            assert_eq!(record.next.state["mail"], serde_json::to_value(&selected).unwrap());
+            assert_eq!(record.transition.state["mail"], serde_json::to_value(&selected).unwrap());
             let remaining = runtime.task_host().inbox(task, 1, 1).await?;
             if queued { assert_eq!(remaining[0].sequence, 2); } else { assert!(remaining.is_empty()); }
         }

@@ -329,22 +329,28 @@ impl PiNativeCommandHost {
             let value = conversation.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody()?)
         };
-        let history = HistoryReader::new_with_native_work(
+        let mut reader_io = acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        );
+        let history = HistoryReader::new(
             &self.stream,
             &conversation.0.0,
             &verifier.0,
-            work,
+            &mut Some(&mut reader_io),
         )?;
-        let cursor = history.0.pin_with_native_work(0, work).await?;
+        let cursor = history.pin(0, Some(&mut reader_io)).await?;
         let effect = acyclic_harness::effect_host::task_effect_id(
             input.binding.task_id,
             command,
             &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)),
         )?;
-        history
-            .0
-            .effect_with_native_work(&cursor.0, effect, history_limits(context)?, work)
-            .await
+        let mut io = acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        );
+        let effect = history
+            .effect(&cursor, effect, history_limits(context)?, Some(&mut io))
+            .await?;
+        Ok((effect.map(|(effect, _)| effect), io.into_custody()?))
     }
 
     pub(super) async fn bind_recovery(

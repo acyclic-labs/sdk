@@ -152,7 +152,7 @@ impl NativeDemandSource {
         #[cfg(unix)]
         let result = self.inner.root.read_dir_stats(&relative, context);
         #[cfg(windows)]
-        let result = self.inner.root.read_dir_stats_wide(&relative, context);
+        let result = self.inner.root.read_dir_stats(&relative, context);
         drop(relative);
         context.release(allocation)?;
         let (entries, allocation) = result?;
@@ -195,6 +195,7 @@ impl Drop for SourceDirectoryPublication {
 }
 impl SourceDirectoryPublication {
     fn retire(&mut self) -> Result<(), DemandError> {
+        self.state.take();
         if let Some(original) = self.original.take() {
             original.with_original_leaf(|work| {
                 work.complete(publication_cleanup(), publication_cleanup())
@@ -291,7 +292,7 @@ impl NativeDemandSource {
                 let result = self
                     .inner
                     .root
-                    .open_dir_held_wide(directory, context)
+                    .open_dir_held(directory, context)
                     .and_then(|parent| {
                         crate::native_host::stat_windows_leaf(&parent, &entry.name, context)
                     });

@@ -808,11 +808,12 @@ mod tests {
         assert_eq!(work.budget.items_examined, original.items_examined - 1);
         let before = work.work.items_examined;
         let (counters, allocations, roots) = work.into_current();
-        let work = DemandWork::from_current(original, &cancellation, counters, allocations, roots);
+        let mut work = DemandWork::from_current(original, &cancellation, counters, allocations, roots);
         drop(lease);
-        let receipt = work.finish(Ok(())).expect("actual cleanup under reconstructed full budget");
-        assert_eq!(receipt.work.items_examined, before + 1);
-        receipt.work.verify(original).expect("no artificial quota overflow");
+        work.record(WorkCounters::UNCHARGED).expect("actual cleanup under reconstructed full budget");
+        let receipt = work.receipt();
+        assert_eq!(receipt.items_examined, before + 1);
+        receipt.verify(original).expect("no artificial quota overflow");
         assert_eq!(gate.state.lock().expect("gate state").readers, 0);
     }
 
@@ -836,7 +837,7 @@ mod tests {
         let _ = queued.admissions(|roots| &mut roots.view_gates).expect("second actual cleanup");
         assert_eq!(queued.work.items_examined, before + 2);
         assert_eq!(queued.budget.items_examined, budget.items_examined);
-        queued.finish(Ok(())).expect("same original meter finishes");
+        queued.record(WorkCounters::UNCHARGED).expect("same original meter finishes");
         assert_eq!(gate.state.lock().expect("gate state").readers, 0);
     }
 
@@ -870,7 +871,7 @@ mod tests {
         assert_eq!(gate.reader_generation.load(Ordering::Acquire), generation);
         assert_eq!(gate.state.lock().expect("gate state").readers, 1);
         drop(first);
-        work.finish(Ok(())).expect("only admitted read releases");
+        work.record(WorkCounters::UNCHARGED).expect("only admitted read releases");
     }
 
     #[tokio::test]
@@ -888,8 +889,9 @@ mod tests {
         drop(independent);
         let before = work.work.items_examined;
         drop(first);
-        let receipt = work.finish(Ok(())).expect("original physical read cleanup");
-        assert_eq!(receipt.work.items_examined, before + 1);
+        work.record(WorkCounters::UNCHARGED).expect("original physical read cleanup");
+        let receipt = work.receipt();
+        assert_eq!(receipt.items_examined, before + 1);
     }
 
     #[tokio::test]
@@ -907,8 +909,9 @@ mod tests {
         drop(nested);
         drop(writer.await);
         let before = work.work.items_examined;
-        let receipt = work.finish(Ok(())).expect("two actual callback releases");
-        assert_eq!(receipt.work.items_examined, before + 2);
+        work.record(WorkCounters::UNCHARGED).expect("two actual callback releases");
+        let receipt = work.receipt();
+        assert_eq!(receipt.items_examined, before + 2);
     }
 
     #[test]
@@ -921,11 +924,11 @@ mod tests {
         let (counters, allocations, roots) = work.into_current();
         let mut tighter = WorkBudget::UNBOUNDED;
         tighter.items_examined = before;
-        let work = DemandWork::from_current(tighter, &cancellation, counters, allocations, roots);
+        let mut work = DemandWork::from_current(tighter, &cancellation, counters, allocations, roots);
         drop(lease);
-        let failure = work.finish(Ok(())).expect_err("tighter ceiling cannot erase actual cleanup");
-        assert_eq!(failure.work.items_examined, before + 1);
-        assert!(matches!(failure.error, crate::demand::DemandError::Work(_)));
+        let failure = work.record(WorkCounters::UNCHARGED).expect_err("tighter ceiling cannot erase actual cleanup");
+        assert_eq!(work.receipt().items_examined, before + 1);
+        assert!(matches!(failure, crate::demand::DemandError::Work(_)));
     }
 
     #[test]

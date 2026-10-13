@@ -151,7 +151,7 @@ where
         let mut work = history.as_mut().map(|history| history as &mut dyn crate::store::history::HistoryIo);
         owner.validate_storage(verifier, maximum_payload_bytes, &mut work)?;
         let _identity;
-        let identity = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("{}", owner.workflow_admission().operation_id), work))?;
+        let identity = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("{}", owner.workflow_admission().operation_id), work))?;
         _identity = io.map(|io| io.guard_owned(identity.capacity() as u64)).transpose()?;
         let mut journal = Self::new(owner.stream(), host, &identity, volume, verifier, scope,
             maximum_payload_bytes, io)?;
@@ -196,7 +196,7 @@ where
         let verifier = verifier.copy(&mut work)?;
         let scope = scope.copy(&mut work)?;
         let path_hold;
-        let path = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("harness/v2/workflows/{workflow_id}"), work))?;
+        let path = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("harness/v2/workflows/{workflow_id}"), work))?;
         path_hold = io.map(|io| io.guard_owned(path.capacity() as u64)).transpose()?;
         let stream_hold;
         let (validated, held) = Self::observation_stream(&stream, &path, io)?;
@@ -232,7 +232,7 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<WorkflowRecord> {
         let _prefix;
-        let prefix = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!(".system/workflows/{}/", self.id()), work))?;
+        let prefix = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!(".system/workflows/{}/", self.id()), work))?;
         _prefix = io.map(|io| io.guard_owned(prefix.capacity() as u64)).transpose()?;
         if reference.volume() != &self.volume
             || reference.descriptor().media_type() != "application/json"
@@ -254,7 +254,6 @@ where
             if verify_machine {
                 owner.validate_workflow_record(&record, io)?;
             } else if record.prior.machine != owner.workflow_admission().initial.machine
-                || record.next.machine != owner.workflow_admission().initial.machine
             {
                 return Err(observation_boundary(io, crate::wire::ErrorCode::Unauthorized,
                     "observed workflow changed its pinned machine"));
@@ -338,7 +337,7 @@ where
                 _ => None,
             };
             let record = self.read_record(&reference, verify_payloads, verify_machine, io).await?;
-            if record.prior.revision != sequence || record.next.revision != sequence + 1 {
+            if record.prior.revision != sequence {
                 return Err(observation_boundary(io, crate::wire::ErrorCode::Storage,
                     "workflow checkpoint revision is discontinuous"));
             }
@@ -400,7 +399,7 @@ where
         let Some(record) = self.observe_latest_record(Some(io)).await? else { return Ok(None); };
         if !matches!(record.transition.status, MachineStatus::Suspended) { return Ok(None); }
         let owner = self.owner.as_ref().expect("observed outbox has its original owner");
-        Ok(Some(WorkflowReleaseWitness { binding: owner.task_binding(), path: &self.path, tail: record.next.revision }))
+        Ok(Some(WorkflowReleaseWitness { binding: owner.task_binding(), path: &self.path, tail: record.checkpoint()?.1 }))
     }
 
     async fn verify_observation_owner(
@@ -509,7 +508,7 @@ where
         let mut previous: Option<WorkflowRecord> = None;
         let mut matched = None;
         loop {
-            let revision = previous.as_ref().map_or(0, |prior| prior.next.revision);
+            let revision = previous.as_ref().map(WorkflowRecord::checkpoint).transpose()?.map_or(0, |(_, revision, _)| revision);
             let before_page = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             let page = self.replay_records(
                 revision, WORKFLOW_REPLAY_PAGE_RECORDS, false, true, io,
@@ -522,7 +521,7 @@ where
             let mut page_has_match = false;
             if page.is_empty() { break; }
             for record in page {
-                let checkpoint = previous.as_ref().map_or(&admission.initial, |prior| &prior.next);
+                let checkpoint = previous.as_ref().map(WorkflowRecord::checkpoint).transpose()?.unwrap_or((&admission.initial.machine, admission.initial.revision, &admission.initial.state));
                 let terminal = previous.as_ref().is_some_and(|prior| !matches!(prior.transition.status, MachineStatus::Suspended));
                 validate_workflow_next(checkpoint, terminal, &identities.reserved, &identities.keys, &record, io)
                     .map_err(|error| if error.is_native_failure() { error } else {
@@ -551,7 +550,7 @@ where
             }
             previous_page_owned = if page_has_match { 0 } else { page_owned };
         }
-        let revision = previous.as_ref().map_or(0, |prior| prior.next.revision);
+        let revision = previous.as_ref().map(WorkflowRecord::checkpoint).transpose()?.map_or(0, |(_, revision, _)| revision);
         if let Some(io) = io { io.check_cancellation()?; }
         for identity in candidate.operation_ids() {
             if let Some(io) = io { io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?; }
@@ -561,7 +560,7 @@ where
             }
         }
         if require_next && revision == candidate.prior.revision {
-            let checkpoint = previous.as_ref().map_or(&admission.initial, |prior| &prior.next);
+            let checkpoint = previous.as_ref().map(WorkflowRecord::checkpoint).transpose()?.unwrap_or((&admission.initial.machine, admission.initial.revision, &admission.initial.state));
             let terminal = previous.as_ref().is_some_and(|prior| !matches!(prior.transition.status, MachineStatus::Suspended));
             validate_workflow_next(checkpoint, terminal, &identities.reserved, &identities.keys, candidate, io)?;
         }
@@ -603,7 +602,7 @@ where
 
     pub(crate) async fn read_admission(&self, io: Option<&PreparationIo>) -> Result<Option<WorkflowAdmission>> {
         let _path;
-        let path = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("harness/v2/workflow-admissions/{}", self.id()), work))?;
+        let path = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("harness/v2/workflow-admissions/{}", self.id()), work))?;
         _path = io.map(|io| io.guard_owned(path.capacity() as u64)).transpose()?;
         let _stream_path;
         let (stream, held) = Self::observation_stream(&self.stream, &path, io)?;
@@ -645,7 +644,7 @@ where
             _ => None,
         };
         let _expected_path;
-        let expected_path = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!(".system/workflows/{}/admission.json", self.id()), work))?;
+        let expected_path = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!(".system/workflows/{}/admission.json", self.id()), work))?;
         _expected_path = io.map(|io| io.guard_owned(expected_path.capacity() as u64)).transpose()?;
         if reference.volume() != &self.volume
             || reference.path() != expected_path
@@ -688,14 +687,14 @@ where
         }
         let _path;
         let path = match transition {
-            Some((revision, operation)) => crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!(".system/workflows/{}/{revision:020}-{operation}.json", self.id()), work))?,
-            None => crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!(".system/workflows/{}/admission.json", self.id()), work))?,
+            Some((revision, operation)) => crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!(".system/workflows/{}/{revision:020}-{operation}.json", self.id()), work))?,
+            None => crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!(".system/workflows/{}/admission.json", self.id()), work))?,
         };
         _path = io.map(|io| io.guard_owned(path.capacity() as u64)).transpose()?;
         let _key;
         let key = match transition {
-            Some((_, operation)) => crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("workflow:{}:{operation}", self.id()), work))?,
-            None => crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("workflow:{}:admission", self.id()), work))?,
+            Some((_, operation)) => crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("workflow:{}:{operation}", self.id()), work))?,
+            None => crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("workflow:{}:admission", self.id()), work))?,
         };
         _key = io.map(|io| io.guard_owned(key.capacity() as u64)).transpose()?;
         let key = IdempotencyKey::new(key)?;
@@ -725,7 +724,7 @@ where
         }
         let digest = {
             let _input;
-            let input = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("{path}:{retry}"), work))?;
+            let input = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("{path}:{retry}"), work))?;
             _input = io.map(|io| io.guard_owned(input.capacity() as u64)).transpose()?;
             if let Some(io) = io {
                 let hashing = acyclic_fs::WorkCounters { bytes_hashed: input.len() as u64, ..Default::default() };
@@ -958,7 +957,7 @@ where
             }
         }
         let _path;
-        let path = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("harness/v2/workflow-admissions/{}", self.id()), work))?;
+        let path = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("harness/v2/workflow-admissions/{}", self.id()), work))?;
         _path = io.map(|io| io.guard_owned(path.capacity() as u64)).transpose()?;
         let appended = self.append_reference(&path, "admission", 0, admission.operation_id,
             &reference, io).await;
@@ -997,35 +996,57 @@ where
     #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_work(&self) -> bool { true }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn admission_with_native_work<'a>(
-        &'a self, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<WorkflowAdmission>, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            if let Some(owner) = &self.owner { self.verify_observation_owner(owner, Some(&io)).await?; }
-            let admission = self.read_admission(Some(&io)).await?;
-            if let Some(owner) = &self.owner { self.verify_observation_owner(owner, Some(&io)).await?; }
-            let retained = io.owned_bytes()?;
-            let custody = io.into_native_custody(retained)?;
-            Ok((admission, custody))
+    fn admission<'a>(
+        &'a self,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::store::history::HistoryContentFuture<'a, (Option<WorkflowAdmission>, crate::NativeCustody)>> {
+        use crate::store::history::HistoryContentFuture;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(io) = io {
+            let work = io.original_native_work().ok_or_else(|| observation_boundary(
+                Some(io), crate::wire::ErrorCode::Unsupported, "native admission requires original work",
+            ))?;
+            return crate::NativeFutureBundle::new(work, || async move {
+                let io = PreparationIo::from_native_work(work)?;
+                if let Some(owner) = &self.owner { self.verify_observation_owner(owner, Some(&io)).await?; }
+                let admission = self.read_admission(Some(&io)).await?;
+                if let Some(owner) = &self.owner { self.verify_observation_owner(owner, Some(&io)).await?; }
+                let retained = io.owned_bytes()?;
+                Ok((admission, Some(io.into_native_custody(retained)?)))
+            }).map(HistoryContentFuture::Native);
+        }
+        let _ = io;
+        Ok(HistoryContentFuture::Ordinary {
+            future: Box::pin(async move { Ok((self.read_admission(None).await?, None)) }),
+            frame_bytes: 0,
         })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn replay_with_native_work<'a>(
+    fn replay<'a>(
         &'a self, after: u64, maximum: u32,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<WorkflowRecord>, acyclic_fs::NativeAllocation)>> {
-        if let Some(owner) = &self.owner { owner.require_native_workflow_validation()?; }
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            if let Some(owner) = &self.owner { self.verify_observation_owner(owner, Some(&io)).await?; }
-            let records = self.replay_records(after, maximum, true, true, Some(&io)).await?;
-            if let Some(owner) = &self.owner { self.verify_observation_owner(owner, Some(&io)).await?; }
-            let retained = io.owned_bytes()?;
-            let custody = io.into_native_custody(retained)?;
-            Ok((records, custody))
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::store::history::HistoryContentFuture<'a, (Vec<WorkflowRecord>, crate::NativeCustody)>> {
+        use crate::store::history::HistoryContentFuture;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(io) = io {
+            let work = io.original_native_work().ok_or_else(|| observation_boundary(
+                Some(io), crate::wire::ErrorCode::Unsupported, "native replay requires original work",
+            ))?;
+            if let Some(owner) = &self.owner { owner.require_native_workflow_validation()?; }
+            return crate::NativeFutureBundle::new(work, || async move {
+                let io = PreparationIo::from_native_work(work)?;
+                if let Some(owner) = &self.owner { self.verify_observation_owner(owner, Some(&io)).await?; }
+                let records = self.replay_records(after, maximum, true, true, Some(&io)).await?;
+                if let Some(owner) = &self.owner { self.verify_observation_owner(owner, Some(&io)).await?; }
+                let retained = io.owned_bytes()?;
+                Ok((records, Some(io.into_native_custody(retained)?)))
+            }).map(HistoryContentFuture::Native);
+        }
+        let _ = io;
+        let span = obs_span!("acyclic.harness.workflow.replay", rev = after);
+        Ok(HistoryContentFuture::Ordinary {
+            future: traced(span, async move { Ok((self.replay_records(after, maximum, true, true, None).await?, None)) }),
+            frame_bytes: 0,
         })
     }
 
@@ -1063,15 +1084,6 @@ where
             let custody = io.into_native_custody(retained)?;
             Ok((admission, custody))
         })
-    }
-
-    fn admission(&self) -> BoxFuture<'_, Result<Option<WorkflowAdmission>>> {
-        Box::pin(self.read_admission(None))
-    }
-
-    fn replay(&self, after: u64, maximum: u32) -> BoxFuture<'_, Result<Vec<WorkflowRecord>>> {
-        let span = obs_span!("acyclic.harness.workflow.replay", rev = after);
-        traced(span, self.replay_records(after, maximum, true, true, None))
     }
 
     fn commit<'a>(

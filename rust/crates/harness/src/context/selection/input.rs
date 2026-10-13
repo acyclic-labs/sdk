@@ -80,7 +80,7 @@ impl ContextSelection {
                 }
             }
         }
-        crate::contract::json_byte_length(self, limits.render_bytes, work).map(|_| ())?;
+        crate::executor::json::json_byte_length(self, limits.render_bytes, work).map(|_| ())?;
         if let ContextSourceValue::Attribute { attribute } = &self.source {
             attribute.validate_schema(work)?;
         }

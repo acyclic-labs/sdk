@@ -122,7 +122,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                     path,
                     writable: binding.writable,
                     namespace: binding.namespace.clone(),
-                    authority_revision: crate::contract::canonical_json_digest(
+                    authority_revision: crate::executor::json::canonical_json_digest(
                         &(binding.verifier.audience(), binding.scope),
                         owner.input_limits().file_bytes,
                         &mut Some(&mut io.history_io()),

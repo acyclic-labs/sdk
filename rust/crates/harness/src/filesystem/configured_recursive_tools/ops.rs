@@ -62,73 +62,58 @@ where
     ) -> Result<RetainedSourceBinding<A, O>> {
         let owner = self.source_owner(context.task(), cancellation, io).await?;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(io) = io
-            && let Some(work) = io.original_native_work()
-        {
-            let request =
-                crate::executor::with_history_io(Some(io), |observer| request.copy(observer))?;
-            let custody = io.take_native_custody(request.1)?;
-            let selected = match &request.0.authorized_source {
-                Some(authorization) => Some(
-                    owner
-                        .restore_project_source_authorization_with_native_work(
-                            context.task(),
-                            authorization,
-                            work,
-                        )?
-                        .await?,
-                ),
-                None => None,
-            };
-            let verifier = crate::executor::with_history_io(Some(io), |observer| {
-                caller.owner.issuer().verifier(observer)
-            })?;
-            let resolver = self.resolver(context, owner, Some(io))?;
-            let source =
-                crate::filesystem::recursive::restore_recursive_fork_source_with_native_work(
-                    Arc::clone(&self.filesystem),
-                    &self.stream,
-                    parent,
-                    &verifier,
-                    &caller.owner.scope,
-                    &caller.project,
-                    &self.config.stream_provider,
-                    (request.0, custody),
-                    self.config.history_limits,
-                    selected.as_ref().map(|selected| &selected.0),
-                    resolver,
-                    cancellation,
-                    work,
-                )
-                .await?;
-            io.absorb_native_custody(source.1)?;
-            return Ok(source.0);
-        }
+        let mut _selected_hold = None;
         let selected = match &request.authorized_source {
-            Some(authorization) => Some(
-                owner
-                    .restore_project_source_authorization(context.task(), authorization)
-                    .await?,
-            ),
+            Some(authorization) => {
+                let selected = 'selection: {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+                        let (handle, custody) = owner
+                            .restore_project_source_authorization_with_native_work(
+                                context.task(),
+                                authorization,
+                                work,
+                            )?
+                            .await?;
+                        _selected_hold = Some(custody);
+                        break 'selection handle;
+                    }
+                    owner
+                        .restore_project_source_authorization(context.task(), authorization)
+                        .await?
+                };
+                Some(selected)
+            }
             None => None,
         };
-        let resolver = self.resolver(context, owner, None)?;
+        let verifier =
+            crate::executor::with_history_io(io, |work| caller.owner.issuer.verifier(work))?;
+        let request = crate::executor::with_history_io(io, |work| request.copy(work))?.0;
+        let resolver = self.resolver(context, owner, io)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let input = io
+            .and_then(PreparationIo::original_native_work)
+            .map(PreparationIo::from_native_work)
+            .transpose()?;
+        #[cfg(target_arch = "wasm32")]
+        let input = None;
         restore_recursive_fork_source(
             Arc::clone(&self.filesystem),
             &self.stream,
-            &parent,
-            verifier(&caller.owner)?,
-            caller.owner.scope.clone(),
-            caller.project.clone(),
-            self.config.stream_provider.clone(),
-            request.clone(),
+            (parent, input),
+            &verifier,
+            &caller.owner.scope,
+            &caller.project,
+            &self.config.stream_provider,
+            request,
             self.config.history_limits,
-            selected,
+            selected.as_ref(),
             resolver,
             cancellation,
         )
         .await
     }
+
     pub(super) async fn open(
         &self,
         binding: &ConfiguredRecursiveAuthorityBinding,
@@ -136,11 +121,11 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<StreamAggregate<P>> {
         let (authority, verifier) = crate::executor::with_history_io(io, |work| {
-            let verifier = binding.issuer().verifier(work)?;
-            verifier.verify_scope_for_with_work(binding.authority(), &binding.scope, work)?;
+            let verifier = binding.issuer.verifier(work)?;
+            verifier.verify_scope_for_with_work(binding.issuer.audience(), &binding.scope, work)?;
             let authority = match work.as_deref_mut() {
-                Some(work) => work.clone_authority(binding.authority())?,
-                None => binding.authority().clone(),
+                Some(work) => work.clone_authority(binding.issuer.audience())?,
+                None => binding.issuer.audience().clone(),
             };
             Ok::<_, Error>((authority, verifier))
         })?;

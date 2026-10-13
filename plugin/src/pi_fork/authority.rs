@@ -245,9 +245,9 @@ impl<'a> PiForkCoordinator<'a> {
         let workspace = self
             .resources
             .fs
-            .open_workspace_with_native_work(&name.0, work, work.cancellation())
+            .open_workspace(&name.0, work, work.cancellation())
             .await
-            .map_err(native_workspace_error)?;
+            .map_err(|error| native_workspace_error((error, None)))?;
         (owner)
             .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
             .await?;

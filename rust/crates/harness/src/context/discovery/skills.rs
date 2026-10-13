@@ -68,272 +68,6 @@ pub(super) fn discovery_error(
     }
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn discovery_work_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
-    Error::NativeWork {
-        cause,
-        custody: None,
-    }
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn bound_skill_values(
-    skills: &[SkillMetadata],
-    maximum_bytes: u64,
-    io: &mut dyn crate::store::history::HistoryIo,
-) -> Result<()> {
-    fn byte_bound(bytes: usize, maximum: u64) -> Result<()> {
-        if bytes as u64 > maximum {
-            return Err(crate::Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "JSON exceeds declared byte bound",
-            });
-        }
-        Ok(())
-    }
-    fn provider_bound(provider: &crate::resources::ProviderRef, maximum: u64) -> Result<()> {
-        byte_bound(provider.namespace().len(), maximum)?;
-        byte_bound(provider.family().len(), maximum)?;
-        byte_bound(provider.version().len(), maximum)
-    }
-    fn value_bound(
-        value: &serde_json::Value,
-        depth: u32,
-        maximum: u64,
-        io: &mut dyn crate::store::history::HistoryIo,
-    ) -> Result<()> {
-        io.check_cancellation()?;
-        if depth > 256 {
-            return Err(crate::Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "JSON exceeds declared structural bound",
-            });
-        }
-        io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
-        match value {
-            serde_json::Value::String(text) => byte_bound(text.len(), maximum)?,
-            serde_json::Value::Array(values) => {
-                byte_bound(values.len(), maximum)?;
-                for value in values {
-                    value_bound(value, depth + 1, maximum, io)?;
-                }
-            }
-            serde_json::Value::Object(values) => {
-                byte_bound(values.len(), maximum)?;
-                for (key, value) in values {
-                    io.check_cancellation()?;
-                    io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
-                    byte_bound(key.len(), maximum)?;
-                    value_bound(value, depth + 1, maximum, io)?;
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-    // These are implied byte bounds, not a new cap on discovery or retained workspaces.
-    byte_bound(skills.len(), maximum_bytes)?;
-    for skill in skills {
-        io.check_cancellation()?;
-        io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
-        byte_bound(skill.name.len(), maximum_bytes)?;
-        byte_bound(skill.description.len(), maximum_bytes)?;
-        byte_bound(skill.fields.len(), maximum_bytes)?;
-        byte_bound(skill.source.root.directory.len(), maximum_bytes)?;
-        byte_bound(skill.source.path.len(), maximum_bytes)?;
-        let volume = &skill.source.root.volume;
-        byte_bound(volume.id().len(), maximum_bytes)?;
-        provider_bound(volume.provider(), maximum_bytes)?;
-        if let crate::conversation::VolumeOwner::Project(name) = volume.owner() {
-            byte_bound(name.len(), maximum_bytes)?;
-        }
-        let generation = skill.source.generation.as_resource();
-        provider_bound(generation.provider(), maximum_bytes)?;
-        byte_bound(generation.key().len(), maximum_bytes)?;
-        if let Some(version) = generation.version() {
-            byte_bound(version.len(), maximum_bytes)?;
-        }
-        for (key, value) in &skill.fields {
-            io.check_cancellation()?;
-            io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
-            byte_bound(key.len(), maximum_bytes)?;
-            // skills array -> skill object -> fields object -> actual field value.
-            value_bound(value, 3, maximum_bytes, io)?;
-        }
-    }
-    Ok(())
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn skill_text_native(
-    skills: &[SkillMetadata],
-    size: u64,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(String, acyclic_fs::NativeAllocation)> {
-    struct Writer<'a, 'b> {
-        bytes: &'a mut Vec<u8>,
-        maximum: usize,
-        work: &'b acyclic_fs::NativeMaterializationWork,
-        failure: Option<Error>,
-    }
-    impl Writer<'_, '_> {
-        fn fail(&mut self, error: Error) -> std::io::Error {
-            self.failure = Some(error);
-            // Serde's original io-error conversion allocates its one boxed ErrorImpl.
-            if let Err(cause) = self.work.spent(acyclic_fs::WorkCounters {
-                allocation_operations: 1,
-                ..acyclic_fs::WorkCounters::default()
-            }) {
-                self.failure = Some(discovery_work_error(cause));
-            }
-            std::io::ErrorKind::Other.into()
-        }
-    }
-    impl std::io::Write for Writer<'_, '_> {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            let observed = self.work.spent(acyclic_fs::WorkCounters {
-                bytes_encoded: bytes.len() as u64,
-                ..acyclic_fs::WorkCounters::default()
-            });
-            if let Err(cause) = observed {
-                return Err(self.fail(discovery_work_error(cause)));
-            }
-            if let Err(cause) = self.work.remaining() {
-                return Err(self.fail(discovery_work_error(cause)));
-            }
-            if self
-                .bytes
-                .len()
-                .checked_add(bytes.len())
-                .is_none_or(|end| end > self.maximum)
-            {
-                return Err(self.fail(crate::Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid,
-                    reason: "discovered skill serialization exceeded its counted size",
-                }));
-            }
-            if let Err(cause) = self.work.admit(acyclic_fs::WorkCounters {
-                bytes_copied: bytes.len() as u64,
-                ..acyclic_fs::WorkCounters::default()
-            }) {
-                return Err(self.fail(discovery_work_error(cause)));
-            }
-            self.bytes.extend_from_slice(bytes);
-            if let Err(cause) = self.work.spent(acyclic_fs::WorkCounters {
-                bytes_copied: bytes.len() as u64,
-                ..acyclic_fs::WorkCounters::default()
-            }) {
-                return Err(self.fail(discovery_work_error(cause)));
-            }
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    let maximum = usize::try_from(size).map_err(|_| crate::Error::NativeBoundary {
-        code: crate::wire::ErrorCode::Invalid,
-        reason: "discovered skill serialization capacity overflows",
-    })?;
-    let mut output = (
-        Vec::new(),
-        work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)
-            .map_err(discovery_work_error)?,
-    );
-    let mut backing = super::super::reserve_context_vec_native(&mut output.0, maximum, work)?;
-    output
-        .1
-        .absorb(&mut backing)
-        .map_err(discovery_work_error)?;
-    let labels = [
-        "SkillMetadata",
-        "name",
-        "description",
-        "fields",
-        "source",
-        "PinnedContextPath",
-        "root",
-        "generation",
-        "path",
-        "ContextRoot",
-        "volume",
-        "directory",
-        "VolumeRef",
-        "ProviderRef",
-        "namespace",
-        "family",
-        "version",
-        "owner",
-        "class",
-        "GenerationRef",
-        "ResourceRef",
-        "kind",
-        "provider",
-        "key",
-        "key must be a string",
-        "number out of range",
-    ];
-    let diagnostic_bytes = crate::contract::audited_serde_diagnostic_bytes(
-        size,
-        labels.iter().map(|label| label.len() as u64 + 4).sum(),
-    )?;
-    let diagnostic = work
-        .claim(diagnostic_bytes, 0, acyclic_fs::WorkCounters::UNCHARGED)
-        .map_err(discovery_work_error)?;
-    work.admit(acyclic_fs::WorkCounters {
-        bytes_encoded: size,
-        bytes_copied: size,
-        allocation_operations: 1,
-        ..acyclic_fs::WorkCounters::default()
-    })
-    .map_err(discovery_work_error)?;
-    let mut writer = Writer {
-        bytes: &mut output.0,
-        maximum,
-        work,
-        failure: None,
-    };
-    let serialized = serde_json::to_writer(&mut writer, skills);
-    let failure = writer.failure.take();
-    drop(writer);
-    if let Err(source) = serialized {
-        if let Some(failure) = failure {
-            drop(source);
-            drop(diagnostic);
-            return Err(failure);
-        }
-        if let Err(cause) = work.spent(acyclic_fs::WorkCounters {
-            allocation_operations: 1,
-            ..acyclic_fs::WorkCounters::default()
-        }) {
-            drop(source);
-            return Err(Error::NativeWork {
-                cause,
-                custody: Some(diagnostic),
-            });
-        }
-        return Err(Error::NativeJson {
-            code: crate::wire::ErrorCode::Invalid,
-            source,
-            custody: Some(diagnostic),
-        });
-    }
-    drop(diagnostic);
-    if output.0.len() != maximum {
-        return Err(crate::Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid,
-            reason: "discovered skill serialization changed its counted size",
-        });
-    }
-    work.remaining().map_err(discovery_work_error)?;
-    let text = String::from_utf8(output.0).map_err(|_| crate::Error::NativeBoundary {
-        code: crate::wire::ErrorCode::Invalid,
-        reason: "discovered skill serialization is not UTF-8",
-    })?;
-    work.remaining().map_err(discovery_work_error)?;
-    Ok((text, output.1))
-}
-
 #[derive(Deserialize)]
 struct Frontmatter {
     name: String,
@@ -450,4 +184,56 @@ pub(super) async fn discover_skills(
         }
     }
     Ok(result)
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(super) fn skill_text_native(
+    skills: &[SkillMetadata],
+    size: u64,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<(String, acyclic_fs::NativeAllocation)> {
+    use crate::store::history::HistoryIo as _;
+    let mut observer =
+        crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
+    let bounds = crate::executor::json::JsonBounds {
+        maximum_bytes: size,
+        maximum_items: work.remaining()?.items_examined,
+        maximum_depth: 256,
+    };
+    let diagnostic = work.claim(
+        crate::executor::json::sdk_json_diagnostic_bytes(),
+        0,
+        acyclic_fs::WorkCounters::UNCHARGED,
+    )?;
+    let bytes = match crate::executor::json::json_bytes_bounded(
+        &skills,
+        bounds,
+        Some(crate::wire::ErrorCode::Invalid),
+        &mut |charge| observer.codec_charge(charge),
+    ) {
+        Err(Error::NativeJson {
+            code,
+            source,
+            custody: None,
+        }) => {
+            return Err(Error::NativeJson {
+                code,
+                source,
+                custody: Some(diagnostic),
+            });
+        }
+        result => result?,
+    };
+    drop(diagnostic);
+    if bytes.len() as u64 != size {
+        return Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Invalid,
+            reason: "discovered skill serialization changed its counted size",
+        });
+    }
+    let text = String::from_utf8(bytes).map_err(|_| Error::NativeBoundary {
+        code: crate::wire::ErrorCode::Invalid,
+        reason: "discovered skill serialization is not UTF-8",
+    })?;
+    Ok((text, observer.into_custody()?))
 }

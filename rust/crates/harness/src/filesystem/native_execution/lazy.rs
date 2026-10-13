@@ -96,7 +96,7 @@ impl NativeExistingLazyVolume {
                 namespace: binding.namespace.clone(),
                 path,
                 writable: binding.writable,
-                authority_revision: crate::contract::canonical_json_digest(
+                authority_revision: crate::executor::json::canonical_json_digest(
                     &(binding.verifier.audience(), binding.scope),
                     owner.input_limits().file_bytes,
                     &mut Some(&mut io.history_io()),

@@ -86,7 +86,6 @@ pub struct BrowserMergePreparationResult {
 
 #[wasm_bindgen]
 impl BrowserCheckout {
-    /// Prepares a bounded two-parent merge against the current authority head.
     #[wasm_bindgen(js_name = prepareMerge)]
     pub async fn prepare_merge(
         &mut self,

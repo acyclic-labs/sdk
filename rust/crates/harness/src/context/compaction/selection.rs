@@ -339,7 +339,7 @@ pub(crate) fn compact_context(
 
 pub(super) fn compaction_step(quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<()> {
     if let Some(io) = quota.work().as_deref_mut() {
-        io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+        io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
     }
     Ok(())
 }
