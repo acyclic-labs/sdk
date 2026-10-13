@@ -440,7 +440,7 @@ async fn owner_private_directory_is_lazy_paged_and_generation_pinned() -> Result
         name: "acyclic.list_files".into(),
         arguments: json!({"path": "notes", "maximum_entries": 65}),
     };
-    let page = tool.executor.execute(invocation.clone()).await?;
+    let page = tool.executor.execute(invocation.clone(), None).await?;
     assert_eq!(page.value["entries"][0]["name"], "one.txt");
     storage
         .stage(
@@ -451,7 +451,7 @@ async fn owner_private_directory_is_lazy_paged_and_generation_pinned() -> Result
             "two.txt",
         )
         .await?;
-    assert_eq!(tool.executor.reconcile(invocation).await?, Some(page));
+    assert_eq!(tool.executor.reconcile(invocation, None).await?, Some(page));
     let (_, pinned_notes) = storage
         .list_private_directory("notes", Some(&generation), None, 8)
         .await?;
