@@ -74,7 +74,6 @@ struct Shared {
     stop_completed: AtomicBool,
     ownership: SourcePayloadOwnership,
     cleanup: Mutex<[Option<crate::materializer::NativeWorkReservation>; 2]>,
-    attempted: AtomicBool,
     dropped: AtomicBool,
     #[cfg(test)]
     native_wait_cancellation: Mutex<Option<crate::CancellationToken>>,

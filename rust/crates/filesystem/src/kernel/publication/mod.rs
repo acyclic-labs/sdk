@@ -61,19 +61,22 @@ pub struct PublishGenerationRequest {
     pub generation_root: ObjectId,
 }
 
+/// Context, evidence and authorization for one publication.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PublicationIntent {
-    pub(crate) operation_context: Option<Digest>,
-    pub(crate) original_evidence: Option<acyclic_stream::OwnedBytes>,
-    pub(crate) fingerprint_permit: Option<PublicationPermit>,
-    pub(crate) permit: PublicationPermit,
+pub struct PublicationIntent {
+    /// Optional semantic operation context.
+    pub operation_context: Option<Digest>,
+    /// Original operation evidence retained through publication.
+    pub original_evidence: Option<acyclic_stream::OwnedBytes>,
+    /// Original permit used when reconstructing a retry fingerprint.
+    pub fingerprint_permit: Option<PublicationPermit>,
+    /// Current publication authorization.
+    pub permit: PublicationPermit,
 }
 
 impl PublicationIntent {
-    pub(crate) const fn guarded(
-        operation_context: Option<Digest>,
-        permit: PublicationPermit,
-    ) -> Self {
+    /// Creates an intent without original evidence or a prior permit.
+    pub const fn guarded(operation_context: Option<Digest>, permit: PublicationPermit) -> Self {
         Self {
             operation_context,
             original_evidence: None,
@@ -156,9 +159,9 @@ mod engine;
 use engine::*;
 mod api;
 pub use api::publish_generation;
+pub(crate) use api::publish_generation_async_guarded;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use api::publish_generation_async_guarded_with_native_work;
-pub(crate) use api::{publish_generation_async_guarded, publish_generation_async_with_permit};
 
 #[cfg(all(test, feature = "memory"))]
 #[path = "../tests/publication/mod.rs"]

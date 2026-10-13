@@ -32,10 +32,6 @@ fn publication_payload_versions_are_canonical_bounded_and_validate_the_complete_
         assert_eq!(decoded.publication, expected);
         assert_eq!(decoded.original_evidence, evidence);
         assert_eq!(
-            decoded.evidence_digest,
-            evidence.map(original_evidence_digest)
-        );
-        assert_eq!(
             decode_published_generation(&bytes, length, accept)?,
             expected
         );

@@ -115,7 +115,7 @@ where
     }
     let fingerprint_permit = intent.fingerprint_permit.unwrap_or(intent.permit);
     let operation_context =
-        permit_context_with_accounting(intent.operation_context, fingerprint_permit, accounting)
+        permit_context(intent.operation_context, fingerprint_permit, accounting)
             .map_err(E::from)?;
     let commit = prepare_publication_commit(
         request,

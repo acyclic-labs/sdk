@@ -315,14 +315,14 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
             decoded.original_evidence,
             Some(b"immutable original operation data".as_slice())
         );
-        assert_eq!(
-            publication_fingerprint(
-                request,
-                Some(intent.operation_context.ok_or("missing original context")?),
-                &commit.payload,
-            ),
-            commit.fingerprint
-        );
+        let (payload, fingerprint) = construct_publication_commit(
+            request,
+            Some(intent.operation_context.ok_or("missing original context")?),
+            decoded.original_evidence,
+            &mut accounting,
+        )?;
+        payload.retire(&mut accounting)?;
+        assert_eq!(fingerprint, commit.fingerprint);
     }
     let later = publish_generation_async_guarded_with_native_work(
         &objects,

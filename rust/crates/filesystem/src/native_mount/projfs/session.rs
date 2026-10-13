@@ -99,7 +99,7 @@ impl ProjFsSession {
             callbacks: CallbackGate::start()?,
             _allocation: allocation,
         });
-        *out = Some(Self {
+        let session = out.insert(Self {
             controller: None,
             context: None,
             runtime: Some(Arc::clone(&runtime)),
@@ -113,8 +113,7 @@ impl ProjFsSession {
             capture_attempted: false,
         });
         runtime.projector.attach(Arc::clone(&runtime))?;
-        out.as_mut().expect("installed startup owner").controller =
-            Some(Arc::clone(&runtime.projector));
+        session.controller = Some(Arc::clone(&runtime.projector));
         let observer: Arc<dyn ViewObserver> = runtime.projector.clone();
         runtime
             .source
@@ -122,9 +121,6 @@ impl ProjFsSession {
         if let Some(packet) = retirement.as_mut() {
             prepare(packet)?;
         }
-        let session = out
-            .as_mut()
-            .expect("startup owner installed before SDK effects");
         session.retirement = retirement.take();
         let guid = warm.map_or_else(
             || guid_from_key(u128::from_le_bytes(request.mount_id.into_bytes())),

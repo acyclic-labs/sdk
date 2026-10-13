@@ -91,34 +91,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 )?;
             } else {
                 self.root_scope
-                    .narrow(admission.grants.clone(), admission.limits)?
-                    .with_run_limits(admission.run_limits, quota.work())?;
+                    .narrow(admission.grants.clone(), admission.limits)?;
             }
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
             self.root_scope
-                .narrow(admission.grants.clone(), admission.limits)?
-                .with_run_limits(admission.run_limits, quota.work())?;
-            let ancestor = self.root_scope.run_limits();
-            for (bound, actual) in [
-                (
-                    ancestor.concurrency.map(|v| v as u64),
-                    admission.run_limits.concurrency.map(|v| v as u64),
-                ),
-                (
-                    ancestor.max_steps.map(|v| v as u64),
-                    admission.run_limits.max_steps.map(|v| v as u64),
-                ),
-                (
-                    ancestor.deadline_epoch_ms,
-                    admission.run_limits.deadline_epoch_ms,
-                ),
-            ] {
-                if bound.is_some_and(|bound| actual.is_none_or(|actual| actual > bound)) {
-                    return Err(Error::Unauthorized(
-                        "task run limits widen root authority".into(),
-                    ));
-                }
-            }
+                .narrow(admission.grants.clone(), admission.limits)?;
+            self.root_scope
+                .validate_run_limit_attenuation(&admission.run_limits, quota.work())?;
         }
         let retained =
             std::mem::size_of::<TaskAdmissionRecord>() as u64 + admission.logical_owned_bytes()?;

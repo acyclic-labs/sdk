@@ -8,8 +8,8 @@ pub(super) fn root_parent_bytes(root: &GenerationRoot) -> u64 {
 
 pub(super) fn held_owned_bytes(held: &Held) -> u64 {
     let parents = match held {
-        Held::Checkout(roots) => {
-            roots.working.parents.capacity() * std::mem::size_of::<crate::GenerationId>()
+        Held::Checkout { working, .. } => {
+            working.parents.capacity() * std::mem::size_of::<crate::GenerationId>()
         }
         Held::Record { .. } => 0,
     };
@@ -18,20 +18,6 @@ pub(super) fn held_owned_bytes(held: &Held) -> u64 {
 
 pub(crate) fn handle_allocation_error(error: AllocationError) -> crate::FsError {
     error.into_work_or(crate::FsError::HandleAllocationFailed)
-}
-
-pub(crate) fn charge_handle_copy(
-    bytes: u64,
-    work: &mut WorkCounters,
-    budget: WorkBudget,
-) -> Result<(), crate::FsError> {
-    let charged = work.checked_add(WorkCounters {
-        bytes_copied: bytes,
-        ..WorkCounters::default()
-    })?;
-    charged.verify(budget)?;
-    *work = charged;
-    Ok(())
 }
 
 pub(crate) fn clone_generation_root(

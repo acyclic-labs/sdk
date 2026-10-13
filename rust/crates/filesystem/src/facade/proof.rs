@@ -130,7 +130,13 @@ impl DependencyLedger {
                 let mut next_ledger = *ledger;
                 let mut next_work = *work;
                 next_work.charge_items(items, &budget)?;
-                crate::collection::charge_handle_copy(copied, &mut next_work, budget)?;
+                next_work.charge(
+                    &WorkCounters {
+                        bytes_copied: copied,
+                        ..WorkCounters::UNCHARGED
+                    },
+                    &budget,
+                )?;
                 let earlier_peak = next_work.peak_allocation_bytes;
                 next_work.peak_allocation_bytes = 0;
                 let external = self.data_custody.operation_cache_bytes();

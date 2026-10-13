@@ -199,7 +199,7 @@ async fn owned_generation_closure_reads_release_all_retained_backend_bytes()
     ))
     .await?;
     assert_eq!(proof.file_count, 1);
-    assert_eq!(proof.object_count, 4);
+    assert_eq!(u64::try_from(proof.objects.len()).unwrap_or(u64::MAX), 4);
     assert!(proof.work.bytes_copied > 0);
     assert!(proof.work.peak_allocation_bytes > 0);
     Ok(())

@@ -6,41 +6,9 @@ impl NativeSourceWatch {
         delivery: Arc<Delivery>,
         work: &mut W,
     ) -> Result<Self, DemandError> {
-        Self::open_driver(root.directory_handle(), delivery, true, None, true, work)
+        Self::open_watch(root.directory_handle(), delivery, true, None, true, work)
     }
-    pub(crate) fn start_directory_driver<W: SourceDemandReadWork>(
-        root: &cap_std::fs::Dir,
-        delivery: Arc<Delivery>,
-        complete: bool,
-        work: &mut W,
-    ) -> Result<Self, DemandError> {
-        use std::os::windows::io::AsHandle;
-        Self::open_driver(
-            root.as_handle(),
-            delivery,
-            false,
-            Some(complete),
-            false,
-            work,
-        )
-    }
-    pub(crate) fn start_held_root_with_work<W: SourceDemandReadWork>(
-        root: &crate::native_host::HostRoot,
-        delivery: Arc<Delivery>,
-        complete: bool,
-        recursive: bool,
-        work: &mut W,
-    ) -> Result<Self, DemandError> {
-        Self::open_driver(
-            root.directory_handle(),
-            delivery,
-            false,
-            Some(complete),
-            recursive,
-            work,
-        )
-    }
-    fn open_driver<W: SourceDemandReadWork>(
+    pub(crate) fn open_watch<W: SourceDemandReadWork>(
         root: std::os::windows::io::BorrowedHandle<'_>,
         delivery: Arc<Delivery>,
         pin_name: bool,
@@ -96,7 +64,6 @@ impl NativeSourceWatch {
                 stop_completed: AtomicBool::new(false),
                 ownership,
                 cleanup: Mutex::new([active, terminal]),
-                attempted: AtomicBool::new(false),
                 dropped: AtomicBool::new(false),
                 #[cfg(test)]
                 native_wait_cancellation: Mutex::new(None),

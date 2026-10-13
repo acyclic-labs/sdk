@@ -4,61 +4,44 @@ use super::*;
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_execution(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<bool> {
+        work.remaining()?;
+        Ok(true)
+    }
+
     async fn claim_model_dispatch(
         &self,
-        task_id: TaskId,
-        attempt_id: OperationId,
+        task: TaskId,
+        attempt: OperationId,
         step: u32,
-        request_digest: [u8; 32],
+        digest: [u8; 32],
         fence: crate::scheduler::LeaseFence,
     ) -> Result<()> {
-        let operation_id = OperationId::from_bytes(task_id.into_bytes());
-        let admission = self.admission(operation_id, &mut None).await?;
-        if !admission.grants.contains("model:generate") {
-            return Err(Error::Unauthorized(
-                "task scope lacks model:generate".into(),
-            ));
-        }
-        let scope = RuntimeScope::new(admission.grants, admission.limits)?
-            .with_run_limits(admission.run_limits, &mut None)?;
-        self.validate_parent_scope(admission.parent, &scope).await?;
-        let mut coordinator = self.coordinator.lock().await;
-        coordinator.refresh(&mut None).await?;
-        let operation = coordinator.observe_operation(
-            &self.owner,
-            &self.owner_scope,
-            &self.verifier,
-            operation_id,
-            &mut None,
-        )?;
-        crate::scheduler::require_execution_owner(operation, &fence, false, &mut None)?;
-        let session = coordinator
-            .scheduler()
-            .session_limits(operation_id, &mut None)?;
-        let ceiling = (scope.limits().model_steps as u64)
-            .min(
-                scope
-                    .run_limits()
-                    .max_steps
-                    .map_or(u64::MAX, |value| value as u64),
-            )
-            .min(session.model_steps);
-        let lease_digest = blake3::hash(&crate::contract::canonical_json_bytes(&fence)?);
-        coordinator
-            .apply(
-                IdempotencyKey::new(format!("model-dispatch:{attempt_id}:{step}:{lease_digest}"))?,
-                crate::scheduler::SchedulerEvent::ModelDispatchClaimed {
-                    operation_id,
-                    attempt_id,
-                    step,
-                    request_digest,
-                    fence,
-                    ceiling,
-                },
-                &mut None,
-            )
-            .await?;
-        Ok(())
+        self.claim_model(task, attempt, step, digest, &fence, &mut None)
+            .await
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn claim_model_dispatch_with_native_work<'a>(
+        &'a self,
+        task: TaskId,
+        attempt: OperationId,
+        step: u32,
+        digest: [u8; 32],
+        fence: &'a crate::scheduler::LeaseFence,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
+        crate::NativeFutureBundle::new(work, || async move {
+            let mut io = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            );
+            self.claim_model(task, attempt, step, digest, fence, &mut Some(&mut io))
+                .await
+        })
     }
 }
 
@@ -75,6 +58,18 @@ impl<P: StreamProvider> crate::runtime::TaskSpawner for CoordinatorTaskHost<P> {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Option<&ComponentIdentity>> {
         TaskStateProvider::policy_identity_with_native_work(self, work)
+    }
+
+    async fn admit_owned(
+        &self,
+        admission: TaskAdmissionRecord,
+        fence: crate::scheduler::LeaseFence,
+    ) -> Result<Admission<TaskId>> {
+        let parent = admission
+            .parent
+            .ok_or_else(|| Error::Invalid("owned child admission has no parent".into()))?;
+        self.verify_owner(parent, &fence, false, &mut None).await?;
+        self.admit_record(admission, Some(fence)).await
     }
 
     async fn reconcile_admission(
@@ -156,7 +151,7 @@ impl<P: StreamProvider> crate::runtime::TaskSpawner for CoordinatorTaskHost<P> {
 
     async fn admit_batch(&self, request: DurableBatchRequest) -> Result<Vec<Admission<TaskId>>> {
         self.validate_batch(&request)?;
-        self.validate_parent_scope(request.parent, &request.scope)
+        self.validate_parent_scope(request.parent, &request.scope, &mut None)
             .await?;
         self.commit_batch(&request).await?;
         let observed = self

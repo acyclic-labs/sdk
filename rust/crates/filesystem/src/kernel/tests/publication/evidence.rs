@@ -62,7 +62,7 @@ async fn evidence_fixture() -> TestResult<(
     let mut expected_objects = vec![metadata, extents, tree, table, root];
     expected_objects.sort_unstable();
     assert_eq!(proof.objects, expected_objects);
-    assert_eq!(proof.object_count, 5);
+    assert_eq!(crate::foundation::usize_to_u64(proof.objects.len()), 5);
     assert_eq!(proof.file_count, 3);
     assert_eq!(proof.logical_file_bytes, u128::from(u64::MAX) * 2);
     let cancellation = CancellationToken::new();
@@ -114,7 +114,7 @@ async fn publication_evidence_preserves_original_complete_closure_and_every_perm
             &encoded.bytes,
             &encoded.sha256,
             encoded.bytes.len() as u64,
-            proof.object_count,
+            crate::foundation::usize_to_u64(proof.objects.len()),
         )?;
         assert_eq!(decoded.request, request);
         assert_eq!(decoded.append, append);
@@ -152,7 +152,7 @@ async fn publication_evidence_rejects_tampering_and_byte_and_object_bounds() -> 
             &encoded.bytes,
             &digest,
             64 * 1024,
-            proof.object_count
+            crate::foundation::usize_to_u64(proof.objects.len())
         ),
         Err(PublicationEvidenceError::Mismatch)
     ));
@@ -164,7 +164,7 @@ async fn publication_evidence_rejects_tampering_and_byte_and_object_bounds() -> 
                 &altered,
                 &encoded.sha256,
                 64 * 1024,
-                proof.object_count,
+                crate::foundation::usize_to_u64(proof.objects.len()),
             ),
             Err(PublicationEvidenceError::Mismatch)
         ));
@@ -179,12 +179,12 @@ async fn publication_evidence_rejects_tampering_and_byte_and_object_bounds() -> 
                 &encoded.bytes,
                 &encoded.sha256,
                 bound,
-                proof.object_count,
+                crate::foundation::usize_to_u64(proof.objects.len()),
             ),
             Err(PublicationEvidenceError::TooLarge)
         ));
     }
-    for bound in [0, proof.object_count - 1] {
+    for bound in [0, crate::foundation::usize_to_u64(proof.objects.len()) - 1] {
         assert!(matches!(
             decode_generation_publication_evidence(
                 &encoded.bytes,
@@ -219,12 +219,6 @@ async fn publication_evidence_rejects_disagreeing_request_proof_and_exact_append
             Err(PublicationEvidenceError::Mismatch)
         ));
     }
-    let mut changed = proof.clone();
-    changed.object_count += 1;
-    assert!(matches!(
-        encode_generation_publication_evidence(&request, &changed, &append, config, 64 * 1024),
-        Err(PublicationEvidenceError::Mismatch)
-    ));
     let mut changed = proof.clone();
     changed.root.volume_id = VolumeId::from_bytes([81; 16]);
     assert!(matches!(
@@ -267,7 +261,12 @@ async fn publication_evidence_rejects_trailing_and_truncated_frames_with_fresh_d
     trailing.push(0);
     let digest = Sha256::digest(&trailing).into();
     assert!(matches!(
-        decode_generation_publication_evidence(&trailing, &digest, 64 * 1024, proof.object_count),
+        decode_generation_publication_evidence(
+            &trailing,
+            &digest,
+            64 * 1024,
+            crate::foundation::usize_to_u64(proof.objects.len())
+        ),
         Err(PublicationEvidenceError::Decode(
             CanonicalDecodeError::TrailingBytes
         ))
@@ -275,7 +274,12 @@ async fn publication_evidence_rejects_trailing_and_truncated_frames_with_fresh_d
     let truncated = &encoded.bytes[..encoded.bytes.len() - 1];
     let digest = Sha256::digest(truncated).into();
     assert!(matches!(
-        decode_generation_publication_evidence(truncated, &digest, 64 * 1024, proof.object_count),
+        decode_generation_publication_evidence(
+            truncated,
+            &digest,
+            64 * 1024,
+            crate::foundation::usize_to_u64(proof.objects.len())
+        ),
         Err(PublicationEvidenceError::Decode(_))
     ));
     Ok(())
