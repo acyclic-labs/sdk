@@ -141,16 +141,25 @@ where
                 let path_hold = io
                     .map(|io| io.guard_owned(path.capacity() as u64))
                     .transpose()?;
-                let (file, _) = context.stage_file_once(
-                    operation, &path, &bytes, "application/json", "source-checkpoint.json", Some(observer),
-                ).await?;
+                let (file, _) = context
+                    .stage_file_once(
+                        operation,
+                        &path,
+                        &bytes,
+                        "application/json",
+                        "source-checkpoint.json",
+                        Some(observer),
+                    )
+                    .await?;
                 drop((path, path_hold));
                 drop(bytes);
                 drop(bytes_hold);
                 file
             }
         };
-        let bytes = self.read(context, &source_checkpoint, observer).await?;
+        let bytes = context
+            .read_file(&source_checkpoint, Some(observer))
+            .await?;
         let record: RecursiveForkSourceIntent = match io {
             #[cfg(not(target_arch = "wasm32"))]
             Some(io) => crate::filesystem::retain_decoded(io.decode(
@@ -168,7 +177,7 @@ where
             ));
         }
         for file in &allocation.input_files {
-            drop(self.read(context, file, observer).await?);
+            drop(context.read_file(file, Some(observer)).await?);
         }
         let parent = self.open(&caller.owner, None, io).await?;
         let child_conversation = self.open(&allocation.child, None, io).await?;

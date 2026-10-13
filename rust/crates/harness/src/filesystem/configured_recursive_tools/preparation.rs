@@ -71,16 +71,16 @@ where
                 "preparation changed its retained sealed Project source",
             ));
         }
+        let ordinary;
+        let observer = match io {
+            Some(io) => io,
+            None => {
+                ordinary = PreparationIo::from_budget(self.config.content_budget, cancellation)?;
+                &ordinary
+            }
+        };
         if let Some(checkpoint) = &preparation.source_checkpoint {
-            let ordinary;
-            let content_io = match io {
-                Some(io) => io,
-                None => {
-                    ordinary = PreparationIo::from_budget(self.config.content_budget, cancellation)?;
-                    &ordinary
-                }
-            };
-            let bytes = reader.read_file(checkpoint, Some(content_io)).await?;
+            let bytes = reader.read_file(checkpoint, Some(observer)).await?;
             let record: RecursiveForkSourceIntent = match io {
                 #[cfg(not(target_arch = "wasm32"))]
                 Some(io) => crate::filesystem::retain_decoded(io.decode(
@@ -101,14 +101,6 @@ where
                 ));
             }
         }
-        let ordinary;
-        let observer = match io {
-            Some(io) => io,
-            None => {
-                ordinary = PreparationIo::from_budget(self.config.content_budget, cancellation)?;
-                &ordinary
-            }
-        };
         let reducer = self
             .open(&caller.owner, Some(request.parent_revision), Some(observer))
             .await?

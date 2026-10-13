@@ -252,7 +252,7 @@ where
                 &ordinary_io
             }
         };
-        drop(self.read(context, &notice.content, reader).await?);
+        drop(context.read_file(&notice.content, Some(reader)).await?);
         let (verifier, scope, project, source_authority, source_project) =
             with_history_io(io, |work| {
                 let verifier = caller.owner.issuer.verifier(work)?;

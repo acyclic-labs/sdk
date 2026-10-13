@@ -43,14 +43,6 @@ where
         self.authenticate_caller(context.task(), None, project_read, None)
             .await
     }
-    pub(super) async fn read(
-        &self,
-        context: &ToolContext,
-        file: &crate::conversation::FileRef,
-        io: &PreparationIo,
-    ) -> Result<acyclic_stream::OwnedBytes> {
-        context.read_file(file, Some(io)).await
-    }
     pub(super) async fn source(
         &self,
         context: &ToolContext,

@@ -467,7 +467,7 @@ if let Some(io) = Some(io) { io.retain_owned(reference.logical_owned_bytes()?)?;
             owner.require_interaction_grant(&mut work)?;
             owner.verify(true, &mut work).await?;
         }
-        host.verify_approval_with_io(id, operation, digest, io)
+        host.verify_approval(id, operation, digest, io)
             .await?;
         if let Some((owner, _)) = &self.owner {
             owner.verify(true, &mut work).await?;

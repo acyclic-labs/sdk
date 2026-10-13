@@ -16,7 +16,7 @@ where
         let span = obs_span!(INFO, "acyclic.harness.journal.resolve_interaction");
         traced(span, async {
             let host = self.interactions()?;
-            host.verify_responder_scope_with_io(id, responder, None)?;
+            host.verify_responder_scope(id, responder, None)?;
             if let Some((owner, _)) = &self.owner {
                 owner.require_interaction_grant(&mut None)?;
                 owner.verify(true, &mut None).await?;
@@ -188,7 +188,7 @@ where
         let ticket_hold;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let ticket = host
-            .stage_request_with_io(id, interaction, None, io)
+            .stage_request(id, interaction, None, io)
             .await?;
         ticket_hold = io
             .map(|io| {
@@ -278,7 +278,7 @@ where
                 "task execution has no conversation interaction owner",
             )
         })?;
-        let outcome = host.read_outcome_with_io(id, io).await?;
+        let outcome = host.read_outcome(id, io).await?;
         if let Some((owner, _)) = &self.owner {
             owner.verify(true, &mut work).await?;
         }

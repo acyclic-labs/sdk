@@ -17,6 +17,7 @@ where
     ) -> Result<TaskCommandProgress> {
         use crate::filesystem::task_runtime::observed::boundary;
         use crate::wire::ErrorCode;
+        mail::require_native_observer(io)?;
         let task = context
             .context()
             .durable_task_id()
@@ -150,30 +151,12 @@ where
 
             TIMER_TASK_COMMAND_KIND if !reconciliation_only => {
                 let input: TimerTaskCommand = mail::decode_command(payload, io)?;
-                #[cfg(not(target_arch = "wasm32"))]
-                let work = io
-                    .map(|io| {
-                        io.original_native_work().ok_or_else(|| {
-                            boundary(
-                                Some(io),
-                                ErrorCode::Unsupported,
-                                "native timer requires original work",
-                            )
-                        })
-                    })
-                    .transpose()?;
-                #[cfg(target_arch = "wasm32")]
-                let work = None;
+                let fence =
+                    crate::executor::with_history_io(io, |work| fence.clone_with_work(work))?;
                 let elapsed = self
                     .runtime
                     .task_host()
-                    .poll_timer(
-                        task,
-                        &fence,
-                        command.operation_id,
-                        input.deadline_unix_ms,
-                        io,
-                    )
+                    .poll_timer(task, fence, command.operation_id, input.deadline_unix_ms)
                     .await?;
                 if elapsed {
                     ready(Outcome::Succeeded(Value::Null), io)
@@ -218,6 +201,7 @@ where
         payload: Value,
         io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<bool> {
+        mail::require_native_observer(io)?;
         let task = context.durable_task_id().ok_or_else(|| {
             crate::filesystem::task_runtime::observed::boundary(
                 io,
@@ -235,17 +219,9 @@ where
                     ));
                 }
                 let input: TimerTaskCommand = mail::decode_command(payload, io)?;
-                let mut observer = io.map(crate::filesystem::PreparationIo::history_io);
                 self.runtime
                     .task_host()
-                    .timer_ready(
-                        task,
-                        command.operation_id,
-                        input.deadline_unix_ms,
-                        &mut observer
-                            .as_mut()
-                            .map(|work| work as &mut dyn crate::store::history::HistoryIo),
-                    )
+                    .timer_ready(task, command.operation_id, input.deadline_unix_ms)
                     .await
             }
             MAIL_RECEIVE_TASK_COMMAND_KIND => {
@@ -269,16 +245,6 @@ where
             }
             TOOL_TASK_COMMAND_KIND => {
                 let input: ToolTaskCommand = mail::decode_command(payload, io)?;
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(io) = io {
-                    io.original_native_work().ok_or_else(|| {
-                        crate::filesystem::task_runtime::observed::boundary(
-                            Some(io),
-                            crate::wire::ErrorCode::Unsupported,
-                            "native tool wait requires original observer",
-                        )
-                    })?;
-                }
                 let definition = self
                     .runtime
                     .tool_definition(&input.name, &input.revision, io)?;
@@ -304,14 +270,7 @@ where
                     self.runtime
                         .model_approval_ready(context, command.operation_id, &input, io);
                 #[cfg(not(target_arch = "wasm32"))]
-                if let Some(io) = io {
-                    io.original_native_work().ok_or_else(|| {
-                        crate::filesystem::task_runtime::observed::boundary(
-                            Some(io),
-                            crate::wire::ErrorCode::Unsupported,
-                            "native model wait requires original observer",
-                        )
-                    })?;
+                if io.is_some() {
                     return ready.await;
                 }
                 Box::pin(ready).await

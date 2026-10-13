@@ -43,13 +43,9 @@ where
                         "native fork requires its original shared context",
                     ));
                 };
-                let work = io.original_native_work().ok_or_else(|| {
-                    boundary(
-                        Some(io),
-                        ErrorCode::Unsupported,
-                        "native fork requires original work",
-                    )
-                })?;
+                let work = io
+                    .original_native_work()
+                    .expect("dispatch checked original work");
                 if reconciliation_only {
                     let Some(preparation) = self
                         .runtime
@@ -213,17 +209,10 @@ where
             ));
         }
         #[cfg(not(target_arch = "wasm32"))]
-        let work = io
-            .map(|io| {
-                io.original_native_work().ok_or_else(|| {
-                    boundary(
-                        Some(io),
-                        ErrorCode::Unsupported,
-                        "native child requires original work",
-                    )
-                })
-            })
-            .transpose()?;
+        let work = io.map(|io| {
+            io.original_native_work()
+                .expect("dispatch checked original work")
+        });
         if reconciliation_only {
             let retained = 'retained: {
                 #[cfg(not(target_arch = "wasm32"))]
@@ -304,13 +293,9 @@ where
             let admission = 'admission: {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(io) = io {
-                    let work = io.original_native_work().ok_or_else(|| {
-                        boundary(
-                            Some(io),
-                            ErrorCode::Unsupported,
-                            "native child requires original work",
-                        )
-                    })?;
+                    let work = io
+                        .original_native_work()
+                        .expect("dispatch checked original work");
                     let input_bytes = (std::mem::size_of::<Value>() as u64)
                         .checked_add(crate::executor::json::json_value_logical_owned_bytes(
                             &input.input,
