@@ -46,25 +46,6 @@ pub(in crate::native_mount) fn mount_wait_error(
     }
 }
 
-pub(in crate::native_mount) fn mount_accept<T, E>(
-    work: &mut crate::demand::DemandWork,
-    result: crate::MeasuredResult<crate::OperationReceipt<T>, E>,
-    map: impl FnOnce(E) -> MountSourceError,
-) -> Result<T, MountSourceError> {
-    match result {
-        Ok(receipt) => {
-            work.merge(receipt.work, work.live_allocation_bytes())
-                .map_err(mount_demand_error)?;
-            Ok(receipt.value)
-        }
-        Err(failure) => {
-            work.merge(*failure.work, work.live_allocation_bytes())
-                .map_err(mount_demand_error)?;
-            Err(map(failure.error))
-        }
-    }
-}
-
 pub(in crate::native_mount) fn mount_items(
     work: &mut crate::demand::DemandWork,
     count: usize,
@@ -74,25 +55,4 @@ pub(in crate::native_mount) fn mount_items(
         ..crate::WorkCounters::UNCHARGED
     })
     .map_err(mount_demand_error)
-}
-
-pub(in crate::native_mount) fn mount_vec<T>(
-    count: usize,
-    work: &mut crate::demand::DemandWork,
-) -> Result<Vec<T>, MountSourceError> {
-    let bytes = count
-        .checked_mul(std::mem::size_of::<T>())
-        .ok_or(MountSourceError::Work(crate::WorkError::Overflow))? as u64;
-    work.claim_allocation(
-        bytes,
-        u64::from((bytes) != 0),
-        crate::WorkCounters::UNCHARGED,
-    )
-    .map_err(mount_demand_error)?;
-    let mut values = Vec::new();
-    if let Err(error) = values.try_reserve_exact(count) {
-        work.release(bytes).map_err(mount_demand_error)?;
-        return Err(MountSourceError::Allocation(error));
-    }
-    Ok(values)
 }

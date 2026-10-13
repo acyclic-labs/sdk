@@ -106,23 +106,27 @@ pub(super) fn capture_sort_by<T>(
             if child + 1 < end {
                 capture_charge(
                     meter,
-                    WorkCounters {
-                        items_examined: 2,
-                        ..WorkCounters::UNCHARGED
-                    },
+                    crate::materializer::NativeResourceCredit::Items.delta(2),
                 )?;
-                if compare(&values[child], &values[child + 1]).is_lt() {
+                if compare(
+                    values.get(child).ok_or(WorkError::Overflow)?,
+                    values.get(child + 1).ok_or(WorkError::Overflow)?,
+                )
+                .is_lt()
+                {
                     child += 1;
                 }
             }
             capture_charge(
                 meter,
-                WorkCounters {
-                    items_examined: 2,
-                    ..WorkCounters::UNCHARGED
-                },
+                crate::materializer::NativeResourceCredit::Items.delta(2),
             )?;
-            if !compare(&values[root], &values[child]).is_lt() {
+            if !compare(
+                values.get(root).ok_or(WorkError::Overflow)?,
+                values.get(child).ok_or(WorkError::Overflow)?,
+            )
+            .is_lt()
+            {
                 break;
             }
             values.swap(root, child);
@@ -216,10 +220,7 @@ pub(super) fn capture_reserve<T>(
     let mut replacement = capture_vec(capacity, meter)?;
     capture_charge(
         meter,
-        WorkCounters {
-            bytes_copied: copied as u64,
-            ..WorkCounters::UNCHARGED
-        },
+        crate::materializer::NativeResourceCredit::Copy.delta(copied as u64),
     )?;
     replacement.append(values);
     let old_values = std::mem::replace(values, replacement);
@@ -241,13 +242,10 @@ pub(super) fn capture_position<V>(
     while low < high {
         capture_charge(
             meter,
-            WorkCounters {
-                items_examined: 2,
-                ..WorkCounters::UNCHARGED
-            },
+            crate::materializer::NativeResourceCredit::Items.delta(2),
         )?;
         let middle = low + (high - low) / 2;
-        match entries[middle].0.cmp(key) {
+        match entries.get(middle).ok_or(WorkError::Overflow)?.0.cmp(key) {
             std::cmp::Ordering::Less => low = middle + 1,
             std::cmp::Ordering::Greater => high = middle,
             std::cmp::Ordering::Equal => return Ok(Ok(middle)),
@@ -262,16 +260,16 @@ pub(super) fn capture_insert_at<V>(
     value: V,
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
-    let copied = (entries.len() - index)
+    let copied = entries
+        .len()
+        .checked_sub(index)
+        .ok_or(WorkError::Overflow)?
         .checked_mul(std::mem::size_of::<(NamespacePath, V)>())
         .ok_or(WorkError::Overflow)? as u64;
     capture_reserve(entries, 1, meter)?;
     capture_charge(
         meter,
-        WorkCounters {
-            bytes_copied: copied,
-            ..WorkCounters::UNCHARGED
-        },
+        crate::materializer::NativeResourceCredit::Copy.delta(copied),
     )?;
     entries.insert(index, (key, value));
     Ok(())
@@ -285,7 +283,7 @@ pub(super) fn capture_replace<V>(
     match capture_position(entries, &key, meter)? {
         Ok(index) => {
             capture_drop_path(key, meter)?;
-            entries[index].1 = value;
+            entries.get_mut(index).ok_or(WorkError::Overflow)?.1 = value;
             Ok(())
         }
         Err(index) => capture_insert_at(entries, index, key, value, meter),
@@ -307,7 +305,7 @@ pub(super) fn capture_entry<'a, V>(
             index
         }
     };
-    Ok(&mut entries[index].1)
+    Ok(&mut entries.get_mut(index).ok_or(WorkError::Overflow)?.1)
 }
 pub(super) fn capture_remove<V>(
     entries: &mut Vec<(NamespacePath, V)>,
@@ -322,10 +320,7 @@ pub(super) fn capture_remove<V>(
         .ok_or(WorkError::Overflow)? as u64;
     capture_charge(
         meter,
-        WorkCounters {
-            bytes_copied: copied,
-            ..WorkCounters::UNCHARGED
-        },
+        crate::materializer::NativeResourceCredit::Copy.delta(copied),
     )?;
     Ok(Some(entries.remove(index)))
 }

@@ -58,16 +58,15 @@ pub(super) fn collect_host_walk_measured(
                 capture_drop_path(child, meter)?;
                 continue;
             }
-            let stat = match stat {
-                Some(stat) => stat,
-                None => {
-                    let host_path = namespace_to_host_path_measured(&child, meter)?;
-                    let stat = root
-                        .stat(&host_path, &mut meter.clone())
-                        .map_err(capture_demand_error)?;
-                    capture_drop_host_path(host_path, meter)?;
-                    stat
-                }
+            let stat = if let Some(stat) = stat {
+                stat
+            } else {
+                let host_path = namespace_to_host_path_measured(&child, meter)?;
+                let stat = root
+                    .stat(&host_path, &mut meter.clone())
+                    .map_err(capture_demand_error)?;
+                capture_drop_host_path(host_path, meter)?;
+                stat
             };
             let recurse = stat.file_type() == crate::demand::SourceNodeKind::Directory;
             insert(clone_capture_path(&child, meter)?, stat, meter)?;

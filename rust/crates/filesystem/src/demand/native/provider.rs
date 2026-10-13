@@ -28,10 +28,19 @@ impl DemandSource for NativeDemandSource {
         cancellation: &CancellationToken,
     ) -> W::Output<Option<SourceNode>, DemandError> {
         self.request(path, work, cancellation, move |provider, path, context| {
-            provider.check(source, context)?;
+            context.check()?;
+            if source != provider.reference() {
+                return Err(DemandError::StaleSource);
+            }
             if provider.excluded.excludes(path) {
                 return Ok(None);
             }
+            // Every non-root host path needs an encoded-name buffer.
+            context.admit(WorkCounters {
+                allocation_operations: u64::from(path.depth() != 0),
+                ..WorkCounters::UNCHARGED
+            })?;
+            provider.check(source, context)?;
             provider.observe_parent(path, context)?;
             let mut node = provider.metadata(path, context)?.as_ref().map(Self::node);
             if node.is_some_and(|node| node.kind == SourceNodeKind::Directory)

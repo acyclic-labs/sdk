@@ -145,9 +145,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             .seal_prepared_project_source(&request, parent_task, source_io.as_ref())
             .await?;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(io) = source_io {
+        if let (Some(io), Some(observer)) = (source_io, work.as_deref_mut()) {
             let retained = io.owned_bytes()?;
-            let observer = work.as_deref_mut().expect("native preparation observer");
             observer.absorb_native_custody(io.into_native_custody(retained)?)?;
             if project_source.is_some() {
                 observer.release_owned(std::mem::size_of::<

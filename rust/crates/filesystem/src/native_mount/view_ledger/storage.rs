@@ -106,7 +106,7 @@ pub(super) fn record(
             }
             next.extend(latest.drain());
             drop(std::mem::replace(latest, next));
-            drop(std::mem::replace(custody, Some(next_custody)));
+            drop(custody.replace(next_custody));
             Ok(())
         })();
         let released = release_backing(borrowed, carrier);

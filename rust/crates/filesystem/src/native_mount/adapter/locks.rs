@@ -16,7 +16,9 @@ impl<A, O> CheckoutMountSource<A, O> {
         })?;
         let bytes = std::mem::size_of::<ViewReadLease>() as u64;
         carrier
-            .with_work(|leaf| leaf.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED))
+            .with_work(|leaf| {
+                leaf.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)
+            })
             .map_err(super::lazy::mount_demand_error)?;
         if let Err(error) = lease.attach_owned_payload(bytes) {
             carrier
@@ -66,7 +68,10 @@ impl LockWait<'_, '_> {
         }
         .map_err(super::lazy::mount_wait_error)?;
         let cleanup = wait.cleanup_items();
-        self.waits[index] = Some(wait);
+        *self
+            .waits
+            .get_mut(index)
+            .ok_or(MountSourceError::Work(WorkError::Overflow))? = Some(wait);
         if native.is_none() {
             self.carrier
                 .with_work(|work| {
@@ -154,15 +159,15 @@ pub(super) async fn await_lock<F: Future>(
             if token.is_cancelled() {
                 return Poll::Ready(Err(error));
             }
-            if waits.waits[index].is_none() {
-                if let Err(error) = waits.prepare(index, token) {
-                    return Poll::Ready(Err(error));
-                }
-            }
-            if Pin::new(waits.waits[index].as_mut().expect("prepared cancellation"))
-                .poll(context)
-                .is_ready()
+            if waits.waits.get(index).is_none_or(Option::is_none)
+                && let Err(error) = waits.prepare(index, token)
             {
+                return Poll::Ready(Err(error));
+            }
+            let Some(wait) = waits.waits.get_mut(index).and_then(Option::as_mut) else {
+                return Poll::Ready(Err(MountSourceError::Work(WorkError::Overflow)));
+            };
+            if Pin::new(wait).poll(context).is_ready() {
                 return Poll::Ready(Err(error));
             }
         }

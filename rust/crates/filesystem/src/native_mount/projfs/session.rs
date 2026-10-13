@@ -3,7 +3,7 @@ use super::*;
 // SAFETY: the projection loop drains before its owner stops the SDK context.
 unsafe impl Send for SendContext {}
 
-pub(in crate::native_mount) fn has_pending_capture(
+pub(super) fn has_pending_capture(
     failure: &Mutex<PostOperationFailures>,
     path: &MountPath,
 ) -> bool {
@@ -15,9 +15,9 @@ pub(in crate::native_mount) fn has_pending_capture(
 }
 
 pub(in crate::native_mount) struct ProjFsSession {
-    pub(in crate::native_mount) controller: Option<Arc<Projector>>,
+    pub(super) controller: Option<Arc<Projector>>,
     pub(in crate::native_mount) context: Option<PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT>,
-    pub(in crate::native_mount) runtime: Option<Arc<Runtime>>,
+    pub(super) runtime: Option<Arc<Runtime>>,
     pub(in crate::native_mount) retirement: Option<super::super::NativeMountRetirement>,
     pub(in crate::native_mount) original_stop_work: crate::NativeMaterializationWork,
     pub(in crate::native_mount) sdk_stop_credit: Option<crate::NativeWorkReservation>,
@@ -60,14 +60,10 @@ impl ProjFsSession {
             ));
         }
         let physical = work.allocation_work();
-        let stop = physical.reserve_work(crate::WorkCounters {
-            backend_write_operations: 1,
-            ..crate::WorkCounters::UNCHARGED
-        })?;
-        let worker_close = physical.reserve_work(crate::WorkCounters {
-            backend_write_operations: 1,
-            ..crate::WorkCounters::UNCHARGED
-        })?;
+        let stop = physical
+            .reserve_work(crate::materializer::NativeResourceCredit::WriteOperations.delta(1))?;
+        let worker_close = physical
+            .reserve_work(crate::materializer::NativeResourceCredit::WriteOperations.delta(1))?;
         let (root, mut allocation) = work.path(&request.destination, None)?;
         let bytes = size_of::<Runtime>()
             + size_of::<Projector>()
@@ -240,10 +236,7 @@ impl ProjFsSession {
                 .as_mut()
                 .ok_or(NativeMountError::ControlPending)?;
             credit.started_io(
-                crate::WorkCounters {
-                    backend_write_operations: 1,
-                    ..crate::WorkCounters::UNCHARGED
-                },
+                crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
                 None,
             )?;
             // SAFETY: the projection loop has drained; SDK stop drains every callback.
@@ -258,18 +251,14 @@ impl ProjFsSession {
                     let result = delete_through(&directory, || {
                         credit
                             .started_io(
-                                crate::WorkCounters {
-                                    backend_write_operations: 1,
-                                    ..crate::WorkCounters::UNCHARGED
-                                },
+                                crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
                                 None,
                             )
                             .map_err(NativeMountError::from)
                     });
-                    credit.started_drop_io(crate::WorkCounters {
-                        backend_write_operations: 1,
-                        ..crate::WorkCounters::UNCHARGED
-                    });
+                    credit.started_drop_io(
+                        crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
+                    );
                     drop(directory);
                     result.err()
                 });
@@ -492,7 +481,7 @@ impl ProjFsSession {
         runtime.projector.settle()
     }
 
-    pub(in crate::native_mount) fn live(
+    pub(super) fn live(
         &self,
     ) -> Result<(&Arc<Runtime>, PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT), NativeMountError> {
         self.runtime

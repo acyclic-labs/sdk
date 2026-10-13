@@ -98,15 +98,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let (proof, mut allocation) = match accounting {
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { work: original, .. } => {
-                let (proof, allocation) = prove_generation_closure_with_native_work(
+                let (proof, mut allocation) = crate::kernel::closure::ProofContext::new(
                     &self.inner.objects,
-                    generation_root,
                     limits,
-                    original,
-                    cancellation,
-                )
+                    crate::kernel::closure::ProofMeter::Native { original, cancellation },
+                ).prove(generation_root)
                 .await?;
-                (proof, KernelOwnedAllocation::NativeOriginal(allocation))
+                (proof, KernelOwnedAllocation::NativeOriginal(allocation.take_native()?))
             }
             _ => {
                 let result = prove_generation_closure(

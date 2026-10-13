@@ -224,7 +224,7 @@ impl ViewLedger {
         let recorded = (|| {
             match change {
                 ViewChange::Node(id) => {
-                    storage::record(&self.nodes, key_of(id), position, carrier)?
+                    storage::record(&self.nodes, key_of(id), position, carrier)?;
                 }
                 ViewChange::Bound(path) => self.rebound(path, position, carrier)?,
                 ViewChange::Entry(path, id) => {
@@ -349,20 +349,6 @@ impl ViewLedger {
         })
     }
 
-    /// Whether every binding in this path is unchanged since the stamp.
-    pub(super) fn binding_unchanged_since(
-        &self,
-        path: &NamespacePath,
-        stamp: ViewStamp,
-        work: &mut crate::demand::DemandWork,
-    ) -> Result<bool, MountSourceError> {
-        admitted_names(path.components(), work, || {
-            stamp.precedes_none_of(&self.unconfirmed)
-                && stamp.precedes_none_of(&self.everything)
-                && storage::unchanged_since(&self.bindings, stamp, path_keys(path))
-        })
-    }
-
     /// Whether this directory listing is unchanged since the stamp.
     pub(super) fn listing_unchanged_since(
         &self,
@@ -430,14 +416,14 @@ fn hash_spelling_fold(name: &LogicalName, hasher: &mut DefaultHasher) {
             }
         }
         NameEncoding::WindowsUtf16Le => {
-            if let Some(units) = crate::kernel::types::utf16le_units(bytes) {
-                if char::decode_utf16(units.clone()).all(|value| value.is_ok()) {
-                    hash_text(
-                        char::decode_utf16(units).map(|value| value.expect("validated UTF-16")),
-                        hasher,
-                    );
-                    return;
-                }
+            if let Some(units) = crate::kernel::types::utf16le_units(bytes)
+                && char::decode_utf16(units.clone()).all(|value| value.is_ok())
+            {
+                hash_text(
+                    char::decode_utf16(units).map(|value| value.expect("validated UTF-16")),
+                    hasher,
+                );
+                return;
             }
         }
     }

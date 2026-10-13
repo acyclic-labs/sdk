@@ -18,7 +18,7 @@ pub(super) fn write_listed_content(
     let mut failure = None;
     let mut delivered = 0_u64;
     let mut sink = |_offset: u64, packet: crate::kernel::OwnedSourceChunk| {
-        let mut remaining = packet.bytes().as_ref();
+        let mut remaining = packet.bytes.as_ref();
         while !remaining.is_empty() {
             let count = match crate::native_host::file_transfer(
                 acyclic_native_runtime::NativeOperationKind::Write,
@@ -66,10 +66,10 @@ pub(super) fn write_listed_content(
                     count,
                     projection.work,
                 )?;
-                if packet.bytes().is_empty() {
+                if packet.bytes.is_empty() {
                     return Err(MountSourceError::Stale);
                 }
-                offset += u64::try_from(packet.bytes().len()).unwrap_or(u64::MAX);
+                offset += u64::try_from(packet.bytes.len()).unwrap_or(u64::MAX);
                 sink(offset, packet)?;
             }
             Ok(())
@@ -209,7 +209,9 @@ pub(super) fn symbolic_link_digest(data: &[u8]) -> Option<u64> {
     };
     Some(link_digest(
         std::iter::repeat_n(u16::from(b'\\'), slashes).chain(
-            name.chunks_exact(2)
+            name.as_chunks::<2>()
+                .0
+                .iter()
                 .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]])),
         ),
     ))

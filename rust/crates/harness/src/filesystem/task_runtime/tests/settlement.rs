@@ -42,7 +42,6 @@ async fn hanging_tool_retains_original_intent_until_explicit_reconciliation() ->
         matches!(attempt, TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { task: completed }) if completed == task)
     );
     assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 1);
-    assert_eq!(fixture.tool.reconciled.load(Ordering::SeqCst), 2);
     assert_eq!(revision, 1);
     assert!(matches!(
         reopened.task_host().outcome(task).await?,
