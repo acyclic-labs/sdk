@@ -330,12 +330,14 @@ impl PreparationIo {
         if bytes > self.owned_bytes()? {
             return Err(self.invalid("owned buffer exceeds retained quota"));
         }
-        let mut reservation = DecodeReservation {
+        let reservation = DecodeReservation {
             io: self,
             bytes,
             #[cfg(not(target_arch = "wasm32"))]
             custody: None,
         };
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut reservation = reservation;
         #[cfg(not(target_arch = "wasm32"))]
         if self.original_native_work().is_some() {
             reservation.custody = Some(self.take_native_custody(bytes)?);

@@ -72,7 +72,7 @@ pub(crate) fn reserve_preparation_workspace<'a, T: Serialize>(
     let before_items = io.receipt().items_examined;
     let _encoded_hold;
     let encoded = io.encode(value, io.remaining()?.bytes_encoded, false)?;
-    _encoded_hold = io.guard_owned(encoded.len() as u64)?;
+    _encoded_hold = io.guard_bytes(&encoded)?;
     let items = io
         .receipt()
         .items_examined
