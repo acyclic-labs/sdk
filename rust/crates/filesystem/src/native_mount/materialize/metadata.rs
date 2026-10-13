@@ -172,7 +172,7 @@ pub(super) async fn apply_host_metadata_offloaded(
         let target = root.0.open_windows_metadata_target(&path.0, work)?;
         #[cfg(target_os = "linux")]
         {
-            crate::native_host::apply_linux_metadata(&target, metadata, work)
+            crate::native_host::apply_metadata(&target, metadata, work)
         }
         #[cfg(target_os = "macos")]
         {
@@ -180,7 +180,7 @@ pub(super) async fn apply_host_metadata_offloaded(
         }
         #[cfg(windows)]
         {
-            crate::native_host::apply_windows_metadata(target, metadata, work)
+            crate::native_host::apply_metadata(target, metadata, work)
         }
     })
     .await

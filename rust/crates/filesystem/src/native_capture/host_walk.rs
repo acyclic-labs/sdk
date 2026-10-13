@@ -148,7 +148,7 @@ pub(super) fn collect_host_walk_measured(
                     .stat(&host_child, &mut meter.clone())
                     .map_err(capture_demand_error)?,
             };
-            let recurse = stat.is_dir() && !stat.file_type().is_symlink();
+            let recurse = (stat.file_type() == crate::demand::SourceNodeKind::Directory) && (stat.file_type() != crate::demand::SourceNodeKind::SymbolicLink);
             let observed_path = clone_capture_path(&child, meter)?;
             insert(observed_path, stat, meter)?;
             if recurse {
@@ -253,7 +253,7 @@ pub(super) fn collect_host_subtree_roots(
     for root in roots {
         let host_root = namespace_to_host_path_measured(root, meter)?;
         if let Some(observation) = observe_host_path(source_root, &host_root, meter)? {
-            let recurse = observation.is_dir() && !observation.file_type().is_symlink();
+            let recurse = (observation.file_type() == crate::demand::SourceNodeKind::Directory) && (observation.file_type() != crate::demand::SourceNodeKind::SymbolicLink);
             let path = clone_capture_path(root, meter)?;
             insert_host_observation(observed, path, observation, maximum, meter)?;
             if recurse {

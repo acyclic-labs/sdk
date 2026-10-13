@@ -1,12 +1,12 @@
-fn node_kind(file_type: crate::native_host::HostFileType) -> SourceNodeKind {
+fn node_kind(file_type: crate::demand::SourceNodeKind) -> SourceNodeKind {
     [
-        (file_type.is_dir(), SourceNodeKind::Directory),
-        (file_type.is_file(), SourceNodeKind::RegularFile),
-        (file_type.is_symlink(), SourceNodeKind::SymbolicLink),
-        (file_type.is_fifo(), SourceNodeKind::Fifo),
-        (file_type.is_socket(), SourceNodeKind::Socket),
-        (file_type.is_char_device(), SourceNodeKind::CharacterDevice),
-        (file_type.is_block_device(), SourceNodeKind::BlockDevice),
+        ((file_type == crate::demand::SourceNodeKind::Directory), SourceNodeKind::Directory),
+        ((file_type == crate::demand::SourceNodeKind::RegularFile), SourceNodeKind::RegularFile),
+        ((file_type == crate::demand::SourceNodeKind::SymbolicLink), SourceNodeKind::SymbolicLink),
+        ((file_type == crate::demand::SourceNodeKind::Fifo), SourceNodeKind::Fifo),
+        ((file_type == crate::demand::SourceNodeKind::Socket), SourceNodeKind::Socket),
+        ((file_type == crate::demand::SourceNodeKind::CharacterDevice), SourceNodeKind::CharacterDevice),
+        ((file_type == crate::demand::SourceNodeKind::BlockDevice), SourceNodeKind::BlockDevice),
     ]
     .into_iter()
     .find_map(|(matches, kind)| matches.then_some(kind))
