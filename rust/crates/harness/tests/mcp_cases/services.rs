@@ -225,7 +225,7 @@ async fn endpoint_sampling_lost_ack_reopens_without_model_redispatch_and_pins_re
         )
         .await?;
         let operation = OperationId::from_bytes([81; 16]);
-        let tool = ToolContext::new(context, operation, "remote", None)?;
+        let tool = ToolContext::new(Arc::new(context), operation, "remote", None)?;
         let model = Arc::new(ByteModel {
             dispatches: AtomicUsize::new(0),
             pause: false,
@@ -345,7 +345,7 @@ async fn endpoint_sampling_lost_ack_reopens_without_model_redispatch_and_pins_re
             None,
         )
         .await?;
-        let tool = ToolContext::new(context, operation, "remote", None)?;
+        let tool = ToolContext::new(Arc::new(context), operation, "remote", None)?;
         let reopened = McpRuntimeCallbacks::new(
             executor(Arc::clone(&model), scope)?,
             disk,
@@ -391,7 +391,7 @@ async fn form_callback_replays_owner_answer_and_rejects_changed_schema() -> Resu
     )
     .await?;
     let operation = OperationId::from_bytes([82; 16]);
-    let tool = ToolContext::new(context, operation, "form", None)?;
+    let tool = ToolContext::new(Arc::new(context), operation, "form", None)?;
     let model = Arc::new(ByteModel {
         dispatches: AtomicUsize::new(0),
         pause: false,
@@ -602,7 +602,7 @@ async fn remote_callback_cancellation_drops_recorded_model_without_replay() -> R
     )
     .await?;
     let operation = OperationId::from_bytes([83; 16]);
-    let tool = ToolContext::new(context, operation, "cancel", None)?;
+    let tool = ToolContext::new(Arc::new(context), operation, "cancel", None)?;
     let model = Arc::new(ByteModel {
         dispatches: AtomicUsize::new(0),
         pause: true,
@@ -713,7 +713,7 @@ async fn sampling_media_uses_scoped_filesystem_publication_and_native_policy() -
         )?;
         let volume = VolumeRef::new(
             provider,
-            "scratch",
+            "scratch".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(acyclic_harness::AgentId::from_bytes([41; 16])),
             &mut None,
