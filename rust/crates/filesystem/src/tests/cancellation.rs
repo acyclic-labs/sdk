@@ -268,7 +268,7 @@ fn linked_children_preserve_local_stop_parent_propagation_and_release_their_owne
         let child_state = Arc::downgrade(&child.state);
         let accounting = Arc::downgrade(&original.state);
         let scope = original
-            .fork(crate::WorkBudget {
+            .native_volume_work(crate::WorkBudget {
                 items_examined: 6,
                 ..crate::WorkBudget::UNBOUNDED
             })
