@@ -62,16 +62,15 @@ pub(super) fn ensure_current_host_node(
     source_root: &HostRoot,
     host_path: &CaptureHostPath,
     expected: &HostSnapshot,
-    cancellation: &CancellationToken,
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
-    cancellation.check()?;
+    meter.cancellation().check()?;
     meter.clone().check().map_err(capture_demand_error)?;
     let observed = source_root
         .stat(host_path, &mut meter.clone())
         .map_err(capture_demand_error)?;
     ensure_same_host_node(expected, &observed)?;
-    cancellation.check()?;
+    meter.cancellation().check()?;
     meter.clone().check().map_err(capture_demand_error)
 }
 
