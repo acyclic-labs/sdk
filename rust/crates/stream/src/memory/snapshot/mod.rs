@@ -1,18 +1,11 @@
-//! The whole state machine as one self-contained encoding, from which a durable provider
-
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::Arc;
-
-use crate::OwnedBytes as Bytes;
-use prost::Message as _;
-use tokio::sync::watch;
-
-use super::{History, MemoryStream, PathState, RecordBatch, Retained, State, retain};
+//! Canonical snapshot of retained Stream facts.
+use super::{History, MemoryStream, Retained, State, publish, retain};
 use crate::wire_codec::{envelope_to_wire, observation_wire};
-use crate::{CommitId, IdempotencyKey, IdempotencyObservation, Record, StreamError, StreamPath};
-
+use crate::{CommitId, CommittedMutation, IdempotencyKey, IdempotencyObservation, StreamError};
+use prost::Message as _;
+use std::collections::HashMap;
+use std::sync::Arc;
 const MAGIC: &[u8] = b"ACYCLIC-STREAM-STATE-V1\0";
-
 const NODE_BATCH: u8 = 0;
 const NODE_PREFIX: u8 = 1;
 const RETAINS_REPLAY: u8 = 1;
@@ -81,8 +74,8 @@ fn encode(state: &State) -> Vec<u8> {
             } => {
                 out.push(NODE_BATCH);
                 put_len(&mut out, reference(parent));
-                put_len(&mut out, records.len());
-                for record in records.iter() {
+                put_len(&mut out, records.records.len());
+                for record in records.records.iter() {
                     put_u64(&mut out, record.sequence);
                     out.extend_from_slice(record.commit_id.as_bytes());
                     put_u64(&mut out, record.committed_at_micros);
@@ -132,259 +125,81 @@ fn encode(state: &State) -> Vec<u8> {
 fn decode(encoded: &[u8]) -> Option<State> {
     let mut input = Input(encoded.strip_prefix(MAGIC)?);
     let decision = input.u64()?;
-    let last_committed_at_micros = input.u64()?;
-    let hierarchy_version = CommitId::from_bytes(input.array()?);
-    let nodes = decode_nodes(&mut input)?;
-    let (paths, path_bytes) = decode_paths(&mut input, &nodes)?;
+    let time = input.u64()?;
+    let hierarchy = CommitId::from_bytes(input.array()?);
+    // Retained envelopes determine the history; the byte comparison verifies the encoded graph.
+    for _ in 0..input.len()? {
+        let tag = input.u8()?;
+        input.len()?;
+        match tag {
+            NODE_BATCH => {
+                for _ in 0..input.len()? {
+                    input.take(48)?;
+                    input.bytes()?;
+                }
+            }
+            NODE_PREFIX => {
+                input.u64()?;
+            }
+            _ => return None,
+        }
+    }
+    for _ in 0..input.len()? {
+        input.bytes()?;
+        input.len()?;
+        input.u64()?;
+    }
     let mut state = State::default();
-    state.paths = paths;
-    state.path_bytes = path_bytes;
-    state.decision = decision;
-    state.last_committed_at_micros = last_committed_at_micros;
-    state.hierarchy_version = hierarchy_version;
     decode_retained(&mut input, &mut state)?;
-    if !input.0.is_empty() {
+    if !input.0.is_empty() || decision != u64::try_from(state.commits.len()).ok()? {
         return None;
     }
-    // The first-party codec has one canonical encoding. This also rejects
-    if encode(&state) != encoded {
-        return None;
-    }
-    for path in state.paths.keys() {
-        if path
-            .parent()
-            .is_some_and(|parent| !state.paths.contains_key(&parent))
-        {
-            return None;
-        }
-    }
-    if nodes.iter().any(|node| match node.as_ref() {
-        History::Batch { records, .. } => records
-            .iter()
-            .any(|record| record.committed_at_micros > last_committed_at_micros),
-        History::Prefix { .. } => false,
-    }) {
-        return None;
-    }
-    // Every successful current operation retains one immutable envelope; no
-    if state.decision != u64::try_from(state.commits.len()).ok()? {
-        return None;
-    }
-    validate_inventory(&state)?;
-    for envelope in state.retained.iter().filter_map(Retained::envelope) {
+    let inventory = std::mem::take(&mut state.retained);
+    let builder = MemoryStream::default();
+    for envelope in inventory.iter().filter_map(Retained::envelope) {
         for mutation in &envelope.mutations {
-            let records = match mutation {
-                crate::CommittedMutation::Append(append) => &append.records,
-                crate::CommittedMutation::Fork(fork) => &fork.records,
-            };
-            state.record_count = state.record_count.checked_add(records.len())?;
-            state.payload_bytes = state.payload_bytes.checked_add(
-                records
-                    .iter()
-                    .map(|record| record.value.len())
-                    .sum::<usize>(),
-            )?;
+            match mutation {
+                CommittedMutation::Append(append) => {
+                    if append.start != state.paths.get(&append.path).map_or(0, |path| path.tail) {
+                        return None;
+                    }
+                }
+                CommittedMutation::Fork(fork) => {
+                    if state.paths.contains_key(&fork.destination)
+                        || fork.forked_at > state.paths.get(&fork.source)?.tail
+                    {
+                        return None;
+                    }
+                }
+            }
+            if super::fact_records(mutation)
+                .iter()
+                .any(|record| record.committed_at_micros > time)
+            {
+                return None;
+            }
         }
+        let (histories, _histories) = builder.histories(&state, &envelope.mutations).ok()?;
+        let (paths, _paths) = builder
+            .paths(
+                &state,
+                envelope.mutations.iter().map(|mutation| match mutation {
+                    CommittedMutation::Append(append) => &append.path,
+                    CommittedMutation::Fork(fork) => &fork.destination,
+                }),
+            )
+            .ok()?;
+        publish(&mut state, paths, histories, envelope);
+    }
+    state.retained = inventory;
+    state.decision = decision;
+    state.last_committed_at_micros = time;
+    if state.hierarchy_version != hierarchy || encode(&state) != encoded {
+        return None;
     }
     Some(state)
 }
 
-// Index each path's own immutable nodes once, stopping at its fork Prefix.
-fn validate_inventory(state: &State) -> Option<()> {
-    let mut batches = BTreeMap::new();
-    let mut prefixes = BTreeMap::new();
-    let mut seen = HashSet::new();
-    for (path, stream) in &state.paths {
-        let mut cursor = stream.history.as_ref();
-        while let Some(node) = cursor {
-            let pointer = Arc::as_ptr(node);
-            if !seen.insert(pointer) {
-                return None;
-            }
-            match node.as_ref() {
-                History::Batch {
-                    parent, records, ..
-                } => {
-                    let fact = (records.as_ref(), pointer, parent.as_ref().map(Arc::as_ptr));
-                    if batches
-                        .insert((path, records.first()?.commit_id), fact)
-                        .is_some()
-                    {
-                        return None;
-                    }
-                    cursor = parent.as_ref();
-                }
-                History::Prefix { source, tail, .. } => {
-                    prefixes.insert(path, (source.as_ref().map(Arc::as_ptr), *tail, pointer));
-                    break;
-                }
-            }
-        }
-    }
-    let mut heads = BTreeMap::new();
-    for retained in &state.retained {
-        let Some(envelope) = retained.envelope() else {
-            continue;
-        };
-        let commit = envelope.commit_id;
-        let mut pending = Vec::with_capacity(envelope.mutations.len());
-        for mutation in &envelope.mutations {
-            let (path, records, parent) = match mutation {
-                crate::CommittedMutation::Append(append) => (
-                    &append.path,
-                    &append.records,
-                    heads.get(&append.path).copied().flatten(),
-                ),
-                crate::CommittedMutation::Fork(fork) => {
-                    if heads.contains_key(&fork.destination) {
-                        return None;
-                    }
-                    let source_head = *heads.get(&fork.source)?;
-                    let (source, tail, prefix) = prefixes.remove(&fork.destination)?;
-                    if source != source_head || tail != fork.forked_at {
-                        return None;
-                    }
-                    (&fork.destination, &fork.records, Some(prefix))
-                }
-            };
-            let head = if records.is_empty() {
-                parent
-            } else {
-                let (stored, node, stored_parent) = batches.remove(&(path, commit))?;
-                if stored.as_ref() != records.as_slice() || stored_parent != parent {
-                    return None;
-                }
-                Some(node)
-            };
-            pending.push((path, head));
-        }
-        for (path, head) in pending {
-            let mut ancestor = path.clone();
-            loop {
-                let (known, _) = state.paths.get_key_value(&ancestor)?;
-                if heads.contains_key(known) {
-                    break;
-                }
-                heads.insert(known, None);
-                let Some(parent) = ancestor.parent() else {
-                    break;
-                };
-                ancestor = parent;
-            }
-            heads.insert(path, head);
-        }
-    }
-    if !batches.is_empty() || !prefixes.is_empty() || heads.len() != state.paths.len() {
-        return None;
-    }
-    state
-        .paths
-        .iter()
-        .all(|(path, stream)| {
-            heads.get(path).copied() == Some(stream.history.as_ref().map(Arc::as_ptr))
-        })
-        .then_some(())
-}
-
-/// The node an encoded reference names: 0 for none, otherwise one after
-fn reference(nodes: &[Arc<History>], index: usize) -> Option<Option<Arc<History>>> {
-    match index {
-        0 => Some(None),
-        index => nodes.get(index - 1).cloned().map(Some),
-    }
-}
-
-fn history_tail(history: Option<&Arc<History>>) -> Option<u64> {
-    match history.map(AsRef::as_ref) {
-        None => Some(0),
-        Some(History::Batch { records, .. }) => records.last()?.sequence.checked_add(1),
-        Some(History::Prefix { tail, .. }) => Some(*tail),
-    }
-}
-
-fn decode_nodes(input: &mut Input<'_>) -> Option<Vec<Arc<History>>> {
-    let count = input.len()?;
-    let mut nodes = Vec::with_capacity(count.min(input.0.len()));
-    for _ in 0..count {
-        let tag = input.u8()?;
-        let parent = reference(&nodes, input.len()?)?;
-        let node = match tag {
-            NODE_BATCH => {
-                let count = input.len()?;
-                if count == 0 || count > crate::MAX_ITEMS {
-                    return None;
-                }
-                let mut sequence = history_tail(parent.as_ref())?;
-                let mut records = Vec::with_capacity(count.min(input.0.len()));
-                for _ in 0..count {
-                    let record = Record {
-                        sequence: input.u64()?,
-                        commit_id: CommitId::from_bytes(input.array()?),
-                        committed_at_micros: input.u64()?,
-                        value: Bytes::copy_from_slice(input.bytes()?),
-                    };
-                    if record.sequence != sequence || record.value.len() > crate::MAX_RECORD_BYTES {
-                        return None;
-                    }
-                    sequence = sequence.checked_add(1)?;
-                    records.push(record);
-                }
-                History::Batch {
-                    parent,
-                    records: Arc::new(RecordBatch {
-                        records: records,
-                        _allocation: Default::default(),
-                    }),
-                    _allocation: Default::default(),
-                }
-            }
-            NODE_PREFIX => {
-                let tail = input.u64()?;
-                if tail > history_tail(parent.as_ref())? {
-                    return None;
-                }
-                History::Prefix {
-                    source: parent,
-                    tail,
-                    _allocation: Default::default(),
-                }
-            }
-            _ => return None,
-        };
-        nodes.push(Arc::new(node));
-    }
-    Some(nodes)
-}
-
-fn decode_paths(
-    input: &mut Input<'_>,
-    nodes: &[Arc<History>],
-) -> Option<(BTreeMap<StreamPath, PathState>, usize)> {
-    let mut paths = BTreeMap::new();
-    let mut path_bytes = 0_usize;
-    for _ in 0..input.len()? {
-        let path = input.path()?;
-        let history = reference(nodes, input.len()?)?;
-        let tail = input.u64()?;
-        if tail != history_tail(history.as_ref())? || paths.contains_key(&path) {
-            return None;
-        }
-        let (changed, _) = watch::channel(tail);
-        path_bytes = path_bytes.checked_add(path.as_str().len())?;
-        paths.insert(
-            path,
-            PathState {
-                history,
-                tail,
-                changed,
-                _allocation: Default::default(),
-            },
-        );
-    }
-    Some((paths, path_bytes))
-}
-
-// A current command is bounded by MAX_COMMAND_BYTES and each protobuf bytes
 fn retained_fact_bound() -> Option<usize> {
     crate::MAX_COMMAND_BYTES
         .checked_mul(64)?
@@ -532,11 +347,6 @@ impl<'a> Input<'a> {
     fn bytes(&mut self) -> Option<&'a [u8]> {
         let count = self.len()?;
         self.take(count)
-    }
-
-    fn path(&mut self) -> Option<StreamPath> {
-        let bytes = self.bytes()?;
-        StreamPath::new(std::str::from_utf8(bytes).ok()?).ok()
     }
 }
 
