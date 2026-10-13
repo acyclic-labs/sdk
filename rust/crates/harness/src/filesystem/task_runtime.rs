@@ -389,7 +389,7 @@ where
                 });
             }
             if let Some(policy) = &policy {
-                policy.supports_native_policy(work)?;
+                policy.identity_with_native_work(work)?;
             }
             let payloads = FilesystemContentPublisher::new(
                 filesystem.clone(),
@@ -775,7 +775,6 @@ where
         let identity = match io {
             Some(io) => {
                 let work = io.original_native_work().expect("native approval IO");
-                policy.supports_native_policy(work)?;
                 let (identity, custody) = policy.identity_with_native_work(work)?;
                 io.absorb_native_custody(custody)?;
                 identity

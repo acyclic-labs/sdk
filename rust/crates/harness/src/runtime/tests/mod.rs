@@ -79,16 +79,38 @@ impl ToolPolicy for FixedPolicy {
 
     fn evaluate<'a>(
         &'a self,
-        _invocation: &'a ToolInvocation,
-        _scope: &'a RuntimeScope,
-    ) -> BoxFuture<'a, Result<ToolPolicyDecision>> {
+        _: &'a ToolInvocation,
+        _: &'a RuntimeScope,
+        io: Option<&'a crate::executor::PreparationIo>,
+    ) -> Result<crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>>
+    {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = task_original_work(io)? {
+            return crate::NativeFutureBundle::new(work, || async move {
+                use crate::store::history::HistoryIo;
+                let mut io = crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(work)?,
+                );
+                let value = match &self.decision {
+                    ToolPolicyDecision::Allow => ToolPolicyDecision::Allow,
+                    ToolPolicyDecision::Deny { reason } => ToolPolicyDecision::Deny {
+                        reason: io.clone_text(reason)?,
+                    },
+                    ToolPolicyDecision::RequireApproval { prompt } => {
+                        ToolPolicyDecision::RequireApproval {
+                            prompt: io.clone_text(prompt)?,
+                        }
+                    }
+                };
+                Ok((value, Some(io.into_custody()?)))
+            })
+            .map(crate::store::HistoryContentFuture::Native);
+        }
         let decision = self.decision.clone();
-        Box::pin(async move { Ok(decision) })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_policy(&self, _work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        Ok(())
+        Ok(crate::store::HistoryContentFuture::Ordinary {
+            future: Box::pin(async move { Ok((decision, None)) }),
+            frame_bytes: 0,
+        })
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -97,34 +119,6 @@ impl ToolPolicy for FixedPolicy {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(ComponentIdentity, acyclic_fs::NativeAllocation)> {
         native_fixture_policy_identity(&self.identity, work)
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn evaluate_with_native_work<'a>(
-        &'a self,
-        _invocation: &'a ToolInvocation,
-        _scope: &'a RuntimeScope,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (ToolPolicyDecision, acyclic_fs::NativeAllocation)>>
-    {
-        crate::NativeFutureBundle::new(work, || async move {
-            use crate::store::history::HistoryIo;
-            let mut io = crate::store::HistoryWork::new(
-                crate::filesystem::PreparationIo::from_native_work(work)?,
-            );
-            let value = match &self.decision {
-                ToolPolicyDecision::Allow => ToolPolicyDecision::Allow,
-                ToolPolicyDecision::Deny { reason } => ToolPolicyDecision::Deny {
-                    reason: io.clone_text(reason)?,
-                },
-                ToolPolicyDecision::RequireApproval { prompt } => {
-                    ToolPolicyDecision::RequireApproval {
-                        prompt: io.clone_text(prompt)?,
-                    }
-                }
-            };
-            Ok((value, io.into_custody()?))
-        })
     }
 }
 
@@ -158,7 +152,7 @@ pub(super) fn native_policy_fixture_inputs() -> (FixedPolicy, ToolDefinition, To
             digest: [9; 32],
         },
         decision: ToolPolicyDecision::RequireApproval {
-            prompt: "Approve ÃŽÂ» Ã°Å¸Â¦â‚¬?".into(),
+            prompt: "Approve ÃƒÅ½Ã‚Â» ÃƒÂ°Ã…Â¸Ã‚Â¦Ã¢â€šÂ¬?".into(),
         },
     };
     let definition = ToolDefinition {
@@ -173,7 +167,7 @@ pub(super) fn native_policy_fixture_inputs() -> (FixedPolicy, ToolDefinition, To
         operation_id: OperationId::new(),
         call_id: "provider-call".into(),
         name: definition.name.clone(),
-        arguments: serde_json::json!({"z":[true,null],"a":"ÃŽÂ»"}),
+        arguments: serde_json::json!({"z":[true,null],"a":"ÃƒÅ½Ã‚Â»"}),
     };
     (policy, definition, invocation)
 }
@@ -206,75 +200,12 @@ impl ResumableMachine for TestMachine {
     }
 }
 
-pub(super) struct IdentityHost {
-    pub(super) record: TaskAdmissionRecord,
-    pub(super) polls: Arc<AtomicUsize>,
-}
-
-impl DurableTaskHost for IdentityHost {}
-
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-impl TaskSpawner for IdentityHost {
-    fn policy_identity(&self) -> Option<ComponentIdentity> {
-        TaskStateProvider::policy_identity(self)
-    }
-    async fn reconcile_admission(
-        &self,
-        operation_id: OperationId,
-    ) -> Result<Option<(TaskId, TaskAdmissionRecord)>> {
-        Ok(Some((
-            TaskId::from_bytes(operation_id.into_bytes()),
-            self.record.clone(),
-        )))
-    }
-    async fn admit(
-        &self,
-        _request: TaskAdmissionRecord,
-    ) -> Result<Admission<TaskId>> {
-        Ok(Admission::Rejected {
-            reason: "unused".into(),
-        })
-    }
-}
-
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-impl crate::runtime::TaskStateProvider for IdentityHost {
-    async fn observe_admission(
-        &self,
-        _task_id: TaskId,
-    ) -> Result<TaskAdmissionRecord> { Ok(self.record.clone())
-    }
-    async fn outcome(&self, _task_id: TaskId) -> Result<Option<Outcome<Value>>> {
-        if self.polls.fetch_add(1, Ordering::SeqCst) == 0 {
-            Ok(None)
-        } else {
-            Ok(Some(Outcome::Succeeded(serde_json::json!(7))))
-        }
-    }
-    async fn cancel(&self, _task_id: TaskId) -> Result<()> { Ok(())
-    }
-
-    fn policy_identity(&self) -> Option<ComponentIdentity> {
-        None
-    }
-
-    async fn resume_scope(
-        &self,
-        _task_id: TaskId,
-        _operation_id: OperationId,
-    ) -> Result<RuntimeScope> {
-        Err(Error::Unsupported(
-            "durable task context authentication is not bound".into(),
-        ))
-    }
-}
-
 pub(super) struct SplitState {
     pub(super) task_id: TaskId,
     pub(super) record: TaskAdmissionRecord,
 }
+
+impl DurableTaskHost for SplitState {}
 
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
@@ -282,10 +213,7 @@ impl TaskStateProvider for SplitState {
     fn policy_identity(&self) -> Option<ComponentIdentity> {
         None
     }
-    async fn observe_admission(
-        &self,
-        task_id: TaskId,
-    ) -> Result<TaskAdmissionRecord> {
+    async fn observe_admission(&self, task_id: TaskId) -> Result<TaskAdmissionRecord> {
         if task_id != self.task_id {
             return Err(Error::NotFound("task".into()));
         }
@@ -322,15 +250,14 @@ impl TaskSpawner for SplitState {
     fn policy_identity(&self) -> Option<ComponentIdentity> {
         None
     }
-    async fn admit(
-        &self,
-        _request: TaskAdmissionRecord,
-    ) -> Result<Admission<TaskId>> { Ok(Admission::Accepted(self.task_id))
+    async fn admit(&self, _request: TaskAdmissionRecord) -> Result<Admission<TaskId>> {
+        Ok(Admission::Accepted(self.task_id))
     }
     async fn reconcile_admission(
         &self,
         _operation_id: OperationId,
-    ) -> Result<Option<(TaskId, TaskAdmissionRecord)>> { Ok(Some((self.task_id, self.record.clone())))
+    ) -> Result<Option<(TaskId, TaskAdmissionRecord)>> {
+        Ok(Some((self.task_id, self.record.clone())))
     }
 }
 

@@ -102,7 +102,9 @@ impl AgentHarness {
             .as_ref()
             .ok_or_else(|| Error::Unsupported("durable task state is not bound".into()))?;
         let retained = state.observe_admission(task_id).await?;
-        let context = self.durable_context(task_id, retained.operation_id, None).await?;
+        let context = self
+            .durable_context(task_id, retained.operation_id, None)
+            .await?;
         definition.open(context, &fence, journal)?.await
     }
 
@@ -130,110 +132,76 @@ impl AgentHarness {
         )
     }
 
-    /// Builds a registered descendant request using the original guarded input.
+    /// Builds a registered admission from guarded input and an optional parent scope.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn registered_child_admission_with_native_work(
+    pub fn registered_admission(
         &self,
         operation: OperationId,
         name: &str,
         version: &str,
         input: (Value, acyclic_fs::NativeAllocation),
-        parent: TaskId,
-        scope: &RuntimeScope,
+        parent: Option<(TaskId, &RuntimeScope)>,
+        expected_digest: Option<[u8; 32]>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(TaskAdmissionRecord, acyclic_fs::NativeAllocation)> {
+        if parent.is_none() {
+            work.charge(Default::default())?;
+            if expected_digest.is_none() {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "root admission requires its pinned task digest",
+                });
+            }
+        }
         if !input.1.work().shares_allocation_context(work) {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
-                reason: "child input belongs to another original metadata ledger",
+                reason: "admission input belongs to another original metadata ledger",
             });
         }
         self.assert_durable_policy_bindings(Some(work))?;
-        let mut io = crate::store::HistoryWork::new(
-            crate::filesystem::PreparationIo::from_native_work(work)?,
-        );
-        crate::store::history::HistoryIo::absorb_native_custody(&mut io, input.1)?;
-        let record = self.tasks.registered_admission(
-            operation,
-            name,
-            version,
-            input.0,
-            Some(parent),
-            None,
-            scope,
-            &mut Some(&mut io),
-        )?;
-        let bytes = (std::mem::size_of::<TaskAdmissionRecord>() as u64)
-            .checked_add(record.logical_owned_bytes()?)
-            .ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "native admission metadata overflows",
-            })?;
-        let custody = crate::store::history::HistoryIo::take_native_custody(&mut io, bytes)?;
-        Ok((record, custody))
-    }
-
-    /// Builds a registered root admission from an already guarded native input.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn registered_root_admission_with_native_work<I, O>(
-        &self,
-        operation: OperationId,
-        definition: &Arc<TaskDefinition<I, O>>,
-        input: (Value, acyclic_fs::NativeAllocation),
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(TaskAdmissionRecord, acyclic_fs::NativeAllocation)> {
-        work.charge(Default::default())
-            .map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
-        if !input.1.work().shares_allocation_context(work) {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "root input belongs to another original resource ledger",
-            });
-        }
-        self.assert_durable_policy_bindings(Some(work))?;
-        if self.execution.is_some() {
+        if parent.is_none() && self.execution.is_some() {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported,
                 reason: "native root admission requires the configured local durable host",
             });
         }
+        use crate::store::history::HistoryIo as _;
         let mut io = crate::store::HistoryWork::new(
             crate::filesystem::PreparationIo::from_native_work(work)?,
         );
-        use crate::store::history::HistoryIo as _;
-        let (value, custody) = input;
-        io.absorb_native_custody(custody)?;
-        let identity = definition.identity();
+        io.absorb_native_custody(input.1)?;
         let mut record = self.tasks.registered_admission(
             operation,
-            &identity.name,
-            &identity.version,
-            value,
-            None,
-            Some(identity.digest),
-            &self.scope,
+            name,
+            version,
+            input.0,
+            parent.map(|(task, _)| task),
+            expected_digest,
+            parent.map_or(&self.scope, |(_, scope)| scope),
             &mut Some(&mut io),
         )?;
-        record.policy = match self.policy_identity.as_ref() {
-            None => None,
-            Some(identity) => Some(ComponentIdentity {
-                name: io.clone_text(&identity.name)?,
-                version: io.clone_text(&identity.version)?,
-                digest: identity.digest,
-            }),
-        };
-        record.validate(&mut Some(&mut io))?;
+        if parent.is_none() {
+            record.policy = self
+                .policy_identity
+                .as_ref()
+                .map(|identity| -> Result<ComponentIdentity> {
+                    Ok(ComponentIdentity {
+                        name: io.clone_text(&identity.name)?,
+                        version: io.clone_text(&identity.version)?,
+                        digest: identity.digest,
+                    })
+                })
+                .transpose()?;
+            record.validate(&mut Some(&mut io))?;
+        }
         let bytes = (std::mem::size_of::<TaskAdmissionRecord>() as u64)
             .checked_add(record.logical_owned_bytes()?)
             .ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
                 reason: "native admission metadata overflows",
             })?;
-        let custody = io.take_native_custody(bytes)?;
-        Ok((record, custody))
+        Ok((record, io.take_native_custody(bytes)?))
     }
 
     /// Reopens the exact registered task definition under its current context.
@@ -304,7 +272,9 @@ impl AgentHarness {
             &admission.task.version,
             &mut None,
         )?);
-        let context = self.durable_context(task_id, admission.operation_id, None).await?;
+        let context = self
+            .durable_context(task_id, admission.operation_id, None)
+            .await?;
         definition.open_workflow(context, fence, journal)?.await
     }
 

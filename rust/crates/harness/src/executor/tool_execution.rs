@@ -137,7 +137,7 @@ impl StockExecution<'_> {
                     if self.stock.policy_identity.as_ref() != Some(&policy.identity()) {
                         return Err(Error::Conflict("stock policy changed after binding".into()));
                     }
-                    let decision = policy.evaluate(&invocation, scope).await?;
+                    let decision = policy.evaluate(&invocation, scope, None)?.await?.0;
                     if self.stock.policy_identity.as_ref() != Some(&policy.identity()) {
                         return Err(Error::Conflict(
                             "stock policy changed during evaluation".into(),

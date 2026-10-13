@@ -305,7 +305,15 @@ impl PiTaskRuntime {
         let record = self
             .runtime
             .harness()
-            .registered_root_admission_with_native_work(operation, &self.definition, value, work)?;
+            .registered_admission(
+                operation,
+                &self.definition.identity().name,
+                &self.definition.identity().version,
+                value,
+                None,
+                Some(self.definition.identity().digest),
+                work,
+            )?;
         self.runtime
             .task_host()
             .admit_with_native_work(record, work)?

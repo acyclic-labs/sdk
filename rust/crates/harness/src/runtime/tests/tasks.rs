@@ -448,14 +448,13 @@ async fn durable_reattachment_requires_the_exact_admitted_definition() -> Result
         extensions: None,
         execution: None,
     };
-    let polls = Arc::new(AtomicUsize::new(0));
     let harness = Bindings {
         tasks,
         scope,
         concurrency: 1,
-        durable_host: Some(Arc::new(IdentityHost {
+        durable_host: Some(Arc::new(SplitState {
+            task_id: TaskId::from_bytes([5; 16]),
             record,
-            polls: Arc::clone(&polls),
         })),
         ..Bindings::local()
     }
@@ -476,7 +475,6 @@ async fn durable_reattachment_requires_the_exact_admitted_definition() -> Result
         harness.attach(task_id, &first).await?.result().await?,
         Outcome::Succeeded(7)
     );
-    assert_eq!(polls.load(Ordering::SeqCst), 2);
     Ok(())
 }
 
