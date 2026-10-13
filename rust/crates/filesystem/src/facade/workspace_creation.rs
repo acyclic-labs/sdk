@@ -60,7 +60,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let (creation, operation) = match observed {
                 Ok(record) => record,
                 Err(WorkspaceError::Filesystem(FsError::Authority(
-                    AuthorityStoreError::Missing,
+                    AuthorityStoreError::Missing
+                    | AuthorityStoreError::NativeStream(acyclic_stream::StreamError::NotFound),
                 ))) => {
                     let (_, root) = self
                         .create_volume_operation(
@@ -162,7 +163,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             {
                 Ok(record) => record,
                 Err(WorkspaceError::Filesystem(FsError::Authority(
-                    AuthorityStoreError::Missing,
+                    AuthorityStoreError::Missing
+                    | AuthorityStoreError::NativeStream(acyclic_stream::StreamError::NotFound),
                 ))) => return Ok(None),
                 Err(WorkspaceError::Filesystem(FsError::VolumeMismatch)) => {
                     return Err(FsError::CreationRejected.into());
