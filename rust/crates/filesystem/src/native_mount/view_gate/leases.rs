@@ -80,7 +80,7 @@ impl ViewReadLease {
             payload_finished,
             proof_alive: true,
             ..
-        }) = &mut state.reader_slots[index]
+        }) = state.reader_slots.get_mut(index).and_then(Option::as_mut)
         else {
             return Err(MountSourceError::Work(crate::WorkError::Overflow));
         };

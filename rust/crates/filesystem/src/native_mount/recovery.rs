@@ -171,10 +171,9 @@ impl NativeMountRecoveryOwner {
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state
-                .as_mut()
-                .expect("original recovery state")
-                .retire(shared._custody.work());
+            if let Some(state) = state.as_mut() {
+                state.retire(shared._custody.work());
+            }
             drop(state.take());
             shared.wake.notify_all();
             drop(state);
@@ -191,7 +190,7 @@ impl NativeMountRecoveryOwner {
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 state
                     .as_mut()
-                    .expect("original recovery state")
+                    .ok_or(NativeMountError::ControlPending)?
                     .acquire(&owner.shared.destination, owner.shared._custody.work())
             }))
             .unwrap_or_else(|panic| {
@@ -222,14 +221,13 @@ impl NativeMountRecoveryOwner {
     }
 
     /// Returns the original identity and actual recovery state.
-    #[must_use]
-    pub fn cleanup_state(&self) -> NativeMountRecoveryCleanupState {
+    pub fn cleanup_state(&self) -> Result<NativeMountRecoveryCleanupState, NativeMountError> {
         self.shared
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
-            .expect("an active recovery owner")
+            .ok_or(NativeMountError::ControlPending)?
             .snapshot()
     }
 
@@ -247,7 +245,7 @@ impl NativeMountRecoveryOwner {
         &mut self,
         remove_destination: bool,
     ) -> Result<bool, NativeMountError> {
-        if !self.cleanup_state().destination_fence_retained {
+        if !self.cleanup_state()?.destination_fence_retained {
             return Ok(false);
         }
         #[cfg(target_os = "macos")]
@@ -292,7 +290,9 @@ impl NativeMountRecoveryOwner {
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let state = state.as_mut().expect("an active recovery owner");
+            let Some(state) = state.as_mut() else {
+                return Err((NativeMountError::ControlPending, work.receipt()));
+            };
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 state.finish_with_work(&self.shared.destination, remove_destination, &work)
             }))
@@ -418,7 +418,7 @@ impl NativeRecoveryState {
             }
             self.guard
                 .as_mut()
-                .expect("original retained fence")
+                .ok_or(NativeMountError::ControlPending)?
                 .release(&mut &*work)?;
             self.guard.take();
             Ok(true)
@@ -427,15 +427,15 @@ impl NativeRecoveryState {
         result
     }
 
-    fn snapshot(&self) -> NativeMountRecoveryCleanupState {
-        NativeMountRecoveryCleanupState {
-            fence_identity: self.identity.expect("an acquired fence identity"),
+    fn snapshot(&self) -> Result<NativeMountRecoveryCleanupState, NativeMountError> {
+        Ok(NativeMountRecoveryCleanupState {
+            fence_identity: self.identity.ok_or(NativeMountError::ControlPending)?,
             destination_fence_retained: self.guard.is_some(),
             controls_pending: self.control.controls_pending(),
             namespace_detach_confirmed: self.control.namespace_detach_confirmed(),
             destination_removed: self.destination_removed,
             measured_cleanup_failed: self.measured_cleanup_failed,
-        }
+        })
     }
 }
 

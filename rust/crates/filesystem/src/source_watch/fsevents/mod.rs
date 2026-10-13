@@ -118,11 +118,9 @@ impl NativeSourceWatch {
         if std::fs::symlink_metadata(&self.shared.root)
             .is_ok_and(|metadata| identity(&metadata) == self.shared.held)
         {
-            self.delivery()
-                .deliver_with_work(&[HostChange::Unconfirmed], work)?;
+            self.delivery().deliver(&[HostChange::Unconfirmed], work)?;
         } else if self.delivery().exact.swap(false, Ordering::AcqRel) {
-            self.delivery()
-                .deliver_with_work(&[HostChange::Everything], work)?;
+            self.delivery().deliver(&[HostChange::Everything], work)?;
         }
         Ok(false)
     }

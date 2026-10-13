@@ -56,6 +56,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             policy_binding: None,
             effects: None,
             session_limits: None,
+            #[cfg(feature = "filesystem")]
             resource_creation: Vec::new(),
         })
     }

@@ -40,7 +40,9 @@ pub(super) fn write_listed_content(
             delivered = delivered
                 .checked_add(count as u64)
                 .ok_or(crate::WorkError::Overflow)?;
-            remaining = &remaining[count..];
+            remaining = remaining.get(count..).ok_or(MountSourceError::NativeWork(
+                crate::NativeTreeMaterializationError::InvalidLayout,
+            ))?;
         }
         Ok(())
     };
@@ -165,7 +167,8 @@ pub(super) fn delete_through<E: From<std::io::Error>>(
             handle,
             FileDispositionInfoEx,
             (&raw const posix).cast(),
-            size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
+            u32::try_from(size_of::<FILE_DISPOSITION_INFO_EX>())
+                .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?,
         )
     };
     if result.is_err() {
@@ -176,7 +179,8 @@ pub(super) fn delete_through<E: From<std::io::Error>>(
                 handle,
                 FileDispositionInfo,
                 (&raw const on_close).cast(),
-                size_of::<FILE_DISPOSITION_INFO>() as u32,
+                u32::try_from(size_of::<FILE_DISPOSITION_INFO>())
+                    .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?,
             )
         }
         .map_err(std::io::Error::from)

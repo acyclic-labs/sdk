@@ -2,6 +2,22 @@
 use super::*;
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
+    pub(super) async fn admission_run_limits(
+        &self,
+        operation: OperationId,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> Result<crate::runtime::TaskRunLimits> {
+        let admission = self.admission(operation, work).await?;
+        let retained =
+            std::mem::size_of::<TaskAdmissionRecord>() as u64 + admission.logical_owned_bytes()?;
+        let limits = admission.run_limits;
+        drop(admission);
+        if let Some(io) = work.as_deref_mut() {
+            io.release_owned(retained)?;
+        }
+        Ok(limits)
+    }
+
     pub(super) async fn admission(
         &self,
         operation: OperationId,

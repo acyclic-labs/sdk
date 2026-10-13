@@ -7,8 +7,6 @@
 //! generations and are never enumerated here.
 
 use crate::WorkspaceId;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::kernel::allocation::KernelAccounting;
 use crate::record_store::stored_revision;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -133,71 +131,6 @@ pub trait WorkspaceContextStore: Send + Sync {
         require_exact_set: bool,
     ) -> impl Future<Output = Result<bool, Self::Error>> + Send;
 
-    /// Loads metadata on the caller's original native invocation.
-    /// Custom adapters opt in explicitly; the default performs no I/O.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn load_with_native_work(
-        &self,
-        context_id: WorkspaceContextId,
-        original: &crate::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> impl Future<
-        Output = Result<
-            Option<(WorkspaceContext, crate::NativeAllocation)>,
-            (
-                WorkspaceContextError<Self::Error>,
-                Option<crate::NativeAllocation>,
-            ),
-        >,
-    > + Send {
-        let _ = context_id;
-        async move {
-            KernelAccounting::native(original, cancellation)
-                .check()
-                .map_err(|error| {
-                    (
-                        WorkspaceContextError::NativeFilesystem(Box::new(error)),
-                        None,
-                    )
-                })?;
-            Err((WorkspaceContextError::NativeOriginalUnsupported, None))
-        }
-    }
-
-    /// Performs the same revision comparison and index update with custody.
-    /// The replacement's already-paid physical payload moves into the store.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn compare_and_swap_with_native_work(
-        &self,
-        context_id: WorkspaceContextId,
-        expected_revision: u64,
-        replacement: (WorkspaceContext, crate::NativeAllocation),
-        original: &crate::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> impl Future<
-        Output = Result<
-            bool,
-            (
-                WorkspaceContextError<Self::Error>,
-                Option<crate::NativeAllocation>,
-            ),
-        >,
-    > + Send {
-        let _ = (context_id, expected_revision);
-        async move {
-            KernelAccounting::native(original, cancellation)
-                .check()
-                .map_err(|error| {
-                    (
-                        WorkspaceContextError::NativeFilesystem(Box::new(error)),
-                        None,
-                    )
-                })?;
-            drop(replacement);
-            Err((WorkspaceContextError::NativeOriginalUnsupported, None))
-        }
-    }
-
     /// Atomically validates and tombstones one direct-child subtree.
     fn discard_subtree(
         &self,
@@ -271,14 +204,6 @@ pub enum WorkspaceContextError<E: std::error::Error + 'static> {
     /// A root cannot be removed while a descendant still depends on it.
     #[error("workspace root is still bound by a live descendant")]
     RootInUse,
-    /// The original native invocation rejected measured metadata work.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[error(transparent)]
-    NativeFilesystem(Box<crate::FsError>),
-    /// A custom adapter has not implemented original-ledger metadata work.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[error("workspace-context store does not support original native work")]
-    NativeOriginalUnsupported,
 }
 
 impl<S: WorkspaceContextStore> WorkspaceContextRegistry<S> {
