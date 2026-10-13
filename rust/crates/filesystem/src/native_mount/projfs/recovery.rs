@@ -126,7 +126,6 @@ pub(super) fn reparse_data<T>(
     file: &impl std::os::windows::io::AsRawHandle,
     inspect: impl FnOnce(&[u8]) -> T,
 ) -> std::io::Result<Option<T>> {
-    use std::os::windows::io::AsRawHandle as _;
     use windows::Win32::Foundation::{ERROR_NOT_A_REPARSE_POINT, HANDLE};
     use windows::Win32::Storage::FileSystem::MAXIMUM_REPARSE_DATA_BUFFER_SIZE;
     use windows::Win32::System::IO::DeviceIoControl;

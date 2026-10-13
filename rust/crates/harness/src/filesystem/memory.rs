@@ -87,7 +87,7 @@ impl MemoryHarnessStorage {
         limits: Limits,
         source: Option<
             Arc<
-                dyn super::RecursiveDefaultToolSource<
+                super::ConfiguredRecursiveToolSource<
                         MemoryStream,
                         MemoryAuthorityBackend,
                         MemoryObjectBackend,

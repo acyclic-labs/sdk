@@ -17,17 +17,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             Err(error) => return Err(error),
         };
         let result = async {
-            let checkout = self
+            let mut transaction = accounted!(ctx, |work, cancel| self
                 .workspace
-                .checkout_accounted(
-                    crate::model::GenerationSelector::Head,
-                    crate::model::CheckoutMode::tracking_transaction(),
-                    ctx,
-                    cancellation(ctx),
-                )
-                .await?;
-            let mut transaction =
-                crate::Transaction::from_checkout(&self.workspace, checkout, key, false);
+                .begin_transaction(key, work, cancel))?;
             self.stage_write(
                 &mut transaction,
                 path,

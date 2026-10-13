@@ -1,30 +1,25 @@
 use super::*;
-use crate::demand::NativeDemandReadMeter;
-use crate::storage::{ObjectId, ObjectRead, ObjectReadRequest, ObjectResult, ObjectWrite};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use crate::storage::{ObjectId, ObjectReadRequest, ObjectWrite};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 struct ReenteringObjects {
     inner: crate::memory::MemoryObjectStore,
-    meter: Arc<Mutex<Option<Arc<crate::demand::NativeDemandReadMeter>>>>,
-    calls: Arc<AtomicUsize>,
+    entered: Arc<AtomicBool>,
 }
 
 impl ReenteringObjects {
-    async fn reenter(&self) {
-        for _ in 0..2 {
-            {
-                let binding = self.meter.lock().expect("fixture meter binding");
-                if let Some(meter) = binding.as_ref() {
-                    let original = meter.0.try_lock().expect(
-                        "watch capture must release its original meter before backend entry",
-                    );
-                    original.check().expect("fixture invocation remains active");
-                    self.calls.fetch_add(1, Ordering::Relaxed);
-                }
-            }
-            tokio::task::yield_now().await;
+    async fn reenter(&self, context: &crate::AuthorityWork<'_>) {
+        if let Some(work) = context.original {
+            let state = work
+                .state
+                .0
+                .try_lock()
+                .expect("capture holds its meter across backend entry");
+            state.check().expect("fixture invocation remains active");
+            self.entered.store(true, Ordering::Relaxed);
         }
+        tokio::task::yield_now().await;
     }
 }
 
@@ -35,29 +30,17 @@ impl AsyncObjectStore for ReenteringObjects {
         bytes: acyclic_stream::OwnedBytes,
         context: &mut crate::AuthorityWork<'_>,
     ) -> Result<(), crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(crate::ObjectStoreError::NativeUnavailable);
-        }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = async {
-            self.reenter().await;
-            ({
-                let __object_args = (object_id, bytes, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-                let __object_result = AsyncObjectStore::put(
-                    &self.inner,
-                    __object_args.0,
-                    __object_args.1,
-                    &mut __object_work,
-                )
-                .await;
-                __object_work.receipt(__object_result)
-            })
-        }
-        .await;
-        context.accept(result)
+        self.reenter(context).await;
+        self.inner.put(object_id, bytes, context).await
+    }
+
+    async fn put_hashed(
+        &self,
+        object: crate::storage::HashedObject,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        self.reenter(context).await;
+        self.inner.put_hashed(object, context).await
     }
 
     async fn put_many(
@@ -65,25 +48,8 @@ impl AsyncObjectStore for ReenteringObjects {
         writes: &[ObjectWrite],
         context: &mut crate::AuthorityWork<'_>,
     ) -> Result<(), crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(crate::ObjectStoreError::NativeUnavailable);
-        }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = async {
-            self.reenter().await;
-            ({
-                let __object_args = (writes, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
-                let __object_result =
-                    AsyncObjectStore::put_many(&self.inner, __object_args.0, &mut __object_work)
-                        .await;
-                __object_work.receipt(__object_result)
-            })
-        }
-        .await;
-        context.accept(result)
+        self.reenter(context).await;
+        self.inner.put_many(writes, context).await
     }
 
     async fn read(
@@ -92,29 +58,8 @@ impl AsyncObjectStore for ReenteringObjects {
         maximum_bytes: u64,
         context: &mut crate::AuthorityWork<'_>,
     ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(crate::ObjectStoreError::NativeUnavailable);
-        }
-        let budget = context.read_budget()?;
-        let cancellation = context.cancellation;
-        let result = async {
-            self.reenter().await;
-            ({
-                let __object_args = (object_id, maximum_bytes, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-                let __object_result = AsyncObjectStore::read(
-                    &self.inner,
-                    __object_args.0,
-                    __object_args.1,
-                    &mut __object_work,
-                )
-                .await;
-                __object_work.receipt(__object_result)
-            })
-        }
-        .await;
-        context.accept(result)
+        self.reenter(context).await;
+        self.inner.read(object_id, maximum_bytes, context).await
     }
 
     async fn read_many(
@@ -122,26 +67,8 @@ impl AsyncObjectStore for ReenteringObjects {
         requests: &[ObjectReadRequest],
         context: &mut crate::AuthorityWork<'_>,
     ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(crate::ObjectStoreError::NativeUnavailable);
-        }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = async {
-            self.reenter().await;
-            ({
-                let __object_args = (requests, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
-                let __object_result =
-                    AsyncObjectStore::read_many(&self.inner, __object_args.0, &mut __object_work)
-                        .await
-                        .map(|(values, _allocation)| values);
-                __object_work.receipt(__object_result)
-            })
-        }
-        .await;
-        context.accept(result).map(|values| (values, None))
+        self.reenter(context).await;
+        self.inner.read_many(requests, context).await
     }
 
     async fn contains(
@@ -149,25 +76,8 @@ impl AsyncObjectStore for ReenteringObjects {
         object_id: ObjectId,
         context: &mut crate::AuthorityWork<'_>,
     ) -> Result<bool, crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(crate::ObjectStoreError::NativeUnavailable);
-        }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = async {
-            self.reenter().await;
-            ({
-                let __object_args = (object_id, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
-                let __object_result =
-                    AsyncObjectStore::contains(&self.inner, __object_args.0, &mut __object_work)
-                        .await;
-                __object_work.receipt(__object_result)
-            })
-        }
-        .await;
-        context.accept(result)
+        self.reenter(context).await;
+        self.inner.contains(object_id, context).await
     }
 }
 
@@ -175,14 +85,13 @@ impl AsyncObjectStore for ReenteringObjects {
 async fn shared_watch_reenters_original_meter() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     std::fs::write(directory.path().join("file"), vec![b'x'; 256 * 1024])?;
-    let binding = Arc::new(Mutex::new(None));
-    let calls = Arc::new(AtomicUsize::new(0));
+
+    let entered = Arc::new(AtomicBool::new(false));
     let fs = crate::Fs::new(
         crate::memory::MemoryAuthorityStore::default(),
         ReenteringObjects {
             inner: crate::memory::MemoryObjectStore::default(),
-            meter: Arc::clone(&binding),
-            calls: Arc::clone(&calls),
+            entered: Arc::clone(&entered),
         },
         crate::EmbeddedCapabilities::MEMORY,
     );
@@ -210,8 +119,7 @@ async fn shared_watch_reenters_original_meter() -> Result<(), Box<dyn std::error
     let budget = WorkBudget::UNBOUNDED;
     let native =
         crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
-    let meter = Arc::clone(&native.state);
-    *binding.lock().expect("fixture binding") = Some(Arc::clone(&meter));
+
     let limits = checkout.volume_config().limits;
     let path =
         NamespacePath::from_portable(&crate::path::PortablePath::parse("/file", limits)?, limits)?;
@@ -236,7 +144,7 @@ async fn shared_watch_reenters_original_meter() -> Result<(), Box<dyn std::error
         &cancellation,
     )
     .await?;
-    assert!(calls.load(Ordering::Relaxed) > 0);
+    assert!(entered.load(Ordering::Relaxed));
     assert_eq!(captured.value.epoch, 9);
     assert_eq!(captured.value.next_sequence, 4);
     Ok(())

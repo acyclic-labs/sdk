@@ -173,7 +173,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         // This guard is declared before the physical proof so every error
         let mut proof_allocation = accounting.claim_owned(proof_bytes, 1)?;
         // Immutable proof maps remain shared by the canonical Arc COW engine.
-        let mut dependencies = self.dependencies.independent_with_custody(custody);
+        let dependencies = self.dependencies.independent_with_custody(custody);
         accounting.record_completed(copied)?;
         dependencies.proof().control = match accounting {
             #[cfg(not(target_arch = "wasm32"))]

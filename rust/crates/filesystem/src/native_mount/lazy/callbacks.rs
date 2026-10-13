@@ -378,7 +378,7 @@ where
                         let mut accounting =
                             crate::kernel::KernelAccounting::native(work, work.cancellation());
                         self.lazy
-                            .read_resolved(&lookup, &text, None, u64::MAX, crate::model::GenerationSelector::Head, &mut accounting)
+                            .read_resolved(&lookup, &text, None, u64::MAX, &mut accounting)
                             .await
                             .map_err(lazy_error)
                     }

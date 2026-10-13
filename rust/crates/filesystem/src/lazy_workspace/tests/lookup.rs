@@ -6,7 +6,6 @@ async fn observation_and_transient_inspection_pin_their_versions() {
     let source = Arc::new(CountingSource::new(Bytes::from_static(b"before")));
     let root = attach(
         &fs,
-        "root",
         Arc::clone(&source),
         MemoryLazyWorkspaceStore::default(),
     )
@@ -59,7 +58,6 @@ async fn aliases_preserve_identity_metadata_and_latest_content() {
         let source = Arc::new(source);
         let root = attach(
             &fs,
-            "root",
             Arc::clone(&source),
             MemoryLazyWorkspaceStore::default(),
         )
@@ -106,16 +104,14 @@ async fn aliases_preserve_identity_metadata_and_latest_content() {
             .checkout(crate::model::GenerationSelector::Head, accounting!())
             .await
             .unwrap();
-        let a = root
-            .authored_record(&mut checkout.value, "/a", accounting!())
-            .await
-            .unwrap()
-            .unwrap();
-        let b = root
-            .authored_record(&mut checkout.value, "/b", accounting!())
-            .await
-            .unwrap()
-            .unwrap();
+        let mut record = async |path| {
+            root.authored_record(&mut checkout.value, path, accounting!())
+                .await
+                .unwrap()
+                .unwrap()
+        };
+        let a = record("/a").await;
+        let b = record("/b").await;
         assert_eq!(a.0.file_id, b.0.file_id);
         assert_eq!(
             a.0.file_id,
@@ -135,7 +131,7 @@ async fn last_alias_removal_keeps_the_identity_shadow_after_reopen() {
     source.node.link_count = Some(2);
     let source = Arc::new(source);
     let store = MemoryLazyWorkspaceStore::default();
-    let root = attach(&fs, "root", Arc::clone(&source), store.clone())
+    let root = attach(&fs, Arc::clone(&source), store.clone())
         .await
         .unwrap();
     root.write(
@@ -150,22 +146,18 @@ async fn last_alias_removal_keeps_the_identity_shadow_after_reopen() {
     assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
     root.remove("/a", None, accounting!()).await.unwrap();
     let reopened = LazyWorkspace::open(
-        fs.open_workspace("root", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).unwrap(),
+        fs.open_workspace("root", WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map(|receipt| receipt.value)
+            .unwrap(),
         source,
         store,
         accounting!(),
     )
     .await
     .unwrap();
-    assert_eq!(
-        reopened
-            .read("/b", 64, accounting!())
-            .await
-            .unwrap()
-            .bytes
-            .as_slice(),
-        b"changed"
-    );
+    let read = async || reopened.read("/b", 64, accounting!()).await.unwrap().bytes;
+    assert_eq!(read().await.as_slice(), b"changed");
     reopened
         .promote(
             "/b",
@@ -176,15 +168,7 @@ async fn last_alias_removal_keeps_the_identity_shadow_after_reopen() {
         )
         .await
         .unwrap();
-    assert_eq!(
-        reopened
-            .read("/b", 64, accounting!())
-            .await
-            .unwrap()
-            .bytes
-            .as_slice(),
-        b"changed"
-    );
+    assert_eq!(read().await.as_slice(), b"changed");
     assert!(matches!(
         reopened.stat("/a", accounting!()).await,
         Err(LazyWorkspaceError::NotFound)
@@ -197,7 +181,6 @@ async fn stale_identity_is_rejected_and_unresolved_seek_is_dense() {
     let source = Arc::new(CountingSource::new(Bytes::from_static(b"abcdef")));
     let root = attach(
         &fs,
-        "root",
         Arc::clone(&source),
         MemoryLazyWorkspaceStore::default(),
     )
@@ -209,19 +192,19 @@ async fn stale_identity_is_rejected_and_unresolved_seek_is_dense() {
         Err(LazyWorkspaceError::StaleIdentity)
     ));
     assert_eq!(
-        root.seek("/a", 2, LazySeekTarget::Data, accounting!())
+        root.seek("/a", 2, crate::ExtentSeekTarget::Data, accounting!())
             .await
             .unwrap(),
         Some(2)
     );
     assert_eq!(
-        root.seek("/b", 2, LazySeekTarget::Hole, accounting!())
+        root.seek("/b", 2, crate::ExtentSeekTarget::Hole, accounting!())
             .await
             .unwrap(),
         Some(6)
     );
     assert_eq!(
-        root.seek("/b", 6, LazySeekTarget::Data, accounting!())
+        root.seek("/b", 6, crate::ExtentSeekTarget::Data, accounting!())
             .await
             .unwrap(),
         None
@@ -235,7 +218,6 @@ async fn promotion_is_bounded_and_idempotent() {
     let source = Arc::new(CountingSource::new(Bytes::from_static(b"content")));
     let root = attach(
         &fs,
-        "root",
         Arc::clone(&source),
         MemoryLazyWorkspaceStore::default(),
     )
@@ -255,25 +237,20 @@ async fn promotion_is_bounded_and_idempotent() {
     ));
     assert_eq!(root.head(accounting!()).await.unwrap().id(), head);
     let key = IdempotencyKey::new();
-    root.promote(
-        "/file",
-        64,
-        key,
-        crate::PublicationPermit::Unrestricted,
-        accounting!(),
-    )
-    .await
-    .unwrap();
+    let promote = async || {
+        root.promote(
+            "/file",
+            64,
+            key,
+            crate::PublicationPermit::Unrestricted,
+            accounting!(),
+        )
+        .await
+        .unwrap()
+    };
+    promote().await;
     let promoted = root.head(accounting!()).await.unwrap().id();
-    root.promote(
-        "/file",
-        64,
-        key,
-        crate::PublicationPermit::Unrestricted,
-        accounting!(),
-    )
-    .await
-    .unwrap();
+    promote().await;
     assert_eq!(root.head(accounting!()).await.unwrap().id(), promoted);
     let (lookup, _) = root.lookup("/file", accounting!()).await.unwrap();
     let id = root

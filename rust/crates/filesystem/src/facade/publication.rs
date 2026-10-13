@@ -558,15 +558,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     OperationFailure::before_work(E::from(FsError::from(error)))
                 })?;
                 let resolved = ({
-                    let mut authority = crate::AuthorityWork::new((budget), (cancellation));
+                    let mut authority = crate::AuthorityWork::new(budget, cancellation);
                     let result = self
                         .volume
                         .fs
                         .inner
                         .authority
                         .find_operation(
-                            (volume_authority_id(self.volume.id)),
-                            (operation_id),
+                            volume_authority_id(self.volume.id),
+                            operation_id,
                             &mut authority,
                         )
                         .await;
