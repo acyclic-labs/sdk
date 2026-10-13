@@ -61,92 +61,94 @@ pub(super) fn conversation_journal(
     Ok((journal, id))
 }
 
-pub(crate) async fn open_prepared_approval(
-    runtime: &PiTaskRuntime,
-    filesystem: &Arc<PiNativeFilesystem>,
-    protected: &PiOwnerConfig,
-    context: &TaskContext,
-    owner: &TaskJournalOwner<LocalStream>,
-    binding: &PiTaskBinding,
-    descriptor: &ApprovalRef<'_>,
-    work: &NativeMaterializationWork,
-) -> Result<()> {
-    validate_descriptor(protected, descriptor, work)?;
-    runtime.verify_owner_with_native_work(protected, work)?;
-    protected.validate_root(binding, work)?;
-    let (task, fence) =
-        context.owned_task_binding(Some(&PreparationIo::from_native_work(work)?))?;
-    if task != protected.policy().root_task
-        || owner.task_id() != task
-        || descriptor.session != binding.native_session_id
-        || descriptor.private_volume != &binding.scratch.volume
-    {
-        return Err(denied(
-            "prepared approval changed its Root output allocation",
-        ));
+pub(crate) fn open_prepared_approval<'a>(
+    runtime: &'a PiTaskRuntime,
+    filesystem: &'a Arc<PiNativeFilesystem>,
+    protected: &'a PiOwnerConfig,
+    context: &'a TaskContext,
+    owner: &'a TaskJournalOwner<LocalStream>,
+    binding: &'a PiTaskBinding,
+    descriptor: &'a ApprovalRef<'a>,
+    work: &'a NativeMaterializationWork,
+) -> impl std::future::Future<Output = Result<()>> + Send + 'a {
+    async move {
+        validate_descriptor(protected, descriptor, work)?;
+        runtime.verify_owner_with_native_work(protected, work)?;
+        protected.validate_root(binding, work)?;
+        let (task, fence) =
+            context.owned_task_binding(Some(&PreparationIo::from_native_work(work)?))?;
+        if task != protected.policy().root_task
+            || owner.task_id() != task
+            || descriptor.session != binding.native_session_id
+            || descriptor.private_volume != &binding.scratch.volume
+        {
+            return Err(denied(
+                "prepared approval changed its Root output allocation",
+            ));
+        }
+        let io = PreparationIo::from_native_work(work)?;
+        let mut history = &io;
+        owner.verify(false, &mut Some(&mut history)).await?;
+        let storage = protected.authority(work)?;
+        let authority = protected.conversation_authority_with_native_work(
+            binding.task_id,
+            binding.agent_id,
+            context.scope().grants(),
+            work,
+        )?;
+        let verifier = authority.0.1.verifier(&mut Some(&mut history))?;
+        let current = runtime
+            .runtime
+            .task_host()
+            .journal_owner(task, fence, Some(&io))
+            .await?;
+        let journal = Journal::for_task(
+            current,
+            descriptor.operation,
+            context.id(),
+            Arc::clone(filesystem),
+            &protected.policy().journal,
+            &storage.verifier,
+            &storage.signed,
+            protected.policy().maximum_payload_bytes,
+            Some(&io),
+        )?
+        .with_interaction_owner(
+            &verifier,
+            &SchemaRegistry::new(),
+            &authority.0.2,
+            descriptor.private_volume,
+            Some(&io),
+        )?;
+        let prompt = work.display(&format_args!(
+            "Publish selected Pi writeback {}",
+            descriptor.command.sdk_operation,
+        ))?;
+        let interaction = Interaction::Approval {
+            prompt: prompt.0,
+            operation_id: descriptor.operation,
+            action_digest: pi_operator::parse_digest(descriptor.approval_digest)?,
+        };
+        let id = acyclic_harness::durable_host::task_interaction_id(
+            task,
+            descriptor.operation,
+            &mut Some(&mut history),
+        )?;
+        journal
+            .open_interaction(id, &interaction, Some(&io))?
+            .await?;
+        owner.verify(false, &mut Some(&mut history)).await?;
+        let _staged = crate::pi_root_provider::stage_pi_input(
+            protected,
+            filesystem,
+            descriptor.operation,
+            "operator-approval",
+            descriptor,
+            work,
+        )
+        .await?;
+        owner.verify(false, &mut Some(&mut history)).await
     }
-    let io = PreparationIo::from_native_work(work)?;
-    let mut history = &io;
-    owner.verify(false, &mut Some(&mut history)).await?;
-    let storage = protected.authority(work)?;
-    let authority = protected.conversation_authority_with_native_work(
-        binding.task_id,
-        binding.agent_id,
-        context.scope().grants(),
-        work,
-    )?;
-    let verifier = authority.0.1.verifier(&mut Some(&mut history))?;
-    let current = runtime
-        .runtime
-        .task_host()
-        .journal_owner(task, fence, Some(&io))
-        .await?;
-    let journal = Journal::for_task(
-        current,
-        descriptor.operation,
-        context.id(),
-        Arc::clone(filesystem),
-        &protected.policy().journal,
-        &storage.verifier,
-        &storage.signed,
-        protected.policy().maximum_payload_bytes,
-        Some(&io),
-    )?
-    .with_interaction_owner(
-        &verifier,
-        &SchemaRegistry::new(),
-        &authority.0.2,
-        descriptor.private_volume,
-        Some(&io),
-    )?;
-    let prompt = work.display(&format_args!(
-        "Publish selected Pi writeback {}",
-        descriptor.command.sdk_operation,
-    ))?;
-    let interaction = Interaction::Approval {
-        prompt: prompt.0,
-        operation_id: descriptor.operation,
-        action_digest: pi_operator::parse_digest(descriptor.approval_digest)?,
-    };
-    let id = acyclic_harness::durable_host::task_interaction_id(
-        task,
-        descriptor.operation,
-        &mut Some(&mut history),
-    )?;
-    journal
-        .open_interaction(id, &interaction, Some(&io))?
-        .await?;
-    owner.verify(false, &mut Some(&mut history)).await?;
-    let _staged = crate::pi_root_provider::stage_pi_input(
-        protected,
-        filesystem,
-        descriptor.operation,
-        "operator-approval",
-        descriptor,
-        work,
-    )
-    .await?;
-    owner.verify(false, &mut Some(&mut history)).await
 }
 
 pub(crate) async fn require_resolved_approval(
