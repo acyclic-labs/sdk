@@ -8,25 +8,25 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
     snapshot: &HostSnapshot,
     maximum_extent_spans: u32,
     cancellation: &CancellationToken,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
     staged_file_bytes: &mut u64,
 ) -> Result<Vec<(HostDataRange, StagedContent)>, CaptureError> {
     cancellation.check()?;
     #[cfg(unix)]
     let file = source_root
-        .open_file(host_path, &mut meter.native.clone())
+        .open_file(host_path, &mut meter.clone())
         .map_err(capture_demand_error)?;
     #[cfg(windows)]
     let file = source_root
         .open_file(
             host_path,
             windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0),
-            &mut meter.native.clone(),
+            &mut meter.clone(),
         )
         .map_err(capture_demand_error)?;
     let file = file.into_std();
     let metadata = source_root
-        .stat_file(&file, &mut meter.native.clone())
+        .stat_file(&file, &mut meter.clone())
         .map_err(capture_demand_error)?;
     if !metadata.file_type().is_file() {
         return Err(CaptureError::Kernel(crate::FsError::SourceSnapshotStale));
@@ -37,10 +37,10 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
         0,
         metadata.len(),
         maximum_extent_spans,
-        &mut meter.native.clone(),
+        &mut meter.clone(),
     )
     .map_err(capture_demand_error)?;
-    let positional = native_positional_file(file, &meter.native)?;
+    let positional = native_positional_file(file, meter)?;
     let native_bytes = std::mem::size_of::<acyclic_native_runtime::NativeFile>() as u64;
     capture_allocate(meter, native_bytes)?;
     let native = std::sync::Arc::new(positional);
@@ -57,25 +57,21 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
     let content = stage_host_ranges(stager, &native, &ranges, meter, staged_file_bytes).await?;
     cancellation.check()?;
     let after = source_root
-        .stat_file(native.as_file(), &mut meter.native.clone())
+        .stat_file(native.as_file(), &mut meter.clone())
         .map_err(capture_demand_error)?;
     ensure_same_host_node(snapshot, &after)?;
     let current = source_root
-        .stat(host_path, &mut meter.native.clone())
+        .stat(host_path, &mut meter.clone())
         .map_err(capture_demand_error)?;
     ensure_same_host_node(snapshot, &current)?;
     cancellation.check()?;
-    meter.native.clone().check().map_err(capture_demand_error)?;
+    meter.clone().check().map_err(capture_demand_error)?;
     let bytes = vector_bytes(&ranges)
         .checked_add(native_bytes)
         .ok_or(WorkError::Overflow)?;
     drop(ranges);
     drop(native);
-    meter
-        .native
-        .clone()
-        .release(bytes)
-        .map_err(capture_demand_error)?;
+    meter.clone().release(bytes).map_err(capture_demand_error)?;
     Ok(content)
 }
 
@@ -86,7 +82,7 @@ pub(super) fn append_staged_regular_state(
     canonical_metadata: FileMetadata,
     ranges: Vec<(HostDataRange, StagedContent)>,
     mutations: &mut Vec<AuthoredMutation>,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
     {
         let ranges_bytes =
@@ -122,7 +118,6 @@ pub(super) fn append_staged_regular_state(
             });
         }
         meter
-            .native
             .clone()
             .release(ranges_bytes)
             .map_err(capture_demand_error)?;
@@ -138,7 +133,7 @@ pub(super) async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStor
     stager: &Checkout<A, O>,
     native: &std::sync::Arc<acyclic_native_runtime::NativeFile>,
     ranges: &[HostDataRange],
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
     staged_file_bytes: &mut u64,
 ) -> Result<Vec<(HostDataRange, StagedContent)>, CaptureError> {
     let mut staged = capture_vec(ranges.len(), meter)?;
@@ -148,9 +143,8 @@ pub(super) async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStor
             range.offset,
             range.length,
         );
-        let stage_cancellation = meter.native.cancellation().clone();
-        let mut accounting =
-            crate::kernel::KernelAccounting::native(&meter.native, &stage_cancellation);
+        let stage_cancellation = meter.cancellation().clone();
+        let mut accounting = crate::kernel::KernelAccounting::native(meter, &stage_cancellation);
         let content = stager
             .stage_content_with_accounting(
                 &mut bounded,

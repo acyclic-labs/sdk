@@ -31,7 +31,7 @@ fn only_absent_paths_may_become_deletions() -> Result<(), Box<dyn std::error::Er
         observe_host_path(
             &source_root,
             &test_host_path(Path::new("file/child")),
-            &scope
+            &scope.native
         )?
         .is_none()
     );

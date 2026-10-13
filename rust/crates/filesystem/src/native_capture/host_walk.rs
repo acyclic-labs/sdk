@@ -7,21 +7,25 @@ pub(super) fn collect_host_walk_measured(
     host_root: CaptureHostPath,
     volume_root: NamespacePath,
     policy: &CapturePolicy,
-    meter: &CaptureWorkScope,
-    mut insert: impl FnMut(NamespacePath, HostStat, &CaptureWorkScope) -> Result<(), CaptureError>,
+    meter: &NativeMaterializationWork,
+    mut insert: impl FnMut(
+        NamespacePath,
+        HostStat,
+        &NativeMaterializationWork,
+    ) -> Result<(), CaptureError>,
 ) -> Result<(), CaptureError> {
     let slot = std::mem::size_of::<(CaptureHostPath, NamespacePath)>() as u64;
     let mut pending = capture_vec(1, meter)?;
     pending.push((host_root, volume_root));
     while let Some((host_parent, volume_parent)) = pending.pop() {
-        meter.native.clone().check().map_err(capture_demand_error)?;
+        meter.clone().check().map_err(capture_demand_error)?;
 
         let (mut reader, reader_allocation) = root
-            .read_dir_stats(&host_parent, &mut meter.native.clone())
+            .read_dir_stats(&host_parent, &mut meter.clone())
             .map_err(capture_demand_error)?;
         loop {
             let entry = reader
-                .next(&mut meter.native.clone())
+                .next(&mut meter.clone())
                 .map_err(capture_demand_error)?;
             let Some((entry, name_allocation)) = entry else {
                 break;
@@ -97,7 +101,7 @@ pub(super) fn collect_host_walk_measured(
                     } else {
                         let mut length = 0usize;
                         for character in char::decode_utf16(entry.name.iter().copied()) {
-                            meter.native.clone().check().map_err(capture_demand_error)?;
+                            meter.clone().check().map_err(capture_demand_error)?;
                             length = length
                                 .checked_add(
                                     character
@@ -129,7 +133,6 @@ pub(super) fn collect_host_walk_measured(
             })()?;
             drop(entry.name);
             meter
-                .native
                 .clone()
                 .release(name_allocation)
                 .map_err(capture_demand_error)?;
@@ -142,7 +145,7 @@ pub(super) fn collect_host_walk_measured(
             let stat = match entry.stat {
                 Some(stat) => stat,
                 None => root
-                    .stat(&host_child, &mut meter.native.clone())
+                    .stat(&host_child, &mut meter.clone())
                     .map_err(capture_demand_error)?,
             };
             let recurse = stat.is_dir() && !stat.file_type().is_symlink();
@@ -158,7 +161,6 @@ pub(super) fn collect_host_walk_measured(
         }
         drop(reader);
         meter
-            .native
             .clone()
             .release(reader_allocation)
             .map_err(capture_demand_error)?;
@@ -168,7 +170,6 @@ pub(super) fn collect_host_walk_measured(
     let pending_bytes = pending.capacity() as u64 * slot;
     drop(pending);
     meter
-        .native
         .clone()
         .release(pending_bytes)
         .map_err(capture_demand_error)?;
@@ -179,7 +180,7 @@ pub(super) fn observe_unique_paths(
     paths: Vec<NamespacePath>,
     source_root: &HostRoot,
     cancellation: &CancellationToken,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<(Vec<Option<HostStat>>, Vec<NamespacePath>), CaptureError> {
     let mut observations = capture_vec(paths.len(), meter)?;
     for path in &paths {
@@ -201,9 +202,9 @@ pub(super) fn observe_unique_paths(
 pub(super) fn observe_host_path(
     source_root: &HostRoot,
     host_path: &CaptureHostPath,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<Option<HostStat>, CaptureError> {
-    classify_host_observation(source_root.stat(host_path, &mut meter.native.clone()))
+    classify_host_observation(source_root.stat(host_path, &mut meter.clone()))
 }
 
 pub(super) fn classify_host_observation(
@@ -222,7 +223,7 @@ pub(super) fn insert_host_observation(
     path: NamespacePath,
     metadata: HostStat,
     maximum: usize,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
     if capture_position(observed, &path, meter)?.is_err() && observed.len() >= maximum {
         return Err(CaptureError::InvalidOptions);
@@ -247,7 +248,7 @@ pub(super) fn collect_host_subtree_roots(
     roots: &[NamespacePath],
     policy: &CapturePolicy,
     observed: &mut Vec<(NamespacePath, Option<HostStat>)>,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
     for root in roots {
         let host_root = namespace_to_host_path_measured(root, meter)?;

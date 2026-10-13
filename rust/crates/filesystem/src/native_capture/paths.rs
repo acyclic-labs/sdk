@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) fn clone_capture_name(
     name: &LogicalName,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<LogicalName, CaptureError> {
     capture_charge(
         meter,
@@ -17,15 +17,11 @@ pub(super) fn clone_capture_name(
         bytes_copied: name.as_bytes().len() as u64,
         ..WorkCounters::UNCHARGED
     };
-    crate::native_host::NativeHostWork::admit(&mut meter.native.clone(), copied)
+    crate::native_host::NativeHostWork::admit(&mut meter.clone(), copied)
         .map_err(capture_demand_error)?;
     let mut bytes = capture_vec(name.as_bytes().len(), meter)?;
     bytes.extend_from_slice(name.as_bytes());
-    meter
-        .native
-        .clone()
-        .record(copied)
-        .map_err(capture_demand_error)?;
+    meter.clone().record(copied).map_err(capture_demand_error)?;
     LogicalName::new(name.encoding(), bytes, u32::MAX).map_err(CaptureError::from)
 }
 
@@ -33,7 +29,7 @@ pub(super) fn clone_capture_prefix(
     path: &NamespacePath,
     depth: usize,
     limits: crate::model::VolumeLimits,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<NamespacePath, CaptureError> {
     let names = path.components().get(..depth).ok_or(CaptureError::Kernel(
         crate::kernel::NamespacePathError::TooDeep.into(),
@@ -53,7 +49,7 @@ pub(super) fn clone_capture_prefix(
 pub(super) fn capture_excludes(
     policy: &CapturePolicy,
     path: &NamespacePath,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<bool, CaptureError> {
     for prefix in &policy.excluded_prefixes {
         capture_charge(
@@ -82,7 +78,7 @@ pub(super) fn capture_excludes(
 pub(super) fn clone_capture_paths(
     paths: &[NamespacePath],
     policy: Option<&CapturePolicy>,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<Vec<NamespacePath>, CaptureError> {
     let mut result = capture_vec(paths.len(), meter)?;
     for path in paths {
@@ -105,7 +101,7 @@ pub(super) fn clone_capture_paths(
 
 pub(super) fn release_capture_paths(
     paths: Vec<NamespacePath>,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
     let bytes = paths.iter().try_fold(
         paths.capacity() as u64 * std::mem::size_of::<NamespacePath>() as u64,
@@ -116,16 +112,12 @@ pub(super) fn release_capture_paths(
         },
     )?;
     drop(paths);
-    meter
-        .native
-        .clone()
-        .release(bytes)
-        .map_err(capture_demand_error)
+    meter.clone().release(bytes).map_err(capture_demand_error)
 }
 
 pub(super) fn capture_has_duplicate_paths(
     paths: &[NamespacePath],
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<bool, CaptureError> {
     for pair in paths.windows(2) {
         capture_charge(
@@ -145,7 +137,7 @@ pub(super) fn capture_has_duplicate_paths(
 pub(super) fn canonical_subtree_roots_measured(
     roots: &[NamespacePath],
     policy: &CapturePolicy,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<Vec<NamespacePath>, CaptureError> {
     let mut sorted = clone_capture_paths(roots, Some(policy), meter)?;
     capture_sort_by(&mut sorted, Ord::cmp, meter)?;
@@ -188,9 +180,9 @@ pub(super) fn canonical_subtree_roots_measured(
 
 pub(super) fn clone_capture_path(
     path: &NamespacePath,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<NamespacePath, CaptureError> {
-    meter.native.clone().check().map_err(capture_demand_error)?;
+    meter.clone().check().map_err(capture_demand_error)?;
     // A full prefix preserves the already validated path's exact bounds.
     let limits = crate::model::VolumeLimits {
         maximum_path_bytes: path.encoded_bytes(),
@@ -205,9 +197,9 @@ pub(super) fn append_path_measured(
     parent: &NamespacePath,
     name: LogicalName,
     limits: crate::model::VolumeLimits,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<NamespacePath, CaptureError> {
-    meter.native.clone().check().map_err(capture_demand_error)?;
+    meter.clone().check().map_err(capture_demand_error)?;
     NamespacePath::validate_component_lengths(
         parent
             .components()
@@ -239,13 +231,9 @@ pub(super) fn append_path_measured(
 
 pub(super) fn capture_drop_path(
     path: NamespacePath,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
     let bytes = path.retained_bytes();
     drop(path);
-    meter
-        .native
-        .clone()
-        .release(bytes)
-        .map_err(capture_demand_error)
+    meter.clone().release(bytes).map_err(capture_demand_error)
 }
