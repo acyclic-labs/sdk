@@ -107,7 +107,10 @@ fn regular(file_id: FileId, metadata: ObjectId) -> Result<FileRecord, Box<dyn st
     })
 }
 
-async fn blob(store: &MemoryObjectStore, bytes: &[u8]) -> Result<ObjectId, Box<dyn std::error::Error>> {
+async fn blob(
+    store: &MemoryObjectStore,
+    bytes: &[u8],
+) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let mut source = std::io::Cursor::new(bytes);
     Ok(build_blob(
         store,
@@ -120,7 +123,8 @@ async fn blob(store: &MemoryObjectStore, bytes: &[u8]) -> Result<ObjectId, Box<d
         },
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?
+    )
+    .await?
     .root)
 }
 
@@ -136,7 +140,8 @@ async fn inline_at(
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?
+    )
+    .await?
     .record
     .ok_or("expected regular-file path is absent")?;
     let FilePayload::InlineRegular(data) = record.payload else {
@@ -150,25 +155,42 @@ async fn fixture(store: &MemoryObjectStore) -> Result<Fixture, Box<dyn std::erro
     let metadata = put(
         store,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata_value(MetadataField::Value(1)), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+        encode_file_metadata(
+            metadata_value(MetadataField::Value(1)),
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     let changed_metadata = put(
         store,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata_value(MetadataField::Value(2)), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+        encode_file_metadata(
+            metadata_value(MetadataField::Value(2)),
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     let empty_tree = put(
         store,
         ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Leaf(Vec::new()), limits.maximum_directory_page_entries, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+        encode_tree_page(
+            &TreePage::Leaf(Vec::new()),
+            limits.maximum_directory_page_entries,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     let root_id = FileId::from_bytes([1; 16]);
     let file_id = FileId::from_bytes([2; 16]);
     let directory_id = FileId::from_bytes([3; 16]);
     let root_tree = put(
         store,
         ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Leaf(vec![
+        encode_tree_page(
+            &TreePage::Leaf(vec![
                 TreeEntry {
                     name: name("a")?,
                     file_id,
@@ -179,12 +201,18 @@ async fn fixture(store: &MemoryObjectStore) -> Result<Fixture, Box<dyn std::erro
                     file_id: directory_id,
                     kind: FileKind::Directory,
                 },
-            ]), limits.maximum_directory_page_entries, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+            ]),
+            limits.maximum_directory_page_entries,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     let file_table = put(
         store,
         ObjectKind::FileTablePage,
-        encode_file_table_page(&FileTablePage::Leaf(vec![
+        encode_file_table_page(
+            &FileTablePage::Leaf(vec![
                 FileRecord {
                     file_id: root_id,
                     kind: FileKind::Directory,
@@ -202,8 +230,13 @@ async fn fixture(store: &MemoryObjectStore) -> Result<Fixture, Box<dyn std::erro
                         entries: empty_tree,
                     },
                 },
-            ]), limits.maximum_directory_page_entries, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+            ]),
+            limits.maximum_directory_page_entries,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     Ok(Fixture {
         generation: GenerationRoot {
             volume_id: VolumeId::from_bytes([9; 16]),
@@ -297,7 +330,8 @@ async fn append_blob_bytes(
             AsyncObjectStore::read(store, __object_args.0, __object_args.1, &mut __object_work)
                 .await;
         __object_work.receipt(__object_result)
-    }?.value;
+    }?
+    .value;
     let page = decode_blob_page(&encoded, DecodeLimits::default(), &mut |_| {
         Ok::<_, crate::kernel::CanonicalDecodeError>(())
     })?;
@@ -321,7 +355,8 @@ async fn append_blob_bytes(
                     )
                     .await;
                     __object_work.receipt(__object_result)
-                }?.value;
+                }?
+                .value;
                 output.extend_from_slice(&bytes);
             }
         }
@@ -351,7 +386,8 @@ async fn collect_extents(
             AsyncObjectStore::read(store, __object_args.0, __object_args.1, &mut __object_work)
                 .await;
         __object_work.receipt(__object_result)
-    }?.value;
+    }?
+    .value;
     match decode_extent_page(&encoded, DecodeLimits::default(), &mut |_| {
         Ok::<_, crate::kernel::CanonicalDecodeError>(())
     })? {
@@ -421,7 +457,8 @@ async fn collect_file_table_records(
             AsyncObjectStore::read(store, __object_args.0, __object_args.1, &mut __object_work)
                 .await;
         __object_work.receipt(__object_result)
-    }?.value;
+    }?
+    .value;
     match decode_file_table_page(&encoded, DecodeLimits::default(), &mut |_| {
         Ok::<_, crate::kernel::CanonicalDecodeError>(())
     })? {
@@ -456,7 +493,8 @@ async fn assert_generation_matches_model(
             config(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        ).await?
+        )
+        .await?
         .record;
         match (model.bindings.get(candidate), found) {
             (None, None) => {}
@@ -481,7 +519,8 @@ async fn assert_generation_matches_model(
             DecodeLimits::default(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        ).await?
+        )
+        .await?
         .value;
         match (model.bytes.get(file_id), found) {
             (None, None) => {}
@@ -513,7 +552,8 @@ async fn assert_generation_matches_model(
 }
 
 #[tokio::test]
-async fn malformed_file_table_preserves_nested_failure_work() -> Result<(), Box<dyn std::error::Error>> {
+async fn malformed_file_table_preserves_nested_failure_work()
+-> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let fixture = fixture(&store).await?;
     let generation = missing_file_table_generation(&fixture);
@@ -593,7 +633,8 @@ async fn mixed_namespace_batch_uses_candidate_state_and_preserves_base()
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     let candidate = receipt.root.clone();
     let found_new = lookup_path(
         &store,
@@ -602,7 +643,8 @@ async fn mixed_namespace_batch_uses_candidate_state_and_preserves_base()
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(found_new.record.map(|record| record.file_id), Some(new_id));
     let renamed = lookup_path(
         &store,
@@ -611,7 +653,8 @@ async fn mixed_namespace_batch_uses_candidate_state_and_preserves_base()
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(renamed.record.map(|record| record.link_count), Some(1));
     assert_eq!(
         renamed.record.map(|record| record.metadata),
@@ -626,7 +669,8 @@ async fn mixed_namespace_batch_uses_candidate_state_and_preserves_base()
                 config(),
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
-            ).await?
+            )
+            .await?
             .record,
             None
         );
@@ -639,7 +683,8 @@ async fn mixed_namespace_batch_uses_candidate_state_and_preserves_base()
             config(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        ).await?
+        )
+        .await?
         .record
         .is_some()
     );
@@ -651,7 +696,8 @@ async fn mixed_namespace_batch_uses_candidate_state_and_preserves_base()
             config(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        ).await?
+        )
+        .await?
         .record,
         None
     );
@@ -691,7 +737,8 @@ async fn nested_create_uses_new_parent_without_scanning_other_subtrees()
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     let candidate = receipt.root.clone();
     assert_eq!(
         lookup_path(
@@ -701,7 +748,8 @@ async fn nested_create_uses_new_parent_without_scanning_other_subtrees()
             config(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        ).await?
+        )
+        .await?
         .record
         .map(|record| record.file_id),
         Some(child_id)
@@ -727,7 +775,8 @@ async fn content_executes_and_identity_rejections_precede_candidate_writes()
         },
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?
+    )
+    .await?
     .root;
     let content_receipt = apply_generation_mutations(
         &store,
@@ -742,7 +791,8 @@ async fn content_executes_and_identity_rejections_precede_candidate_writes()
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     let content_record = lookup_path(
         &store,
         &content_receipt.root,
@@ -750,7 +800,8 @@ async fn content_executes_and_identity_rejections_precede_candidate_writes()
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?
+    )
+    .await?
     .record
     .ok_or("content-mutated file disappeared")?;
     let FilePayload::InlineRegular(data) = content_record.payload else {
@@ -841,11 +892,18 @@ async fn mixed_content_batch_observes_candidate_paths_and_hard_link_identity()
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
-    assert_eq!(inline_at(&store, &receipt.root, "renamed").await?, b"YZyload");
+    )
+    .await?;
+    assert_eq!(
+        inline_at(&store, &receipt.root, "renamed").await?,
+        b"YZyload"
+    );
     assert_eq!(inline_at(&store, &receipt.root, "alias").await?, b"YZyload");
     assert_eq!(inline_at(&store, &receipt.root, "b").await?, b"X0YZ000");
-    assert_eq!(inline_at(&store, &fixture.generation, "a").await?, b"payload");
+    assert_eq!(
+        inline_at(&store, &fixture.generation, "a").await?,
+        b"payload"
+    );
     Ok(())
 }
 
@@ -882,7 +940,8 @@ async fn identity_mutation_observes_same_batch_link_count_transitions()
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(
         inline_at(&store, &surviving_link.root, "alias").await?,
         b"Xayload"
@@ -895,7 +954,8 @@ async fn identity_mutation_observes_same_batch_link_count_transitions()
             config(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        ).await?
+        )
+        .await?
         .record
         .is_none()
     );
@@ -929,7 +989,10 @@ async fn identity_mutation_observes_same_batch_link_count_transitions()
         final_unlink.error,
         GenerationMutationError::MissingSource
     ));
-    assert_eq!(inline_at(&store, &fixture.generation, "a").await?, b"payload");
+    assert_eq!(
+        inline_at(&store, &fixture.generation, "a").await?,
+        b"payload"
+    );
     Ok(())
 }
 
@@ -951,7 +1014,8 @@ async fn identity_clone_uses_two_ids_with_a_one_operation_batch_limit()
         one_operation,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     let cloned = apply_generation_mutations(
         &store,
         &created.root,
@@ -965,8 +1029,12 @@ async fn identity_clone_uses_two_ids_with_a_one_operation_batch_limit()
         one_operation,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
-    assert_eq!(inline_at(&store, &cloned.root, "destination").await?, b"payload");
+    )
+    .await?;
+    assert_eq!(
+        inline_at(&store, &cloned.root, "destination").await?,
+        b"payload"
+    );
     Ok(())
 }
 
@@ -984,7 +1052,8 @@ async fn rename_over_same_hard_link_identity_is_a_noop() -> Result<(), Box<dyn s
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     let renamed = apply_generation_mutations(
         &store,
         &linked.root,
@@ -996,7 +1065,8 @@ async fn rename_over_same_hard_link_identity_is_a_noop() -> Result<(), Box<dyn s
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     let original = lookup_path(
         &store,
         &renamed.root,
@@ -1004,7 +1074,8 @@ async fn rename_over_same_hard_link_identity_is_a_noop() -> Result<(), Box<dyn s
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?
+    )
+    .await?
     .record
     .ok_or("same-identity rename removed source alias")?;
     let alias = lookup_path(
@@ -1014,7 +1085,8 @@ async fn rename_over_same_hard_link_identity_is_a_noop() -> Result<(), Box<dyn s
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?
+    )
+    .await?
     .record
     .ok_or("same-identity rename removed destination alias")?;
     assert_eq!(original.file_id, alias.file_id);
@@ -1024,8 +1096,8 @@ async fn rename_over_same_hard_link_identity_is_a_noop() -> Result<(), Box<dyn s
 }
 
 #[tokio::test]
-async fn overlapping_same_file_clone_uses_preoperation_snapshot() -> Result<(), Box<dyn std::error::Error>>
-{
+async fn overlapping_same_file_clone_uses_preoperation_snapshot()
+-> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let fixture = fixture(&store).await?;
     let receipt = apply_generation_mutations(
@@ -1041,7 +1113,8 @@ async fn overlapping_same_file_clone_uses_preoperation_snapshot() -> Result<(), 
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(inline_at(&store, &receipt.root, "a").await?, b"papayld");
     assert!(receipt.work.bytes_copied >= 4);
     Ok(())
@@ -1222,7 +1295,8 @@ async fn removing_directory_after_candidate_child_insert_is_rejected()
             config(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        ).await?
+        )
+        .await?
         .record
         .is_some()
     );
@@ -1262,7 +1336,8 @@ async fn disabled_hard_links_reject_before_work() -> Result<(), Box<dyn std::err
             config(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        ).await?
+        )
+        .await?
         .record
         .is_some()
     );
@@ -1274,7 +1349,8 @@ async fn disabled_hard_links_reject_before_work() -> Result<(), Box<dyn std::err
             config(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        ).await?
+        )
+        .await?
         .record
         .is_none()
     );
@@ -1304,7 +1380,8 @@ async fn rename_replace_drops_the_destination_identity_atomically()
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert!(receipt.work.backend_write_operations > 0);
     assert!(
         lookup_path(
@@ -1314,7 +1391,8 @@ async fn rename_replace_drops_the_destination_identity_atomically()
             config(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        ).await?
+        )
+        .await?
         .record
         .is_none()
     );
@@ -1325,7 +1403,8 @@ async fn rename_replace_drops_the_destination_identity_atomically()
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?
+    )
+    .await?
     .record
     .ok_or("renamed destination is absent")?;
     assert_eq!(replacement.file_id, FileId::from_bytes([2; 16]));
@@ -1339,11 +1418,15 @@ async fn rename_replace_drops_the_destination_identity_atomically()
             DecodeLimits::for_volume(config()),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        ).await?
+        )
+        .await?
         .value
         .is_none()
     );
-    assert_eq!(inline_at(&store, &fixture.generation, "a").await?, b"payload");
+    assert_eq!(
+        inline_at(&store, &fixture.generation, "a").await?,
+        b"payload"
+    );
     Ok(())
 }
 
@@ -1381,7 +1464,8 @@ async fn directory_rename_below_itself_is_rejected_without_publication()
             config(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        ).await?
+        )
+        .await?
         .record
         .is_some()
     );
@@ -1597,7 +1681,10 @@ async fn namespace_and_identity_preconditions_fail_with_exact_terminal_errors()
         assert_eq!(failure.work.backend_write_operations, 0);
     }
 
-    assert_eq!(inline_at(&store, &fixture.generation, "a").await?, b"payload");
+    assert_eq!(
+        inline_at(&store, &fixture.generation, "a").await?,
+        b"payload"
+    );
     assert!(
         lookup_path(
             &store,
@@ -1606,7 +1693,8 @@ async fn namespace_and_identity_preconditions_fail_with_exact_terminal_errors()
             config(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        ).await?
+        )
+        .await?
         .record
         .is_none()
     );
@@ -1659,7 +1747,13 @@ async fn nested_regular_identity_failures_preserve_prior_generation_work()
                             maximum: 0,
                         }
                     ))
-                )
+                ) | GenerationMutationError::FileRecord(super::super::FileRecordReadError::Work(
+                    WorkError::BudgetExceeded {
+                        counter: "bytes_copied",
+                        observed: 1..,
+                        maximum: 0,
+                    }
+                ))
             ),
             "unexpected nested regular failure: {:?}",
             failure.error
@@ -1722,7 +1816,8 @@ async fn ordered_path_and_identity_regular_mutations_share_one_candidate()
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     let record = lookup_file_record(
         &store,
         receipt.root.file_table,
@@ -1730,7 +1825,8 @@ async fn ordered_path_and_identity_regular_mutations_share_one_candidate()
         DecodeLimits::for_volume(config()),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?
+    )
+    .await?
     .value
     .ok_or("mutated file identity disappeared")?;
     assert_eq!(record.metadata, fixture.changed_metadata);
@@ -1739,7 +1835,10 @@ async fn ordered_path_and_identity_regular_mutations_share_one_candidate()
     };
     assert_eq!(logical_bytes, 128);
     assert!(receipt.work.backend_write_operations > 0);
-    assert_eq!(inline_at(&store, &fixture.generation, "a").await?, b"payload");
+    assert_eq!(
+        inline_at(&store, &fixture.generation, "a").await?,
+        b"payload"
+    );
     Ok(())
 }
 
@@ -2097,7 +2196,10 @@ async fn generated_generation_histories_match_independent_namespace_and_identity
                 .map_err(|error| format!("history {history}, step {step}: {error}"))?;
         }
 
-        assert_eq!(inline_at(&store, &fixture.generation, "a").await?, b"payload");
+        assert_eq!(
+            inline_at(&store, &fixture.generation, "a").await?,
+            b"payload"
+        );
     }
     Ok(())
 }
@@ -2303,7 +2405,10 @@ async fn generated_multi_operation_transactions_observe_the_candidate_in_order()
         assert_generation_matches_model(&store, &receipt.root, &model, &names)
             .await
             .map_err(|error| format!("history {history}: {error}"))?;
-        assert_eq!(inline_at(&store, &fixture.generation, "a").await?, b"payload");
+        assert_eq!(
+            inline_at(&store, &fixture.generation, "a").await?,
+            b"payload"
+        );
     }
     Ok(())
 }
@@ -2328,13 +2433,36 @@ fn transaction_construction_rejects_every_contradictory_sparse_seed()
         limits,
         WorkBudget::UNBOUNDED,
     )?;
-    fn fixture_state(plan: &MutationPlan, lookups: &InitialLookups) -> Result<TransactionState, crate::FsError> {
+    fn fixture_state(
+        plan: &MutationPlan,
+        lookups: &InitialLookups,
+    ) -> Result<TransactionState, crate::FsError> {
         let cancellation = CancellationToken::new();
         let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
         let mut allocation = KernelOwnedAllocation::Standalone;
-        TransactionState::new(plan, lookups, config(), &mut MutationLeaf { accounting: &mut accounting, allocation: &mut allocation })
+        TransactionState::new(
+            plan,
+            lookups,
+            config(),
+            &mut MutationLeaf {
+                accounting: &mut accounting,
+                allocation: &mut allocation,
+            },
+        )
     }
-    let failure = fixture_state(&one, &InitialLookups { paths: Owned { value: Vec::new(), allocation: KernelOwnedAllocation::Standalone }, identities: Owned { value: Vec::new(), allocation: KernelOwnedAllocation::Standalone } })
+    let failure = fixture_state(
+        &one,
+        &InitialLookups {
+            paths: Owned {
+                value: Vec::new(),
+                allocation: KernelOwnedAllocation::Standalone,
+            },
+            identities: Owned {
+                value: Vec::new(),
+                allocation: KernelOwnedAllocation::Standalone,
+            },
+        },
+    )
     .err()
     .ok_or("lookup cardinality mismatch unexpectedly succeeded")?;
     assert!(matches!(
@@ -2354,18 +2482,30 @@ fn transaction_construction_rejects_every_contradictory_sparse_seed()
         limits,
         WorkBudget::UNBOUNDED,
     )?;
-    let failure = fixture_state(&duplicate_path, &InitialLookups { paths: Owned { value: vec![
-        PathBatchEntry {
-            record: Some(first),
-            parent: None,
-            resolved_components: 1,
+    let failure = fixture_state(
+        &duplicate_path,
+        &InitialLookups {
+            paths: Owned {
+                value: vec![
+                    PathBatchEntry {
+                        record: Some(first),
+                        parent: None,
+                        resolved_components: 1,
+                    },
+                    PathBatchEntry {
+                        record: Some(second),
+                        parent: None,
+                        resolved_components: 1,
+                    },
+                ],
+                allocation: KernelOwnedAllocation::Standalone,
+            },
+            identities: Owned {
+                value: Vec::new(),
+                allocation: KernelOwnedAllocation::Standalone,
+            },
         },
-        PathBatchEntry {
-            record: Some(second),
-            parent: None,
-            resolved_components: 1,
-        },
-    ], allocation: KernelOwnedAllocation::Standalone }, identities: Owned { value: Vec::new(), allocation: KernelOwnedAllocation::Standalone } })
+    )
     .err()
     .ok_or("contradictory duplicate path lookup unexpectedly succeeded")?;
     assert!(matches!(
@@ -2392,7 +2532,19 @@ fn transaction_construction_rejects_every_contradictory_sparse_seed()
         parent: None,
         resolved_components: 0,
     };
-    let failure = fixture_state(&duplicate_created, &InitialLookups { paths: Owned { value: vec![absent, absent], allocation: KernelOwnedAllocation::Standalone }, identities: Owned { value: Vec::new(), allocation: KernelOwnedAllocation::Standalone } })
+    let failure = fixture_state(
+        &duplicate_created,
+        &InitialLookups {
+            paths: Owned {
+                value: vec![absent, absent],
+                allocation: KernelOwnedAllocation::Standalone,
+            },
+            identities: Owned {
+                value: Vec::new(),
+                allocation: KernelOwnedAllocation::Standalone,
+            },
+        },
+    )
     .err()
     .ok_or("duplicate created identity unexpectedly succeeded")?;
     assert!(matches!(
@@ -2419,18 +2571,30 @@ fn transaction_construction_rejects_every_contradictory_sparse_seed()
         },
         ..first
     };
-    let failure = fixture_state(&distinct_paths, &InitialLookups { paths: Owned { value: vec![
-        PathBatchEntry {
-            record: Some(first),
-            parent: None,
-            resolved_components: 1,
+    let failure = fixture_state(
+        &distinct_paths,
+        &InitialLookups {
+            paths: Owned {
+                value: vec![
+                    PathBatchEntry {
+                        record: Some(first),
+                        parent: None,
+                        resolved_components: 1,
+                    },
+                    PathBatchEntry {
+                        record: Some(conflicting_first),
+                        parent: None,
+                        resolved_components: 1,
+                    },
+                ],
+                allocation: KernelOwnedAllocation::Standalone,
+            },
+            identities: Owned {
+                value: Vec::new(),
+                allocation: KernelOwnedAllocation::Standalone,
+            },
         },
-        PathBatchEntry {
-            record: Some(conflicting_first),
-            parent: None,
-            resolved_components: 1,
-        },
-    ], allocation: KernelOwnedAllocation::Standalone }, identities: Owned { value: Vec::new(), allocation: KernelOwnedAllocation::Standalone } })
+    )
     .err()
     .ok_or("contradictory base records unexpectedly succeeded")?;
     assert!(matches!(
@@ -2438,11 +2602,23 @@ fn transaction_construction_rejects_every_contradictory_sparse_seed()
         GenerationMutationError::FileIdentityAlreadyExists
     ));
 
-    let failure = fixture_state(&one, &InitialLookups { paths: Owned { value: vec![PathBatchEntry {
-        record: Some(first),
-        parent: None,
-        resolved_components: 1,
-    }], allocation: KernelOwnedAllocation::Standalone }, identities: Owned { value: Vec::new(), allocation: KernelOwnedAllocation::Standalone } })
+    let failure = fixture_state(
+        &one,
+        &InitialLookups {
+            paths: Owned {
+                value: vec![PathBatchEntry {
+                    record: Some(first),
+                    parent: None,
+                    resolved_components: 1,
+                }],
+                allocation: KernelOwnedAllocation::Standalone,
+            },
+            identities: Owned {
+                value: Vec::new(),
+                allocation: KernelOwnedAllocation::Standalone,
+            },
+        },
+    )
     .err()
     .ok_or("base and created identity collision unexpectedly succeeded")?;
     assert!(matches!(
@@ -2459,10 +2635,15 @@ fn impossible_transaction_vector_allocation_releases_its_complete_claim()
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
     let cancellation = CancellationToken::new();
-    let mut accounting = KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation);
+    let mut accounting = KernelAccounting::borrowed_standalone(
+        &mut allocations,
+        &mut work,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    );
     let failure = reserve_owned::<u8>(usize::MAX, &mut accounting)
-    .err()
-    .ok_or("impossible transaction vector allocation succeeded")?;
+        .err()
+        .ok_or("impossible transaction vector allocation succeeded")?;
     assert!(matches!(
         generation_error(failure),
         GenerationMutationError::AllocationFailed
@@ -2535,17 +2716,38 @@ async fn original_generation_denies_identity_scratch_before_provider_calls()
     let fixture = fixture(&store).await?;
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(
-        WorkBudget { allocation_operations: 1, ..WorkBudget::UNBOUNDED }, &cancellation,
-    ).map_err(|(error, _)| error)?;
+        WorkBudget {
+            allocation_operations: 1,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    )
+    .map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let source = [Mutation::File { file_id: FileId::from_bytes([2; 16]), mutation: FileMutation::ValidateRegular }];
+    let source = [Mutation::File {
+        file_id: FileId::from_bytes([2; 16]),
+        mutation: FileMutation::ValidateRegular,
+    }];
     let (operations, input_guard) = original_identity_operations(&source, &mut accounting)?;
     let before = original.receipt();
     let error = (apply_generation_mutations_retaining_with_accounting(
-        &NoGenerationCalls, &fixture.generation, operations, config(), &mut accounting, &cancellation,
-    )).await.err().ok_or("exhausted original allocated identity scratch")?;
-    assert!(matches!(error, crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(WorkError::BudgetExceeded { .. }))));
+        &NoGenerationCalls,
+        &fixture.generation,
+        operations,
+        config(),
+        &mut accounting,
+        &cancellation,
+    ))
+    .await
+    .err()
+    .ok_or("exhausted original allocated identity scratch")?;
+    assert!(matches!(
+        error,
+        crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(
+            WorkError::BudgetExceeded { .. }
+        ))
+    ));
     assert_eq!(original.receipt(), before);
     drop(error);
     drop(input_guard);
@@ -2559,16 +2761,28 @@ async fn original_root_clone_denial_releases_parents_without_copy()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let mut root = fixture(&store).await?.generation;
-    root.parents.push(GenerationId::new(Digest::from_bytes([17; 32])));
+    root.parents
+        .push(GenerationId::new(Digest::from_bytes([17; 32])));
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(
-        WorkBudget { bytes_copied: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
-    ).map_err(|(error, _)| error)?;
+        WorkBudget {
+            bytes_copied: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    )
+    .map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let error = clone_generation_root_with_accounting(&root, &mut accounting).err()
+    let error = clone_generation_root_with_accounting(&root, &mut accounting)
+        .err()
         .ok_or("zero original copy budget cloned parents")?;
-    assert!(matches!(error, crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(WorkError::BudgetExceeded { .. }))));
+    assert!(matches!(
+        error,
+        crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(
+            WorkError::BudgetExceeded { .. }
+        ))
+    ));
     assert_eq!(original.receipt().bytes_copied, 0);
     assert_eq!(original.receipt().backend_read_operations, 0);
     assert_eq!(original.receipt().backend_write_operations, 0);
@@ -2578,11 +2792,20 @@ async fn original_root_clone_denial_releases_parents_without_copy()
 
 #[cfg(not(target_arch = "wasm32"))]
 fn original_identity_operations(
-    source: &[Mutation], accounting: &mut KernelAccounting<'_>,
+    source: &[Mutation],
+    accounting: &mut KernelAccounting<'_>,
 ) -> Result<(Vec<Mutation>, KernelOwnedAllocation), crate::FsError> {
-    assert!(source.iter().all(|operation| matches!(operation, Mutation::File { .. } | Mutation::CloneFileRange { .. })));
+    assert!(source.iter().all(|operation| matches!(
+        operation,
+        Mutation::File { .. } | Mutation::CloneFileRange { .. }
+    )));
     let mut operations = reserve_owned::<Mutation>(source.len(), accounting)?;
-    let delta = WorkCounters { bytes_copied: usize_to_u64(source.len()).checked_mul(size_of::<Mutation>() as u64).ok_or(WorkError::Overflow)?, ..WorkCounters::default() };
+    let delta = WorkCounters {
+        bytes_copied: usize_to_u64(source.len())
+            .checked_mul(size_of::<Mutation>() as u64)
+            .ok_or(WorkError::Overflow)?,
+        ..WorkCounters::default()
+    };
     accounting.admit(delta)?;
     operations.value.extend(source.iter().cloned());
     accounting.record_completed(delta)?;
