@@ -1,4 +1,4 @@
-use super::super::root_binding::{boundary, native_root_output_binding_operation};
+use super::super::native_root_output_binding_operation;
 use super::*;
 use crate::conversation::{ContentPublisher, ContentResidencyVerifier, FileRef};
 /// Authenticated, unmounted original ROOT result storage.
@@ -380,4 +380,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         })?
         .await
     }
+}
+
+pub(super) fn boundary(code: crate::wire::ErrorCode, reason: &'static str) -> Error {
+    Error::NativeBoundary { code, reason }
 }

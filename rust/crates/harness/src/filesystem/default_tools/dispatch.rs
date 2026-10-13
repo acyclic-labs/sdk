@@ -1,60 +1,89 @@
-//! Dispatch for portable recursive tools.
-
+//! Typed task-command dispatch and immutable protocol payloads.
 use super::*;
+use crate::filesystem::PreparationIo;
 
-impl<P, A, O> RecursiveExecutor<P, A, O>
-where
-    P: StreamProvider + 'static,
-    A: AsyncAuthorityStore + 'static,
-    O: AsyncObjectStore + 'static,
+impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
+    RecursiveExecutor<P, A, O>
 {
     pub(super) async fn dispatch(
         &self,
         context: &ToolContext,
-        owner: &RecursiveToolOwner<P, A, O>,
+        owner: &(
+            Arc<FilesystemTaskRuntime<P, A, O>>,
+            Arc<FilesystemWorkflowJournal<P, A, O>>,
+        ),
         plan: &Plan,
         stage: &str,
         command: &WorkflowCommand,
-        payload: Value,
         report: Option<&ForkReport>,
         receipt: Option<&ProjectMergeReceipt>,
         cancellation: &CancellationToken,
-        io: Option<&crate::filesystem::PreparationIo>,
+        io: Option<&PreparationIo>,
     ) -> Result<Option<Value>> {
-        #[cfg(not(target_arch = "wasm32"))]
-        let native_work = io.and_then(crate::filesystem::PreparationIo::original_native_work);
+        let (runtime, workflow) = owner;
+        let owner_guard = workflow.owner.as_ref().expect("validated tool owner");
         let outcome = match (plan, stage) {
-            (Plan::Fork(_), "prepare" | "child-admit") => {
-                let progress = 'progress: {
+            (Plan::Fork(fork), "prepare" | "child-admit") => {
+                let payload = retained_payload(
+                    context,
+                    &command.payload,
+                    self.maximum_request_bytes,
+                    cancellation,
+                    io,
+                )
+                .await?;
+                let admission = if stage == "prepare" {
+                    &fork.preparation
+                } else {
+                    &fork.request.child
+                };
+                let actual = payload.get("admission").ok_or_else(|| {
+                    recursive_reject(
+                        io,
+                        crate::wire::ErrorCode::Unauthorized,
+                        "command has no admission",
+                    )
+                })?;
+                reject_if(
+                    payload.as_object().is_none_or(|object| object.len() != 1)
+                        || !recursive_encoded_equal(admission, actual, io)?,
+                    io,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "command changed original admission",
+                )?;
+                let progress = 'execute: {
                     #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(work) = native_work {
+                    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
                         let context = context.native_task().ok_or_else(|| {
                             recursive_reject(
                                 io,
                                 crate::wire::ErrorCode::Unauthorized,
-                                "recursive command has no original native task context",
+                                "native command has no original task",
                             )
                         })?;
-                        let temporary_io =
-                            crate::filesystem::PreparationIo::from_native_work(work)?;
-                        let history = &mut temporary_io.history_io();
-                        let original_fence = owner.journal_owner.task_binding().1;
+                        let temporary = PreparationIo::from_native_work(work)?;
+                        let fence = owner_guard.task_binding().1;
                         let fence = crate::scheduler::LeaseFence {
-                            reservation_id: history.clone_text(&original_fence.reservation_id)?,
-                            placement: history.clone_text(&original_fence.placement)?,
+                            reservation_id: crate::executor::stock_string_copy(
+                                &fence.reservation_id,
+                                Some(&temporary),
+                            )?,
+                            placement: crate::executor::stock_string_copy(
+                                &fence.placement,
+                                Some(&temporary),
+                            )?,
                         };
-                        let command = WorkflowCommand {
-                            operation_id: command.operation_id,
-                            kind: history.clone_text(&command.kind)?,
-                            payload: command.payload.copy(&mut Some(&mut *history))?,
-                        };
-                        let payload = crate::wire_codec::CodecQuota::produce(
-                            &mut Some(&mut *history),
-                            |copy_quota| crate::core::copy_value(&payload, copy_quota),
-                        )?
+                        let command = crate::filesystem::task_runtime::observed::clone_command(
+                            command,
+                            Some(&temporary),
+                        )?;
+                        let payload = crate::executor::with_history_io(Some(&temporary), |work| {
+                            crate::wire_codec::CodecQuota::produce(work, |quota| {
+                                crate::core::copy_value(&payload, quota)
+                            })
+                        })?
                         .0;
-                        break 'progress owner
-                            .runtime
+                        break 'execute runtime
                             .commands()
                             .execute_with_native_work(
                                 Arc::clone(context),
@@ -65,12 +94,11 @@ where
                             )?
                             .await?;
                     }
-                    break 'progress owner
-                        .runtime
+                    break 'execute runtime
                         .commands()
                         .execute(
                             context.task().clone(),
-                            owner.journal_owner.task_binding().1.clone(),
+                            owner_guard.task_binding().1.clone(),
                             command.clone(),
                             payload,
                         )
@@ -78,13 +106,12 @@ where
                 };
                 match progress {
                     TaskCommandProgress::Ready(value) => {
-                        if io.is_some_and(|io| io.original_native_work().is_some()) {
-                            return Err(recursive_reject(
-                                io,
-                                crate::wire::ErrorCode::Unauthorized,
-                                "native recursive command reply lacks its original payload custody",
-                            ));
-                        }
+                        reject_if(
+                            io.is_some_and(|io| io.original_native_work().is_some()),
+                            io,
+                            crate::wire::ErrorCode::Unauthorized,
+                            "native command result has no original guard",
+                        )?;
                         Some(decode::<Outcome<Value>>(&value, io)?)
                     }
                     #[cfg(not(target_arch = "wasm32"))]
@@ -96,33 +123,30 @@ where
                 }
             }
             (Plan::Fork(fork), "observe") => {
-                if owner
-                    .runtime
+                let before = io.map(PreparationIo::owned_bytes).transpose()?;
+                let same = runtime
                     .admission_observed(fork.preparation.task_id(), io)
                     .await?
-                    != fork.preparation
-                {
-                    return Err(recursive_reject(
-                        io,
-                        crate::wire::ErrorCode::Unauthorized,
-                        "observed preparation admission changed",
-                    ));
-                }
-                let outcome = owner
-                    .runtime
+                    == fork.preparation;
+                recursive_release_since(io, before)?;
+                reject_if(
+                    !same,
+                    io,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "preparation admission changed",
+                )?;
+                let outcome = runtime
                     .outcome_observed(fork.preparation.task_id(), io)
                     .await?;
                 if let Some(Outcome::Succeeded(value)) = &outcome {
                     recursive_decoded::<ForkReport, _>(value, io, |report| {
                         crate::executor::with_history_io(io, |work| report.validate(work))?;
-                        if !recursive_encoded_equal(&report.request, &fork.request.payload, io)? {
-                            return Err(recursive_reject(
-                                io,
-                                crate::wire::ErrorCode::Unauthorized,
-                                "preparation output changed original retained request",
-                            ));
-                        }
-                        Ok(())
+                        reject_if(
+                            !recursive_encoded_equal(&report.request, &fork.request.payload, io)?,
+                            io,
+                            crate::wire::ErrorCode::Unauthorized,
+                            "preparation report changed its request",
+                        )
                     })?;
                 }
                 outcome
@@ -149,7 +173,7 @@ where
                 return Err(recursive_reject(
                     io,
                     crate::wire::ErrorCode::Invalid,
-                    "recursive command does not match its retained plan",
+                    "command does not match its retained plan",
                 ));
             }
         };
@@ -158,11 +182,10 @@ where
             Some(Outcome::Failed { message }) => {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-                    let custody = io.take_native_custody(io.owned_bytes()?)?;
                     return Err(Error::NativeDiagnostic {
                         code: crate::wire::ErrorCode::Conflict,
                         message,
-                        custody,
+                        custody: io.take_native_custody(io.owned_bytes()?)?,
                     });
                 }
                 Err(Error::Conflict(message))
@@ -181,175 +204,116 @@ where
     }
 }
 
-pub(super) fn command_payload(
-    stage: &str,
-    plan: &Plan,
-    report: Option<&ForkReport>,
-    receipt: Option<&ProjectMergeReceipt>,
-    io: Option<&crate::filesystem::PreparationIo>,
-) -> Result<Value> {
-    #[derive(Serialize)]
-    struct Admission<'a> {
-        admission: &'a TaskAdmissionRecord,
-    }
-    #[derive(Serialize)]
-    struct Observation {
-        preparation: TaskId,
-    }
-    match (plan, stage) {
-        (Plan::Fork(plan), "prepare") => encode(
-            &Admission {
-                admission: &plan.preparation,
-            },
-            io,
-        ),
-        (Plan::Fork(plan), "observe") => encode(
-            &Observation {
-                preparation: plan.preparation.task_id(),
-            },
-            io,
-        ),
-        (Plan::Fork(_), "fork-publish") => encode(
-            report.ok_or_else(|| {
-                recursive_reject(
-                    io,
-                    crate::wire::ErrorCode::Invalid,
-                    "publication report missing",
-                )
-            })?,
-            io,
-        ),
-        (Plan::Fork(plan), "child-admit") => encode(
-            &Admission {
-                admission: &plan.request.child,
-            },
-            io,
-        ),
-        (Plan::Merge(plan), "merge-apply") => encode(plan, io),
-        (Plan::Merge(_), "merge-publish") => encode(
-            receipt.ok_or_else(|| {
-                recursive_reject(
-                    io,
-                    crate::wire::ErrorCode::Invalid,
-                    "publication receipt missing",
-                )
-            })?,
-            io,
-        ),
-        _ => Err(recursive_reject(
-            io,
-            crate::wire::ErrorCode::Invalid,
-            "command payload does not match retained plan",
-        )),
-    }
-}
-
 pub(super) async fn retained_payload(
     context: &ToolContext,
     file: &FileRef,
     maximum: u64,
     cancellation: &CancellationToken,
-    io: Option<&crate::filesystem::PreparationIo>,
+    io: Option<&PreparationIo>,
 ) -> Result<Value> {
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-        let work = io
-            .original_native_work()
-            .expect("native payload reads preserve their original ledger");
+    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
         work.charge(acyclic_fs::WorkCounters {
             items_examined: 1,
             ..Default::default()
         })?;
-        if file.descriptor().byte_length()
-            > maximum.min(context.effective_scope().limits().file_bytes)
-        {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "retained recursive payload exceeds its original bound",
-            });
-        }
-        let bytes = context.read_file(file, Some(&crate::executor::PreparationIo::from_native_work(work)?)).await?;
-        return Ok(crate::filesystem::retain_decoded(io.decode(
-            std::marker::PhantomData::<Value>,
-            &bytes,
-            crate::wire::ErrorCode::Storage,
-        )?));
+        reject_if(
+            file.descriptor().byte_length()
+                > maximum.min(context.effective_scope().limits().file_bytes),
+            io,
+            crate::wire::ErrorCode::Invalid,
+            "retained recursive payload exceeds its bound",
+        )?;
+        let bytes = context.read_file_with_native_work(file, work).await?;
+        return Ok(crate::filesystem::retain_decoded(
+            io.expect("native payload").decode(
+                std::marker::PhantomData::<Value>,
+                &bytes,
+                crate::wire::ErrorCode::Storage,
+            )?,
+        ));
     }
+    let bytes = context
+        .task()
+        .read_file_measured(
+            file,
+            acyclic_fs::performance::work_budget(maximum, maximum),
+            cancellation,
+        )
+        .await
+        .map_err(|failure| failure.error)?
+        .value;
+    crate::contract::json_from_slice(&bytes).map_err(|error| Error::Storage(error.to_string()))
+}
+pub(super) async fn stage<T: Serialize>(
+    context: &ToolContext,
+    operation: OperationId,
+    label: &str,
+    value: &T,
+    maximum: u64,
+    cancellation: &CancellationToken,
+    io: Option<&PreparationIo>,
+) -> Result<FileRef> {
     let ordinary;
-    let content_io = match io {
+    let io = match io {
         Some(io) => io,
         None => {
-            ordinary = crate::filesystem::PreparationIo::from_budget(
-                acyclic_fs::performance::work_budget(maximum, maximum), cancellation,
+            ordinary = PreparationIo::from_budget(
+                acyclic_fs::performance::work_budget(maximum, maximum),
+                cancellation,
             )?;
             &ordinary
         }
     };
-    let bytes = context.read_file(file, Some(content_io)).await?;
-    crate::contract::json_from_slice(&bytes).map_err(|error| Error::Storage(error.to_string()))
-}
-pub(super) async fn stage(
-    context: &ToolContext,
-    operation: OperationId,
-    label: &str,
-    value: &Value,
-    maximum: u64,
-    cancellation: &CancellationToken,
-    io: Option<&crate::filesystem::PreparationIo>,
-) -> Result<FileRef> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-        let work = io
-            .original_native_work()
-            .expect("native staging preserves its original ledger");
-        let bytes = io.encode(
-            value,
-            maximum.min(context.effective_scope().limits().file_bytes),
-            true,
-        )?;
-        let _path;
-        let path = crate::executor::with_history_io(Some(io), |work| crate::executor::preparation_format(format_args!("recursive-tools/{}/{label}.json", context.operation_id()), work))?;
-        _path = io.guard_owned(path.capacity() as u64)?;
-        let _display;
-        let display = crate::executor::with_history_io(Some(io), |work| crate::executor::preparation_format(format_args!("{label}.json"), work))?;
-        _display = io.guard_owned(display.capacity() as u64)?;
-        let (file, custody) = {
-            let publication_io = crate::executor::PreparationIo::from_native_work(work)?;
-            context
-                .stage_file_once(
+    let bytes = io.encode(
+        value,
+        maximum.min(context.effective_scope().limits().file_bytes),
+        true,
+    )?;
+    let path_hold;
+    let path = crate::executor::with_history_io(Some(io), |work| {
+        crate::contract::preparation_format(
+            format_args!("recursive-tools/{}/{label}.json", context.operation_id()),
+            work,
+        )
+    })?;
+    path_hold = io.guard_owned(path.capacity() as u64)?;
+    let display_hold;
+    let display = crate::executor::with_history_io(Some(io), |work| {
+        crate::contract::preparation_format(format_args!("{label}.json"), work)
+    })?;
+    display_hold = io.guard_owned(display.capacity() as u64)?;
+    let result = 'stage: {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = io.original_native_work() {
+            let (file, custody) = context
+                .stage_file_once_with_native_work(
                     operation,
                     &path,
                     &bytes,
                     "application/json",
                     &display,
-                    Some(&publication_io),
+                    work,
                 )
-                .await
-                .and_then(|(file, retained)| Ok((file, publication_io.take_native_custody(retained)?)))
-        }?;
-        io.absorb_native_custody(custody)?;
-        return Ok(file);
-    }
-    let _ = io;
-    let io = crate::filesystem::fork_preparer::PreparationIo::from_budget(
-        acyclic_fs::performance::work_budget(maximum, maximum),
-        cancellation,
-    )?;
-    let bytes = io.encode(
-        value,
-        maximum.min(context.scope().limits().file_bytes),
-        true,
-    )?;
-    context
-        .stage_file_once(
-            operation,
-            &format!("recursive-tools/{}/{label}.json", context.operation_id()),
-            &bytes,
-            "application/json",
-            &format!("{label}.json"),
-            Some(&io),
+                .await?;
+            io.absorb_native_custody(custody)?;
+            break 'stage Ok(file);
+        }
+        io.receive_content(
+            context
+                .stage_file_once_measured(
+                    operation,
+                    &path,
+                    &bytes,
+                    "application/json",
+                    &display,
+                    io.remaining()?,
+                    cancellation,
+                )
+                .await,
         )
-        .await
-        .map(|(file, _)| file)
-
+    };
+    drop((display, display_hold));
+    drop((path, path_hold));
+    result
 }

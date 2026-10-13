@@ -59,10 +59,14 @@ mod reads;
 mod volumes;
 mod workspaces;
 pub(crate) use keys::map_error;
-pub use keys::workspace_ref;
 pub(in crate::filesystem) use keys::{
-    content_identity_path_io, content_metadata_path_io, filesystem_key, project_join_key,
+    content_identity_path_io, content_metadata_path_io, project_join_key,
 };
+pub use keys::{filesystem_key, workspace_ref};
 pub(in crate::filesystem) use reads::read_generation;
 
-use crate::executor::{stock_boundary};
+use crate::executor::stock_boundary;
+#[cfg(not(target_arch = "wasm32"))]
+pub use volumes::{
+    bind_original_root_conversation_with_native_work, native_root_output_binding_operation,
+};

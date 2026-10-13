@@ -80,8 +80,8 @@ macro_rules! recursive_preparation_records {
     ($($record:ty => $schema:ident),+ $(,)?) => {$(
         impl crate::filesystem::PreparationRecord for $record {
             fn maximum_slot_bytes() -> u64 { recursive_decode_slot_bytes::<Self>() }
-            fn json_value_schema() -> crate::executor::json::JsonValueSchema {
-                crate::executor::json::JsonValueSchema::$schema
+            fn json_value_schema() -> crate::contract::JsonValueSchema {
+                crate::contract::JsonValueSchema::$schema
             }
         }
     )+};
@@ -90,8 +90,7 @@ recursive_preparation_records!(
     ForkToolArguments => None, MergeToolArguments => None,
     RecursiveForkSourceIntent => RecursiveForkSourceIntent, RecursiveForkToolPlan => RecursiveForkToolPlan,
     RecursiveMergeToolPlan => RecursiveMergeToolPlan,
-    Plan => RecursivePlan, State => RecursiveState, InitialPlan => RecursiveInitialPlan,
-    SourcePin => RecursiveSourcePin, Receipt => RecursiveReceipt,
+    Plan => RecursivePlan, State => RecursiveState, Receipt => RecursiveReceipt,
     ForkSeed => ForkSeed,
     TaskId => None, ProjectMergeReceipt => ProjectMergeReceipt,
 );
@@ -102,7 +101,7 @@ pub(super) fn recursive_inspect(
     items: u64,
 ) -> Result<()> {
     if let Some(io) = io {
-        io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items }, false)?;
+        io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items }, false)?;
     }
     Ok(())
 }
@@ -116,7 +115,7 @@ pub(super) fn recursive_byte_bound(
         return io.check_json_byte_bound(value, maximum);
     }
     let _ = io;
-    crate::executor::json::json_byte_length(value, maximum, &mut None).map(|_| ())
+    crate::contract::json_byte_length(value, maximum, &mut None).map(|_| ())
 }
 pub(in crate::filesystem) fn decode<T: crate::filesystem::PreparationRecord>(
     value: &Value,
@@ -129,7 +128,7 @@ pub(in crate::filesystem) fn decode<T: crate::filesystem::PreparationRecord>(
         ));
     }
     let _ = io;
-    serde_json::from_value(value.clone()).map_err(|error| Error::Invalid(error.to_string()))
+    T::deserialize(value).map_err(|error| Error::Invalid(error.to_string()))
 }
 pub(super) fn recursive_decoded<T: crate::filesystem::PreparationRecord, R>(
     value: &Value,
@@ -207,14 +206,6 @@ pub(in crate::filesystem) fn recursive_box<T>(
     }
     Ok(Box::new(value))
 }
-pub(in crate::filesystem) fn recursive_command_outbox(
-    command: WorkflowCommand,
-    io: Option<&crate::filesystem::PreparationIo>,
-) -> Result<Vec<WorkflowCommand>> {
-    let mut commands = Vec::new();
-    crate::executor::stock_vec_push(&mut commands, command, io)?;
-    Ok(commands)
-}
 pub(super) fn derived(
     effect: OperationId,
     label: &str,
@@ -244,13 +235,20 @@ pub(super) fn transition_identity(
 ) -> Result<(OperationId, IdempotencyKey)> {
     let operation = {
         let _label;
-        let label = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("transition-{revision}"), work))?;
+        let label = crate::executor::with_history_io(io, |work| {
+            crate::contract::preparation_format(format_args!("transition-{revision}"), work)
+        })?;
         _label = io
             .map(|io| io.guard_owned(label.capacity() as u64))
             .transpose()?;
         derived(effect, &label, io)?
     };
-    let key = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("recursive-tool:{effect}:{revision}"), work))?;
+    let key = crate::executor::with_history_io(io, |work| {
+        crate::contract::preparation_format(
+            format_args!("recursive-tool:{effect}:{revision}"),
+            work,
+        )
+    })?;
     if let Some(io) = io {
         io.retain_owned(std::mem::size_of::<IdempotencyKey>() as u64)?;
     }
@@ -316,7 +314,7 @@ pub(super) fn recursive_owned_add(left: u64, right: u64) -> Result<u64> {
 pub(in crate::filesystem) fn recursive_value_owned_bytes(value: &Value) -> Result<u64> {
     recursive_owned_add(
         std::mem::size_of::<Value>() as u64,
-        crate::executor::json::json_value_logical_owned_bytes(value)?,
+        crate::contract::json_value_logical_owned_bytes(value)?,
     )
 }
 #[cfg(not(target_arch = "wasm32"))]
@@ -326,7 +324,7 @@ pub(in crate::filesystem) fn recursive_transition_owned_bytes(
 ) -> Result<u64> {
     let mut bytes = recursive_owned_add(
         std::mem::size_of::<MachineTransition>() as u64,
-        crate::executor::json::json_value_logical_owned_bytes(&transition.state)?,
+        crate::contract::json_value_logical_owned_bytes(&transition.state)?,
     )?;
     let slots = (transition.commands.capacity() as u64)
         .checked_mul(std::mem::size_of::<WorkflowCommand>() as u64)
@@ -346,7 +344,7 @@ pub(in crate::filesystem) fn recursive_transition_owned_bytes(
     let status = match &transition.status {
         MachineStatus::Suspended => 0,
         MachineStatus::Completed { value } => {
-            crate::executor::json::json_value_logical_owned_bytes(value)?
+            crate::contract::json_value_logical_owned_bytes(value)?
         }
         MachineStatus::Failed { message } => message.capacity() as u64,
     };

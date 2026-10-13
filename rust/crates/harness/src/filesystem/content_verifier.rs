@@ -11,6 +11,26 @@ pub struct FilesystemContentVerifier<A, O> {
 }
 
 impl<A, O> FilesystemContentVerifier<A, O> {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::filesystem) fn require_native_work(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        if !self
+            ._native_metadata
+            .as_ref()
+            .is_some_and(|guard| guard.work().shares_allocation_context(work))
+        {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "Filesystem verifier belongs to another original resource",
+            });
+        }
+        let io = PreparationIo::from_native_work(work)?;
+        self.verifier
+            .verify(&self.scope, &mut Some(&mut io.history_io()))
+    }
+
     /// Binds authenticated read authority with optional preparation accounting.
     pub fn new(
         host: Arc<FilesystemHost<A, O>>,
@@ -329,21 +349,10 @@ where
         volume: &VolumeRef,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
-        if !self
-            ._native_metadata
-            .as_ref()
-            .is_some_and(|guard| guard.work().shares_allocation_context(work))
-        {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "directory verifier lacks original native metadata custody",
-            });
-        }
-        self.verifier.verify(
-            &self.scope,
-            &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
-        )?;
-        volume.validate(&mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?))?;
+        self.require_native_work(work)?;
+        volume.validate(&mut Some(&mut crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        )))?;
         if volume.provider() != &self.host.provider {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
@@ -380,7 +389,9 @@ where
             context
                 .verify_original_execution_owner_with_native_work(work)?
                 .await?;
-            let mut observer = crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?;
+            let mut observer = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            );
             let grant = ContentGrant::verify_directory_read(
                 &self.verifier,
                 &self.scope,
@@ -543,4 +554,4 @@ pub(in crate::filesystem) fn require_file_read(
     ))
 }
 
-use crate::executor::{stock_boundary};
+use crate::executor::stock_boundary;

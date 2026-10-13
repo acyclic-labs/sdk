@@ -1,13 +1,10 @@
 use super::*;
+use crate::executor::{stock_boundary, stock_string_copy};
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     ParentProjectController<'_, A, O>
 {
-    /// Freezes a completed exchange from the authoritative execution journal before retaining its shared segment.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one exact journal exchange and direct-parent binding"
-    )]
+    /// Freezes the completed exchange before staging its model prefix.
     pub async fn stage_completed_model_prefix(
         &self,
         private: &VolumeRef,
@@ -25,14 +22,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let reference = self.stage_model_prefix(private, &segment).await?;
         Ok((reference, prepared))
     }
-
-    /// Retains one immutable model segment in the parent's private volume.
+    /// Retains one canonical parent-owned model prefix.
     pub async fn stage_model_prefix(
         &self,
         private: &VolumeRef,
         prefix: &crate::model::ModelPrefix,
     ) -> Result<FileRef> {
-        self.require("fork:publish", VolumeOperation::Read)?;
+        self.require("fork:publish", VolumeOperation::Read, None)?;
         if private.provider() != &self.host.provider
             || private.class() != VolumeClass::AgentPrivate
             || private.owner()
@@ -54,7 +50,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             u64::MAX,
             &mut None,
         )?;
-        let bytes = crate::contract::canonical_json_bytes(&prefix)?;
+        let bytes = prefix.canonical_bytes(None)?;
         let digest = blake3::hash(&bytes).to_hex();
         self.host
             .put_internal_content(
@@ -72,11 +68,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             .await
     }
 
-    /// Projects inherited reader capabilities from the controller's original parent cut.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "original history, readers and finite bounds"
-    )]
+    /// Projects the original parent prefix's exact reader grants.
     pub async fn inherited_reference_grants(
         &self,
         parent: &Reducer,
@@ -93,19 +85,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let io = self
             .native_custody
             .as_ref()
-            .map(|custody| {
-                self.require_with_native_work(
-                    capability::FORK_PUBLISH,
-                    VolumeOperation::Read,
-                    custody.work(),
-                )
-            })
+            .map(|custody| PreparationIo::from_native_work(custody.work()))
             .transpose()?;
         #[cfg(target_arch = "wasm32")]
         let io: Option<PreparationIo> = None;
-        if io.is_none() {
-            self.require(capability::FORK_PUBLISH, VolumeOperation::Read)?;
-        }
+        self.require(capability::FORK_PUBLISH, VolumeOperation::Read, io.as_ref())?;
         if let Some(archive) = archive {
             crate::executor::with_history_io(io.as_ref(), |work| {
                 archive.verify(&self.verifier, work)
@@ -141,31 +125,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         drop(manifests);
         #[cfg(not(target_arch = "wasm32"))]
         let custody = io
-            .map(|io| {
-                let mut bytes = (grants.capacity() as u64)
-                    .checked_mul(std::mem::size_of::<ReferenceGrant>() as u64)
-                    .ok_or_else(|| io.invalid("inherited grant output ownership overflows"))?;
-                for grant in &grants {
-                    let manifest = grant
-                        .attachment_manifest
-                        .as_ref()
-                        .map(FileRef::logical_owned_bytes)
-                        .transpose()?
-                        .unwrap_or(0);
-                    bytes = bytes
-                        .checked_add(grant.file.logical_owned_bytes()?)
-                        .and_then(|sum| sum.checked_add(manifest))
-                        .ok_or_else(|| io.invalid("inherited grant output ownership overflows"))?;
-                }
-                io.into_native_custody(bytes)
-            })
+            .map(|io| io.into_native_custody(grant_bytes(&grants)?))
             .transpose()?;
         #[cfg(target_arch = "wasm32")]
         let custody = None;
         Ok((grants, custody))
     }
 
-    pub(in crate::filesystem) fn selected_inherited_history<'p>(
+    pub(super) fn selected_inherited_history<'p>(
         &self,
         parent: &'p Reducer,
         through_sequence: u64,
@@ -173,53 +140,41 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         archive: Option<&'p crate::conversation::ConversationState>,
         io: Option<&PreparationIo>,
     ) -> Result<&'p crate::conversation::ConversationState> {
-        let rejected = |code: crate::wire::ErrorCode, reason: &'static str| {
-            #[cfg(not(target_arch = "wasm32"))]
-            if io.and_then(PreparationIo::original_native_work).is_some() {
-                return Error::NativeBoundary { code, reason };
-            }
-            match code {
-                crate::wire::ErrorCode::Unauthorized => Error::Unauthorized(reason.into()),
-                crate::wire::ErrorCode::Conflict => Error::Conflict(reason.into()),
-                _ => Error::Invalid(reason.into()),
-            }
-        };
+        let reject = |code, reason| stock_boundary(io, code, reason);
         if parent.authority() != self.verifier.audience()
             || parent.conversation().and_then(|state| state.agent) != self.scope.agent()
         {
-            return Err(rejected(
+            return Err(reject(
                 crate::wire::ErrorCode::Unauthorized,
                 "inherited history is outside the actual parent",
             ));
         }
-        let parent_history = parent.conversation().ok_or_else(|| {
-            rejected(
+        let parent = parent.conversation().ok_or_else(|| {
+            reject(
                 crate::wire::ErrorCode::Invalid,
                 "parent is not a conversation",
             )
         })?;
-        let history = archive.unwrap_or(parent_history);
-        if history.agent != parent_history.agent
-            || through_sequence > parent_history.logical_revision()
-            || (archive.is_some()
+        let history = archive.unwrap_or(parent);
+        if history.agent != parent.agent
+            || through_sequence > parent.logical_revision()
+            || archive.is_some()
                 && (history.resident_after_sequence() != 0
-                    || history.logical_revision() != through_sequence))
+                    || history.logical_revision() != through_sequence)
         {
-            return Err(rejected(
+            return Err(reject(
                 crate::wire::ErrorCode::Conflict,
                 "inherited archive differs from its original parent cut",
             ));
         }
         let count = usize::try_from(through_sequence).map_err(|_| {
-            stock_boundary(
-                io,
+            reject(
                 crate::wire::ErrorCode::Invalid,
                 "inherited prefix is too large",
             )
         })?;
         if count > maximum_messages || count > history.messages.len() {
-            return Err(stock_boundary(
-                io,
+            return Err(reject(
                 crate::wire::ErrorCode::Invalid,
                 "inherited prefix exceeds the selected history or limit",
             ));
@@ -227,11 +182,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         Ok(history)
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::too_many_lines,
-        reason = "one canonical bounded reference projection"
-    )]
     pub(in crate::filesystem) async fn collect_inherited_reference_grants(
         history: &crate::conversation::ConversationState,
         child_agent: AgentId,
@@ -242,175 +192,130 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         resolver: &dyn ContentResidencyVerifier,
         io: Option<&PreparationIo>,
     ) -> Result<(Vec<ReferenceGrant>, Vec<FileRef>)> {
-        let count = usize::try_from(through_sequence).map_err(|_| {
-            stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "inherited prefix is too large",
-            )
-        })?;
-        let mut direct = BTreeMap::<String, FileRef>::new();
-        let mut member = BTreeMap::<(String, String), (FileRef, FileRef)>::new();
-        let mut manifests = BTreeMap::<String, FileRef>::new();
-        let mut manifest_bytes_total = 0_u64;
+        let reject = |reason| stock_boundary(io, crate::wire::ErrorCode::Invalid, reason);
+        let count = usize::try_from(through_sequence)
+            .map_err(|_| reject("inherited prefix is too large"))?;
+        let records_hold;
+        let mut records = Vec::new();
+        let mut manifests = Vec::new();
+        let mut manifest_bytes = 0_u64;
         for message in history.messages.iter().take(count) {
             crate::model::charge_items(io, 1)?;
-            crate::model::charge_items(io, 1)?;
-if let Some(io) = io { io.retain_owned(std::mem::size_of::<(String, FileRef)>() as u64)?; }
-            direct.insert(
-                match io { Some(io) => io.capability(&message.content, "file:read:"), None => message.content.read_capability(&mut None) }?,
-                crate::executor::with_history_io(io, |work| message.content.copy(work))?,
-            );
-            for reference in message.extensions.values() {
-                crate::model::charge_items(io, 1)?;
-if let Some(io) = io { io.retain_owned(std::mem::size_of::<(String, FileRef)>() as u64)?; }
-                direct.insert(
-                    match io { Some(io) => io.capability(reference, "file:read:"), None => reference.read_capability(&mut None) }?,
-                    crate::executor::with_history_io(io, |work| reference.copy(work))?,
-                );
+            insert_reference(&mut records, &message.content, None, child_agent, io)?;
+            for file in message.extensions.values() {
+                insert_reference(&mut records, file, None, child_agent, io)?;
             }
             match &message.attachments {
                 ReferencedAttachments::Inline { items } => {
                     for item in items {
-                        crate::model::charge_items(io, 1)?;
-if let Some(io) = io { io.retain_owned(std::mem::size_of::<(String, FileRef)>() as u64)?; }
-                        direct.insert(
-                            match io { Some(io) => io.capability(&item.file, "file:read:"), None => item.file.read_capability(&mut None) }?,
-                            crate::executor::with_history_io(io, |work| item.file.copy(work))?,
-                        );
+                        insert_reference(&mut records, &item.file, None, child_agent, io)?;
                     }
                 }
                 ReferencedAttachments::Manifest {
                     manifest,
                     item_count,
                 } => {
-                    manifest_bytes_total = manifest_bytes_total
+                    manifest_bytes = manifest_bytes
                         .checked_add(manifest.descriptor().byte_length())
-                        .ok_or_else(|| {
-                            stock_boundary(
-                                io,
-                                crate::wire::ErrorCode::Invalid,
-                                "inherited manifests exceed byte limit",
-                            )
-                        })?;
-                    if manifest_bytes_total > maximum_bytes {
-                        return Err(stock_boundary(
-                            io,
-                            crate::wire::ErrorCode::Invalid,
-                            "inherited attachment manifest exceeds limit",
-                        ));
+                        .ok_or_else(|| reject("inherited manifests exceed byte limit"))?;
+                    if manifest_bytes > maximum_bytes {
+                        return Err(reject("inherited attachment manifest exceeds limit"));
                     }
                     let (items, _items_hold) =
                         crate::conversation::load_manifest(resolver, manifest, *item_count, io)
                             .await?;
                     if items.len() != *item_count as usize {
-                        return Err(stock_boundary(
-                            io,
-                            crate::wire::ErrorCode::Invalid,
-                            "inherited attachment manifest count mismatch",
-                        ));
+                        return Err(reject("inherited attachment manifest count mismatch"));
                     }
-                    let key = match io { Some(io) => io.capability(manifest, "file:read:"), None => manifest.read_capability(&mut None) }?;
-                    crate::model::charge_items(io, 1)?;
-if let Some(io) = io { io.retain_owned((2 * std::mem::size_of::<(String, FileRef)>()) as u64)?; }
-                    direct.insert(
-                        stock_string_copy(&key, io)?,
-                        crate::executor::with_history_io(io, |work| manifest.copy(work))?,
-                    );
-                    manifests.insert(
-                        stock_string_copy(&key, io)?,
-                        crate::executor::with_history_io(io, |work| manifest.copy(work))?,
-                    );
-                    for item in items {
+                    insert_reference(&mut records, manifest, None, child_agent, io)?;
+                    let mut present = false;
+                    for existing in &manifests {
                         crate::model::charge_items(io, 1)?;
-if let Some(io) = io { io.retain_owned(std::mem::size_of::<((String, String), (FileRef, FileRef))>() as u64)?; }
-                        member.insert(
-                            (
-                                stock_string_copy(&key, io)?,
-                                match io { Some(io) => io.capability(&item.file, "file:read:"), None => item.file.read_capability(&mut None) }?,
-                            ),
-                            (
-                                crate::executor::with_history_io(io, |work| manifest.copy(work))?,
-                                item.file,
-                            ),
-                        );
+                        if existing == manifest {
+                            present = true;
+                            break;
+                        }
+                    }
+                    if !present {
+                        let copy =
+                            crate::executor::with_history_io(io, |work| manifest.copy(work))?;
+                        crate::executor::stock_vec_push(&mut manifests, copy, io)?;
+                    }
+                    for item in &items {
+                        insert_reference(
+                            &mut records,
+                            &item.file,
+                            Some(manifest),
+                            child_agent,
+                            io,
+                        )?;
                     }
                 }
             }
-            if direct.len().saturating_add(member.len()) > maximum_references {
-                return Err(stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Invalid,
-                    "inherited reference count exceeds limit",
-                ));
+            if records.len() > maximum_references {
+                return Err(reject("inherited reference count exceeds limit"));
             }
         }
-        if let Some(io) = io {
-            for file in direct.values().chain(member.values().map(|(_, file)| file)) {
-                resolver.verify(file, maximum_bytes, Some(io))?.await?;
+        records_hold = io
+            .map(|io| io.guard_owned(grant_bytes(&records)?))
+            .transpose()?;
+        if io.is_some() {
+            for record in &records {
+                resolver.verify(&record.file, maximum_bytes, io)?.await?;
             }
-            io.retain_owned(((attached_agents.len() + 1) * std::mem::size_of::<AgentId>()) as u64)?;
         }
-        let mut readers = BTreeSet::from([child_agent]);
-        readers.extend(attached_agents.iter().copied());
-        if readers.len() != attached_agents.len().saturating_add(1) {
-            return Err(stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "inherited readers are duplicated",
-            ));
+        for (index, reader) in attached_agents.iter().enumerate() {
+            crate::model::charge_items(io, 1)?;
+            if *reader == child_agent {
+                return Err(reject("inherited readers are duplicated"));
+            }
+            for prior in &attached_agents[..index] {
+                crate::model::charge_items(io, 1)?;
+                if prior == reader {
+                    return Err(reject("inherited readers are duplicated"));
+                }
+            }
         }
-        let total_grants = direct
+        let total = records
             .len()
-            .saturating_add(member.len())
-            .saturating_mul(readers.len());
-        if total_grants > maximum_references {
-            return Err(stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "inherited read grants exceed limit",
-            ));
+            .checked_mul(
+                attached_agents
+                    .len()
+                    .checked_add(1)
+                    .ok_or_else(|| reject("inherited read grants exceed limit"))?,
+            )
+            .ok_or_else(|| reject("inherited read grants exceed limit"))?;
+        if total > maximum_references {
+            return Err(reject("inherited read grants exceed limit"));
         }
-        let mut reference_grants = crate::model::vec_with_capacity(total_grants, io)?;
-        for reader in readers {
-            for file in direct.values() {
-                if file.volume().class() == VolumeClass::AgentPrivate
-                    && file.volume().owner() == &VolumeOwner::Agent(reader)
+        let mut grants = crate::model::vec_with_capacity(total, io)?;
+        for reader in std::iter::once(child_agent).chain(attached_agents.iter().copied()) {
+            for record in &records {
+                crate::model::charge_items(io, 1)?;
+                if record.file.volume().class() == VolumeClass::AgentPrivate
+                    && record.file.volume().owner() == &VolumeOwner::Agent(reader)
                 {
                     continue;
                 }
-                reference_grants.push(ReferenceGrant {
-                    file: crate::executor::with_history_io(io, |work| file.copy(work))?,
-                    reader,
-                    attachment_manifest: None,
-                });
-            }
-            for (manifest, file) in member.values() {
-                if file.volume().class() == VolumeClass::AgentPrivate
-                    && file.volume().owner() == &VolumeOwner::Agent(reader)
-                {
-                    continue;
-                }
-                reference_grants.push(ReferenceGrant {
-                    file: crate::executor::with_history_io(io, |work| file.copy(work))?,
-                    reader,
-                    attachment_manifest: Some(crate::executor::with_history_io(io, |work| {
-                        manifest.copy(work)
-                    })?),
-                });
+                grants.push(crate::executor::with_history_io(io, |work| {
+                    Ok(ReferenceGrant {
+                        reader,
+                        file: record.file.copy(work)?,
+                        attachment_manifest: record
+                            .attachment_manifest
+                            .as_ref()
+                            .map(|manifest| manifest.copy(work))
+                            .transpose()?,
+                    })
+                })?);
             }
         }
-        let mut attachment_manifests = crate::model::vec_with_capacity(manifests.len(), io)?;
-        attachment_manifests.extend(manifests.into_values());
-        Ok((reference_grants, attachment_manifests))
+        drop(records);
+        drop(records_hold);
+        Ok((grants, manifests))
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::too_many_lines,
-        reason = "same inherited capture with exact original summary continuation keys"
-    )]
-    /// Materializes the bounded inherited prefix and its original continuation.
+    /// Stages the canonical selected prefix in the child's original private volume.
     pub async fn materialize_inherited_conversation(
         &self,
         parent: &Reducer,
@@ -429,37 +334,30 @@ if let Some(io) = io { io.retain_owned(std::mem::size_of::<((String, String), (F
         io: Option<&PreparationIo>,
         preparation: Option<&crate::resource_preparation::TaskResourcePreparation>,
         #[cfg(not(target_arch = "wasm32"))] native_creation_guard: Option<
-            &std::sync::Arc<crate::resource_preparation::TaskResourcePreparation>,
+            &Arc<crate::resource_preparation::TaskResourcePreparation>,
         >,
     ) -> Result<InheritedContextCapture> {
         #[cfg(not(target_arch = "wasm32"))]
-        let native = io.and_then(PreparationIo::original_native_work).is_some();
-        #[cfg(target_arch = "wasm32")]
-        let native = false;
+        let native = io.and_then(PreparationIo::original_native_work);
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            native_creation_guard.ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "native inherited publication requires its original issued creation guard",
-            })?.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
+        if let Some(work) = native {
+            native_creation_guard
+                .ok_or_else(|| {
+                    stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Unauthorized,
+                        "native inherited publication requires its original issued creation guard",
+                    )
+                })?
+                .verify_creation_with_native_work(work)?
+                .await?;
         }
-        if !native && let Some(preparation) = preparation {
-            preparation.verify(false, io)?.await?;
+        if io.is_none_or(|io| io.original_native_work().is_none())
+            && let Some(preparation) = preparation
+        {
+            preparation.verify_creation().await?;
         }
-        if let Some(io) = io {
-            let project = io.capability(&self.project, "volume:read:")?;
-            if !self.scope.capabilities().contains(&project)
-                || !self.scope.capabilities().contains(capability::FORK_PUBLISH)
-            {
-                return Err(stock_boundary(
-                    Some(io),
-                    crate::wire::ErrorCode::Unauthorized,
-                    "parent fork preparation is not granted",
-                ));
-            }
-        } else {
-            self.require(capability::FORK_PUBLISH, VolumeOperation::Read)?;
-        }
+        self.require(capability::FORK_PUBLISH, VolumeOperation::Read, io)?;
         if parent.authority() != self.verifier.audience()
             || parent.conversation().and_then(|state| state.agent) != self.scope.agent()
             || child_private.provider() != &self.host.provider
@@ -472,14 +370,7 @@ if let Some(io) = io { io.retain_owned(std::mem::size_of::<((String, String), (F
                 "inherited context is not parent-controlled and child-owned",
             ));
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            child_private.validate(&mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?))?;
-        } else {
-            child_private.validate(&mut None)?;
-        }
-        #[cfg(target_arch = "wasm32")]
-        child_private.validate(&mut None)?;
+        crate::executor::with_history_io(io, |work| child_private.validate(work))?;
         let history = self.selected_inherited_history(
             parent,
             through_sequence,
@@ -487,52 +378,50 @@ if let Some(io) = io { io.retain_owned(std::mem::size_of::<((String, String), (F
             archived_history,
             io,
         )?;
-        let prefix = if let Some(io) = io {
-            if attached_agents.len() as u64 > crate::fork::MAX_FORK_AGENTS as u64 {
-                return Err(io.invalid("too many attached agents for inherited context"));
-            }
-            let mut readers = BTreeSet::new();
-            for reader in attached_agents {
-                crate::model::charge_items(Some(io), 1)?;
-if let Some(io) = Some(io) { io.retain_owned(std::mem::size_of::<AgentId>() as u64)?; }
-                if !readers.insert(*reader) {
-                    return Err(io.invalid("inherited attached agents are invalid"));
+        if attached_agents.len() as u64 > crate::fork::MAX_FORK_AGENTS as u64 {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "too many attached agents for inherited context",
+            ));
+        }
+        for (index, agent) in attached_agents.iter().enumerate() {
+            for prior in &attached_agents[..index] {
+                crate::model::charge_items(io, 1)?;
+                if prior == agent {
+                    return Err(stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Invalid,
+                        "inherited attached agents are invalid",
+                    ));
                 }
             }
-            let message_digest =
-                history.history_prefix_digest(through_sequence, &mut Some(&mut io.history_io()))?;
-            let inherited_parent = crate::core::Authority {
+        }
+        let attached_agents_copy = crate::executor::with_history_io(io, |work| {
+            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+            let copy = crate::core::copy_copy_vector(attached_agents, &mut quota)?;
+            quota.transfer();
+            Ok(copy)
+        })?;
+        let prefix = InheritedConversationPrefix {
+            format_version: 3,
+            parent: Authority {
                 kind: self.verifier.audience().kind,
-                id: stock_string_copy(&self.verifier.audience().id, Some(io))?,
-            };
-            let copied = acyclic_fs::WorkCounters {
-                bytes_copied: std::mem::size_of_val(attached_agents) as u64,
-                ..Default::default()
-            };
-            io.preflight(copied)?;
-            let mut attached = crate::model::vec_with_capacity(attached_agents.len(), Some(io))?;
-            attached.extend_from_slice(attached_agents);
-            io.charge(copied)?;
-            InheritedConversationPrefix {
-                format_version: 3,
-                parent: inherited_parent,
-                parent_revision: parent.revision(),
-                parent_agent: history
-                    .agent
-                    .ok_or_else(|| io.invalid("inherited prefix parent is unbound"))?,
-                through_sequence,
-                attached_agents: attached,
-                message_digest,
-            }
-        } else {
-            InheritedConversationPrefix::select(
-                self.verifier.audience().clone(),
-                parent.revision(),
-                through_sequence,
-                attached_agents,
-                history,
-                &mut None,
-            )?
+                id: stock_string_copy(&self.verifier.audience().id, io)?,
+            },
+            parent_revision: parent.revision(),
+            parent_agent: history.agent.ok_or_else(|| {
+                stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "inherited prefix parent is unbound",
+                )
+            })?,
+            through_sequence,
+            attached_agents: attached_agents_copy,
+            message_digest: crate::executor::with_history_io(io, |work| {
+                history.history_prefix_digest(through_sequence, work)
+            })?,
         };
         let (reference_grants, attachment_manifests) = Self::collect_inherited_reference_grants(
             history,
@@ -577,6 +466,7 @@ if let Some(io) = Some(io) { io.retain_owned(std::mem::size_of::<AgentId>() as u
             if head != original {
                 let mut continued = false;
                 for key in continuation_keys {
+                    crate::model::charge_items(io, 1)?;
                     if let Some(generation) =
                         fork_preparer_io::operation_generation(self.host, &workspace, key, io)
                             .await?
@@ -610,21 +500,21 @@ if let Some(io) = Some(io) { io.retain_owned(std::mem::size_of::<AgentId>() as u
                     "child private volume is not fresh",
                 ));
             }
-            let copied = bytes.clone();
-            let mutations = [
-                WorkspaceMutation::CreateDirectory {
-                    path: stock_string_copy("/.system/inherited-conversation", io)?,
-                },
-                WorkspaceMutation::PutFile {
-                    path: crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("/{path}"), work))?,
-                    bytes: copied,
-                },
-            ];
             fork_preparer_io::apply_generation_task_guarded(
                 self.host,
                 &workspace,
                 Some(&initial),
-                &mutations,
+                &[
+                    WorkspaceMutation::CreateDirectory {
+                        path: stock_string_copy("/.system/inherited-conversation", io)?,
+                    },
+                    WorkspaceMutation::PutFile {
+                        path: crate::executor::with_history_io(io, |work| {
+                            crate::contract::preparation_format(format_args!("/{path}"), work)
+                        })?,
+                        bytes: bytes.clone(),
+                    },
+                ],
                 idempotency_key,
                 io,
                 preparation,
@@ -634,27 +524,24 @@ if let Some(io) = Some(io) { io.retain_owned(std::mem::size_of::<AgentId>() as u
             .await?
         };
         let generation = fork_preparer_io::generation_ref(&self.host.provider, committed.id(), io)?;
-        if let Some(io) = io {
-            fork_preparer_io::retain(&committed, Some(io)).await?;
-        } else {
-            self.host.retain_generation(&workspace, &generation).await?;
-        }
-        let version = fork_preparer_io::hex_key(generation.as_resource().key(), io)?;
+        fork_preparer_io::retain(&committed, io).await?;
         let reference = crate::executor::with_history_io(io, |work| {
             FileRef::new(
                 child_private.copy(work)?,
                 stock_string_copy(path, io)?,
-                version,
+                fork_preparer_io::hex_key(generation.as_resource().key(), io)?,
                 descriptor,
                 stock_string_copy("inherited-conversation.json", io)?,
                 work,
             )
         })?;
-        let committed = self
+        if self
             .host
             .read_pinned_io(&reference, maximum_bytes, io)
-            .await?;
-        if committed.as_ref() != bytes.as_ref() {
+            .await?
+            .as_ref()
+            != bytes.as_ref()
+        {
             return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Conflict,
@@ -670,4 +557,44 @@ if let Some(io) = Some(io) { io.retain_owned(std::mem::size_of::<AgentId>() as u
     }
 }
 
-use crate::executor::{stock_boundary, stock_string_copy};
+fn grant_bytes(grants: &Vec<ReferenceGrant>) -> Result<u64> {
+    let slots = (grants.capacity() as u64)
+        .checked_mul(std::mem::size_of::<ReferenceGrant>() as u64)
+        .ok_or_else(|| Error::Invalid("inherited grant output ownership overflows".into()))?;
+    grants.iter().try_fold(slots, |bytes, grant| {
+        let manifest = grant
+            .attachment_manifest
+            .as_ref()
+            .map(FileRef::logical_owned_bytes)
+            .transpose()?
+            .unwrap_or(0);
+        bytes
+            .checked_add(grant.file.logical_owned_bytes()?)
+            .and_then(|bytes| bytes.checked_add(manifest))
+            .ok_or_else(|| Error::Invalid("inherited grant output ownership overflows".into()))
+    })
+}
+
+fn insert_reference(
+    records: &mut Vec<ReferenceGrant>,
+    file: &FileRef,
+    manifest: Option<&FileRef>,
+    child_agent: AgentId,
+    io: Option<&PreparationIo>,
+) -> Result<()> {
+    crate::model::charge_items(io, 1)?;
+    for record in records.iter() {
+        crate::model::charge_items(io, 1)?;
+        if &record.file == file && record.attachment_manifest.as_ref() == manifest {
+            return Ok(());
+        }
+    }
+    let record = crate::executor::with_history_io(io, |work| {
+        Ok(ReferenceGrant {
+            file: file.copy(work)?,
+            reader: child_agent,
+            attachment_manifest: manifest.map(|manifest| manifest.copy(work)).transpose()?,
+        })
+    })?;
+    crate::executor::stock_vec_push(records, record, io)
+}

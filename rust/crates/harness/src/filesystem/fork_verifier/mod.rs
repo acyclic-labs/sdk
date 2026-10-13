@@ -6,164 +6,18 @@ pub struct FilesystemForkVerifier<A, O> {
     pub(in crate::filesystem) maximum_inherited_bytes: u64,
     pub(in crate::filesystem) maximum_total_reference_bytes: u64,
     #[cfg(not(target_arch = "wasm32"))]
-    pub(in crate::filesystem) native_binding: Option<NativeFilesystemVerificationBinding>,
+    pub(in crate::filesystem) native_binding: Option<Arc<FilesystemContentVerifier<A, O>>>,
 }
 
 pub(in crate::filesystem) struct FilesystemForkPublicationGuard<A, O> {
-    pub(in crate::filesystem) workspace: Workspace<A, O>,
-    pub(in crate::filesystem) reservation: Option<PublicationReservation>,
+    workspace: Workspace<A, O>,
+    reservation: Option<PublicationReservation>,
     #[cfg(not(target_arch = "wasm32"))]
-    pub(in crate::filesystem) native_binding: Option<NativeFilesystemVerificationBinding>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(in crate::filesystem) struct NativeFilesystemVerificationBinding {
-    pub(in crate::filesystem) verifier: AuthorityVerifier,
-    pub(in crate::filesystem) scope: Scope,
-    pub(in crate::filesystem) custody: acyclic_fs::NativeAllocation,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl NativeFilesystemVerificationBinding {
-    pub(in crate::filesystem) fn new(
-        verifier: &AuthorityVerifier,
-        scope: &Scope,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self> {
-        verifier.verify(
-            scope,
-            &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
-        )?;
-        let mut observer = crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new).map_err(Error::from)?;
-        let verifier = verifier.copy(&mut Some(&mut observer))?;
-        let scope = scope.copy(&mut Some(&mut observer))?;
-        Ok(Self {
-            verifier,
-            scope,
-            custody: observer.into_custody()?,
-        })
-    }
-
-    pub(in crate::filesystem) fn authenticate(
-        &self,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        if !self.custody.work().shares_allocation_context(work) {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "Filesystem verifier belongs to another original resource",
-            });
-        }
-        self.verifier.verify(
-            &self.scope,
-            &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
-        )
-    }
-
-    pub(in crate::filesystem) fn require_seed(
-        &self,
-        seed: &ForkSeed,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        self.authenticate(work)?;
-        let audience = self.verifier.audience();
-        if audience != &seed.parent && audience != &seed.child {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "fork verifier belongs to another publication aggregate",
-            });
-        }
-        if self.scope.agent().is_none()
-            || (audience == &seed.child && self.scope.agent() != Some(seed.child_agent))
-        {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "fork verifier belongs to another publication agent",
-            });
-        }
-        if audience == &seed.parent && !self.scope.capabilities().contains(capability::FORK_PUBLISH)
-        {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "parent fork publication is not currently granted",
-            });
-        }
-        Ok(())
-    }
-
-    pub(in crate::filesystem) fn require_file(
-        &self,
-        file: &FileRef,
-        io: &PreparationIo,
-    ) -> Result<()> {
-        self.authenticate(io.original_native_work().expect("native verification IO"))?;
-        require_file_read(&self.scope, file, io)
-    }
-}
-
-impl<A, O> ForkPublicationGuard for FilesystemForkPublicationGuard<A, O>
-where
-    A: AsyncAuthorityStore + 'static,
-    O: AsyncObjectStore + 'static,
-{
-    fn release<'a, 'w: 'a>(
-        &'a self,
-        work: &'a mut Option<&'w mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<crate::store::history::HistoryContentFuture<'a, ()>> {
-        crate::fork::admit_fork_future(work, |work| async move {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(native) = work.as_ref().and_then(|io| io.original_native_work()) {
-                let binding = self.native_binding.as_ref().ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "fork publication guard has no original native authority",
-                })?;
-                binding.authenticate(native)?;
-                let original = binding.custody.work();
-                let reservation = self.reservation.ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid,
-                    reason: "fork publication guard has no reservation",
-                })?;
-                return self
-                    .workspace
-                    .release_publication(reservation, original, original.cancellation())
-                    .await
-                    .map_err(|source| Error::NativeWorkspace {
-                        source,
-                        custody: None,
-                    });
-            }
-            let reservation = self.reservation.ok_or_else(|| {
-                Error::Invalid("fork publication guard has no reservation".into())
-            })?;
-            let budget = work
-                .as_ref()
-                .map(|io| io.remaining())
-                .transpose()?
-                .unwrap_or(acyclic_fs::WorkBudget::UNBOUNDED);
-            let cancellation = work
-                .as_ref()
-                .map(|io| io.cancellation().clone())
-                .unwrap_or_default();
-            let result = self
-                .workspace
-                .release_publication(reservation, budget, &cancellation)
-                .await;
-            let counters = match &result {
-                Ok(receipt) => receipt.work,
-                Err(failure) => *failure.work,
-            };
-            if let Some(io) = work.as_deref_mut() {
-                io.receive_work(counters)?;
-            }
-            result
-                .map(|receipt| receipt.value)
-                .map_err(|failure| map_error(failure.error))
-        })
-    }
+    native_binding: Option<Arc<FilesystemContentVerifier<A, O>>>,
 }
 
 impl<A, O> FilesystemForkVerifier<A, O> {
-    /// Binds fork-reference limits and optional original scoped authority.
+    /// Binds the provider, reference limits and optional original authority.
     pub fn new(
         host: Arc<FilesystemHost<A, O>>,
         maximum_inherited_bytes: u64,
@@ -174,7 +28,7 @@ impl<A, O> FilesystemForkVerifier<A, O> {
             .unwrap_or_else(|| maximum_inherited_bytes.saturating_mul(1_024));
         let io = original.map(|(_, _, io)| io);
         if maximum_inherited_bytes == 0 || maximum_total_reference_bytes == 0 {
-            return Err(stock_boundary(
+            return Err(fork_preparer_io::failure(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "fork reference limits must be positive",
@@ -183,18 +37,26 @@ impl<A, O> FilesystemForkVerifier<A, O> {
         #[cfg(not(target_arch = "wasm32"))]
         let native_binding = original
             .map(|(verifier, scope, io)| -> Result<_> {
-                let work = io
-                    .original_native_work()
+                io.original_native_work()
                     .ok_or_else(|| io.invalid("fork verifier requires original native work"))?;
                 host.provider.validate(&mut Some(&mut io.history_io()))?;
-                let mut binding = NativeFilesystemVerificationBinding::new(verifier, scope, work)?;
-                let mut header = work.claim(
+                let mut binding = FilesystemContentVerifier::new(
+                    Arc::clone(&host),
+                    verifier,
+                    scope,
+                    maximum_inherited_bytes,
+                    Some(io),
+                )?;
+                let mut header = io.original_native_work().unwrap().claim(
                     std::mem::size_of::<Self>() as u64,
                     1,
                     WorkCounters::UNCHARGED,
                 )?;
-                binding
-                    .custody
+                Arc::get_mut(&mut binding)
+                    .expect("new verifier has no aliases")
+                    ._native_metadata
+                    .as_mut()
+                    .expect("native verifier owns its metadata")
                     .absorb(&mut header)
                     .map_err(|cause| Error::NativeWork {
                         cause,
@@ -205,7 +67,7 @@ impl<A, O> FilesystemForkVerifier<A, O> {
             .transpose()?;
         #[cfg(target_arch = "wasm32")]
         if original.is_some() {
-            return Err(stock_boundary(
+            return Err(fork_preparer_io::failure(
                 io,
                 crate::wire::ErrorCode::Unsupported,
                 "native fork verification is unavailable",
@@ -222,7 +84,7 @@ impl<A, O> FilesystemForkVerifier<A, O> {
 }
 
 pub(in crate::filesystem) fn fork_io(
-    work: &Option<&mut dyn crate::store::history::HistoryIo>,
+    work: &Option<&mut dyn crate::store::HistoryIo>,
 ) -> Result<PreparationIo> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = work.as_ref().and_then(|io| io.original_native_work()) {
@@ -244,10 +106,88 @@ pub(in crate::filesystem) fn fork_io(
     }
 }
 
-impl<A, O> ForkSeedVerifier for FilesystemForkVerifier<A, O>
-where
-    A: AsyncAuthorityStore + 'static,
-    O: AsyncObjectStore + 'static,
+#[cfg(not(target_arch = "wasm32"))]
+fn require_seed<A, O>(
+    binding: &FilesystemContentVerifier<A, O>,
+    seed: &ForkSeed,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<()> {
+    binding.require_native_work(work)?;
+    let audience = binding.verifier.audience();
+    if audience != &seed.parent && audience != &seed.child {
+        return Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            reason: "fork verifier belongs to another publication aggregate",
+        });
+    }
+    if binding.scope.agent().is_none()
+        || audience == &seed.child && binding.scope.agent() != Some(seed.child_agent)
+    {
+        return Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            reason: "fork verifier belongs to another publication agent",
+        });
+    }
+    if audience == &seed.parent
+        && !binding
+            .scope
+            .capabilities()
+            .contains(capability::FORK_PUBLISH)
+    {
+        return Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            reason: "parent fork publication is not currently granted",
+        });
+    }
+    Ok(())
+}
+
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ForkPublicationGuard
+    for FilesystemForkPublicationGuard<A, O>
+{
+    fn release<'a, 'w: 'a>(
+        &'a self,
+        work: &'a mut Option<&'w mut dyn crate::store::HistoryIo>,
+    ) -> Result<crate::store::history::HistoryContentFuture<'a, ()>> {
+        crate::fork::admit_fork_future(work, |work| async move {
+            let io = fork_io(work)?;
+            #[cfg(not(target_arch = "wasm32"))]
+            let io = if let Some(original) = io.original_native_work() {
+                let binding = self.native_binding.as_ref().ok_or(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "fork publication guard has no original native authority",
+                })?;
+                binding.require_native_work(original)?;
+                PreparationIo::from_native_work(
+                    binding
+                        ._native_metadata
+                        .as_ref()
+                        .expect("authenticated native metadata")
+                        .work(),
+                )?
+            } else {
+                io
+            };
+            let reservation = self
+                .reservation
+                .ok_or_else(|| io.invalid("fork publication guard has no reservation"))?;
+            let result = io.sdk(
+                self.workspace
+                    .release_publication(reservation, &io, io.cancellation())
+                    .await,
+            );
+            if io.original_native_work().is_none()
+                && let Some(work) = work.as_deref_mut()
+            {
+                work.receive_work(io.receipt())?;
+            }
+            result
+        })
+    }
+}
+
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ForkSeedVerifier
+    for FilesystemForkVerifier<A, O>
 {
     fn provider(&self) -> &ProviderRef {
         &self.host.provider
@@ -255,90 +195,69 @@ where
     fn maximum_reference_bytes(&self) -> u64 {
         self.maximum_total_reference_bytes
     }
+
     fn verify<'a, 'w: 'a>(
         &'a self,
         seed: &'a ForkSeed,
-        work: &'a mut Option<&'w mut dyn crate::store::history::HistoryIo>,
+        work: &'a mut Option<&'w mut dyn crate::store::HistoryIo>,
     ) -> Result<crate::store::history::HistoryContentFuture<'a, ()>> {
         crate::fork::admit_fork_future(work, |work| async move {
-            #[cfg(not(target_arch = "wasm32"))]
-            let native = work
-                .as_ref()
-                .and_then(|io| io.original_native_work())
-                .cloned();
             let io = fork_io(work)?;
             let result = async {
                 #[cfg(not(target_arch = "wasm32"))]
-                if let Some(native) = &native {
-                    let binding = self.native_binding.as_ref().ok_or(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Unauthorized,
-                        reason: "Filesystem verifier has no native authority",
-                    })?;
-                    binding.require_seed(seed, native)?;
-                    for file in &seed.inherited_context {
+                if let Some(original) = io.original_native_work() {
+                    require_seed(
+                        self.native_binding.as_ref().ok_or(Error::NativeBoundary {
+                            code: crate::wire::ErrorCode::Unauthorized,
+                            reason: "Filesystem verifier has no native authority",
+                        })?,
+                        seed,
+                        original,
+                    )?;
+                    for file in seed
+                        .inherited_context
+                        .iter()
+                        .chain(seed.reference_grants.iter().map(|grant| &grant.file))
+                        .chain(&seed.attachment_manifests)
+                        .chain(seed.summary.iter().flat_map(|summary| {
+                            std::iter::once(&summary.context)
+                                .chain(&summary.payloads)
+                                .chain(&summary.references)
+                        }))
+                    {
                         if file.volume().provider() == &self.host.provider {
-                            self.require_seed_file_with_io(seed, file, &io).await?;
-                        }
-                    }
-                    for grant in &seed.reference_grants {
-                        if grant.file.volume().provider() == &self.host.provider {
-                            self.require_seed_file_with_io(seed, &grant.file, &io)
-                                .await?;
-                        }
-                    }
-                    for file in &seed.attachment_manifests {
-                        if file.volume().provider() == &self.host.provider {
-                            self.require_seed_file_with_io(seed, file, &io).await?;
-                        }
-                    }
-                    if let Some(summary) = &seed.summary {
-                        for file in std::iter::once(&summary.context)
-                            .chain(&summary.payloads)
-                            .chain(&summary.references)
-                        {
-                            if file.volume().provider() == &self.host.provider {
-                                self.require_seed_file_with_io(seed, file, &io).await?;
-                            }
+                            self.require_seed_file(seed, file, &io).await?;
                         }
                     }
                 }
-                self.verify_with_io(seed, &io).await
+                self.verify_seed(seed, &io).await
             }
             .await;
-            #[cfg(not(target_arch = "wasm32"))]
-            if native.is_none() {
-                if let Some(observer) = work.as_deref_mut() {
-                    observer.receive_work(io.receipt())?;
-                }
-            }
-            #[cfg(target_arch = "wasm32")]
-            if let Some(observer) = work.as_deref_mut() {
-                observer.receive_work(io.receipt())?;
+            if io.original_native_work().is_none()
+                && let Some(work) = work.as_deref_mut()
+            {
+                work.receive_work(io.receipt())?;
             }
             result
         })
     }
+
     fn read_manifest<'a, 'w: 'a>(
         &'a self,
         seed: &'a ForkSeed,
         file: &'a FileRef,
-        work: &'a mut Option<&'w mut dyn crate::store::history::HistoryIo>,
+        work: &'a mut Option<&'w mut dyn crate::store::HistoryIo>,
     ) -> Result<crate::store::history::HistoryContentFuture<'a, (acyclic_stream::OwnedBytes, u64)>>
     {
         crate::fork::admit_fork_future(work, |work| async move {
-            #[cfg(not(target_arch = "wasm32"))]
-            let native = work
-                .as_ref()
-                .and_then(|io| io.original_native_work())
-                .cloned();
             let io = fork_io(work)?;
             let result = async {
                 #[cfg(not(target_arch = "wasm32"))]
-                if native.is_some() {
-                    self.require_seed_file_with_io(seed, file, &io).await?;
+                if io.original_native_work().is_some() {
+                    self.require_seed_file(seed, file, &io).await?;
                 }
                 if file.volume().provider() != &self.host.provider {
-                    return Err(stock_boundary(
+                    return Err(fork_preparer_io::failure(
                         Some(&io),
                         crate::wire::ErrorCode::Unauthorized,
                         "fork manifest belongs to another provider",
@@ -348,53 +267,44 @@ where
                     .host
                     .read_pinned_io(file, self.maximum_inherited_bytes, Some(&io))
                     .await?;
-                #[cfg(not(target_arch = "wasm32"))]
-                if native.is_some() {
-                    return Ok((bytes, 0));
-                }
-                let retained = bytes.retained_capacity().ok_or_else(|| {
-                    stock_boundary(
-                        Some(&io),
-                        crate::wire::ErrorCode::Unsupported,
-                        "manifest producer does not expose its admitted owned capacity",
-                    )
-                })? as u64;
+                let retained = if io.original_native_work().is_some() {
+                    0
+                } else {
+                    bytes.retained_capacity().ok_or_else(|| {
+                        fork_preparer_io::failure(
+                            Some(&io),
+                            crate::wire::ErrorCode::Unsupported,
+                            "manifest producer does not expose its admitted owned capacity",
+                        )
+                    })? as u64
+                };
                 Ok((bytes, retained))
             }
             .await;
-            #[cfg(not(target_arch = "wasm32"))]
-            if native.is_none() {
-                if let Some(observer) = work.as_deref_mut() {
-                    observer.receive_work(io.receipt())?;
-                }
-            }
-            #[cfg(target_arch = "wasm32")]
-            if let Some(observer) = work.as_deref_mut() {
-                observer.receive_work(io.receipt())?;
+            if io.original_native_work().is_none()
+                && let Some(work) = work.as_deref_mut()
+            {
+                work.receive_work(io.receipt())?;
             }
             result
         })
     }
+
     fn verify_file<'a, 'w: 'a>(
         &'a self,
         seed: &'a ForkSeed,
         file: &'a FileRef,
-        work: &'a mut Option<&'w mut dyn crate::store::history::HistoryIo>,
+        work: &'a mut Option<&'w mut dyn crate::store::HistoryIo>,
     ) -> Result<crate::store::history::HistoryContentFuture<'a, ()>> {
         crate::fork::admit_fork_future(work, |work| async move {
-            #[cfg(not(target_arch = "wasm32"))]
-            let native = work
-                .as_ref()
-                .and_then(|io| io.original_native_work())
-                .cloned();
             let io = fork_io(work)?;
             let result = async {
                 #[cfg(not(target_arch = "wasm32"))]
-                if native.is_some() {
-                    self.require_seed_file_with_io(seed, file, &io).await?;
+                if io.original_native_work().is_some() {
+                    self.require_seed_file(seed, file, &io).await?;
                 }
                 if file.volume().provider() != &self.host.provider {
-                    return Err(stock_boundary(
+                    return Err(fork_preparer_io::failure(
                         Some(&io),
                         crate::wire::ErrorCode::Unauthorized,
                         "fork file belongs to another provider",
@@ -406,139 +316,83 @@ where
                     .await?;
                 let retained = bytes.retained_capacity().unwrap_or(0) as u64;
                 drop(bytes);
-                #[cfg(not(target_arch = "wasm32"))]
-                if native.is_none() {
+                if io.original_native_work().is_none() {
                     io.release(retained)?;
                 }
-                #[cfg(target_arch = "wasm32")]
-                io.release(retained)?;
                 Ok(())
             }
             .await;
-            #[cfg(not(target_arch = "wasm32"))]
-            if native.is_none() {
-                if let Some(observer) = work.as_deref_mut() {
-                    observer.receive_work(io.receipt())?;
-                }
-            }
-            #[cfg(target_arch = "wasm32")]
-            if let Some(observer) = work.as_deref_mut() {
-                observer.receive_work(io.receipt())?;
+            if io.original_native_work().is_none()
+                && let Some(work) = work.as_deref_mut()
+            {
+                work.receive_work(io.receipt())?;
             }
             result
         })
     }
+
     fn acquire_private_fence<'a, 'w: 'a>(
         &'a self,
         seed: &'a ForkSeed,
-        work: &'a mut Option<&'w mut dyn crate::store::history::HistoryIo>,
+        work: &'a mut Option<&'w mut dyn crate::store::HistoryIo>,
     ) -> Result<
         crate::store::history::HistoryContentFuture<'a, crate::fork::ObservedForkPublicationGuard>,
     > {
         crate::fork::admit_fork_future(work, |work| async move {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = work.as_ref().and_then(|io| io.original_native_work()) {
-                return async {
-            let io = PreparationIo::from_native_work(work)?;
-            let binding = self.native_binding.as_ref().ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized, reason: "Filesystem verifier has no native authority" })?;
-            binding.require_seed(seed, work)?;
-            if seed.child_private_volume.provider() != &self.host.provider
-                || (binding.verifier.audience() != &seed.parent
-                    && !io.contains_capability(binding.scope.capabilities(), &seed.child_private_volume, "volume:write:")?)
-            {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "fork private publication fence lacks the exact current provider write grant" });
-            }
-            self.host.read_fork_allocation(seed, &seed.child_private_volume, crate::filesystem::fork_preparer::seed_digest(seed, 16 * 1024 * 1024, Some(&io))?, 16 * 1024 * 1024, Some(&io)).await?;
-            let reference = fork_preparer_io::content_workspace(&self.host.provider, &seed.child_private_volume, Some(&io))?;
-            let workspace = fork_preparer_io::open(&self.host, &reference, &io).await?;
-            let native_binding = NativeFilesystemVerificationBinding::new(&binding.verifier, &binding.scope, work)?;
-            let header;
-            let mut guard = {
-                header = work.claim(std::mem::size_of::<FilesystemForkPublicationGuard<A, O>>() as u64, u64::from((std::mem::size_of::<FilesystemForkPublicationGuard<A, O>>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED)
-                    .map_err(Error::from)?;
-                Box::new(FilesystemForkPublicationGuard {
-                    workspace, reservation: None,
-                    native_binding: Some(native_binding),
-                })
-            };
-            let operation = acyclic_fs::OperationId::from_bytes(seed.operation_id.into_bytes());
-            let reservation = match guard.workspace.reserve_publication(
-                operation, work, work.cancellation()).await.map_err(|error| (error, None))
-            {
-                Ok(reservation) => reservation,
-                Err((source, custody)) => {
-                    let primary = Error::NativeWorkspace { source, custody };
-                    if let Ok(Some(reservation)) = guard.workspace.publication_reservation(
-                        operation, work, work.cancellation()).await
-                    {
-                        guard.reservation = Some(reservation);
-                        let _cleanup = guard.workspace.release_publication(
-                            reservation, work, work.cancellation()).await;
-                    }
-                    return Err(primary);
-                }
-            };
-            guard.reservation = Some(reservation);
-            Ok(crate::fork::ObservedForkPublicationGuard { guard: guard as Box<dyn ForkPublicationGuard>, _allocation: Some(header) })
-                }.await;
-            }
             let io = fork_io(work)?;
             let result = async {
                 if seed.child_private_volume.provider() != &self.host.provider {
-                    return Err(Error::Unauthorized(
-                        "fork private volume belongs to another provider".into(),
-                    ));
+                    return Err(fork_preparer_io::failure(Some(&io), crate::wire::ErrorCode::Unauthorized,
+                        "fork private volume belongs to another provider"));
                 }
-                let reference = fork_preparer_io::content_workspace(
-                    &self.host.provider,
-                    &seed.child_private_volume,
-                    Some(&io),
-                )?;
-                let workspace = fork_preparer_io::open(&self.host, &reference, &io).await?;
-                let guard_bytes =
-                    std::mem::size_of::<FilesystemForkPublicationGuard<A, O>>() as u64;
-                io.retain_owned(guard_bytes)?;
-                io.allocation_attempt(guard_bytes)?;
-                let mut guard = Box::new(FilesystemForkPublicationGuard {
-                    workspace,
-                    reservation: None,
-                    #[cfg(not(target_arch = "wasm32"))]
-                    native_binding: None,
-                });
-                let receipt = guard
-                    .workspace
-                    .reserve_publication(
-                        acyclic_fs::OperationId::from_bytes(seed.operation_id.into_bytes()),
-                        io.remaining()?,
-                        io.cancellation(),
-                    )
-                    .await;
-                let receipt = match receipt {
-                    Ok(receipt) => receipt,
-                    Err(failure) => {
-                        io.spent(*failure.work)?;
-                        return Err(map_error(failure.error));
+                #[cfg(not(target_arch = "wasm32"))]
+                let (native_binding, allocation) = if let Some(original) = io.original_native_work() {
+                    let binding = self.native_binding.as_ref().ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                        reason: "Filesystem verifier has no native authority" })?;
+                    require_seed(binding, seed, original)?;
+                    if binding.verifier.audience() != &seed.parent
+                        && !io.contains_capability(binding.scope.capabilities(), &seed.child_private_volume, "volume:write:")?
+                    {
+                        return Err(fork_preparer_io::failure(Some(&io), crate::wire::ErrorCode::Unauthorized,
+                            "fork private publication fence lacks the exact current provider write grant"));
                     }
-                };
-                guard.reservation = Some(receipt.value);
-                io.charge(receipt.work)?;
-                Ok(crate::fork::ObservedForkPublicationGuard {
-                    guard: guard as Box<dyn ForkPublicationGuard>,
-                    #[cfg(not(target_arch = "wasm32"))]
-                    _allocation: None,
+                    self.host.read_fork_allocation(seed, &seed.child_private_volume,
+                        crate::filesystem::fork_preparer::seed_digest(seed, 16 * 1024 * 1024, Some(&io))?,
+                        16 * 1024 * 1024, Some(&io)).await?;
+                    (Some(Arc::clone(binding)), Some(original.claim(
+                        std::mem::size_of::<FilesystemForkPublicationGuard<A, O>>() as u64, 1, WorkCounters::UNCHARGED)?))
+                } else { (None, None) };
+                let reference = fork_preparer_io::content_workspace(&self.host.provider, &seed.child_private_volume, Some(&io))?;
+                let workspace = fork_preparer_io::open(&self.host, &reference, &io).await?;
+                if io.original_native_work().is_none() {
+                    io.retain_owned(std::mem::size_of::<FilesystemForkPublicationGuard<A, O>>() as u64)?;
+                    io.allocation_attempt(std::mem::size_of::<FilesystemForkPublicationGuard<A, O>>() as u64)?;
+                }
+                let mut guard = Box::new(FilesystemForkPublicationGuard { workspace, reservation: None,
+                    #[cfg(not(target_arch = "wasm32"))] native_binding });
+                let operation = acyclic_fs::OperationId::from_bytes(seed.operation_id.into_bytes());
+                match io.sdk(guard.workspace.reserve_publication(operation, &io, io.cancellation()).await) {
+                    Ok(reservation) => guard.reservation = Some(reservation),
+                    Err(cause) => {
+                        if io.original_native_work().is_some() && let Ok(Some(reservation)) = io.sdk(guard.workspace.publication_reservation(operation, &io, io.cancellation()).await) {
+                            let _cleanup = io.sdk(guard.workspace.release_publication(reservation, &io, io.cancellation()).await);
+                        }
+                        return Err(cause);
+                    }
+                }
+                Ok(crate::fork::ObservedForkPublicationGuard { guard,
+                    #[cfg(not(target_arch = "wasm32"))] _allocation: allocation,
                 })
-            }
-            .await;
-            if let Some(observer) = work.as_deref_mut() {
-                observer.receive_work(io.receipt())?;
+            }.await;
+            if io.original_native_work().is_none()
+                && let Some(work) = work.as_deref_mut()
+            {
+                work.receive_work(io.receipt())?;
             }
             result
         })
     }
 }
 
+mod ordered;
 mod seed;
-
-use crate::executor::{stock_boundary};

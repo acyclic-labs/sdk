@@ -1,83 +1,37 @@
+use super::ordered::*;
 use super::*;
+use crate::executor::stock_string_copy;
 
-fn search<T>(
-    values: &[T],
-    value: &T,
-    compare: impl Fn(&T, &T) -> std::cmp::Ordering,
+fn inventory(seed: &ForkSeed) -> impl Iterator<Item = &FileRef> {
+    seed.inherited_context
+        .iter()
+        .chain(seed.reference_grants.iter().map(|grant| &grant.file))
+        .chain(&seed.attachment_manifests)
+}
+
+fn matches_path(
+    change: &acyclic_fs::ChangedPath,
+    path: &str,
+    directory: bool,
     io: &PreparationIo,
-) -> Result<std::result::Result<usize, usize>> {
-    let (mut low, mut high) = (0, values.len());
-    while low < high {
-        let middle = low + (high - low) / 2;
+) -> Result<bool> {
+    let mut selected = path.split('/');
+    for component in change.path.components() {
         crate::model::charge_items(Some(io), 1)?;
-        match compare(&values[middle], value) {
-            std::cmp::Ordering::Less => low = middle + 1,
-            std::cmp::Ordering::Greater => high = middle,
-            std::cmp::Ordering::Equal => return Ok(Ok(middle)),
-        }
-    }
-    Ok(Err(low))
-}
-
-pub(in crate::filesystem) fn fork_verify_insert<T>(
-    values: &mut Vec<T>,
-    value: T,
-    compare: impl Fn(&T, &T) -> std::cmp::Ordering,
-    io: &PreparationIo,
-) -> Result<bool> {
-    let index = match search(values, &value, compare, io)? {
-        Ok(index) => {
-            values[index] = value;
-            return Ok(false);
-        }
-        Err(index) => index,
-    };
-    let capacity = values
-        .len()
-        .checked_add(1)
-        .ok_or_else(|| io.invalid("fork verification vector overflow"))?;
-    crate::filesystem::PreparationIo::reserve(values, capacity, Some(io))?;
-    let shifted = (values.len() - index)
-        .checked_mul(std::mem::size_of::<T>())
-        .ok_or_else(|| io.invalid("fork verification copy overflow"))? as u64;
-    let copies = WorkCounters {
-        bytes_copied: shifted,
-        ..Default::default()
-    };
-    io.preflight(copies)?;
-    io.charge(copies)?;
-    values.insert(index, value);
-    Ok(true)
-}
-
-pub(in crate::filesystem) fn fork_verify_contains<T: Ord>(
-    values: &[T],
-    value: &T,
-    io: &PreparationIo,
-) -> Result<bool> {
-    Ok(search(values, value, Ord::cmp, io)?.is_ok())
-}
-
-pub(in crate::filesystem) fn fork_verify_equal<T: Eq>(
-    left: &[T],
-    right: &[T],
-    io: &PreparationIo,
-) -> Result<bool> {
-    if left.len() != right.len() {
-        return Ok(false);
-    }
-    for (left, right) in left.iter().zip(right) {
-        crate::model::charge_items(Some(io), 1)?;
-        if left != right {
+        if selected.next().map(str::as_bytes) != Some(component.as_bytes()) {
             return Ok(false);
         }
     }
-    Ok(true)
+    Ok(if directory {
+        selected.next().is_some()
+    } else {
+        selected.next().is_none()
+    })
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FilesystemForkVerifier<A, O> {
     #[cfg(not(target_arch = "wasm32"))]
-    pub(in crate::filesystem) async fn require_seed_file_with_io(
+    pub(super) async fn require_seed_file(
         &self,
         seed: &ForkSeed,
         file: &FileRef,
@@ -90,26 +44,21 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             code: crate::wire::ErrorCode::Unauthorized,
             reason: "Filesystem verifier has no native authority",
         })?;
-        binding.require_seed(seed, work)?;
-        file.validate(&mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?))?;
+        require_seed(binding, seed, work)?;
+        file.validate(&mut Some(&mut io.history_io()))?;
         if file.volume().provider() != &self.host.provider {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "fork file belongs to another provider",
-            });
+            return Err(fork_preparer_io::failure(
+                Some(io),
+                crate::wire::ErrorCode::Unauthorized,
+                "fork file belongs to another provider",
+            ));
         }
         let mut admitted = false;
-        for selected in seed
-            .inherited_context
-            .iter()
-            .chain(seed.reference_grants.iter().map(|grant| &grant.file))
-            .chain(seed.attachment_manifests.iter())
-            .chain(seed.summary.iter().flat_map(|summary| {
-                std::iter::once(&summary.context)
-                    .chain(summary.payloads.iter())
-                    .chain(summary.references.iter())
-            }))
-        {
+        for selected in inventory(seed).chain(seed.summary.iter().flat_map(|summary| {
+            std::iter::once(&summary.context)
+                .chain(&summary.payloads)
+                .chain(&summary.references)
+        })) {
             crate::model::charge_items(Some(io), 1)?;
             if selected == file {
                 admitted = true;
@@ -117,119 +66,66 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             }
         }
         if !admitted {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "fork file is not in the original admitted seed inventory",
-            });
-        }
-        self.host
-            .read_fork_allocation(
-                seed,
-                &seed.child_private_volume,
-                crate::filesystem::fork_preparer::seed_digest(seed, 16 * 1024 * 1024, Some(io))?,
-                16 * 1024 * 1024,
+            return Err(fork_preparer_io::failure(
                 Some(io),
-            )
+                crate::wire::ErrorCode::Unauthorized,
+                "fork file is not in the original admitted seed inventory",
+            ));
+        }
+        self.allocation(seed, &seed.child_private_volume, io)
             .await?;
         if binding.verifier.audience() == &seed.parent
             && file.volume() == &seed.child_private_volume
         {
             return Ok(());
         }
-        binding.require_file(file, io)
+        binding.require_native_work(work)?;
+        require_file_read(&binding.scope, file, io)
     }
 
-    pub(in crate::filesystem) async fn matches_selection_with_io(
-        selected: &Generation<A, O>,
-        source: &Generation<A, O>,
-        paths: Option<Vec<String>>,
-        io: &PreparationIo,
-    ) -> Result<bool> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.original_native_work() {
-            return selected
-                .matches_fork_selection(source, paths, work, work.cancellation())
-                .await
-                .map_err(|source| Error::NativeWorkspace {
-                    source,
-                    custody: None,
-                });
-        }
-        io.receive(
-            selected
-                .matches_fork_selection(source, paths, io.remaining()?, io.cancellation())
-                .await,
-        )
-    }
-
-    pub(in crate::filesystem) async fn changed_paths_with_io(
-        initial: &Generation<A, O>,
-        head: &Generation<A, O>,
-        io: &PreparationIo,
-    ) -> Result<Vec<acyclic_fs::ChangedPath>> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.original_native_work() {
-            let _changes_custody;
-            let (changes, custody) = initial
-                .diff_to(head, u32::MAX, work, work.cancellation())
-                .await
-                .map(|(value, allocation)| (value, allocation.expect("native result allocation")))
-                .map_err(|source| Error::NativeWorkspace {
-                    source,
-                    custody: None,
-                })?;
-            _changes_custody = custody;
-            let (paths, custody) = changes
-                .changed_paths(u32::MAX, work, work.cancellation())
-                .await
-                .map(|(value, allocation)| (value, allocation.expect("native result allocation")))
-                .map_err(|source| Error::NativeWorkspace {
-                    source,
-                    custody: None,
-                })?;
-            drop(changes);
-            drop(_changes_custody);
-            io.absorb_native_custody(custody)?;
-            return Ok(paths);
-        }
-        let (changes, _) = io.receive(
-            initial
-                .diff_to(head, u32::MAX, io.remaining()?, io.cancellation())
-                .await,
-        )?;
-        io.receive(
-            changes
-                .changed_paths(u32::MAX, io.remaining()?, io.cancellation())
-                .await,
-        )
-        .map(|(paths, _)| paths)
-    }
-
-    pub(in crate::filesystem) async fn verify_with_io(
+    async fn allocation(
         &self,
         seed: &ForkSeed,
+        volume: &VolumeRef,
         io: &PreparationIo,
     ) -> Result<()> {
-        let mut validation = io.history_io();
-        seed.validate(&mut Some(&mut validation))?;
-        drop(validation);
+        self.host
+            .read_fork_allocation(
+                seed,
+                volume,
+                crate::filesystem::fork_preparer::seed_digest(seed, 16 * 1024 * 1024, Some(io))?,
+                16 * 1024 * 1024,
+                Some(io),
+            )
+            .await
+            .map(|_| ())
+    }
+
+    async fn pinned(
+        &self,
+        volume: &VolumeRef,
+        reference: &GenerationRef,
+        io: &PreparationIo,
+    ) -> Result<Generation<A, O>> {
+        let workspace_ref =
+            fork_preparer_io::content_workspace(&self.host.provider, volume, Some(io))?;
+        let hold = io.guard_owned(workspace_ref.logical_owned_bytes()?)?;
+        let workspace = fork_preparer_io::open(&self.host, &workspace_ref, io).await?;
+        let generation =
+            fork_preparer_io::generation(&self.host, &workspace, reference, io).await?;
+        drop(workspace_ref);
+        drop(hold);
+        Ok(generation)
+    }
+
+    pub(super) async fn verify_seed(&self, seed: &ForkSeed, io: &PreparationIo) -> Result<()> {
+        seed.validate(&mut Some(&mut io.history_io()))?;
         if seed.child_private_volume.provider() == &self.host.provider {
-            self.host
-                .read_fork_allocation(
-                    seed,
-                    &seed.child_private_volume,
-                    crate::filesystem::fork_preparer::seed_digest(
-                        seed,
-                        16 * 1024 * 1024,
-                        Some(&io),
-                    )?,
-                    16 * 1024 * 1024,
-                    Some(&io),
-                )
+            self.allocation(seed, &seed.child_private_volume, io)
                 .await?;
         }
         for resource in &seed.resources {
-            crate::model::charge_items(Some(&io), 1)?;
+            crate::model::charge_items(Some(io), 1)?;
             if let (
                 ResourceRevision::Project {
                     volume: source,
@@ -242,160 +138,108 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             ) = (&resource.source, &resource.revision)
                 && source.provider() == &self.host.provider
             {
-                self.host
-                    .read_fork_allocation(
-                        seed,
-                        child,
-                        crate::filesystem::fork_preparer::seed_digest(
-                            seed,
-                            16 * 1024 * 1024,
-                            Some(&io),
-                        )?,
-                        16 * 1024 * 1024,
-                        Some(&io),
-                    )
-                    .await?;
-                let source_ref =
-                    fork_preparer_io::content_workspace(&self.host.provider, source, Some(&io))?;
-                let child_ref =
-                    fork_preparer_io::content_workspace(&self.host.provider, child, Some(&io))?;
-                let source_workspace = fork_preparer_io::open(&self.host, &source_ref, &io).await?;
-                let child_workspace = fork_preparer_io::open(&self.host, &child_ref, &io).await?;
-                let source_generation =
-                    fork_preparer_io::generation(&self.host, &source_workspace, fork_point, &io)
-                        .await?;
-                let child_generation =
-                    fork_preparer_io::generation(&self.host, &child_workspace, initial, &io)
-                        .await?;
-                if !Self::matches_selection_with_io(&child_generation, &source_generation, None, io)
-                    .await?
-                {
-                    return Err(interaction_host::interaction_boundary(
-                        Some(io),
-                        crate::wire::ErrorCode::Invalid,
-                        "project capture is not forked from the selected generation",
-                    ));
-                }
-            }
-        }
-        let mut unique_files: Vec<(String, &FileRef)> = Vec::new();
-        for file in seed
-            .inherited_context
-            .iter()
-            .chain(seed.reference_grants.iter().map(|grant| &grant.file))
-            .chain(seed.attachment_manifests.iter())
-        {
-            crate::model::charge_items(Some(&io), 1)?;
-            if file.volume().provider() == &self.host.provider {
-                let key = match Some(&io) { Some(io) => io.capability(file, "file:read:"), None => file.read_capability(&mut None) }?;
-                let owned = key.len() as u64;
-                if !fork_verify_insert(
-                    &mut unique_files,
-                    (key, file),
-                    |left, right| left.0.cmp(&right.0),
-                    &io,
+                self.allocation(seed, child, io).await?;
+                let source = self.pinned(source, fork_point, io).await?;
+                let child = self.pinned(child, initial, io).await?;
+                if !io.sdk(
+                    child
+                        .matches_fork_selection(&source, None, io, io.cancellation())
+                        .await,
                 )? {
-                    io.release(owned)?;
+                    return Err(
+                        io.invalid("project capture is not forked from the selected generation")
+                    );
                 }
             }
         }
-        let mut total = 0_u64;
-        for (_, file) in &unique_files {
-            crate::model::charge_items(Some(&io), 1)?;
-            total = total
-                .checked_add(file.descriptor().byte_length())
-                .ok_or_else(|| {
-                    interaction_host::interaction_boundary(
-                        Some(io),
-                        crate::wire::ErrorCode::Invalid,
-                        "fork reference bytes overflow",
+        let mut unique = Vec::new();
+        for file in inventory(seed) {
+            crate::model::charge_items(Some(io), 1)?;
+            if file.volume().provider() == &self.host.provider {
+                let digest = crate::executor::with_history_io(Some(io), |work| {
+                    crate::contract::canonical_json_digest(
+                        file,
+                        crate::store::default_projection_read_limits().maximum_bytes,
+                        work,
                     )
                 })?;
+                fork_verify_insert(
+                    &mut unique,
+                    (digest, file),
+                    |left, right| left.0.cmp(&right.0),
+                    io,
+                )?;
+            }
+        }
+        let unique_hold = io.guard_owned(
+            (unique.capacity() * std::mem::size_of::<([u8; 32], &FileRef)>()) as u64,
+        )?;
+        let mut total = 0_u64;
+        for (_, file) in &unique {
+            crate::model::charge_items(Some(io), 1)?;
+            total = total
+                .checked_add(file.descriptor().byte_length())
+                .ok_or_else(|| io.invalid("fork reference bytes overflow"))?;
             if total > self.maximum_total_reference_bytes {
-                return Err(interaction_host::interaction_boundary(
-                    Some(io),
-                    crate::wire::ErrorCode::Invalid,
-                    "fork reference bytes exceed aggregate limit",
-                ));
+                return Err(io.invalid("fork reference bytes exceed aggregate limit"));
             }
         }
         if seed.child_private_volume.provider() == &self.host.provider {
             let mut prefix = None;
             for file in &seed.inherited_context {
-                crate::model::charge_items(Some(&io), 1)?;
+                crate::model::charge_items(Some(io), 1)?;
                 if file.path() == ".system/inherited-conversation/prefix.json" {
                     prefix = Some(file);
                     break;
                 }
             }
             if seed.inherited_through_sequence > 0 && prefix.is_none() {
-                return Err(interaction_host::interaction_boundary(
-                    Some(io),
-                    crate::wire::ErrorCode::Invalid,
-                    "fork omitted its materialized conversation prefix",
-                ));
+                return Err(io.invalid("fork omitted its materialized conversation prefix"));
             }
             if let Some(file) = prefix {
                 if file.descriptor().media_type()
                     != "application/vnd.acyclic.harness.inherited-conversation+json"
                 {
-                    return Err(interaction_host::interaction_boundary(
-                        Some(io),
-                        crate::wire::ErrorCode::Invalid,
-                        "inherited conversation has the wrong media type",
-                    ));
+                    return Err(io.invalid("inherited conversation has the wrong media type"));
                 }
                 let bytes = self
                     .host
-                    .read_pinned_io(file, self.maximum_inherited_bytes, Some(&io))
+                    .read_pinned_io(file, self.maximum_inherited_bytes, Some(io))
                     .await?;
+                let _bytes = io.guard_bytes(&bytes)?;
                 let inherited = io.decode(
                     std::marker::PhantomData::<InheritedConversationPrefix>,
                     &bytes,
                     crate::wire::ErrorCode::Storage,
                 )?;
-                let canonical_guard;
                 let canonical = io.encode(&inherited.0, io.remaining()?.bytes_encoded, true)?;
-                canonical_guard = io.guard_bytes(&canonical)?;
-                if canonical.as_slice() != bytes.as_ref()
+                let _canonical = io.guard_bytes(&canonical)?;
+                if canonical.as_ref() != bytes.as_ref()
                     || file.display_name() != "inherited-conversation.json"
                 {
-                    return Err(interaction_host::interaction_boundary(
-                        Some(io),
-                        crate::wire::ErrorCode::Invalid,
-                        "inherited conversation is not canonical",
-                    ));
+                    return Err(io.invalid("inherited conversation is not canonical"));
                 }
                 if inherited.0.format_version != 3
                     || inherited.0.parent != seed.parent
                     || inherited.0.parent_revision != seed.parent_revision
                     || inherited.0.parent_agent == seed.child_agent
                     || inherited.0.through_sequence != seed.inherited_through_sequence
-                    || !fork_verify_equal(&inherited.0.attached_agents, &seed.attached_agents, &io)?
+                    || !fork_verify_equal(&inherited.0.attached_agents, &seed.attached_agents, io)?
                 {
-                    return Err(interaction_host::interaction_boundary(
-                        Some(io),
-                        crate::wire::ErrorCode::Invalid,
-                        "inherited conversation does not match the fork boundary",
-                    ));
+                    return Err(
+                        io.invalid("inherited conversation does not match the fork boundary")
+                    );
                 }
-                drop(inherited);
-                let bytes_owned = bytes.len() as u64;
-                drop(canonical);
-                drop(bytes);
-                drop(canonical_guard);
-                io.release(bytes_owned)?;
             }
         }
         if let Some(summary) = &seed.summary
             && summary.context.volume().provider() == &self.host.provider
         {
-            let _bytes_hold;
             let bytes = self
                 .host
-                .read_pinned_io(&summary.context, self.maximum_inherited_bytes, Some(&io))
+                .read_pinned_io(&summary.context, self.maximum_inherited_bytes, Some(io))
                 .await?;
-            _bytes_hold = io.guard_owned(bytes.len() as u64)?;
+            let _bytes = io.guard_bytes(&bytes)?;
             let context = io.decode(
                 std::marker::PhantomData::<crate::context::Context>,
                 &bytes,
@@ -404,371 +248,51 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             crate::context::validate_projected_context(
                 &context.0,
                 summary.selection.limits,
-                Some(&io),
+                Some(io),
             )?;
-            let _canonical_hold;
             let canonical = io.encode(&context.0, io.remaining()?.bytes_encoded, true)?;
-            _canonical_hold = io.guard_bytes(&canonical)?;
-            if context.0.current_input_index.is_some() || canonical.as_slice() != bytes.as_ref() {
-                return Err(interaction_host::interaction_boundary(
-                    Some(io),
-                    crate::wire::ErrorCode::Invalid,
-                    "summary capture is not a canonical historical Context",
-                ));
+            let _canonical = io.guard_bytes(&canonical)?;
+            if context.0.current_input_index.is_some() || canonical.as_ref() != bytes.as_ref() {
+                return Err(io.invalid("summary capture is not a canonical historical Context"));
             }
-            let _observed_hold;
             let mut observed = Vec::new();
-            {
-                let mut examine = |file: &FileRef| -> Result<()> {
-                    crate::model::charge_items(Some(&io), 1)?;
-                    let digest = crate::executor::with_history_io(Some(&io), |work|
-                        crate::executor::json::canonical_json_digest(file, u64::MAX, work))?;
-                    fork_verify_insert(&mut observed, digest, Ord::cmp, &io).map(|_| ())
-                };
-                for message in &context.0.messages {
-                    for file in message.content.file_refs() {
-                        examine(file)?;
-                    }
-                }
-                for file in context.0.metadata.values() {
-                    examine(file)?;
-                }
-            }
-            _observed_hold =
-                io.guard_owned((observed.capacity() * std::mem::size_of::<[u8; 32]>()) as u64)?;
-            let _declared_hold;
             let mut declared = Vec::new();
-            for file in summary.payloads.iter().chain(&summary.references) {
-                crate::model::charge_items(Some(&io), 1)?;
-                let digest = crate::executor::with_history_io(Some(&io), |work|
-                    crate::executor::json::canonical_json_digest(file, u64::MAX, work))?;
-                fork_verify_insert(&mut declared, digest, Ord::cmp, &io)?;
+            for file in context
+                .0
+                .messages
+                .iter()
+                .flat_map(|message| message.content.file_refs())
+                .chain(context.0.metadata.values())
+            {
+                crate::model::charge_items(Some(io), 1)?;
+                let digest = crate::executor::with_history_io(Some(io), |work| {
+                    crate::contract::canonical_json_digest(file, u64::MAX, work)
+                })?;
+                fork_verify_insert(&mut observed, digest, Ord::cmp, io)?;
             }
-            _declared_hold =
+            for file in summary.payloads.iter().chain(&summary.references) {
+                crate::model::charge_items(Some(io), 1)?;
+                let digest = crate::executor::with_history_io(Some(io), |work| {
+                    crate::contract::canonical_json_digest(file, u64::MAX, work)
+                })?;
+                fork_verify_insert(&mut declared, digest, Ord::cmp, io)?;
+            }
+            let _observed =
+                io.guard_owned((observed.capacity() * std::mem::size_of::<[u8; 32]>()) as u64)?;
+            let _declared =
                 io.guard_owned((declared.capacity() * std::mem::size_of::<[u8; 32]>()) as u64)?;
-            if !fork_verify_equal(&observed, &declared, &io)? {
-                return Err(interaction_host::interaction_boundary(
-                    Some(io),
-                    crate::wire::ErrorCode::Invalid,
-                    "summary capture reference inventory differs from its Context",
-                ));
+            if !fork_verify_equal(&observed, &declared, io)? {
+                return Err(
+                    io.invalid("summary capture reference inventory differs from its Context")
+                );
             }
         }
         if seed.child_private_volume.provider() == &self.host.provider {
-            let private = fork_preparer_io::content_workspace(
-                &self.host.provider,
-                &seed.child_private_volume,
-                Some(&io),
-            )?;
-            let private_head = fork_preparer_io::resolve(&self.host, &private, Some(&io))
-                .await?
-                .generation;
-            if private_head != seed.child_private_generation {
-                return Err(interaction_host::interaction_boundary(
-                    Some(io),
-                    crate::wire::ErrorCode::Conflict,
-                    "child private generation changed before fork admission",
-                ));
-            }
-            let mut scratch = None;
-            for resource in &seed.resources {
-                crate::model::charge_items(Some(&io), 1)?;
-                if let (
-                    ResourceRevision::PrivateVolume {
-                        volume: source,
-                        generation,
-                        paths,
-                    },
-                    ResourceRevision::PrivateVolume {
-                        volume: child,
-                        generation: initial,
-                        ..
-                    },
-                ) = (&resource.source, &resource.revision)
-                    && child == &seed.child_private_volume
-                {
-                    scratch = Some((source, generation, paths, initial));
-                    break;
-                }
-            }
-            let scratch = scratch.ok_or_else(|| {
-                interaction_host::interaction_boundary(
-                    Some(io),
-                    crate::wire::ErrorCode::Invalid,
-                    "fork has no selected parent scratch lineage",
-                )
-            })?;
-            let source_ref =
-                fork_preparer_io::content_workspace(&self.host.provider, scratch.0, Some(&io))?;
-            let source_workspace = fork_preparer_io::open(&self.host, &source_ref, &io).await?;
-            let child_workspace = fork_preparer_io::open(&self.host, &private, &io).await?;
-            let source =
-                fork_preparer_io::generation(&self.host, &source_workspace, scratch.1, &io).await?;
-            let initial =
-                fork_preparer_io::generation(&self.host, &child_workspace, scratch.3, &io).await?;
-            let mut paths = Vec::new();
-            let capacity = paths
-                .len()
-                .checked_add(scratch.2.len())
-                .ok_or_else(|| io.invalid("fork verification vector overflow"))?;
-            crate::filesystem::PreparationIo::reserve(&mut paths, capacity, Some(&io))?;
-            for path in scratch.2 {
-                crate::model::charge_items(Some(&io), 1)?;
-                paths.push(stock_string_copy(path, Some(&io))?);
-            }
-            let selected_bytes = paths.capacity() * std::mem::size_of::<String>()
-                + paths.iter().map(String::len).sum::<usize>();
-            if !Self::matches_selection_with_io(&initial, &source, Some(paths), io).await? {
-                return Err(interaction_host::interaction_boundary(
-                    Some(io),
-                    crate::wire::ErrorCode::Invalid,
-                    "scratch capture differs from its pinned selection",
-                ));
-            }
-            io.release(selected_bytes as u64)?;
-            let head =
-                fork_preparer_io::generation(&self.host, &child_workspace, &private_head, &io)
-                    .await?;
-            let changes = Self::changed_paths_with_io(&initial, &head, io).await?;
-            let mut changed_owned =
-                (changes.capacity() * std::mem::size_of::<acyclic_fs::ChangedPath>()) as u64;
-            for change in &changes {
-                changed_owned = changed_owned
-                    .checked_add(std::mem::size_of_val(change.path.components()) as u64)
-                    .ok_or_else(|| {
-                        interaction_host::interaction_boundary(
-                            Some(io),
-                            crate::wire::ErrorCode::Invalid,
-                            "changed path ownership overflow",
-                        )
-                    })?;
-                for component in change.path.components() {
-                    changed_owned = changed_owned
-                        .checked_add(component.as_bytes().len() as u64)
-                        .ok_or_else(|| {
-                            interaction_host::interaction_boundary(
-                                Some(io),
-                                crate::wire::ErrorCode::Invalid,
-                                "changed path ownership overflow",
-                            )
-                        })?;
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            if io.original_native_work().is_none() {
-                io.retain_owned(changed_owned)?;
-            }
-            #[cfg(target_arch = "wasm32")]
-            io.retain_owned(changed_owned)?;
-            let mut expected = Vec::new();
-            let version_bytes = private_head
-                .as_resource()
-                .key()
-                .len()
-                .checked_mul(2)
-                .ok_or_else(|| {
-                    interaction_host::interaction_boundary(
-                        Some(io),
-                        crate::wire::ErrorCode::Invalid,
-                        "fork generation encoding overflow",
-                    )
-                })?;
-            io.retain_owned(version_bytes as u64)?;
-            io.allocation_attempt(version_bytes as u64)?;
-            let version = hex::encode(private_head.as_resource().key());
-            for file in &seed.inherited_context {
-                crate::model::charge_items(Some(&io), 1)?;
-                if file.version() != version {
-                    if seed.summary.is_none() {
-                        return Err(interaction_host::interaction_boundary(
-                            Some(io),
-                            crate::wire::ErrorCode::Invalid,
-                            "inherited file is not pinned to the selected private generation",
-                        ));
-                    }
-                    let selected = crate::executor::with_history_io(Some(&io), |work| {
-                        FileRef::new(
-                            file.volume().copy(work)?,
-                            stock_string_copy(file.path().into(), Some(&io))?,
-                            stock_string_copy(&version, Some(&io))?,
-                            FileDescriptor::new(
-                                *file.descriptor().sha256(),
-                                file.descriptor().byte_length(),
-                                stock_string_copy(file.descriptor().media_type(), Some(&io))?,
-                            )?,
-                            stock_string_copy(file.display_name().into(), Some(&io))?,
-                            work,
-                        )
-                    })?;
-                    let original = self
-                        .host
-                        .read_pinned_io(file, self.maximum_inherited_bytes, Some(&io))
-                        .await?;
-                    let final_bytes = self
-                        .host
-                        .read_pinned_io(&selected, self.maximum_inherited_bytes, Some(&io))
-                        .await?;
-                    if original != final_bytes {
-                        return Err(interaction_host::interaction_boundary(
-                            Some(io),
-                            crate::wire::ErrorCode::Invalid,
-                            "summary inherited payload changed before admission",
-                        ));
-                    }
-                    let original_owned = original.len() as u64;
-                    let final_owned = final_bytes.len() as u64;
-                    drop(original);
-                    drop(final_bytes);
-                    io.release(original_owned)?;
-                    io.release(final_owned)?;
-                }
-                let path = crate::executor::with_history_io(Some(&io), |work| crate::executor::preparation_format(format_args!("/{}", file.path()), work))?;
-                let owned = path.len() as u64;
-                if !fork_verify_insert(&mut expected, path, Ord::cmp, &io)? {
-                    io.release(owned)?;
-                }
-            }
-            if expected.len() != seed.inherited_context.len() {
-                return Err(interaction_host::interaction_boundary(
-                    Some(io),
-                    crate::wire::ErrorCode::Invalid,
-                    "inherited context has duplicate paths",
-                ));
-            }
-            let mut expected_directories = Vec::new();
-            fork_verify_insert(
-                &mut expected_directories,
-                stock_string_copy("/", Some(&io))?,
-                Ord::cmp,
-                &io,
-            )?;
-            for path in &expected {
-                let mut parent = path.as_str();
-                while let Some((directory, _)) = parent.rsplit_once('/') {
-                    crate::model::charge_items(Some(&io), 1)?;
-                    if directory.is_empty() {
-                        break;
-                    }
-                    let directory_copy = stock_string_copy(directory, Some(&io))?;
-                    if !fork_verify_insert(
-                        &mut expected_directories,
-                        directory_copy,
-                        Ord::cmp,
-                        &io,
-                    )? {
-                        io.release(directory.len() as u64)?;
-                    }
-                    parent = directory;
-                }
-            }
-            let mut observed = Vec::new();
-            for change in &changes {
-                crate::model::charge_items(Some(&io), 1)?;
-                let mut length = 1_usize;
-                for (index, name) in change.path.components().iter().enumerate() {
-                    crate::model::charge_items(Some(&io), 1)?;
-                    std::str::from_utf8(name.as_bytes()).map_err(|_| {
-                        interaction_host::interaction_boundary(
-                            Some(io),
-                            crate::wire::ErrorCode::Invalid,
-                            "scratch path is not UTF-8",
-                        )
-                    })?;
-                    length = length
-                        .checked_add(name.as_bytes().len())
-                        .and_then(|bytes| bytes.checked_add(usize::from(index > 0)))
-                        .ok_or_else(|| {
-                            interaction_host::interaction_boundary(
-                                Some(io),
-                                crate::wire::ErrorCode::Invalid,
-                                "scratch path size overflow",
-                            )
-                        })?;
-                }
-                io.retain_owned(length as u64)?;
-                io.allocation_attempt(length as u64)?;
-                let copied = acyclic_fs::WorkCounters {
-                    bytes_copied: (length - 1) as u64,
-                    ..Default::default()
-                };
-                io.preflight(copied)?;
-                io.charge(copied)?;
-                let mut path = String::with_capacity(length);
-                path.push('/');
-                for (index, name) in change.path.components().iter().enumerate() {
-                    if index > 0 {
-                        path.push('/');
-                    }
-                    path.push_str(std::str::from_utf8(name.as_bytes()).map_err(|_| {
-                        interaction_host::interaction_boundary(
-                            Some(io),
-                            crate::wire::ErrorCode::Invalid,
-                            "scratch path is not UTF-8",
-                        )
-                    })?);
-                }
-                match change.after {
-                    Some(record)
-                        if record.kind == FileKind::Directory
-                            && fork_verify_contains(&expected_directories, &path, &io)?
-                            && change.before.is_none() =>
-                    {
-                        io.release(length as u64)?;
-                    }
-                    Some(record)
-                        if record.kind == FileKind::Regular
-                            && fork_verify_contains(&expected, &path, &io)?
-                            && change.before.is_none() =>
-                    {
-                        if !fork_verify_insert(&mut observed, path, Ord::cmp, &io)? {
-                            io.release(length as u64)?;
-                        }
-                    }
-                    _ => {
-                        return Err(interaction_host::interaction_boundary(
-                            Some(io),
-                            crate::wire::ErrorCode::Invalid,
-                            "child scratch changed outside inherited context staging",
-                        ));
-                    }
-                }
-            }
-            if !fork_verify_equal(&observed, &expected, &io)? {
-                return Err(interaction_host::interaction_boundary(
-                    Some(io),
-                    crate::wire::ErrorCode::Invalid,
-                    "child private volume lacks selected inherited context",
-                ));
-            }
-            if fork_preparer_io::resolve(&self.host, &private, Some(&io))
-                .await?
-                .generation
-                != private_head
-            {
-                return Err(interaction_host::interaction_boundary(
-                    Some(io),
-                    crate::wire::ErrorCode::Conflict,
-                    "child private volume changed during fork admission",
-                ));
-            }
-            fork_preparer_io::retain(&head, Some(&io)).await?;
-            drop(changes);
-            drop(version);
-            io.release(changed_owned)?;
-            io.release(version_bytes as u64)?;
-            for collection in [expected, expected_directories, observed] {
-                let owned = (collection.capacity() * std::mem::size_of::<String>()) as u64
-                    + collection
-                        .iter()
-                        .map(|path| path.capacity() as u64)
-                        .sum::<u64>();
-                drop(collection);
-                io.release(owned)?;
-            }
+            self.verify_scratch(seed, io).await?;
         }
         for resource in &seed.resources {
             for revision in [&resource.source, &resource.revision] {
-                crate::model::charge_items(Some(&io), 1)?;
+                crate::model::charge_items(Some(io), 1)?;
                 if revision.provider() != &self.host.provider {
                     continue;
                 }
@@ -777,37 +301,27 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                     | ResourceRevision::PrivateVolume {
                         volume, generation, ..
                     } => {
-                        let reference = fork_preparer_io::content_workspace(
-                            &self.host.provider,
-                            volume,
-                            Some(&io),
-                        )?;
-                        let workspace = fork_preparer_io::open(&self.host, &reference, &io).await?;
-                        let generation =
-                            fork_preparer_io::generation(&self.host, &workspace, generation, &io)
-                                .await?;
-                        fork_preparer_io::retain(&generation, Some(&io)).await?;
+                        let generation = self.pinned(volume, generation, io).await?;
+                        fork_preparer_io::retain(&generation, Some(io)).await?;
                     }
                     ResourceRevision::SharedVolume(volume) => {
                         let reference = fork_preparer_io::content_workspace(
                             &self.host.provider,
                             volume,
-                            Some(&io),
+                            Some(io),
                         )?;
-                        fork_preparer_io::resolve(&self.host, &reference, Some(&io)).await?;
+                        let _hold = io.guard_owned(reference.logical_owned_bytes()?)?;
+                        fork_preparer_io::resolve(&self.host, &reference, Some(io)).await?;
                     }
                     ResourceRevision::History(_) => {
-                        return Err(interaction_host::interaction_boundary(
+                        return Err(fork_preparer_io::failure(
                             Some(io),
                             crate::wire::ErrorCode::Unsupported,
                             "Filesystem cannot prove Stream history",
                         ));
                     }
-                    ResourceRevision::Context(_)
-                    | ResourceRevision::Process(_)
-                    | ResourceRevision::Artifact(_)
-                    | ResourceRevision::Extension { .. } => {
-                        return Err(interaction_host::interaction_boundary(
+                    _ => {
+                        return Err(fork_preparer_io::failure(
                             Some(io),
                             crate::wire::ErrorCode::Unsupported,
                             "fork resource requires its owning provider verifier",
@@ -816,17 +330,213 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 }
             }
         }
-        for (_, reference) in &unique_files {
+        for (_, reference) in &unique {
             let bytes = self
                 .host
-                .read_pinned_io(reference, self.maximum_inherited_bytes, Some(&io))
+                .read_pinned_io(reference, self.maximum_inherited_bytes, Some(io))
                 .await?;
-            let owned = bytes.len() as u64;
-            drop(bytes);
-            io.release(owned)?;
+            let _bytes = io.guard_bytes(&bytes)?;
         }
+        drop(unique);
+        drop(unique_hold);
+        Ok(())
+    }
+
+    async fn verify_scratch(&self, seed: &ForkSeed, io: &PreparationIo) -> Result<()> {
+        let private = fork_preparer_io::content_workspace(
+            &self.host.provider,
+            &seed.child_private_volume,
+            Some(io),
+        )?;
+        let _private = io.guard_owned(private.logical_owned_bytes()?)?;
+        let head = fork_preparer_io::resolve(&self.host, &private, Some(io))
+            .await?
+            .generation;
+        let _head = io.guard_owned(head.logical_owned_bytes()?)?;
+        if head != seed.child_private_generation {
+            return Err(fork_preparer_io::failure(
+                Some(io),
+                crate::wire::ErrorCode::Conflict,
+                "child private generation changed before fork admission",
+            ));
+        }
+        let mut scratch = None;
+        for resource in &seed.resources {
+            crate::model::charge_items(Some(io), 1)?;
+            if let (
+                ResourceRevision::PrivateVolume {
+                    volume: source,
+                    generation,
+                    paths,
+                },
+                ResourceRevision::PrivateVolume {
+                    volume: child,
+                    generation: initial,
+                    ..
+                },
+            ) = (&resource.source, &resource.revision)
+                && child == &seed.child_private_volume
+            {
+                scratch = Some((source, generation, paths, initial));
+                break;
+            }
+        }
+        let (source, generation, selected_paths, initial) =
+            scratch.ok_or_else(|| io.invalid("fork has no selected parent scratch lineage"))?;
+        let source = self.pinned(source, generation, io).await?;
+        let initial = self.pinned(&seed.child_private_volume, initial, io).await?;
+        let mut paths = crate::model::vec_with_capacity(selected_paths.len(), Some(io))?;
+        let mut owned = (paths.capacity() * std::mem::size_of::<String>()) as u64;
+        for path in selected_paths {
+            crate::model::charge_items(Some(io), 1)?;
+            let copy = stock_string_copy(path, Some(io))?;
+            owned = owned
+                .checked_add(copy.capacity() as u64)
+                .ok_or_else(|| io.invalid("fork selection ownership overflow"))?;
+            paths.push(copy);
+        }
+        let _paths = io.guard_owned(owned)?;
+        if !io.sdk(
+            initial
+                .matches_fork_selection(&source, Some(paths), io, io.cancellation())
+                .await,
+        )? {
+            return Err(io.invalid("scratch capture differs from its pinned selection"));
+        }
+        drop(_paths);
+        let head_generation = self.pinned(&seed.child_private_volume, &head, io).await?;
+        let (diff, changes_allocation) = io.sdk(
+            initial
+                .diff_to(&head_generation, u32::MAX, io, io.cancellation())
+                .await,
+        )?;
+        let (changes, paths_allocation) =
+            io.sdk(diff.changed_paths(u32::MAX, io, io.cancellation()).await)?;
+        drop(diff);
+        drop(changes_allocation);
+        let mut owned =
+            (changes.capacity() * std::mem::size_of::<acyclic_fs::ChangedPath>()) as u64;
+        for change in &changes {
+            crate::model::charge_items(Some(io), 1)?;
+            owned = owned
+                .checked_add(change.path.logical_owned_bytes())
+                .ok_or_else(|| io.invalid("changed path ownership overflow"))?;
+            for component in change.path.components() {
+                crate::model::charge_items(Some(io), 1)?;
+                std::str::from_utf8(component.as_bytes())
+                    .map_err(|_| io.invalid("scratch path is not UTF-8"))?;
+            }
+            if change.before.is_some() || change.after.is_none() {
+                return Err(io.invalid("child scratch changed outside inherited context staging"));
+            }
+        }
+        let _changes = if io.original_native_work().is_none() {
+            io.retain_owned(owned)?;
+            Some(io.guard_owned(owned)?)
+        } else {
+            None
+        };
+        let version = fork_preparer_io::hex_key(head.as_resource().key(), Some(io))?;
+        let _version = io.guard_owned(version.capacity() as u64)?;
+        for (index, file) in seed.inherited_context.iter().enumerate() {
+            crate::model::charge_items(Some(io), 1)?;
+            for prior in &seed.inherited_context[..index] {
+                crate::model::charge_items(Some(io), 1)?;
+                if prior.path() == file.path() {
+                    return Err(io.invalid("inherited context has duplicate paths"));
+                }
+            }
+            if file.version() != version {
+                if seed.summary.is_none() {
+                    return Err(io.invalid(
+                        "inherited file is not pinned to the selected private generation",
+                    ));
+                }
+                let before = io.owned_bytes()?;
+                let selected = crate::executor::with_history_io(Some(io), |work| {
+                    FileRef::new(
+                        file.volume().copy(work)?,
+                        stock_string_copy(file.path(), Some(io))?,
+                        stock_string_copy(&version, Some(io))?,
+                        FileDescriptor::new(
+                            *file.descriptor().sha256(),
+                            file.descriptor().byte_length(),
+                            stock_string_copy(file.descriptor().media_type(), Some(io))?,
+                        )?,
+                        stock_string_copy(file.display_name(), Some(io))?,
+                        work,
+                    )
+                })?;
+                let _selected = io.guard_owned(
+                    io.owned_bytes()?
+                        .checked_sub(before)
+                        .ok_or_else(|| io.invalid("selected file ownership underflows"))?,
+                )?;
+                let original = self
+                    .host
+                    .read_pinned_io(file, self.maximum_inherited_bytes, Some(io))
+                    .await?;
+                let _original = io.guard_bytes(&original)?;
+                let final_bytes = self
+                    .host
+                    .read_pinned_io(&selected, self.maximum_inherited_bytes, Some(io))
+                    .await?;
+                let _final = io.guard_bytes(&final_bytes)?;
+                if original != final_bytes {
+                    return Err(io.invalid("summary inherited payload changed before admission"));
+                }
+            }
+            let mut present = false;
+            for change in &changes {
+                crate::model::charge_items(Some(io), 1)?;
+                if change
+                    .after
+                    .is_some_and(|record| record.kind == FileKind::Regular)
+                    && matches_path(change, file.path(), false, io)?
+                {
+                    present = true;
+                    break;
+                }
+            }
+            if !present {
+                return Err(io.invalid("child private volume lacks selected inherited context"));
+            }
+        }
+        for change in &changes {
+            crate::model::charge_items(Some(io), 1)?;
+            let kind = change
+                .after
+                .expect("validated change has a new record")
+                .kind;
+            let mut admitted = kind == FileKind::Directory && change.path.components().is_empty();
+            for file in &seed.inherited_context {
+                crate::model::charge_items(Some(io), 1)?;
+                if matches!(kind, FileKind::Regular | FileKind::Directory)
+                    && matches_path(change, file.path(), kind == FileKind::Directory, io)?
+                {
+                    admitted = true;
+                    break;
+                }
+            }
+            if !admitted {
+                return Err(io.invalid("child scratch changed outside inherited context staging"));
+            }
+        }
+        if fork_preparer_io::resolve(&self.host, &private, Some(io))
+            .await?
+            .generation
+            != head
+        {
+            return Err(fork_preparer_io::failure(
+                Some(io),
+                crate::wire::ErrorCode::Conflict,
+                "child private volume changed during fork admission",
+            ));
+        }
+        fork_preparer_io::retain(&head_generation, Some(io)).await?;
+        drop(changes);
+        drop(paths_allocation);
+        drop(_changes);
         Ok(())
     }
 }
-
-use crate::executor::{stock_string_copy};

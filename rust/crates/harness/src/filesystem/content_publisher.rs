@@ -22,7 +22,7 @@ pub struct FilesystemContentPublisher<A, O> {
 }
 
 impl<A, O> FilesystemContentPublisher<A, O> {
-    /// Binds authenticated write authority with optional preparation accounting.
+    /// Binds authenticated write authority and optional preparation accounting.
     pub fn new(
         host: Arc<FilesystemHost<A, O>>,
         volume: &VolumeRef,
@@ -46,7 +46,9 @@ impl<A, O> FilesystemContentPublisher<A, O> {
                 scope,
                 volume,
                 VolumeOperation::Write,
-                maximum_bytes,
+                io.map(|io| io.remaining().map(|remaining| remaining.bytes_encoded))
+                    .transpose()?
+                    .unwrap_or(u64::MAX),
                 work,
             )?;
             Ok((volume.copy(work)?, grant))
@@ -56,16 +58,16 @@ impl<A, O> FilesystemContentPublisher<A, O> {
             io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
         }
         #[cfg(not(target_arch = "wasm32"))]
-        let _native_metadata = match io.filter(|io| io.original_native_work().is_some()) {
-            Some(io) => Some(
+        let _native_metadata = io
+            .filter(|io| io.original_native_work().is_some())
+            .map(|io| {
                 io.take_native_custody(
                     io.owned_bytes()?
                         .checked_sub(before)
                         .ok_or_else(|| io.invalid("content publisher custody underflows"))?,
-                )?,
-            ),
-            None => None,
-        };
+                )
+            })
+            .transpose()?;
         Ok(Arc::new(Self {
             host,
             volume,
@@ -77,10 +79,85 @@ impl<A, O> FilesystemContentPublisher<A, O> {
     }
 }
 
-impl<A, O> ContentPublisher for FilesystemContentPublisher<A, O>
-where
-    A: AsyncAuthorityStore + 'static,
-    O: AsyncObjectStore + 'static,
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
+    crate::distributed::SchedulerPayloadStore for FilesystemContentPublisher<A, O>
+{
+    fn stage<'a>(
+        &'a self,
+        operation: OperationId,
+        idempotency_key: &'a str,
+        bytes: &'a [u8],
+        io: Option<&'a PreparationIo>,
+    ) -> Result<BoundedContentFuture<'a, FileRef>> {
+        if self.volume.class() != crate::conversation::VolumeClass::AgentPrivate
+            || self.volume.provider() != &self.host.provider
+        {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "scheduler payload store requires a private volume and positive limit",
+            ));
+        }
+        BoundedContentFuture::new(io, || async move {
+            let hashing = acyclic_fs::WorkCounters {
+                bytes_hashed: idempotency_key.len() as u64,
+                items_examined: 1,
+                ..Default::default()
+            };
+            if let Some(io) = io {
+                io.preflight(hashing)?;
+            }
+            let key = blake3::hash(idempotency_key.as_bytes()).to_hex();
+            if let Some(io) = io {
+                io.charge(hashing)?;
+            }
+            let path_hold;
+            let path = crate::executor::with_history_io(io, |work| {
+                crate::contract::preparation_format(
+                    format_args!("scheduler/results/{operation}/{key}.json"),
+                    work,
+                )
+            })?;
+            path_hold = io
+                .map(|io| io.guard_owned(path.capacity() as u64))
+                .transpose()?;
+            let retry_hold;
+            let retry = crate::executor::with_history_io(io, |work| {
+                crate::contract::preparation_format(
+                    format_args!("scheduler-result:{operation}:{key}"),
+                    work,
+                )
+            })?;
+            retry_hold = io
+                .map(|io| io.guard_owned(retry.capacity() as u64))
+                .transpose()?;
+            let retry = IdempotencyKey::new(retry)?;
+            let result = self
+                .host
+                .put_content(
+                    &self.volume,
+                    &self.grant,
+                    &path,
+                    bytes,
+                    "application/json",
+                    "result.json",
+                    self.maximum_bytes,
+                    &retry,
+                    None,
+                    io,
+                )
+                .await;
+            drop(retry);
+            drop(retry_hold);
+            drop(path);
+            drop(path_hold);
+            result
+        })
+    }
+}
+
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPublisher
+    for FilesystemContentPublisher<A, O>
 {
     fn volume(&self) -> &VolumeRef {
         &self.volume
@@ -88,32 +165,46 @@ where
 
     fn supports_stage(&self, io: Option<&PreparationIo>) -> Result<()> {
         crate::model::charge_items(io, 1)?;
-        let mut history = io.map(PreparationIo::history_io);
-        self.volume.validate(
-            &mut history
-                .as_mut()
-                .map(|observer| observer as &mut dyn crate::store::history::HistoryIo),
-        )?;
+        crate::executor::with_history_io(io, |work| self.volume.validate(work))?;
         self.grant.require(&self.volume, VolumeOperation::Write, io)
     }
 
     fn stage_once<'a>(
         &'a self,
-        operation_id: OperationId,
+        operation: OperationId,
         path: &'a str,
         bytes: &'a [u8],
-        media_type: &'a str,
-        display_name: &'a str,
+        media: &'a str,
+        display: &'a str,
         io: Option<&'a PreparationIo>,
     ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
         BoundedContentFuture::new(io, || async move {
             let file = self
-                .publish_once(
-                    operation_id,
-                    path,
+                .publish(operation, None, path, bytes, media, display, io, None, None)
+                .await?;
+            let hold = io
+                .map(|io| io.guard_owned(file.logical_owned_bytes()?))
+                .transpose()?;
+            Ok((file, hold))
+        })
+    }
+
+    fn stage_at<'a>(
+        &'a self,
+        operation: OperationId,
+        source: &'a FileRef,
+        bytes: &'a [u8],
+        io: Option<&'a PreparationIo>,
+    ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
+        BoundedContentFuture::new(io, || async move {
+            let file = self
+                .publish(
+                    operation,
+                    Some(source),
+                    source.path(),
                     bytes,
-                    media_type,
-                    display_name,
+                    source.descriptor().media_type(),
+                    source.display_name(),
                     io,
                     None,
                     None,
@@ -128,22 +219,12 @@ where
 
     fn observe_staged_once<'a>(
         &'a self,
-        operation_id: OperationId,
-        maximum_bytes: u64,
+        operation: OperationId,
+        maximum: u64,
         io: Option<&'a PreparationIo>,
-    ) -> Result<
-        crate::conversation::BoundedContentFuture<
-            'a,
-            (
-                Option<FileRef>,
-                Option<crate::conversation::ContentHold<'a>>,
-            ),
-        >,
-    > {
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            let file = self
-                .observe_publication(operation_id, maximum_bytes, io)
-                .await?;
+    ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
+        BoundedContentFuture::new(io, || async move {
+            let file = self.observe_publication(operation, maximum, io).await?;
             let bytes = file
                 .as_ref()
                 .map(UploadRecord::logical_owned_bytes)
@@ -154,39 +235,16 @@ where
         })
     }
 
-    fn stage_at<'a>(
+    fn stage<'a>(
         &'a self,
-        operation_id: OperationId,
-        source: &'a FileRef,
+        operation: OperationId,
+        path: &'a str,
         bytes: &'a [u8],
+        media: &'a str,
+        display: &'a str,
         io: Option<&'a PreparationIo>,
     ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
         BoundedContentFuture::new(io, || async move {
-            let file = self
-                .replace(operation_id, source, bytes, io, None, None)
-                .await?;
-            let hold = io
-                .map(|io| io.guard_owned(file.logical_owned_bytes()?))
-                .transpose()?;
-            Ok((file, hold))
-        })
-    }
-
-    fn stage<'a>(
-        &'a self,
-        operation_id: OperationId,
-        path: &'a str,
-        bytes: &'a [u8],
-        media_type: &'a str,
-        display_name: &'a str,
-        io: Option<&'a PreparationIo>,
-    ) -> Result<
-        crate::conversation::BoundedContentFuture<
-            'a,
-            (FileRef, Option<crate::conversation::ContentHold<'a>>),
-        >,
-    > {
-        crate::conversation::BoundedContentFuture::new(io, || async move {
             let hashing = acyclic_fs::WorkCounters {
                 bytes_hashed: path.len() as u64,
                 ..Default::default()
@@ -198,26 +256,28 @@ where
             if let Some(io) = io {
                 io.charge(hashing)?;
             }
-            let retry = IdempotencyKey::new(crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("filesystem-upload:{operation_id}:{}", digest.to_hex()), work))?)?;
+            let retry = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
+                crate::contract::preparation_format(
+                    format_args!("filesystem-upload:{operation}:{}", digest.to_hex()),
+                    work,
+                )
+            })?)?;
             let retry_hold = io
                 .map(|io| io.guard_owned(retry.as_str().len() as u64))
                 .transpose()?;
             let file = self
                 .host
-                .put_content_impl(
+                .put_content(
                     &self.volume,
                     &self.grant,
                     path,
                     bytes,
-                    media_type,
-                    display_name,
+                    media,
+                    display,
                     self.maximum_bytes,
                     &retry,
                     None,
-                    None,
                     io,
-                    None,
-                    None,
                 )
                 .await?;
             drop(retry);
@@ -235,12 +295,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
 {
     pub(super) async fn observe_publication(
         &self,
-        operation_id: OperationId,
-        maximum_bytes: u64,
+        operation: OperationId,
+        maximum: u64,
         io: Option<&PreparationIo>,
     ) -> Result<Option<FileRef>> {
-        let retry = once_key(operation_id, io)?;
-        let retry_hold = io
+        let retry = once_key(operation, io)?;
+        let hold = io
             .map(|io| io.guard_owned(retry.as_str().len() as u64))
             .transpose()?;
         let file = self
@@ -250,50 +310,34 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 &self.grant,
                 &retry,
                 None,
-                maximum_bytes.min(self.maximum_bytes),
+                maximum.min(self.maximum_bytes),
                 io,
             )
             .await?;
         drop(retry);
-        drop(retry_hold);
+        drop(hold);
         Ok(file)
     }
 
-    pub(super) fn replace<'a>(
-        &'a self,
-        operation_id: OperationId,
-        source: &'a FileRef,
-        bytes: &'a [u8],
-        io: Option<&'a PreparationIo>,
-        publication_lease: Option<&'a Arc<dyn crate::resource_preparation::CreatedTaskLease>>,
-        root_allocation: Option<&'a FilesystemRootBootstrapAllocation<A, O>>,
-    ) -> impl std::future::Future<Output = Result<FileRef>> + acyclic_stream::ProviderTask + 'a
-    {
-        async move {
-            validate_publication(
-                source.path(),
-                bytes,
-                source.descriptor().media_type(),
-                source.display_name(),
-                self.maximum_bytes,
-                io,
-            )?;
-            let mut history = io.map(PreparationIo::history_io);
-            source.validate(
-                &mut history
-                    .as_mut()
-                    .map(|observer| observer as &mut dyn crate::store::history::HistoryIo),
-            )?;
+    pub(super) async fn publish(
+        &self,
+        operation: OperationId,
+        source: Option<&FileRef>,
+        path: &str,
+        bytes: &[u8],
+        media: &str,
+        display: &str,
+        io: Option<&PreparationIo>,
+        lease: Option<&Arc<dyn crate::resource_preparation::CreatedTaskLease>>,
+        root: Option<&FilesystemRootBootstrapAllocation<A, O>>,
+    ) -> Result<FileRef> {
+        if let Some(source) = source {
+            crate::executor::with_history_io(io, |work| source.validate(work))?;
             if source.volume() != &self.volume {
-                #[cfg(not(target_arch = "wasm32"))]
-                if io.and_then(PreparationIo::original_native_work).is_some() {
-                    return Err(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Unauthorized,
-                        reason: "source belongs to another writer volume",
-                    });
-                }
-                return Err(Error::Unauthorized(
-                    "source belongs to another writer volume".into(),
+                return Err(super::fork_preparer_io::failure(
+                    io,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "source belongs to another writer volume",
                 ));
             }
             let version = source.version();
@@ -310,121 +354,63 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     "file version is not a Filesystem generation",
                 ));
             }
-            #[cfg(not(target_arch = "wasm32"))]
-            let root_generation = root_allocation
-                .map(|allocation| allocation.source_generation(Some(source), io))
-                .transpose()?
-                .flatten();
-            #[cfg(target_arch = "wasm32")]
-            let root_generation = {
-                let _ = root_allocation;
-                None
-            };
-            let owned_generation = if root_generation.is_some() {
-                None
-            } else {
-                Some(self.host.file_generation(source, io)?)
-            };
-            let generation_hold = owned_generation
-                .as_ref()
-                .and_then(|generation| {
-                    io.map(|io| io.guard_owned(generation.logical_owned_bytes()?))
-                })
-                .transpose()?;
-            let generation = root_generation
-                .or(owned_generation.as_ref())
-                .expect("Root loan basis or authenticated Filesystem generation");
-            let retry = replacement_key(operation_id, source.path(), io)?;
-            let retry_hold = io
-                .map(|io| io.guard_owned(retry.as_str().len() as u64))
-                .transpose()?;
-            let file = self
-                .host
-                .put_content_impl(
-                    &self.volume,
-                    &self.grant,
-                    source.path(),
-                    bytes,
-                    source.descriptor().media_type(),
-                    source.display_name(),
-                    self.maximum_bytes,
-                    &retry,
-                    None,
-                    Some(generation),
-                    io,
-                    publication_lease,
-                    root_allocation.filter(|_| root_generation.is_some()),
-                )
-                .await?;
-            drop(retry);
-            drop(retry_hold);
-            drop(owned_generation);
-            drop(generation_hold);
-            Ok(file)
         }
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one canonical complete publication identity"
-    )]
-    pub(super) fn publish_once<'a>(
-        &'a self,
-        operation_id: OperationId,
-        path: &'a str,
-        bytes: &'a [u8],
-        media_type: &'a str,
-        display_name: &'a str,
-        io: Option<&'a PreparationIo>,
-        publication_lease: Option<&'a Arc<dyn crate::resource_preparation::CreatedTaskLease>>,
-        root_allocation: Option<&'a FilesystemRootBootstrapAllocation<A, O>>,
-    ) -> impl std::future::Future<Output = Result<FileRef>> + acyclic_stream::ProviderTask + 'a
-    {
-        async move {
-            validate_publication(
+        #[cfg(not(target_arch = "wasm32"))]
+        let root_generation = root
+            .map(|root| root.source_generation(source, io))
+            .transpose()?
+            .flatten();
+        #[cfg(target_arch = "wasm32")]
+        let root_generation = {
+            let _ = root;
+            None
+        };
+        let owned_generation = source
+            .filter(|_| root_generation.is_none())
+            .map(|source| self.host.file_generation(source, io))
+            .transpose()?;
+        let generation_hold = owned_generation
+            .as_ref()
+            .and_then(|generation| io.map(|io| io.guard_owned(generation.logical_owned_bytes()?)))
+            .transpose()?;
+        let generation = root_generation.or(owned_generation.as_ref());
+        let (path, media, display) = source.map_or((path, media, display), |source| {
+            (
+                source.path(),
+                source.descriptor().media_type(),
+                source.display_name(),
+            )
+        });
+        let retry = match source {
+            Some(source) => replacement_key(operation, source.path(), io)?,
+            None => once_key(operation, io)?,
+        };
+        let retry_hold = io
+            .map(|io| io.guard_owned(retry.as_str().len() as u64))
+            .transpose()?;
+        let file = self
+            .host
+            .put_content_impl(
+                &self.volume,
+                &self.grant,
                 path,
                 bytes,
-                media_type,
-                display_name,
+                media,
+                display,
                 self.maximum_bytes,
+                &retry,
+                None,
+                generation,
                 io,
-            )?;
-            #[cfg(not(target_arch = "wasm32"))]
-            let expected_generation = root_allocation
-                .map(|allocation| allocation.source_generation(None, io))
-                .transpose()?
-                .flatten();
-            #[cfg(target_arch = "wasm32")]
-            let expected_generation = {
-                let _ = root_allocation;
-                None
-            };
-            let retry = once_key(operation_id, io)?;
-            let retry_hold = io
-                .map(|io| io.guard_owned(retry.as_str().len() as u64))
-                .transpose()?;
-            let file = self
-                .host
-                .put_content_impl(
-                    &self.volume,
-                    &self.grant,
-                    path,
-                    bytes,
-                    media_type,
-                    display_name,
-                    self.maximum_bytes,
-                    &retry,
-                    None,
-                    expected_generation,
-                    io,
-                    publication_lease,
-                    root_allocation.filter(|_| expected_generation.is_some()),
-                )
-                .await?;
-            drop(retry);
-            drop(retry_hold);
-            Ok(file)
-        }
+                lease,
+                root.filter(|_| root_generation.is_some()),
+            )
+            .await?;
+        drop(retry);
+        drop(retry_hold);
+        drop(owned_generation);
+        drop(generation_hold);
+        Ok(file)
     }
 }
 
@@ -505,60 +491,3 @@ fn replacement_key(
     }
     IdempotencyKey::new(key)
 }
-
-fn validate_publication(
-    path: &str,
-    bytes: &[u8],
-    media_type: &str,
-    display_name: &str,
-    maximum_bytes: u64,
-    io: Option<&PreparationIo>,
-) -> Result<()> {
-    crate::executor::with_history_io(io, |work| {
-        crate::conversation::validate_content_path(path, work)
-    })?;
-    if bytes.len() as u64 > maximum_bytes || bytes.len() as u64 > 9_007_199_254_740_991 {
-        return Err(stock_boundary(
-            io,
-            crate::wire::ErrorCode::Invalid,
-            "content size limit mismatch",
-        ));
-    }
-    if path == ".system"
-        || path.starts_with(".system/")
-        || path == "turns/.canonical"
-        || path.starts_with("turns/.canonical/")
-    {
-        return Err(stock_boundary(
-            io,
-            crate::wire::ErrorCode::Invalid,
-            "internal storage paths are reserved",
-        ));
-    }
-    if display_name.is_empty()
-        || display_name.len() > crate::conversation::MAX_LABEL_BYTES
-        || display_name.chars().any(char::is_control)
-    {
-        return Err(stock_boundary(
-            io,
-            crate::wire::ErrorCode::Invalid,
-            "file display name is invalid",
-        ));
-    }
-    if !media_type
-        .split_once('/')
-        .is_some_and(|(kind, subtype)| !kind.is_empty() && !subtype.is_empty())
-        || media_type.chars().any(|character| {
-            !character.is_ascii_alphanumeric() && !matches!(character, '/' | '-' | '+' | '.' | '_')
-        })
-    {
-        return Err(stock_boundary(
-            io,
-            crate::wire::ErrorCode::Invalid,
-            "media type is invalid",
-        ));
-    }
-    Ok(())
-}
-
-use crate::executor::{stock_boundary};

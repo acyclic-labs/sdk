@@ -10,7 +10,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         child: &VolumeRef,
         idempotency_key: &IdempotencyKey,
     ) -> Result<WorkspaceObservation> {
-        self.require(capability::FORK_PUBLISH, VolumeOperation::Read)?;
+        self.require(capability::FORK_PUBLISH, VolumeOperation::Read, None)?;
         self.host
             .fork_volume_pinned(
                 &self.project,
@@ -94,19 +94,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let io = self
             .native_custody
             .as_ref()
-            .map(|custody| {
-                self.require_with_native_work(
-                    capability::PROJECT_MERGE,
-                    VolumeOperation::Write,
-                    custody.work(),
-                )
-            })
+            .map(|custody| PreparationIo::from_native_work(custody.work()))
             .transpose()?;
         #[cfg(target_arch = "wasm32")]
         let io: Option<PreparationIo> = None;
-        if io.is_none() {
-            self.require(capability::PROJECT_MERGE, VolumeOperation::Write)?;
-        }
+        self.require(
+            capability::PROJECT_MERGE,
+            VolumeOperation::Write,
+            io.as_ref(),
+        )?;
         Self::require_selected_project_source(
             source,
             generation,
@@ -153,11 +149,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             .native_custody
             .as_ref()
             .map(|custody| {
-                let io = self.require_with_native_work(
-                    capability::PROJECT_MERGE,
-                    VolumeOperation::Write,
-                    custody.work(),
-                )?;
+                let io = PreparationIo::from_native_work(custody.work())?;
+                self.require(capability::PROJECT_MERGE, VolumeOperation::Write, Some(&io))?;
                 source.validate(&mut Some(&mut io.history_io()))?;
                 if source.provider() != &self.host.provider
                     || (!selected
@@ -184,7 +177,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let io = match native_io {
             Some(io) => io,
             None => {
-                self.require(capability::PROJECT_MERGE, VolumeOperation::Write)?;
+                self.require(capability::PROJECT_MERGE, VolumeOperation::Write, None)?;
                 if !selected {
                     ContentGrant::verify(
                         &self.verifier,
@@ -264,29 +257,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(in crate::filesystem) fn require_merge_plan_with_native_work(
-        &self,
-        plan: &ParentMergePlan<A, O>,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<PreparationIo> {
-        let io =
-            self.require_with_native_work(capability::PROJECT_MERGE, VolumeOperation::Write, work)?;
-        if !plan
-            .native_custody
-            .as_ref()
-            .is_some_and(|guard| guard.work().shares_allocation_context(work))
-            || plan.parent_project != self.project
-            || plan.parent_scope != self.scope
-        {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "merge plan belongs to another original parent controller",
-            });
-        }
-        Ok(io)
-    }
-
     /// Publishes the inspected plan with optional exact conflict-side selections.
     pub async fn apply_project_merge(
         &self,
@@ -297,37 +267,37 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(custody) = &self.native_custody {
             let work = custody.work();
-            let io = self.require_merge_plan_with_native_work(plan, work)?;
-            let binding =
-                NativeFilesystemVerificationBinding::new(&self.verifier, &self.scope, work)?;
+            let io = PreparationIo::from_native_work(work)?;
+            self.require_merge_plan(plan, Some(&io))?;
+            self.verifier
+                .verify(&self.scope, &mut Some(&mut io.history_io()))?;
+            let verifier = self.verifier.copy(&mut Some(&mut io.history_io()))?;
+            let scope = self.scope.copy(&mut Some(&mut io.history_io()))?;
             let project = self.project.copy(&mut Some(&mut io.history_io()))?;
             let bytes = std::mem::size_of::<(
-                NativeFilesystemVerificationBinding,
+                AuthorityVerifier,
+                Scope,
                 VolumeRef,
                 acyclic_fs::NativeAllocation,
             )>() as u64;
             io.retain_owned(bytes)?;
             io.allocation_attempt(bytes)?;
             let retained = io.owned_bytes()?;
-            let owner = Arc::new((binding, project, io.into_native_custody(retained)?));
+            let owner = Arc::new((verifier, scope, project, io.into_native_custody(retained)?));
             let mut guard = move |original: &acyclic_fs::NativeMaterializationWork| {
                 std::future::ready((|| {
-                    if !owner.2.work().shares_allocation_context(original) {
+                    if !owner.3.work().shares_allocation_context(original) {
                         return Err(Error::NativeBoundary {
                             code: crate::wire::ErrorCode::Unauthorized,
                             reason: "merge publication owner belongs to another original resource",
                         });
                     }
-                    owner.0.authenticate(original)?;
                     let io = PreparationIo::from_native_work(original)?;
-                    if !owner
-                        .0
-                        .scope
-                        .capabilities()
-                        .contains(capability::PROJECT_MERGE)
+                    owner.0.verify(&owner.1, &mut Some(&mut io.history_io()))?;
+                    if !owner.1.capabilities().contains(capability::PROJECT_MERGE)
                         || !io.contains_capability(
-                            owner.0.scope.capabilities(),
-                            &owner.1,
+                            owner.1.capabilities(),
+                            &owner.2,
                             "volume:write:",
                         )?
                     {
@@ -346,7 +316,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let (outcome, custody) = if selections.is_empty() {
                 plan.plan
                     .apply_with_native_work(
-                        options, &[],
+                        options,
                         acyclic_fs::PublicationPermit::Unrestricted,
                         work,
                         work.cancellation(),
@@ -367,11 +337,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             };
             return Ok((outcome, Some(custody)));
         }
-        self.require_merge_plan(plan)?;
+        self.require_merge_plan(plan, None)?;
         let options = Self::merge_options(plan, project_join_key(operation_id, None)?);
         let outcome = if selections.is_empty() {
             plan.plan
-                .apply(options, std::collections::BTreeMap::new(), acyclic_fs::PublicationPermit::Unrestricted)
+                .apply(options, acyclic_fs::PublicationPermit::Unrestricted)
                 .await
                 .map_err(map_error)?
         } else {
@@ -393,154 +363,131 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         notice: &crate::conversation::ConversationMessage,
     ) -> Result<(ProjectMergeReceipt, Option<MergeAllocation>)> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(custody) = &self.native_custody {
-            let work = custody.work();
-            self.require_merge_plan_with_native_work(plan, work)?;
-            let (JoinOutcome::Applied(application) | JoinOutcome::AlreadyApplied(application)) =
-                outcome
-            else {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Conflict,
-                    reason: "project join did not publish a result",
-                });
-            };
-            let io = PreparationIo::from_native_work(work)?;
-            let filesystem_key =
-                project_join_key(operation_id, Some(&PreparationIo::from_native_work(work)?))?;
-            let _witness = plan
+        let io = self
+            .native_custody
+            .as_ref()
+            .map(|custody| PreparationIo::from_native_work(custody.work()))
+            .transpose()?;
+        #[cfg(target_arch = "wasm32")]
+        let io: Option<PreparationIo> = None;
+        self.require_merge_plan(plan, io.as_ref())?;
+        let (JoinOutcome::Applied(application) | JoinOutcome::AlreadyApplied(application)) =
+            outcome
+        else {
+            return Err(fork_preparer_io::failure(
+                io.as_ref(),
+                crate::wire::ErrorCode::Conflict,
+                "project join did not publish a result",
+            ));
+        };
+        let filesystem_key = project_join_key(operation_id, io.as_ref())?;
+        let witness = match &io {
+            Some(io) => io.sdk(plan.plan.commit_witness(
+                application,
+                filesystem_key,
+                io,
+                io.cancellation(),
+            ))?,
+            None => plan
                 .plan
-                .commit_witness(application, filesystem_key, work, io.cancellation())
-                .map_err(|source| Error::NativeWorkspace {
-                    source,
-                    custody: None,
-                })?;
-            let maximum_witness_bytes = (std::mem::size_of::<JoinCommitWitness>() as u64)
-                .checked_mul(16)
-                .and_then(|bytes| bytes.checked_add(1024))
-                .ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid,
-                    reason: "join witness bound overflows",
-                })?;
-            let root = std::mem::size_of::<serde_json::Value>() as u64;
-            io.retain_owned(root)?;
-            let root_hold = io.guard_owned(root)?;
-            let diagnostics = io.reserve_decode(crate::executor::json::sdk_json_diagnostic_bytes())?;
-            let statement = match crate::executor::json::json_value_bounded(
-                &_witness,
-                crate::executor::json::JsonBounds {
-                    maximum_bytes: maximum_witness_bytes,
-                    maximum_items: io.remaining()?.items_examined,
-                    maximum_depth: 8,
-                },
-                Some(crate::wire::ErrorCode::Storage),
-                &mut |charge| io.codec_charge(charge, false),
-            ) {
-                Err(Error::NativeJson {
-                    code,
-                    source,
-                    custody: None,
-                }) => {
-                    let custody = io.take_native_custody(diagnostics.bytes())?;
-                    diagnostics.into_retained();
-                    return Err(Error::NativeJson {
+                .commit_witness(
+                    application,
+                    filesystem_key,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .map(|receipt| receipt.value)
+                .map_err(|failure| map_error(failure.error))?,
+        };
+        let statement = match &io {
+            Some(io) => {
+                let maximum_witness_bytes = (std::mem::size_of::<JoinCommitWitness>() as u64)
+                    .checked_mul(16)
+                    .and_then(|bytes| bytes.checked_add(1024))
+                    .ok_or_else(|| io.invalid("join witness bound overflows"))?;
+                let root = std::mem::size_of::<serde_json::Value>() as u64;
+                io.retain_owned(root)?;
+                let root_hold = io.guard_owned(root)?;
+                let diagnostics = io.reserve_decode(crate::contract::sdk_json_diagnostic_bytes())?;
+                let statement = match crate::contract::json_value_bounded(
+                    &witness,
+                    crate::contract::JsonBounds {
+                        maximum_bytes: maximum_witness_bytes,
+                        maximum_items: io.remaining()?.items_examined,
+                        maximum_depth: 8,
+                    },
+                    Some(crate::wire::ErrorCode::Storage),
+                    &mut |charge| io.codec_charge(charge, false),
+                ) {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    Err(Error::NativeJson {
                         code,
                         source,
-                        custody: Some(custody),
-                    });
-                }
-                result => result?,
-            };
-            root_hold.into_retained();
-            drop(diagnostics);
-            let mut observer = io.history_io();
-            let child = crate::store::history::HistoryIo::clone_authority(&mut observer, child)?;
-            drop(observer);
-            let source_project = plan.child_project.copy(&mut Some(&mut io.history_io()))?;
-            let target_project = self.project.copy(&mut Some(&mut io.history_io()))?;
-            let (source_generation, custody) = GenerationRef::new(&self.host.provider, &plan.source_head().digest().into_bytes(), None, Some(work)).map(|(value, custody)| (value, custody.expect("native generation custody")))?;
-            io.absorb_native_custody(custody)?;
-            let (expected_target_generation, custody) = GenerationRef::new(&self.host.provider, &plan.target_head().digest().into_bytes(), None, Some(work)).map(|(value, custody)| (value, custody.expect("native generation custody")))?;
-            io.absorb_native_custody(custody)?;
-            let result_generation = fork_preparer_io::generation_ref(
-                &self.host.provider,
-                application.generation.id(),
-                Some(&io),
-            )?;
-            let operation_bytes = filesystem_key.into_bytes();
-            let mut provider_operation_id = Vec::new();
-            crate::filesystem::PreparationIo::reserve(&mut provider_operation_id, operation_bytes.len(), Some(&io))?;
-            let copy = acyclic_fs::WorkCounters {
-                bytes_copied: operation_bytes.len() as u64,
-                ..Default::default()
-            };
-            io.preflight(copy)?;
-            io.charge(copy)?;
-            provider_operation_id.extend_from_slice(&operation_bytes);
-            let provider = self.host.provider.clone_with_io(&io)?;
-            let format = stock_string_copy(FILESYSTEM_JOIN_PROOF_FORMAT, Some(&io))?;
-            let mut observer = io.history_io();
-            let mut history_work = Some(&mut observer as &mut dyn crate::store::history::HistoryIo);
-            let mut quota = crate::wire_codec::CodecQuota::new(&mut history_work, 0)?;
-            let notice = notice.clone_in_quota(&mut quota)?;
-            quota.transfer();
-            drop(quota);
+                        custody: None,
+                    }) => {
+                        let custody = io.take_native_custody(diagnostics.bytes())?;
+                        diagnostics.into_retained();
+                        return Err(Error::NativeJson {
+                            code,
+                            source,
+                            custody: Some(custody),
+                        });
+                    }
+                    result => result?,
+                };
+                root_hold.into_retained();
+                drop(diagnostics);
+                statement
+            }
+            None => {
+                serde_json::to_value(witness).map_err(|error| Error::Invalid(error.to_string()))?
+            }
+        };
+        let source_generation =
+            fork_preparer_io::generation_ref(&self.host.provider, plan.source_head(), io.as_ref())?;
+        let expected_target_generation =
+            fork_preparer_io::generation_ref(&self.host.provider, plan.target_head(), io.as_ref())?;
+        let result_generation = fork_preparer_io::generation_ref(
+            &self.host.provider,
+            application.generation.id(),
+            io.as_ref(),
+        )?;
+        let receipt = crate::executor::with_history_io(io.as_ref(), |work| -> Result<_> {
+            let source_project = plan.child_project.copy(work)?;
+            let target_project = self.project.copy(work)?;
+            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
             let receipt = ProjectMergeReceipt {
                 operation_id,
-                child,
+                child: crate::core::copy_authority(child, &mut quota)?,
                 source_project,
                 source_generation,
                 target_project,
                 expected_target_generation,
                 result_generation,
-                provider_operation_id,
+                provider_operation_id: crate::core::copy_copy_vector(
+                    &filesystem_key.into_bytes(),
+                    &mut quota,
+                )?,
                 provider_proof: ProviderJoinProof {
-                    provider,
-                    format,
+                    provider: crate::core::copy_provider(&self.host.provider, &mut quota)?,
+                    format: crate::core::copy_text(FILESYSTEM_JOIN_PROOF_FORMAT, &mut quota)?,
                     statement,
                 },
-                notice,
+                notice: notice.clone_in_quota(&mut quota)?,
             };
-            let retained = io.owned_bytes()?;
-            let custody = io.into_native_custody(retained)?;
-            return Ok((receipt, Some(custody)));
-        }
-        self.require_merge_plan(plan)?;
-        let (JoinOutcome::Applied(application) | JoinOutcome::AlreadyApplied(application)) =
-            outcome
-        else {
-            return Err(Error::Conflict(
-                "project join did not publish a result".into(),
-            ));
-        };
-        let filesystem_key = project_join_key(operation_id, None)?;
-        let witness = plan
-            .plan
-            .commit_witness(
-                application,
-                filesystem_key,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .map(|receipt| receipt.value)
-            .map_err(|failure| map_error(failure.error))?;
-        let receipt = ProjectMergeReceipt {
-            operation_id,
-            child: child.clone(),
-            source_project: plan.child_project.clone(),
-            source_generation: self.host.generation_ref_id(plan.source_head())?,
-            target_project: self.project.clone(),
-            expected_target_generation: self.host.generation_ref_id(plan.target_head())?,
-            result_generation: self.host.generation_ref_id(application.generation.id())?,
-            provider_operation_id: filesystem_key.into_bytes().to_vec(),
-            provider_proof: ProviderJoinProof {
-                provider: self.host.provider.clone(),
-                format: FILESYSTEM_JOIN_PROOF_FORMAT.into(),
-                statement: serde_json::to_value(witness)
-                    .map_err(|error| Error::Invalid(error.to_string()))?,
-            },
-            notice: notice.clone(),
-        };
-        Ok((receipt, None))
+            quota.transfer();
+            Ok(receipt)
+        })?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let custody = io
+            .map(|io| {
+                let retained = io.owned_bytes()?;
+                io.into_native_custody(retained)
+            })
+            .transpose()?;
+        #[cfg(target_arch = "wasm32")]
+        let custody = None;
+        Ok((receipt, custody))
     }
 
     /// Describes exact three-way conflicts without yielding the publishable plan.
@@ -550,9 +497,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         conflicts: &[MergeConflict],
         truncated: bool,
     ) -> Result<MergePlan> {
-        self.require_merge_plan(plan)?;
+        self.require_merge_plan(plan, None)?;
         plan.plan
-            .describe_conflicts(conflicts.to_vec(), truncated)
+            .describe_conflicts(conflicts, truncated)
             .await
             .map_err(map_error)
     }
@@ -564,7 +511,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         operation_id: crate::OperationId,
         candidate: &acyclic_fs::UnpublishedMergeCandidate,
     ) -> Result<JoinOutcome<A, O>> {
-        self.require_merge_plan(plan)?;
+        self.require_merge_plan(plan, None)?;
         plan.plan
             .apply_candidate(
                 Self::merge_options(plan, project_join_key(operation_id, None)?),
@@ -578,11 +525,27 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     pub(in crate::filesystem) fn require_merge_plan(
         &self,
         plan: &ParentMergePlan<A, O>,
+        io: Option<&PreparationIo>,
     ) -> Result<()> {
-        self.require(capability::PROJECT_MERGE, VolumeOperation::Write)?;
+        self.require(capability::PROJECT_MERGE, VolumeOperation::Write, io)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = io.and_then(PreparationIo::original_native_work)
+            && !plan
+                .native_custody
+                .as_ref()
+                .is_some_and(|guard| guard.work().shares_allocation_context(work))
+        {
+            return Err(fork_preparer_io::failure(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "merge plan belongs to another original parent controller",
+            ));
+        }
         if plan.parent_project != self.project || plan.parent_scope != self.scope {
-            return Err(Error::Unauthorized(
-                "merge plan belongs to another parent controller".into(),
+            return Err(fork_preparer_io::failure(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "merge plan belongs to another parent controller",
             ));
         }
         Ok(())

@@ -4,13 +4,13 @@ use acyclic_fs::{MaterializationJournal, MaterializationPhase, WorkCounters};
 
 /// Fixed, funded completion accepted before an SDK physical mutation.
 pub(crate) struct NativePreparationCompletionTemplate {
-    journal: MaterializationJournal,
-    binding: (crate::TaskId, crate::scheduler::LeaseFence),
-    path: acyclic_stream::StreamPath,
-    key: acyclic_stream::IdempotencyKey,
-    value: serde_json::Value,
-    output: acyclic_stream::PreparedOwnedBytes<NativeAllocation>,
-    custody: NativeAllocation,
+    pub(crate) journal: MaterializationJournal,
+    pub(crate) binding: (crate::TaskId, crate::scheduler::LeaseFence),
+    pub(crate) path: acyclic_stream::StreamPath,
+    pub(crate) key: acyclic_stream::IdempotencyKey,
+    pub(crate) value: serde_json::Value,
+    pub(crate) output: acyclic_stream::PreparedOwnedBytes<NativeAllocation>,
+    pub(crate) custody: NativeAllocation,
 }
 
 impl NativePreparationCompletionTemplate {
@@ -64,18 +64,6 @@ impl NativePreparationCompletionTemplate {
         Ok(packet)
     }
 
-    pub(crate) fn task_binding(&self) -> (crate::TaskId, &crate::scheduler::LeaseFence) {
-        (self.binding.0, &self.binding.1)
-    }
-    pub(crate) fn expected_revision(&self) -> u64 {
-        self.journal.revision
-    }
-    pub(crate) fn path(&self) -> &acyclic_stream::StreamPath {
-        &self.path
-    }
-    pub(crate) fn key(&self) -> &acyclic_stream::IdempotencyKey {
-        &self.key
-    }
     pub(crate) fn matches_work(&self, work: &NativeMaterializationWork) -> bool {
         self.custody.matches_work(work)
             && self
@@ -90,7 +78,7 @@ impl NativePreparationCompletionTemplate {
         work: &NativeMaterializationWork,
     ) -> Result<()> {
         if !self.matches_work(work)
-            || self.task_binding() != owner.task_binding()
+            || (self.binding.0, &self.binding.1) != owner.task_binding()
             || self.journal.phase != MaterializationPhase::Preparing
             || !self.journal.is_valid_for(self.journal.plan.operation_id)
         {
@@ -163,26 +151,5 @@ impl NativePreparationCompletionTemplate {
         Self::set_work(&mut self.value, self.journal.revision, counters)?;
         self.journal.work = counters;
         Ok(())
-    }
-    pub(crate) fn codec_parts(&mut self) -> (&serde_json::Value, &mut [u8], u64) {
-        let output = self.output.writable();
-        let maximum = output.len() as u64;
-        (&self.value, output, maximum)
-    }
-    pub(crate) fn into_completed_parts(
-        self,
-    ) -> (
-        MaterializationJournal,
-        acyclic_stream::PreparedOwnedBytes<NativeAllocation>,
-        NativeAllocation,
-    ) {
-        let Self {
-            mut journal,
-            output,
-            custody,
-            ..
-        } = self;
-        journal.revision += 1;
-        (journal, output, custody)
     }
 }

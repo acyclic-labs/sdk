@@ -73,13 +73,11 @@ pub(crate) use workflow_journal::WorkflowReleaseWitness;
 mod memory;
 pub use memory::MemoryHarnessStorage;
 mod text_tools;
-pub use text_tools::ExactTextReplacement;
 #[cfg(not(target_arch = "wasm32"))]
-mod root_binding;
-#[cfg(not(target_arch = "wasm32"))]
-pub use root_binding::{
+pub use host::{
     bind_original_root_conversation_with_native_work, native_root_output_binding_operation,
 };
+pub use text_tools::ExactTextReplacement;
 mod root_source;
 pub use root_source::{FsRootNativeSource, FsRootProjectSourceProvider};
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
@@ -108,26 +106,22 @@ mod task_commands;
 mod task_runtime;
 pub use configured_recursive_tools::{
     ConfiguredRecursiveAuthorityBinding, ConfiguredRecursiveCaller, ConfiguredRecursiveFork,
-    ConfiguredRecursiveMerge, ConfiguredRecursiveToolSource,
-    ConfiguredRecursiveToolsConfig,
+    ConfiguredRecursiveMerge, ConfiguredRecursiveToolSource, ConfiguredRecursiveToolsConfig,
 };
 pub(crate) use default_tools::InvocationCancellation;
 pub use default_tools::{
-    MergeToolArguments, MergeToolSelection, MergeToolSide, RecursiveDefaultToolSource,
-    RecursiveDefaultToolset, RecursiveForkSourceIntent, RecursiveForkToolBinding,
-    RecursiveForkToolPlan, RecursiveMergeToolBinding, RecursiveMergeToolPlan, RecursiveToolOwner,
+    MergeToolArguments, MergeToolSelection, MergeToolSide, RecursiveDefaultToolset,
     recursive_default_tools,
+};
+pub(in crate::filesystem) use default_tools::{
+    RecursiveForkSourceIntent, RecursiveForkToolBinding, RecursiveForkToolPlan,
+    RecursiveMergeToolBinding, RecursiveMergeToolPlan,
 };
 pub use mailbox_machine::MailboxModelMachine;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub use native_execution::{
-    BorrowedNativeVolumeBinding, NativeExistingLazyVolume, NativePreparationReceipt,
-    NativePreparationRoot, NativeProcessView, NativePublicationCleanup, NativePublicationFailure,
-    NativePublicationReservationFailure, NativeRecordedPreparation, NativeRootOutputSource,
-    NativeTaskViewDrainReceipt, NativeTaskWorkingView, NativeViewPublicationError,
-    NativeViewPublicationReceipt, NativeVolumeView, copy_native_mapping_with_work,
-    observe_preparation,
-};
+pub use native_execution::*;
+#[cfg(not(target_arch = "wasm32"))]
+pub use recursive::restore_recursive_fork_source_with_native_work;
 pub use recursive::{
     ForkPreparationLimits, ForkPreparationMachine, ForkToolArguments, RecursiveForkConfig,
     RecursiveSourceSnapshot, RetainedSourceBinding, fork_preparation_request,
@@ -153,9 +147,7 @@ pub use config::{WorkspaceMutation, WorkspaceObservation};
 mod host;
 pub(crate) use host::map_error;
 use host::*;
-pub use host::{FilesystemHost, workspace_ref};
-mod scheduler_payload;
-pub use scheduler_payload::FilesystemSchedulerPayloadStore;
+pub use host::{FilesystemHost, filesystem_key, workspace_ref};
 mod content_verifier;
 pub use content_verifier::FilesystemContentVerifier;
 use content_verifier::*;
@@ -165,9 +157,7 @@ use fork_verifier::*;
 mod project_verifier;
 pub use project_verifier::FilesystemProjectMergeVerifier;
 mod parent;
-pub use parent::{
-    InheritedContextCapture, ParentMergePlan, ParentProjectController, VolumeImportPlan,
-};
+pub use parent::{InheritedContextCapture, ParentMergePlan, ParentProjectController};
 
 #[cfg(not(target_arch = "wasm32"))]
 mod source_publication;
@@ -230,7 +220,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(lease) = publication_lease {
             match io {
-                Some(io) => lease.verify(Some(io))?.await?,
+                Some(io) => io.finish_future(lease.verify(Some(io))?).await?,
                 None => lease.verify(None)?.await?,
             }
         }
@@ -401,7 +391,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .await?;
             let indexed = match io {
                 Some(io) => {
-                    let indexed_path = crate::executor::with_history_io(Some(io), |work| crate::executor::preparation_format(format_args!("/{metadata_path}"), work))?;
+                    let indexed_path = crate::executor::with_history_io(Some(io), |work| {
+                        crate::contract::preparation_format(format_args!("/{metadata_path}"), work)
+                    })?;
                     read_generation(&prior, &indexed_path, metadata_bytes.len() as u64, Some(io))
                         .await?
                 }
@@ -450,8 +442,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             return Ok(reference);
         }
-        let absolute =
-            crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("/{}", provisional.path()), work))?;
+        let absolute = crate::executor::with_history_io(io, |work| {
+            crate::contract::preparation_format(format_args!("/{}", provisional.path()), work)
+        })?;
         let mut mutations = crate::model::vec_with_capacity(6, io)?;
         if let Some((parent, _)) = absolute.rsplit_once('/')
             && !parent.is_empty()
@@ -472,11 +465,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             path: stock_string_copy("/.system/harness-file-metadata", io)?,
         });
         mutations.push(WorkspaceMutation::PutFile {
-            path: crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("/{metadata_path}"), work))?,
+            path: crate::executor::with_history_io(io, |work| {
+                crate::contract::preparation_format(format_args!("/{metadata_path}"), work)
+            })?,
             bytes: metadata_bytes,
         });
         mutations.push(WorkspaceMutation::PutFile {
-            path: crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("/{receipt_path}"), work))?,
+            path: crate::executor::with_history_io(io, |work| {
+                crate::contract::preparation_format(format_args!("/{receipt_path}"), work)
+            })?,
             bytes: receipt_bytes,
         });
         let publication = async {
@@ -492,7 +489,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                     let original = original.clone();
                                     async move {
                                         let io = PreparationIo::from_native_work(&original)?;
-                                        lease.verify(Some(&io))?.await
+                                        io.finish_future(lease.verify(Some(&io))?).await
                                     }
                                 };
                             fork_preparer_io::publish_native(
@@ -511,7 +508,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                     PreparationIo::from_budget(budget, io.cancellation())
                                         .map_err(acyclic_fs::OperationFailure::before_work)?;
                                 let result = match lease.verify(Some(&callback)) {
-                                    Ok(future) => future.await,
+                                    Ok(future) => callback.finish_future(future).await,
                                     Err(error) => Err(error),
                                 };
                                 callback.finish(result)
@@ -667,9 +664,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             io.and_then(|io| io.original_native_work().map(|original| (io, original)))
         {
             use sha2::Digest as _;
-            reference.validate(&mut Some(&mut crate::filesystem::PreparationIo::from_native_work(
-                original,
-            ).map(crate::store::HistoryWork::new)?))?;
+            reference.validate(&mut Some(&mut io.history_io()))?;
             if reference.volume().provider() != &self.provider
                 || reference.descriptor().byte_length() > maximum_bytes
             {

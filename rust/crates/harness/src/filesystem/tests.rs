@@ -59,7 +59,7 @@ fn native_verifier_copies_authentic_scope_and_keeps_custody_until_drop() -> Resu
             .native_binding
             .as_ref()
             .unwrap()
-            .authenticate(&other),
+            .require_native_work(&other),
         Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized,
             ..
