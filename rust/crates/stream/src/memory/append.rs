@@ -31,7 +31,7 @@ impl MemoryStream {
         if request.if_tail.is_some_and(|expected| expected != start) {
             let result = AppendOutcome::TailConflict { actual_tail: start };
             if request.idempotency_key.is_some() {
-                let allocation = self.retained(&mut state, true, false)?;
+                self.reserve_retained(&mut state)?;
                 retain(
                     &mut state,
                     None,
@@ -39,11 +39,6 @@ impl MemoryStream {
                     digest,
                     IdempotencyOutcome::Append(result.clone()),
                 );
-                state
-                    .retained
-                    .back_mut()
-                    .expect("retained conflict")
-                    ._allocation = allocation;
             }
             return Ok((result, Default::default()));
         }
@@ -74,10 +69,7 @@ impl MemoryStream {
         facts.push(CommittedMutation::Append(fact));
         let (histories, _histories) = self.histories(&state, &facts)?;
         let (paths, _paths) = self.paths(&state, std::iter::once(&request.path))?;
-        self.absorb(
-            &mut allocation,
-            self.retained(&mut state, request.idempotency_key.is_some(), true)?,
-        )?;
+        self.reserve_retained(&mut state)?;
         let envelope = CommittedEnvelope {
             commit_id,
             mutations: facts,
@@ -95,7 +87,7 @@ impl MemoryStream {
             );
             state
                 .retained
-                .back_mut()
+                .last_mut()
                 .expect("retained append")
                 ._allocation = allocation;
             Ok((outcome, Default::default()))

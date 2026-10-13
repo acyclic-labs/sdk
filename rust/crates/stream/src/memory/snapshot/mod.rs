@@ -25,8 +25,8 @@ impl MemoryStream {
             || decoded.path_bytes > self.limits.path_bytes
             || decoded.record_count > self.limits.records
             || decoded.payload_bytes > self.limits.payload_bytes
-            || decoded.commits.len() > self.limits.commits
-            || decoded.replays.len() > self.limits.idempotency_results
+            || decoded.decision > self.limits.commits as u64
+            || decoded.replay_count() > self.limits.idempotency_results
         {
             return Err(StreamError::Capacity);
         }
@@ -151,7 +151,17 @@ fn decode(encoded: &[u8]) -> Option<State> {
     }
     let mut state = State::default();
     decode_retained(&mut input, &mut state)?;
-    if !input.0.is_empty() || decision != u64::try_from(state.commits.len()).ok()? {
+    if !input.0.is_empty()
+        || decision
+            != u64::try_from(
+                state
+                    .retained
+                    .iter()
+                    .filter(|entry| entry.envelope().is_some())
+                    .count(),
+            )
+            .ok()?
+    {
         return None;
     }
     let inventory = std::mem::take(&mut state.retained);
@@ -232,14 +242,14 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Option<()> {
         };
         if envelope
             .as_ref()
-            .is_some_and(|envelope| state.commits.contains_key(&envelope.commit_id))
+            .is_some_and(|envelope| state.commit(&envelope.commit_id).is_some())
         {
             return None;
         }
         let (key, digest, result, envelope) = match observation {
             Some(observation) => {
                 let key = observation.idempotency_key;
-                if state.replays.contains_key(key.as_bytes())
+                if state.replay(key.as_bytes()).is_some()
                     || replay_commit_id(envelope.as_ref(), &observation.outcome)?
                         != envelope.as_ref().map(|envelope| envelope.commit_id)
                 {
