@@ -5,7 +5,7 @@ struct CheckoutAttachedFile<A, O> {
     cancellation: CancellationToken,
     profile: FilesystemProfile,
     limits: VolumeLimits,
-    _native_allocation: Option<crate::NativeAllocation>,
+    _native_allocation: crate::NativeAllocation,
     native_callback_guard: Option<Arc<dyn super::NativeMountCallbackGuard>>,
 }
 
@@ -28,9 +28,7 @@ where
                 Some(&self.cancellation),
             )
             .await?;
-        let checkout = observation
-            .observer(work, work.cancellation())
-            .map_err(fs_error)?;
+        let checkout = observation.observer(work, work.cancellation())?;
         carrier.check(work.cancellation(), Some(&self.cancellation))?;
         Ok(checkout)
     }
@@ -52,8 +50,7 @@ where
         candidate
             .checkout
             .change_named_attribute(self.file_id, &name, value, work, cancellation)
-            .await
-            .map_err(fs_error)?;
+            .await?;
         self.checkout
             .install_change(
                 candidate,
@@ -93,8 +90,7 @@ where
                     work,
                     cancellation,
                 )
-                .await
-                .map_err(fs_error)?;
+                .await?;
             self.checkout
                 .install_change(
                     candidate,
@@ -124,12 +120,10 @@ where
             let mut checkout = self.observer(work).await?;
             let record = checkout
                 .read_file_record_by_id(self.file_id, work, work.cancellation())
-                .await
-                .map_err(fs_error)?;
+                .await?;
             let metadata = checkout
-                .read_metadata_by_id(self.file_id, work, work.cancellation())
-                .await
-                .map_err(fs_error)?;
+                .read_metadata(self.file_id, work, work.cancellation())
+                .await?;
             NativeDemandCarrier::Native(work)
                 .check(work.cancellation(), Some(&self.cancellation))?;
             Ok(MountLookup {
@@ -157,8 +151,7 @@ where
                     work,
                     work.cancellation(),
                 )
-                .await
-                .map_err(fs_error)?;
+                .await?;
             let capacity = read.logical_owned_bytes();
             NativeDemandCarrier::Native(work).finish_read(
                 crate::kernel::OwnedSourceChunk::intrinsic(read.bytes, capacity),
@@ -184,8 +177,7 @@ where
                     work,
                     work.cancellation(),
                 )
-                .await
-                .map_err(fs_error)?;
+                .await?;
             let capacity = read.logical_owned_bytes();
             NativeDemandCarrier::Native(work).finish_read(
                 crate::kernel::OwnedSourceChunk::intrinsic(read.bytes, capacity),
@@ -214,8 +206,7 @@ where
                     work,
                     work.cancellation(),
                 )
-                .await
-                .map_err(fs_error)?;
+                .await?;
             NativeDemandCarrier::Native(work)
                 .check(work.cancellation(), Some(&self.cancellation))?;
             Ok(position)
@@ -281,11 +272,8 @@ where
             let mut checkout = self.observer(work).await?;
             let record = checkout
                 .read_file_record_by_id(self.file_id, work, work.cancellation())
-                .await
-                .map_err(fs_error)?;
-            let file = checkout
-                .detached_from_record(record, work, work.cancellation())
-                .map_err(fs_error)?;
+                .await?;
+            let file = checkout.detached_from_record(record, work, work.cancellation())?;
             sparse::read_sparse(&file, offset, length, work, &self.cancellation).await
         })
     }
@@ -311,8 +299,7 @@ where
             let record = candidate
                 .checkout
                 .read_file_record_by_id(self.file_id, work, cancellation)
-                .await
-                .map_err(fs_error)?;
+                .await?;
             let changes =
                 sparse::sparse_changes(offset, &range.0, mount_node(record).logical_bytes, work)?;
             let times = ContentTimes::Stamp(content_change_time()?);
@@ -320,8 +307,7 @@ where
                 candidate
                     .checkout
                     .change_content(self.file_id, change, times, work, cancellation)
-                    .await
-                    .map_err(fs_error)?;
+                    .await?;
             }
             self.checkout
                 .install_change(
@@ -410,9 +396,8 @@ where
                 .await?;
             candidate
                 .checkout
-                .set_attributes_by_id(self.file_id, metadata, logical_bytes, work, cancellation)
-                .await
-                .map_err(fs_error)?;
+                .set_attributes(self.file_id, metadata, logical_bytes, work, cancellation)
+                .await?;
             self.checkout
                 .install_change(
                     candidate,
@@ -441,8 +426,7 @@ where
             let mut checkout = self.observer(work).await?;
             let value = checkout
                 .read_named_attribute(self.file_id, &name, work, cancellation)
-                .await
-                .map_err(fs_error)?;
+                .await?;
             inputs
                 .carrier
                 .check(cancellation, Some(&self.cancellation))?;
@@ -485,8 +469,7 @@ where
                     &mut accounting,
                     cancellation,
                 )
-                .await
-                .map_err(fs_error)?;
+                .await?;
             let page = inputs.attribute_page(&listing.0)?;
             drop(listing);
             drop(checkout);

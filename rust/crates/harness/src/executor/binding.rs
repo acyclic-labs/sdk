@@ -140,7 +140,8 @@ impl StockExecution<'_> {
         input: &TurnInput,
     ) -> Result<()> {
         self.verify_task_context_binding(input.operation_id)?;
-        let (tail, records) = replay_execution(
+        let _records_hold;
+        let (tail, records, hold) = replay_execution(
             journal,
             input.operation_id,
             1,
@@ -148,6 +149,7 @@ impl StockExecution<'_> {
             self.io,
         )
         .await?;
+        _records_hold = hold;
         if tail != 0 && records.first().is_none_or(|record| record.sequence != 1) {
             return Err(stock_boundary(
                 self.io,

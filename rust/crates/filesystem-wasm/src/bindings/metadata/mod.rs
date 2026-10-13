@@ -65,7 +65,7 @@ impl BrowserCheckout {
         file_id: Vec<u8>,
     ) -> Result<Ts<BrowserMetadataResult>, JsValue> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let receipt = browser_call!(self, read_metadata_by_id(file_id,))?;
+        let receipt = browser_call!(self, read_metadata(file_id,))?;
         ts(BrowserMetadataResult {
             canonical_bytes: encode_file_metadata(
                 receipt.value,
@@ -113,7 +113,7 @@ impl BrowserCheckout {
             &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
         )
         .map_err(js_error)?;
-        let receipt = browser_call!(self, set_attributes_by_id(file_id, metadata, None,))?;
+        let receipt = browser_call!(self, set_attributes(file_id, metadata, None,))?;
         mutation_value(receipt.work)
     }
 
@@ -151,7 +151,7 @@ impl BrowserCheckout {
         .map_err(js_error)?;
         let receipt = browser_call!(
             self,
-            set_attributes_by_id(file_id, metadata, logical_bytes,)
+            set_attributes(file_id, metadata, logical_bytes,)
         )?;
         mutation_value(receipt.work)
     }

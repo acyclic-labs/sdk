@@ -317,7 +317,7 @@ where
                         "canonical summary belongs to another step",
                     )
                 })?;
-            let (_, records) = crate::executor::replay_execution(
+            let (_, records, hold) = crate::executor::replay_execution(
                 self,
                 operation,
                 limits.model_events_per_step.saturating_add(2),
@@ -340,6 +340,7 @@ where
                 io,
             )
             .await?;
+            let records = crate::executor::retain_preparation((records, hold));
             let mut prepared = None;
             let mut request = None;
             let mut output = String::new();

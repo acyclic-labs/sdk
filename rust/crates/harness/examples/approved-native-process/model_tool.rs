@@ -86,7 +86,7 @@ impl<P: StreamProvider> McpToolTransport for Transport<P> {
             }
             self.authorize(&context)?;
             let descriptor = self.descriptor()?;
-            if descriptor.method != McpStdioMethod::CallTool
+            if descriptor.method != "tools/call"
                 || descriptor.params != json!({"name":name,"arguments":arguments})
             {
                 return Err(Error::Unauthorized(

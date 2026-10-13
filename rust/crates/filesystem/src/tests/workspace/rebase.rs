@@ -24,15 +24,12 @@ async fn filtered_fork_rebase_preserves_local_and_parent_changes() -> Result<(),
     assert_eq!(unbounded!(child, read("/local", 16))?.as_ref(), b"child");
     child.write_text("/local", "after rebase").await?;
     let source = unbounded!(child, head())?;
-    let plan = child.join_into(&parent).plan().await?;
+    let plan = child.join_into(&parent).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert!(matches!(
-        plan.apply(
-            ApplyOptions {
+        plan.apply(ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new()
-            },
-            crate::PublicationPermit::Unrestricted
-        )
+            }, BTreeMap::new(), crate::PublicationPermit::Unrestricted)
         .await?,
         JoinOutcome::Applied(_)
     ));
@@ -70,40 +67,31 @@ async fn nested_filtered_fork_uses_its_pinned_inheritance_as_delta_baseline()
     )
     .await?;
     child.write_text("/new", "child").await?;
-    let plan = child.join_into(&root).plan().await?;
-    plan.apply(
-        ApplyOptions {
+    let plan = child.join_into(&root).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    plan.apply(ApplyOptions {
             if_target: plan.target_head(),
             idempotency_key: IdempotencyKey::new(),
-        },
-        crate::PublicationPermit::Unrestricted,
-    )
+        }, BTreeMap::new(), crate::PublicationPermit::Unrestricted)
     .await?;
     assert_eq!(unbounded!(root, read("/keep", 32))?.as_ref(), b"root");
     assert_eq!(unbounded!(root, read("/omit", 32))?.as_ref(), b"root");
     assert_eq!(unbounded!(root, read("/new", 32))?.as_ref(), b"child");
     child.write_text("/keep", "edited").await?;
-    let plan = child.join_into(&root).plan().await?;
+    let plan = child.join_into(&root).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert!(matches!(
-        plan.apply(
-            ApplyOptions {
+        plan.apply(ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new(),
-            },
-            crate::PublicationPermit::Unrestricted
-        )
+            }, BTreeMap::new(), crate::PublicationPermit::Unrestricted)
         .await?,
         JoinOutcome::Conflicted { .. }
     ));
     root.write_text("/keep", "inherited").await?;
-    let plan = child.join_into(&root).plan().await?;
-    plan.apply(
-        ApplyOptions {
+    let plan = child.join_into(&root).plan(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    plan.apply(ApplyOptions {
             if_target: plan.target_head(),
             idempotency_key: IdempotencyKey::new(),
-        },
-        crate::PublicationPermit::Unrestricted,
-    )
+        }, BTreeMap::new(), crate::PublicationPermit::Unrestricted)
     .await?;
     assert_eq!(unbounded!(root, read("/keep", 32))?.as_ref(), b"edited");
     assert_eq!(
@@ -259,7 +247,7 @@ async fn live_rebase_merges_disjoint_sparse_ranges_without_materializing_file()
     let mut local = unbounded!(agent, begin_transaction(IdempotencyKey::new()))?;
     unbounded!(
         local,
-        write_range("/shared", 1, OwnedBytes::from_static(b"XY"))
+        write_range("/shared", 1, bytes::Bytes::from_static(b"XY"))
     )?;
     assert!(matches!(
         commit(&mut local).await?,
@@ -268,7 +256,7 @@ async fn live_rebase_merges_disjoint_sparse_ranges_without_materializing_file()
     let mut upstream = unbounded!(main, begin_transaction(IdempotencyKey::new()))?;
     unbounded!(
         upstream,
-        write_range("/shared", 64, OwnedBytes::from_static(b"UV"))
+        write_range("/shared", 64, bytes::Bytes::from_static(b"UV"))
     )?;
     assert!(matches!(
         commit(&mut upstream).await?,

@@ -63,10 +63,6 @@ impl FuseProjection {
             (state.node_facts(source, inode, handle, work)?, open_file)
         };
         let current = resolve_node(source, facts, work)?;
-        let _claim = changes
-            .size
-            .map(|_| self.core.claim_content(current.lookup.node.file_id, work))
-            .transpose()?;
         let resolved = if changes.is_empty() {
             current
         } else {

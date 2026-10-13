@@ -735,7 +735,7 @@ async fn summary_and_response_reconcile_inside_one_parent_execution() -> Result<
     );
     assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
     assert_eq!(provider.reconciliations.load(Ordering::SeqCst), 2);
-    let (_, admissions) = replay_execution(
+    let (_, admissions, _) = replay_execution(
         &journal,
         parent.operation_id,
         3,

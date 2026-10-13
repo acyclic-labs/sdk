@@ -46,7 +46,7 @@ async fn stamped_content_change_equals_the_change_then_its_stamp_in_one_mutation
         changed_ns: MetadataField::Value(3),
         ..FileMetadata::default()
     };
-    (seed.set_attributes_by_id(file_id, times, None, B, &cancellation)).await?;
+    (seed.set_attributes(file_id, times, None, B, &cancellation)).await?;
     (seed.commit(
         OperationId::from_bytes([132; 16]),
         None,
@@ -97,14 +97,14 @@ async fn stamped_content_change_equals_the_change_then_its_stamp_in_one_mutation
         &cancellation,
     ))
     .await?;
-    let mut expected = (separate.read_metadata_by_id(file_id, B, &cancellation))
+    let mut expected = (separate.read_metadata(file_id, B, &cancellation))
         .await?
         .value;
     assert_eq!(expected, times, "a preserving write leaves metadata intact");
     assert!(expected.stamp_content_change(99));
-    (separate.set_attributes_by_id(file_id, expected, None, B, &cancellation)).await?;
+    (separate.set_attributes(file_id, expected, None, B, &cancellation)).await?;
     assert_eq!(stamped.root(), separate.root());
-    let metadata = (stamped.read_metadata_by_id(file_id, B, &cancellation))
+    let metadata = (stamped.read_metadata(file_id, B, &cancellation))
         .await?
         .value;
     assert_eq!(metadata.modified_ns, MetadataField::Value(99));
@@ -590,7 +590,7 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
         ..FileMetadata::default()
     };
     checkout
-        .set_attributes_by_id(destination.file_id, metadata, None, B, &cancellation)
+        .set_attributes(destination.file_id, metadata, None, B, &cancellation)
         .await?;
     let original =
         crate::NativeMaterializationWork::new(B, &cancellation).map_err(|(cause, _)| cause)?;
@@ -649,7 +649,7 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
         .await?;
     assert_eq!(content.bytes.as_ref(), b"sourceticated source bytes");
     let stamped = candidate
-        .read_metadata_by_id(destination.file_id, &original, &cancellation)
+        .read_metadata(destination.file_id, &original, &cancellation)
         .await?;
     assert_eq!(stamped.modified_ns, MetadataField::Value(41));
     assert_eq!(stamped.changed_ns, MetadataField::Value(41));
@@ -658,7 +658,7 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
     assert!(original.receipt().bytes_encoded > 0);
     assert_eq!(
         checkout
-            .read_metadata_by_id(destination.file_id, B, &cancellation,)
+            .read_metadata(destination.file_id, B, &cancellation,)
             .await?
             .value,
         metadata,

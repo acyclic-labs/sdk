@@ -237,7 +237,7 @@ impl<P: StreamProvider> Tree<'_, P> {
         let hash = *blake3::hash(&bytes).as_bytes();
         let stream = node_path_with_work(authority, hash, quota.work())?;
         quota.transfer();
-        checkpoints::stage_immutable_vec_with_work(client, stream, Ok(bytes), quota.work()).await?;
+        checkpoints::stage_immutable(client, stream, Ok(bytes), quota.work()).await?;
         Ok(hash)
     }
     async fn update(
