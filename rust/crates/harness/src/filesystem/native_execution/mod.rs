@@ -134,7 +134,7 @@ where
         use acyclic_fs::native_mount::NativeMountPublicationFailure;
         use publication::failure;
         let work = self.work();
-        if !owner.native_custody.as_ref().is_some_and(|custody| custody.work().shares_allocation_context(work))
+        if !owner.native_shared_work_matches(work)
             || owner.task_binding() != (self.preparation.task, &self.preparation.original_fence)
         {
             return Err(Error::NativeBoundary {

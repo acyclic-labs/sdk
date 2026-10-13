@@ -869,7 +869,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             .runtime
             .runtime
             .task_host()
-            .journal_owner_with_native_work(request.caller, &fence, &self.work)
+            .journal_owner(request.caller, &fence, Some(&acyclic_harness::executor::PreparationIo::from_native_work(&self.work)?))
             .await?
             .with_invocation_cancellation(self.work.cancellation())
             .into_native_shared(&self.work)?;

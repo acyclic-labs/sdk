@@ -157,7 +157,7 @@ where
             maximum_payload_bytes, io)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            if !owner.native_custody.as_ref().is_some_and(|custody| custody.work().shares_allocation_context(work)) {
+            if !owner.native_shared_work_matches(work) {
                 return Err(stock_boundary(io, crate::wire::ErrorCode::Unauthorized,
                     "workflow owner belongs to another native ledger"));
             }

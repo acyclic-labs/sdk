@@ -243,18 +243,25 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(crate::filesystem::PreparationIo::original_native_work) {
             let (task, fence) = context.owned_task_binding_with_native_work(work)?;
-            let mut owner = self.runtime(io)?.task_host()
-                .journal_owner(task, fence.clone(), Some(&crate::filesystem::PreparationIo::from_native_work(work)?)).await?;
-            owner.invocation_stop = Some(cancellation.clone());
-            owner.require_mail_scope(context.scope(), &mut Some(&mut crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)))?;
-            return Ok(Arc::new(owner));
+            let owner = self
+                .runtime(io)?
+                .task_host()
+                .journal_owner(task, fence, Some(&crate::executor::PreparationIo::from_native_work(work)?))
+                .await?
+                .with_invocation_cancellation(cancellation);
+            owner.require_mail_scope_with_native_work(context.scope(), work)?;
+            return owner.into_native_shared(work);
         }
         let task = context.durable_task_id().ok_or_else(|| {
             Error::Unauthorized("recursive source has no original admitted reader".into())
         })?;
-        let mut owner = self.runtime(io)?.task_host().journal_owner(task, context.owned_task_fence()?, None).await?;
-        owner.invocation_stop = Some(cancellation.clone());
-        Ok(Arc::new(owner))
+        Ok(Arc::new(
+            self.runtime(io)?
+                .task_host()
+                .journal_owner(task, &(context.owned_task_fence()?), None)
+                .await?
+                .with_invocation_cancellation(cancellation),
+        ))
     }
     pub(super) fn resolver(
         &self,

@@ -94,7 +94,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     async fn verify_owner(owner: &TaskJournalOwner<P>, io: &PreparationIo) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.original_native_work() {
-            let cancellation = owner.invocation_stop.as_ref().ok_or(Error::NativeBoundary {
+            let cancellation = owner.invocation_cancellation().ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "selected source has no original invocation token",
             })?;

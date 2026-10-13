@@ -129,11 +129,11 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
             }
             VolumeClass::SessionShared => return Err(Error::Unauthorized("invalid Root volume class".into())),
         };
-        let root = proof.witness.binding();
+        let root = &proof.witness.0;
         if other.is_some_and(|other| {
-            other.witness.binding().original_task() != root.original_task()
+            other.witness.0.original_task() != root.original_task()
                 || other.owner() != proof.owner()
-                || other.witness.binding().agent() != root.agent()
+                || other.witness.0.agent() != root.agent()
                 || other.admission_digest != proof.admission_digest
         }) {
             return Err(Error::NativeBoundary {

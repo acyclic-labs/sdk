@@ -47,9 +47,7 @@ impl NativeSession {
         let owner = self
             .runtime
             .task_host()
-            .journal_owner(
-                binding.caller,
-                LeaseFence::from(&request.caller_lease.reservation), None)
+            .journal_owner(binding.caller, &(LeaseFence::from(&request.caller_lease.reservation)), None)
             .await?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = match acyclic_fs::NativeMaterializationWork::new(binding.budget, &cancellation) {

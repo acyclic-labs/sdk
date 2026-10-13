@@ -192,7 +192,7 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     };
     let owner = fixture
         .host
-        .journal_owner(task, (&lease.reservation).into(), None)
+        .journal_owner(task, &((&lease.reservation).into()), None)
         .await?;
     let child_agent = AgentId::from_bytes([94; 16]);
     let project = VolumeRef::new(

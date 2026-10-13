@@ -53,8 +53,8 @@ impl<P: StreamProvider> NativeRootOutputOwner for TaskJournalOwner<P> {
             let proof = self
                 .authenticated_root_binding_with_native_work(work)
                 .await?;
-            if proof.bind_operation() != source.bind_operation
-                || proof.intent_digest() != source.bind_intent
+            if proof.0.bind_operation() != source.bind_operation
+                || proof.0.intent_digest() != source.bind_intent
             {
                 return Err(boundary(
                     crate::wire::ErrorCode::Unauthorized,
@@ -263,7 +263,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                     crate::filesystem::PreparationIo::from_native_work(work)?,
                 )),
             )?;
-            if !owner.native_custody.as_ref().is_some_and(|custody| custody.work().shares_allocation_context(work)) {
+            if !owner.native_shared_work_matches(work) {
                 return Err(boundary(
                     crate::wire::ErrorCode::Unauthorized,
                     "ROOT output requires its original paid shared owner",
@@ -273,16 +273,16 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             let proof = owner
                 .authenticated_root_binding_with_native_work(work)
                 .await?;
-            verifier.verify_audience(proof.audience(), &mut Some(&mut &io))?;
+            verifier.verify_audience(proof.0.audience(), &mut Some(&mut &io))?;
             crate::core::inspect_metadata(
                 &(scope.capabilities(), &owner.admission.grants),
                 &mut Some(&mut &io),
             )?;
-            if scope.capabilities() != &owner.admission.grants
-                || scope.agent() != Some(proof.agent())
+            if scope.capabilities() != owner.input_grants()
+                || scope.agent() != Some(proof.0.agent())
                 || volume.provider() != &self.provider
                 || volume.class() != crate::conversation::VolumeClass::AgentPrivate
-                || volume.owner() != &crate::conversation::VolumeOwner::Agent(proof.agent())
+                || volume.owner() != &crate::conversation::VolumeOwner::Agent(proof.0.agent())
             {
                 return Err(boundary(
                     crate::wire::ErrorCode::Unauthorized,
@@ -290,18 +290,18 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 ));
             }
             let bind_operation = native_root_output_binding_operation(
-                proof.audience(),
+                proof.0.audience(),
                 volume,
                 creation_operation,
                 work,
             )?;
-            if proof.bind_operation() != bind_operation {
+            if proof.0.bind_operation() != bind_operation {
                 return Err(boundary(
                     crate::wire::ErrorCode::Unauthorized,
                     "ROOT creation differs from its protected original bind",
                 ));
             }
-            let bind_intent = proof.intent_digest();
+            let bind_intent = proof.0.intent_digest();
             let _name_custody;
             let name = crate::filesystem::fork_preparer_io::volume_storage_name(volume, Some(&io))?;
             _name_custody = io.guard_owned(name.capacity() as u64)?;

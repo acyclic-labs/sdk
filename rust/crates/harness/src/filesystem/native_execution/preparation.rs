@@ -44,7 +44,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
         work: &'a NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, Self>> {
         crate::NativeFutureBundle::new(work, || async move {
-            if !owner.native_custody.as_ref().is_some_and(|custody| custody.work().shares_allocation_context(work))
+            if !owner.native_shared_work_matches(work)
                 || options.root != allocation.root
                 || !options.work_per_volume.has_finite_allowances()
                 || bindings.is_empty()

@@ -172,7 +172,7 @@ where
             return Ok(false);
         };
         owner
-            .release_quiescent_execution(*operation, tail, &pending, &io)
+            .release_quiescent_execution(*operation, tail, &pending, &mut Some(&mut io.history_io()))
             .await
     }
 

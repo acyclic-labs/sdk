@@ -201,7 +201,7 @@ read_authorization: fork.authorized_source.clone(),
     };
     host.start_task(&lease, None).await?;
     let invocation = crate::filesystem::InvocationCancellation(acyclic_fs::CancellationToken::new());
-    let owner = Arc::new(host.journal_owner(prep_task, (&lease.reservation).into(), None).await?
+    let owner = Arc::new(host.journal_owner(prep_task, &((&lease.reservation).into()), None).await?
         .with_invocation_cancellation(&invocation.0));
     Ok((owner.resource_preparation(request, &mut None).await?, invocation))
 }

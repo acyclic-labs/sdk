@@ -89,7 +89,7 @@ pub(crate) trait ResourcePreparationLease: ProviderPlatform {
 #[cfg(feature = "filesystem")]
 impl<P: StreamProvider> ResourcePreparationLease for crate::durable_host::TaskJournalOwner<P> {
     fn cancellation(&self) -> Option<&acyclic_fs::CancellationToken> {
-        self.invocation_stop.as_ref()
+        self.invocation_cancellation()
     }
     fn verify_lease<'a>(
         &'a self,
@@ -98,7 +98,7 @@ impl<P: StreamProvider> ResourcePreparationLease for crate::durable_host::TaskJo
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(|io| io.original_native_work()) {
-            if !self.native_custody.as_ref().is_some_and(|custody| custody.work().shares_allocation_context(work)) {
+            if !self.native_shared_work_matches(work) {
                 return Err(Error::NativeBoundary {
                     code: Unauthorized,
                     reason: "preparation lease uses another native ledger",
