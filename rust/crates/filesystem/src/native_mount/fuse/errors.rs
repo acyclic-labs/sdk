@@ -131,9 +131,7 @@ pub(super) fn fatal_handler_error(error: &NativeMountError) -> bool {
                     crate::native_mount::native_workspace_failure_is_fatal(error)
                 }
                 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-                MountSourceError::SourceWatchStartup(_)
-                | MountSourceError::NativeWatchStartupFailed { .. }
-                | MountSourceError::NativeWatchSourceStartupFailed { .. } => true,
+                MountSourceError::NativeWatchStartupFailed { .. } => true,
                 MountSourceError::Work(_)
                 | MountSourceError::Cancelled
                 | MountSourceError::Allocation(_)

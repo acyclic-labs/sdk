@@ -346,7 +346,7 @@ where
     let mut mail = receive(runtime, caller, after, 1, work).await?;
     let mut outcome = runtime
         .task_host()
-        .outcome_with_native_work(requested, work)
+        .outcome_with_native_work(requested, work)?
         .await?;
     let state = match &outcome.0 {
         None | Some(Outcome::Indeterminate { .. }) => "pending",

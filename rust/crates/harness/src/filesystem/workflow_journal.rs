@@ -269,13 +269,8 @@ where
     fn require_machine_io(&self, io: Option<&PreparationIo>) -> Result<()> {
         if io.is_some() {
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-                // Native owner construction already validates the pinned machine callbacks.
-                if self.owner.as_ref().is_some_and(|owner| !owner.native_shared_work_matches(work)) {
-                    return Err(observation_boundary(io, crate::wire::ErrorCode::Unauthorized,
-                        "workflow owner belongs to another native ledger"));
-                }
-                return Ok(());
+            if io.and_then(PreparationIo::original_native_work).is_some() {
+                return self.owner.as_ref().map_or(Ok(()), |owner| owner.require_native_workflow_validation());
             }
             return Err(observation_boundary(io, crate::wire::ErrorCode::Unsupported,
                 "finite workflow replay requires a native machine callback"));
@@ -1036,7 +1031,7 @@ where
             let work = io.original_native_work().ok_or_else(|| observation_boundary(
                 Some(io), crate::wire::ErrorCode::Unsupported, "native replay requires original work",
             ))?;
-            self.require_machine_io(Some(io))?;
+            if let Some(owner) = &self.owner { owner.require_native_workflow_validation()?; }
             return crate::NativeFutureBundle::new(work, || async move {
                 let io = PreparationIo::from_native_work(work)?;
                 if let Some(owner) = &self.owner { self.verify_observation_owner(owner, Some(&io)).await?; }
@@ -1059,8 +1054,7 @@ where
         &'a self, expected_revision: u64, idempotency_key: IdempotencyKey,
         record: WorkflowRecord, work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (WorkflowRecord, acyclic_fs::NativeAllocation)>> {
-        let validation = PreparationIo::from_native_work(work)?;
-        self.require_machine_io(Some(&validation))?;
+        if let Some(owner) = &self.owner { owner.require_native_workflow_validation()?; }
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             let outcome = self.commit_with_io(expected_revision, idempotency_key, record, Some(&io)).await?;
