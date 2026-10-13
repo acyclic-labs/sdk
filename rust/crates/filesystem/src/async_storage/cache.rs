@@ -40,26 +40,6 @@ pub enum DecodedCacheAdmission {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn native_read_batch(
-    reads: Vec<ObjectRead>,
-    allocation: crate::materializer::NativeAllocation,
-) -> Result<
-    (Vec<ObjectRead>, crate::materializer::NativeAllocation),
-    crate::storage::ObjectStoreError,
-> {
-    let bytes = reads
-        .capacity()
-        .checked_mul(size_of::<ObjectRead>())
-        .and_then(|bytes| u64::try_from(bytes).ok());
-    if bytes != Some(allocation.bytes()) {
-        drop(reads);
-        drop(allocation);
-        return Err(crate::storage::ObjectStoreError::Corrupt);
-    }
-    Ok((reads, allocation))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn owned_read(
     read: ObjectRead,
     original: &crate::materializer::NativeMaterializationWork,

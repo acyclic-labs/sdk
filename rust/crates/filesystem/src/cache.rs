@@ -1449,7 +1449,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
                 let BatchBuffer { values, allocation } = receipt.value;
                 match allocation {
                     Some(KernelOwnedAllocation::NativeOriginal(allocation)) => {
-                        crate::async_storage::native_read_batch(values, allocation)
+                        Ok::<_, crate::ObjectStoreError>((values, allocation))
                     }
                     _ => {
                 drop(values);

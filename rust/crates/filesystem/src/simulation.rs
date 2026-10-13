@@ -1583,7 +1583,7 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
             .map_err(crate::async_storage::object_error)?;
         match allocation {
             KernelOwnedAllocation::NativeOriginal(allocation) => {
-                crate::async_storage::native_read_batch(reads, allocation)
+                Ok::<_, crate::ObjectStoreError>((reads, allocation))
             }
             KernelOwnedAllocation::Standalone => Err(ObjectStoreError::Corrupt),
         }
