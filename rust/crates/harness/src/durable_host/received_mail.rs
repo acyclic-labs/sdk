@@ -337,6 +337,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
     }
 
     /// Resolves only the authenticated donor's exact immutable parcel bytes.
+    #[cfg(feature = "filesystem")]
     pub(super) fn mailbox(&self, task: TaskId) -> Result<acyclic_stream::Stream<P>> {
         acyclic_stream::Stream::new(
             self.stream.clone(),
@@ -367,19 +368,18 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         #[cfg(feature = "filesystem")]
         let access = scope.created_access();
         #[cfg(feature = "filesystem")]
-        let mut reader: Option<&dyn ContentResidencyVerifier> = None;
-        #[cfg(feature = "filesystem")]
-        if let Some(access) = access.as_ref() {
-            for binding in &access.references {
-                if let Some(io) = quota.work().as_deref_mut() {
-                    io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
+        let reader: &dyn ContentResidencyVerifier = 'reader: {
+            if let Some(access) = access.as_ref() {
+                for (file, reader) in &access.references {
+                    if let Some(io) = quota.work().as_deref_mut() {
+                        io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect {
+                            items: 1,
+                        })?;
+                    }
+                    if file == payload {
+                        break 'reader reader.as_ref();
+                    }
                 }
-                if &binding.0 == payload {
-                    reader = Some(binding.1.as_ref());
-                    break;
-                }
-            }
-            if reader.is_none() {
                 for binding in &access.content {
                     if let Some(io) = quota.work().as_deref_mut() {
                         io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect {
@@ -387,15 +387,14 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                         })?;
                     }
                     if &binding.volume == payload.volume() {
-                        reader = Some(binding.binding.reader.as_ref());
-                        break;
+                        break 'reader binding.binding.reader.as_ref();
                     }
                 }
             }
-        }
+            self.reader.as_ref()
+        };
         #[cfg(not(feature = "filesystem"))]
-        let reader: Option<&dyn ContentResidencyVerifier> = None;
-        let reader = reader.unwrap_or(self.reader.as_ref());
+        let reader = self.reader.as_ref();
         let bytes = match quota.work().as_deref_mut() {
             Some(io) => {
                 crate::store::read_content_with_work(io, reader, payload)

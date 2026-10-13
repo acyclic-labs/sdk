@@ -159,9 +159,8 @@ pub(super) fn append_scanned_path(
     maximum: usize,
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
-    let index = match capture_position(paths, &path, meter)? {
-        Ok(_) => return capture_drop_path(path, meter),
-        Err(index) => index,
+    let Err(index) = capture_position(paths, &path, meter)? else {
+        return capture_drop_path(path, meter);
     };
     if paths.len() >= maximum {
         return Err(CaptureError::InvalidOptions);

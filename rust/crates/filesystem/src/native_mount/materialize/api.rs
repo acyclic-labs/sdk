@@ -193,7 +193,9 @@ where
     for path in paths {
         let mut insertion = selected_paths.len();
         while insertion != 0 {
-            let previous = selected_paths[insertion - 1];
+            let previous = *selected_paths
+                .get(insertion - 1)
+                .ok_or(MaterializeError::InvalidOptions)?;
             receipt
                 .custody
                 .work()
@@ -288,7 +290,13 @@ where
         {
             host_root
                 .0
-                .create_dir_all_held(&host_path.0[..separator], &mut work)
+                .create_dir_all_held(
+                    host_path
+                        .0
+                        .get(..separator)
+                        .ok_or(MaterializeError::InvalidOptions)?,
+                    &mut work,
+                )
                 .map_err(MaterializeError::from)?;
         }
         generation_action(

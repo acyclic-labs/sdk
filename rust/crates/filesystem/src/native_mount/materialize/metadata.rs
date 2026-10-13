@@ -114,11 +114,12 @@ pub(super) async fn apply_host_attributes_offloaded(
                     crate::native_host::set_extended_attributes(file, &attributes.0, work)
                 }
                 crate::native_host::MacMetadataTarget::Noop { .. } => {
-                    crate::native_host::NativeHostWork::check(work)
-                        .and(Err(crate::native_host::NativeMetadataError(
+                    crate::native_host::NativeHostWork::check(work).and(Err(
+                        crate::native_host::NativeMetadataError(
                             "named_attributes on a non-ordinary file kind",
                         )
-                        .into()))
+                        .into(),
+                    ))
                 }
             };
             #[cfg(target_os = "macos")]
@@ -256,7 +257,7 @@ pub(super) fn validate_bounds(options: &MaterializeOptions) -> Result<(), Materi
 
 pub(super) fn create_file(
     host_root: &HostRoot,
-    path: &Vec<HostPathUnit>,
+    path: &[HostPathUnit],
     receipt: &mut GenerationReceipt,
 ) -> Result<acyclic_native_runtime::NativeFile, MaterializeError> {
     let mut work = receipt.custody.work().clone();
@@ -345,7 +346,7 @@ pub(super) fn account_file(
 pub(super) fn create_symlink(
     host_root: &HostRoot,
     target: &acyclic_stream::OwnedBytes,
-    destination: &Vec<HostPathUnit>,
+    destination: &[HostPathUnit],
     receipt: &mut GenerationReceipt,
 ) -> Result<(), MaterializeError> {
     let mut work = receipt.custody.work().clone();

@@ -262,8 +262,7 @@ impl ProjFsSession {
         self.namespace_outcome = Some(ProjFsNamespaceOutcome {
             capture_failure: self.capture_failure.take(),
             cleanup_failure,
-            qualification: self.qualification,
-            state,
+            _state: state,
             callbacks: Arc::clone(&runtime.post_operation_failure),
         });
         self.runtime = None;
@@ -493,14 +492,14 @@ pub(super) fn source_hresult(error: &MountSourceError) -> HRESULT {
         MountSourceError::AlreadyExists => HR_ALREADY_EXISTS,
         MountSourceError::Invalid(_) => HR_INVALID_DATA,
         MountSourceError::Unsupported(_) => HR_NOT_SUPPORTED,
-        MountSourceError::Engine(_) => HR_IO_DEVICE,
-        MountSourceError::Stale | MountSourceError::Cancelled => HR_FILE_INVALID,
-        MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled) => {
+        MountSourceError::Stale
+        | MountSourceError::Cancelled
+        | MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled) => {
             HR_FILE_INVALID
         }
-        MountSourceError::Io(error, _) => {
-            HRESULT::from_win32(error.raw_os_error().unwrap_or(1117) as u32)
-        }
+        MountSourceError::Io(error, _) => HRESULT::from_win32(u32::from_ne_bytes(
+            error.raw_os_error().unwrap_or(1117).to_ne_bytes(),
+        )),
         _ => HR_IO_DEVICE,
     }
 }
@@ -508,9 +507,9 @@ pub(super) fn source_hresult(error: &MountSourceError) -> HRESULT {
 pub(super) fn native_hresult(error: &NativeMountError) -> HRESULT {
     match error {
         NativeMountError::Source(error) => source_hresult(error),
-        NativeMountError::Io(error) => {
-            HRESULT::from_win32(error.raw_os_error().unwrap_or(1117) as u32)
-        }
+        NativeMountError::Io(error) => HRESULT::from_win32(u32::from_ne_bytes(
+            error.raw_os_error().unwrap_or(1117).to_ne_bytes(),
+        )),
         NativeMountError::Materialization(crate::NativeTreeMaterializationError::Cancelled) => {
             HR_FILE_INVALID
         }

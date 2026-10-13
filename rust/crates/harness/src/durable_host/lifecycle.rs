@@ -32,16 +32,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         use crate::distributed::{WorkLease, WorkPull};
         use crate::scheduler::OperationPhase;
         let operation = OperationId::from_bytes(task.into_bytes());
-        let io = operation_io(work)?;
-        #[cfg(feature = "filesystem")]
-        let mut admission_history = io.as_ref().map(|io| io.history_io());
-        #[cfg(feature = "filesystem")]
-        let mut admission_work = admission_history
-            .as_mut()
-            .map(|io| io as &mut dyn crate::store::HistoryIo);
-        #[cfg(not(feature = "filesystem"))]
-        let mut admission_work = None;
-        self.admission(operation, &mut admission_work).await?;
+        self.admission_run_limits(operation, work).await?;
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh(work).await?;
         let state = coordinator.observe_operation(
@@ -89,16 +80,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<()> {
         let operation = lease.operation.operation_id;
-        let io = operation_io(work)?;
-        #[cfg(feature = "filesystem")]
-        let mut admission_history = io.as_ref().map(|io| io.history_io());
-        #[cfg(feature = "filesystem")]
-        let mut admission_work = admission_history
-            .as_mut()
-            .map(|io| io as &mut dyn crate::store::HistoryIo);
-        #[cfg(not(feature = "filesystem"))]
-        let mut admission_work = None;
-        let admission = self.admission(operation, &mut admission_work).await?;
+        let limits = self.admission_run_limits(operation, work).await?;
         let fence = crate::scheduler::LeaseFence {
             reservation_id: match work.as_deref_mut() {
                 Some(io) => io.clone_text(&lease.reservation.id)?,
@@ -126,8 +108,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             ));
         }
         if state.phase != crate::scheduler::OperationPhase::Reconciling
-            && admission
-                .run_limits
+            && limits
                 .deadline_epoch_ms
                 .is_some_and(|deadline| self.now_unix_millis() >= deadline)
         {
@@ -251,18 +232,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<()> {
         let operation = OperationId::from_bytes(task.into_bytes());
         if !settlement {
-            let io = operation_io(work)?;
-            #[cfg(feature = "filesystem")]
-            let mut admission_history = io.as_ref().map(|io| io.history_io());
-            #[cfg(feature = "filesystem")]
-            let mut admission_work = admission_history
-                .as_mut()
-                .map(|io| io as &mut dyn crate::store::HistoryIo);
-            #[cfg(not(feature = "filesystem"))]
-            let mut admission_work = None;
-            let admission = self.admission(operation, &mut admission_work).await?;
-            if admission
-                .run_limits
+            let limits = self.admission_run_limits(operation, work).await?;
+            if limits
                 .deadline_epoch_ms
                 .is_some_and(|deadline| self.now_unix_millis() >= deadline)
             {
