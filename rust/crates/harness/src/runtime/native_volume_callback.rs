@@ -136,7 +136,7 @@ impl<P: StreamProvider + 'static> VolumeCallback<P> {
         work: &'a NativeMaterializationWork,
         require_write: bool,
     ) -> std::result::Result<NativeMountCallbackFuture<'a>, NativeMountError> {
-        NativeMountCallbackFuture::new_guarded::<Error, _, _>(work, || async move {
+        NativeMountCallbackFuture::new_guarded::<Error, _, _>(work, move || async move {
             if require_write && !self.writable {
                 return Err(denied("read-only callback cannot authorize writes"));
             }
