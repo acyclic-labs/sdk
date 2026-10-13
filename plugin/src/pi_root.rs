@@ -125,10 +125,11 @@ mod identity_key_tests {
                         &identity
                     ));
                 }
-                assert!(!root_identity_key_matches(
-                    &canonical.chars().take(31).collect::<String>(),
-                    &identity
-                ));
+                assert!(
+                    canonical
+                        .get(..31)
+                        .is_some_and(|key| !root_identity_key_matches(key, &identity))
+                );
             }
         }
     }
