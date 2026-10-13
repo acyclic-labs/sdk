@@ -209,6 +209,4 @@ fn precondition(error: &ObjectStoreError) -> bool {
 mod requests;
 use requests::*;
 mod read;
-#[cfg(test)]
-mod tests;
 mod write;

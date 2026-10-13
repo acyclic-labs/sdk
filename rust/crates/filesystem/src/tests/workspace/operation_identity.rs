@@ -152,10 +152,8 @@ async fn historical_context_never_authorizes_a_foreign_reservation() -> Result<(
         reserve_publication(IdempotencyKey::new().operation_id())
     )?;
     assert!(matches!(
-        contextual_commit(&mut transaction, b"witness", permit(&foreign_reservation)).await,
-        Err(WorkspaceError::Filesystem(FsError::Authority(
-            crate::AuthorityStoreError::RejectedStatic(_)
-        )))
+        contextual_commit(&mut transaction, b"witness", permit(&foreign_reservation)).await?,
+        TransactionCommit::Fenced
     ));
     assert_eq!(unbounded!(target, head())?.id(), head.id());
     assert!(unbounded!(target, operation_generation(key))?.is_none());

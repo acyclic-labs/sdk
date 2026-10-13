@@ -78,6 +78,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
                         }
                     }
                 };
+                if matches!(value, TransactionCommit::Committed(_) | TransactionCommit::AlreadyCommitted(_)) {
+                    self.requires_rebase = true;
+                }
                 Ok(crate::OperationReceipt { value, work })
             },
             budget,
@@ -172,6 +175,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             )
         };
         if let Some(value) = outcome.and_then(|outcome| self.commit_value(outcome)) {
+            if matches!(value, TransactionCommit::Committed(_) | TransactionCommit::AlreadyCommitted(_)) {
+                self.requires_rebase = true;
+            }
             return Ok(value);
         }
         let actual = self
