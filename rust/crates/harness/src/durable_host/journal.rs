@@ -220,6 +220,16 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         write: crate::distributed::JournalWrite,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<acyclic_stream::CommitCondition> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if work
+            .as_deref()
+            .and_then(|io| io.original_native_work())
+            .is_some_and(|native| !self.native_shared_work_matches(native))
+        {
+            return Err(Error::Unauthorized(
+                "journal owner uses another metadata ledger".into(),
+            ));
+        }
         if self.read_proof.is_some() {
             return Err(Error::Unauthorized(
                 "historical admission has no publication authority".into(),
