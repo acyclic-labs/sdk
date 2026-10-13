@@ -445,11 +445,12 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     runtime.task_host().start_task(&lease, &mut None).await?;
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     let provider = Arc::new(ModelFixture(AtomicUsize::new(0)));
+    let turn = OperationId::from_bytes([130; 16]);
     let execution = runtime
         .stock_execution(
             task,
             LeaseFence::from(&lease.reservation),
-            OperationId::from_bytes([130; 16]),
+            turn,
             Model::new("fixture".into(), "headless".into(), "1".into(), json!({}))?,
             provider.clone(),
             ContextPipeline::default(),
@@ -959,7 +960,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
         .stock_execution(
             task,
             LeaseFence::from(&lease.reservation),
-            input.operation_id,
+            turn,
             Model::new("fixture".into(), "headless".into(), "1".into(), json!({}))?,
             provider.clone(),
             ContextPipeline::default(),

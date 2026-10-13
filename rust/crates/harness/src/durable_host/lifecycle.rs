@@ -350,17 +350,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             &mut work,
         )?;
         #[cfg(not(target_arch = "wasm32"))]
-        let state = match io.and_then(|io| io.original_native_work()) {
-            Some(native) => {
+        let state = match custody.as_mut() {
+            Some(custody) => {
                 let (state, mut held) = self.machines.initialize_with_native_work(
                     &admission.machine,
                     &admission.input,
-                    native,
+                    custody.work(),
                 )?;
-                custody
-                    .as_mut()
-                    .expect("native admission custody")
-                    .absorb(&mut held)?;
+                custody.absorb(&mut held)?;
                 state
             }
             None => self
@@ -394,19 +391,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         let fence = fence.clone_with_work(&mut work)?;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(custody) = custody.as_mut() {
+        if let (Some(custody), Some(io)) = (custody.as_mut(), io) {
             let retained = (std::mem::size_of::<TaskJournalOwner<P>>()
                 + 2 * std::mem::size_of::<usize>()) as u64
                 + fence.reservation_id.capacity() as u64
                 + fence.placement.capacity() as u64
                 + workflow.initial.machine.name.capacity() as u64
                 + workflow.initial.machine.version.capacity() as u64;
-            custody.absorb(
-                &mut work
-                    .as_deref_mut()
-                    .expect("native history")
-                    .take_native_custody(retained)?,
-            )?;
+            custody.absorb(&mut io.take_native_custody(retained)?)?;
         }
         let before_scope = io.map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
         let (scope, _scope_bytes) = self.authenticated_scope(&admission, &mut work).await?;
@@ -425,19 +417,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 .transpose()?
         };
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(custody) = custody.as_mut() {
+        if let (Some(custody), Some(io)) = (custody.as_mut(), io) {
             custody.absorb(
-                &mut work
-                    .as_deref_mut()
-                    .expect("native owner context")
-                    .take_native_custody(
-                        io.expect("native owner IO")
-                            .owned_bytes()?
-                            .checked_sub(before_scope)
-                            .ok_or_else(|| {
-                                Error::Invalid("created scope ownership underflows".into())
-                            })?,
-                    )?,
+                &mut io.take_native_custody(
+                    io.owned_bytes()?.checked_sub(before_scope).ok_or_else(|| {
+                        Error::Invalid("created scope ownership underflows".into())
+                    })?,
+                )?,
             )?;
         }
         let owner = TaskJournalOwner {

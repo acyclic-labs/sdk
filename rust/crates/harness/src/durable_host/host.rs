@@ -328,14 +328,30 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
         &self,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Option<&ComponentIdentity>> {
-        work.charge(acyclic_fs::WorkCounters::UNCHARGED)?;
-        if self.policy.is_some() {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "task state has no original native policy binding source",
-            });
+        work.remaining()?;
+        if let Some(policy) = &self.policy {
+            let (identity, custody) = policy.identity_with_native_work(work)?;
+            let needed = (std::mem::size_of::<ComponentIdentity>() as u64)
+                .checked_add(identity.name.capacity() as u64)
+                .and_then(|bytes| bytes.checked_add(identity.version.capacity() as u64))
+                .ok_or(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "native policy identity custody overflows",
+                })?;
+            if !custody.work().shares_ledger(work) || custody.bytes() < needed {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "policy identity differs from its original native metadata custody",
+                });
+            }
+            if self.policy_binding.as_ref() != Some(&identity) {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Conflict,
+                    reason: "durable policy implementation changed after native binding",
+                });
+            }
         }
-        Ok(None)
+        Ok(self.policy_binding.as_ref())
     }
 
     async fn observe_admission(&self, task_id: TaskId) -> Result<TaskAdmissionRecord> {

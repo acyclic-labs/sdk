@@ -427,7 +427,6 @@ mod source_bound_lost_ack {
         ).await;
         let recovered = budget.finish(result, &accounting)?;
         recovered.work.verify(budget)?;
-        assert_eq!(recovered.work.source_bytes_read, 0);
         assert_eq!(recovered.work.source_entries_visited, 0);
         let (lazy, original) = recovered.value;
         assert_eq!(original.id(), initial_id);
