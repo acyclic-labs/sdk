@@ -27,7 +27,7 @@ use crate::kernel::{
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::kernel::{
-    prove_generation_closure_with_native_work, prove_record_closure_with_native_work,
+    prove_record_closure_with_native_work,
     publish_generation_async_guarded_with_native_work,
 };
 

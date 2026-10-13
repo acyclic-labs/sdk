@@ -11,7 +11,7 @@ pub(super) fn proof_standalone_control_bytes() -> u64 {
 }
 
 #[derive(Clone)]
-pub(super) enum ProofMeter<'a> {
+pub(crate) enum ProofMeter<'a> {
     Standalone {
         state: std::sync::Arc<std::sync::Mutex<StandaloneProofState>>,
         cancellation: &'a CancellationToken,
@@ -24,7 +24,7 @@ pub(super) enum ProofMeter<'a> {
 }
 
 impl<'a> ProofMeter<'a> {
-    pub(super) fn standalone(
+    pub(crate) fn standalone(
         budget: WorkBudget,
         cancellation: &'a CancellationToken,
     ) -> Result<Self, crate::FsError> {
@@ -114,7 +114,7 @@ impl<'a> ProofMeter<'a> {
             .map(|owned| owned.1)
     }
 
-    pub(super) fn work(&self) -> WorkCounters {
+    pub(crate) fn work(&self) -> WorkCounters {
         match self {
             Self::Standalone { state, .. } => {
                 state
@@ -268,7 +268,7 @@ impl ProofGuard {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn take_native(&mut self) -> Result<crate::NativeAllocation, crate::FsError> {
+    pub(crate) fn take_native(&mut self) -> Result<crate::NativeAllocation, crate::FsError> {
         match self {
             ProofGuard::Native(guard) => guard.split_off(guard.bytes()).map_err(Into::into),
             ProofGuard::Standalone { .. } => {

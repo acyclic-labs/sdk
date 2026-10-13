@@ -522,18 +522,6 @@ pub enum MountSourceError {
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
     #[error("filesystem engine failure: source demand failed: native watcher backend failed: {0}")]
     NativeWatchOriginalBackend(#[source] notify::Error),
-    /// Same actual started root watcher retained after later admission failure.
-    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-    #[error(
-        "filesystem engine failure: source demand failed: native watcher startup failed: {cause}"
-    )]
-    NativeWatchStartupFailed {
-        /// Original typed cause, moved without another allocation.
-        #[source]
-        cause: crate::NativeTreeMaterializationError,
-        /// Actual same root watcher to retain through measured terminal cleanup.
-        watch: crate::watch::NativeWatch,
-    },
     /// An actual mutation failed and its original completion accounting also failed.
     #[error("mutation failed; original completion accounting also failed")]
     MutationFinalization {
@@ -547,21 +535,6 @@ pub enum MountSourceError {
     /// Original authenticated workspace cause, moved without formatting.
     #[error(transparent)]
     WorkspaceCause(crate::WorkspaceError),
-    /// Original workspace failure and the original prefix-accounting failure.
-    #[error("workspace operation and its prefix accounting failed")]
-    WorkspacePrefixFailure {
-        /// Complete original workspace cause.
-        #[source]
-        source: crate::WorkspaceError,
-        /// Complete scalar prefix failure; neither cause replaces the other.
-        accounting: crate::WorkspaceError,
-    },
-    /// Whole original workspace cause and its already funded outer custody.
-    #[error("{0}")]
-    NativeWorkspaceCause(
-        #[source] crate::WorkspaceError,
-        Option<crate::NativeAllocation>,
-    ),
     /// Original authorization denial in its already funded callback slot.
     #[cfg(not(target_arch = "wasm32"))]
     #[error("native callback authorization failed")]

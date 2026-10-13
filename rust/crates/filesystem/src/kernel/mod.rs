@@ -8,7 +8,7 @@ mod attribute_list;
 mod attribute_mutation;
 mod blob;
 mod checkpoint;
-mod closure;
+pub(crate) mod closure;
 pub(crate) mod codec;
 mod export;
 mod extent;
@@ -63,7 +63,7 @@ pub(crate) use blob::{build_blob_with_accounting, read_blob_range_with_accountin
 pub(crate) use checkpoint::build_checkpoint_with_accounting;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use closure::{
-    prove_generation_closure_with_native_work, prove_record_closure_with_native_work,
+    prove_record_closure_with_native_work,
 };
 pub(crate) use file_read::{OriginalReadAccounting, read_object_with_accounting};
 pub(crate) use file_read::{decode_owned, owned_read_bytes};

@@ -168,16 +168,18 @@ impl crate::kernel::AsyncBlobSource for acyclic_native_runtime::AsyncRangeReader
                 .state
                 .take_native_io_failure()
                 .map(crate::materializer::native_materialization_work_error)
-                .map(crate::FsError::NativeKernel)
-                .unwrap_or_else(|| {
-                    if error.kind() == std::io::ErrorKind::UnexpectedEof {
-                        crate::FsError::SourceSnapshotStale
-                    } else {
-                        crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Io(
-                            error,
-                        ))
-                    }
-                })
+                .map_or_else(
+                    || {
+                        if error.kind() == std::io::ErrorKind::UnexpectedEof {
+                            crate::FsError::SourceSnapshotStale
+                        } else {
+                            crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Io(
+                                error,
+                            ))
+                        }
+                    },
+                    crate::FsError::NativeKernel,
+                )
         })?;
         if result.0.len() != maximum {
             return Err(crate::FsError::SourceSnapshotStale);

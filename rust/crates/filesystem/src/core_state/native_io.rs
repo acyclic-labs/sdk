@@ -6,6 +6,10 @@ pub(crate) fn reserve<T>(
     work: &crate::materializer::NativeMaterializationWork,
     held: &mut crate::materializer::NativeAllocation,
 ) -> Result<(), crate::NativeTreeMaterializationError> {
+    work.admit(crate::WorkCounters::UNCHARGED)?;
+    if !held.work().shares_allocation_context(work) {
+        return Err(crate::NativeTreeMaterializationError::InvalidLayout);
+    }
     let prior = (values.capacity() * std::mem::size_of::<T>()) as u64;
     if held.bytes() < prior {
         let mut prefix = work.claim(prior - held.bytes(), 0, crate::WorkCounters::UNCHARGED)?;

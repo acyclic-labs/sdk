@@ -45,37 +45,57 @@ where
     let (proof, guard) = match accounting {
         #[cfg(not(target_arch = "wasm32"))]
         KernelAccounting::NativeOriginal { work: original, .. } => {
-            let (proof, guard) = crate::kernel::closure::prove_generation_closure_with_native_work(
+            crate::kernel::closure::ProofContext::new(
                 objects,
-                request.generation_root,
                 closure_limits,
-                original,
-                cancellation,
+                crate::kernel::closure::ProofMeter::Native {
+                    original,
+                    cancellation,
+                },
             )
+            .prove(request.generation_root)
             .await
-            .map_err(E::from)?;
-            (proof, ProofGuard::Native(guard))
+            .map_err(E::from)?
         }
         _ => {
             let (_, work, budget, _) = accounting
                 .standalone_parts()
                 .expect("ordinary publication has a standalone ledger");
-            match crate::kernel::closure::prove_generation_closure_owned_async(
-                objects,
-                request.generation_root,
-                closure_limits,
-                budget,
-                cancellation,
-            )
-            .await
+            if request.generation_root.kind != ObjectKind::GenerationRoot {
+                *work = WorkCounters::UNCHARGED;
+                return Err(E::from(crate::FsError::Closure(
+                    ClosureError::WrongObjectKind,
+                )));
+            }
+            if closure_limits.maximum_objects == 0 {
+                *work = WorkCounters::UNCHARGED;
+                return Err(E::from(crate::FsError::Closure(
+                    ClosureError::TooManyObjects {
+                        observed: 1,
+                        maximum: 0,
+                    },
+                )));
+            }
+            let meter = crate::kernel::closure::ProofMeter::standalone(budget, cancellation)
+                .map_err(|error| {
+                    *work = WorkCounters::UNCHARGED;
+                    E::from(crate::FsError::Closure(
+                        crate::kernel::closure::closure_error(error),
+                    ))
+                })?;
+            match crate::kernel::closure::ProofContext::new(objects, closure_limits, meter.clone())
+                .prove(request.generation_root)
+                .await
             {
                 Ok((proof, guard)) => {
                     *work = proof.work;
                     (proof, guard)
                 }
                 Err(failure) => {
-                    *work = *failure.work;
-                    return Err(E::from(crate::FsError::Closure(failure.error)));
+                    *work = meter.work();
+                    return Err(E::from(crate::FsError::Closure(
+                        crate::kernel::closure::closure_error(failure),
+                    )));
                 }
             }
         }

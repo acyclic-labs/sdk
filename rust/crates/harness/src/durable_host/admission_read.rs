@@ -20,12 +20,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let value = self.read_json(&spec.state, io.as_ref()).await?;
         let owned = crate::executor::json::json_value_logical_owned_bytes(&value)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(io) = &io {
-            quota
-                .work()
-                .as_deref_mut()
-                .expect("original observer")
-                .absorb_native_custody(io.take_native_custody(owned)?)?;
+        if let (Some(io), Some(observer)) = (&io, quota.work().as_deref_mut()) {
+            observer.absorb_native_custody(io.take_native_custody(owned)?)?;
         }
         quota.adopt(owned)?;
         let (admission, held) = TaskAdmissionRecord::from_canonical_value(value, quota.work())?;
