@@ -497,7 +497,7 @@ impl TaskAdmissionRecord {
                         .codec_charge(charge),
                 },
             );
-            let admission = decoded.map_err(|mut error| {
+            let admission: Self = decoded.map_err(|mut error| {
                 if let Error::NativeJson { custody, .. } = &mut error {
                     let retained = quota.retained();
                     *custody = Some(
@@ -512,7 +512,11 @@ impl TaskAdmissionRecord {
                 }
                 error
             })?;
-            let bytes = quota.retained();
+            let bytes = crate::core::owned_sum([
+                std::mem::size_of::<Self>() as u64,
+                admission.logical_owned_bytes()?,
+            ])?;
+            quota.replace(bytes)?;
             quota.transfer();
             return Ok((admission, bytes));
         }
