@@ -1,10 +1,11 @@
 use super::*;
+use crate::demand::NativeMountAllocationCustody;
 
 pub(super) struct FileHandle {
     file_id: FileId,
     file: Option<(
         Arc<dyn MountOpenFile>,
-        Option<Arc<crate::demand::NativeMountAllocationCustody>>,
+        Option<Arc<NativeMountAllocationCustody>>,
     )>,
     written: Arc<DarwinOwned<AtomicU64>>,
 }
@@ -252,22 +253,6 @@ impl DarwinMountContext {
         Ok(true)
     }
 
-    pub(super) fn verify_labels(&self, work: &Work) -> Result<bool, NativeMountError> {
-        let cleared = self.labels_cleared.load(Ordering::Acquire);
-        let Some(issued) = self.issued_labels(work)? else {
-            return Ok(false);
-        };
-        for (path, lookup) in issued.iter() {
-            work.charge(scan_work(1))?;
-            match self.lookup(path, work) {
-                Ok(current) if same_attributes(current, *lookup) => {}
-                Err(cause) if fatal(&cause) => return Err(cause),
-                _ => return Ok(false),
-            }
-        }
-        Ok(self.labels_cleared.load(Ordering::Acquire) == cleared)
-    }
-
     pub(super) fn inode(&self, file_id: FileId, work: &Work) -> Result<u64, NativeMountError> {
         let mut inodes = self.inodes.lock().map_err(|_| driver_errno(libc::EIO))?;
 
@@ -405,7 +390,7 @@ impl DarwinMountContext {
         (
             (
                 Arc<dyn MountOpenFile>,
-                Option<Arc<crate::demand::NativeMountAllocationCustody>>,
+                Option<Arc<NativeMountAllocationCustody>>,
             ),
             Option<Arc<DarwinOwned<AtomicU64>>>,
         ),
