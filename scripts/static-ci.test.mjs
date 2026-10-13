@@ -14,6 +14,7 @@ function fixture(body){
  };
  try{
   mkdirSync(join(root,'scripts/vendor'),{recursive:true});
+  copyFileSync(resolve('.gitattributes'),join(root,'.gitattributes'));
   for(const name of ['static-ci.mjs','static-policy.mjs','vendor/yaml.cjs'])copyFileSync(resolve('scripts',name),join(root,'scripts',name));
   git('init','-q');git('config','tag.gpgSign','false');git('config','commit.gpgSign','false');git('config','user.name','Contract');git('config','user.email','contract@example.invalid');
   const commit=message=>{git('add','.');git('commit','--allow-empty','-qm',message);};
@@ -51,3 +52,22 @@ test('release policy fetches complete history and docs describe only release dia
  assert.match(docs,/publish=false/);assert.match(docs,/no independent manual triggers/);
  assert.doesNotMatch(docs,/Manual diagnostic qualification remains available|native-mount-qualification\.yml|five-minute job/);
 });
+
+test('release whitespace preserves byte-exact transport artifacts and generated declarations',()=>fixture(({root,git,commit,check})=>{
+ git('tag','acyclic-v0.1.0');
+ const artifacts={
+  'patches/example.patch':'@@ -1 +1 @@\n \n',
+  'rust/crates/harness-codex/fixtures/codex-0.155.1/help-exec.txt':'Usage\n          \n',
+  'typescript/packages/actors/src/generated/ErrorMetadata.ts':'export type ErrorMetadata = { \ncode: string, \n};\n',
+ };
+ for(const [path,bytes] of Object.entries(artifacts)){mkdirSync(join(root,path,'..'),{recursive:true});writeFileSync(join(root,path),bytes);}
+ commit('record producer artifacts');commit('later source');
+ const result=check();assert.equal(result.status,0,result.stdout+result.stderr);
+ for(const [path,bytes] of Object.entries(artifacts))assert.equal(readFileSync(join(root,path),'utf8'),bytes);
+}));
+
+test('artifact whitespace rules still reject handwritten source errors',()=>fixture(({root,git,commit,check})=>{
+ git('tag','acyclic-v0.1.0');mkdirSync(join(root,'typescript/packages/actors/src'),{recursive:true});
+ writeFileSync(join(root,'typescript/packages/actors/src/client.ts'),'export const value=1; \n');commit('source whitespace');commit('later commit');
+ const result=check();assert.notEqual(result.status,0);assert.match(result.stdout,/client\.ts.*trailing whitespace/);
+}));

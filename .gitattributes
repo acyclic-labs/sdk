@@ -13,3 +13,9 @@
 *.bin binary
 *.wasm binary
 *.node binary
+
+# Preserve byte-exact patch context and captured CLI output.
+patches/*.patch -whitespace
+rust/crates/harness-codex/fixtures/*/help-*.txt -whitespace
+# ts-rs emits spaces before line breaks in its generated declarations.
+typescript/packages/actors/src/generated/*.ts whitespace=-blank-at-eol
