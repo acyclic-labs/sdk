@@ -36,21 +36,6 @@ impl TaskRunLimits {
         Ok(())
     }
 
-    pub(super) fn validate_observed(&self, io: StartupIo<'_>) -> Result<()> {
-        native_startup::item(io, 0)?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        {
-            let mut observer = io.map(crate::filesystem::PreparationIo::history_io);
-            self.validate(
-                &mut observer
-                    .as_mut()
-                    .map(|io| io as &mut dyn crate::store::HistoryIo),
-            )
-        }
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        self.validate(&mut None)
-    }
-
     pub(super) fn check_deadline(&self) -> Result<()> {
         let Some(deadline) = self.deadline_epoch_ms else {
             return Ok(());
@@ -260,7 +245,10 @@ impl RuntimeScope {
                 .work()
                 .as_deref_mut()
                 .expect("proof vector copy observer")
-                .codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                .codec_charge(crate::executor::json::JsonCodecCharge::Work {
+                    bytes: 0,
+                    items: 1,
+                })?;
             let (copied, retained) = proof.copy(quota.work())?;
             quota.adopt(retained)?;
             Ok(copied)
@@ -512,7 +500,10 @@ impl RuntimeScope {
         }
         for grant in admission.grants.iter() {
             if let Some(io) = work.as_deref_mut() {
-                io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                io.codec_charge(crate::executor::json::JsonCodecCharge::Work {
+                    bytes: 0,
+                    items: 1,
+                })?;
             }
             if !self.grants.contains(grant)
                 && !access
