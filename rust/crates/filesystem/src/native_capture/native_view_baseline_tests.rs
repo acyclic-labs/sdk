@@ -9,7 +9,7 @@ fn native_view_keeps_canonical_stamps_for_the_same_root() -> Result<(), Box<dyn 
         .map_err(crate::native_host::ordinary_error)?;
     let identity = root.identity();
     let baseline = NativeViewBaseline::new(identity, false);
-    let snapshot = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("file"))?)?;
+    let snapshot = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("file"))?);
     let prior = FileMetadata {
         changed_ns: MetadataField::Value(-123),
         created_ns: MetadataField::Value(-456),

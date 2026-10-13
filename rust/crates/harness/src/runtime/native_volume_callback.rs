@@ -189,15 +189,16 @@ mod tests {
             )
             .await?
             .into_native_shared(&original)?;
-        let (context, custody) = fixture
+        let context = fixture
             .harness
-            .durable_context_with_native_work(
+            .durable_context(
                 fixture.root,
                 fixture.root_lease.operation.operation_id,
-                &original,
+                Some(&crate::filesystem::PreparationIo::from_native_work(
+                    &original,
+                )?),
             )
             .await?;
-        let context = context.into_native_shared(custody, &original)?;
         assert!(matches!(
             context.verify_volume_owner(&owner, &original).await,
             Err(Error::NativeBoundary {

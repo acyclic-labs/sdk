@@ -455,6 +455,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             (lookup, allocation)
         })
     }
+    pub(super) async fn lookup_content_record<F: ContentFile>(
+        &mut self,
+        file: &F,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<FileRecord, FsError> {
+        let record = match file.address() {
+            ContentAddress::Path(path) => {
+                let (lookup, allocation) = self
+                    .lookup_no_follow_with_accounting(path, accounting, cancellation, false)
+                    .await?;
+                drop(allocation);
+                lookup.record
+            }
+            ContentAddress::File(id) => {
+                self.lookup_file_record_by_id_with_accounting(id, accounting, cancellation)
+                    .await?
+            }
+        };
+        record.ok_or(FsError::NotFound)
+    }
+
     pub(crate) async fn lookup_file_record_by_id_with_accounting(
         &self,
         file_id: FileId,

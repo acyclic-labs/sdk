@@ -184,19 +184,7 @@ pub(super) type NativeWork = acyclic_fs::NativeMaterializationWork;
 pub(super) type NativeWork = ();
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn validate_native_policy_identity(
-    paid: &(ComponentIdentity, Option<NativeCustody>),
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<()> {
-    let custody = paid.1.as_ref().ok_or(Error::NativeBoundary {
-        code: crate::wire::ErrorCode::Conflict,
-        reason: "policy identity does not retain its original ledger",
-    })?;
-    validate_policy_identity_custody_with_native_work(&paid.0, custody, work)
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn validate_policy_identity_custody_with_native_work(
+pub(super) fn check_policy_metadata(
     identity: &ComponentIdentity,
     custody: &acyclic_fs::NativeAllocation,
     work: &acyclic_fs::NativeMaterializationWork,
@@ -212,18 +200,6 @@ pub(super) fn validate_policy_identity_custody_with_native_work(
     }
     work.remaining()?;
     Ok(())
-}
-
-/// Shared SDK startup boundary for already-owned policy metadata.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn validate_policy_identity_with_native_work(
-    identity: &ComponentIdentity,
-    custody: &acyclic_fs::NativeAllocation,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<()> {
-    validate_policy_identity_custody_with_native_work(identity, custody, work)?;
-    let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-    validate_policy_identity(identity, Some(&io))
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -367,7 +343,7 @@ impl ToolContext {
                 })?;
             (call_id, Some(custody))
         } else {
-            if task.native_metadata_source.is_some() {
+            if task.native_custody.is_some() {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unsupported,
                     reason: "native tool context requires its original work",
@@ -505,10 +481,7 @@ impl ToolContext {
     /// Checks the SDK-issued native dispatch context before MCP allocation or IO.
     pub fn validate_native_mcp_context(&self, work: &NativeWork) -> Result<()> {
         let context = self.validate_native_bound_context(work)?;
-        if !context
-            .native_metadata_source
-            .as_ref()
-            .is_some_and(|source| source.purpose == IssuedContextPurpose::Dispatch)
+        if context.native_purpose != Some(IssuedContextPurpose::Dispatch)
         {
             return Err(native_context::boundary(
                 crate::wire::ErrorCode::Unauthorized,

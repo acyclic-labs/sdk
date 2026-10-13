@@ -1,5 +1,4 @@
 use super::*;
-use crate::kernel::{KernelAccounting, KernelOwnedAllocation, Owned};
 
 /// Durable bindings and content-addressed source facts.
 pub trait LazyWorkspaceStore: Clone + Send + Sync + 'static {
@@ -92,25 +91,13 @@ fn insert<K, V>(
             if matches!(table.allocation, KernelOwnedAllocation::Standalone) {
                 table.allocation = ctx.claim_owned(table.bytes, 0)?;
             }
-            let count = table
-                .value
-                .capacity()
-                .checked_mul(2)
-                .ok_or(crate::WorkError::Overflow)?
-                .max(1);
-            let mut next = Owned::allocate(count, ctx)?;
             let copied = WorkCounters {
                 items_examined: table.value.len() as u64,
                 bytes_copied: (table.value.len() * std::mem::size_of::<(K, V)>()) as u64,
                 ..WorkCounters::UNCHARGED
             };
-            if let Err(error) = ctx.admit(copied) {
-                next.retire(ctx)?;
-                return Err(error.into());
-            }
-            next.value.append(&mut table.value);
-            let old = std::mem::replace(table, next);
-            old.retire(ctx)?;
+            ctx.admit(copied)?;
+            table.ensure_for_push(usize::MAX, ctx)?;
             ctx.record_completed(copied)?;
         }
         let moved = WorkCounters {

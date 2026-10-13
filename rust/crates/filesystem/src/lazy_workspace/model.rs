@@ -142,7 +142,7 @@ pub enum LazyShadow {
         /// Canonically encoded immutable file record.
         record: Vec<u8>,
         /// Projected scalar metadata authenticated with the record.
-        metadata: Box<crate::WorkspaceMetadata>,
+        metadata: crate::WorkspaceMetadata,
         /// Identities ordered before this one.
         left: LazyShadowId,
         /// Identities ordered after this one.

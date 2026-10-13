@@ -83,23 +83,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         let mut prepared = false;
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let state = self.state(ctx).await?;
-            let shadows = if let LazyLookup::Authored { stat, .. } = lookup {
-                let checkout = self
-                    .checkout(crate::model::GenerationSelector::Head, ctx)
-                    .await?;
-                let record = checkout
-                    .value
-                    .lookup_file_record_by_id_with_accounting(stat.file_id, ctx, cancellation(ctx))
-                    .await;
-                checkout.retire(ctx)?;
-                self.insert_shadow(
-                    state.shadows,
-                    stat.file_id,
-                    record?.ok_or(LazyWorkspaceError::NotFound)?,
-                    stat.metadata,
-                    ctx,
-                )
-                .await?
+            let shadows = if let LazyLookup::Authored {
+                record, metadata, ..
+            } = lookup
+            {
+                self.insert_shadow(state.shadows, record.file_id, *record, *metadata, ctx)
+                    .await?
             } else {
                 state.shadows
             };
@@ -137,21 +126,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             return Err(LazyWorkspaceError::Concurrent);
         }
         if let PendingLazyRemoveKind::Authored { idempotency_key } = kind {
-            let checkout = self
+            let mut transaction = accounted!(ctx, |work, cancel| self
                 .workspace
-                .checkout_accounted(
-                    crate::model::GenerationSelector::Head,
-                    crate::model::CheckoutMode::tracking_transaction(),
-                    ctx,
-                    cancellation(ctx),
-                )
-                .await?;
-            let mut transaction = crate::Transaction::from_checkout(
-                &self.workspace,
-                checkout,
-                idempotency_key,
-                false,
-            );
+                .begin_transaction(idempotency_key, work, cancel))?;
             let staged = accounted!(ctx, |work, cancel| transaction
                 .remove_if(path, actual, work, cancel));
             if let Err(error) = staged {

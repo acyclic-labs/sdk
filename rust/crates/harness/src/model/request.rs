@@ -209,31 +209,14 @@ impl PreparedModelRequest {
             if io.original_native_work().is_some() {
                 return Self::encode_admitted(request, limits, Some(io));
             }
-            // Guards outlive payloads if preparation fails.
             let request_hold;
             let bytes_hold;
             let request = request;
-            let before = io.receipt().items_examined;
+            // Bound JSON depth before the recursive capacity inventory.
             let bytes = io.encode(&request, io.remaining()?.bytes_encoded, true)?;
             bytes_hold = io.guard_bytes(&bytes)?;
-            let items = io
-                .receipt()
-                .items_examined
-                .checked_sub(before)
-                .ok_or_else(|| Error::Invalid("model request encoding count underflow".into()))?;
-            let owned = items
-                .checked_mul(
-                    <ModelRequest as crate::filesystem::PreparationRecord>::maximum_slot_bytes(),
-                )
-                .and_then(|slots| slots.checked_mul(8))
-                .and_then(|slots| {
-                    (bytes.len() as u64)
-                        .checked_mul(4)
-                        .and_then(|strings| slots.checked_add(strings))
-                })
-                .and_then(|owned| owned.checked_add(size_of::<ModelRequest>() as u64))
-                .ok_or_else(|| Error::Invalid("model request ownership overflow".into()))?;
-            request_hold = io.reserve_decode(owned)?;
+            request_hold =
+                io.reserve_decode(add(size_of::<Self>() as u64, request.payload_bytes()?)?)?;
             request.validate(limits, Some(io))?;
             let request_digest = hash_bytes(&bytes, Some(io))?;
             if let Some(hold) = bytes_hold {

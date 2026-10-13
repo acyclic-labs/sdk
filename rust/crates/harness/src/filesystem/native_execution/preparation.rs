@@ -93,15 +93,18 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                 let volume_work = work.native_volume_work(options.work_per_volume)?;
                 verify_binding(owner, binding, guard, &volume_work).await?;
                 let volume_io = PreparationIo::from_native_work(&volume_work)?;
-                let reference = crate::filesystem::fork_preparer_io::content_workspace(
+                let reference = super::super::fork_preparer::bounded_io::content_workspace(
                     &binding.host.provider,
                     binding.volume,
                     Some(&volume_io),
                 )?;
-                let workspace =
-                    crate::filesystem::fork_preparer_io::open(binding.host, &reference, &volume_io)
-                        .await?;
-                let generation = crate::filesystem::fork_preparer_io::generation(
+                let workspace = super::super::fork_preparer::bounded_io::open(
+                    binding.host,
+                    &reference,
+                    &volume_io,
+                )
+                .await?;
+                let generation = super::super::fork_preparer::bounded_io::generation(
                     binding.host,
                     &workspace,
                     binding.generation,
@@ -233,7 +236,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
             {
                 return Err(invalid());
             }
-            let verify = || async {
+            let verify = move || async move {
                 for (binding, guard) in bindings.iter().zip(guards) {
                     verify_binding(owner, binding, guard, work).await?;
                 }

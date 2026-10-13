@@ -589,7 +589,7 @@ async fn lazy_node_collection_keeps_exactly_the_reachable_nodes() {
         file_id: crate::foundation::FileId::from_bytes([7; 16]),
         priority: 0,
         record: record.clone(),
-        metadata: Box::new(metadata),
+        metadata,
         left: empty_shadows,
         right: empty_shadows,
     };
@@ -606,7 +606,7 @@ async fn lazy_node_collection_keeps_exactly_the_reachable_nodes() {
         file_id: crate::foundation::FileId::from_bytes([8; 16]),
         priority: 0,
         record,
-        metadata: Box::new(metadata),
+        metadata,
         left: empty_shadows,
         right: empty_shadows,
     };

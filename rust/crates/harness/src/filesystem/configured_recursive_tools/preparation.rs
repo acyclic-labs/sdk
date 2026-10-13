@@ -127,7 +127,7 @@ where
         let shared = match context {
             #[cfg(not(target_arch = "wasm32"))]
             WorkerContext::Native(shared) => Arc::clone(shared),
-            WorkerContext::Ordinary(reader) => Arc::new(reader.clone()),
+            WorkerContext::Ordinary(reader) => Arc::clone(reader),
         };
         let resolver = crate::runtime::content_residency_verifier(shared, owner, io)?;
         let verifier =

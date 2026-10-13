@@ -393,11 +393,11 @@ pub(super) fn create_special(
     destination: &Vec<HostPathUnit>,
     kind: FileKind,
     device: Option<(u32, u32)>,
-    receipt: &mut GenerationReceipt,
+    _receipt: &mut GenerationReceipt,
 ) -> Result<(), MaterializeError> {
     #[cfg(unix)]
     {
-        let mut work = receipt.custody.work().clone();
+        let mut work = _receipt.custody.work().clone();
         match kind {
             FileKind::Fifo => host_root
                 .create_fifo_held(super::work::host_path(destination), 0o600, &mut work)

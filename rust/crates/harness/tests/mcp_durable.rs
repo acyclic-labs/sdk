@@ -476,7 +476,7 @@ async fn phase(
     let task = TaskId::from_bytes([42; 16]);
     let op = OperationId::from_bytes([43; 16]);
     let context = runtime
-        .durable_context(task, OperationId::from_bytes([44; 16]))
+        .durable_context(task, OperationId::from_bytes([44; 16]), None)
         .await?;
     let runner = DurableToolRunner::new(&tools, journal, None)?;
     runner
