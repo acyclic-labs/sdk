@@ -1,4 +1,4 @@
-//! Runs the protocol through the existing task and workflow owners.
+//! Recursive operations rely on the existing durable tool runner and SDK journals.
 use super::*;
 use crate::filesystem::PreparationIo;
 
@@ -20,29 +20,22 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
             work.remaining()?;
-            reject_if(
-                !context.native_metadata_matches(work),
-                io,
-                crate::wire::ErrorCode::Unauthorized,
-                "recursive metadata belongs to another original context",
-            )?;
+            deny(!context.native_metadata_matches(work), io)?;
         }
         let scope = context.effective_scope();
-        let (grant, call) = if self.durable.definition.name == "acyclic.fork" {
+        let (grant, call) = if self.definition.name == "acyclic.fork" {
             ("fork:publish", "tool:call:acyclic.fork")
         } else {
             ("project:merge", "tool:call:acyclic.merge")
         };
-        reject_if(
+        deny(
             context.operation_id() != invocation.operation_id
                 || context.call_id() != invocation.call_id
                 || context.durable_task_id().is_none()
-                || invocation.name != self.durable.definition.name
+                || invocation.name != self.definition.name
                 || !scope.grants().contains(grant)
                 || !scope.grants().contains(call),
             io,
-            crate::wire::ErrorCode::Unauthorized,
-            "recursive invocation changed its admitted caller or effect",
         )?;
         recursive_byte_bound(
             &invocation.arguments,
@@ -57,144 +50,89 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
         invocation: &ToolInvocation,
         cancellation: &CancellationToken,
         io: Option<&PreparationIo>,
-    ) -> Result<(Option<ToolResult>, crate::NativeCustody)> {
+    ) -> Result<Option<ToolResult>> {
         cancellation
             .check()
             .map_err(|error| Error::Storage(error.to_string()))?;
         self.check_authority(context, invocation, io)?;
-        let (runtime, workflow) = self
+        crate::executor::with_history_io(io, |work| {
+            crate::executor::validate_json_schema_value(
+                &self.definition.input_schema,
+                &invocation.arguments,
+                "tool input",
+                work,
+            )
+        })?;
+        let approval = 'approval: {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+                break 'approval context
+                    .authorize_tool(&self.definition, invocation, work)
+                    .await?;
+            }
+            context
+                .task()
+                .authorize_tool(&self.definition, invocation)
+                .await?
+        };
+        if let Some(operation) = approval {
+            return Err(Error::Indeterminate(operation));
+        }
+        let owner = self
             .source
             .as_ref()
             .expect("authorized source")
-            .owner(context, &self.durable, invocation, cancellation, io)
+            .owner(context, cancellation, io)
             .await?;
-        let owner = workflow.owner.as_ref().expect("validated tool owner");
-        let caller = context
-            .durable_task_id()
-            .expect("authorized durable caller");
+        let caller = context.durable_task_id().expect("authorized caller");
         {
             let temporary = recursive_temporary_io(io)?;
-            let admitted = runtime
+            let admission = owner
+                .0
                 .admission_observed(caller, temporary.as_ref())
                 .await?;
             reject_if(
-                admitted.grants != *context.scope().grants()
-                    || admitted.limits != context.scope().limits()
-                    || admitted.run_limits != context.scope().run_limits(),
+                admission.execution.is_some(),
                 io,
-                crate::wire::ErrorCode::Unauthorized,
-                "recursive owner differs from original admission",
+                crate::wire::ErrorCode::Unsupported,
+                "stock routed execution provider is not composed",
+            )?;
+            deny(
+                admission.grants != *context.scope().grants()
+                    || admission.limits != context.scope().limits()
+                    || admission.run_limits != context.scope().run_limits(),
+                io,
             )?;
         }
-        runtime
-            .owner_observed(caller, owner.task_binding().1, false, io)
+        owner
+            .0
+            .owner_observed(caller, owner.1.task_binding().1, false, io)
             .await?;
-
-        // The SDK sessions differ in their input/output guard contract, not in protocol control flow.
-        macro_rules! drive {
-            ($session:ident, $local:ident, $input:ident, $identity:ident, $step:expr) => {{
-                for _ in 0..8 {
-                    cancellation
-                        .check()
-                        .map_err(|error| Error::Storage(error.to_string()))?;
-                    runtime
-                        .owner_observed(caller, owner.task_binding().1, false, io)
-                        .await?;
-                    let temporary = recursive_temporary_io(io)?;
-                    let $local = temporary.as_ref();
-                    let (state, state_custody) = 'state: {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        if let Some(io) = $local {
-                            let (state, custody) = crate::filesystem::native_decoded(
-                                io.value_decode_preparation::<State>(
-                                    &$session.checkpoint().state,
-                                    crate::wire::ErrorCode::Invalid,
-                                )?,
-                            )?;
-                            break 'state (state, Some(custody));
-                        }
-                        (decode::<State>(&$session.checkpoint().state, None)?, None)
-                    };
-                    if let State::Complete { value } = state {
-                        return Ok((Some(ToolResult { value }), state_custody));
-                    }
-                    let Some($input) = self
-                        .input(
-                            context,
-                            invocation,
-                            &(runtime.clone(), workflow.clone()),
-                            state,
-                            cancellation,
-                            $local,
-                        )
-                        .await?
-                    else {
-                        return Ok((None, None));
-                    };
-                    let $identity = transition_identity(
-                        invocation.operation_id,
-                        $session.checkpoint().revision,
-                        $local,
-                    )?;
-                    let (transition, custody): (MachineTransition, crate::NativeCustody) = $step;
-                    runtime
-                        .owner_observed(caller, owner.task_binding().1, false, io)
-                        .await?;
-                    match transition.status {
-                        MachineStatus::Completed { value } => {
-                            return Ok((Some(ToolResult { value }), custody));
-                        }
-                        MachineStatus::Failed { message } => {
-                            #[cfg(not(target_arch = "wasm32"))]
-                            if let Some(custody) = custody {
-                                return Err(Error::NativeDiagnostic {
-                                    code: crate::wire::ErrorCode::Conflict,
-                                    message,
-                                    custody,
-                                });
-                            }
-                            return Err(Error::Conflict(message));
-                        }
-                        MachineStatus::Suspended => {}
-                    }
-                    drop(state_custody);
-                }
-                if io.is_some() {
-                    return Ok((None, None));
-                }
-                return Err(Error::Invalid(
-                    "recursive tool exceeded its finite command sequence".into(),
-                ));
-            }};
-        }
-
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            let mut session = self
-                .durable
-                .open_with_native_context(context, invocation, workflow.clone(), work)?
-                .await?;
-            drive!(session, local, input, identity, {
-                let custody = local
-                    .expect("native input")
-                    .take_native_custody(local.expect("native input").owned_bytes()?)?;
-                let (transition, custody) = session
-                    .step(identity.0, identity.1, input, custody, work)?
-                    .await?;
-                (transition, Some(custody))
-            });
-        }
-        let mut session = self
-            .durable
-            .open(context.clone(), invocation.clone(), workflow.clone())
+        let temporary = recursive_temporary_io(io)?;
+        let plan = self
+            .pinned_plan(
+                context,
+                invocation,
+                &owner,
+                cancellation,
+                temporary.as_ref(),
+            )
             .await?;
-        drive!(
-            session,
-            local,
-            input,
-            identity,
-            (session.step(identity.0, identity.1, input).await?, None)
-        )
+        let value = match &plan {
+            Plan::Fork(plan) => {
+                self.run_fork(context, &owner, plan, cancellation, io)
+                    .await?
+            }
+            Plan::Merge(plan) => Some(
+                self.run_merge(context, &owner, plan, cancellation, io)
+                    .await?,
+            ),
+        };
+        owner
+            .0
+            .owner_observed(caller, owner.1.task_binding().1, false, io)
+            .await?;
+        Ok(value.map(|value| ToolResult { value }))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -204,37 +142,23 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
         invocation: &ToolInvocation,
         original: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Option<ToolResult>, acyclic_fs::NativeAllocation)> {
-        let mut custody = original.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
         let (work, cancellation) = original.invocation_view()?;
         let _stop = InvocationCancellation(cancellation.clone());
         let io = PreparationIo::from_native_work(&work)?;
-        let (result, returned) = self
+        let result = self
             .run(context, invocation, &cancellation, Some(&io))
             .await?;
-        if let Some(mut returned) = returned {
-            custody.absorb(&mut returned)?;
-        }
-        Ok((result, custody))
+        let bytes = result
+            .as_ref()
+            .map(|result| recursive_value_owned_bytes(&result.value))
+            .transpose()?
+            .unwrap_or(0);
+        Ok((result, io.take_native_custody(bytes)?))
     }
 }
 impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     ToolExecutor for RecursiveExecutor<P, A, O>
 {
-    fn resumable_machine_identity(
-        &self,
-        work: crate::NativeWork<'_>,
-    ) -> Result<Option<&MachineIdentity>> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = work {
-            return self
-                .durable
-                .machine
-                .identity_with_native_work(work)
-                .map(Some);
-        }
-        let _ = work;
-        Ok(Some(self.durable.machine.identity()))
-    }
     fn authorize(&self, _: Option<&RuntimeScope>, _: &ToolInvocation) -> Result<()> {
         Err(Error::Unauthorized(
             "recursive tools require the original durable context".into(),
@@ -248,13 +172,18 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
         self.check_authority(context, invocation, None)
     }
 
-
-    fn execute<'a>(&'a self, invocation: ToolInvocation, context: Option<ToolContext>) -> BoxProviderFuture<'a, Result<ToolResult>> {
-let Some(context) = context else { return Box::pin(async {
-            Err(Error::Unauthorized(
-                "recursive tools require their durable context".into(),
-            ))
-        }); };
+    fn execute<'a>(
+        &'a self,
+        invocation: ToolInvocation,
+        context: Option<ToolContext>,
+    ) -> BoxProviderFuture<'a, Result<ToolResult>> {
+        let Some(context) = context else {
+            return Box::pin(async {
+                Err(Error::Unauthorized(
+                    "recursive tools require their durable context".into(),
+                ))
+            });
+        };
 
         let cancellation = CancellationToken::new();
         let stop = InvocationCancellation(cancellation.clone());
@@ -262,24 +191,27 @@ let Some(context) = context else { return Box::pin(async {
             let _stop = stop;
             self.run(&context, &invocation, &cancellation, None)
                 .await?
-                .0
                 .ok_or(Error::Indeterminate(invocation.operation_id))
         })
     }
-    fn reconcile<'a>(&'a self, invocation: ToolInvocation, context: Option<ToolContext>) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
-let Some(context) = context else { return Box::pin(async {
-            Err(Error::Unauthorized(
-                "recursive tools require their durable context".into(),
-            ))
-        }); };
+    fn reconcile<'a>(
+        &'a self,
+        invocation: ToolInvocation,
+        context: Option<ToolContext>,
+    ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
+        let Some(context) = context else {
+            return Box::pin(async {
+                Err(Error::Unauthorized(
+                    "recursive tools require their durable context".into(),
+                ))
+            });
+        };
 
         let cancellation = CancellationToken::new();
         let stop = InvocationCancellation(cancellation.clone());
         Box::pin(async move {
             let _stop = stop;
-            self.run(&context, &invocation, &cancellation, None)
-                .await
-                .map(|result| result.0)
+            self.run(&context, &invocation, &cancellation, None).await
         })
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -292,8 +224,7 @@ let Some(context) = context else { return Box::pin(async {
             !self
                 .source
                 .as_ref()
-                .is_some_and(|source| source.supports_native_source())
-                || !self.durable.machine.supports_native_work(),
+                .is_some_and(|source| source.supports_native_source()),
             Some(&PreparationIo::from_native_work(work)?),
             crate::wire::ErrorCode::Unsupported,
             "recursive source has no original native callbacks",
