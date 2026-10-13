@@ -107,18 +107,18 @@ impl LogicalName {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(Self, KernelOwnedAllocation), crate::FsError> {
-        let mut owned = NamespacePathAccounting::new(accounting)?;
+        let mut owned = OriginalReadAccounting::new(accounting)?;
         cancellation.check()?;
         let maximum_bytes = u32::try_from(self.bytes.len())
             .map_err(|_| NamespacePathError::Name(TreePageError::NameTooLarge))?;
-        owned.observe(NamespacePathStep::Admit(&WorkCounters {
+        owned.admit(WorkCounters {
             bytes_copied: self.bytes.len() as u64,
             ..WorkCounters::UNCHARGED
-        }))?;
+        })?;
         let result = self.try_clone(maximum_bytes, &mut |step| {
-            owned.observe(NamespacePathStep::Allocation(step))
+            owned.observe(step)
         });
-        owned.finish(result)
+        finish_owned(owned, result)
     }
 
     fn validate_bytes(
@@ -233,9 +233,9 @@ impl LogicalName {
     ) -> W::OwnedOutput<String> {
         let mut accounting = work.accounting(cancellation);
         let result = (|| {
-            let mut owned = NamespacePathAccounting::new(&mut accounting)?;
-            let result = self.project_unicode(cancellation, &mut |step| owned.observe(step));
-            owned.finish(result)
+            let mut owned = OriginalReadAccounting::new(&mut accounting)?;
+            let result = self.project_unicode(cancellation, &mut |step| observe_path(&mut owned, step));
+            finish_owned(owned, result)
         })();
         work.finish_owned(result, &accounting)
     }
