@@ -25,7 +25,13 @@ impl Reducer {
             ));
         }
         self.resident_terminal_effect_limit = maximum;
-        self.trim_terminal_effects(protected);
+        let budget = maximum.saturating_sub(protected);
+        while self.projection.indexed_terminal_effects.len() > budget {
+            if let Some(effect) = self.projection.indexed_terminal_effects.pop_front() {
+                self.projection.effects.remove(&effect);
+                self.projection.effects_archived = true;
+            }
+        }
         Ok(())
     }
 
@@ -66,18 +72,6 @@ impl Reducer {
             return Ok(());
         }
         self.set_resident_terminal_effect_limit(self.resident_terminal_effect_limit)
-    }
-
-    pub(in crate::core) fn trim_terminal_effects(&mut self, protected: usize) {
-        let budget = self
-            .resident_terminal_effect_limit
-            .saturating_sub(protected);
-        while self.projection.indexed_terminal_effects.len() > budget {
-            if let Some(effect) = self.projection.indexed_terminal_effects.pop_front() {
-                self.projection.effects.remove(&effect);
-                self.projection.effects_archived = true;
-            }
-        }
     }
 
     /// Number of resident active and cached terminal effect projections.
