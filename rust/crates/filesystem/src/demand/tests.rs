@@ -244,7 +244,7 @@ async fn native_source_reports_symbolic_link_target_bytes() -> Result<(), Box<dy
             )
             .await?
             .value
-            .bytes()
+            .bytes
             .as_ref(),
         b"target"
     );

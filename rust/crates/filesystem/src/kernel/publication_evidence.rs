@@ -83,7 +83,6 @@ pub fn encode_generation_publication_evidence(
         || proof.generation_id != generation_id
         || published.volume_id != request.volume_id
         || published.generation_root != root_id
-        || proof.object_count != u64::try_from(proof.objects.len()).unwrap_or(u64::MAX)
     {
         return Err(PublicationEvidenceError::Mismatch);
     }

@@ -32,7 +32,7 @@ async fn finite_native_utf16_paths_preserve_unpaired_names_and_restart() -> Test
     .map(|receipt| receipt.value)
     .map_err(|failure| failure.error)?;
     let token = CancellationToken::new();
-    let budget = finite_budget()?;
+    let budget = FINITE_BUDGET;
     let node = source
         .lookup(source.reference(), &path, budget, &token)
         .await?

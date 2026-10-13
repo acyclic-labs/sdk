@@ -75,7 +75,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         let mut before_publication = before_publication.clone();
         let result: Result<(), E> = async {
             carrier.check(cancellation, lifetime)?;
-            let original = publication.original.as_mut().expect("original checkout");
+            let original = publication
+                .original
+                .as_mut()
+                .ok_or(MountSourceError::NativeWork(
+                    crate::NativeTreeMaterializationError::InvalidLayout,
+                ))?;
             if original.publication_evidence.is_none()
                 && (force || original.checkout.has_pending_mutations())
                 && let Some(context) = context

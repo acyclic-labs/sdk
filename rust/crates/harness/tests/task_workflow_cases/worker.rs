@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_harness::runtime::TaskSpawner as _;
 
 pub(super) async fn worker_restart_with_options(
     command: WorkerCommand,
