@@ -28,7 +28,7 @@ struct VolumeCallback<P: StreamProvider> {
 }
 
 impl TaskContext {
-    /// Authenticates and retains the original issued dispatch context.
+    /// Authenticates the original issued dispatch context.
     pub async fn verify_volume_owner<P: StreamProvider + 'static>(
         self: &Arc<Self>,
         owner: &Arc<TaskJournalOwner<P>>,
@@ -130,7 +130,7 @@ impl<P: StreamProvider + 'static> VolumeCallback<P> {
         work: &'a NativeMaterializationWork,
         require_write: bool,
     ) -> std::result::Result<NativeMountCallbackFuture<'a>, NativeMountError> {
-        NativeMountCallbackFuture::new_guarded::<Error, _, _>(work, || async move {
+        NativeMountCallbackFuture::new_guarded::<Error, _, _>(work, move || async move {
             if require_write && !self.writable {
                 return Err(denied("read-only callback cannot authorize writes"));
             }
@@ -190,7 +190,13 @@ mod tests {
         let fence = crate::scheduler::LeaseFence::from(&fixture.root_lease.reservation);
         let owner = fixture
             .host
-            .journal_owner(fixture.root, &fence, Some(&crate::executor::PreparationIo::from_native_work(&original)?))
+            .journal_owner(
+                fixture.root,
+                &fence,
+                Some(&crate::executor::PreparationIo::from_native_work(
+                    &original,
+                )?),
+            )
             .await?
             .into_native_shared(&original)?;
         let (context, custody) = fixture
