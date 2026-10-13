@@ -111,7 +111,7 @@ impl MailFixture {
                 WorkPull::Claimed(lease) => lease,
                 _ => return Err(Error::NotFound("native mail original lease".into())),
             };
-            runtime.task_host().start_task(&lease).await?;
+            runtime.task_host().start_task(&lease, &mut None).await?;
             tasks.push((
                 TaskId::from_bytes(lease.operation.operation_id.into_bytes()),
                 LeaseFence::from(&lease.reservation),
