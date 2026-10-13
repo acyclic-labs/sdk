@@ -143,10 +143,12 @@ impl AgentHarness {
         issued_purpose: IssuedContextPurpose,
         owned_mailbox: Option<(Arc<dyn OwnedTaskMailbox>, RuntimeScope, NativeCustody)>,
     ) -> Result<Arc<TaskContext>> {
-        let (owned_mailbox, mut native_scope) = match owned_mailbox {
+        let (owned_mailbox, native_scope) = match owned_mailbox {
             Some((mailbox, scope, custody)) => (Some(mailbox), Some((scope, custody))),
             None => (None, None),
         };
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let mut native_scope = native_scope;
         let native_work = task_original_work(io)?;
         let host = self.state.as_ref().ok_or_else(|| {
             crate::conversation::content_error(
