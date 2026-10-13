@@ -20,7 +20,7 @@ use acyclic_harness::durable_host::CoordinatorTaskHost;
 use acyclic_harness::executor::{Executor, StockExecutor, TurnInput};
 use acyclic_harness::filesystem::{
     FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost,
-    FilesystemInteractionHost, FilesystemSchedulerPayloadStore, FilesystemTaskRuntime,
+    FilesystemInteractionHost, FilesystemContentPublisher, FilesystemTaskRuntime,
     MAIL_RECEIVE_TASK_COMMAND_KIND, MAIL_SEND_TASK_COMMAND_KIND, MODEL_TASK_COMMAND_KIND,
     MailReceiveTaskCommand, MailSendTaskCommand, ModelTaskCommand, TASK_ADMIT_COMMAND_KIND,
     TASK_OBSERVE_COMMAND_KIND, TIMER_TASK_COMMAND_KIND, TOOL_TASK_COMMAND_KIND, TaskAdmitCommand,
@@ -938,13 +938,13 @@ async fn worker_restart_with_options(
                     .await
                     .map_err(|error| Error::Storage(error.to_string()))?,
             );
-            let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
+            let payloads = FilesystemContentPublisher::new(
                 filesystem.clone(),
                 &volume,
                 &issuer.verifier(&mut None).expect("verifier copy"),
                 &signed,
                 65_536, None,
-            )?);
+            )?;
             let reader = FilesystemContentVerifier::new(filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?;
             if with_policy && !reopened {
                 Box::pin(async {
@@ -1423,7 +1423,7 @@ async fn worker_restart_with_options(
                 );
                 assert_eq!(retained.reservation.as_ref(), Some(&lease.reservation));
                 if with_child {
-                    let context = runtime.harness().durable_context(task, operation).await?;
+                    let context = runtime.harness().durable_context(task, operation, None).await?;
                     let reference = runtime
                         .task_host()
                         .observe_admission(task)
@@ -1459,7 +1459,7 @@ async fn worker_restart_with_options(
                     ));
                 }
                 if with_mail_send {
-                    let context = runtime.harness().durable_context(task, operation).await?;
+                    let context = runtime.harness().durable_context(task, operation, None).await?;
                     let file = serde_json::from_value(
                         runtime.task_host().observe_admission(task).await?.input,
                     )
@@ -1585,7 +1585,7 @@ async fn worker_restart_with_options(
                     ));
                 }
                 if with_tool && !with_model_approval {
-                    let context = runtime.harness().durable_context(task, operation).await?;
+                    let context = runtime.harness().durable_context(task, operation, None).await?;
                     let admission = runtime.task_host().observe_admission(task).await?;
                     let file = serde_json::from_value(admission.input)
                         .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -2179,13 +2179,13 @@ async fn stock_restart_with_publication_fault(
                 .map_err(|error| Error::Storage(error.to_string()))?,
         ));
         let stream = stream_provider.clone();
-        let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
+        let payloads = FilesystemContentPublisher::new(
             filesystem.clone(),
             &volume,
             &issuer.verifier(&mut None).expect("verifier copy"),
             &signed,
             65_536, None,
-        )?);
+        )?;
         let reader = FilesystemContentVerifier::new(filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?;
         let host = CoordinatorTaskHost::new(DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None)
                 .await?, stream.clone(), payloads.clone(), reader.clone(), &(authority), signed.clone(), issuer.verifier(&mut None).expect("verifier copy"), scope.clone(), tasks.clone(), machines.clone(), Arc::new(SystemUnixMillisClock), None)?
@@ -2236,7 +2236,7 @@ async fn stock_restart_with_publication_fault(
         reader.verify(&input_file).await?;
         assert!(matches!(
             harness
-                .durable_context(task, operation)
+                .durable_context(task, operation, None)
                 .await?
                 .read_file(&input_file, None)
                 .await,
@@ -2428,7 +2428,7 @@ async fn stock_restart_with_publication_fault(
                 stream_provider.arm_execution(3, mode);
             }
             let interrupted = if direct_executor {
-                let admitted_context = harness.durable_context(task, operation).await?;
+                let admitted_context = harness.durable_context(task, operation, None).await?;
                 let previous = StockExecutor::new(
                     Model::new("test".into(), "interrupted".into(), "1".into(), Value::Null)?,
                     model.clone(),
@@ -2698,7 +2698,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
         let runtime = FilesystemTaskRuntime::open(stream, filesystem.clone(), volume.clone(), issuer.verifier(&mut None).expect("verifier copy"), signed.clone(),
             scope.clone(), tasks.clone(), machines.clone(), ToolRegistry::default(),
             SessionLimits { active_tasks: 1, total_tasks: 1, depth: 1, model_steps: 1 }, 1, 65536).await?;
-        let payloads = FilesystemSchedulerPayloadStore::new(filesystem, &volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65536, None)?;
+        let payloads = FilesystemContentPublisher::new(filesystem, &volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65536, None)?;
         let commands = runtime.commands().with_model(model.clone(), provider_model.clone(), ContextPipeline::default(),
             acyclic_harness::context::CompactionPolicy::Disabled);
         if phase == 0 {
@@ -2750,7 +2750,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
             let parcel = request.messages.iter().flat_map(|message| message.content.file_refs())
                 .find(|file| file.path() == parcel_path).ok_or_else(|| Error::NotFound("selected model parcel".into()))?;
             assert_eq!(parcel.descriptor(), selected.as_ref().unwrap().payload.descriptor());
-            assert_eq!(runtime.harness().durable_context(task, operation).await?.read_file(parcel, None).await?.as_ref(), b"first steering");
+            assert_eq!(runtime.harness().durable_context(task, operation, None).await?.read_file(parcel, None).await?.as_ref(), b"first steering");
         }
         if phase == 3 {
             let Some(Outcome::Succeeded(value)) = runtime.task_host().outcome(task).await? else {

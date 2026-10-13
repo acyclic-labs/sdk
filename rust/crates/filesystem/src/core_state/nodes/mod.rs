@@ -260,17 +260,6 @@ impl LazyNode for crate::LazyShadow {
                 left,
                 right,
             } => {
-                let bytes = std::mem::size_of::<crate::WorkspaceMetadata>() as u64;
-                work.admit(crate::WorkCounters {
-                    bytes_copied: bytes,
-                    ..Default::default()
-                })?;
-                allocation.grow(bytes)?;
-                let metadata = Box::new(metadata);
-                work.spent(crate::WorkCounters {
-                    bytes_copied: bytes,
-                    ..Default::default()
-                })?;
                 Self::Node {
                     file_id,
                     priority,
@@ -409,13 +398,7 @@ pub(super) fn clone_node<T: crate::lazy_workspace::MemoryLazyNode>(
     meter: &crate::materializer::NativeMaterializationWork,
 ) -> Result<(T, crate::NativeAllocation), LocalCoreStateStoreError> {
     meter.allocations(|allocations, work, budget, cancellation| {
-        Ok(crate::lazy_workspace::clone_lazy_node(
-            value,
-            allocations,
-            work,
-            budget,
-            cancellation,
-        )?)
+        Ok(value.copy(&mut crate::kernel::KernelAccounting::borrowed_standalone(allocations, work, budget, cancellation))?.0)
     })
 }
 

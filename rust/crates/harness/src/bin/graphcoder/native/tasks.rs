@@ -14,7 +14,7 @@ impl NativeSession {
                 let admission = self.runtime.task_host().observe_admission(parent).await?;
                 self.runtime
                     .harness()
-                    .durable_context(parent, admission.operation_id)
+                    .durable_context(parent, admission.operation_id, None)
                     .await?
                     .admit(operation, &definition, command)
                     .await

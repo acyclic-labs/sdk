@@ -1,7 +1,23 @@
 use super::*;
 use crate::native_host::HostRoot;
 
-/// Validates a prospective recovery location using held root identities.
+pub(super) fn host_path<W: crate::native_host::NativeHostWork, T>(
+    path: &Path,
+    work: &mut W,
+    #[cfg(unix)] operation: impl FnOnce(&Path, &mut W) -> Result<T, W::Error>,
+    #[cfg(windows)] operation: impl FnOnce(&[u16], &mut W) -> Result<T, W::Error>,
+) -> Result<T, W::Error> {
+    #[cfg(unix)]
+    {
+        operation(path, work)
+    }
+    #[cfg(windows)]
+    {
+        crate::native_host::with_wide_path(path, work, operation)
+    }
+}
+
+/// Validates a recovery location against the held checkout allocation.
 pub fn validate_native_preparation_location(
     root: &Path,
     operation: &Path,
@@ -15,7 +31,7 @@ pub fn validate_native_preparation_location(
             Err(NativeTreeMaterializationError::Io(error))
                 if error.kind() == std::io::ErrorKind::NotFound =>
             {
-                existing = existing.parent().ok_or(error)?
+                existing = existing.parent().ok_or(error)?;
             }
             Err(error) => return Err(error),
         }
@@ -32,61 +48,36 @@ pub fn validate_native_preparation_location(
     validate_layout(&root, &parent, suffix, work)?;
     Ok(root.identity())
 }
+
 pub(super) fn validate_layout(
     root: &HostRoot,
     operation: &HostRoot,
     suffix: &Path,
     work: &NativeMaterializationWork,
 ) -> Result<(), NativeTreeMaterializationError> {
-    if root.identity().device != operation.identity().device {
+    if root.identity().device != operation.identity().device
+        || root.identity() == operation.identity()
+    {
         return Err(NativeTreeMaterializationError::InvalidLayout);
     }
-    let root = { #[cfg(unix)] { root.open_dir_held(Path::new(""), &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new(""), &mut &*work, |path, work| root.open_dir_held(path, work)) } }?;
-    let operation = { #[cfg(unix)] { operation.open_dir_held(Path::new(""), &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(Path::new(""), &mut &*work, |path, work| operation.open_dir_held(path, work)) } }?;
+    // A missing path cannot be an ancestor of an existing checkout.
     #[cfg(unix)]
-    let nested = {
-        let (root, _root) = crate::native_host::canonical_directory_path_held(root, &mut &*work)?;
-        let (operation, _operation) =
-            crate::native_host::canonical_directory_path_held(operation, &mut &*work)?;
-        let (prospective, _prospective) = work.path(&operation, Some(suffix))?;
-        work.charge(
-            NativeResourceCredit::Items
-                .delta((root.as_os_str().len() + prospective.as_os_str().len()) as u64),
+    let nested = crate::native_host::directory_has_ancestor(
+        &operation.directory,
+        root.identity(),
+        &mut &*work,
+    )? || suffix.as_os_str().is_empty()
+        && crate::native_host::directory_has_ancestor(
+            &root.directory,
+            operation.identity(),
+            &mut &*work,
         )?;
-        prospective.starts_with(&root) || root.starts_with(&prospective)
-    };
     #[cfg(windows)]
     let nested = {
-        let (root, _root) = crate::native_host::canonical_directory_wide(&root, &mut &*work)?;
-        let (mut operation, mut allocation) =
-            crate::native_host::canonical_directory_wide(&operation, &mut &*work)?;
-        if !suffix.as_os_str().is_empty() {
-            crate::native_host::with_wide_path(suffix, &mut &*work, |suffix, _meter| {
-                let separator = usize::from(operation.last() != Some(&92));
-                let count = separator
-                    .checked_add(suffix.len())
-                    .ok_or(crate::WorkError::Overflow)?;
-                let needed = operation
-                    .len()
-                    .checked_add(count)
-                    .ok_or(crate::WorkError::Overflow)?;
-                let delta = NativeResourceCredit::Copy.delta(owned_size(count, 2)?);
-                work.admit(delta)?;
-                if needed > operation.capacity() {
-                    allocation.grow(owned_size(needed - operation.capacity(), 2)?)?;
-                    let reserved = operation.try_reserve_exact(needed - operation.len());
-                    let reconciled =
-                        allocation.reconcile_capacity(owned_size(operation.capacity(), 2)?);
-                    reserved.map_err(NativeTreeMaterializationError::AllocationFailed)?;
-                    reconciled?;
-                }
-                if separator != 0 {
-                    operation.push(92);
-                }
-                operation.extend_from_slice(suffix);
-                work.spent(delta)
-            })?;
-        }
+        let (root, _root) =
+            crate::native_host::canonical_directory_wide(&root.directory, &mut &*work)?;
+        let (operation, _operation) =
+            crate::native_host::canonical_directory_wide(&operation.directory, &mut &*work)?;
         work.charge(NativeResourceCredit::Items.delta((root.len() + operation.len()) as u64))?;
         fn contains(parent: &[u16], child: &[u16]) -> bool {
             child.starts_with(parent)
@@ -94,7 +85,7 @@ pub(super) fn validate_layout(
                     || child.len() == parent.len()
                     || child.get(parent.len()) == Some(&92))
         }
-        contains(&root, &operation) || contains(&operation, &root)
+        contains(&root, &operation) || suffix.as_os_str().is_empty() && contains(&operation, &root)
     };
     if nested {
         return Err(NativeTreeMaterializationError::InvalidLayout);

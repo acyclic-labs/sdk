@@ -254,7 +254,7 @@ pub(super) async fn capture_subtrees_in_scope<A: AsyncAuthorityStore, O: AsyncOb
         }
         let maximum =
             usize::try_from(options.maximum_paths).map_err(|_| CaptureError::InvalidOptions)?;
-        let mut paths = CaptureMap::new();
+        let mut paths = Vec::new();
         for path in &canonical {
             let path = clone_capture_path(path, meter)?;
             append_scanned_path(&mut paths, path, maximum, meter)?;
@@ -292,7 +292,7 @@ pub(super) async fn capture_subtrees_in_scope<A: AsyncAuthorityStore, O: AsyncOb
                 if source_root.identity() != expected_identity {
                     return Err(CaptureError::RootChanged);
                 }
-                let mut observed = CaptureMap::new();
+                let mut observed = Vec::new();
                 collect_host_subtree_roots(
                     &source_root,
                     profile,
@@ -419,9 +419,9 @@ pub async fn capture_baseline<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let source_root = open_source_root(options, meter)?;
         let limits = checkout.volume_config().limits;
         let profile = checkout.volume_config().profile;
-        let mut paths = CaptureMap::new();
+        let mut paths = Vec::new();
 
-        let mut observed = CaptureMap::new();
+        let mut observed = Vec::new();
         let root = NamespacePath::new(Vec::new(), limits).map_err(CaptureError::from)?;
         collect_host_walk_measured(
             &source_root,

@@ -59,7 +59,7 @@ fn native_verifier_copies_authentic_scope_and_keeps_custody_until_drop() -> Resu
             .native_binding
             .as_ref()
             .unwrap()
-            .authenticate(&other),
+            .require_native_work(&other),
         Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized,
             ..
@@ -667,7 +667,7 @@ async fn conversation_stream_admission_requires_resident_files() -> Result<()> {
         )
         .await?;
     let verifier = FilesystemContentVerifier::new(
-        Arc::new(host),
+        host,
         &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
         4_096,

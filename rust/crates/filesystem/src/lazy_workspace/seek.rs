@@ -7,7 +7,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         &self,
         path: &str,
         offset: u64,
-        target: LazySeekTarget,
+        target: crate::kernel::ExtentSeekTarget,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<u64>, LazyWorkspaceError> {
         let lookup = self.lookup(path, ctx).await?;
@@ -24,37 +24,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             }
             if matches!(lookup.0, LazyLookup::Source { .. }) {
                 return Ok(Some(match target {
-                    LazySeekTarget::Data => offset,
-                    LazySeekTarget::Hole => length,
+                    crate::kernel::ExtentSeekTarget::Data => offset,
+                    crate::kernel::ExtentSeekTarget::Hole => length,
                 }));
             }
             let record = match &lookup.0 {
-                LazyLookup::Shadow { record, .. } => *record,
-                LazyLookup::Authored { stat, .. } => {
-                    let checkout = self
-                        .checkout(crate::model::GenerationSelector::Head, ctx)
-                        .await?;
-                    let record = checkout
-                        .value
-                        .lookup_file_record_by_id_with_accounting(
-                            stat.file_id,
-                            ctx,
-                            cancellation(ctx),
-                        )
-                        .await;
-                    checkout.retire(ctx)?;
-                    record?.ok_or(LazyWorkspaceError::NotFound)?
-                }
+                LazyLookup::Shadow { record, .. } | LazyLookup::Authored { record, .. } => *record,
                 LazyLookup::Source { .. } => unreachable!(),
             };
             crate::facade::seek_record_extent_with_accounting(
                 &self.workspace.volume,
                 record,
                 offset,
-                match target {
-                    LazySeekTarget::Data => crate::kernel::ExtentSeekTarget::Data,
-                    LazySeekTarget::Hole => crate::kernel::ExtentSeekTarget::Hole,
-                },
+                target,
                 ctx,
                 cancellation(ctx),
             )

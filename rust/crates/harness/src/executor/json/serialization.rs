@@ -205,15 +205,3 @@ pub(crate) fn count_json_bytes_trusted<
     }
     Ok(size)
 }
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn validate_json_byte_bound_native_trusted<
-    T: Serialize + ?Sized,
-    F: FnMut(JsonCodecCharge) -> Result<()>,
->(
-    value: &T,
-    bounds: JsonBounds,
-    code: crate::wire::ErrorCode,
-    charge: &mut F,
-) -> Result<()> {
-    count_json_bytes_trusted(value, bounds, Some(code), charge).map(|_| ())
-}

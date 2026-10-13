@@ -59,7 +59,7 @@ fn compaction_preserves_instructions_current_input_and_complete_exchanges() -> R
         assert!(compact(&source, 5, through).is_err());
     }
     assert!(
-        DurableContextProvider::compact(&source, 3, None, CompactionRetention::default(), None)
+        DurableContextProvider::compact(&source, 3, None, &CompactionRetention::default(), None)
             .is_err()
     );
     let plain = context(
@@ -113,7 +113,7 @@ fn declared_retention_preserves_native_tool_exchanges() -> Result<()> {
                 &source,
                 3,
                 Some(summary(&source, source.messages.len())?),
-                retention.clone(),
+                &retention,
                 None,
             )?;
             assert_eq!(
