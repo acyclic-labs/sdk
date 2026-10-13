@@ -1,12 +1,5 @@
 use super::*;
 
-#[derive(Serialize)]
-pub(super) struct Envelope<'a, P> {
-    pub(super) id: OperationId,
-    pub(super) jsonrpc: &'static str,
-    pub(super) method: &'a str,
-    pub(super) params: P,
-}
 #[cfg(test)]
 pub(super) fn line(value: &Value) -> Result<Vec<u8>> {
     Ok(encode_line(value, usize::MAX, None)?.0)
@@ -88,24 +81,9 @@ pub(super) fn codec_charge(
                 ..acyclic_fs::WorkCounters::default()
             })
             .map_err(Error::from),
-        Charge::Copy { bytes } => work
-            .charge(acyclic_fs::WorkCounters {
-                bytes_copied: bytes,
-                ..acyclic_fs::WorkCounters::default()
-            })
-            .map_err(Error::from),
-        Charge::Read { bytes } => work
-            .charge(acyclic_fs::WorkCounters {
-                source_bytes_read: bytes,
-                ..acyclic_fs::WorkCounters::default()
-            })
-            .map_err(Error::from),
-        Charge::Inspect { items } => work
-            .charge(acyclic_fs::WorkCounters {
-                items_examined: items,
-                ..Default::default()
-            })
-            .map_err(Error::from),
+        Charge::Copy { bytes } => charge(Some(work), 0, 0, bytes),
+        Charge::Read { bytes } => charge(Some(work), 0, bytes, 0),
+        Charge::Inspect { items } => charge(Some(work), items, 0, 0),
         Charge::Work { bytes, items } => work
             .charge(acyclic_fs::WorkCounters {
                 bytes_encoded: bytes,
@@ -189,11 +167,11 @@ pub(super) fn encode_line<T: Serialize + ?Sized>(
     Ok((bytes, None))
 }
 
-pub(super) fn frame_admission(
+pub(super) fn decode_value(
     body: &[u8],
     maximum: usize,
     work: NativeWork<'_>,
-) -> Result<NativeCustody> {
+) -> Result<(Value, NativeCustody)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         let per_token =
@@ -203,47 +181,40 @@ pub(super) fn frame_admission(
             .checked_mul(per_token)
             .and_then(|n| n.checked_add(crate::executor::json::sdk_json_diagnostic_bytes()))
             .ok_or_else(|| error(Some(work), ErrorCode::Invalid, "MCP frame quota overflows"))?;
-        let custody = work.claim(quota, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
-        // Per-byte original cancellation and item admission before any serde.
-        let diagnostic_custody = work
-            .claim(
-                crate::executor::json::lexical_json_diagnostic_bytes(),
-                0,
-                acyclic_fs::WorkCounters::UNCHARGED,
-            )
-            .map_err(Error::from)?;
-        let scanned =
-            crate::executor::json::admit_json(body, bounds(maximum), &mut |event| match event {
+        let mut custody = Some(work.claim(quota, 0, acyclic_fs::WorkCounters::UNCHARGED)?);
+        let value = crate::executor::json::json_from_slice_bounded(
+            std::marker::PhantomData::<Value>,
+            body,
+            bounds(maximum),
+            0,
+            Some(ErrorCode::Invalid),
+            None,
+            &mut |event| match event {
                 crate::JsonCodecCharge::Read { bytes } => charge(Some(work), 0, bytes, 0),
                 crate::JsonCodecCharge::Work { items, .. }
                 | crate::JsonCodecCharge::Inspect { items } => charge(Some(work), items, 0, 0),
                 _ => charge(Some(work), 0, 0, 0),
-            });
-        scanned.map_err(|error| diagnostic(error, diagnostic_custody))?;
-        return Ok(Some(custody));
-    }
-    let _ = (body, maximum, work);
-    Ok(None)
-}
-
-pub(super) fn decode_value(
-    body: &[u8],
-    work: NativeWork<'_>,
-    custody: &mut NativeCustody,
-) -> Result<Value> {
-    charge(work, 0, 0, 0)?;
-    crate::contract::json_from_slice(body).map_err(|source| {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if work.is_some() {
-            return Error::NativeJson {
-                code: ErrorCode::Invalid,
+            },
+        )
+        .map_err(|failure| match failure {
+            Error::NativeJson {
+                code,
+                source,
+                custody: None,
+            } => Error::NativeJson {
+                code,
                 source,
                 custody: custody.take(),
-            };
-        }
-        let _ = custody;
-        Error::Invalid(format!("invalid MCP stdio JSON: {source}"))
-    })
+            },
+            failure => failure,
+        })?;
+        return Ok((value, custody));
+    }
+    let _ = maximum;
+    charge(work, 0, 0, 0)?;
+    crate::contract::json_from_slice(body)
+        .map(|value| (value, None))
+        .map_err(|source| Error::Invalid(format!("invalid MCP stdio JSON: {source}")))
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

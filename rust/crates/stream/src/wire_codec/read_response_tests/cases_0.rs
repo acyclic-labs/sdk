@@ -1,4 +1,4 @@
-use super::frames::zstd_read_response;
+use super::zstd_read_response;
 use super::{read_response_records, read_response_wire, wire};
 
 fn records(from: u64, count: u64) -> Vec<wire::Record> {

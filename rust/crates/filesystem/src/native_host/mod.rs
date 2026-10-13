@@ -33,7 +33,9 @@ mod work;
 pub(crate) use work::*;
 mod cwd;
 pub(crate) use cwd::*;
+#[cfg(unix)]
 mod unix_path;
+#[cfg(unix)]
 pub(crate) use unix_path::*;
 mod open;
 pub(crate) use open::*;
@@ -59,7 +61,9 @@ mod links;
 pub(crate) use links::*;
 mod unix_stat;
 pub(crate) use unix_stat::*;
+#[cfg(windows)]
 mod root_path;
+#[cfg(windows)]
 pub(crate) use root_path::*;
 mod identity;
 pub(crate) use identity::*;

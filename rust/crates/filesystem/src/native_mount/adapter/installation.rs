@@ -77,36 +77,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         {
             return Ok(None);
         }
-        let prepared = if let Some(original) = carrier.original_native_work() {
-            state
-                .checkout
-                .prepare_candidate_adoption(
-                    &candidate.base,
-                    &candidate.checkout,
-                    &original,
-                    cancellation,
-                )
-                .map_err(MountSourceError::Filesystem)?
-        } else {
-            let (budget, live) = carrier.remaining()?;
-            let result = state.checkout.prepare_candidate_adoption(
+        let original = carrier.original_native_work().expect("native SDK callback");
+        let prepared = state
+            .checkout
+            .prepare_candidate_adoption(
                 &candidate.base,
                 &candidate.checkout,
-                budget,
+                &original,
                 cancellation,
-            );
-            carrier.accept_with_prior_live(result, live, fs_error)?
-        };
+            )
+            .map_err(fs_error)?;
         let Some(prepared) = prepared else {
             return Ok(None);
         };
-        if carrier.original_native_work().is_none() {
-            carrier
-                .with_work(|work| {
-                    work.retain_checkout_control(&candidate.checkout.private_control_custody())
-                })
-                .map_err(super::lazy::mount_demand_error)?;
-        }
         carrier.check(cancellation, lifetime)?;
         let operation = candidate.operation;
         if !commit(&mut state.checkout, candidate, prepared)? {

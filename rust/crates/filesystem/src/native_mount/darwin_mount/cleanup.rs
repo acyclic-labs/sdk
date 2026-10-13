@@ -90,20 +90,15 @@ pub(super) struct Diskutil {
 
 impl Diskutil {
     pub(super) fn prepare(original: &Work) -> Result<Self, NativeMountError> {
-        let observations = control_visits(DISKUTIL_UNMOUNT_TIMEOUT, STOP_POLL_INTERVAL)?;
-        let termination = control_visits(
+        const OBSERVATIONS: u64 = control_visits(DISKUTIL_UNMOUNT_TIMEOUT, STOP_POLL_INTERVAL);
+        const TERMINATION: u64 = control_visits(
             acyclic_native_runtime::ProcessTree::TERMINATION_TIMEOUT,
             acyclic_native_runtime::ProcessTree::TERMINATION_POLL_INTERVAL,
-        )?;
+        );
         let meter = original
             .reserve_work(WorkCounters {
-                backend_read_operations: termination
-                    .checked_mul(5)
-                    .and_then(|n| n.checked_add(observations + 1))
-                    .ok_or(WorkError::Overflow)?,
-                backend_write_operations: observations
-                    .checked_add(10)
-                    .ok_or(WorkError::Overflow)?,
+                backend_read_operations: TERMINATION * 5 + OBSERVATIONS + 1,
+                backend_write_operations: OBSERVATIONS + 10,
                 items_examined: 4,
                 bytes_copied: (5 * std::mem::size_of::<*mut c_char>()) as u64,
                 ..WorkCounters::UNCHARGED
@@ -154,12 +149,10 @@ impl Diskutil {
     }
 }
 
-pub(super) fn control_visits(
-    timeout: Duration,
-    interval: Duration,
-) -> Result<u64, NativeMountError> {
-    u64::try_from(timeout.as_nanos().div_ceil(interval.as_nanos()) + 1)
-        .map_err(|_| WorkError::Overflow.into())
+pub(super) const fn control_visits(timeout: Duration, interval: Duration) -> u64 {
+    let visits = timeout.as_nanos().div_ceil(interval.as_nanos()) + 1;
+    assert!(visits <= u64::MAX as u128);
+    visits as u64
 }
 
 impl DarwinRecoveryControl {
