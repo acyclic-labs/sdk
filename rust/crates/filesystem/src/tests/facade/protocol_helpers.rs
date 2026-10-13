@@ -1,270 +1,97 @@
 use super::*;
 
-pub(super) async fn sparse_rebase_across_remote_ranges(
-    native: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let cancellation = CancellationToken::new();
-    let volume = (fs.create_volume_with_id(
-        VolumeId::from_bytes([86; 16]),
-        config(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
-    let file = path("file")?;
-    let mut seed = (volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
-    (seed.create(
-        crate::AuthoredMutation::CreateFile {
-            path: file.clone(),
-            bytes: (bytes::Bytes::from(vec![b'a'; 128])).into(),
-            metadata: crate::kernel::FileMetadata::default(),
-        },
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+pub(super) async fn sparse_rebase_across_remote_ranges(native: bool) -> TestResult {
+    let cancel = CancellationToken::new();
+    let (volume, mut seed) = fixture(config(), &cancel).await?;
+    let id = create(
+        &mut seed,
+        "file",
+        OwnedBytes::from(vec![b'a'; 128]),
+        &cancel,
+    )
     .await?;
-    (seed.commit(
-        OperationId::from_bytes([87; 16]),
-        None,
-        None,
-        None,
-        crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-        allow::<FsError>,
-    ))
-    .await?;
-
-    let mut local = (volume.checkout(
-        GenerationSelector::Head,
-        writable_tracking(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
-    let mut remote = (volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
-    (local.change_content(
-        file.clone(),
-        crate::ContentChange::Write {
-            offset: 0,
-            bytes: (bytes::Bytes::from_static(b"LOCAL")).into(),
-        },
-        crate::ContentTimes::Preserve,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
-    (remote.change_content(
-        file.clone(),
-        crate::ContentChange::Write {
-            offset: 64,
-            bytes: (bytes::Bytes::from_static(b"REMOTE")).into(),
-        },
-        crate::ContentTimes::Preserve,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
-    (remote.commit(
-        OperationId::from_bytes([88; 16]),
-        None,
-        None,
-        None,
-        crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-        allow::<FsError>,
-    ))
-    .await?;
+    commit(&mut seed, &cancel).await?;
     #[cfg(not(target_arch = "wasm32"))]
-    if native {
+    let original = crate::NativeMaterializationWork::new(B, &cancel).map_err(|(error, _)| error)?;
+    for (local_offset, remote_offset, local_bytes, remote_bytes, safe) in [
+        (0, 64, b"LOCAL".as_slice(), b"REMOTE".as_slice(), true),
+        (10, 12, b"local".as_slice(), b"remote".as_slice(), false),
+    ] {
+        let mut local = open_checkout(&volume, writable_tracking(), &cancel).await?;
+        let mut remote = open_checkout(&volume, writable_pinned(), &cancel).await?;
+        for (checkout, offset, bytes) in [
+            (&mut local, local_offset, local_bytes),
+            (&mut remote, remote_offset, remote_bytes),
+        ] {
+            checkout
+                .change_content(
+                    path("file")?,
+                    ContentChange::Write {
+                        offset,
+                        bytes: OwnedBytes::copy_from_slice(bytes),
+                    },
+                    ContentTimes::Preserve,
+                    B,
+                    &cancel,
+                )
+                .await?;
+        }
+        commit(&mut remote, &cancel).await?;
         let before = (
-            local.generation_id(),
-            local.root.file_table,
-            local.base_root.file_table,
-            local.authority_head,
+            checkout_state(&local),
             local.authored_operation_id,
             local.live_operation_id,
-            local.dependencies.proof().dependencies.clone(),
         );
-        let denied = crate::NativeMaterializationWork::new(
-            WorkBudget {
-                allocation_operations: 1,
-                ..WorkBudget::UNBOUNDED
-            },
-            &cancellation,
-        )
-        .map_err(|(cause, _)| cause)?;
-        assert!(
-            (local.rebase_head(8, &denied, &cancellation))
-                .await
-                .is_err()
-        );
-        assert_eq!(
-            before,
-            (
-                local.generation_id(),
-                local.root.file_table,
-                local.base_root.file_table,
-                local.authority_head,
-                local.authored_operation_id,
-                local.live_operation_id,
-                local.dependencies.proof().dependencies.clone(),
+        #[cfg(not(target_arch = "wasm32"))]
+        if native && safe {
+            let denied = crate::NativeMaterializationWork::new(
+                WorkBudget {
+                    allocation_operations: 1,
+                    ..B
+                },
+                &cancel,
             )
-        );
+            .map_err(|(error, _)| error)?;
+            assert!(local.rebase_head(8, &denied, &cancel).await.is_err());
+            assert_eq!(
+                before,
+                (
+                    checkout_state(&local),
+                    local.authored_operation_id,
+                    local.live_operation_id
+                )
+            );
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let (decision, _allocation) = if native {
+            let result = local.rebase_head(8, &original, &cancel).await?;
+            assert!(result.1.work().shares_ledger(&original));
+            (result.0, Some(result.1))
+        } else {
+            (local.rebase_head(8, B, &cancel).await?.value, None)
+        };
+        #[cfg(target_arch = "wasm32")]
+        let decision = local.rebase_head(8, B, &cancel).await?.value;
+        if safe {
+            assert!(matches!(decision, RebaseDecision::Safe { .. }));
+            let bytes = read(&mut local, id, 0, 70, &cancel).await?;
+            assert_eq!(&bytes[..5], b"LOCAL");
+            assert_eq!(&bytes[64..70], b"REMOTE");
+        } else {
+            assert_eq!(
+                before,
+                (
+                    checkout_state(&local),
+                    local.authored_operation_id,
+                    local.live_operation_id
+                )
+            );
+            assert!(
+                matches!(decision, RebaseDecision::Conflicted { conflicts, .. }
+                if conflicts.iter().any(|conflict| matches!(conflict.region, DependencyRegion::ContentRange { .. })))
+            );
+        }
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(cause, _)| cause)?;
-    #[cfg(not(target_arch = "wasm32"))]
-    let safe = if native {
-        let result = (local.rebase_head(8, &original, &cancellation)).await?;
-        (result.0, Some(result.1))
-    } else {
-        (
-            (local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
-                .await?
-                .value,
-            None,
-        )
-    };
-    #[cfg(target_arch = "wasm32")]
-    let safe = (
-        (local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
-            .await?
-            .value,
-        (),
-    );
-    assert!(matches!(safe.0, RebaseDecision::Safe { .. }));
-    let local_bytes = (local.read_file_range(
-        &file,
-        ByteRange {
-            offset: 0,
-            length: 70,
-        },
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
-    assert_eq!(&local_bytes.value.bytes[..5], b"LOCAL");
-    assert_eq!(&local_bytes.value.bytes[64..70], b"REMOTE");
-
-    let mut overlapping_local = (volume.checkout(
-        GenerationSelector::Head,
-        writable_tracking(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
-    let mut overlapping_remote = (volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
-    (overlapping_local.change_content(
-        file.clone(),
-        crate::ContentChange::Write {
-            offset: 10,
-            bytes: (bytes::Bytes::from_static(b"local")).into(),
-        },
-        crate::ContentTimes::Preserve,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
-    (overlapping_remote.change_content(
-        file,
-        crate::ContentChange::Write {
-            offset: 12,
-            bytes: (bytes::Bytes::from_static(b"remote")).into(),
-        },
-        crate::ContentTimes::Preserve,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
-    (overlapping_remote.commit(
-        OperationId::from_bytes([89; 16]),
-        None,
-        None,
-        None,
-        crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-        allow::<FsError>,
-    ))
-    .await?;
-    let unchanged = (
-        overlapping_local.generation_id(),
-        overlapping_local.root.file_table,
-        overlapping_local.base_root.file_table,
-        overlapping_local.authority_head,
-        overlapping_local.authored_operation_id,
-        overlapping_local.live_operation_id,
-        overlapping_local.dependencies.proof().dependencies.clone(),
-    );
-    #[cfg(not(target_arch = "wasm32"))]
-    let conflict = if native {
-        let result = (overlapping_local.rebase_head(8, &original, &cancellation)).await?;
-        assert!(result.1.work().shares_ledger(&original));
-        assert!(result.1.bytes() >= (std::mem::size_of::<crate::kernel::RebaseConflict>()) as u64);
-        (result.0, Some(result.1))
-    } else {
-        (
-            (overlapping_local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
-                .await?
-                .value,
-            None,
-        )
-    };
-    #[cfg(target_arch = "wasm32")]
-    let conflict = (
-        (overlapping_local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
-            .await?
-            .value,
-        (),
-    );
-    assert_eq!(
-        unchanged,
-        (
-            overlapping_local.generation_id(),
-            overlapping_local.root.file_table,
-            overlapping_local.base_root.file_table,
-            overlapping_local.authority_head,
-            overlapping_local.authored_operation_id,
-            overlapping_local.live_operation_id,
-            overlapping_local.dependencies.proof().dependencies.clone(),
-        )
-    );
-    assert!(matches!(
-        conflict.0,
-        RebaseDecision::Conflicted { ref conflicts, .. }
-            if conflicts.iter().any(|conflict| matches!(
-                conflict.region,
-                DependencyRegion::ContentRange { .. }
-            ))
-    ));
     Ok(())
 }
 
@@ -368,156 +195,106 @@ pub(super) fn original_borrowed_path_changes(
     Ok((value, slots, source))
 }
 
-pub(super) async fn assert_authority_volume_identity_fails_closed()
--> Result<(), Box<dyn std::error::Error>> {
-    let generation_root = ObjectId {
+pub(super) async fn assert_authority_volume_identity_fails_closed() -> TestResult {
+    let root = ObjectId {
         kind: ObjectKind::GenerationRoot,
         digest: Digest::from_bytes([221; 32]),
     };
-    let expected_volume = VolumeId::from_bytes([222; 16]);
-    let wrong_volume = VolumeId::from_bytes([223; 16]);
-    let creation = DurableCommit {
-        settled_at_micros: None,
-        epoch: Epoch::new(1)?,
-        sequence: Sequence::new(1),
-        operation_id: OperationId::from_bytes([224; 16]),
-        fingerprint: Digest::from_bytes([225; 32]),
-        previous_digest: Digest::ZERO,
-        digest: Digest::from_bytes([226; 32]),
-        payload: bytes::Bytes::from(crate::kernel::encode_volume_created(
-            VolumeCreated {
-                volume_id: wrong_volume,
-                config: config(),
-                initial_generation_root: generation_root,
-            },
-            |_| Ok::<_, crate::kernel::VolumeCreatedError>(()),
-            |_| {
-                crate::kernel::VolumeCreatedError::Decode(
-                    crate::kernel::CanonicalDecodeError::AllocationFailed,
-                )
-            },
-        )?),
-    };
-    assert!(matches!(
-        generation_from_record(
-            &creation,
-            expected_volume,
-            &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &CancellationToken::new())
-        ),
-        Err(FsError::VolumeMismatch)
-    ));
-    let publication = DurableCommit {
-        sequence: Sequence::new(2),
-        payload: {
-            let mut bytes = Vec::new();
-            bytes.extend_from_slice(b"acyclic-fs-publish-generation-v1\0");
-            bytes.extend_from_slice(&1_u16.to_le_bytes());
-            bytes.extend_from_slice(&wrong_volume.into_bytes());
-            bytes.push(generation_root.kind.canonical_tag());
-            bytes.extend_from_slice(generation_root.digest.as_bytes());
-            bytes::Bytes::from(bytes)
-        },
-        ..creation
-    };
-    assert!(matches!(
-        generation_from_record(
-            &publication,
-            expected_volume,
-            &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &CancellationToken::new())
-        ),
-        Err(FsError::VolumeMismatch)
-    ));
-
-    let authority = Arc::new(crate::memory::MemoryAuthorityStore::default());
+    let expected = VolumeId::from_bytes([222; 16]);
+    let wrong = VolumeId::from_bytes([223; 16]);
+    let authority = Arc::new(crate::MemoryAuthorityStore::default());
     let fs = Fs::new(
-        Arc::clone(&authority),
-        crate::memory::MemoryObjectStore::default(),
+        authority.clone(),
+        crate::MemoryObjectStore::default(),
         EmbeddedCapabilities::MEMORY,
     );
-    let expected_authority = volume_authority_id(expected_volume);
-    let active = ({
-        let authority_cancellation = &crate::CancellationToken::new();
-
-        AsyncAuthorityStore::create_authority(
-            &*authority,
-            expected_authority,
-            Epoch::GENESIS,
-            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation),
-            None::<&mut ()>,
-        )
+    let cancel = CancellationToken::new();
+    let authority_id = volume_authority_id(expected);
+    let mut work = crate::AuthorityWork::new(B, &cancel);
+    let created = authority
+        .create_authority(authority_id, Epoch::GENESIS, &mut work, None::<&mut ()>)
         .await
-        .map_err(|error| error.into_error(std::convert::identity))
-    })?;
-    let head = match active {
+        .map_err(|error| error.into_error(std::convert::identity))?;
+    let head = match created {
         CreateAuthorityOutcome::Created(head) | CreateAuthorityOutcome::Existing(head) => head,
     };
-    let cancellation = CancellationToken::new();
-    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let mut accounting = KernelAccounting::standalone(B, &cancel);
     let encoded =
         crate::kernel::codec::encode_owned(&mut accounting, |observe, allocation_error| {
             crate::kernel::encode_volume_created(
                 VolumeCreated {
-                    volume_id: wrong_volume,
+                    volume_id: wrong,
                     config: config(),
-                    initial_generation_root: generation_root,
+                    initial_generation_root: root,
                 },
                 observe,
                 allocation_error,
             )
         })?;
     let proposal = creation_commit(OperationId::from_bytes([227; 16]), encoded, &mut accounting)?;
-    ({
-        let authority_cancellation = &crate::CancellationToken::new();
-
-        AsyncAuthorityStore::compare_and_append(
-            &*authority,
+    let appended = authority
+        .compare_and_append(
             crate::GuardedAppend {
-                authority_id: expected_authority,
+                authority_id,
                 epoch: head.epoch,
                 expected: Head::genesis(head.epoch),
                 commit: proposal,
-                permit: crate::PublicationPermit::Unrestricted,
+                permit: PublicationPermit::Unrestricted,
             },
-            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation),
+            &mut work,
             None::<&mut ()>,
         )
         .await
-        .map_err(|error| error.into_error(std::convert::identity))
-    })?;
-    let cancellation = CancellationToken::new();
+        .map_err(|error| error.into_error(std::convert::identity))?;
+    let AppendOutcome::Committed(creation) = appended else {
+        return Err("fixture creation did not commit".into());
+    };
     assert!(matches!(
-        (fs.read_creation_record(expected_volume, WorkBudget::UNBOUNDED, &cancellation)).await,
+        fs.read_creation_record(expected, B, &cancel).await,
         Err(OperationFailure {
             error: FsError::VolumeMismatch,
             ..
         })
     ));
-
-    let empty_volume = VolumeId::from_bytes([228; 16]);
-    ({
-        let authority_cancellation = &crate::CancellationToken::new();
-
-        AsyncAuthorityStore::create_authority(
-            &*authority,
-            volume_authority_id(empty_volume),
+    let mut payload = Vec::from(b"acyclic-fs-publish-generation-v1\0".as_slice());
+    payload.extend_from_slice(&1_u16.to_le_bytes());
+    payload.extend_from_slice(&wrong.into_bytes());
+    payload.push(root.kind.canonical_tag());
+    payload.extend_from_slice(root.digest.as_bytes());
+    let publication = DurableCommit {
+        sequence: Sequence::new(2),
+        payload: payload.into(),
+        ..creation.clone()
+    };
+    for record in [&creation, &publication] {
+        assert!(matches!(
+            generation_from_record(
+                record,
+                expected,
+                &mut KernelAccounting::standalone(B, &cancel)
+            ),
+            Err(FsError::VolumeMismatch)
+        ));
+    }
+    let empty = VolumeId::from_bytes([228; 16]);
+    authority
+        .create_authority(
+            volume_authority_id(empty),
             Epoch::GENESIS,
-            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation),
+            &mut work,
             None::<&mut ()>,
         )
         .await
-        .map_err(|error| error.into_error(std::convert::identity))
-    })?;
+        .map_err(|error| error.into_error(std::convert::identity))?;
     let empty = Volume {
         fs,
-        id: empty_volume,
+        id: empty,
         config: config(),
     };
     assert!(matches!(
-        (empty.resolve_head_generation(
-            &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation),
-            &cancellation
-        ))
-        .await,
+        empty
+            .resolve_head_generation(&mut KernelAccounting::standalone(B, &cancel), &cancel)
+            .await,
         Err(FsError::EmptyAuthority)
     ));
     Ok(())
