@@ -92,7 +92,7 @@ cargo test -p acyclic-plugin
 
 The one product binary lives in `plugin`. It auto-starts one per-user
 service, derives workspace routing from canonical cwd, exposes local history as
-`acyclic git`, and packages thin capability-aware adapters for coding agents.
+`acyclic-plugin git`, and packages thin capability-aware adapters for coding agents.
 There is no `init` command and no repository marker.
 
 The Filesystem API keeps the same workspace, generation, and sparse transaction

@@ -34,7 +34,10 @@ pub(crate) fn parse_install_arguments(arguments: &[String]) -> Result<(&str, boo
         [host] if host == "--detected" => Ok((host, false)),
         [host] if !host.starts_with('-') => Ok((host, false)),
         [host, project] if !host.starts_with('-') && project == "--project" => Ok((host, true)),
-        _ => Err("usage: acyclic install HOST [--project] | acyclic install --detected".to_owned()),
+        _ => Err(
+            "usage: acyclic-plugin install HOST [--project] | acyclic-plugin install --detected"
+                .to_owned(),
+        ),
     }
 }
 
@@ -56,7 +59,7 @@ pub(crate) fn parse_uninstall_arguments(arguments: &[String]) -> Result<(&str, b
     match arguments {
         [host] if !host.starts_with('-') => Ok((host, false)),
         [host, purge] if !host.starts_with('-') && purge == "--purge" => Ok((host, true)),
-        _ => Err("usage: acyclic uninstall HOST [--purge]".to_owned()),
+        _ => Err("usage: acyclic-plugin uninstall HOST [--purge]".to_owned()),
     }
 }
 
@@ -64,7 +67,9 @@ pub(crate) fn parse_read_only_arguments(arguments: &[String]) -> Result<bool, St
     match arguments {
         [] => Ok(false),
         [json] if json == "--json" => Ok(true),
-        _ => Err("usage: acyclic doctor [--json] | acyclic agents [--json]".to_owned()),
+        _ => {
+            Err("usage: acyclic-plugin doctor [--json] | acyclic-plugin agents [--json]".to_owned())
+        }
     }
 }
 

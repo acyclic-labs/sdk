@@ -1014,6 +1014,18 @@ fn actual_codex_binary_executes_the_scripted_scenario() {
     );
 }
 
+// npm links the package's `acyclic-plugin` command to the native executable.
+fn npm_command_directory(temporary: &Path, native: &Path) -> std::path::PathBuf {
+    let commands = temporary.join("command-bin");
+    fs::create_dir_all(&commands).expect("command directory");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(native, commands.join("acyclic-plugin"))
+        .expect("acyclic-plugin command");
+    #[cfg(windows)]
+    fs::hard_link(native, commands.join("acyclic-plugin.exe")).expect("acyclic-plugin command");
+    commands
+}
+
 #[test]
 #[ignore = "local authenticated Codex eval; intentionally excluded from CI"]
 fn local_codex_adversarial_workspace_eval() {
@@ -1061,7 +1073,7 @@ fn local_codex_adversarial_workspace_eval() {
     ]);
     host.arg(LOCAL_CODEX_ADVERSARIAL_PROMPT);
     isolated_codex_state(&mut host, temporary.path());
-    let mut path = vec![package.root.join("bin")];
+    let mut path = vec![npm_command_directory(temporary.path(), &package.native)];
     if let Some(inherited) = std::env::var_os("PATH") {
         path.extend(std::env::split_paths(&inherited));
     }
@@ -1109,7 +1121,7 @@ fn local_codex_adversarial_workspace_eval() {
         );
     }
     let trace = String::from_utf8_lossy(&output.stdout);
-    for evidence in ["acyclic git merge", "acyclic discard"] {
+    for evidence in ["acyclic-plugin git merge", "acyclic-plugin discard"] {
         assert!(
             trace.contains(evidence),
             "Codex trace lacks {evidence:?}; trace: {}",
@@ -1141,8 +1153,8 @@ Complete all phases, overlapping independent work where possible:
 4. Recursion: spawn a child that itself spawns a grandchild. The grandchild writes exactly `nested\n`
    to `nested.txt`; it publishes to its parent, then that parent publishes to you.
 
-Use `acyclic agents` to discover refs, `acyclic git merge agents/<ref>` only for direct children, and
-`acyclic discard agents/<ref>` for unwanted trees. Wait for children before acting on their results.
+Use `acyclic-plugin agents` to discover refs, `acyclic-plugin git merge agents/<ref>` only for direct children, and
+`acyclic-plugin discard agents/<ref>` for unwanted trees. Wait for children before acting on their results.
 Do not finish until the root contains accepted.txt, speculative.txt, and nested.txt with the exact
 contents above; debug-probe.txt and rejected.txt must be absent. Run final checks yourself.
 "#;

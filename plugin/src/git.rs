@@ -1,4 +1,4 @@
-//! The `acyclic git` executor over managed workspaces.
+//! The `acyclic-plugin git` executor over managed workspaces.
 
 use super::*;
 
@@ -536,7 +536,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 };
                 if let Some(conflicts) = projected_conflicts {
                     return Err(Self::error(format!(
-                        "Git join projected unresolved text conflicts into the workspace: {conflicts}. Edit them, then run `acyclic git merge --continue`, or run `acyclic git merge --abort`"
+                        "Git join projected unresolved text conflicts into the workspace: {conflicts}. Edit them, then run `acyclic-plugin git merge --continue`, or run `acyclic-plugin git merge --abort`"
                     )));
                 }
                 let resulting_tracked = existing_tracked_paths(&generation, tracked_paths).await?;
@@ -968,11 +968,11 @@ pub(crate) async fn git_apply_patch(
         return Ok(None);
     }
     let [_, patch_path] = argv else {
-        return Err("acyclic git apply requires exactly one patch file".to_owned());
+        return Err("acyclic-plugin git apply requires exactly one patch file".to_owned());
     };
     if patch_path == "-" {
         return Err(
-            "acyclic git apply does not accept stdin through the service; pass a patch file"
+            "acyclic-plugin git apply does not accept stdin through the service; pass a patch file"
                 .to_owned(),
         );
     }

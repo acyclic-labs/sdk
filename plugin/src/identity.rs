@@ -171,7 +171,7 @@ impl Store {
         reject_alias(&self.path)?;
         let bytes = fs::read(&self.path).map_err(|error| {
             if error.kind() == io::ErrorKind::NotFound {
-                Error::new("login_required", "run acyclic login first")
+                Error::new("login_required", "run acyclic-plugin login first")
             } else {
                 error.into()
             }
@@ -234,7 +234,7 @@ impl Store {
     fn read(&self, endpoint: &str) -> Result<Session, Error> {
         self.credentials(endpoint)?
             .session
-            .ok_or_else(|| Error::new("login_required", "run acyclic login first"))
+            .ok_or_else(|| Error::new("login_required", "run acyclic-plugin login first"))
     }
 
     fn write(&self, endpoint: &str, session: Session) -> Result<Session, Error> {

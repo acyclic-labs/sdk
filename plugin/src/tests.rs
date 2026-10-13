@@ -1379,7 +1379,7 @@ async fn copilot_hook_case() {
         )
         .await
         .expect("child start");
-    assert!(child.to_string().contains("acyclic git"));
+    assert!(child.to_string().contains("acyclic-plugin git"));
     let child_path = route_path(&service.sessions["session"].state.routes["child"]);
     assert!(
         service
@@ -1958,7 +1958,7 @@ async fn codex_hook_turn_identity_case() {
             json!({
                 "session_id":"session","turn_id":"root-turn","cwd":root,
                 "tool_name":"Bash","tool_use_id":"root-agents",
-                "tool_input":{"command":"acyclic agents"}
+                "tool_input":{"command":"acyclic-plugin agents"}
             }),
             &root,
         )
@@ -4931,7 +4931,7 @@ async fn authenticated_control_protocol_case() {
         .await
         .expect("child start");
     control
-        .pre_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"git-switch","tool_name":"exec_command","tool_input":{"cmd":"acyclic git switch -c feature","workdir":root.display().to_string()}}))
+        .pre_tool(json!({"session_id":"session","turn_id":"child-turn","tool_use_id":"git-switch","tool_name":"exec_command","tool_input":{"cmd":"acyclic-plugin git switch -c feature","workdir":root.display().to_string()}}))
         .await
         .expect("open authenticated command");
     let child_context_id = WorkspaceContextId::from_bytes(control.state.routes["child"].context_id);
@@ -6001,6 +6001,21 @@ fn only_acyclic_commands_require_standalone_shell_syntax() {
     assert_eq!(
         is_acyclic_cli_invocation("PowerShell", &json!({"command":"acyclic agents"})),
         Ok(true)
+    );
+    assert_eq!(
+        is_acyclic_cli_invocation("Bash", &json!({"command":"acyclic-plugin agents"})),
+        Ok(true)
+    );
+    assert_eq!(
+        is_acyclic_cli_invocation(
+            "PowerShell",
+            &json!({"command":"acyclic-plugin.exe agents"})
+        ),
+        Ok(true)
+    );
+    assert_eq!(
+        is_acyclic_cli_invocation("Bash", &json!({"command":"acyclic-plugins agents"})),
+        Ok(false)
     );
     assert!(
         is_acyclic_cli_invocation("Bash", &json!({"command":"acyclic agents && whoami"})).is_err()

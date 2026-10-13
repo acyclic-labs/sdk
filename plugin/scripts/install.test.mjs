@@ -458,7 +458,7 @@ const managers = {
 };
 
 for (const [name, manager] of Object.entries(managers)) {
-  test(`${name} links the acyclic command to the native executable`, { skip: !available(name) }, () => {
+  test(`${name} links the acyclic-plugin command to the native executable`, { skip: !available(name) }, () => {
     const first = packageRelease("9.8.7-test.1");
     const second = packageRelease("9.8.7-test.2", Buffer.from("upgraded release bytes"));
     const home = mkdtempSync(join(scratch, `${name}-`));
@@ -468,7 +468,7 @@ for (const [name, manager] of Object.entries(managers)) {
       }
       const environment = manager.environment?.(home) ?? {};
       const commandPath = { PATH: `${manager.bin(home)}${process.platform === "win32" ? ";" : ":"}${process.env.PATH}` };
-      const invoke = () => run("acyclic --version", home, { ...environment, ...commandPath }).trim();
+      const invoke = () => run("acyclic-plugin --version", home, { ...environment, ...commandPath }).trim();
       for (const release of [first, second]) {
         run(manager.install(release.tarball, home), home, environment);
         const bin = join(manager.root(home), "bin");
@@ -484,7 +484,7 @@ for (const [name, manager] of Object.entries(managers)) {
             assert.doesNotMatch(readFileSync(path, "utf8"), /node(\.exe)?["' ]|_prog/, `${shim} starts an interpreter`);
           }
         } else if (name === "npm") {
-          assert.equal(realpathSync(join(manager.bin(home), "acyclic")), realpathSync(executable));
+          assert.equal(realpathSync(join(manager.bin(home), "acyclic-plugin")), realpathSync(executable));
         }
       }
       run(manager.remove(home), home, environment);
@@ -503,7 +503,7 @@ for (const [name, manager] of Object.entries(managers)) {
 // npm 12 skips install scripts for packages it has not been told to trust, so
 // the command's first run finishes the install, and later runs are the
 // executable itself.
-test("the acyclic command installs the executable when install scripts were skipped",
+test("the acyclic-plugin command installs the executable when install scripts were skipped",
   { skip: process.platform === "win32" || !available("npm") }, () => {
     const release = packageRelease("9.8.7-test.1");
     const home = mkdtempSync(join(scratch, "npm-no-scripts-"));
@@ -512,16 +512,16 @@ test("the acyclic command installs the executable when install scripts were skip
       const bin = join(managers.npm.root(home), "bin");
       assert.equal(existsSync(join(bin, "installed-binary.json")), false);
       const commandPath = { PATH: `${managers.npm.bin(home)}:${process.env.PATH}` };
-      assert.equal(run("acyclic --version", home, commandPath).trim(), process.version);
+      assert.equal(run("acyclic-plugin --version", home, commandPath).trim(), process.version);
       assert.equal(digest(join(bin, executableName)), digest(release.source));
-      assert.equal(realpathSync(join(managers.npm.bin(home), "acyclic")), realpathSync(join(bin, executableName)));
-      assert.equal(run("acyclic --version", home, commandPath).trim(), process.version);
+      assert.equal(realpathSync(join(managers.npm.bin(home), "acyclic-plugin")), realpathSync(join(bin, executableName)));
+      assert.equal(run("acyclic-plugin --version", home, commandPath).trim(), process.version);
     } finally {
       for (const path of [release.root, home]) rmSync(path, { recursive: true, force: true });
     }
   });
 
-test("the acyclic command explains how to reinstall when it cannot install itself",
+test("the acyclic-plugin command explains how to reinstall when it cannot install itself",
   { skip: process.platform === "win32" }, () => {
     const value = fixture();
     try {

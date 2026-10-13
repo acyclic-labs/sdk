@@ -2223,9 +2223,9 @@ impl ControlPlane {
             "tests": {"status": "not-reported", "detail": "Acyclic does not infer test execution from process output"},
             "pendingDescendants": descendants,
             "actions": {
-                "inspect": format!("acyclic git diff {reference}"),
-                "merge": format!("acyclic git merge {reference}"),
-                "discard": format!("acyclic discard {reference}"),
+                "inspect": format!("acyclic-plugin git diff {reference}"),
+                "merge": format!("acyclic-plugin git merge {reference}"),
+                "discard": format!("acyclic-plugin discard {reference}"),
             }
         });
         Ok(json!({
@@ -2234,7 +2234,7 @@ impl ControlPlane {
                 format!("Acyclic will freeze {reference} after its live descendants finish.")
             } else {
                 format!(
-                    "Acyclic stopped {reference}. Inspect with `acyclic git diff {reference}`; merge with `acyclic git merge {reference}`; discard with `acyclic discard {reference}`."
+                    "Acyclic stopped {reference}. Inspect with `acyclic-plugin git diff {reference}`; merge with `acyclic-plugin git merge {reference}`; discard with `acyclic-plugin discard {reference}`."
                 )
             },
             "acyclicSummary": summary,
@@ -2943,7 +2943,7 @@ impl ControlPlane {
             .is_some()
         {
             return Err(
-                "this parent workspace already has an unresolved agent merge; use `acyclic git merge --continue` or `--abort`"
+                "this parent workspace already has an unresolved agent merge; use `acyclic-plugin git merge --continue` or `--abort`"
                     .to_owned(),
             );
         }
@@ -3105,7 +3105,7 @@ impl ControlPlane {
                     "conflictCount":conflicts.len(),
                     "conflicts":conflicts,
                     "truncated":publication.conflicts.values().any(|plan| plan.truncated),
-                    "help":"Resolve projected files with ordinary edits, declare every resolved path with `acyclic git add <paths>`, then run `acyclic git merge --continue`; use `acyclic git merge --abort` to restore the pre-merge working tree."
+                    "help":"Resolve projected files with ordinary edits, declare every resolved path with `acyclic-plugin git add <paths>`, then run `acyclic-plugin git merge --continue`; use `acyclic-plugin git merge --abort` to restore the pre-merge working tree."
                 }));
             }
             Publication::Applied(publication) => publication,

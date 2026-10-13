@@ -1621,7 +1621,9 @@ pub(crate) async fn dispatch_session_request(
     let (invocation_caller, _) = control.route_from_cwd(&request.cwd)?;
     let (selected_caller, _) = control.route_from_cwd(&selected_cwd)?;
     if selected_caller != invocation_caller {
-        return Err("acyclic -C cannot cross workspace-context authority boundaries".to_owned());
+        return Err(
+            "acyclic-plugin -C cannot cross workspace-context authority boundaries".to_owned(),
+        );
     }
     let mut request = request;
     request.cwd = selected_cwd;
@@ -1667,7 +1669,7 @@ pub(crate) async fn dispatch_plane_request(
         }
         ControlCommand::Git => {
             if request.argv.is_empty() {
-                return Err("acyclic git requires a Git-style subcommand".to_owned());
+                return Err("acyclic-plugin git requires a Git-style subcommand".to_owned());
             }
             let (caller, route, root_id) = control.route_root_from_cwd(&request.cwd)?;
             if request.argv.as_slice() == ["merge", "--continue"] {
@@ -1702,7 +1704,9 @@ pub(crate) async fn dispatch_plane_request(
                     paths
                 };
                 if paths.is_empty() {
-                    return Err("acyclic git add requires a conflicted path or -A".to_owned());
+                    return Err(
+                        "acyclic-plugin git add requires a conflicted path or -A".to_owned()
+                    );
                 }
                 control
                     .publication_coordinator()
@@ -1744,7 +1748,9 @@ pub(crate) async fn dispatch_plane_request(
                     paths = paths.get(1..).unwrap_or_default();
                 }
                 if paths.len() > 1 {
-                    return Err("acyclic git diff agents/<ref> accepts at most one path".to_owned());
+                    return Err(
+                        "acyclic-plugin git diff agents/<ref> accepts at most one path".to_owned(),
+                    );
                 }
                 return control
                     .agent_changes_as(

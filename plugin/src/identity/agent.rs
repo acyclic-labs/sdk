@@ -218,7 +218,7 @@ impl Identity {
         let agent = credentials.agent.as_mut().ok_or_else(|| {
             Error::new(
                 "login_required",
-                "run acyclic login or signup --agent first",
+                "run acyclic-plugin login or signup --agent first",
             )
         })?;
         let registration = agent.registration()?;

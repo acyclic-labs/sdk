@@ -6,6 +6,10 @@
 
 ## Unreleased
 
+- The npm package's command is now `acyclic-plugin`, so it no longer replaces
+  the `acyclic` command from `@acyclic-labs/cli`. Agent guidance and messages
+  name `acyclic-plugin`; hooks still recognize `acyclic` from earlier guidance.
+  Cargo still installs the executable as `acyclic`.
 - Installing with npm 12, which skips install scripts for packages it has not
   been told to trust, no longer leaves a broken `acyclic` command. The first
   run finishes the install itself, and if it cannot, it prints the command

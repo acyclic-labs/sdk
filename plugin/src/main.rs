@@ -435,7 +435,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut cwd = invocation_cwd.clone();
     if arguments.first().is_some_and(|argument| argument == "-C") {
         if arguments.len() < 2 {
-            return Err(io::Error::other("acyclic -C requires a path").into());
+            return Err(io::Error::other("acyclic-plugin -C requires a path").into());
         }
         cwd = PathBuf::from(arguments.remove(1)).canonicalize()?;
         arguments.remove(0);
@@ -445,7 +445,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .is_some_and(|argument| matches!(argument.as_str(), "--help" | "-h"))
     {
         println!(
-            "Acyclic {}\n\nUsage: acyclic [COMMAND]\n\nCommands:\n  login [--json]     Sign in with device approval\n  signup --agent [--json] Create an agent identity\n  whoami [--json]    Show the signed-in identity\n  orgs [--json]      List organizations\n  refresh [--json]   Rotate the session token\n  identity-mcp       Serve customer identity MCP tools\n  install HOST       Install host integration\n  uninstall HOST [--purge]\n                       Remove integration; preserve durable state unless purged\n  doctor [--json]    Diagnose the release installation\n  git ARGS...        Run Git compatibility commands\n  agents [--json]    List recursive agent workspace status\n  discard WORKSPACE  Discard a child workspace\n  mcp                 Serve MCP over standard input/output",
+            "Acyclic {}\n\nUsage: acyclic-plugin [COMMAND]\n\nCommands:\n  login [--json]     Sign in with device approval\n  signup --agent [--json] Create an agent identity\n  whoami [--json]    Show the signed-in identity\n  orgs [--json]      List organizations\n  refresh [--json]   Rotate the session token\n  identity-mcp       Serve customer identity MCP tools\n  install HOST       Install host integration\n  uninstall HOST [--purge]\n                       Remove integration; preserve durable state unless purged\n  doctor [--json]    Diagnose the release installation\n  git ARGS...        Run Git compatibility commands\n  agents [--json]    List recursive agent workspace status\n  discard WORKSPACE  Discard a child workspace\n  mcp                 Serve MCP over standard input/output",
             env!("CARGO_PKG_VERSION")
         );
         return Ok(());
@@ -565,9 +565,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .is_some_and(|argument| argument == "__service-drain")
     {
         if arguments.len() > 2 {
-            return Err(
-                io::Error::other("usage: acyclic __service-drain [EXPECTED_IDENTITY]").into(),
-            );
+            return Err(io::Error::other(
+                "usage: acyclic-plugin __service-drain [EXPECTED_IDENTITY]",
+            )
+            .into());
         }
         let fence = drain_service(
             &default_data_directory(),

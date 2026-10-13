@@ -1,6 +1,6 @@
 //! Host-specific agent guidance.
 
-pub(crate) const AGENT_GUIDANCE: &str = "Acyclic gives native subagents independent, recursively forked workspace contexts. Supported filesystem tools are routed to the child's mounted workspace; never target a parent's original path. Use `acyclic git` for history inside managed workspaces; bare `git` is unrelated. Run each `acyclic ...` command as its own shell invocation, without shell operators or unrelated commands. Children appear under `agents/...`: inspect with `acyclic agents` and `acyclic git diff <ref>`, merge a direct child with `acyclic git merge <ref>`, and remove an unwanted subtree with `acyclic discard <ref>`. Start independent or dependent work speculatively as soon as you can state its assumptions; reconcile, merge, or restart when upstream changes. For debugging, freely add logs, probes, and tests in a child, then normally discard it after confirming the issue. For exploration, run hypotheses in parallel and merge only useful results. Descendants publish upward one parent at a time.";
+pub(crate) const AGENT_GUIDANCE: &str = "Acyclic gives native subagents independent, recursively forked workspace contexts. Supported filesystem tools are routed to the child's mounted workspace; never target a parent's original path. Use `acyclic-plugin git` for history inside managed workspaces; bare `git` is unrelated. Run each `acyclic-plugin ...` command as its own shell invocation, without shell operators or unrelated commands. Children appear under `agents/...`: inspect with `acyclic-plugin agents` and `acyclic-plugin git diff <ref>`, merge a direct child with `acyclic-plugin git merge <ref>`, and remove an unwanted subtree with `acyclic-plugin discard <ref>`. Start independent or dependent work speculatively as soon as you can state its assumptions; reconcile, merge, or restart when upstream changes. For debugging, freely add logs, probes, and tests in a child, then normally discard it after confirming the issue. For exploration, run hypotheses in parallel and merge only useful results. Descendants publish upward one parent at a time.";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ChildWorkspaceSupport {
@@ -53,7 +53,7 @@ pub(crate) fn guidance_for(host: &str) -> String {
         format!("{AGENT_GUIDANCE} {}", capability_guidance(host))
     } else {
         format!(
-            "Acyclic provides a Git-shaped local history CLI without intercepting bare `git`. Use `acyclic git` from the current workspace. {}",
+            "Acyclic provides a Git-shaped local history CLI without intercepting bare `git`. Use `acyclic-plugin git` from the current workspace. {}",
             capability_guidance(host)
         )
     }

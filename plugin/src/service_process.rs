@@ -590,16 +590,21 @@ pub(crate) fn doctor_report(
     ));
     let cli_on_path = env::var_os("PATH").is_some_and(|paths| {
         env::split_paths(&paths).any(|directory| {
-            ["acyclic", "acyclic.exe", "acyclic.cmd", "acyclic.ps1"]
-                .iter()
-                .any(|name| directory.join(name).is_file())
+            [
+                "acyclic-plugin",
+                "acyclic-plugin.exe",
+                "acyclic-plugin.cmd",
+                "acyclic-plugin.ps1",
+            ]
+            .iter()
+            .any(|name| directory.join(name).is_file())
         })
     });
     checks.push(doctor_check(
         "cli-path",
         if cli_on_path { "pass" } else { "warn" },
         if cli_on_path {
-            "acyclic shell launcher is on PATH"
+            "acyclic-plugin shell launcher is on PATH"
         } else {
             "plugin MCP tool is available; install the npm package for shell PATH access"
         },
@@ -1193,7 +1198,7 @@ pub(crate) fn control_request_from_argv(
     let mut selected_cwd = cwd.clone();
     if argv.first().is_some_and(|argument| argument == "-C") {
         if argv.len() < 2 {
-            return Err("acyclic -C requires a path".to_owned());
+            return Err("acyclic-plugin -C requires a path".to_owned());
         }
         selected_cwd = PathBuf::from(argv.remove(1))
             .canonicalize()

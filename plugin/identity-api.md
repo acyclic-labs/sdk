@@ -22,7 +22,7 @@ All POST bodies are JSON objects, as required by Global's `readBody`.
   and `expires_in`. Non-2xx responses contain `error`.
 - `authorization_pending` repeats at the advertised interval; `slow_down`
   increases the interval by five seconds. Other errors end polling.
-- `acyclic whoami` calls `GET /v1/identity/session`; `acyclic orgs` calls
+- `acyclic-plugin whoami` calls `GET /v1/identity/session`; `acyclic-plugin orgs` calls
   `GET /v1/identity/orgs`. Both use a session bearer and return the server JSON.
   Expiring or refused access triggers one refresh. Refresh durably removes the saved session before sending its rotating token, retaining any agent key. An interrupted refresh requires device login; the spent token is never replayed. If consuming the session fails, no request is sent.
 

@@ -102,12 +102,12 @@ if (!hookHandlers.some(hook => hook.type === "mcp_tool")
   fail("Codex MCP hooks must call the plugin's hook server");
 }
 
-// The `acyclic` command must link to an interpreter-less placeholder that the
+// The `acyclic-plugin` command must link to an interpreter-less placeholder that the
 // installer replaces with the native executable; an interpreter line would make
 // Windows package managers wrap the command in that interpreter.
 const packageJson = JSON.parse(readFileSync(join(plugin, "package.json"), "utf8"));
-if (JSON.stringify(packageJson.bin) !== JSON.stringify({ acyclic: "bin/acyclic" })) {
-  fail("the acyclic command must link to bin/acyclic");
+if (JSON.stringify(packageJson.bin) !== JSON.stringify({ "acyclic-plugin": "bin/acyclic" })) {
+  fail("the acyclic-plugin command must link to bin/acyclic");
 }
 const placeholder = join(plugin, "bin", "acyclic");
 if (!existsSync(placeholder) || !statSync(placeholder).isFile() || statSync(placeholder).size > 4096

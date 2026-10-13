@@ -103,6 +103,20 @@ pub(crate) fn pre_tool_update(updated: &Value) -> Value {
     })
 }
 
+// The npm package links `acyclic-plugin` to the executable; agents following
+// guidance from earlier releases, and hooks naming the executable by path, run
+// it as `acyclic`.
+fn is_acyclic_command_name(name: &str) -> bool {
+    [
+        "acyclic",
+        "acyclic.exe",
+        "acyclic-plugin",
+        "acyclic-plugin.exe",
+    ]
+    .iter()
+    .any(|command| name.eq_ignore_ascii_case(command))
+}
+
 pub(crate) fn is_acyclic_cli_invocation(tool_name: &str, input: &Value) -> Result<bool, String> {
     if !(matches!(tool_name, "Bash" | "PowerShell") || is_exec_command_tool(tool_name)) {
         return Ok(false);
@@ -118,9 +132,7 @@ pub(crate) fn is_acyclic_cli_invocation(tool_name: &str, input: &Value) -> Resul
     let acyclic = Path::new(&program)
         .file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| {
-            name.eq_ignore_ascii_case("acyclic") || name.eq_ignore_ascii_case("acyclic.exe")
-        });
+        .is_some_and(is_acyclic_command_name);
     if !acyclic {
         return Ok(false);
     }
@@ -129,9 +141,7 @@ pub(crate) fn is_acyclic_cli_invocation(tool_name: &str, input: &Value) -> Resul
         Path::new(program)
             .file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(|name| {
-                name.eq_ignore_ascii_case("acyclic") || name.eq_ignore_ascii_case("acyclic.exe")
-            })
+            .is_some_and(is_acyclic_command_name)
     }))
 }
 

@@ -6,7 +6,7 @@ Configure a stdio MCP server with the installed native CLI:
 {
   "mcpServers": {
     "acyclic-identity": {
-      "command": "acyclic",
+      "command": "acyclic-plugin",
       "args": ["identity-mcp", "--endpoint", "https://YOUR_PUBLIC_EDGE_ORIGIN"]
     }
   }
