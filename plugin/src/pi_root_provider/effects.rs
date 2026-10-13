@@ -314,28 +314,6 @@ impl PiRootProvider {
                 reason: "root effect differs from its original request, schema, provider or attempt",
             });
         }
-        let retained_plan = self
-            .read_with_native_work::<acyclic_harness::effect_host::TaskEffectPlan>(
-                &self.preparation.command.payload,
-                work,
-            )
-            .await?;
-        let request = self
-            .read_with_native_work::<PiRootRequest>(&plan.request, work)
-            .await?;
-        let schema = self
-            .read_with_native_work::<serde_json::Value>(&plan.result_schema, work)
-            .await?;
-        let expected_schema = PiRootAllocation::schema(&request.0.binding, work)?;
-        if retained_plan.0 != *plan
-            || request.0 != self.preparation.request
-            || schema.0 != expected_schema.0
-        {
-            return Err(Error::NativeBoundary {
-                code: ErrorCode::Unauthorized,
-                reason: "original immutable root preparation differs",
-            });
-        }
         if let EffectStatus::Succeeded { result } = &state.0.status {
             let canonical = self
                 .original_artifact_with_native_work(effect, attempt, "result", work)
