@@ -301,17 +301,16 @@ impl PiSession {
                 mount_path: None,
             });
         }
+        let (roots, _context_custody) = context;
         drop(
             WorkspaceContextRegistry::new(self.resources.store.clone())
-                .register_root_with_native_work(
+                .register_root(
                     WorkspaceContextId::from_bytes(self.state.root_context_id),
-                    context,
-                    work,
-                    work.cancellation(),
+                    roots,
                 )
                 .await
-                .map_err(|(source, custody)| match source {
-                    acyclic_fs::WorkspaceContextError::NativeFilesystem(source) => RootError::NativeFilesystem { source: Box::new(source), custody },
+                .map_err(|source| match source {
+                    acyclic_fs::WorkspaceContextError::NativeFilesystem(source) => RootError::NativeFilesystem { source: Box::new(source), custody: None },
                     source => RootError::Storage(display(source)),
                 })?,
         );
