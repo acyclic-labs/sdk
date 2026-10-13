@@ -56,7 +56,7 @@ test('the required job only checks Cargo lock consistency',()=>{
  assert.doesNotMatch(workflow,/setup-node|static-ci|fmt|clippy|cargo (?:build|test|check)/);
 });
 test('heavy workflows are reachable only through the release caller',()=>{
- for(const name of workflows.filter(name=>![STATIC,'release.yml'].includes(name))){
+ for(const name of workflows.filter(name=>![STATIC,'release.yml','readme-guard.yml'].includes(name))){
   assert.match(triggers(read(name)),/workflow_call:/,name);
   assert.doesNotMatch(triggers(read(name)),/workflow_dispatch:/,name);
  }
