@@ -179,7 +179,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             None => None,
         };
         #[cfg(target_arch = "wasm32")]
-        let lease = None;
+        let lease = None::<&Arc<dyn crate::resource_preparation::CreatedTaskLease>>;
         if let Some(lease) = lease {
             match io {
                 Some(io) => lease.verify(Some(io))?.await?,

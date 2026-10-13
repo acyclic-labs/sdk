@@ -8,8 +8,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_mkdir(
     uid: u32,
     gid: u32,
 ) -> c_int {
-    let span = callback_span!(TRACE, mkdir);
-    ffi(address, &span, true, |context, work| {
+    ffi(address, true, |context, work| {
         let path = mount_path(path, work)?;
         context.mutate(
             || {
@@ -31,8 +30,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_remove(
     path: *const c_char,
     directory: c_int,
 ) -> c_int {
-    let span = callback_span!(TRACE, remove);
-    ffi(address, &span, true, |context, work| {
+    ffi(address, true, |context, work| {
         let path = mount_path(path, work)?;
         let lookup = context.lookup(&path, work)?;
         if (directory != 0) != (lookup.node.kind == MountNodeKind::Directory) {
@@ -62,8 +60,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_rename(
     source: *const c_char,
     destination: *const c_char,
 ) -> c_int {
-    let span = callback_span!(DEBUG, rename);
-    ffi(address, &span, true, |context, work| {
+    ffi(address, true, |context, work| {
         let (source, destination) = (mount_path(source, work)?, mount_path(destination, work)?);
         let rename = || context.source.rename(&source, &destination, true, work);
         match context.lookup(&destination, work) {
@@ -81,8 +78,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_link(
     source: *const c_char,
     destination: *const c_char,
 ) -> c_int {
-    let span = callback_span!(TRACE, link);
-    ffi(address, &span, true, |context, work| {
+    ffi(address, true, |context, work| {
         let (source, destination) = (mount_path(source, work)?, mount_path(destination, work)?);
         context.mutate(
             || context.source.hard_link(&source, &destination, work),
@@ -100,8 +96,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_symlink(
     uid: u32,
     gid: u32,
 ) -> c_int {
-    let span = callback_span!(TRACE, symlink);
-    ffi(address, &span, true, |context, work| {
+    ffi(address, true, |context, work| {
         let target = copy_bytes(work, c_bytes(target, work)?)?;
         let destination = mount_path(destination, work)?;
         context.mutate(
@@ -126,8 +121,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_readlink(
     buffer: *mut c_char,
     length: usize,
 ) -> c_int {
-    let span = callback_span!(TRACE, readlink);
-    ffi(address, &span, false, |context, work| {
+    ffi(address, false, |context, work| {
         if length == 0 {
             return Err(driver_errno(libc::ERANGE));
         }
@@ -156,8 +150,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_mknod(
     uid: u32,
     gid: u32,
 ) -> c_int {
-    let span = callback_span!(TRACE, mknod);
-    ffi(address, &span, true, |context, work| {
+    ffi(address, true, |context, work| {
         let kind = match (mode & libc::S_IFMT as u32) as libc::mode_t {
             libc::S_IFIFO => MountNodeKind::Fifo,
             libc::S_IFSOCK => MountNodeKind::Socket,
@@ -194,8 +187,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_chmod(
     mode: u32,
     handle: u64,
 ) -> c_int {
-    let span = callback_span!(DEBUG, chmod, fh = handle);
-    ffi(address, &span, true, |context, work| {
+    ffi(address, true, |context, work| {
         context.mutate_metadata(
             &*mount_path(path, work)?,
             handle,
@@ -218,8 +210,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_chown(
     gid: u32,
     handle: u64,
 ) -> c_int {
-    let span = callback_span!(DEBUG, chown, fh = handle);
-    ffi(address, &span, true, |context, work| {
+    ffi(address, true, |context, work| {
         context.mutate_metadata(
             &*mount_path(path, work)?,
             handle,
@@ -245,8 +236,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_utimens(
     times: *const NativeTimes,
     handle: u64,
 ) -> c_int {
-    let span = callback_span!(DEBUG, utimens, fh = handle);
-    ffi(address, &span, true, |context, work| {
+    ffi(address, true, |context, work| {
         // SAFETY: the bridge retains a nonnull NativeTimes through this callback.
         let times = unsafe { times.as_ref() }.ok_or_else(|| driver_errno(libc::EINVAL))?;
         context.mutate_metadata(

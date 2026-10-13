@@ -1,7 +1,7 @@
 use super::*;
 use crate::filesystem::{PreparationIo, task_runtime::observed::boundary};
 use crate::resource_preparation::{ResourcePreparationRequest, TaskResourcePreparation};
-use crate::runtime::{TaskAdmissionRecord, TaskSpawner as _};
+use crate::runtime::TaskAdmissionRecord;
 use crate::wire::ErrorCode;
 
 impl<P, A, O> FilesystemTaskCommands<'_, P, A, O>
@@ -35,21 +35,14 @@ where
         });
         let preparation: Arc<TaskResourcePreparation> = 'preparation: {
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(io) = io {
+            if let Some(work) = io.and_then(PreparationIo::original_native_work) {
                 let WorkerContext::Native(shared) = context else {
                     return Err(boundary(
-                        Some(io),
+                        io,
                         ErrorCode::Unauthorized,
                         "native fork requires its original shared context",
                     ));
                 };
-                let work = io.original_native_work().ok_or_else(|| {
-                    boundary(
-                        Some(io),
-                        ErrorCode::Unsupported,
-                        "native fork requires original work",
-                    )
-                })?;
                 if reconciliation_only {
                     let Some(preparation) = self
                         .runtime
@@ -60,26 +53,6 @@ where
                     };
                     break 'preparation preparation;
                 }
-                let bytes = (std::mem::size_of::<ResourcePreparationRequest>() as u64)
-                    .checked_add(request.logical_owned_bytes()?)
-                    .ok_or_else(|| {
-                        boundary(
-                            Some(io),
-                            ErrorCode::Invalid,
-                            "fork preparation request ownership overflows",
-                        )
-                    })?;
-                let custody = io.take_native_custody(bytes)?;
-                let owner = self
-                    .runtime
-                    .task_host()
-                    .journal_owner(task, fence, Some(io))
-                    .await?
-                    .into_native_shared(work)?;
-                io.absorb_native_custody(custody)?;
-                let mut preparation = owner.resource_preparation(request, &mut Some(&mut io.history_io())).await?;
-                preparation.native_custody = Some(io.take_native_custody(io.owned_bytes()?)?);
-                break 'preparation Arc::new(preparation);
             }
             let owner = self
                 .runtime
@@ -87,11 +60,27 @@ where
                 .journal_owner(task, fence, io)
                 .await?
                 .with_invocation_cancellation(&cancellation);
-            Arc::new(
-                Arc::new(owner)
-                    .resource_preparation(request, &mut None)
-                    .await?,
-            )
+            #[cfg(not(target_arch = "wasm32"))]
+            let owner = match io.and_then(PreparationIo::original_native_work) {
+                Some(work) => owner.into_native_shared(work)?,
+                None => Arc::new(owner),
+            };
+            #[cfg(target_arch = "wasm32")]
+            let owner = Arc::new(owner);
+            let mut history = io.map(PreparationIo::history_io);
+            let mut preparation = owner
+                .resource_preparation(
+                    request,
+                    &mut history
+                        .as_mut()
+                        .map(|work| work as &mut dyn crate::store::HistoryIo),
+                )
+                .await?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(io) = io {
+                preparation.native_custody = Some(io.take_native_custody(io.owned_bytes()?)?);
+            }
+            Arc::new(preparation)
         };
         let fork: crate::fork::ForkRequest =
             match io {
@@ -121,41 +110,15 @@ where
                     "fork preparation source is not configured",
                 )
             })?;
-            let retained = 'source: {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(io) = io {
-                    let WorkerContext::Native(shared) = context else {
-                        unreachable!("preparation checked native context")
-                    };
-                    let work = io
-                        .original_native_work()
-                        .expect("preparation checked original work");
-                    let (retained, custody) = if reconciliation_only {
-                        source
-                            .preparation_for_reconciliation_with_native_work(
-                                shared,
-                                &preparation,
-                                &cancellation,
-                                work,
-                            )?
-                            .await?
-                    } else {
-                        source
-                            .preparation_with_native_work(
-                                shared,
-                                &preparation,
-                                &cancellation,
-                                work,
-                            )?
-                            .await?
-                    };
-                    io.absorb_native_custody(custody)?;
-                    break 'source retained;
-                }
-                source
-                    .preparation(context.context(), &preparation, &cancellation)
-                    .await?
-            };
+            let retained = source
+                .preparation(
+                    context,
+                    &preparation,
+                    &cancellation,
+                    reconciliation_only,
+                    io,
+                )
+                .await?;
             if retained.request != fork {
                 return Err(boundary(
                     io,
@@ -213,17 +176,10 @@ where
             ));
         }
         #[cfg(not(target_arch = "wasm32"))]
-        let work = io
-            .map(|io| {
-                io.original_native_work().ok_or_else(|| {
-                    boundary(
-                        Some(io),
-                        ErrorCode::Unsupported,
-                        "native child requires original work",
-                    )
-                })
-            })
-            .transpose()?;
+        let work = io.map(|io| {
+            io.original_native_work()
+                .expect("dispatch checked original work")
+        });
         if reconciliation_only {
             let retained = 'retained: {
                 #[cfg(not(target_arch = "wasm32"))]
@@ -304,13 +260,9 @@ where
             let admission = 'admission: {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(io) = io {
-                    let work = io.original_native_work().ok_or_else(|| {
-                        boundary(
-                            Some(io),
-                            ErrorCode::Unsupported,
-                            "native child requires original work",
-                        )
-                    })?;
+                    let work = io
+                        .original_native_work()
+                        .expect("dispatch checked original work");
                     let input_bytes = (std::mem::size_of::<Value>() as u64)
                         .checked_add(crate::executor::json::json_value_logical_owned_bytes(
                             &input.input,
@@ -362,19 +314,30 @@ where
             return mail::reconciled(io);
         }
         let input: TaskObserveCommand = mail::decode_command(payload, io)?;
-        let child =
-            TaskId::from_bytes(child_operation(task, input.admission_operation, io)?.into_bytes());
+        match self
+            .observe_child(task, input.admission_operation, io)
+            .await?
+        {
+            None | Some(Outcome::Indeterminate { .. }) => Ok(TaskCommandProgress::Pending),
+            Some(outcome) => ready(outcome, io),
+        }
+    }
+
+    pub(super) async fn observe_child(
+        &self,
+        task: TaskId,
+        admission: OperationId,
+        io: Option<&PreparationIo>,
+    ) -> Result<Option<Outcome<Value>>> {
+        let child = TaskId::from_bytes(child_operation(task, admission, io)?.into_bytes());
         if self.runtime.admission_observed(child, io).await?.parent != Some(task) {
             return Err(boundary(
                 io,
                 ErrorCode::Unauthorized,
-                "observed task is not this command's direct child",
+                "observed task is not a direct child",
             ));
         }
-        match self.runtime.outcome_observed(child, io).await? {
-            None | Some(Outcome::Indeterminate { .. }) => Ok(TaskCommandProgress::Pending),
-            Some(outcome) => ready(outcome, io),
-        }
+        self.runtime.outcome_observed(child, io).await
     }
 
     pub(super) async fn cancel_child_command(

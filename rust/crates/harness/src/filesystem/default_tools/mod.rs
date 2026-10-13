@@ -14,10 +14,7 @@ use crate::{
     fork::{ForkReport, ForkRequest, ForkSeed},
     merge::ProjectMergeReceipt,
     resources::GenerationRef,
-    runtime::{
-        RuntimeScope, TaskAdmissionRecord, ToolContext,
-        task_id_for_admission,
-    },
+    runtime::{RuntimeScope, TaskAdmissionRecord, ToolContext, task_id_for_admission},
     store::{StreamAggregate, history::HistoryIo as _},
     tool::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolRegistry, ToolResult},
     workflow::{
@@ -283,5 +280,6 @@ use validation::*;
 mod tests;
 pub(super) use codec::{
     decode, encode, recursive_box, recursive_decode_slot_bytes, recursive_reject,
-    recursive_transition_owned_bytes, recursive_value_owned_bytes,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) use codec::{recursive_transition_owned_bytes, recursive_value_owned_bytes};

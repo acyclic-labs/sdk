@@ -25,14 +25,20 @@ impl Reducer {
             ));
         }
         self.resident_terminal_effect_limit = maximum;
-        self.trim_terminal_effects(protected);
+        let budget = maximum.saturating_sub(protected);
+        while self.projection.indexed_terminal_effects.len() > budget {
+            if let Some(effect) = self.projection.indexed_terminal_effects.pop_front() {
+                self.projection.effects.remove(&effect);
+                self.projection.effects_archived = true;
+            }
+        }
         Ok(())
     }
 
     pub(crate) fn mark_indexed_terminal_effect_with_work(
         &mut self,
         event: &Event,
-        _work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        _work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         let EventPayload::EffectResolved { observation } = &event.payload else {
             return Ok(());
@@ -68,18 +74,6 @@ impl Reducer {
         self.set_resident_terminal_effect_limit(self.resident_terminal_effect_limit)
     }
 
-    pub(in crate::core) fn trim_terminal_effects(&mut self, protected: usize) {
-        let budget = self
-            .resident_terminal_effect_limit
-            .saturating_sub(protected);
-        while self.projection.indexed_terminal_effects.len() > budget {
-            if let Some(effect) = self.projection.indexed_terminal_effects.pop_front() {
-                self.projection.effects.remove(&effect);
-                self.projection.effects_archived = true;
-            }
-        }
-    }
-
     /// Number of resident active and cached terminal effect projections.
     #[must_use]
     pub fn resident_effect_count(&self) -> usize {
@@ -102,7 +96,7 @@ impl Reducer {
         verifier: AuthorityVerifier,
         effect_id: EffectId,
         events: &[Event],
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<(EffectState, u64)> {
         let metadata_owned = if work.is_some() {
             (authority.id.capacity() as u64)
@@ -111,7 +105,7 @@ impl Reducer {
         } else {
             0
         };
-        let mut quota = crate::wire_codec::CodecQuota::from_retained(work, metadata_owned);
+        let mut quota = CodecQuota::from_retained(work, metadata_owned);
         let mut projection = Self::new(authority, verifier, SchemaRegistry::default());
         let mut previous = 0;
         for event in events {

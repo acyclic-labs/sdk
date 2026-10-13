@@ -13,7 +13,7 @@ pub fn json_from_slice_bounded<
     bounds: JsonBounds,
     maximum_owned_bytes: u64,
     code: Option<crate::wire::ErrorCode>,
-    value_schema: Option<JsonValueSchema>,
+    value_schema: Option<&'static JsonValueSchema>,
     charge: &mut F,
 ) -> Result<S::Value> {
     let bounds = JsonBounds {
@@ -57,7 +57,7 @@ pub fn json_from_value_bounded<T: DeserializeOwned, F: FnMut(JsonCodecCharge) ->
     bounds: JsonBounds,
     maximum_owned_bytes: u64,
     code: Option<crate::wire::ErrorCode>,
-    value_schema: JsonValueSchema,
+    value_schema: &'static JsonValueSchema,
     charge: &mut F,
 ) -> Result<T> {
     let mut shape = json_owned_value_shape_bounded(source.as_ref(), bounds, value_schema, charge)?;

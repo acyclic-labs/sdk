@@ -29,16 +29,9 @@ async fn settle(
             )
         })
         .map_err(|error| std::io::Error::other(error.to_string()))?;
-    let ranges = settled_sparse_ranges(
-        &native,
-        &metadata,
-        reported,
-        maximum_ranges,
-        &cancellation,
-        &scope,
-    )
-    .await
-    .map_err(std::io::Error::other)?;
+    let ranges = settled_sparse_ranges(&native, &metadata, reported, maximum_ranges, &scope.native)
+        .await
+        .map_err(std::io::Error::other)?;
     let converted = ranges
         .into_iter()
         .map(|range| (range.offset, range.length))
@@ -104,7 +97,7 @@ async fn written_zeros_in_a_sparse_file_capture_as_holes() -> std::io::Result<()
                 .map_err(|(error, work)| OperationFailure::new(CaptureError::from(error), work))?;
             let mut scope = CaptureWorkScope::new(&original)?;
             {
-                let mut work = &scope;
+                let work = &scope;
                 work.native
                     .with_original_leaf(|work| {
                         work.claim_allocation(
@@ -118,10 +111,9 @@ async fn written_zeros_in_a_sparse_file_capture_as_holes() -> std::io::Result<()
                         OperationFailure::new(capture_demand_error(error), work.native.receipt())
                     })?;
             }
-            let result =
-                settled_sparse_ranges(&native, &metadata, reported, 16, &cancellation, &scope)
-                    .await
-                    .map(drop);
+            let result = settled_sparse_ranges(&native, &metadata, reported, 16, &scope.native)
+                .await
+                .map(drop);
             scope
                 .release()
                 .map_err(|error| OperationFailure::new(error, original.receipt()))?;

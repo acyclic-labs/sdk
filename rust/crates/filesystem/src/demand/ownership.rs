@@ -134,13 +134,7 @@ impl NativeMountAllocationCustody {
     pub(crate) fn is_admitted(&self, work: &mut DemandWork) -> Result<bool, DemandError> {
         work.reconcile_cancellation_registry()?;
         for entry in work.roots.native_mount_admissions.0.iter() {
-            work.work.charge(
-                &WorkCounters {
-                    items_examined: 1,
-                    ..WorkCounters::UNCHARGED
-                },
-                &work.budget,
-            )?;
+            work.work.charge(&super::admissions::SCAN, &work.budget)?;
             if std::ptr::eq(entry.0.as_ptr(), self) {
                 return Ok(true);
             }
@@ -193,18 +187,16 @@ impl NativeMountAllocationCustody {
                     .filter(|current| *current >= std::mem::size_of::<Self>() as u64)
             })
             .map_err(|_| crate::WorkError::Overflow)?;
-        if let Some(resource) = self
-            .original
-            .as_ref()
-            .and_then(|work| work.resource.as_ref())
+        self.retire_resource(bytes)
+    }
+    fn retire_resource(&self, bytes: u64) -> Result<(), crate::WorkError> {
+        if let Some(original) = &self.original
+            && let Some(resource) = &original.resource
         {
             if let Err(error) = resource.retire(bytes) {
-                self.original
-                    .as_ref()
-                    .expect("resource owner")
-                    .with_original_leaf(|work| {
-                        work.record_native_io_failure(error);
-                    });
+                original.with_original_leaf(|work| {
+                    work.record_native_io_failure(error);
+                });
                 return Err(crate::WorkError::Overflow);
             }
         }
@@ -213,14 +205,6 @@ impl NativeMountAllocationCustody {
 }
 impl Drop for NativeMountAllocationCustody {
     fn drop(&mut self) {
-        if let Some(original) = &self.original {
-            if let Some(resource) = &original.resource {
-                if let Err(error) = resource.retire(self.retained_bytes()) {
-                    original.with_original_leaf(|work| {
-                        work.record_native_io_failure(error);
-                    });
-                }
-            }
-        }
+        let _ = self.retire_resource(self.retained_bytes());
     }
 }

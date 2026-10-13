@@ -12,7 +12,6 @@ pub(super) struct TextTool {
 }
 
 impl TextTool {
-    // This preflight is also used when the executor authorizes durable replay.
     pub(super) fn preflight(
         &self,
         scope: &RuntimeScope,
@@ -92,48 +91,76 @@ impl TextTool {
         self.preflight(context.task().scope(), invocation)
     }
 
-    async fn run(&self, context: ToolContext, invocation: ToolInvocation) -> Result<ToolResult> {
-        let file = self.preflight_with_context(&context, &invocation)?;
-        let task = context.task();
-        let bytes = task.read_file(&file, None).await?;
-        let source = std::str::from_utf8(&bytes)
-            .map_err(|_| Error::Invalid("text tool requires UTF-8 content".into()))?;
+    async fn run(
+        &self,
+        context: &ToolContext,
+        invocation: &ToolInvocation,
+        work: crate::NativeWork<'_>,
+    ) -> Result<(ToolResult, crate::NativeCustody)> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let owned_io = work
+            .map(crate::executor::PreparationIo::from_native_work)
+            .transpose()?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let io = owned_io.as_ref();
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let io: Option<&crate::executor::PreparationIo> = None;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = work {
+            self.authorize_with_native_context(context, invocation, work)?;
+        } else {
+            self.preflight_with_context(context, invocation)?;
+        }
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        self.preflight_with_context(context, invocation)?;
         let maximum = self
             .maximum_result_bytes
-            .min(task.scope().limits().file_bytes);
-        let value = match self.kind {
+            .min(context.effective_scope().limits().file_bytes);
+        let invalid = || {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if work.is_some() {
+                return super::files::native::invalid("text tool requires UTF-8 content");
+            }
+            Error::Invalid("text tool requires UTF-8 content".into())
+        };
+        let encoded = match self.kind {
             TextKind::Read(options) => {
-                let input: ReadInput = decode(&invocation.arguments, None)?.0;
+                let input = decode::<ReadInput>(&invocation.arguments, work)?;
+                let bytes = context.read_file(&input.0.file, io).await?;
+                let source = std::str::from_utf8(bytes.as_ref()).map_err(|_| invalid())?;
+                let mut allocation =
+                    super::edit::AlgorithmWork::new(work, std::mem::size_of::<TextSelection>())?;
                 let value = ReadResult {
-                    file,
                     selection: super::text::read_range(
                         source,
-                        input.range,
+                        input.0.range,
                         options,
-                        &mut super::edit::AlgorithmWork::ordinary(),
+                        &mut allocation,
                     )?,
+                    file: input.0.file,
                 };
-                crate::executor::json::json_byte_length(&value, maximum, &mut None).map(|_| ())?;
-                serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))?
+                super::value(&value, maximum, work)?
             }
             TextKind::Search(options) => {
-                let input: SearchInput = decode(&invocation.arguments, None)?.0;
-                let matches = super::text::literal_search(
-                    source,
-                    &input.query,
-                    options,
-                    &mut super::edit::AlgorithmWork::ordinary(),
-                )?;
+                let input = decode::<SearchInput>(&invocation.arguments, work)?;
+                let bytes = context.read_file(&input.0.file, io).await?;
+                let source = std::str::from_utf8(bytes.as_ref()).map_err(|_| invalid())?;
+                let mut allocation =
+                    super::edit::AlgorithmWork::new(work, std::mem::size_of::<SearchMatches>())?;
                 let value = SearchResult {
-                    file,
-                    query: input.query,
-                    matches,
+                    matches: super::text::literal_search(
+                        source,
+                        &input.0.query,
+                        options,
+                        &mut allocation,
+                    )?,
+                    file: input.0.file,
+                    query: input.0.query,
                 };
-                crate::executor::json::json_byte_length(&value, maximum, &mut None).map(|_| ())?;
-                serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))?
+                super::value(&value, maximum, work)?
             }
         };
-        Ok(ToolResult { value })
+        Ok((ToolResult { value: encoded.0 }, encoded.1))
     }
 }
 
@@ -203,7 +230,8 @@ impl ToolExecutor for TextTool {
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (ToolResult, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || async move {
-            self.run_native(context, invocation, work).await
+            let (result, custody) = self.run(context, invocation, Some(work)).await?;
+            Ok((result, custody.expect("native text result")))
         })
     }
 
@@ -216,8 +244,8 @@ impl ToolExecutor for TextTool {
     ) -> Result<crate::NativeFutureBundle<'a, (Option<ToolResult>, acyclic_fs::NativeAllocation)>>
     {
         crate::NativeFutureBundle::new(work, || async move {
-            let result = self.run_native(context, invocation, work).await?;
-            Ok((Some(result.0), result.1))
+            let (result, custody) = self.run(context, invocation, Some(work)).await?;
+            Ok((Some(result), custody.expect("native text result")))
         })
     }
 
@@ -251,7 +279,11 @@ impl ToolExecutor for TextTool {
                 ))
             });
         };
-        Box::pin(self.run(context, invocation))
+        Box::pin(async move {
+            self.run(&context, &invocation, None)
+                .await
+                .map(|result| result.0)
+        })
     }
 
     fn reconcile<'a>(
@@ -267,75 +299,10 @@ impl ToolExecutor for TextTool {
             });
         };
         // Immutable reads have no publication effect; retry uses the same pinned source.
-        Box::pin(async move { self.run(context, invocation).await.map(Some) })
-    }
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-impl TextTool {
-    async fn run_native(
-        &self,
-        context: &ToolContext,
-        invocation: &ToolInvocation,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(ToolResult, acyclic_fs::NativeAllocation)> {
-        use super::files::native;
-        self.authorize_with_native_context(context, invocation, work)?;
-        let maximum = self
-            .maximum_result_bytes
-            .min(context.effective_scope().limits().file_bytes);
-        match self.kind {
-            TextKind::Read(options) => {
-                let input = super::decode::<ReadInput>(&invocation.arguments, Some(work))?;
-                let read = context
-                    .read_file(
-                        &input.0.file,
-                        Some(&crate::executor::PreparationIo::from_native_work(work)?),
-                    )
-                    .await?;
-                let source = std::str::from_utf8(read.as_ref())
-                    .map_err(|_| native::invalid("text tool requires UTF-8 content"))?;
-                let mut allocation =
-                    super::edit::AlgorithmWork::native(work, std::mem::size_of::<TextSelection>())?;
-                let value = ReadResult {
-                    selection: super::text::read_range(
-                        source,
-                        input.0.range,
-                        options,
-                        &mut allocation,
-                    )?,
-                    file: input.0.file,
-                };
-                native::bound(&value, maximum, work)?;
-                let encoded = super::value(&value, work.remaining()?.bytes_encoded, work)?;
-                Ok((ToolResult { value: encoded.0 }, encoded.1))
-            }
-            TextKind::Search(options) => {
-                let input = super::decode::<SearchInput>(&invocation.arguments, Some(work))?;
-                let read = context
-                    .read_file(
-                        &input.0.file,
-                        Some(&crate::executor::PreparationIo::from_native_work(work)?),
-                    )
-                    .await?;
-                let source = std::str::from_utf8(read.as_ref())
-                    .map_err(|_| native::invalid("text tool requires UTF-8 content"))?;
-                let mut allocation =
-                    super::edit::AlgorithmWork::native(work, std::mem::size_of::<SearchMatches>())?;
-                let value = SearchResult {
-                    matches: super::text::literal_search(
-                        source,
-                        &input.0.query,
-                        options,
-                        &mut allocation,
-                    )?,
-                    file: input.0.file,
-                    query: input.0.query,
-                };
-                native::bound(&value, maximum, work)?;
-                let encoded = super::value(&value, work.remaining()?.bytes_encoded, work)?;
-                Ok((ToolResult { value: encoded.0 }, encoded.1))
-            }
-        }
+        Box::pin(async move {
+            self.run(&context, &invocation, None)
+                .await
+                .map(|result| Some(result.0))
+        })
     }
 }

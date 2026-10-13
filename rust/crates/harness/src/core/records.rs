@@ -164,15 +164,6 @@ impl RecordedScope {
             .ok_or_else(|| Error::Invalid("recorded scope ownership overflows".into()))
     }
 
-    pub(in crate::core) fn from_scope(scope: &Scope) -> Self {
-        Self {
-            id: scope.id.clone(),
-            capabilities: scope.capabilities.clone(),
-            issuer: scope.issuer.clone(),
-            agent: scope.agent,
-        }
-    }
-
     /// Capabilities authenticated for this one committed event.
     #[must_use]
     pub const fn capabilities(&self) -> &Capabilities {
@@ -241,7 +232,7 @@ impl Event {
             io.admit_allocation(std::mem::size_of::<ForkSeed>() as u64)?;
         }
         let (event, retained) =
-            crate::wire_codec::CodecQuota::produce(work, |quota| copying::copy_event(self, quota))?;
+            CodecQuota::produce(work, |quota| copying::copy_event(self, quota))?;
         Ok((ApplyResult::Replayed { event }, retained))
     }
 }
@@ -508,7 +499,7 @@ pub(in crate::core) fn validate_causal_parent_with_work(
     authority: &Authority,
     current_revision: u64,
     reference: Option<&EventReference>,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<()> {
     let Some(reference) = reference else {
         return Ok(());

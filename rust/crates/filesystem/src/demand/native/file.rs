@@ -62,7 +62,7 @@ impl NativeDemandFile {
             Err(error) => return Err(error),
         };
         let opened = stat_held(&provider, &file, context)?;
-        if !opened.file_type().is_file() {
+        if (opened.file_type() != crate::demand::SourceNodeKind::RegularFile) {
             return Err(DemandError::NotRegularFile);
         }
         if version(&opened) != expected {

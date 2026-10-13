@@ -1,8 +1,6 @@
 //! Shared real-provider fixture for durable host behavior tests.
 use super::*;
-use crate::filesystem::{
-    FilesystemContentPublisher, FilesystemContentVerifier, FilesystemHost,
-};
+use crate::filesystem::{FilesystemContentPublisher, FilesystemContentVerifier, FilesystemHost};
 use crate::runtime::{TaskDefinition, TaskRegistry};
 type Execution<P, A, O> = crate::filesystem::FilesystemExecutionJournal<P, A, O>;
 type Workflow<P, A, O> = crate::filesystem::FilesystemWorkflowJournal<P, A, O>;
@@ -105,17 +103,16 @@ where
                 &mut None,
             )
             .await?;
-        let (input, _) = self
-            .publisher
-            .stage(
-                OperationId::from_bytes([byte; 16]),
-                "replacement.json",
-                b"0",
-                "application/json",
-                "replacement.json",
-                None,
-            )?
-            .await?;
+        let (input, _) = crate::conversation::ContentPublisher::stage(
+            self.publisher.as_ref(),
+            OperationId::from_bytes([byte; 16]),
+            "replacement.json",
+            b"0",
+            "application/json",
+            "replacement.json",
+            None,
+        )?
+        .await?;
         self.host
             .resume_workflow(
                 task,

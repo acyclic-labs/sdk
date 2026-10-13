@@ -205,7 +205,11 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let native_snapshot = snapshot
             .native_snapshot
             .as_ref()
-            .map(|value| crate::core::copy_value(value, &mut quota))
+            .map(|value| {
+                crate::core::copy(value, &mut quota, |value, _| {
+                    crate::executor::json::json_value_logical_owned_bytes(value)
+                })
+            })
             .transpose()?;
         let mut authorization = ProjectSourceAuthorization {
             owner,
@@ -315,27 +319,12 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         native: crate::NativeWork<'_>,
     ) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = native {
-            work.remaining()?;
-            if !context.original_task_binding_matches(self.task_id(), &self.fence)
-                || context.scope().grants() != &self.admission.grants
-                || context.scope().limits() != self.admission.limits
-            {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "selected project read lacks its current original owner",
-                });
-            }
-            return self.verify_project_source_read(handle, native).await;
-        }
-        if context.durable_task_id() != Some(self.task_id())
-            || context.owned_task_fence()? != self.fence
-            || context.scope().grants() != &self.admission.grants
-        {
-            return Err(Error::Unauthorized(
-                "selected project read lacks its current original owner".into(),
-            ));
-        }
+        let io = native
+            .map(crate::executor::PreparationIo::from_native_work)
+            .transpose()?;
+        #[cfg(target_arch = "wasm32")]
+        let io: Option<crate::executor::PreparationIo> = None;
+        self.require_task_context_binding(context, io.as_ref())?;
         self.verify_project_source_read(handle, native).await
     }
 

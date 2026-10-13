@@ -5,7 +5,8 @@ use std::sync::atomic::Ordering;
 #[tokio::test]
 async fn b11_pull_response_loss_keeps_original_reservation() -> Result<()> {
     for mode in 0..3 {
-        let stream = Arc::new(crate::test_stream::LostSessionAck::default());
+        let stream: Arc<crate::test_stream::LostSessionAck<MemoryStream>> =
+            Arc::new(crate::test_stream::LostSessionAck::default());
         let f = Fixture::new(
             stream.clone(),
             acyclic_fs::Fs::memory(),

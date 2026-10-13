@@ -56,35 +56,24 @@ impl ToolProjection for ReadFileProjection {
         }
         let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = work {
-            input.0.file.descriptor().verify(
-                text.0.as_bytes(),
-                &mut Some(&mut crate::store::HistoryWork::new(
-                    crate::filesystem::PreparationIo::from_native_work(work)?,
-                )),
-            )?;
-            return native::summary_reference(
-                &input.0.file,
-                160,
-                format_args!(
-                    "Read {} UTF-8 bytes. The exact text is retained in the canonical tool result and omitted from this model projection.",
-                    text.0.len()
-                ),
-                work,
-            );
-        }
-        input
-            .0
-            .file
-            .descriptor()
-            .verify(text.0.as_bytes(), &mut None)?;
-        super::schema::project_reference(
+        let owned_io = work
+            .map(crate::executor::PreparationIo::from_native_work)
+            .transpose()?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let io = owned_io.as_ref();
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let io: Option<&crate::executor::PreparationIo> = None;
+        crate::executor::with_history_io(io, |history| {
+            input.0.file.descriptor().verify(text.0.as_bytes(), history)
+        })?;
+        super::schema::summary_reference(
             &input.0.file,
-            &format!(
+            160,
+            format_args!(
                 "Read {} UTF-8 bytes. The exact text is retained in the canonical tool result and omitted from this model projection.",
                 text.0.len()
             ),
-            None,
+            work,
         )
     }
 }

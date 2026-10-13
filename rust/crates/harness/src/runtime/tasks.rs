@@ -405,7 +405,9 @@ impl<I, O> TaskDefinition<I, O> {
                             initial: MachineCheckpoint {
                                 machine: task_copy_machine(&admission.initial.machine, quota)?,
                                 revision: admission.initial.revision,
-                                state: crate::core::copy_value(&admission.initial.state, quota)?,
+                                state: crate::core::copy(&admission.initial.state, quota, |value: &serde_json::Value, _| {
+    crate::executor::json::json_value_logical_owned_bytes(value)
+})?,
                             },
                         })
                     })?;

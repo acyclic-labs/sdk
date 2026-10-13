@@ -1,4 +1,4 @@
-use super::schema::{NONE, ROOT, Schema, UNKNOWN};
+use super::schema::{JsonValueSchema, NONE, ROOT, UNKNOWN};
 use super::*;
 use std::{cell::RefCell, iter::Peekable};
 
@@ -212,7 +212,7 @@ impl Branches {
 
 fn value(
     input: &mut Peekable<&mut Input<'_>>,
-    schema: &'static Schema,
+    schema: &'static JsonValueSchema,
     depth: u32,
     virtual_value: bool,
     charge: &Charge<'_>,
@@ -441,7 +441,7 @@ impl Lexical {
 pub(super) fn source(
     bytes: &[u8],
     mut bounds: JsonBounds,
-    schema: Option<JsonValueSchema>,
+    schema: Option<&'static JsonValueSchema>,
     code: Option<crate::wire::ErrorCode>,
     charge: &mut dyn FnMut(JsonCodecCharge) -> Result<()>,
 ) -> Result<JsonValueShape> {
@@ -458,7 +458,7 @@ pub(super) fn source(
     });
     let reader: &mut Input<'_> = &mut source;
     let mut reader = Iterator::peekable(reader);
-    let descriptor = schema.map_or(&UNKNOWN, JsonValueSchema::descriptor);
+    let descriptor = schema.unwrap_or(&UNKNOWN);
     let (mut branches, valid) = value(&mut reader, descriptor, 0, false, &charge)?;
     let ended = space(&mut reader)?.is_none();
     while next(&mut reader)?.is_some() {}
@@ -517,7 +517,7 @@ pub(crate) fn admit_json<F: FnMut(JsonCodecCharge) -> Result<()>>(
 pub(crate) fn admit_json_value_shape<F: FnMut(JsonCodecCharge) -> Result<()>>(
     bytes: &[u8],
     bounds: JsonBounds,
-    schema: JsonValueSchema,
+    schema: &'static JsonValueSchema,
     charge: &mut F,
 ) -> Result<JsonValueShape> {
     source(bytes, bounds, Some(schema), None, charge)
@@ -526,9 +526,9 @@ pub(crate) fn admit_json_value_shape<F: FnMut(JsonCodecCharge) -> Result<()>>(
 pub(crate) fn json_owned_value_shape_bounded<F: FnMut(JsonCodecCharge) -> Result<()>>(
     value: &Value,
     bounds: JsonBounds,
-    schema: JsonValueSchema,
+    schema: &'static JsonValueSchema,
     charge: &mut F,
 ) -> Result<JsonValueShape> {
-    owned::inspect(value, bounds, schema.descriptor(), charge)
+    owned::inspect(value, bounds, schema, charge)
 }
 mod owned;

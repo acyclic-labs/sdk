@@ -66,7 +66,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             .source
             .as_ref()
             .expect("authorized source")
-            .owner(context, &self.durable, invocation, cancellation, io)?
+            .owner(context, &self.durable, invocation, cancellation, io)
             .await?;
         let owner = workflow.owner.as_ref().expect("validated tool owner");
         let caller = context

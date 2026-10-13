@@ -1,13 +1,13 @@
 use super::*;
 
-fn admit_copy<'a, 'w>(
+pub(in crate::core) fn admit_copy<'a, 'w>(
     bytes: u64,
     work: &'a mut Option<&'w mut dyn HistoryIo>,
-) -> Result<crate::wire_codec::CodecQuota<'a, 'w>> {
+) -> Result<CodecQuota<'a, 'w>> {
     if let Some(io) = work.as_deref() {
         io.admit_copy(bytes)?;
     }
-    let mut quota = crate::wire_codec::CodecQuota::new(work, bytes)?;
+    let mut quota = CodecQuota::new(work, bytes)?;
     if let Some(io) = quota.work().as_deref_mut() {
         io.copy_bytes(bytes)?;
     }
@@ -18,7 +18,13 @@ impl Snapshot {
     pub fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
         inspect_metadata(self, work)?;
         let bytes = if work.is_some() {
-            self.fields_owned_bytes()?
+            ownership::owned_sum([
+                owned_vector(&self.projection.bindings, |(extension, _)| {
+                    Ok(extension.name.capacity() as u64)
+                })?,
+                self.projection
+                    .owned_bytes(&self.authority, self.events.iter())?,
+            ])?
         } else {
             0
         };
@@ -39,18 +45,6 @@ impl Snapshot {
         quota.transfer();
         Ok(snapshot)
     }
-    fn fields_owned_bytes(&self) -> Result<u64> {
-        ownership::owned_sum([
-            owned_vector(&self.projection.bindings, |(extension, _)| {
-                Ok(extension.name.capacity() as u64)
-            })?,
-            self.projection.owned_bytes(
-                &self.authority,
-                self.events.iter(),
-                self.events.capacity(),
-            )?,
-        ])
-    }
 }
 impl Reducer {
     /// Captures the projection after one committed event.
@@ -61,7 +55,7 @@ impl Reducer {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<(Snapshot, u64)> {
         let mut preview = self.copy(work)?;
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut quota = CodecQuota::new(work, 0)?;
         let input = copying::copy_event(event, &mut quota)?;
         preview.apply_committed(input, quota.work())?;
         preview.mark_indexed_terminal_effect_with_work(event, quota.work())?;
@@ -79,11 +73,8 @@ impl Reducer {
             return Err(Error::Invalid("snapshot must retain its head event".into()));
         }
         let bytes = if work.is_some() {
-            self.projection.owned_bytes(
-                &self.authority,
-                self.events.iter(),
-                self.events.capacity(),
-            )?
+            self.projection
+                .owned_bytes(&self.authority, self.events.iter())?
         } else {
             0
         };

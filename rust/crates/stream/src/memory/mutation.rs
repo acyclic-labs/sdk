@@ -1,5 +1,5 @@
 fn reserve_commit(state: &State, limits: MemoryLimits) -> Result<(), StreamError> {
-    if state.commits.len().saturating_add(reserved(state).0) >= limits.commits {
+    if state.decision.saturating_add(reserved(state).0 as u64) >= limits.commits as u64 {
         Err(StreamError::Capacity)
     } else {
         Ok(())
@@ -26,11 +26,11 @@ fn commit_identity(decision: u64, digest: [u8; 32]) -> CommitId {
     CommitId::from_bytes(hash.finalize().into())
 }
 
-fn replay(
-    state: &State,
+fn replay<'a>(
+    state: &'a State,
     key: Option<&crate::IdempotencyKey>,
     digest: [u8; 32],
-) -> Result<Option<IdempotencyOutcome>, StreamError> {
+) -> Result<Option<&'a IdempotencyOutcome>, StreamError> {
     let Some(key) = key else { return Ok(None) };
     let Some(replay) = state.replay(key.as_bytes()) else {
         return Ok(None);
@@ -38,7 +38,7 @@ fn replay(
     if replay.digest != digest {
         return Err(StreamError::IdempotencyMismatch);
     }
-    Ok(Some(replay.result.clone()))
+    Ok(Some(&replay.result))
 }
 
 fn replay_append(
@@ -47,7 +47,7 @@ fn replay_append(
     digest: [u8; 32],
 ) -> Result<Option<AppendOutcome>, StreamError> {
     match replay(state, key, digest)? {
-        Some(IdempotencyOutcome::Append(result)) => Ok(Some(result)),
+        Some(IdempotencyOutcome::Append(result)) => Ok(Some(result.clone())),
         Some(_) => Err(StreamError::IdempotencyMismatch),
         None => Ok(None),
     }
@@ -59,7 +59,7 @@ fn replay_fork(
     digest: [u8; 32],
 ) -> Result<Option<ForkReceipt>, StreamError> {
     match replay(state, key, digest)? {
-        Some(IdempotencyOutcome::Fork(result)) => Ok(Some(result)),
+        Some(IdempotencyOutcome::Fork(result)) => Ok(Some(result.clone())),
         Some(_) => Err(StreamError::IdempotencyMismatch),
         None => Ok(None),
     }
@@ -71,7 +71,7 @@ fn admit_replay(
     limits: MemoryLimits,
 ) -> Result<(), StreamError> {
     if key.is_some()
-        && state.replays.len().saturating_add(reserved(state).0) >= limits.idempotency_results
+        && state.replay_count().saturating_add(reserved(state).0) >= limits.idempotency_results
     {
         Err(StreamError::Capacity)
     } else {
@@ -102,18 +102,7 @@ fn retain(
         envelope,
         _allocation: Default::default(),
     };
-    let index = state.retained.len();
-    if let Some(envelope) = entry.envelope() {
-        state.commits.insert(envelope.commit_id, index);
-    }
-    if let Some(key) = &entry.replay {
-        state.replays.insert(key.clone(), index);
-    }
     if entry.envelope().is_some() || entry.replay.is_some() {
-        state.retained.push_back(entry);
+        state.retained.push(entry);
     }
-}
-
-fn validate_commit_authority(state: &State, request: &CommitRequest) -> Result<(), StreamError> {
-    crate::preparation::authority(request, |path| state.paths.get(path).map(|path| path.tail))
 }

@@ -55,23 +55,6 @@ fn catalog(revision: &str, names: &[&str]) -> McpCatalog {
         output_schema:Some(json!({"type":"object","required":["value"],"properties":{"value":{"type":"integer"}}})) }).collect() }
 }
 
-#[test]
-fn catalog_pins_replaceable_projection_independently_of_remote_output() -> Result<()> {
-    let mut selected = catalog("native", &["a"]);
-    selected.projection_schema = json!({"type":"object","properties":{
-        "kind":{"const":"parts"},"parts":{"type":"array","items":{"type":"object"}}},
-        "required":["kind","parts"],"additionalProperties":false});
-    let definition = selected.model_definitions(8, 8192)?.remove(0);
-    assert_eq!(definition.projection_schema, selected.projection_schema);
-    let digest = selected.installation_digest(None, 8, 8192)?;
-    selected.projection_schema = crate::tool::json_projection_schema(json!({}));
-    assert_ne!(digest, selected.installation_digest(None, 8, 8192)?);
-    selected.tools.clear();
-    selected.projection_schema = json!({"type":"invalid-type"});
-    assert!(selected.validate(8, 8192).is_err());
-    Ok(())
-}
-
 struct CatalogApproval {
     operation: OperationId,
     interaction: InteractionId,
@@ -124,7 +107,10 @@ async fn scoped_catalog_installation_and_replacement_require_exact_approval() ->
         &mut None,
     )?;
     let verifier = issuer.verifier(&mut None).expect("verifier copy");
-    let original = catalog("1", &["a", "b"]);
+    let mut original = catalog("1", &["a", "b"]);
+    original.projection_schema = json!({"type":"object","properties":{
+        "kind":{"const":"parts"},"parts":{"type":"array","items":{"type":"object"}}},
+        "required":["kind","parts"],"additionalProperties":false});
     let approval = CatalogApproval {
         operation: OperationId::from_bytes([46; 16]),
         interaction: InteractionId::from_bytes([47; 16]),
@@ -214,6 +200,10 @@ async fn scoped_catalog_installation_and_replacement_require_exact_approval() ->
         tool.executor.authorize(Some(&installer), &invocation),
         Err(Error::Unauthorized(_))
     ));
+    assert_eq!(
+        tool.definition.projection_schema,
+        original.projection_schema
+    );
     assert_eq!(registry.definitions(None)?.len(), 2);
     assert_eq!(transport.0.load(Ordering::SeqCst), 0);
     let mut replacement = catalog("2", &["a"]);
@@ -411,6 +401,9 @@ fn schema_bounds_namespace_and_result_negative_controls() {
     input.tools.pop();
     input.tools[0].input_schema = json!({"type":"unknown"});
     assert!(input.validate(1, 8192).is_err());
+    input.tools.clear();
+    input.projection_schema = json!({"type":"invalid-type"});
+    assert!(input.validate(8, 8192).is_err());
     let tool = RemoteTool {
         server: "fixture".into(),
         name: "a".into(),

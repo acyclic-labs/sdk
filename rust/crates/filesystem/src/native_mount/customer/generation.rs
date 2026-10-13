@@ -99,7 +99,7 @@ where
             }
             if expected_root_identity.is_none() {
                 let candidate = checkout
-                    .private_candidate(work, cancellation)
+                    .private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(work, cancellation), cancellation)
                     .map_err(WorkspaceError::from)?;
                 let reader = candidate
                     .into_pinned_reader_with_native_work(work, cancellation)

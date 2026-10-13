@@ -1,5 +1,4 @@
 use super::*;
-use crate::materializer::NativeCleanupLoan;
 use std::mem::MaybeUninit;
 
 pub(super) struct MountProbe {
@@ -7,23 +6,23 @@ pub(super) struct MountProbe {
     pub(super) mounts: DarwinOwned<Vec<MaybeUninit<libc::statfs>>>,
 }
 
-pub(super) enum ProbeWork<'a, 'b> {
+pub(super) enum ProbeWork<'a> {
     Live(&'a Work),
-    Cleanup(&'a NativeCleanupLoan<'b>),
+    Cleanup(&'a crate::NativeWorkReservation, Option<&'a crate::CancellationToken>),
 }
 
-impl ProbeWork<'_, '_> {
+impl ProbeWork<'_> {
     pub(super) fn original(&self) -> &Work {
         match self {
             Self::Live(work) => work,
-            Self::Cleanup(loan) => loan.credit.work(),
+            Self::Cleanup(credit, _) => credit.work(),
         }
     }
 
     pub(super) fn check(&self) -> Result<(), NativeMountError> {
         match self {
             Self::Live(work) => work.admit(WorkCounters::UNCHARGED)?,
-            Self::Cleanup(loan) => loan.check_wait()?,
+            Self::Cleanup(credit, wait) => credit.check_wait(*wait)?,
         }
         Ok(())
     }
@@ -31,7 +30,7 @@ impl ProbeWork<'_, '_> {
     pub(super) fn read(&self) -> Result<(), NativeMountError> {
         match self {
             Self::Live(work) => work.charge(READ_WORK)?,
-            Self::Cleanup(loan) => loan.started_io(READ_WORK)?,
+            Self::Cleanup(credit, wait) => credit.started_io(READ_WORK, *wait)?,
         }
         Ok(())
     }
@@ -40,7 +39,7 @@ impl ProbeWork<'_, '_> {
         let delta = copy_work(bytes);
         match self {
             Self::Live(work) => work.charge(delta)?,
-            Self::Cleanup(loan) => loan.admit_completed(delta)?.record_completed(delta)?,
+            Self::Cleanup(credit, wait) => credit.partition_work(delta, *wait)?.record_completed(delta)?,
         }
         Ok(())
     }
@@ -75,11 +74,11 @@ impl MountProbe {
     pub(super) fn mounted(
         &mut self,
         destination: &Path,
-        work: &ProbeWork<'_, '_>,
+        work: &ProbeWork<'_>,
     ) -> Result<bool, NativeMountError> {
         let mut path = [0_u8; libc::PATH_MAX as usize];
         let mut close = match work {
-            ProbeWork::Cleanup(loan) => loan.admit_completed(WRITE_WORK)?,
+            ProbeWork::Cleanup(credit, wait) => credit.partition_work(WRITE_WORK, *wait)?,
             ProbeWork::Live(original) => original.reserve_work(WRITE_WORK)?,
         };
         work.read()?;
@@ -148,7 +147,7 @@ impl MountProbe {
                 return Err(std::io::Error::last_os_error().into());
             }
             if count as usize >= self.mounts.capacity() {
-                if matches!(work, ProbeWork::Cleanup(_)) {
+                if matches!(work, ProbeWork::Cleanup(..)) {
                     return Err(NativeMountError::Lifecycle(
                         "Darwin mount table exceeds its prepaid capacity",
                     ));

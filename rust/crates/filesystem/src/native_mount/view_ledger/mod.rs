@@ -2,8 +2,9 @@
 
 use super::{MountSourceError, adapter::NativeDemandCarrier};
 use crate::FileId;
+use crate::demand::NativeMountAllocationCustody;
 use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
-use notifications::Observers;
+use notifications::ObserverEntries;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -14,7 +15,6 @@ pub(super) use storage::{copy_work, same_work, scan_work};
 use unicode_normalization::UnicodeNormalization as _;
 mod notifications;
 mod storage;
-pub(super) use notifications::PreparedEverythingNotification;
 
 static VIEW_CHANGES: AtomicU64 = AtomicU64::new(0);
 // Only the Linux and macOS drivers attribute their changes.
@@ -109,9 +109,7 @@ pub trait ViewObserver: Send + Sync {
     fn view_changed(&self, position: ViewStamp, origin: ViewOrigin);
 
     /// Known native allocation ownership for an SDK observer.
-    fn allocation_custody(
-        &self,
-    ) -> Option<std::sync::Arc<crate::demand::NativeMountAllocationCustody>> {
+    fn allocation_custody(&self) -> Option<Arc<NativeMountAllocationCustody>> {
         None
     }
 
@@ -178,8 +176,8 @@ pub(crate) struct ViewLedger {
     bindings: RwLock<ChangePositions>,
     directories: RwLock<ChangePositions>,
     nodes: RwLock<ChangePositions>,
-    observers: Mutex<Observers>,
-    _custody: Option<std::sync::Arc<crate::demand::NativeMountAllocationCustody>>,
+    observers: Mutex<Option<Arc<ObserverEntries>>>,
+    _custody: Option<Arc<NativeMountAllocationCustody>>,
 }
 
 impl ViewLedger {
@@ -205,13 +203,24 @@ impl ViewLedger {
         change: &ViewChange<'_>,
         carrier: &mut NativeDemandCarrier<'_>,
     ) -> Result<(), MountSourceError> {
+        let position = ViewStamp::next();
         let observers = self
             .observers
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .live(carrier)?;
-        storage::charge(carrier, scan_work(observers.0.len() as u64))?;
-        let position = ViewStamp::next();
+            .clone();
+        storage::charge(
+            carrier,
+            scan_work(
+                observers
+                    .as_ref()
+                    .map_or(0, |entries| entries.entries.len()) as u64,
+            ),
+        )
+        .inspect_err(|_| {
+            position.record_in(&self.unconfirmed);
+            position.record_in(&self.latest);
+        })?;
         let recorded = (|| {
             match change {
                 ViewChange::Node(id) => {
@@ -273,7 +282,11 @@ impl ViewLedger {
             position.record_in(&self.unconfirmed);
         }
         position.record_in(&self.latest);
-        for observer in &observers.0 {
+        for observer in observers
+            .iter()
+            .flat_map(|entries| &entries.entries)
+            .filter_map(|(observer, _)| observer.upgrade())
+        {
             if recorded.is_err() || matches!(change, ViewChange::Unconfirmed) {
                 observer.view_unconfirmed(position);
             } else {
@@ -471,14 +484,7 @@ fn admitted_names<T>(
     let mut scratch = 0_u64;
     let mut items = 3_u64;
     for name in names {
-        items = items
-            .checked_add(
-                (name.as_bytes().len() as u64)
-                    .checked_mul(4)
-                    .and_then(|n| n.checked_add(1))
-                    .ok_or(crate::WorkError::Overflow)?,
-            )
-            .ok_or(crate::WorkError::Overflow)?;
+        items += 4 * name.as_bytes().len() as u64 + 1;
         let unicode_scratch = match name.encoding() {
             NameEncoding::WindowsUtf16Le => crate::kernel::types::utf16le_units(name.as_bytes())
                 .is_some_and(|units| {
@@ -490,11 +496,7 @@ fn admitted_names<T>(
             }
         };
         if unicode_scratch {
-            scratch = scratch.max(
-                (name.as_bytes().len() as u64)
-                    .checked_mul(32)
-                    .ok_or(crate::WorkError::Overflow)?,
-            );
+            scratch = scratch.max(32 * name.as_bytes().len() as u64);
         }
     }
     work.charge(scan_work(items))

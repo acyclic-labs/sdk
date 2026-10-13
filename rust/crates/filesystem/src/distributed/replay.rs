@@ -173,7 +173,14 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             b"operation\0",
             &[&authority.into_bytes(), &operation.into_bytes()],
         )?;
-        let observation = self.authority_inspect(key, work).await?;
+        let observed = self.authority_inspect(key, work).await;
+        if !work.is_native() {
+            work.check()?;
+        }
+        let observation = observed?;
+        if work.is_native() {
+            work.check()?;
+        }
         let Some(observation) = &observation.0 else {
             return Ok(None);
         };

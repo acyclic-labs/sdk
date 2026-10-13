@@ -37,7 +37,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         }
         let file_table = if let Some(selected) = paths.0.take() {
             accounting.release_owned(&mut paths.1, path_bytes)?;
-            self.select_fork_paths_with_accounting(
+            self.select_fork_paths(
                 source,
                 &source_root.value,
                 selected,

@@ -2,18 +2,14 @@ use super::*;
 
 pub(super) fn capture_drop_host_path(
     path: CaptureHostPath,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
     #[cfg(unix)]
     let bytes = path.capacity() as u64;
     #[cfg(windows)]
     let bytes = path.capacity() as u64 * 2;
     drop(path);
-    meter
-        .native
-        .clone()
-        .release(bytes)
-        .map_err(capture_demand_error)
+    meter.clone().release(bytes).map_err(capture_demand_error)
 }
 
 #[cfg(unix)]
@@ -24,15 +20,15 @@ pub(super) type CaptureHostPath = Vec<u16>;
 
 pub(super) fn namespace_to_host_path_measured(
     path: &NamespacePath,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<CaptureHostPath, CaptureError> {
     #[cfg(unix)]
-    let result = namespace_to_host_path_with_work(path, &mut meter.native.clone())
-        .map(|(path, _allocation)| path);
+    let result =
+        namespace_to_host_path_with_work(path, &mut meter.clone()).map(|(path, _allocation)| path);
     #[cfg(windows)]
     let result = namespace_host_units_with_work(
         path,
-        &mut meter.native.clone(),
+        &mut meter.clone(),
         u16::from(b'\\'),
         namespace_component_wide,
     )
@@ -138,19 +134,8 @@ pub(crate) fn namespace_host_units_with_work<W: crate::native_host::NativeHostWo
         ..WorkCounters::UNCHARGED
     };
     work.admit(copied)?;
-    let mut allocation = work.claim(bytes as u64)?;
-    let mut buffer = Vec::new();
-    if let Err(error) = buffer.try_reserve_exact(count) {
-        drop(buffer);
-        let _retirement = work.release(allocation);
-        return Err(W::allocation_failed(error));
-    }
+    let (mut buffer, allocation) = crate::native_host::buffer(count, work)?;
     let result = (|| {
-        let actual = buffer
-            .capacity()
-            .checked_mul(width)
-            .ok_or(WorkError::Overflow)?;
-        work.reconcile_allocation(&mut allocation, actual as u64)?;
         for (index, component) in path.components().iter().enumerate() {
             work.check()?;
             let examined = WorkCounters {
@@ -292,12 +277,11 @@ pub fn namespace_to_host_path(path: &NamespacePath) -> Result<PathBuf, CaptureEr
 
 pub(super) fn capture_link_target(
     target: Vec<u8>,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<bytes::Bytes, CaptureError> {
-    meter.native.clone().check().map_err(capture_demand_error)?;
+    meter.clone().check().map_err(capture_demand_error)?;
     if target.len() != target.capacity() {
         meter
-            .native
             .with_original_leaf(|work| work.claim_allocation(0, 1, crate::WorkCounters::UNCHARGED))
             .map_err(capture_demand_error)?;
     }
@@ -307,10 +291,9 @@ pub(super) fn capture_link_target(
 pub(super) fn read_link_bytes(
     root: &HostRoot,
     path: &CaptureHostPath,
-    meter: &CaptureWorkScope,
+    meter: &NativeMaterializationWork,
 ) -> Result<Vec<u8>, CaptureError> {
     let maximum = meter
-        .native
         .with_original_leaf(|meter| meter.remaining())
         .map_err(capture_demand_error)?
         .source_bytes_read;
@@ -318,14 +301,14 @@ pub(super) fn read_link_bytes(
     {
         // The returned byte buffer keeps the driver's existing capture claim.
         let (bytes, _allocation) = root
-            .read_link(path, maximum, &mut meter.native.clone())
+            .read_link(path, maximum, &mut meter.clone())
             .map_err(capture_demand_error)?;
         Ok(bytes)
     }
     #[cfg(windows)]
     {
         let (units, allocation) = root
-            .read_link(path, maximum, &mut meter.native.clone())
+            .read_link(path, maximum, &mut meter.clone())
             .map_err(capture_demand_error)?;
         let length = units
             .len()
@@ -344,7 +327,6 @@ pub(super) fn read_link_bytes(
         }
         drop(units);
         meter
-            .native
             .clone()
             .release(allocation)
             .map_err(capture_demand_error)?;

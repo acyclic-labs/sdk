@@ -8,8 +8,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_getxattr(
     value: *mut c_char,
     length: usize,
 ) -> c_int {
-    let span = callback_span!(TRACE, getxattr);
-    ffi(address, &span, false, |context, work| {
+    ffi(address, false, |context, work| {
         let path = mount_path(path, work)?;
         if !context.may_have_named_attributes(&path, work)? {
             return Err(driver_errno(libc::ENOATTR));
@@ -33,8 +32,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_setxattr(
     length: usize,
     flags: c_int,
 ) -> c_int {
-    let span = callback_span!(TRACE, setxattr);
-    ffi(address, &span, true, |context, work| {
+    ffi(address, true, |context, work| {
         bounded_length(length).map_err(driver_errno)?;
         let mode = match flags {
             0 => MountAttributeWriteMode::Upsert,
@@ -69,14 +67,16 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_listxattr(
     list: *mut c_char,
     length: usize,
 ) -> c_int {
-    let span = callback_span!(TRACE, listxattr);
-    ffi(address, &span, false, |context, work| {
+    ffi(address, false, |context, work| {
         let path = mount_path(path, work)?;
         if !context.may_have_named_attributes(&path, work)? {
             return copy_variable_result(&[], list, length, work);
         }
         let mut cursor: Option<(Vec<u8>, NativeAllocation)> = None;
-        let mut encoded = DarwinOwned::empty(Vec::new());
+        if length != 0 && list.is_null() {
+            return Err(driver_errno(libc::ERANGE));
+        }
+        let mut count = 0_usize;
         loop {
             let mut page = context.source.list_attributes_with_meter(
                 &path,
@@ -89,15 +89,29 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_listxattr(
                 if name.contains(&0) {
                     return Err(driver_errno(libc::EIO));
                 }
-                let required = encoded
-                    .len()
+                let next = count
                     .checked_add(name.len())
                     .and_then(|n| n.checked_add(1))
                     .ok_or(WorkError::Overflow)?;
-                grow_bytes(&mut encoded, required, work)?;
-                work.charge(copy_work(name.len() as u64 + 1))?;
-                encoded.extend_from_slice(name);
-                encoded.push(0);
+                if next > MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES {
+                    return Err(driver_errno(libc::E2BIG));
+                }
+                if length != 0 {
+                    if next > length {
+                        return Err(driver_errno(libc::ERANGE));
+                    }
+                    work.charge(copy_work(name.len() as u64 + 1))?;
+                    // SAFETY: next fits the non-null bridge buffer; the name stays live.
+                    unsafe {
+                        ptr::copy_nonoverlapping(
+                            name.as_ptr(),
+                            list.cast::<u8>().add(count),
+                            name.len(),
+                        );
+                        list.add(next - 1).write(0);
+                    }
+                }
+                count = next;
             }
             let Some(next) = page.0.next_cursor.take() else {
                 break;
@@ -111,7 +125,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_listxattr(
             }
             cursor = Some((next, next_allocation));
         }
-        copy_variable_result(&encoded, list, length, work)
+        c_int::try_from(count).map_err(|_| driver_errno(libc::EOVERFLOW))
     })
 }
 
@@ -121,8 +135,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_removexattr(
     path: *const c_char,
     name: *const c_char,
 ) -> c_int {
-    let span = callback_span!(TRACE, removexattr);
-    ffi(address, &span, true, |context, work| {
+    ffi(address, true, |context, work| {
         let (path, name) = (mount_path(path, work)?, c_bytes(name, work)?);
         context.mutate(|| context.source.remove_attribute(&path, name, work), work)?;
         Ok(0)

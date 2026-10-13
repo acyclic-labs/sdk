@@ -65,7 +65,6 @@ pub mod store;
 pub mod tool;
 pub mod turn;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-#[path = "wasm_bindings/mod.rs"]
 mod wasm;
 pub mod wire_api;
 pub mod wire_codec;

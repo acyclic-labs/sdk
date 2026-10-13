@@ -387,7 +387,7 @@ where
         self.supports_native_directory_list(volume, work)?;
         crate::NativeFutureBundle::new(work, || async move {
             context
-                .verify_original_execution_owner_with_native_work(work)?
+                .verify_original_execution_owner(work)
                 .await?;
             let mut observer = crate::store::HistoryWork::new(
                 crate::filesystem::PreparationIo::from_native_work(work)?,
@@ -481,7 +481,7 @@ where
                             });
                         }
                         context
-                            .verify_original_execution_owner_with_native_work(work)?
+                            .verify_original_execution_owner(work)
                             .await
                     },
                 )

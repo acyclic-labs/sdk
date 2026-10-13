@@ -197,7 +197,7 @@ where
             .await?;
         observation.ensure_publication_resolved()?;
         let mut checkout = observation
-            .observer(work, cancellation)
+            .observer(&mut crate::kernel::allocation::KernelAccounting::native(work, cancellation), cancellation)
             .map_err(mount_engine_error)?;
         let (lookup, _, allocation) = self
             .lazy
