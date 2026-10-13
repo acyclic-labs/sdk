@@ -1,74 +1,56 @@
 use super::*;
 
-fn altered_read_data(
-    read: &ObjectRead,
+fn altered_read(
+    read: &mut ObjectRead,
     fault: Option<SimulationFault>,
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<Option<ObjectRead>, crate::FsError> {
+    work: &mut crate::AuthorityWork<'_>,
+) -> Result<(), ObjectStoreError> {
     if !matches!(
         fault,
-        Some(SimulationFault::CorruptObjectRead | SimulationFault::PartialObjectRead,)
+        Some(SimulationFault::CorruptObjectRead | SimulationFault::PartialObjectRead)
     ) {
-        return Ok(None);
+        return Ok(());
     }
     if read.bytes.is_empty() {
-        return Err(ObjectStoreError::Corrupt.into());
+        return Err(ObjectStoreError::Corrupt);
     }
-    accounting.check()?;
-    let retained = if matches!(fault, Some(SimulationFault::PartialObjectRead)) {
-        read.bytes.len() - 1
-    } else {
-        read.bytes.len()
+    let retained =
+        read.bytes.len() - usize::from(matches!(fault, Some(SimulationFault::PartialObjectRead)));
+    let delta = WorkCounters {
+        bytes_copied: retained as u64,
+        ..WorkCounters::UNCHARGED
     };
-    let requested = u64::try_from(retained).map_err(|_| crate::WorkError::Overflow)?;
-    accounting.admit(WorkCounters {
-        bytes_copied: requested,
-        ..WorkCounters::UNCHARGED
-    })?;
-    let allocation = accounting.claim_owned(requested, u64::from(requested != 0))?;
-    let mut bytes = (Vec::new(), allocation);
-    bytes
-        .0
-        .try_reserve_exact(retained)
-        .map_err(ObjectStoreError::MemoryTableAllocationFailed)?;
-    let actual = u64::try_from(bytes.0.capacity()).map_err(|_| crate::WorkError::Overflow)?;
-    accounting.reconcile_owned(&mut bytes.1, requested, actual)?;
-    accounting.admit(WorkCounters {
-        bytes_copied: requested,
-        ..WorkCounters::UNCHARGED
-    })?;
-    bytes.0.extend_from_slice(&read.bytes[..retained]);
-    accounting.record_completed(WorkCounters {
-        bytes_copied: requested,
-        ..WorkCounters::UNCHARGED
-    })?;
-    if matches!(fault, Some(SimulationFault::CorruptObjectRead))
-        && let Some(first) = bytes.0.first_mut()
-    {
-        *first ^= 0x80;
+    let mut accounting = work.accounting();
+    accounting
+        .admit(delta)
+        .map_err(crate::async_storage::object_error)?;
+    let mut copied = crate::kernel::Owned::<Vec<u8>>::allocate(retained, &mut accounting)
+        .map_err(crate::async_storage::object_error)?;
+    copied.value.extend_from_slice(&read.bytes[..retained]);
+    accounting
+        .record_completed(delta)
+        .map_err(crate::async_storage::object_error)?;
+    if matches!(fault, Some(SimulationFault::CorruptObjectRead)) {
+        copied.value[0] ^= 0x80;
     }
-    let logical_bytes =
-        u64::try_from(bytes.0.capacity()).map_err(|_| crate::WorkError::Overflow)?;
-    let (bytes, allocation) = bytes;
-    let bytes = match allocation {
-        KernelOwnedAllocation::Standalone => OwnedBytes::from(bytes),
+    read.bytes = match copied.allocation {
+        KernelOwnedAllocation::Standalone => copied.value.into(),
         #[cfg(not(target_arch = "wasm32"))]
         KernelOwnedAllocation::NativeOriginal(allocation) => {
             let original = accounting.native_work().ok_or(ObjectStoreError::Corrupt)?;
-            OwnedBytes::from_vec_with_guard(bytes, allocation, original.runtime_meter()).map_err(
-                |failure| match failure.into_error() {
+            OwnedBytes::from_vec_with_guard(copied.value, allocation, original.runtime_meter())
+                .map_err(|failure| match failure.into_error() {
                     acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
-                        crate::FsError::from(original.runtime_error(error))
+                        crate::async_storage::object_error(original.runtime_error(error).into())
                     }
-                    _ => ObjectStoreError::Corrupt.into(),
-                },
-            )?
+                    _ => ObjectStoreError::Corrupt,
+                })?
         }
     };
-    Ok(Some(ObjectRead {
-        bytes,
-        retention: ObjectReadRetention::Owned { logical_bytes },
-    }))
+    read.retention = ObjectReadRetention::Owned {
+        logical_bytes: copied.bytes,
+    };
+    Ok(())
 }
 
 fn write_error(reason: &'static str, work: &crate::AuthorityWork<'_>) -> ObjectStoreError {
@@ -99,7 +81,7 @@ impl<O: AsyncObjectStore> SimulatedStore<O> {
                 .prepare_trace(&mut work.accounting())
                 .map_err(crate::async_storage::object_error)?;
         }
-        let fault = state.intercept(operation).map_err(|reason| {
+        let rejected = |reason| {
             if matches!(
                 operation,
                 SimulationOperation::ObjectPut | SimulationOperation::ObjectContains
@@ -108,21 +90,13 @@ impl<O: AsyncObjectStore> SimulatedStore<O> {
             } else {
                 ObjectStoreError::Simulation(reason)
             }
-        })?;
-        let reason = match fault {
-            Some(SimulationFault::RejectBefore) => "scheduled rejection",
-            Some(SimulationFault::PartitionBefore) => "scheduled partition",
-            _ => return Ok(fault),
         };
-        Err(
-            if operation == SimulationOperation::ObjectPut
-                || operation == SimulationOperation::ObjectContains
-            {
-                write_error(reason, work)
-            } else {
-                ObjectStoreError::Simulation(reason)
-            },
-        )
+        let fault = state.intercept(operation).map_err(rejected)?;
+        match fault {
+            Some(SimulationFault::RejectBefore) => Err(rejected("scheduled rejection")),
+            Some(SimulationFault::PartitionBefore) => Err(rejected("scheduled partition")),
+            _ => Ok(fault),
+        }
     }
 
     fn delay_object(
@@ -169,7 +143,6 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
     fn collection(&self) -> Option<&Arc<crate::Collection>> {
         self.inner.collection()
     }
-
     fn collection_sweeps(&self) -> u64 {
         self.inner.collection_sweeps()
     }
@@ -182,6 +155,7 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
         maximum_objects: u64,
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<Option<crate::kernel::HistoricalGenerationEvidence>, ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
         if work.is_native() {
             return Err(ObjectStoreError::NativeUnavailable);
         }
@@ -267,19 +241,15 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<ObjectRead, ObjectStoreError> {
         let fault = self.object_fault(SimulationOperation::ObjectRead, work)?;
-        let mut value = self.inner.read(object_id, maximum_bytes, work).await?;
-        if let Some(altered) = altered_read_data(&value, fault, &mut work.accounting())
-            .map_err(crate::async_storage::object_error)?
-        {
-            value = altered;
-        }
+        let mut read = self.inner.read(object_id, maximum_bytes, work).await?;
+        altered_read(&mut read, fault, work)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = work.original {
-            if matches!(value.retention, ObjectReadRetention::Owned { .. }) {
-                return crate::async_storage::owned_read(value, original);
+            if matches!(read.retention, ObjectReadRetention::Owned { .. }) {
+                return crate::async_storage::owned_read(read, original);
             }
         }
-        Ok(value)
+        Ok(read)
     }
 
     async fn read_many(
@@ -288,15 +258,11 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
         let fault = self.object_fault(SimulationOperation::ObjectReadMany, work)?;
-        let mut values = self.inner.read_many(requests, work).await?;
-        if let Some(first) = values.0.first_mut() {
-            if let Some(altered) = altered_read_data(first, fault, &mut work.accounting())
-                .map_err(crate::async_storage::object_error)?
-            {
-                *first = altered;
-            }
+        let mut reads = self.inner.read_many(requests, work).await?;
+        if let Some(first) = reads.0.first_mut() {
+            altered_read(first, fault, work)?;
         }
-        Ok(values)
+        Ok(reads)
     }
 
     async fn contains(
@@ -304,6 +270,7 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
         object_id: ObjectId,
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<bool, ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
         if work.is_native() {
             return Err(ObjectStoreError::NativeUnavailable);
         }
@@ -329,7 +296,7 @@ impl<A, O: AsyncObjectStore> Simulation<A, O> {
                 .map_err(|_| ObjectStoreError::Corrupt)?
                 .pending_objects
                 .first_key_value()
-                .map(|(object_id, bytes)| (*object_id, bytes.clone()));
+                .map(|(id, bytes)| (*id, bytes.clone()));
             let Some((object_id, bytes)) = next else {
                 return Ok(published);
             };
