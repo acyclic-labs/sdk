@@ -131,7 +131,7 @@ where
                                 if !work.shares_ledger(custody.work()) {
                                     return Err(observed::boundary(Some(io), crate::wire::ErrorCode::Unauthorized, "native result differs from original work"));
                                 }
-                                self.host.verify_owner(task, &fence, false, &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(custody.work())?.history_io())).await?;
+                                self.owner_observed(task, &fence, false, Some(&crate::filesystem::PreparationIo::from_native_work(custody.work())?)).await?;
                             }
                         }
                         TaskCommandProgress::Pending | TaskCommandProgress::Indeterminate => return Ok(WorkerTurn::Reconciling),

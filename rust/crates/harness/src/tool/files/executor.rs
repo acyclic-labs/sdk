@@ -78,7 +78,7 @@ impl FileTool {
                     limits,
                     &mut super::edit::AlgorithmWork::ordinary(),
                 )?;
-                task
+                context
                     .stage_file_at(
                         invocation.operation_id,
                         &input.file,
@@ -102,7 +102,7 @@ impl FileTool {
                     maximum,
                     &mut super::edit::AlgorithmWork::ordinary(),
                 )?;
-                task
+                context
                     .stage_file_at(
                         invocation.operation_id,
                         &input.file,

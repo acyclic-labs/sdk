@@ -667,7 +667,7 @@ async fn conversation_stream_admission_requires_resident_files() -> Result<()> {
         )
         .await?;
     let verifier = FilesystemContentVerifier::new(
-        Arc::new(host),
+        host,
         &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
         4_096,

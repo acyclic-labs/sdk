@@ -11,7 +11,7 @@ async fn original_fork_retry_after_both_heads_advance_needs_no_publication_seal(
     let cancellation = CancellationToken::new();
     let budget = selected_transaction_budget();
     let first = parent
-        .fork(
+        .fork::<_, _, WorkspaceError>(
             "original-fork-child",
             ForkOptions::from_generation(frozen.clone(), key),
             crate::PublicationPermit::Unrestricted,
@@ -26,7 +26,7 @@ async fn original_fork_retry_after_both_heads_advance_needs_no_publication_seal(
     child.write_text("/file", "later child").await?;
     let advanced_child = unbounded!(child, head())?;
     let retry = parent
-        .fork(
+        .fork::<_, _, WorkspaceError>(
             "original-fork-child",
             ForkOptions::from_generation(frozen, key),
             crate::PublicationPermit::Unrestricted,

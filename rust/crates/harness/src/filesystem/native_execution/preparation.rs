@@ -301,6 +301,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                             &paths,
                             &options,
                             journal,
+                            volume_work,
                             &mut { verify },
                         )
                         .await?;
@@ -417,7 +418,8 @@ impl From<acyclic_fs::MaterializationError<Error, acyclic_fs::NativeTreeMaterial
     ) -> Self {
         match error {
             acyclic_fs::MaterializationError::Store(cause) => cause,
-            acyclic_fs::MaterializationError::Backend(cause) => cause.into(),
+            acyclic_fs::MaterializationError::Backend(cause)
+            | acyclic_fs::MaterializationError::Native(cause) => cause.into(),
             acyclic_fs::MaterializationError::PlanConflict
             | acyclic_fs::MaterializationError::ExternalMutation
             | acyclic_fs::MaterializationError::Contended => Error::NativeBoundary {

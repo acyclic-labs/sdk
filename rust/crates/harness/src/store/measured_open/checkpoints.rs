@@ -342,6 +342,7 @@ async fn measured_snapshot_authentication_observes_original_encoder_and_mac_fail
         snapshot.copy(&mut None)?,
         issuer().verifier(&mut None).expect("verifier copy"),
         schemas(),
+        &mut None,
     )?;
     let cancellation = CancellationToken::new();
     let mut work = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
@@ -413,7 +414,8 @@ async fn measured_snapshot_authentication_observes_original_encoder_and_mac_fail
         Reducer::restore(
             forged.copy(&mut None)?,
             issuer().verifier(&mut None).expect("verifier copy"),
-            schemas()
+            schemas(),
+            &mut None,
         ),
         Err(Error::Unauthorized(_))
     ));

@@ -2698,8 +2698,8 @@ where
             match &progress {
                 #[cfg(not(target_arch = "wasm32"))]
                 Ok(TaskCommandProgress::ReadyWithNativeCustody { custody, .. }) => {
-                    self.host
-                        .verify_owner(task, fence, false, &mut Some(&mut PreparationIo::from_native_work(custody.work())?.history_io()))
+                    self
+                        .owner_observed(task, fence, false, Some(&PreparationIo::from_native_work(custody.work())?))
                         .await?;
                 }
                 _ => self.owner_observed(task, fence, false, io).await?,
