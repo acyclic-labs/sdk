@@ -172,15 +172,23 @@ impl CallbackGate {
         }
     }
 
-    pub(super) fn call_observed<T>(
+    pub(super) fn call_observed(
         &self,
         key: u128,
-        operation: impl FnOnce() -> T,
-        observe: impl FnOnce(&T),
-    ) -> T {
-        let shard = (key % self.shards.len() as u128) as usize;
+        operation: impl FnOnce() -> Result<(), MountSourceError>,
+        observe: impl FnOnce(&Result<(), MountSourceError>),
+    ) -> Result<(), MountSourceError> {
+        let Some(shard) = key
+            .checked_rem(self.shards.len() as u128)
+            .and_then(|index| usize::try_from(index).ok())
+            .and_then(|index| self.shards.get(index))
+        else {
+            let result = Err(MountSourceError::Work(crate::WorkError::Overflow));
+            observe(&result);
+            return result;
+        };
         // The SDK entry already owns admission through operation and observation.
-        let _serial = lock_recover(&self.shards[shard]);
+        let _serial = lock_recover(shard);
         let result = operation();
         observe(&result);
         result
@@ -193,11 +201,11 @@ impl CallbackGate {
 
 pub(super) fn flush_callback_gate(
     callbacks: &CallbackGate,
-    failure: Arc<Mutex<PostOperationFailures>>,
+    failure: &Mutex<PostOperationFailures>,
     capture: impl Fn(&[(MountPath, bool)]) -> Result<(), MountSourceError>,
 ) -> Result<(), NativeMountError> {
     callbacks.drain();
-    let mut pending = lock_recover(failure.as_ref())
+    let mut pending = lock_recover(failure)
         .pending_captures
         .iter()
         .map(|(path, capture)| (path.clone(), capture.serial, capture.subtree))
@@ -214,7 +222,7 @@ pub(super) fn flush_callback_gate(
         .collect::<Vec<_>>();
     let result = capture(&paths);
     {
-        let mut failure = lock_recover(failure.as_ref());
+        let mut failure = lock_recover(failure);
         for (path, serial, _) in pending {
             if failure
                 .pending_captures
@@ -237,7 +245,7 @@ pub(super) fn flush_callback_gate(
         }
     }
     callbacks.drain();
-    let failure = lock_recover(failure.as_ref());
+    let failure = lock_recover(failure);
     let failure = failure.unreplayable.clone().or_else(|| {
         failure
             .pending_captures

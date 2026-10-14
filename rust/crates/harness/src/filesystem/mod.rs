@@ -152,9 +152,6 @@ pub use project_verifier::FilesystemProjectMergeVerifier;
 mod parent;
 pub use parent::{InheritedContextCapture, ParentMergePlan, ParentProjectController};
 
-#[cfg(not(target_arch = "wasm32"))]
-mod source_publication;
-
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     async fn content_for_operation_impl(
         &self,

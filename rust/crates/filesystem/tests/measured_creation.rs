@@ -444,8 +444,10 @@ mod source_bound_lost_ack {
             (changed_config, operation),
         ] {
             let failure = reopened.create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>("stream-lost-ack", requested_config, requested_operation, budget, &cancellation, None).await.err().ok_or("restart accepted a foreign or reconfigured original creation")?;
-            assert!(matches!(&failure.error, WorkspaceError::Engine(message)
-                if message == "volume creation was rejected by authority state"));
+            assert!(matches!(
+                failure.error,
+                WorkspaceError::Filesystem(acyclic_fs::FsError::CreationRejected)
+            ));
             failure.work.verify(budget)?;
             assert_eq!(lazy.workspace().head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), head);
             let retained = lazy.workspace().operation_generation(

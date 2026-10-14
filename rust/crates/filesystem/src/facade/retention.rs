@@ -100,7 +100,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let mut work = authority_work(accounting, cancellation)?;
         let result = self.inner.authority.head(authority_id, &mut work).await;
         record_authority_work(accounting, &work)?;
-        result.map_err(Into::into)
+        result.map_err(|error| match error {
+            #[cfg(not(target_arch = "wasm32"))]
+            AuthorityStoreError::NativeStream(acyclic_stream::StreamError::NotFound) => {
+                FsError::Authority(AuthorityStoreError::Missing)
+            }
+            error => error.into(),
+        })
     }
 
     pub(super) async fn retention_operation_with_accounting(

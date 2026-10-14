@@ -321,7 +321,7 @@ impl Shared {
         }
         result
     }
-    fn retired(&self, reads: &Reads) -> bool {
+    pub(super) fn retired(&self, reads: &Reads) -> bool {
         !reads.pending
             && reads.buffer.is_none()
             && !is_open(&self.directory)

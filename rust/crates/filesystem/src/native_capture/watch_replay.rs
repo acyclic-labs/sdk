@@ -266,9 +266,8 @@ pub async fn capture_watch_batch<
                 })),
             &ordinary,
             &rename_records,
-            renamed_paths,
             policy,
-            maximum_paths,
+            maximum_paths.saturating_sub(renamed_paths),
             checkout.volume_config().limits,
             meter,
         )?;

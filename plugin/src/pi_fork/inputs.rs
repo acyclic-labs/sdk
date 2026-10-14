@@ -1,6 +1,6 @@
 //! Inputs of the original Pi fork.
 use super::*;
-use acyclic_harness::runtime::TaskSpawner;
+use acyclic_harness::runtime::TaskSpawner as _;
 
 impl<'a> PiForkCoordinator<'a> {
     pub(crate) async fn load_plan(

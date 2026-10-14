@@ -19,81 +19,9 @@ impl WorkspaceLineageStore for LocalCoreStateStore {
         self.compare_and_swap_logged(workspace_id, expected_revision, replacement)
             .await
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn load_with_native_work(
-        &self,
-        workspace_id: WorkspaceId,
-        original: &crate::materializer::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<
-        Option<(WorkspaceLineageRecord, crate::NativeAllocation)>,
-        (
-            crate::lineage::WorkspaceLineageError<Self::Error>,
-            Option<crate::materializer::NativeAllocation>,
-        ),
-    > {
-        native_records::check(original, cancellation)
-            .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))?;
-        let cancellation = cancellation.clone();
-        self.materialization(original.clone())
-            .transaction(move |root| {
-                let root = &root;
-                let work = root._allocation.as_ref().expect("bound native work").work();
-                root.with_log(|log| {
-                    native_records::load::<WorkspaceLineageRecord>(
-                        &root,
-                        log,
-                        workspace_id,
-                        work,
-                        &cancellation,
-                    )
-                })
-            })
-            .await
-            .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))
-    }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn compare_and_swap_with_native_work(
-        &self,
-        workspace_id: WorkspaceId,
-        expected_revision: u64,
-        replacement: (WorkspaceLineageRecord, crate::NativeAllocation),
-        original: &crate::materializer::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<
-        bool,
-        (
-            crate::lineage::WorkspaceLineageError<Self::Error>,
-            Option<crate::materializer::NativeAllocation>,
-        ),
-    > {
-        native_records::check(original, cancellation)
-            .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))?;
-        let replacement = native_records::checked_packet(replacement, original, |value| {
-            native_records::native_lineage_owned_bytes(value, original)
-        })
-        .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))?;
-        let cancellation = cancellation.clone();
-        self.materialization(original.clone())
-            .transaction(move |root| {
-                let root = &root;
-                let work = root._allocation.as_ref().expect("bound native work").work();
-                root.with_log(|log| {
-                    native_records::compare_native_lineage(
-                        &root,
-                        log,
-                        workspace_id,
-                        expected_revision,
-                        replacement,
-                        work,
-                        &cancellation,
-                    )
-                })
-            })
-            .await
-            .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))
-    }
+
+
 }
 
 impl WorkspaceContextStore for LocalCoreStateStore {
@@ -637,5 +565,86 @@ impl LocalCoreStateStore {
                     None,
                 )
             })
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl LocalCoreStateStore {
+    /// Loads lineage on the original native ledger.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn load_lineage(
+        &self,
+        workspace_id: WorkspaceId,
+        original: &crate::materializer::NativeMaterializationWork,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<
+        Option<(WorkspaceLineageRecord, crate::NativeAllocation)>,
+        (
+            crate::lineage::WorkspaceLineageError<LocalCoreStateStoreError>,
+            Option<crate::materializer::NativeAllocation>,
+        ),
+    > {
+        native_records::check(original, cancellation)
+            .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))?;
+        let cancellation = cancellation.clone();
+        self.materialization(original.clone())
+            .transaction(move |root| {
+                let root = &root;
+                let work = root._allocation.as_ref().expect("bound native work").work();
+                root.with_log(|log| {
+                    native_records::load::<WorkspaceLineageRecord>(
+                        &root,
+                        log,
+                        workspace_id,
+                        work,
+                        &cancellation,
+                    )
+                })
+            })
+            .await
+            .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))
+    }
+
+    /// Compares and updates lineage on the original native ledger.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn compare_lineage(
+        &self,
+        workspace_id: WorkspaceId,
+        expected_revision: u64,
+        replacement: (WorkspaceLineageRecord, crate::NativeAllocation),
+        original: &crate::materializer::NativeMaterializationWork,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<
+        bool,
+        (
+            crate::lineage::WorkspaceLineageError<LocalCoreStateStoreError>,
+            Option<crate::materializer::NativeAllocation>,
+        ),
+    > {
+        native_records::check(original, cancellation)
+            .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))?;
+        let replacement = native_records::checked_packet(replacement, original, |value| {
+            native_records::native_lineage_owned_bytes(value, original)
+        })
+        .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))?;
+        let cancellation = cancellation.clone();
+        self.materialization(original.clone())
+            .transaction(move |root| {
+                let root = &root;
+                let work = root._allocation.as_ref().expect("bound native work").work();
+                root.with_log(|log| {
+                    native_records::compare_native_lineage(
+                        &root,
+                        log,
+                        workspace_id,
+                        expected_revision,
+                        replacement,
+                        work,
+                        &cancellation,
+                    )
+                })
+            })
+            .await
+            .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))
     }
 }

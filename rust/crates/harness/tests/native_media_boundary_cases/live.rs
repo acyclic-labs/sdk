@@ -288,12 +288,15 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
         .ok_or_else(|| Error::NotFound("image for option capability".into()))?
         .0
         .clone();
-    let durable_selected = selected.clone();
     let durable_scope = RuntimeScope::new(owner.capabilities().clone(), Limits::default())?
         .with_extensions_from(&agent)?
         .with_extension_runtime(linked.clone())?;
     let test_adapter = adapter.clone();
     let test_reader = reader.clone();
+    let retained_host = host.clone();
+    let retained_volume = volume.clone();
+    let retained_owner = owner.clone();
+    let retained_writer = writer.clone();
     tasks.register(TaskDefinition::live(
         "fixture.native_capture",
         "1",
@@ -303,6 +306,11 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
             let selected = selected.clone();
             let messages = messages.clone();
             let bodies = bodies.clone();
+            let host = retained_host.clone();
+            let volume = retained_volume.clone();
+            let owner = retained_owner.clone();
+            let writer = retained_writer.clone();
+            let scope = durable_scope.clone();
             async move {
                 context.model_events(messages.clone(), Some(16)).await?;
                 assert_eq!(adapter.counts.load(Ordering::SeqCst), 1);
@@ -571,6 +579,9 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
                 context.model_events(only_file(&original.0, &original.1), Some(16)).await?;
                 assert_eq!(adapter.counts.load(Ordering::SeqCst), counts + 1);
                 assert_eq!(adapter.generates.load(Ordering::SeqCst), generates + 1);
+                Box::pin(exercise_retained_native_boundary(
+                    host, volume, owner, scope, reader, selected, &writer, &context,
+                )).await?;
                 Ok(())
             }
         },
@@ -671,16 +682,6 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
         runtime.spawn(&task, ()).await?.result().await?,
         Outcome::Succeeded(())
     );
-    exercise_retained_native_boundary(
-        host.clone(),
-        volume.clone(),
-        owner.clone(),
-        durable_scope,
-        reader.clone(),
-        durable_selected,
-        &writer,
-    )
-    .await?;
     let current = agent
         .extension_admission()?
         .ok_or_else(|| Error::NotFound("new native selection".into()))?;

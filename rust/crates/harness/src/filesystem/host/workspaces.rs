@@ -1,9 +1,6 @@
 use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
-    /// Resolves the current immutable head of a named workspace.
-
-
     /// Reads one bounded file from the current head or an exact generation.
     pub async fn read(&self, reference: &WorkspaceRef, generation: Option<&GenerationRef>, path: &str, maximum_bytes: u64, io: Option<&PreparationIo>) -> Result<acyclic_stream::OwnedBytes> {
         let owned = if io.is_none() { Some(PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?) } else { None };
