@@ -128,8 +128,7 @@ fn fuse_recovery_needs_detach(
     destination: Result<rustix::fs::Stat, NativeTreeMaterializationError>,
 ) -> Result<bool, NativeMountError> {
     match destination {
-        Ok(metadata) if metadata.st_dev == parent_device => Ok(false),
-        Ok(_) => Err(NativeMountError::DestinationBusy),
+        Ok(metadata) => Ok(metadata.st_dev != parent_device),
         Err(NativeTreeMaterializationError::Io(error))
             if error.raw_os_error() == Some(libc::ENOTCONN) =>
         {
@@ -172,16 +171,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn recovery_detaches_only_a_disconnected_owner() -> Result<(), Box<dyn std::error::Error>> {
+    fn recovery_detaches_mounts_after_acquiring_the_owner_fence()
+    -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let mut metadata = rustix::fs::stat(root.path())?;
         let device = metadata.st_dev;
         assert!(!fuse_recovery_needs_detach(device, Ok(metadata))?);
         metadata.st_dev = device.wrapping_add(1);
-        assert!(matches!(
-            fuse_recovery_needs_detach(device, Ok(metadata)),
-            Err(NativeMountError::DestinationBusy)
-        ));
+        assert!(fuse_recovery_needs_detach(device, Ok(metadata))?);
         assert!(fuse_recovery_needs_detach(
             device,
             Err(std::io::Error::from_raw_os_error(libc::ENOTCONN).into())
@@ -212,6 +209,34 @@ mod tests {
         let cleanup = meter.reserve_cleanup_write()?;
         cancellation.cancel();
         meter.record_cleanup_write(cleanup)?;
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_helper_setup_reaches_spawn_instead_of_unsupported()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let missing_helper = root.path().join("absent-fusermount3");
+        let work = NativeMaterializationWork::new(
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .map_err(|(error, _)| error)?;
+        let mut helper = None;
+        let error = unix_name(missing_helper.as_os_str(), &mut &work, |program, work| {
+            acyclic_native_runtime::ProcessTree::spawn_closed_measured(
+                program,
+                &[c"-u", c"-z", c"--", c"/unused-mount"],
+                work.runtime_meter().as_ref(),
+                &mut helper,
+            )
+            .map_err(|error| work.runtime_error(error))
+        })
+        .expect_err("the missing helper must reach the OS spawn boundary");
+        assert!(
+            matches!(error, NativeTreeMaterializationError::Io(error) if error.kind() == std::io::ErrorKind::NotFound)
+        );
+        assert!(helper.is_none());
         Ok(())
     }
 }
