@@ -42,7 +42,7 @@ fn administrative_last_drop_closes_real_fence_without_touching_residue()
         crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .map_err(|(error, _)| error)?;
     let mut owner =
-        NativeMountRecoveryOwner::acquire_with_original(&destination, original.clone())?;
+        NativeMountRecoveryOwner::acquire_with_original(&destination, &original)?;
     let identity = owner.cleanup_state()?.fence_identity;
     let cancellation = CancellationToken::new();
     let mut budget = WorkBudget::UNBOUNDED;
@@ -93,14 +93,14 @@ fn administrative_post_lock_acquisition_denial_retires_actual_opened_fence()
     let baseline =
         crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .map_err(|(error, _)| error)?;
-    let owner = NativeMountRecoveryOwner::acquire_with_original(&destination, baseline.clone())?;
+    let owner = NativeMountRecoveryOwner::acquire_with_original(&destination, &baseline)?;
     let writes = baseline.receipt().backend_write_operations;
     await_recovery_worker(owner)?;
     let mut budget = WorkBudget::UNBOUNDED;
     budget.backend_write_operations = writes + 2 + u64::from(cfg!(windows));
     let denied = crate::NativeMaterializationWork::new(budget, &CancellationToken::new())
         .map_err(|(error, _)| error)?;
-    let error = NativeMountRecoveryOwner::acquire_with_original(&destination, denied.clone())
+    let error = NativeMountRecoveryOwner::acquire_with_original(&destination, &denied)
         .expect_err("the actual post-lock registry unlock is denied");
     assert!(matches!(
         error,

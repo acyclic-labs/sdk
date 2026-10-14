@@ -368,7 +368,7 @@ impl ProjFsSession {
         let source = runtime.source.as_ref();
         flush_callback_gate(
             &runtime.callbacks,
-            Arc::clone(&runtime.post_operation_failure),
+            &runtime.post_operation_failure,
             |paths| {
                 let mut exact = Vec::new();
                 for (path, subtree) in paths {

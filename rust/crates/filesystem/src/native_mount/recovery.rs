@@ -291,7 +291,7 @@ impl NativeMountRecoveryOwner {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let Some(state) = state.as_mut() else {
-                return Err((NativeMountError::ControlPending, work.receipt()));
+                return Err((NativeMountError::ControlPending, Box::new(work.receipt())));
             };
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 state.finish_with_work(&self.shared.destination, remove_destination, &work)

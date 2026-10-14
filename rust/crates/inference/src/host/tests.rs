@@ -320,16 +320,17 @@ fn evaluation_contract_binds_native_output_to_exact_grader_observation() -> Resu
     for fault in 0..4 {
         let mut invalid = view.clone();
         let result = invalid.result.as_mut().unwrap();
+        let case = result.case_results.first_mut().unwrap();
         match fault {
             0 | 1 => {
-                let observation = result.case_results[0].observation.as_mut().unwrap();
+                let observation = case.observation.as_mut().unwrap();
                 if fault == 0 {
                     observation.native_output_digest = vec![0; 32];
                 } else {
                     observation.observation_digest = vec![9; 32];
                 }
             }
-            2 => result.case_results[0].metrics.clear(),
+            2 => case.metrics.clear(),
             _ => result.aggregates.clear(),
         }
         assert!(validate_evaluation_view(&invalid, [6; 16]).is_err());

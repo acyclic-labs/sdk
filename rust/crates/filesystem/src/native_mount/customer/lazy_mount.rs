@@ -273,7 +273,7 @@ where
                 cancellation,
             )
             .await
-            .map_err(|(cause, accounting)| (cause.into(), accounting.map(|error| *error)))
+            .map_err(|(cause, accounting)| (cause.into(), accounting))
     }
 
     /// Publishes and detaches, retaining the owner on any failure.
