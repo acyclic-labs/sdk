@@ -196,12 +196,10 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
         mount
             .import_selected(
                 actual,
-                plan,
-                custody,
+                (plan, custody),
                 operation,
                 PublicationPermit::Unrestricted,
-                work,
-                &cancellation,
+                &crate::kernel::KernelAccounting::native(work, &cancellation),
                 before,
             )
             .await

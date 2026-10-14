@@ -62,7 +62,7 @@ impl ViewLedger {
                         work,
                     )
                 })
-                .map_err(super::super::lazy::mount_demand_error)?;
+                .map_err(MountSourceError::from)?;
             storage::charge(carrier, copy_work((count * entry_bytes) as u64))?;
             next.extend(
                 entries

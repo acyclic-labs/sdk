@@ -37,7 +37,7 @@ impl NativeDemandCarrier<'_> {
             Some(mut work) => super::NativeMountAllocationCustody::new(&mut work),
             None => self.with_work(super::NativeMountAllocationCustody::new),
         }
-        .map_err(super::lazy::mount_demand_error)
+        .map_err(MountSourceError::from)
     }
 }
 

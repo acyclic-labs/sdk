@@ -195,8 +195,7 @@ where
                 .shared_checkout()
                 .publish(
                     permit,
-                    work,
-                    cancellation,
+                    crate::kernel::KernelAccounting::native(work, cancellation),
                     Some(self.source.cancellation()),
                     &mut before_publication,
                     Some(self.snapshot_context()),
