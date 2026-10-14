@@ -807,7 +807,9 @@ impl Identity {
             options.mode(0o600);
         }
         // Reserve a usable destination before spending a rotating session token.
+        let mut cleanup = BearerOutputCleanup(None);
         let mut file = options.open(output)?;
+        cleanup.0 = Some(output);
         let result = async {
             let value = self
                 .authenticated_json(store, reqwest::Method::POST, url.path())
@@ -837,10 +839,21 @@ impl Identity {
         }
         .await;
         drop(file);
-        if result.is_err() {
-            fs::remove_file(output)?;
+        if result.is_ok() {
+            cleanup.0 = None;
         }
         result
+    }
+}
+
+struct BearerOutputCleanup<'a>(Option<&'a Path>);
+
+impl Drop for BearerOutputCleanup<'_> {
+    fn drop(&mut self) {
+        if let Some(path) = self.0 {
+            // Cleanup is best-effort so the original request or write error survives.
+            let _ = fs::remove_file(path);
+        }
     }
 }
 

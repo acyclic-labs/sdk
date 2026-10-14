@@ -237,6 +237,98 @@ async fn bearer_is_private_redacted_and_never_overwrites_an_existing_file() {
 }
 
 #[tokio::test]
+async fn bearer_cancellation_removes_the_reserved_output() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind unanswered request");
+    let identity = Identity::new(&format!(
+        "http://{}",
+        listener.local_addr().expect("address")
+    ))
+    .expect("identity");
+    let directory = tempfile::tempdir().expect("directory");
+    let store = Store::open(&directory.path().join("identity.json")).expect("store");
+    store
+        .write(
+            &identity.endpoint,
+            session("access", "refresh", now().expect("time") + 900),
+        )
+        .expect("session");
+    let output = directory.path().join("bearer");
+    {
+        let operation = identity.bearer(&store, "org-1", &output);
+        tokio::pin!(operation);
+        let completed = tokio::select! {
+            biased;
+            _ = &mut operation => true,
+            () = std::future::ready(()) => false,
+        };
+        assert!(!completed, "unanswered request completed");
+        assert!(output.exists(), "destination reserved before the request");
+    }
+    assert!(!output.exists(), "cancellation releases the destination");
+    let expires = now().expect("time") + 900;
+    let router = Router::new().fallback(move || async move {
+        axum::Json(json!({"bearer": "private.token.signature", "account_id": "account-1", "expires_at": expires}))
+    });
+    let task = tokio::spawn(async move {
+        axum::serve(listener, router).await.expect("serve");
+    });
+    identity
+        .bearer(&store, "org-1", &output)
+        .await
+        .expect("retry");
+    task.abort();
+}
+
+#[tokio::test]
+async fn bearer_cleanup_failure_preserves_the_original_response_error() {
+    let directory = tempfile::tempdir().expect("directory");
+    let store = Store::open(&directory.path().join("identity.json")).expect("store");
+    let output = directory.path().join("bearer");
+    let replaced = output.clone();
+    let router = Router::new().fallback(move || {
+        let replaced = replaced.clone();
+        async move {
+            fs::remove_file(&replaced).expect("remove reservation");
+            fs::create_dir(&replaced).expect("make cleanup fail");
+            (
+                StatusCode::BAD_GATEWAY,
+                axum::Json(json!({"error": "upstream_unavailable"})),
+            )
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let identity = Identity::new(&format!(
+        "http://{}",
+        listener.local_addr().expect("address")
+    ))
+    .expect("identity");
+    store
+        .write(
+            &identity.endpoint,
+            session("access", "refresh", now().expect("time") + 900),
+        )
+        .expect("session");
+    let task = tokio::spawn(async move {
+        axum::serve(listener, router).await.expect("serve");
+    });
+    let error = identity
+        .bearer(&store, "org-1", &output)
+        .await
+        .expect_err("upstream error");
+    task.abort();
+    assert_eq!(error.code, "upstream_unavailable");
+    assert_eq!(error.status, Some(StatusCode::BAD_GATEWAY));
+    assert!(
+        output.is_dir(),
+        "failed cleanup leaves the replacement alone"
+    );
+}
+
+#[tokio::test]
 async fn bearer_refuses_unusable_output_before_consuming_an_expired_session() {
     let fake = Fake::start(vec![]).await;
     let directory = tempfile::tempdir().expect("directory");
