@@ -197,149 +197,145 @@ pub(crate) async fn dispatch_session_request(
     dispatch_plane_request(control, request).await
 }
 
-pub(crate) fn dispatch_plane_request<'a>(
-    control: &'a mut ControlPlane,
+pub(crate) async fn dispatch_plane_request(
+    control: &mut ControlPlane,
     request: ControlRequest,
-) -> impl std::future::Future<Output = Result<Value, String>> + Send + 'a {
-    async move {
-        match request.command {
-            ControlCommand::Ping => Ok(json!({})),
-            ControlCommand::Doctor => {
-                parse_read_only_arguments(&request.argv)?;
-                let executable = executable_digests_async().await?;
-                doctor_report(
-                    &control.config_root,
-                    &executable.service_identity,
-                    &executable.sha256,
-                    &executable.blake3,
-                    1,
-                    control.state.routes.len(),
-                    control.state.leases.len(),
-                    !control.state.pending_discards.is_empty() || !control.state.pending.is_empty(),
-                )
+) -> Result<Value, String> {
+    match request.command {
+        ControlCommand::Ping => Ok(json!({})),
+        ControlCommand::Doctor => {
+            parse_read_only_arguments(&request.argv)?;
+            let executable = executable_digests_async().await?;
+            doctor_report(
+                &control.config_root,
+                &executable.service_identity,
+                &executable.sha256,
+                &executable.blake3,
+                1,
+                control.state.routes.len(),
+                control.state.leases.len(),
+                !control.state.pending_discards.is_empty() || !control.state.pending.is_empty(),
+            )
+        }
+        ControlCommand::Agents => {
+            parse_read_only_arguments(&request.argv)?;
+            let (caller, _) = control.route_from_cwd(&request.cwd)?;
+            control.agents_status(&caller).await
+        }
+        ControlCommand::Discard => {
+            let (caller, _) = control.route_from_cwd(&request.cwd)?;
+            let reference = request
+                .argv
+                .first()
+                .and_then(|value| value.strip_prefix("agents/"))
+                .ok_or_else(|| "discard requires agents/<ref>".to_owned())?;
+            control
+                .agent_discard_as(&caller, json!({"agent": reference}))
+                .await
+        }
+        ControlCommand::Git => {
+            if request.argv.is_empty() {
+                return Err("acyclic git requires a Git-style subcommand".to_owned());
             }
-            ControlCommand::Agents => {
-                parse_read_only_arguments(&request.argv)?;
-                let (caller, _) = control.route_from_cwd(&request.cwd)?;
-                control.agents_status(&caller).await
+            let (caller, route, root_id) = control.route_root_from_cwd(&request.cwd)?;
+            if request.argv.as_slice() == ["merge", "--continue"] {
+                return control.agent_merge_transition(&caller, false).await;
             }
-            ControlCommand::Discard => {
-                let (caller, _) = control.route_from_cwd(&request.cwd)?;
-                let reference = request
+            if request.argv.as_slice() == ["merge", "--abort"] {
+                return control.agent_merge_transition(&caller, true).await;
+            }
+            if request.argv.first().is_some_and(|command| command == "add")
+                && let Some(operation_id) = control
+                    .pending_conflict_for_parent(control.context_for_agent(&caller)?)
+                    .await?
+            {
+                control.sync_agent(&caller).await?;
+                let paths = request
                     .argv
-                    .first()
-                    .and_then(|value| value.strip_prefix("agents/"))
-                    .ok_or_else(|| "discard requires agents/<ref>".to_owned())?;
-                control
-                    .agent_discard_as(&caller, json!({"agent": reference}))
-                    .await
-            }
-            ControlCommand::Git => {
-                if request.argv.is_empty() {
-                    return Err("acyclic git requires a Git-style subcommand".to_owned());
-                }
-                let (caller, route, root_id) = control.route_root_from_cwd(&request.cwd)?;
-                if request.argv.as_slice() == ["merge", "--continue"] {
-                    return control.agent_merge_transition(&caller, false).await;
-                }
-                if request.argv.as_slice() == ["merge", "--abort"] {
-                    return control.agent_merge_transition(&caller, true).await;
-                }
-                if request.argv.first().is_some_and(|command| command == "add")
-                    && let Some(operation_id) = control
-                        .pending_conflict_for_parent(control.context_for_agent(&caller)?)
-                        .await?
-                {
-                    control.sync_agent(&caller).await?;
-                    let paths = request
+                    .iter()
+                    .skip(1)
+                    .filter(|argument| argument.as_str() != "--")
+                    .filter(|argument| !argument.starts_with('-'))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let paths = if paths.is_empty()
+                    && request
                         .argv
                         .iter()
                         .skip(1)
-                        .filter(|argument| argument.as_str() != "--")
-                        .filter(|argument| !argument.starts_with('-'))
-                        .cloned()
-                        .collect::<Vec<_>>();
-                    let paths = if paths.is_empty()
-                        && request
-                            .argv
-                            .iter()
-                            .skip(1)
-                            .any(|argument| argument == "-A" || argument == "--all")
-                    {
-                        vec![".".to_owned()]
-                    } else {
-                        paths
-                    };
-                    if paths.is_empty() {
-                        return Err("acyclic git add requires a conflicted path or -A".to_owned());
-                    }
+                        .any(|argument| argument == "-A" || argument == "--all")
+                {
+                    vec![".".to_owned()]
+                } else {
+                    paths
+                };
+                if paths.is_empty() {
+                    return Err("acyclic git add requires a conflicted path or -A".to_owned());
+                }
+                control
+                    .publication_coordinator()
+                    .await?
+                    .declare_conflicted_paths(
+                        operation_id,
+                        control.context_for_agent(&caller)?,
+                        root_id,
+                        &paths,
+                    )
+                    .await
+                    .map_err(display)?;
+                return Ok(json!({"status":"resolved","automaticStaging":true}));
+            }
+            if request
+                .argv
+                .first()
+                .is_some_and(|command| command == "merge")
+                && let Some(reference) = request
+                    .argv
+                    .get(1)
+                    .and_then(|value| value.strip_prefix("agents/"))
+            {
+                return control
+                    .agent_merge_as(&caller, json!({"agent": reference}))
+                    .await;
+            }
+            if request
+                .argv
+                .first()
+                .is_some_and(|command| command == "diff")
+                && let Some(reference) = request
+                    .argv
+                    .get(1)
+                    .and_then(|value| value.strip_prefix("agents/"))
+            {
+                let mut paths = request.argv.get(2..).unwrap_or_default();
+                if paths.first().is_some_and(|argument| argument == "--") {
+                    paths = paths.get(1..).unwrap_or_default();
+                }
+                if paths.len() > 1 {
+                    return Err("acyclic git diff agents/<ref> accepts at most one path".to_owned());
+                }
+                return control
+                    .agent_changes_as(
+                        &caller,
+                        json!({
+                            "agent": reference,
+                            "path": paths.first(),
+                            "_caller_root_id": hex::encode(root_id.into_bytes())
+                        }),
+                    )
+                    .await;
+            }
+            match route {
+                Some(route) => {
                     control
-                        .publication_coordinator()
-                        .await?
-                        .declare_conflicted_paths(
-                            operation_id,
-                            control.context_for_agent(&caller)?,
-                            root_id,
-                            &paths,
-                        )
+                        .git_tool(&route.agent_id, &route, root_id, request.argv)
                         .await
-                        .map_err(display)?;
-                    return Ok(json!({"status":"resolved","automaticStaging":true}));
                 }
-                if request
-                    .argv
-                    .first()
-                    .is_some_and(|command| command == "merge")
-                    && let Some(reference) = request
-                        .argv
-                        .get(1)
-                        .and_then(|value| value.strip_prefix("agents/"))
-                {
-                    return control
-                        .agent_merge_as(&caller, json!({"agent": reference}))
-                        .await;
-                }
-                if request
-                    .argv
-                    .first()
-                    .is_some_and(|command| command == "diff")
-                    && let Some(reference) = request
-                        .argv
-                        .get(1)
-                        .and_then(|value| value.strip_prefix("agents/"))
-                {
-                    let mut paths = request.argv.get(2..).unwrap_or_default();
-                    if paths.first().is_some_and(|argument| argument == "--") {
-                        paths = paths.get(1..).unwrap_or_default();
-                    }
-                    if paths.len() > 1 {
-                        return Err(
-                            "acyclic git diff agents/<ref> accepts at most one path".to_owned()
-                        );
-                    }
-                    return control
-                        .agent_changes_as(
-                            &caller,
-                            json!({
-                                "agent": reference,
-                                "path": paths.first(),
-                                "_caller_root_id": hex::encode(root_id.into_bytes())
-                            }),
-                        )
-                        .await;
-                }
-                match route {
-                    Some(route) => {
-                        control
-                            .git_tool(&route.agent_id, &route, root_id, request.argv)
-                            .await
-                    }
-                    None => control.root_git_tool(root_id, request.argv).await,
-                }
+                None => control.root_git_tool(root_id, request.argv).await,
             }
-            ControlCommand::Hook => {
-                Err("control command is invalid for a workspace session".to_owned())
-            }
+        }
+        ControlCommand::Hook => {
+            Err("control command is invalid for a workspace session".to_owned())
         }
     }
 }

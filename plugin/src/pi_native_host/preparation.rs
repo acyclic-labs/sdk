@@ -69,10 +69,15 @@ impl PiNativeCommandHost {
             .policy()
             .maximum_payload_bytes
             .min(root_admission.0.limits.file_bytes);
-        let root = crate::pi_recovery::decode_recovery_value::<PiTaskInput>(
-            std::borrow::Cow::Borrowed(&root_admission.0.input),
-            acyclic_harness::JsonValueSchema::None,
+        let root_bytes =
+            crate::pi_root_provider::canonical_pi_value(&root_admission.0.input, maximum, work)?;
+        let root = crate::pi_root_provider::guarded_pi_decode::<PiTaskInput>(
+            &root_bytes.0,
             maximum,
+            self.protected.policy().maximum_payload_bytes,
+            acyclic_harness::wire::ErrorCode::Invalid,
+            JsonValueSchema::None,
+            crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES,
             work,
         )?;
         let root_session = &root.0.binding.native_session_id;

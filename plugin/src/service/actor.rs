@@ -158,7 +158,10 @@ impl SessionHandle {
                                         &cancellation,
                                     )
                                     .map_err(
-                                        |(cause, work)| Error::NativeConstruction { cause, work },
+                                        |(cause, work)| Error::NativeConstruction {
+                                            cause,
+                                            work,
+                                        },
                                     )?,
                                 );
                             }
