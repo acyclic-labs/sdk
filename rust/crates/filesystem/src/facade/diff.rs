@@ -128,56 +128,21 @@ pub(super) async fn diff_generation_file_tables<O: AsyncObjectStore>(
             cancellation,
         )
         .await?;
+        truncated |= entries.truncated;
         let bytes = entries.retained_allocation_bytes;
-        let mut entries = crate::kernel::Owned::new(entries, allocation, bytes);
-        truncated |= entries.value.truncated;
-        let next_bytes = bindings
-            .bytes
-            .checked_add(bytes)
-            .ok_or(WorkError::Overflow)?;
-        bindings.allocation.absorb(&mut entries.allocation)?;
-        bindings.bytes = next_bytes;
-        let buffer_bytes = crate::foundation::usize_to_u64(
-            entries
-                .value
-                .changes
-                .capacity()
-                .checked_mul(size_of::<
-                    crate::kernel::ValueChange<LogicalName, crate::kernel::TreeEntry>,
-                >())
-                .ok_or(WorkError::Overflow)?,
-        );
-        for entry in entries.value.changes.drain(..) {
-            accounting.charge(WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            })?;
-            bindings.ensure_for_push(maximum, accounting)?;
-            let copied = WorkCounters {
-                bytes_copied: size_of::<DirectoryBindingChange>() as u64,
-                ..WorkCounters::UNCHARGED
-            };
-            accounting.admit(copied)?;
-            bindings.value.push(DirectoryBindingChange {
-                directory_id: change.key,
-                name: entry.key,
-                before: entry.before,
-                after: entry.after,
-            });
-            accounting.record_completed(copied)?;
-        }
-        drop(entries);
-        accounting.release_owned(&mut bindings.allocation, buffer_bytes)?;
-        bindings.bytes = bindings
-            .bytes
-            .checked_sub(buffer_bytes)
-            .ok_or(WorkError::Overflow)?;
+        append_directory_changes(
+            &mut bindings,
+            crate::kernel::Owned::new(entries.changes, allocation, bytes),
+            change.key,
+            maximum,
+            accounting,
+        )?;
     }
     records.retire(accounting)?;
     bindings.allocation.absorb(&mut files.allocation)?;
     let crate::kernel::Owned {
         value: files,
-        allocation: files_allocation,
+        allocation: _files_allocation,
         ..
     } = files;
     let crate::kernel::Owned {
@@ -185,7 +150,8 @@ pub(super) async fn diff_generation_file_tables<O: AsyncObjectStore>(
         allocation,
         ..
     } = bindings;
-    drop(files_allocation);
+    #[cfg(not(target_arch = "wasm32"))]
+    drop(_files_allocation);
     Ok((
         GenerationDiff {
             files,
@@ -194,6 +160,58 @@ pub(super) async fn diff_generation_file_tables<O: AsyncObjectStore>(
         },
         allocation,
     ))
+}
+
+fn append_directory_changes(
+    bindings: &mut crate::kernel::Owned<Vec<DirectoryBindingChange>>,
+    mut entries: crate::kernel::Owned<
+        Vec<crate::kernel::ValueChange<LogicalName, crate::kernel::TreeEntry>>,
+    >,
+    directory_id: FileId,
+    maximum: usize,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(), FsError> {
+    let next_bytes = bindings
+        .bytes
+        .checked_add(entries.bytes)
+        .ok_or(WorkError::Overflow)?;
+    bindings.allocation.absorb(&mut entries.allocation)?;
+    bindings.bytes = next_bytes;
+    let buffer_bytes = crate::foundation::usize_to_u64(
+        entries
+            .value
+            .capacity()
+            .checked_mul(size_of::<
+                crate::kernel::ValueChange<LogicalName, crate::kernel::TreeEntry>,
+            >())
+            .ok_or(WorkError::Overflow)?,
+    );
+    for entry in entries.value.drain(..) {
+        accounting.charge(WorkCounters {
+            items_examined: 1,
+            ..WorkCounters::UNCHARGED
+        })?;
+        bindings.ensure_for_push(maximum, accounting)?;
+        let copied = WorkCounters {
+            bytes_copied: size_of::<DirectoryBindingChange>() as u64,
+            ..WorkCounters::UNCHARGED
+        };
+        accounting.admit(copied)?;
+        bindings.value.push(DirectoryBindingChange {
+            directory_id,
+            name: entry.key,
+            before: entry.before,
+            after: entry.after,
+        });
+        accounting.record_completed(copied)?;
+    }
+    drop(entries);
+    accounting.release_owned(&mut bindings.allocation, buffer_bytes)?;
+    bindings.bytes = bindings
+        .bytes
+        .checked_sub(buffer_bytes)
+        .ok_or(WorkError::Overflow)?;
+    Ok(())
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {

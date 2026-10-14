@@ -353,8 +353,31 @@ impl ModelProvider for MockAdapter {
                     .map_err(|error| Error::Invalid(error.to_string()))?
                     .len() as u64
                     + 1;
+                // The model receives payloads and options, not reference or admission metadata.
+                for binding in message.content.native_configurations() {
+                    let metadata = serde_json::to_vec(binding)
+                        .map_err(|error| Error::Invalid(error.to_string()))?
+                        .len() as u64;
+                    units = units
+                        .checked_sub(metadata)
+                        .ok_or_else(|| Error::Invalid("fixture metadata count differs".into()))?;
+                }
                 for file in message.content.file_refs() {
-                    units += file.descriptor().byte_length();
+                    if !message
+                        .content
+                        .native_configurations()
+                        .any(|binding| &binding.configuration.content == file)
+                    {
+                        let metadata = serde_json::to_vec(file)
+                            .map_err(|error| Error::Invalid(error.to_string()))?
+                            .len() as u64;
+                        units = units.checked_sub(metadata).ok_or_else(|| {
+                            Error::Invalid("fixture reference count differs".into())
+                        })?;
+                    }
+                    units = units
+                        .checked_add(file.descriptor().byte_length())
+                        .ok_or_else(|| Error::Invalid("fixture count overflow".into()))?;
                 }
                 u32::try_from(units).map_err(|_| Error::Invalid("fixture count overflow".into()))
             })

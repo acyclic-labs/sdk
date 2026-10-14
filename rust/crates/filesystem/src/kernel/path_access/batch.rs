@@ -167,7 +167,7 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                 );
                 current.value.resize(count, None);
                 done.value.resize(count, 0);
-                let (root, root_guard) =
+                let (root, _root_guard) =
                     crate::kernel::file_table::lookup_file_record_async_with_accounting(
                         &cache,
                         generation.file_table,
@@ -180,7 +180,8 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                     .await?;
                 cache.reconcile(accounting)?;
                 let root = root.ok_or(PathLookupError::MissingRootRecord)?;
-                drop(root_guard);
+                #[cfg(not(target_arch = "wasm32"))]
+                drop(_root_guard);
                 for index in 0..count {
                     let is_root = examine_item(accounting, None, || paths.get(index).is_root())?;
                     if is_root {

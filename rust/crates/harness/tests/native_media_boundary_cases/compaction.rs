@@ -187,15 +187,48 @@ where
             .any(|messages| messages == exchange)
     );
     assert!(!admitted.request().messages.iter().any(|message| matches!(&message.content, ModelContent::Text(text) if text.starts_with("old history"))));
-    let prefix = journal
+    let publisher = FilesystemContentPublisher::new(
+        host.clone(),
+        &volume,
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &scope,
+        65_536,
+        None,
+    )?;
+    let mut exported = admitted.request().clone();
+    for message in &mut exported.messages {
+        if let ModelContent::Part(ModelContentPart::File {
+            file,
+            policy: FileProjectionPolicy::BoundedFull,
+        }) = &mut message.content
+            && file.path().starts_with(".system/")
+        {
+            let bytes = journal.load(file, None)?.await?;
+            *file = publisher
+                .stage(
+                    OperationId::new(),
+                    "fork/media-summary",
+                    &bytes,
+                    "text/plain",
+                    "media-summary",
+                    None,
+                )?
+                .await?
+                .0;
+        }
+    }
+    let exported = PreparedModelRequest::prepare(exported, Limits::default(), None)?;
+    let prefix = publisher
         .stage(
             OperationId::new(),
             "fork/media-prefix",
-            &ModelPrefix::select(&admitted, None)?.canonical_bytes(None)?,
+            &ModelPrefix::select(&exported, None)?.canonical_bytes(None)?,
             ModelPrefix::MEDIA_TYPE,
+            "media-prefix",
             None,
         )?
-        .await?;
+        .await?
+        .0;
     let forks = acyclic_harness::fork::CompositeForkVerifier::new(
         &[
             acyclic_harness::filesystem::FilesystemForkVerifier::new(
@@ -231,7 +264,7 @@ where
                 kind: acyclic_harness::conversation::MessageKind::User,
                 content: prefix.clone(),
                 attachments: acyclic_harness::conversation::ReferencedAttachments::Inline {
-                    items: admitted
+                    items: exported
                         .request()
                         .messages
                         .iter()

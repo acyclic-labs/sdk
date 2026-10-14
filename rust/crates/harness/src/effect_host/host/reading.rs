@@ -33,7 +33,13 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<(StreamAggregate<P>, NativeCustody)> {
         #[cfg(feature = "filesystem")]
-        let mut io = history(original(work))?;
+        let mut io = {
+            #[cfg(not(target_arch = "wasm32"))]
+            let native = work.as_deref().and_then(HistoryIo::original_native_work);
+            #[cfg(target_arch = "wasm32")]
+            let native = None;
+            history(native)?
+        };
         #[cfg(feature = "filesystem")]
         let mut observed = match io.as_mut() {
             Some(io) => Some(io as &mut dyn HistoryIo),

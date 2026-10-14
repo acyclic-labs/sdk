@@ -510,6 +510,7 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         };
         #[cfg(not(target_arch = "wasm32"))]
         drop(native_custody);
+        #[cfg(not(target_arch = "wasm32"))]
         drop(allocation);
         pending
             .retire(self.accounting)

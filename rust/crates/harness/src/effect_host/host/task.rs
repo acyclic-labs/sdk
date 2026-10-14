@@ -23,7 +23,9 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             }
             owner.require_effect_grants(&plan.provider, !reconcile_only, observed)?;
             #[cfg(not(target_arch = "wasm32"))]
-            let input = original(observed)
+            let input = observed
+                .as_deref()
+                .and_then(HistoryIo::original_native_work)
                 .map(crate::executor::PreparationIo::from_native_work)
                 .transpose()?;
             #[cfg(target_arch = "wasm32")]

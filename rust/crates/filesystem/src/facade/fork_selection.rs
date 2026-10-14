@@ -199,11 +199,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     };
                     let bytes = directory.retained_bytes();
                     let directory = Owned::new(directory, allocation, bytes);
-                    let (lookup, allocation) = checkout
+                    let (lookup, _allocation) = checkout
                         .value
                         .lookup_no_follow_with_accounting(&directory.value, accounting, cancellation, false)
                         .await?;
-                    drop(allocation);
+                    #[cfg(not(target_arch = "wasm32"))]
+                    drop(_allocation);
                     let original = lookup.record.ok_or(WorkspaceError::NotFound)?;
                     if original.kind != FileKind::Directory {
                         return Err(WorkspaceError::NotDirectory);
@@ -238,11 +239,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         )?;
                         let bytes = child.retained_bytes();
                         let child = Owned::new(child, allocation, bytes);
-                        let (lookup, allocation) = checkout
+                        let (lookup, _allocation) = checkout
                             .value
                             .lookup_no_follow_with_accounting(&child.value, accounting, cancellation, false)
                             .await?;
-                        drop(allocation);
+                        #[cfg(not(target_arch = "wasm32"))]
+                        drop(_allocation);
                         child.retire(accounting)?;
                         let record = lookup.record.ok_or(WorkspaceError::NotFound)?;
                         let (name, mut allocation) =
@@ -333,8 +335,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             )?;
             let position = match position {
                 Ok(position) => {
-                    let record = records.value.get_mut(position).ok_or(WorkspaceError::JoinLimit)?;
-                    record.link_count = record.link_count.checked_add(1).ok_or(WorkspaceError::JoinLimit)?;
+                    let record = records
+                        .value
+                        .get_mut(position)
+                        .ok_or(WorkspaceError::JoinLimit)?;
+                    record.link_count = record
+                        .link_count
+                        .checked_add(1)
+                        .ok_or(WorkspaceError::JoinLimit)?;
                     continue;
                 }
                 Err(position) => position,
@@ -350,8 +358,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     break;
                 }
             }
-            let mut record = if let Some(record) = record { record } else {
-                let (record, allocation) = lookup_file_record_async_with_accounting(
+            let mut record = if let Some(record) = record {
+                record
+            } else {
+                let (record, _allocation) = lookup_file_record_async_with_accounting(
                     &self.inner.objects,
                     root.file_table,
                     id,
@@ -361,7 +371,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     None,
                 )
                 .await?;
-                drop(allocation);
+                #[cfg(not(target_arch = "wasm32"))]
+                drop(_allocation);
                 record.ok_or(WorkspaceError::NotFound)?
             };
             record.link_count = 1;
@@ -370,11 +381,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 bytes_copied: ((records.value.len() - position) * size_of::<FileRecord>()) as u64,
                 ..WorkCounters::UNCHARGED
             })?;
-            records.value.get_mut(position..).ok_or(WorkspaceError::JoinLimit)?.rotate_right(1);
+            records
+                .value
+                .get_mut(position..)
+                .ok_or(WorkspaceError::JoinLimit)?
+                .rotate_right(1);
             if let FilePayload::Directory { entries } = record.payload {
                 let mut cursor: Option<Owned<LogicalName>> = None;
                 loop {
-                    let (page, allocation) = list_tree_entries_async_with_accounting(&self.inner.objects, entries, ((cursor.as_ref().map(|cursor| &cursor.value)).map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded), limits.maximum_page_items), limits, accounting, cancellation, None,)
+                    let (page, allocation) = list_tree_entries_async_with_accounting(
+                        &self.inner.objects,
+                        entries,
+                        (
+                            (cursor.as_ref().map(|cursor| &cursor.value))
+                                .map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
+                            limits.maximum_page_items,
+                        ),
+                        limits,
+                        accounting,
+                        cancellation,
+                        None,
+                    )
                     .await?;
                     let mut page = Owned::new(page, allocation, 0);
                     page.bytes = page.value.entries.iter().try_fold(

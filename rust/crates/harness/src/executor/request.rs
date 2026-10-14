@@ -186,10 +186,30 @@ impl StockExecution<'_> {
         &self,
         context: &crate::context::Context,
     ) -> Result<ModelRequest> {
+        let mut tools_required = self.summary.is_none();
+        if !tools_required {
+            for message in &context.messages {
+                crate::model::charge_items(self.io, 1)?;
+                for part in message.content.parts() {
+                    crate::model::charge_items(self.io, 1)?;
+                    if matches!(part, crate::model::ModelContentPart::ToolCall { .. }) {
+                        tools_required = true;
+                        break;
+                    }
+                }
+                if tools_required {
+                    break;
+                }
+            }
+        }
         Ok(ModelRequest {
             model: crate::model::clone_model(&self.stock.model, self.io)?,
             messages: crate::model::clone_messages(&context.messages, self.io)?,
-            tools: stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io)?,
+            tools: if tools_required {
+                stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io)?
+            } else {
+                Vec::new()
+            },
             max_output_tokens: self.output_budget()?,
         })
     }

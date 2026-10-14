@@ -38,17 +38,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     if current.file_id == file_id {
                         return Ok(None);
                     }
-                    let (existing, existing_allocation) = lookup_file_record_async_with_accounting(
-                        &self.volume.fs.inner.objects,
-                        self.root.file_table,
-                        file_id,
-                        DecodeLimits::for_volume(self.volume.config),
-                        accounting,
-                        cancellation,
-                        Some(&self.dependencies.data_custody),
-                    )
-                    .await?;
-                    drop(existing_allocation);
+                    let (existing, _existing_allocation) =
+                        lookup_file_record_async_with_accounting(
+                            &self.volume.fs.inner.objects,
+                            self.root.file_table,
+                            file_id,
+                            DecodeLimits::for_volume(self.volume.config),
+                            accounting,
+                            cancellation,
+                            Some(&self.dependencies.data_custody),
+                        )
+                        .await?;
+                    #[cfg(not(target_arch = "wasm32"))]
+                    drop(_existing_allocation);
                     if existing.is_some_and(|existing| {
                         existing.kind != current.kind
                             || existing.metadata != current.metadata

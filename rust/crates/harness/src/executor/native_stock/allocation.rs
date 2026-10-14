@@ -23,7 +23,7 @@ pub(crate) fn stock_boundary(
 
 pub(crate) fn stock_string_copy(value: &str, io: Option<&PreparationIo>) -> Result<String> {
     let mut copied = String::new();
-    stock_string_push(&mut copied, value, io)?;
+    stock_string_push(&mut copied, value, u64::MAX, "stock text size overflow", io)?;
     Ok(copied)
 }
 
@@ -65,17 +65,17 @@ pub(crate) fn stock_vec_push<T>(
 pub(crate) fn stock_string_push(
     text: &mut String,
     suffix: &str,
+    maximum: u64,
+    reason: &'static str,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
+    let target = text
+        .len()
+        .checked_add(suffix.len())
+        .filter(|target| *target as u64 <= maximum)
+        .ok_or_else(|| stock_boundary(io, crate::wire::ErrorCode::Invalid, reason))?;
     with_history_io(io, |work| {
         if let Some(work) = work.as_deref_mut() {
-            let target = text.len().checked_add(suffix.len()).ok_or_else(|| {
-                stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Invalid,
-                    "stock text size overflow",
-                )
-            })?;
             work.admit_copy(suffix.len() as u64)?;
             work.reserve_text(text, target)?;
             text.push_str(suffix);

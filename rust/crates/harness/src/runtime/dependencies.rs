@@ -2,7 +2,7 @@ use super::*;
 
 pub(crate) fn validate_task_dependencies<'a>(
     count: usize,
-    task: impl Fn(usize) -> (&'a str, &'a str, &'a BTreeSet<String>),
+    task: impl Fn(usize) -> Result<(&'a str, &'a str, &'a BTreeSet<String>)>,
     available: impl Fn(&str) -> Result<bool>,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
@@ -30,7 +30,7 @@ pub(crate) fn dependency_target(value: &str) -> Option<(&str, &str)> {
 
 fn visit<'a>(
     index: usize,
-    task: &impl Fn(usize) -> (&'a str, &'a str, &'a BTreeSet<String>),
+    task: &impl Fn(usize) -> Result<(&'a str, &'a str, &'a BTreeSet<String>)>,
     available: &impl Fn(&str) -> Result<bool>,
     marks: &mut [u8],
     io: Option<&crate::executor::PreparationIo>,
@@ -54,7 +54,7 @@ fn visit<'a>(
         2 => return Ok(()),
         mark => *mark = 1,
     }
-    for requirement in task(index).2 {
+    for requirement in task(index)?.2 {
         crate::executor::with_history_io(io, |work| {
             crate::core::inspect_metadata(requirement, work)
         })?;
@@ -69,7 +69,7 @@ fn visit<'a>(
             let mut dependency = None;
             for index in 0..marks.len() {
                 crate::model::charge_items(io, 1)?;
-                let (registered_name, registered_version, _) = task(index);
+                let (registered_name, registered_version, _) = task(index)?;
                 if registered_name == name && registered_version == version {
                     dependency = Some(index);
                     break;

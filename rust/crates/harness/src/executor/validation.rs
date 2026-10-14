@@ -177,8 +177,10 @@ fn schema_error(
             custody: Some(custody),
         };
     }
-    preparation_format(format_args!("{context}: {source}"), scope.work())
-        .map_or_else(|error| error, Error::Invalid)
+    let error = preparation_format(format_args!("{context}: {source}"), scope.work())
+        .map_or_else(|error| error, Error::Invalid);
+    drop(source);
+    error
 }
 
 pub(crate) fn preparation_format(

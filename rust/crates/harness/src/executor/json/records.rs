@@ -88,7 +88,9 @@ pub(super) fn decode_error(
         };
     }
     let _ = code;
-    Error::Invalid(source.to_string())
+    let message = source.to_string();
+    drop(source);
+    Error::Invalid(message)
 }
 
 /// Known owned String and container slot capacities of a resident Value.

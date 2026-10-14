@@ -11,6 +11,7 @@ fn guarded_publication_error(error: Error, operation: OperationId) -> Error {
     ) {
         return error;
     }
+    drop(error);
     Error::Indeterminate(operation)
 }
 

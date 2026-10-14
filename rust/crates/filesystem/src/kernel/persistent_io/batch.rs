@@ -77,12 +77,10 @@ where
             return Err(error);
         }
     };
-    let read_container_bytes;
-    let remaining_owned_bytes;
-    match &cold.custody {
+    let (read_container_bytes, remaining_owned_bytes) = match &cold.custody {
         KernelOwnedAllocation::Standalone => {
             // The shared read boundary checked and registered both quantities.
-            read_container_bytes = usize_to_u64(
+            let read_container_bytes = usize_to_u64(
                 cold.value
                     .capacity()
                     .checked_mul(size_of::<ObjectRead>())
@@ -93,16 +91,14 @@ where
                 cold.value.capacity(),
             )
             .expect("registered read retention");
-            remaining_owned_bytes = total
+            let remaining_owned_bytes = total
                 .checked_sub(read_container_bytes)
                 .expect("read retention includes container");
+            (read_container_bytes, remaining_owned_bytes)
         }
         #[cfg(not(target_arch = "wasm32"))]
-        KernelOwnedAllocation::NativeOriginal(owned) => {
-            read_container_bytes = owned.bytes();
-            remaining_owned_bytes = 0;
-        }
-    }
+        KernelOwnedAllocation::NativeOriginal(owned) => (owned.bytes(), 0),
+    };
     if cold.value.len() != plan.requests.len() {
         drop(cold.value);
         release_read_allocation(
@@ -370,7 +366,9 @@ impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
         } else {
             0
         };
+        #[cfg(not(target_arch = "wasm32"))]
         drop(source_allocation);
+        #[cfg(not(target_arch = "wasm32"))]
         drop(read_allocation);
         let bytes = source_bytes
             .checked_add(read_bytes)

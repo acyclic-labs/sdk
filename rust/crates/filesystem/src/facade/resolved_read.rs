@@ -157,6 +157,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                     .buffer_unordered(concurrency.min(requests.len().max(1)))
                     .collect::<Vec<_>>()
                     .await;
+                #[cfg(not(target_arch = "wasm32"))]
                 drop(reads.allocation);
                 let result = order_batch_results(results, WorkBudget::UNBOUNDED);
                 let work = match &result {

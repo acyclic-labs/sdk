@@ -17,11 +17,12 @@ pub(super) async fn read_selected<
         let (mut checkout, path) = workspace
             .open_read_path(selector, path, &mut accounting, cancellation)
             .await?;
-        let (lookup, allocation) = checkout
+        let (lookup, _allocation) = checkout
             .value
             .lookup_no_follow_with_accounting(&path.value, &mut accounting, cancellation, true)
             .await?;
-        drop(allocation);
+        #[cfg(not(target_arch = "wasm32"))]
+        drop(_allocation);
         let record = lookup.record.ok_or(WorkspaceError::NotFound)?;
         if record.kind != FileKind::Regular {
             return Err(WorkspaceError::NotRegularFile);

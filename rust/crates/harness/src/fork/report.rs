@@ -111,15 +111,11 @@ impl ForkReport {
                 _ => {}
             }
         }
-        self.child_private_volume.validate(work.work())?;
         self.child_private_generation
             .as_resource()
             .validate(work.work())?;
-        if self.child_private_volume.class() != VolumeClass::AgentPrivate
-            || self.child_private_volume.provider().family() != "filesystem"
-            || self.child_private_volume.owner() != &VolumeOwner::Agent(self.request.child_agent)
-            || self.child_private_generation.as_resource().provider()
-                != self.child_private_volume.provider()
+        if self.child_private_generation.as_resource().provider()
+            != self.child_private_volume.provider()
         {
             return Err(work.invalid("fork report private volume is not child owned"));
         }

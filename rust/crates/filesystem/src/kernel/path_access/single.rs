@@ -57,9 +57,10 @@ pub(super) async fn resolve_path_with_accounting<S: AsyncObjectStore>(
                 )
                 .await?;
                 cache.reconcile(accounting)?;
-                let (root_record, root_guard) = root;
+                let (root_record, _root_guard) = root;
                 let mut current = root_record.ok_or(PathLookupError::MissingRootRecord)?;
-                drop(root_guard);
+                #[cfg(not(target_arch = "wasm32"))]
+                drop(_root_guard);
                 let mut parent = None;
                 let mut resolved = 0;
                 let mut found = true;
@@ -155,7 +156,7 @@ pub(super) async fn resolve_path_with_accounting<S: AsyncObjectStore>(
                     if let Some(bytes) = entry_bytes {
                         release_standalone(accounting, bytes)?;
                     }
-                    let (record, record_guard) =
+                    let (record, _record_guard) =
                         crate::kernel::file_table::lookup_file_record_async_with_accounting(
                             &cache,
                             generation.file_table,
@@ -168,7 +169,8 @@ pub(super) async fn resolve_path_with_accounting<S: AsyncObjectStore>(
                         .await?;
                     cache.reconcile(accounting)?;
                     current = record.ok_or(PathLookupError::KindMismatch)?;
-                    drop(record_guard);
+                    #[cfg(not(target_arch = "wasm32"))]
+                    drop(_record_guard);
                     if current.kind != kind {
                         return Err(PathLookupError::KindMismatch.into());
                     }

@@ -27,18 +27,13 @@ impl StockExecution<'_> {
             for event in model_events {
                 match event {
                     ModelEvent::Content { delta } => {
-                        if text
-                            .len()
-                            .checked_add(delta.len())
-                            .is_none_or(|size| size as u64 > self.stock.limits.file_bytes)
-                        {
-                            return Err(stock_boundary(
-                                self.io,
-                                crate::wire::ErrorCode::Invalid,
-                                "assistant output exceeds file limit",
-                            ));
-                        }
-                        stock_string_push(&mut text, &delta, self.io)?;
+                        stock_string_push(
+                            &mut text,
+                            &delta,
+                            self.stock.limits.file_bytes,
+                            "assistant output exceeds file limit",
+                            self.io,
+                        )?;
                     }
                     ModelEvent::ToolCall {
                         call_id,
@@ -59,9 +54,7 @@ impl StockExecution<'_> {
                     ModelEvent::Reasoning { .. } => {}
                 }
             }
-            let Some(metadata) = completed else {
-                return Err(Error::Indeterminate(input.operation_id));
-            };
+            let metadata = completed.ok_or(Error::Indeterminate(input.operation_id))?;
             if calls.is_empty() {
                 return Ok(ExecutionProgress::Ready(TurnOutput {
                     text,

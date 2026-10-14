@@ -222,8 +222,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .await?;
             self.plan_record_extents(record, range, maximum_spans, &mut accounting, cancellation)
                 .await
-                .map(|(plan, allocation)| {
-                    drop(allocation);
+                .map(|(plan, _allocation)| {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    drop(_allocation);
                     plan
                 })
         }

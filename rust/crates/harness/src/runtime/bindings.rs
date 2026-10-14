@@ -250,14 +250,16 @@ impl Bindings {
         }
         super::dependencies::validate_task_dependencies(
             self.tasks.0.len(),
-            #[allow(
-                clippy::indexing_slicing,
-                reason = "Dependency traversal supplies indices bounded by this registry's count."
-            )]
             |index| {
-                let definition = &self.tasks.0[index];
+                let definition = self.tasks.0.get(index).ok_or_else(|| {
+                    crate::conversation::content_error(
+                        startup,
+                        crate::wire::ErrorCode::Invalid,
+                        "task dependency index is invalid",
+                    )
+                })?;
                 let identity = definition.identity();
-                (&identity.name, &identity.version, definition.requirements())
+                Ok((&identity.name, &identity.version, definition.requirements()))
             },
             |requirement| super::dependencies::requirement_available(self, requirement, startup),
             startup,

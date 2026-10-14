@@ -92,6 +92,15 @@ impl Scheduler {
                 return Err(diagnostic(work, Conflict, "operation dependency cycle"));
             }
         }
+        self.validate_parent(spec, work)?;
+        Ok(())
+    }
+
+    fn validate_parent(
+        &self,
+        spec: &OperationSpec,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
         if let Some(parent) = &spec.parent {
             observe(work)?;
             if parent.slot.trim().is_empty()

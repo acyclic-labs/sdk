@@ -12,19 +12,12 @@ impl StockExecution<'_> {
         let records = self
             .prefix_records(journal, input.operation_id, step)
             .await?;
-        let Some(ExecutionRecord {
+        if !matches!(records.first(), Some(ExecutionRecord {
             sequence: 1,
             event: ExecutionEvent::Started { request_digest },
             ..
-        }) = records.first()
-        else {
-            return Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Conflict,
-                "tool prefix has another execution identity",
-            ));
-        };
-        if *request_digest != self.request_digest(input)? {
+        }) if *request_digest == self.request_digest(input)?)
+        {
             return Err(stock_boundary(
                 self.io,
                 crate::wire::ErrorCode::Conflict,

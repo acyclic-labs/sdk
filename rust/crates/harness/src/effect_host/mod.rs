@@ -46,14 +46,3 @@ fn history(work: NativeWork<'_>) -> Result<Option<HistoryWork>> {
         Ok(None)
     }
 }
-fn original<'a>(work: &'a Option<&mut dyn HistoryIo>) -> NativeWork<'a> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    {
-        work.as_deref().and_then(HistoryIo::original_native_work)
-    }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    {
-        let _ = work;
-        None
-    }
-}

@@ -1,6 +1,39 @@
 use super::*;
 
 impl StockExecution<'_> {
+    fn summary_text(&self, events: Vec<ModelEvent>) -> Result<String> {
+        let mut text = String::new();
+        for event in events {
+            match event {
+                ModelEvent::Content { delta } => {
+                    stock_string_push(
+                        &mut text,
+                        &delta,
+                        self.stock.limits.render_bytes,
+                        "summary output exceeds caller render budget",
+                        self.io,
+                    )?;
+                }
+                ModelEvent::ToolCall { .. } => {
+                    return Err(stock_boundary(
+                        self.io,
+                        crate::wire::ErrorCode::Invalid,
+                        "summary requested a tool operation",
+                    ));
+                }
+                ModelEvent::Reasoning { .. } | ModelEvent::Completed { .. } => {}
+            }
+        }
+        if text.is_empty() {
+            return Err(stock_boundary(
+                self.io,
+                crate::wire::ErrorCode::Invalid,
+                "summary operation returned no content",
+            ));
+        }
+        Ok(text)
+    }
+
     pub(super) async fn summarize(
         &self,
         journal: &dyn ExecutionJournal,
@@ -91,39 +124,7 @@ impl StockExecution<'_> {
         let events = executor
             .run_model_step(journal, &input, step, &[], ModelPurpose::Summary)?
             .await?;
-        let mut text = String::new();
-        for event in events {
-            match event {
-                ModelEvent::Content { delta } => {
-                    if (text.len() as u64)
-                        .checked_add(delta.len() as u64)
-                        .is_none_or(|length| length > self.stock.limits.render_bytes)
-                    {
-                        return Err(stock_boundary(
-                            self.io,
-                            crate::wire::ErrorCode::Invalid,
-                            "summary output exceeds caller render budget",
-                        ));
-                    }
-                    stock_string_push(&mut text, &delta, self.io)?;
-                }
-                ModelEvent::ToolCall { .. } => {
-                    return Err(stock_boundary(
-                        self.io,
-                        crate::wire::ErrorCode::Invalid,
-                        "summary requested a tool operation",
-                    ));
-                }
-                ModelEvent::Reasoning { .. } | ModelEvent::Completed { .. } => {}
-            }
-        }
-        if text.is_empty() {
-            return Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Invalid,
-                "summary operation returned no content",
-            ));
-        }
+        let text = self.summary_text(events)?;
         let output_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("summary:{step}:output"), work)
         })?;

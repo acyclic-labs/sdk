@@ -570,7 +570,7 @@ fn context_stream_error(
         };
     }
     let _ = io;
-    crate::Error::Storage(source.to_string())
+    source.into()
 }
 
 fn decode_context_json<T: crate::executor::PreparationRecord + serde::Serialize>(

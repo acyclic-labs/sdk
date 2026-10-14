@@ -35,8 +35,9 @@ impl FsWork for WorkBudget {
         accounting: &KernelAccounting<'_>,
     ) -> Self::OwnedOutput<T> {
         measured(
-            result.map(|(value, allocation)| {
-                drop(allocation);
+            result.map(|(value, _allocation)| {
+                #[cfg(not(target_arch = "wasm32"))]
+                drop(_allocation);
                 value
             }),
             accounting,

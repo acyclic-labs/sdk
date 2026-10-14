@@ -261,13 +261,15 @@ impl AuthorityIssuer {
                 "child scope cannot widen ancestor capabilities".into(),
             ));
         }
-        self.issue(
+        let issued = self.issue(
             &id.into(),
             &capabilities,
             parent.agent,
             Some(parent.proof),
             &mut None,
-        )
+        );
+        drop(capabilities);
+        issued
     }
 
     /// Delegates one pinned private file to another agent without a fork or

@@ -30,7 +30,9 @@ pub(super) fn prost_error(custody: NativeCustody, source: prost::DecodeError) ->
         };
     }
     let _ = custody;
-    Error::Storage(source.to_string())
+    let message = source.to_string();
+    drop(source);
+    Error::Storage(message)
 }
 #[derive(Clone, Copy)]
 enum Carrier {

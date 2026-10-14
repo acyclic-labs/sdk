@@ -49,13 +49,78 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         match file.address() {
             ContentAddress::File(id) => Ok(id),
             ContentAddress::Path(path) => {
-                let (lookup, allocation) = self
+                let (lookup, _allocation) = self
                     .lookup_no_follow_with_accounting(path, accounting, cancellation, false)
                     .await?;
-                drop(allocation);
+                #[cfg(not(target_arch = "wasm32"))]
+                drop(_allocation);
                 Ok(lookup.record.ok_or(FsError::NotFound)?.file_id)
             }
         }
+    }
+
+    async fn compile_file_content_change<F: ContentFile>(
+        &mut self,
+        file_id: FileId,
+        change: ContentChange<F>,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Mutation, FsError> {
+        let file_mutation = |mutation| Mutation::File { file_id, mutation };
+        let mutation = match change {
+            ContentChange::CloneFrom {
+                source,
+                source_offset,
+                offset,
+                length,
+            } => {
+                let source_file_id = self
+                    .content_file_id(&source, accounting, cancellation)
+                    .await?;
+                Mutation::CloneFileRange {
+                    source_file_id,
+                    source_offset,
+                    destination_file_id: file_id,
+                    destination_offset: offset,
+                    length,
+                }
+            }
+            ContentChange::Write { bytes, .. } if bytes.is_empty() => {
+                file_mutation(FileMutation::ValidateRegular)
+            }
+            ContentChange::Write { offset, bytes } => {
+                let content = self
+                    .stage_authored_blob_with_accounting(bytes, accounting, cancellation)
+                    .await?;
+                file_mutation(FileMutation::Write {
+                    offset,
+                    length: content.logical_bytes,
+                    content: content.root,
+                    content_offset: 0,
+                })
+            }
+            ContentChange::Resize { logical_bytes } => {
+                file_mutation(FileMutation::Resize { logical_bytes })
+            }
+            ContentChange::ZeroRange {
+                range,
+                allocated,
+                extend,
+            } => file_mutation(FileMutation::ZeroRange {
+                offset: range.offset,
+                length: range.length,
+                allocated,
+                extend,
+            }),
+            ContentChange::Preallocate { range, keep_size } => {
+                file_mutation(FileMutation::Preallocate {
+                    offset: range.offset,
+                    length: range.length,
+                    keep_size,
+                })
+            }
+        };
+        Ok(mutation)
     }
 
     pub(crate) async fn compile_content_with_accounting<F: ContentFile>(
@@ -77,69 +142,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 let file_id = self
                     .content_file_id(&file, accounting, cancellation)
                     .await?;
-                let mutation = match change {
-                    ContentChange::CloneFrom {
-                        source,
-                        source_offset,
-                        offset,
-                        length,
-                    } => {
-                        let source_file_id = self
-                            .content_file_id(&source, accounting, cancellation)
-                            .await?;
-                        Mutation::CloneFileRange {
-                            source_file_id,
-                            source_offset,
-                            destination_file_id: file_id,
-                            destination_offset: offset,
-                            length,
-                        }
-                    }
-                    change => Mutation::File {
-                        file_id,
-                        mutation: match change {
-                            ContentChange::Write { bytes, .. } if bytes.is_empty() => {
-                                FileMutation::ValidateRegular
-                            }
-                            ContentChange::Write { offset, bytes } => {
-                                let content = self
-                                    .stage_authored_blob_with_accounting(
-                                        bytes,
-                                        accounting,
-                                        cancellation,
-                                    )
-                                    .await?;
-                                FileMutation::Write {
-                                    offset,
-                                    length: content.logical_bytes,
-                                    content: content.root,
-                                    content_offset: 0,
-                                }
-                            }
-                            ContentChange::Resize { logical_bytes } => {
-                                FileMutation::Resize { logical_bytes }
-                            }
-                            ContentChange::ZeroRange {
-                                range,
-                                allocated,
-                                extend,
-                            } => FileMutation::ZeroRange {
-                                offset: range.offset,
-                                length: range.length,
-                                allocated,
-                                extend,
-                            },
-                            ContentChange::Preallocate { range, keep_size } => {
-                                FileMutation::Preallocate {
-                                    offset: range.offset,
-                                    length: range.length,
-                                    keep_size,
-                                }
-                            }
-                            ContentChange::CloneFrom { .. } => unreachable!("clone handled above"),
-                        },
-                    },
-                };
+                let mutation = self
+                    .compile_file_content_change(file_id, change, accounting, cancellation)
+                    .await?;
                 push_authored_operation(
                     &mut operations,
                     &mut input.allocation,

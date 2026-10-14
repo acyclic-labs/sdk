@@ -94,8 +94,9 @@ pub async fn classify_rebase_async<P: AsyncRebaseProbe>(
     .await;
     let work = accounting.spent();
     match classified {
-        Ok((decision, allocation)) => {
-            drop(allocation);
+        Ok((decision, _allocation)) => {
+            #[cfg(not(target_arch = "wasm32"))]
+            drop(_allocation);
             Ok(RebaseReceipt { decision, work })
         }
         Err(error) => Err(OperationFailure::new(

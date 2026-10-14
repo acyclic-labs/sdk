@@ -310,6 +310,8 @@ impl MachineRegistry {
             revision: next_revision(checkpoint.revision, io)?,
             state: crate::model::clone_value(&transition.state, io)?,
         };
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        drop(input);
         Ok((
             next,
             transition,

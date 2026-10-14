@@ -293,8 +293,10 @@ pub fn validate_task_requirements_wasm(
     validate_task_dependencies(
         tasks.len(),
         |index| {
-            let ((name, version), requirements) = tasks[index];
-            (name.as_str(), version.as_str(), requirements)
+            let ((name, version), requirements) = tasks
+                .get(index)
+                .ok_or_else(|| crate::Error::Invalid("task dependency index is invalid".into()))?;
+            Ok((name.as_str(), version.as_str(), *requirements))
         },
         |requirement| {
             Ok(if let Some(value) = requirement.strip_prefix("tool:") {

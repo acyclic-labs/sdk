@@ -39,6 +39,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .await?;
         match decision {
             RebaseDecision::Safe { .. } => {
+                #[cfg(not(target_arch = "wasm32"))]
                 drop(allocation);
                 Ok(())
             }
@@ -346,7 +347,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 let publication = publication
                     .map(|receipt| receipt.value)
                     .map_err(|failure| failure.error)?;
-                if let Some((outcome, allocation)) = self
+                if let Some((outcome, _allocation)) = self
                     .finish_live_retry(
                         &mut state,
                         publication,
@@ -357,7 +358,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     )
                     .await?
                 {
-                    drop(allocation);
+                    #[cfg(not(target_arch = "wasm32"))]
+                    drop(_allocation);
                     return Ok(outcome);
                 }
             }
@@ -390,6 +392,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     .await?;
                 match state.observe_rebase(decision).map_err(FsError::LiveRetry)? {
                     LiveRetryAction::Publish => {
+                        #[cfg(not(target_arch = "wasm32"))]
                         drop(allocation);
                         Ok(None)
                     }

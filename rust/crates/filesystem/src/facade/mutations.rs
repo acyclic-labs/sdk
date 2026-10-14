@@ -15,62 +15,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 items_examined: 1,
                 ..WorkCounters::UNCHARGED
             })?;
-            let mut records = [None; 2];
-            if let Some(paths) = operation.paths() {
-                for (index, path) in paths.into_iter().enumerate() {
-                    if index == 1 && path == paths[0] {
-                        records[1] = records[0];
-                        continue;
-                    }
-                    let observed = crate::kernel::observe_path_async_with_accounting(
-                        &self.volume.fs.inner.objects,
-                        &self.base_root,
-                        path,
-                        self.volume.config,
-                        accounting,
-                        cancellation,
-                        None,
-                        false,
-                    )
-                    .await?;
-                    *records.get_mut(index).ok_or(FsError::InvalidDiff)? = observed.0.lookup.record;
-                    let bytes =
-                        Self::mutation_dependency_bytes(&observed.0.dependencies, accounting)?;
-                    Self::append_mutation_dependencies(
-                        &mut dependencies,
-                        Owned::new(observed.0.dependencies, observed.1, bytes),
-                        accounting,
-                    )?;
-                }
-            } else {
-                let ids = match operation {
-                    Mutation::File { file_id, .. } => [Some(*file_id), None],
-                    Mutation::CloneFileRange {
-                        source_file_id,
-                        destination_file_id,
-                        ..
-                    } => [Some(*source_file_id), Some(*destination_file_id)],
-                    _ => [None, None],
-                };
-                for (index, id) in ids.into_iter().enumerate() {
-                    if index == 1 && id == ids[0] {
-                        records[1] = records[0];
-                    } else if let Some(id) = id {
-                        *records.get_mut(index).ok_or(FsError::InvalidDiff)? =
-                            lookup_file_record_async_with_accounting(
-                                &self.volume.fs.inner.objects,
-                                self.base_root.file_table,
-                                id,
-                                DecodeLimits::for_volume(self.volume.config),
-                                accounting,
-                                cancellation,
-                                None,
-                            )
-                            .await?
-                            .0;
-                    }
-                }
-            }
+            let records = self
+                .mutation_dependency_records(operation, &mut dependencies, accounting, cancellation)
+                .await?;
             for region in
                 super::mutation_regions::exact_mutation_regions(operation, records[0], records[1])
                     .into_iter()
@@ -104,6 +51,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .await;
         crate::kernel::retire_allocation(exact_regions.allocation, region_bytes, accounting)?;
         probe.0.retire_with_accounting(accounting)?;
+        #[cfg(not(target_arch = "wasm32"))]
         drop(probe.1);
         let captured = captured?;
         let bytes = Self::mutation_dependency_bytes(&captured.0, accounting)?;
@@ -113,6 +61,71 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             accounting,
         )?;
         Ok(dependencies)
+    }
+
+    async fn mutation_dependency_records(
+        &self,
+        operation: &Mutation,
+        dependencies: &mut Owned<Vec<Dependency>>,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<[Option<FileRecord>; 2], FsError> {
+        let mut records = [None; 2];
+        if let Some(paths) = operation.paths() {
+            for (index, path) in paths.into_iter().enumerate() {
+                if index == 1 && path == paths[0] {
+                    records[1] = records[0];
+                    continue;
+                }
+                let observed = crate::kernel::observe_path_async_with_accounting(
+                    &self.volume.fs.inner.objects,
+                    &self.base_root,
+                    path,
+                    self.volume.config,
+                    accounting,
+                    cancellation,
+                    None,
+                    false,
+                )
+                .await?;
+                *records.get_mut(index).ok_or(FsError::InvalidDiff)? = observed.0.lookup.record;
+                let bytes = Self::mutation_dependency_bytes(&observed.0.dependencies, accounting)?;
+                Self::append_mutation_dependencies(
+                    dependencies,
+                    Owned::new(observed.0.dependencies, observed.1, bytes),
+                    accounting,
+                )?;
+            }
+        } else {
+            let ids = match operation {
+                Mutation::File { file_id, .. } => [Some(*file_id), None],
+                Mutation::CloneFileRange {
+                    source_file_id,
+                    destination_file_id,
+                    ..
+                } => [Some(*source_file_id), Some(*destination_file_id)],
+                _ => [None, None],
+            };
+            for (index, id) in ids.into_iter().enumerate() {
+                if index == 1 && id == ids[0] {
+                    records[1] = records[0];
+                } else if let Some(id) = id {
+                    *records.get_mut(index).ok_or(FsError::InvalidDiff)? =
+                        lookup_file_record_async_with_accounting(
+                            &self.volume.fs.inner.objects,
+                            self.base_root.file_table,
+                            id,
+                            DecodeLimits::for_volume(self.volume.config),
+                            accounting,
+                            cancellation,
+                            None,
+                        )
+                        .await?
+                        .0;
+                }
+            }
+        }
+        Ok(records)
     }
 
     pub(super) fn mutation_region_name_bytes(region: &DependencyRegion) -> u64 {
@@ -241,16 +254,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        cancellation.check().map_err(|_| OperationFailure::before_work(FsError::Cancelled(CancellationError)))?;
+        cancellation
+            .check()
+            .map_err(|_| OperationFailure::before_work(FsError::Cancelled(CancellationError)))?;
         if self.mode.access != AccessMode::ReadWrite
-            || !matches!(self.mode.mutations, MutationMode::PrivateOverlay | MutationMode::DirectLive)
+            || !matches!(
+                self.mode.mutations,
+                MutationMode::PrivateOverlay | MutationMode::DirectLive
+            )
         {
             return Err(OperationFailure::before_work(FsError::MutationNotAllowed));
         }
         let maximum = usize::try_from(self.volume.config.limits.maximum_mutations_per_batch)
             .unwrap_or(usize::MAX);
         if operations.capacity() > maximum {
-            return Err(OperationFailure::before_work(FsError::ExcessiveMutationCapacity));
+            return Err(OperationFailure::before_work(
+                FsError::ExcessiveMutationCapacity,
+            ));
         }
         crate::heap_future::in_heap_measured(
             move |budget| async move {
@@ -392,8 +412,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { .. } => self
                 .root
-                .hold.as_ref()
-                .map(|_| crate::collection::clone_generation_root(&working.0, accounting, Some(producer)))
+                .hold
+                .as_ref()
+                .map(|_| {
+                    crate::collection::clone_generation_root(&working.0, accounting, Some(producer))
+                })
                 .transpose()?,
             _ => {
                 let (allocations, work, budget, token) = accounting
@@ -401,8 +424,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     .ok_or(FsError::PendingMutationAllocationFailed)?;
                 token.check()?;
                 self.root
-                    .hold.as_ref()
-                    .map(|_| crate::collection::clone_generation_root(&working.0, &mut KernelAccounting::borrowed_standalone(allocations, work, budget, token), None))
+                    .hold
+                    .as_ref()
+                    .map(|_| {
+                        crate::collection::clone_generation_root(
+                            &working.0,
+                            &mut KernelAccounting::borrowed_standalone(
+                                allocations,
+                                work,
+                                budget,
+                                token,
+                            ),
+                            None,
+                        )
+                    })
                     .transpose()?
                     .map(|(root, _)| {
                         let control = Self::root_control_claim(&root, Some(producer))?;
@@ -534,9 +569,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .map(crate::foundation::usize_to_u64)
                 .ok_or(WorkError::Overflow)?;
             let captured = Owned::new(value, allocation, bytes);
-            let (probe, allocation) = probe;
+            let (probe, _allocation) = probe;
             probe.retire_with_accounting(accounting)?;
-            drop(allocation);
+            #[cfg(not(target_arch = "wasm32"))]
+            drop(_allocation);
             self.extend_observations_with_accounting(captured, accounting, cancellation)
         }
         .await;
@@ -553,7 +589,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> Result<(), FsError> {
         let before = readonly_standalone_live(accounting);
         let result = async {
-            let (record, allocation) = crate::kernel::lookup_file_record_async_with_accounting(
+            let (record, _allocation) = crate::kernel::lookup_file_record_async_with_accounting(
                 &self.volume.fs.inner.objects,
                 self.base_root.file_table,
                 file_id,
@@ -563,7 +599,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 Some(&self.dependencies.data_custody),
             )
             .await?;
-            drop(allocation);
+            #[cfg(not(target_arch = "wasm32"))]
+            drop(_allocation);
             self.observe_identity_regions_with_accounting(
                 regular_range_regions(record, range.offset, range.length),
                 accounting,

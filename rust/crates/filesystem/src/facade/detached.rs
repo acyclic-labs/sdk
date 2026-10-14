@@ -18,10 +18,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> FsResult<DetachedFile<A, O>> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         let result = async {
-            let (lookup, allocation) = self
+            let (lookup, _allocation) = self
                 .lookup_no_follow_with_accounting(path, &mut accounting, cancellation, true)
                 .await?;
-            drop(allocation);
+            #[cfg(not(target_arch = "wasm32"))]
+            drop(_allocation);
             let record = lookup.record.ok_or(FsError::NotFound)?;
             if record.kind != FileKind::Regular {
                 return Err(FsError::FileRead(FileRangeReadError::NotRegular));
