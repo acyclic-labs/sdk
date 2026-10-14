@@ -65,7 +65,8 @@ pub(super) async fn apply_git_capture<A: AsyncAuthorityStore, O: AsyncObjectStor
             )
             .await?
         {
-            crate::WorkspacePathApply::Applied(generation) => (generation, head.id()),
+            crate::WorkspacePathApply::Applied(generation)
+            | crate::WorkspacePathApply::NoChanges(generation) => (generation, head.id()),
             crate::WorkspacePathApply::AlreadyApplied(generation) => {
                 let parents = generation
                     .parents(WorkBudget::UNBOUNDED, &CancellationToken::new())
@@ -77,7 +78,6 @@ pub(super) async fn apply_git_capture<A: AsyncAuthorityStore, O: AsyncObjectStor
                 };
                 (generation, *initial_generation)
             }
-            crate::WorkspacePathApply::NoChanges(generation) => (generation, head.id()),
             crate::WorkspacePathApply::Conflicted(_)
             | crate::WorkspacePathApply::Stale(_)
             | crate::WorkspacePathApply::Fenced

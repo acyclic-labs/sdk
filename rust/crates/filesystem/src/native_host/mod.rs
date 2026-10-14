@@ -1,10 +1,12 @@
 //! Capability-rooted native filesystem access.
 #![allow(unsafe_code, reason = "isolates native filesystem calls")]
+#[cfg(feature = "local")]
+use crate::NativeWorkReservation;
 use crate::NativeRootIdentity;
 use crate::demand::{DemandError, DemandWork, SourceDemandReadWork};
 use crate::materializer::{
     NativeAllocation, NativeCleanupWrite, NativeMaterializationWork,
-    NativeTreeMaterializationError, NativeWorkReservation,
+    NativeTreeMaterializationError,
 };
 use crate::performance::{WorkBudget, WorkCounters};
 use cap_std::fs::Dir;
@@ -40,7 +42,13 @@ type NativeLeaf = std::ffi::CStr;
 #[cfg(windows)]
 type NativeLeaf = [u16];
 mod record;
-pub(crate) use record::*;
+#[cfg(feature = "local")]
+pub(crate) use record::PreparedMaterializationRecord;
+#[cfg(unix)]
+use record::rename_unix_names_once;
+use record::sync_held_descriptor_once;
+#[cfg(windows)]
+use record::windows_name_packet;
 mod work;
 pub(crate) use work::*;
 mod cwd;

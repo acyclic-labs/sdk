@@ -34,7 +34,10 @@ pub(crate) async fn acquire(
         .check()
         .map_err(|error| OperationFailure::new(error.to_string(), WorkCounters::default()))?;
     let work = NativeMaterializationWork::new(budget, cancellation)
-        .map_err(|(error, work)| OperationFailure::new(error.to_string(), work))?;
+        .map_err(|(error, work)| OperationFailure {
+            error: error.to_string(),
+            work,
+        })?;
     let result = async {
         let read = WorkCounters {
             backend_read_operations: 1,
@@ -208,11 +211,11 @@ where
     ) {
         Ok(watch) => registration.pending_raw_watcher = Some(watch),
         Err(acyclic_fs::NativeWatchError::StartupFailed { cause, watch }) => {
-            registration.pending_raw_watcher = Some(watch);
+            registration.pending_raw_watcher = Some(*watch);
             return Err(native_work_error(cause));
         }
         Err(acyclic_fs::NativeWatchError::SourceStartupFailed { cause, watch }) => {
-            registration.pending_raw_watcher = Some(watch);
+            registration.pending_raw_watcher = Some(*watch);
             return Err(native_watch_error(
                 acyclic_fs::NativeWatchError::SourceStartup(cause),
             ));

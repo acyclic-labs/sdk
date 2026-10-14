@@ -8,7 +8,7 @@ impl WorkspaceName {
     /// Canonicalizes a name under the supplied work limits.
     pub fn new<W: crate::facade::FsWork>(
         name: impl AsRef<str>,
-        work: W,
+        work: &W,
         cancellation: &CancellationToken,
     ) -> W::Output<Self, WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
@@ -93,18 +93,16 @@ impl WorkspaceName {
                 break;
             };
             let end = length + character.len_utf8();
-            if end > output.len() {
-                return Err(WorkspaceNameError::TooLong.into());
-            }
+            let slot = output.get_mut(length..end).ok_or(WorkspaceNameError::TooLong)?;
             let copied = copy_work(character.len_utf8() as u64);
             accounting.admit(copied)?;
-            character.encode_utf8(&mut output[length..end]);
+            character.encode_utf8(slot);
             length = end;
             accounting.record_completed(copied)?;
         }
         drop(normalized);
         accounting.charge(item_work(length as u64))?;
-        let canonical = std::str::from_utf8(&output[..length]).map_err(WorkspaceError::engine)?;
+        let canonical = std::str::from_utf8(output.get(..length).ok_or(WorkspaceNameError::TooLong)?).map_err(WorkspaceError::engine)?;
         if canonical.is_empty() {
             return Err(WorkspaceNameError::Empty.into());
         }
@@ -193,7 +191,7 @@ impl WorkspaceId {
     pub(crate) fn derive<W: crate::facade::FsWork>(
         namespace: [u8; 16],
         name: &WorkspaceName,
-        work: W,
+        work: &W,
         cancellation: &CancellationToken,
     ) -> W::Output<Self, WorkspaceError> {
         let mut accounting = work.accounting(cancellation);

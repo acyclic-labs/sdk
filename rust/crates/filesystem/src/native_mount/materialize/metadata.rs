@@ -186,7 +186,9 @@ pub(super) async fn apply_host_metadata_offloaded(
         }
         #[cfg(windows)]
         {
-            crate::native_host::apply_metadata(target, metadata, work)
+            let result = crate::native_host::apply_metadata(&target, metadata, work);
+            drop(target);
+            result
         }
     })
     .await
@@ -396,7 +398,7 @@ pub(super) fn create_symlink(
 )]
 pub(super) fn create_special(
     host_root: &HostRoot,
-    destination: &Vec<HostPathUnit>,
+    destination: &[HostPathUnit],
     kind: FileKind,
     device: Option<(u32, u32)>,
     _receipt: &mut GenerationReceipt,

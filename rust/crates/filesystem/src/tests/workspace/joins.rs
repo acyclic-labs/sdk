@@ -88,7 +88,7 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
     let witness = value!(plan.commit_witness(
         &joined,
         idempotency_key,
-        WorkBudget::UNBOUNDED,
+        &WorkBudget::UNBOUNDED,
         &CancellationToken::new()
     ))?;
     assert!(unbounded!(main, verify_join_commit(&witness))?);

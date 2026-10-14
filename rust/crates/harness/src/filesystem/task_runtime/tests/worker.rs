@@ -12,7 +12,7 @@ async fn native_stock_worker_stale_fence_and_expired_admission_precede_provider_
             acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction {
                 cause,
-                work: Box::new(work),
+                work: work,
             })?;
         let io = PreparationIo::from_native_work(&work)?;
         let runtime = fixture.runtime(Some(&io)).await?;

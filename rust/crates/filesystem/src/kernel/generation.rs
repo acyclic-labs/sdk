@@ -84,7 +84,7 @@ pub fn encode_generation_root<E: From<CanonicalDecodeError>>(
     encoder.fixed(&root.volume_id.into_bytes());
     encoder.fixed(&root.root_file_id.into_bytes());
     encoder.fixed(root.file_table.digest.as_bytes());
-    encoder.u32(root.parents.len() as u32);
+    encoder.u32(u32::try_from(root.parents.len()).map_err(|_| CanonicalDecodeError::LengthOverflow)?);
     for parent in &root.parents { encoder.fixed(parent.digest().as_bytes()); }
     encoder.u64(root.required_features);
     observe(EncodeWorkStep::Completed(WorkCounters {

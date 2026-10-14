@@ -175,10 +175,18 @@ fn ignore_matches(rule: &GitIgnoreRule, path: &str, is_directory: bool) -> bool 
         }
     };
     if rule.directory_only {
-        path.match_indices('/')
-            .map(|(end, _)| &path[..end])
-            .chain(is_directory.then_some(path))
-            .any(matches)
+        let mut candidate = if is_directory {
+            Some(path)
+        } else {
+            path.rsplit_once('/').map(|(parent, _)| parent)
+        };
+        while let Some(parent) = candidate {
+            if matches(parent) {
+                return true;
+            }
+            candidate = parent.rsplit_once('/').map(|(parent, _)| parent);
+        }
+        false
     } else {
         matches(path)
     }

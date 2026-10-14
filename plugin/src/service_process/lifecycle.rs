@@ -50,7 +50,7 @@ pub(crate) async fn run_service_with_identity(
     let cancellation = acyclic_fs::CancellationToken::new();
     let original_bootstrap_work = acyclic_fs::NativeMaterializationWork::new(
         pi_root_provider::allocation_budget(), &cancellation,
-    ).map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work: Box::new(work) })?;
+    ).map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
     let private_root = data.clone();
     let result = run_locked_service(
         data, identity_override, ready, configured, private_root, &original_bootstrap_work,

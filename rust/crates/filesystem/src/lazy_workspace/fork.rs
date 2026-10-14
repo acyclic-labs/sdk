@@ -146,7 +146,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 source: Arc::clone(&self.source),
                 store: self.store.clone(),
                 #[cfg(not(target_arch = "wasm32"))]
-                allocation: None,
+                _allocation: None,
             },
             snapshot,
         ))

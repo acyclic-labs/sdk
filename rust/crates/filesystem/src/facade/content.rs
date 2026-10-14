@@ -73,7 +73,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 accounting,
             )?;
             let lowered = async {
-                let (file, change) = input.value.take().expect("content input is consumed once");
+                let (file, change) = input.value.take().ok_or(FsError::InvalidDiff)?;
                 let file_id = self
                     .content_file_id(&file, accounting, cancellation)
                     .await?;
@@ -210,7 +210,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
                         cancellation,
                     )
                     .await;
-                    drop(source);
                     drop(bytes);
                     let content = content?;
                     Some(RegularMutation::Write {

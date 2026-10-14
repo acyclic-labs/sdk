@@ -39,25 +39,25 @@ impl<K> Pending<K> {
 }
 
 pub(crate) async fn paginate<S, F>(
-    store: &S, root: ObjectId, bound: Bound<&F::Key>, maximum_values: u32,
+    store: &S, query: (ObjectId, Bound<&F::Key>, u32),
     limits: DecodeLimits, budget: WorkBudget, cancellation: &CancellationToken,
     data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<Receipt<F::Value>, Failure>
 where S: AsyncObjectStore, F: Format {
+    let (root, bound, maximum_values) = query;
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
-    let result = paginate_with_accounting::<S, F>(
-        store, root, bound, maximum_values, limits, &mut accounting, cancellation, data_custody,
-    ).await;
+    let result = paginate_with_accounting::<S, F>(store, (root, bound, maximum_values), limits, &mut accounting, cancellation, data_custody,).await;
     result.map(|(receipt, _)| receipt)
         .map_err(|error| failed(project_failure(error), accounting.spent()))
 }
 
 pub(crate) async fn paginate_with_accounting<S, F>(
-    store: &S, root: ObjectId, bound: Bound<&F::Key>, maximum_values: u32,
+    store: &S, query: (ObjectId, Bound<&F::Key>, u32),
     limits: DecodeLimits, accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken, data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<(Receipt<F::Value>, KernelOwnedAllocation), crate::FsError>
 where S: AsyncObjectStore, F: Format {
+    let (root, bound, maximum_values) = query;
     accounting.check()?;
     let mut machine = Machine::<F>::new_with_accounting(
         root, bound, maximum_values, limits, accounting, data_custody,
@@ -110,7 +110,7 @@ struct Machine<'a, 'accounting, F: Format> {
 impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
     fn new_with_accounting(
         root: ObjectId, bound: Bound<&'a F::Key>,
-        maximum_values: u32, limits: DecodeLimits, mut accounting: &'a mut KernelAccounting<'accounting>,
+        maximum_values: u32, limits: DecodeLimits, accounting: &'a mut KernelAccounting<'accounting>,
         data_custody: Option<&'a super::ProofDataCustody>,
     ) -> Result<Self, Failure> {
         let fail = |error| failed(error, accounting.spent());

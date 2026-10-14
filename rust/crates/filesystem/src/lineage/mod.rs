@@ -46,7 +46,7 @@ fn lineage_shape_is_valid(record: &WorkspaceLineageRecord) -> bool {
             parent_id != record.workspace_id
                 && crate::WorkspaceName::new(
                     parent_name,
-                    WorkBudget::UNBOUNDED,
+                    &WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
                 )
                 .is_ok()
@@ -57,7 +57,7 @@ fn lineage_shape_is_valid(record: &WorkspaceLineageRecord) -> bool {
         && record.revision > 0
         && crate::WorkspaceName::new(
             &record.workspace_name,
-            WorkBudget::UNBOUNDED,
+            &WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )
         .is_ok()
@@ -189,7 +189,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
             crate::obs::in_span(&span, async move {
                 let destination = crate::WorkspaceName::new(
                     destination.as_ref(),
-                    WorkBudget::UNBOUNDED,
+                    &WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
                 )
                 .map_err(|failure| WorkspaceError::from(failure.error))?

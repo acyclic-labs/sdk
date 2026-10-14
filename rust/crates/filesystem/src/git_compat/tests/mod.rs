@@ -59,13 +59,13 @@ pub(super) fn workspace() -> WorkspaceId {
 }
 
 fn workspace_identity(namespace: [u8; 16], name: &str) -> WorkspaceId {
-    let name = WorkspaceName::new(name, WorkBudget::UNBOUNDED, &CancellationToken::new())
+    let name = WorkspaceName::new(name, &WorkBudget::UNBOUNDED, &CancellationToken::new())
         .expect("workspace name")
         .value;
     WorkspaceId::derive(
         namespace,
         &name,
-        WorkBudget::UNBOUNDED,
+        &WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
     )
     .expect("workspace identity")

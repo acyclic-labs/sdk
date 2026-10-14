@@ -160,7 +160,7 @@ impl NativeSession {
                 match acyclic_fs::NativeMaterializationWork::new(binding.budget, &cancellation) {
                     Ok(work) => work,
                     Err((error, work)) => {
-                        return Ok(publication_failure(binding, error.to_string(), work));
+                        return Ok(publication_failure(binding, error.to_string(), *work));
                     }
                 };
             let guard_work = work.clone();
