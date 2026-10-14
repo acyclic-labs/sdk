@@ -344,6 +344,20 @@ pub(super) fn contains_content_grant_with_work<T: Serialize + ?Sized>(
     prefix: &str,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<bool> {
+    if let Some(io) = work.as_deref_mut() {
+        io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
+    }
+    if !grants
+        .0
+        .range::<str, _>((
+            std::ops::Bound::Included(prefix),
+            std::ops::Bound::Unbounded,
+        ))
+        .next()
+        .is_some_and(|grant| grant.starts_with(prefix))
+    {
+        return Ok(false);
+    }
     let digest = crate::executor::json::canonical_json_digest(
         value,
         acyclic_stream::MAX_RECORD_BYTES as u64,
