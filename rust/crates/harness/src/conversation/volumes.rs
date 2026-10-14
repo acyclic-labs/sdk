@@ -238,22 +238,15 @@ impl VolumeRef {
     }
 }
 
-fn label_bytes(prefix: &str, digest: [u8; 32]) -> Result<([u8; 80], usize)> {
+fn label_bytes(prefix: &str, digest: [u8; 32]) -> Option<([u8; 80], usize)> {
     let hash = blake3::Hash::from_bytes(digest).to_hex();
     let mut label = [0_u8; 80];
-    let length = prefix
-        .len()
-        .checked_add(hash.len())
-        .ok_or_else(|| Error::Invalid("identity label is too long".into()))?;
-    let text = label
-        .get_mut(..length)
-        .ok_or_else(|| Error::Invalid("identity label is too long".into()))?;
-    let (prefix_text, digest_text) = text
-        .split_at_mut_checked(prefix.len())
-        .ok_or_else(|| Error::Invalid("identity label is too long".into()))?;
-    prefix_text.copy_from_slice(prefix.as_bytes());
-    digest_text.copy_from_slice(hash.as_bytes());
-    Ok((label, length))
+    let length = prefix.len().checked_add(hash.len())?;
+    let target = label.get_mut(..length)?;
+    let (prefix_bytes, hash_bytes) = target.split_at_mut(prefix.len());
+    prefix_bytes.copy_from_slice(prefix.as_bytes());
+    hash_bytes.copy_from_slice(hash.as_bytes());
+    Some((label, length))
 }
 
 pub(crate) fn content_label(
@@ -261,11 +254,18 @@ pub(crate) fn content_label(
     digest: [u8; 32],
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<String> {
-    let (label, length) = label_bytes(prefix, digest)?;
+    let invalid = || {
+        conversation_error(
+            work,
+            crate::wire::ErrorCode::Invalid,
+            "invalid content identity label",
+        )
+    };
+    let (label, length) = label_bytes(prefix, digest).ok_or_else(invalid)?;
     let text = label
         .get(..length)
         .and_then(|bytes| std::str::from_utf8(bytes).ok())
-        .ok_or_else(|| Error::Invalid("invalid identity label".into()))?;
+        .ok_or_else(invalid)?;
     match work.as_deref_mut() {
         Some(io) => io.clone_text(text),
         None => Ok(text.to_owned()),
@@ -277,14 +277,13 @@ pub(crate) fn contains_content_label(
     prefix: &str,
     digest: [u8; 32],
 ) -> bool {
-    label_bytes(prefix, digest)
-        .ok()
-        .is_some_and(|(label, length)| {
-            label
-                .get(..length)
-                .and_then(|bytes| std::str::from_utf8(bytes).ok())
-                .is_some_and(|text| grants.contains(text))
-        })
+    let Some((label, length)) = label_bytes(prefix, digest) else {
+        return false;
+    };
+    label
+        .get(..length)
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .is_some_and(|label| grants.contains(label))
 }
 
 /// Operations that can be granted independently on a volume.

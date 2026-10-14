@@ -66,16 +66,18 @@ impl ExecutionReplay {
                 || record.sequence != self.after + index as u64 + 1
                 || record.idempotency_key.is_empty()
                 || self.keys.binary_search(&key).is_ok()
-                || keys[..index].contains(&key)
+                || keys.iter().take(index).any(|prior| prior == &key)
             {
                 return Err(Error::Conflict(
                     "execution journal identity or sequence is invalid".into(),
                 ));
             }
-            keys[index] = key;
+            *keys
+                .get_mut(index)
+                .ok_or_else(|| Error::Storage("execution replay page exceeds bound".into()))? = key;
         }
         let previous_len = self.keys.len();
-        for key in &keys[..page.len()] {
+        for key in keys.iter().take(page.len()) {
             if let Err(error) = stock_vec_push(&mut self.keys, *key, io) {
                 self.keys.truncate(previous_len);
                 return Err(error);
@@ -135,9 +137,10 @@ pub(crate) async fn replay_execution<'a>(
         }
         #[cfg(feature = "filesystem")]
         if selected.len() == selected_before
-            && let Some(io) = io {
-                io.release(held.saturating_sub(key_growth))?;
-            }
+            && let Some(io) = io
+        {
+            io.release(held.saturating_sub(key_growth))?;
+        }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if selected.len() != selected_before
             && let Some(io) = io

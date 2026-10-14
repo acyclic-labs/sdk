@@ -183,12 +183,7 @@ impl ConcurrentServiceControl {
                                 pi_root_provider::allocation_budget(),
                                 &cancellation,
                             )
-                            .map_err(|(cause, work)| {
-                                Error::NativeConstruction {
-                                    cause,
-                                    work,
-                                }
-                            })?,
+                            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?,
                         );
                     }
                     let work =

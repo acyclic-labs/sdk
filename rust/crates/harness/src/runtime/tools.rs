@@ -203,6 +203,7 @@ pub(crate) fn tool_approval_binding(
     invocation: &ToolInvocation,
     work: Option<&NativeWork>,
 ) -> Result<(OperationId, [u8; 32])> {
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let _ = work;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let io = work
@@ -459,9 +460,12 @@ impl ToolContext {
         context.verify_original_execution_owner(work).await?;
         let observed = host
             .observe_admission_with_native_work(
-                context
-                    .durable_task_id()
-                    .expect("validated durable tool context"),
+                context.durable_task_id().ok_or_else(|| {
+                    native_context::boundary(
+                        crate::wire::ErrorCode::Unauthorized,
+                        "durable tool context has no task identity",
+                    )
+                })?,
                 work,
             )?
             .await?;

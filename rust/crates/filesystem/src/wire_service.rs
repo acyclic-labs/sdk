@@ -1794,8 +1794,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
                     &CancellationToken::new(),
                 )
                 .await
-                .map_err(|failure| status(&failure.error))?
-                .value;
+                .map_err(|failure| status(&failure.error))?;
         }
         Ok(Response::new(wire::RetainGenerationResponse {
             generation: Some(generation_ref(&generation)),

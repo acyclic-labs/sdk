@@ -41,7 +41,7 @@ pub(super) fn charge(used: &mut u64, bytes: u64, maximum: u64) -> Result<()> {
     Ok(())
 }
 fn right(effect: EffectId, bit: u8) -> bool {
-    effect.into_bytes()[usize::from(bit / 8)] & (0x80 >> (bit % 8)) != 0
+    u128::from_be_bytes(effect.into_bytes()).rotate_left(u32::from(bit)) >> 127 != 0
 }
 
 pub(super) struct Tree<'a, P> {
@@ -213,16 +213,12 @@ impl<P: StreamProvider> Tree<'_, P> {
         &self,
         effect: EffectId,
         head: (u64, u64),
-        observed: (
-            Vec<(Digest, u8, Digest)>,
-            Option<(Digest, EffectId, (u64, u64))>,
-        ),
+        mut stream: Vec<(Digest, u8, Digest)>,
+        leaf: Option<(Digest, EffectId, (u64, u64))>,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Digest> {
-        let held =
-            observed.0.capacity() as u64 * std::mem::size_of::<(Digest, u8, Digest)>() as u64;
+        let held = stream.capacity() as u64 * std::mem::size_of::<(Digest, u8, Digest)>() as u64;
         let mut quota = CodecQuota::from_retained(work, held);
-        let (mut stream, leaf) = observed;
         let mut replacement = self
             .stage_node(Node::Leaf(effect, head), quota.work())
             .await?;
@@ -312,8 +308,14 @@ pub(super) async fn publication<P: StreamProvider>(
         quota.transfer();
         quota.adopt(retained)?;
         root = Some(
-            tree.update(effect, (event.revision, position), observed, quota.work())
-                .await?,
+            tree.update(
+                effect,
+                (event.revision, position),
+                observed.0,
+                observed.1,
+                quota.work(),
+            )
+            .await?,
         );
         Some((effect, position))
     } else {
@@ -335,7 +337,12 @@ pub(super) async fn publication<P: StreamProvider>(
                 Some(&effect),
                 quota.work(),
             )?;
-            let bytes = publication.indexes[0].2.clone();
+            let bytes = publication
+                .indexes
+                .first()
+                .ok_or_else(|| Error::Storage("effect publication index is missing".into()))?
+                .2
+                .clone();
             publication.add_index(stream, position, Ok((bytes, 0)), quota.work())?;
         }
         if let Some(io) = quota.work().as_deref_mut() {

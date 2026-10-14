@@ -10,7 +10,11 @@ impl LocalCoreStateStore {
     ) -> Result<bool, LocalCoreStateStoreError> {
         self.materialization(work)
             .transaction(move |root| {
-                let work = root._allocation.as_ref().expect("bound native work").work();
+                let work = root
+                    ._allocation
+                    .as_ref()
+                    .ok_or(crate::NativeTreeMaterializationError::MissingCustody)?
+                    .work();
                 root.with_log(|log| {
                     let current = log
                         .get::<LazyWorkspaceState>(&root, id, None, None)?
@@ -34,8 +38,7 @@ impl LocalCoreStateStore {
                         {
                             return Ok(false);
                         }
-                        if let Some(prior) = prior_origin {
-                            let current = current.as_ref().expect("retained origin has a binding");
+                        if let (Some(current), Some(prior)) = (&current, prior_origin) {
                             if current.schema_version != replacement.schema_version
                                 || current.workspace_id != id
                                 || current.parent_workspace_id != replacement.parent_workspace_id

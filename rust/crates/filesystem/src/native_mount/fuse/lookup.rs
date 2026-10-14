@@ -48,6 +48,10 @@ pub(super) fn resolve_node(
 }
 
 impl FuseProjection {
+    #[allow(
+        clippy::mutable_key_type,
+        reason = "FuseOwned hashes and compares only its immutable path, never its accounting owner."
+    )]
     pub(super) fn confirm_names(
         &self,
         path: &MountPath,
@@ -80,6 +84,10 @@ impl FuseProjection {
         Ok(())
     }
 
+    #[allow(
+        clippy::mutable_key_type,
+        reason = "FuseOwned hashes and compares only its immutable path, never its accounting owner."
+    )]
     pub(super) fn lookup_entry(
         &self,
         parent: u64,
@@ -175,6 +183,10 @@ impl FuseProjection {
         self.core.state()?.apply(source, inode, &resolved, work)
     }
 
+    #[allow(
+        clippy::mutable_key_type,
+        reason = "FuseOwned hashes and compares only its immutable path, never its accounting owner."
+    )]
     pub(super) fn create_node(
         &self,
         parent: u64,

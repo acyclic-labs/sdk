@@ -93,7 +93,7 @@ where
         &self,
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<((Arc<dyn MountOpenFile>, u64), Option<MountLookup>), MountSourceError> {
+    ) -> Result<(crate::native_mount::MountOpenClaim, Option<MountLookup>), MountSourceError> {
         let (text, mut allocation) = self.path(path, work)?;
         let owner = ViewGate::callback_owner()?;
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
@@ -124,7 +124,9 @@ where
                 };
                 return self
                     .bind_open_file(file, Some(lookup.node.file_id), generation, work)
-                    .map(|file| (file, None));
+                    .map(|(file, bytes)| {
+                        (crate::native_mount::MountOpenClaim { file, bytes }, None)
+                    });
             }
             Resolution::Unauthored(lookup, allocation) => (lookup, allocation),
         };
@@ -134,7 +136,7 @@ where
         if let Some(file) = self.detached_by_id(id)? {
             return self
                 .bind_open_file((file, 0), Some(id), generation, work)
-                .map(|file| (file, None));
+                .map(|(file, bytes)| (crate::native_mount::MountOpenClaim { file, bytes }, None));
         }
         if let LazyLookup::Source { node, source } = lookup {
             if node.kind != SourceNodeKind::RegularFile {
@@ -175,7 +177,7 @@ where
                 .or_default()
                 .push(Arc::downgrade(&file));
             return Ok((
-                (file, 0),
+                crate::native_mount::MountOpenClaim { file, bytes: 0 },
                 Some(mount_lookup(&LazyLookup::Source { node, source }, id)),
             ));
         }
@@ -188,7 +190,7 @@ where
             generation,
             work,
         )
-        .map(|file| (file, None))
+        .map(|(file, bytes)| (crate::native_mount::MountOpenClaim { file, bytes }, None))
     }
 
     pub(super) fn bind_open_file(

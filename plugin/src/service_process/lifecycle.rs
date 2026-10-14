@@ -49,12 +49,20 @@ pub(crate) async fn run_service_with_identity(
     let configured = crate::service::ServiceResources::configure(&data).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let original_bootstrap_work = acyclic_fs::NativeMaterializationWork::new(
-        pi_root_provider::allocation_budget(), &cancellation,
-    ).map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
+        pi_root_provider::allocation_budget(),
+        &cancellation,
+    )
+    .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
     let private_root = data.clone();
     let result = run_locked_service(
-        data, identity_override, ready, configured, private_root, &original_bootstrap_work,
-    ).await;
+        data,
+        identity_override,
+        ready,
+        configured,
+        private_root,
+        &original_bootstrap_work,
+    )
+    .await;
     drop(lock);
     result
 }
@@ -67,7 +75,13 @@ async fn run_locked_service(
     private_root: PathBuf,
     original_bootstrap_work: &acyclic_fs::NativeMaterializationWork,
 ) -> acyclic_harness::Result<SessionCloseState> {
-    let mut service = ConcurrentServiceControl::open(data.clone(), configured, private_root, original_bootstrap_work).await?;
+    let mut service = ConcurrentServiceControl::open(
+        data.clone(),
+        configured,
+        private_root,
+        original_bootstrap_work,
+    )
+    .await?;
     if let Some(identity) = identity_override {
         service.resources.binary_identity = identity;
     }
@@ -113,7 +127,8 @@ async fn run_locked_service(
     };
     drop(stops);
     let result = service_cleanup_outcome(
-        shutdown_service_endpoint(endpoint, control).await, service_result,
+        shutdown_service_endpoint(endpoint, control).await,
+        service_result,
     );
     if let Some(drain_id) = requested_drain {
         let completion = write_service_drain_completion(&data, &instance_id, &drain_id, &result);

@@ -147,7 +147,13 @@ impl EffectRegistry {
             .await;
         match result {
             Ok(attestation) => {
-                let io = work.as_deref_mut().expect("original observer");
+                let Some(io) = work.as_deref_mut() else {
+                    drop(attestation);
+                    return Err(Error::NativeWork {
+                        cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
+                        custody: Some(custody),
+                    });
+                };
                 io.absorb_native_custody(custody)?;
                 io.release_owned(provider_bytes)?;
                 Ok(attestation)
@@ -179,14 +185,14 @@ impl EffectRegistry {
             if work.is_some() {
                 let mut content = crate::wire_codec::CodecQuota::new(work, 0)?;
                 let (bytes, claim) = crate::store::history::read_content_with_work(
-                    content.work().as_deref_mut().expect("observer"),
+                    content.observer()?,
                     resolver.as_ref(),
                     result,
                 )
                 .await?;
                 content.adopt(claim)?;
                 let (schema_bytes, claim) = crate::store::history::read_content_with_work(
-                    content.work().as_deref_mut().expect("observer"),
+                    content.observer()?,
                     resolver.as_ref(),
                     &effect.result_schema,
                 )

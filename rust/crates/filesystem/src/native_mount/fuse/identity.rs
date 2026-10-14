@@ -168,6 +168,10 @@ impl ProjectionState {
         Ok(())
     }
 
+    #[allow(
+        clippy::mutable_key_type,
+        reason = "FuseOwned hashes and compares only its immutable path, never its accounting owner."
+    )]
     pub(super) fn rename_prefix(
         &mut self,
         source: &MountPath,
@@ -199,8 +203,10 @@ impl ProjectionState {
         for (inode, index, path) in replacements.drain(..) {
             self.by_inode
                 .get_mut(&inode)
-                .expect("planned inode remains locked")
-                .bindings[index]
+                .ok_or(libc::EIO)?
+                .bindings
+                .get_mut(index)
+                .ok_or(libc::EIO)?
                 .path = path;
         }
         self.inode_by_path = paths;
@@ -209,6 +215,10 @@ impl ProjectionState {
 }
 
 impl ProjectionState {
+    #[allow(
+        clippy::mutable_key_type,
+        reason = "FuseOwned hashes and compares only its immutable path, never its accounting owner."
+    )]
     pub(super) fn forget_unbound_names(
         &mut self,
         source: &dyn MountFilesystem,
@@ -303,10 +313,7 @@ impl ProjectionState {
             if previous != inode {
                 self.unbind(previous, path, work)?;
             }
-            *self
-                .inode_by_path
-                .get_mut(path)
-                .expect("existing path remains locked") = inode;
+            *self.inode_by_path.get_mut(path).ok_or(libc::EIO)? = inode;
             return Ok(());
         }
         let mut key = fuse_clone_path(path, work)?;
@@ -347,10 +354,7 @@ impl ProjectionState {
             work.record_admitted(Copy.delta(copied))?;
         }
         if entry.bindings.is_empty() && entry.lookup_references == 0 && entry.open_handles == 0 {
-            let entry = self
-                .by_inode
-                .remove(&inode)
-                .expect("matched inode remains locked");
+            let entry = self.by_inode.remove(&inode).ok_or(libc::EIO)?;
             self.forget_file(entry.lookup.node.file_id, inode);
         }
         Ok(())

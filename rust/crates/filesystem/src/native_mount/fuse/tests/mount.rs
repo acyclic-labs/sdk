@@ -331,7 +331,7 @@ impl MountFilesystem for GatedSource {
         node_unchanged_since(file_id: FileId, stamp: ViewStamp) -> bool;
         unchanged_since(path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp) -> bool;
         listing_unchanged_since(path: &MountPath, stamp: ViewStamp) -> bool;
-        observe_view(observer: Weak<dyn ViewObserver>);
+        observe_view(observer: Weak<dyn ViewObserver>) -> Result<(), MountSourceError>;
         observe_view_with_meter(observer: Weak<dyn ViewObserver>, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
         fence_changes_with_meter(work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
         acquire_binding_lease_with_meter(epoch: Option<u64>, work: &crate::NativeMaterializationWork) -> Result<Box<dyn Send>, MountSourceError>;
@@ -362,7 +362,7 @@ impl MountFilesystem for GatedSource {
         set_attributes(path: &MountPath, metadata: FileMetadata, logical_bytes: Option<u64>, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
         flush(work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
         open_file_with_meter(path: &MountPath, work: &crate::NativeMaterializationWork) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
-        open_file_with_lookup_with_meter(path: &MountPath, work: &crate::NativeMaterializationWork) -> Result<((Arc<dyn MountOpenFile>, u64), MountLookup), MountSourceError>;
+        open_file_with_lookup_with_meter(path: &MountPath, work: &crate::NativeMaterializationWork) -> Result<(crate::native_mount::MountOpenClaim, MountLookup), MountSourceError>;
         open_created_with_meter(path: &MountPath, created: &MountLookup, work: &crate::NativeMaterializationWork) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
         detach_file_with_meter(path: &MountPath, work: &crate::NativeMaterializationWork) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
         create_file(path: &MountPath, metadata: FileMetadata, stamp: Option<ViewStamp>, work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;

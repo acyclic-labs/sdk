@@ -14,22 +14,13 @@ pub trait SchedulerPayloadStore: acyclic_stream::ProviderPlatform {
 
 /// Code-first registry for exact durable reducer implementations.
 #[derive(Default)]
-pub struct ReducerRegistry(
-    Vec<(
-        String,
-        String,
-        [u8; 32],
-        fn(&[(String, serde_json::Value)]) -> Result<crate::Outcome<serde_json::Value>>,
-    )>,
-);
+pub struct ReducerRegistry(Vec<(String, String, [u8; 32], Reducer)>);
+
+type Reducer = fn(&[(String, serde_json::Value)]) -> Result<crate::Outcome<serde_json::Value>>;
 
 impl ReducerRegistry {
     /// Registers one exact reducer without ambiguous replacement.
-    pub fn register(
-        &mut self,
-        entrypoint: EntrypointRef,
-        reducer: fn(&[(String, serde_json::Value)]) -> Result<crate::Outcome<serde_json::Value>>,
-    ) -> Result<()> {
+    pub fn register(&mut self, entrypoint: EntrypointRef, reducer: Reducer) -> Result<()> {
         crate::executor::compile_json_schema(
             &entrypoint.result_schema,
             "reducer result",
@@ -47,11 +38,7 @@ impl ReducerRegistry {
         Ok(())
     }
 
-    pub(super) fn get(
-        &self,
-        entrypoint: &EntrypointRef,
-    ) -> Option<fn(&[(String, serde_json::Value)]) -> Result<crate::Outcome<serde_json::Value>>>
-    {
+    pub(super) fn get(&self, entrypoint: &EntrypointRef) -> Option<Reducer> {
         self.0
             .iter()
             .find(|(name, version, digest, _)| {

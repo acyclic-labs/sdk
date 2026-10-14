@@ -69,7 +69,7 @@ impl<F: Format> OwnedPage<F> {
                 }
                 let (allocations, work, budget, _) = accounting
                     .standalone_parts()
-                    .ok_or(crate::FsError::HandleAllocationFailed)?;
+                    .ok_or(crate::ObjectStoreError::Corrupt)?;
                 allocations
                     .claim_bytes(logical_bytes, u64::from(logical_bytes != 0), work, budget)
                     .map_err(allocation_error)?;

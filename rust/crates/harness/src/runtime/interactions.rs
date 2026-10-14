@@ -53,12 +53,13 @@ impl TaskContext {
             });
         }
         if let Interaction::Approval { prompt, .. } = &paid.0
-            && paid.1.bytes() < prompt.capacity() as u64 {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Conflict,
-                    reason: "approval request does not retain its original prompt",
-                });
-            }
+            && paid.1.bytes() < prompt.capacity() as u64
+        {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Conflict,
+                reason: "approval request does not retain its original prompt",
+            });
+        }
         let router = command_router.or_else(|| {
             if self.durable_task.is_some() {
                 self.owned_interactions
@@ -135,13 +136,24 @@ impl TaskContext {
         }
         let (value, custody) = future.await?;
         let paid = (value, custody);
-        if !paid.1.work().shares_ledger(work) {
+        Self::validate_native_interaction_outcome(&paid.0, &paid.1, work)?;
+        work.remaining()?;
+        Ok((paid.0, paid.1))
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn validate_native_interaction_outcome(
+        value: &InteractionOutcome,
+        custody: &acyclic_fs::NativeAllocation,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        if !custody.work().shares_ledger(work) {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Conflict,
                 reason: "interaction outcome belongs to another original ledger",
             });
         }
-        if let InteractionOutcome::Answered { answer } = &paid.0 {
+        if let InteractionOutcome::Answered { answer } = value {
             let owned = answer.logical_owned_bytes().map_err(|error| {
                 if error.is_native_failure() {
                     error
@@ -158,15 +170,14 @@ impl TaskContext {
                     code: crate::wire::ErrorCode::Invalid,
                     reason: "interaction answer ownership overflows",
                 })?;
-            if paid.1.bytes() < bytes {
+            if custody.bytes() < bytes {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Conflict,
                     reason: "interaction answer does not retain its original metadata",
                 });
             }
         }
-        work.remaining()?;
-        Ok((paid.0, paid.1))
+        Ok(())
     }
 
     /// Sends a donor-authorized parcel under the retained owner fence and route.
@@ -192,18 +203,27 @@ impl TaskContext {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let original = work.as_deref().and_then(|io| io.original_native_work())
-            .map(crate::executor::PreparationIo::from_native_work).transpose()?;
+        let original = work
+            .as_deref()
+            .and_then(|io| io.original_native_work())
+            .map(crate::executor::PreparationIo::from_native_work)
+            .transpose()?;
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let original = None::<crate::conversation::ContentIo>;
         let io = original.as_ref();
         if work.is_some() && io.is_none() {
-            return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Unsupported,
-                "parcel read requires an original native observer"));
+            return Err(crate::scheduler::diagnostic(
+                work,
+                crate::wire::ErrorCode::Unsupported,
+                "parcel read requires an original native observer",
+            ));
         }
         let mailbox = self.owned_mailbox.as_ref().ok_or_else(|| {
-            crate::conversation::content_error(io, crate::wire::ErrorCode::Unauthorized,
-                "parcel read requires a retained mailbox owner")
+            crate::conversation::content_error(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "parcel read requires a retained mailbox owner",
+            )
         })?;
         #[cfg(feature = "filesystem")]
         self.owned_task_binding(io)?;
@@ -223,6 +243,4 @@ impl TaskContext {
         mailbox.validate_scope(&self.scope, None)?;
         mailbox.inbox(after, limit).await
     }
-
-
 }

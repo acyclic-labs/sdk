@@ -32,7 +32,7 @@ impl RemoteTool {
         }
         let fields = value
             .as_object_mut()
-            .ok_or_else(|| Error::Invalid("MCP tool result is not an object".into()))?;
+            .ok_or_else(|| Error::Invalid("MCP tool result must be an object".into()))?;
         fields.retain(|key, value| {
             matches!(
                 key.as_str(),

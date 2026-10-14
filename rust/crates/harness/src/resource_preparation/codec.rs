@@ -50,17 +50,15 @@ impl ResourcePreparationRequest {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<(Self, u64)> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(original) = work.as_deref().and_then(|io| io.original_native_work()) {
+        if let Some(observer) = work.as_deref_mut()
+            && let Some(original) = observer.original_native_work()
+        {
             let io = crate::filesystem::PreparationIo::from_native_work(original)?;
             let (request, custody) = crate::filesystem::native_decoded(
                 io.value_decode_preparation::<Self>(value, Invalid)?,
             )?;
             let owned = custody.bytes();
-            if let Err(error) = work
-                .as_deref_mut()
-                .expect("original observer")
-                .absorb_native_custody(custody)
-            {
+            if let Err(error) = observer.absorb_native_custody(custody) {
                 drop(request);
                 return Err(error);
             }

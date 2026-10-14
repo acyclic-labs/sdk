@@ -29,10 +29,10 @@ pub struct CaptureProducer {
 impl Drop for CaptureProducer {
     fn drop(&mut self) {
         let mut gate = self.gate.lock().unwrap_or_else(PoisonError::into_inner);
-        gate.producers = gate
-            .producers
-            .checked_sub(1)
-            .expect("accepted physical source operation");
+        gate.producers = {
+            assert!(gate.producers > 0, "accepted physical source operation");
+            gate.producers - 1
+        };
         if gate.producers == 0 {
             self.quiesced.notify_all();
         }
@@ -156,11 +156,10 @@ impl<A, O> CheckoutMountSource<A, O> {
         if let Some(wait) = wait {
             wait.check().map_err(|_| MountSourceError::Cancelled)?;
         }
-        let prepared = match wait {
-            Some(wait) => self.cancellation.prepare_cancel_with_cleanup_wait(wait),
-            None => self.cancellation.prepare_cancel_accepted_cleanup(),
-        }
-        .map_err(MountSourceError::NativeWork)?;
+        let prepared = self
+            .cancellation
+            .prepare_cancel_cleanup(wait)
+            .map_err(MountSourceError::NativeWork)?;
         self.capture_gate
             .lock()
             .unwrap_or_else(PoisonError::into_inner)

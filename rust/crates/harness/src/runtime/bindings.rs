@@ -165,18 +165,11 @@ impl Bindings {
         }
     }
 
-    /// Validates the immutable composition under caller IO limits.
-    pub fn build(
-        self,
+    fn validate_configuration(
+        &self,
         startup: Option<&crate::conversation::ContentIo>,
-    ) -> Result<Arc<AgentHarness>> {
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        if startup.is_some() {
-            return Err(Error::Unsupported(
-                "native startup is unavailable on this platform".into(),
-            ));
-        }
-        let native = task_original_work(startup)?;
+        native: Option<&NativeWork>,
+    ) -> Result<()> {
         for (invalid, code, reason) in [
             (
                 self.fork_preparer.is_some()
@@ -208,28 +201,14 @@ impl Bindings {
         }
         crate::model::charge_items(startup, 1)?;
         crate::executor::with_history_io(startup, |work| self.scope.run_limits().validate(work))?;
-        let policy_identity = self
-            .policy
-            .as_ref()
-            .filter(|_| native.is_none())
-            .map(|policy| policy.identity());
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let mut policy_identity = policy_identity;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let (Some(work), Some(policy)) = (native, &self.policy) {
-            let (identity, custody) = policy.identity_with_native_work(work)?;
-            check_policy_metadata(&identity, &custody, work)?;
-            validate_policy_identity(&identity, startup)?;
-            startup
-                .expect("native startup observer")
-                .absorb_native_custody(custody)?;
-            policy_identity = Some(identity);
-        }
-        if native.is_none()
-            && let Some(identity) = &policy_identity
-        {
-            validate_policy_identity(identity, startup)?;
-        }
+        Ok(())
+    }
+
+    fn validate_task_bindings(
+        &self,
+        startup: Option<&crate::conversation::ContentIo>,
+        native: Option<&NativeWork>,
+    ) -> Result<()> {
         let durable_ready = self.durable_host.is_some()
             || self.execution.is_some()
             || (self.state.is_some() && self.spawner.is_some());
@@ -271,14 +250,72 @@ impl Bindings {
         }
         super::dependencies::validate_task_dependencies(
             self.tasks.0.len(),
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "Dependency traversal supplies indices bounded by this registry's count."
+            )]
             |index| {
                 let definition = &self.tasks.0[index];
                 let identity = definition.identity();
                 (&identity.name, &identity.version, definition.requirements())
             },
-            |requirement| super::dependencies::requirement_available(&self, requirement, startup),
+            |requirement| super::dependencies::requirement_available(self, requirement, startup),
             startup,
         )?;
+        Ok(())
+    }
+
+    fn validated_policy_identity(
+        &self,
+        startup: Option<&crate::conversation::ContentIo>,
+        native: Option<&NativeWork>,
+    ) -> Result<Option<ComponentIdentity>> {
+        let policy_identity = self
+            .policy
+            .as_ref()
+            .filter(|_| native.is_none())
+            .map(|policy| policy.identity());
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let policy_identity = if let (Some(work), Some(policy)) = (native, &self.policy) {
+            let (identity, custody) = policy.identity_with_native_work(work)?;
+            check_policy_metadata(&identity, &custody, work)?;
+            validate_policy_identity(&identity, startup)?;
+            startup
+                .ok_or_else(|| {
+                    crate::conversation::content_error(
+                        startup,
+                        crate::wire::ErrorCode::Invalid,
+                        "native startup observer is missing",
+                    )
+                })?
+                .absorb_native_custody(custody)?;
+            Some(identity)
+        } else {
+            policy_identity
+        };
+        if native.is_none()
+            && let Some(identity) = &policy_identity
+        {
+            validate_policy_identity(identity, startup)?;
+        }
+        Ok(policy_identity)
+    }
+
+    /// Validates the immutable composition under caller IO limits.
+    pub fn build(
+        self,
+        startup: Option<&crate::conversation::ContentIo>,
+    ) -> Result<Arc<AgentHarness>> {
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        if startup.is_some() {
+            return Err(Error::Unsupported(
+                "native startup is unavailable on this platform".into(),
+            ));
+        }
+        let native = task_original_work(startup)?;
+        self.validate_configuration(startup, native)?;
+        let policy_identity = self.validated_policy_identity(startup, native)?;
+        self.validate_task_bindings(startup, native)?;
         let state = self
             .state
             .or_else(|| self.execution.as_ref().map(|route| route.state()))
@@ -338,9 +375,9 @@ impl Bindings {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_configuration_custody: None,
         };
+        runtime.assert_durable_policy_bindings(native)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut runtime = runtime;
-        runtime.assert_durable_policy_bindings(native)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = startup {
             io.retain_owned(std::mem::size_of::<AgentHarness>() as u64)?;

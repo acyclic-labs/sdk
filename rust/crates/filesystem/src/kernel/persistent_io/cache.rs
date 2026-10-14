@@ -80,7 +80,7 @@ async fn read_cold_object<S: AsyncObjectStore>(
     }
     let (allocations, work, budget, _) = accounting
         .standalone_parts()
-        .ok_or(crate::FsError::HandleAllocationFailed)?;
+        .ok_or(crate::ObjectStoreError::Corrupt)?;
     let prospective = *work;
     let mut remaining = prospective.remaining(budget)?;
     remaining.peak_allocation_bytes = budget
@@ -151,6 +151,10 @@ async fn read_cold_object<S: AsyncObjectStore>(
     Ok((receipt.value, retained))
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "This state transition keeps admission, effects and resource retirement in one frame."
+)]
 pub(crate) fn admit_decoded_with_accounting<S: AsyncObjectStore, F: Format>(
     store: &S,
     key: DecodedCacheKey,
@@ -193,7 +197,7 @@ pub(crate) fn admit_decoded_with_accounting<S: AsyncObjectStore, F: Format>(
         };
         let original = accounting
             .native_work()
-            .expect("original page admission keeps its accounting context");
+            .ok_or(crate::ObjectStoreError::Corrupt)?;
         original
             .remaining()
             .map_err(crate::ObjectStoreError::from)
@@ -222,7 +226,7 @@ pub(crate) fn admit_decoded_with_accounting<S: AsyncObjectStore, F: Format>(
     }
     let (allocations, work, budget, _) = accounting
         .standalone_parts()
-        .ok_or(crate::FsError::HandleAllocationFailed)?;
+        .ok_or(crate::ObjectStoreError::Corrupt)?;
     let decoded = decoded.0;
     let PageLease::Owned(page) = decoded.page else {
         return Err(read_store_error(ObjectStoreError::Corrupt));

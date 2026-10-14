@@ -142,6 +142,7 @@ impl TaskContext {
         command_router: Option<&dyn InteractionRouter>,
         scope: &RuntimeScope,
     ) -> Result<Option<OperationId>> {
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let _ = command_router;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
@@ -186,7 +187,8 @@ impl TaskContext {
                 .await?
             {
                 let ((approval_id, request), custody) = paid;
-                let _ = &custody;
+                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                let _ = custody;
                 let outcome: (InteractionOutcome, Option<NativeCustody>) = match work {
                     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                     Some(work) => {
@@ -194,7 +196,10 @@ impl TaskContext {
                             .route_native_interaction(
                                 approval_id,
                                 request,
-                                custody.expect("native approval retains its prompt"),
+                                custody.ok_or(Error::NativeBoundary {
+                                    code: crate::wire::ErrorCode::Invalid,
+                                    reason: "native approval has no retained prompt",
+                                })?,
                                 work,
                                 command_router,
                                 scope,

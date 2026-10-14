@@ -31,18 +31,19 @@ impl FuseProjection {
         };
         let value = fuse_source_chunk(value, work)?;
         self.source_write(work, || {
-            Ok(match target {
+            match target {
                 AttributeTarget::Handle(open_file) => {
                     open_file
                         .file(work)?
-                        .write_attribute(name.as_bytes(), value, mode, work)?
+                        .write_attribute(name.as_bytes(), value, mode, work)?;
                 }
                 AttributeTarget::Path(path) => {
                     self.core
                         .source
-                        .write_attribute(&path, name.as_bytes(), value, mode, work)?
+                        .write_attribute(&path, name.as_bytes(), value, mode, work)?;
                 }
-            })
+            }
+            Ok(())
         })
     }
 

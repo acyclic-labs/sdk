@@ -160,6 +160,10 @@ struct InternalFrame<F: Format> {
     rewritten: Owned<Vec<Child<F::Key>>>,
 }
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "The traversal frame stays on the stack instead of adding an unadmitted allocation."
+)]
 enum EnteredNode<F: Format> {
     Complete(Owned<Vec<Child<F::Key>>>),
     Internal(InternalFrame<F>),
@@ -404,7 +408,13 @@ where
     }
 
     fn clone_key(&mut self, key: &F::Key) -> Result<Owned<F::Key>, crate::FsError> {
-        let (value, allocation) = persistent_io::clone_key::<F>(key, self.limits.maximum_name_bytes, self.accounting, None, 0)?;
+        let (value, allocation) = persistent_io::clone_key::<F>(
+            key,
+            self.limits.maximum_name_bytes,
+            self.accounting,
+            None,
+            0,
+        )?;
         let bytes = F::key_owned_bytes(&value);
         Ok(Owned::new(value, allocation, bytes))
     }
@@ -427,7 +437,13 @@ where
     }
 
     fn clone_value(&mut self, value: &F::Value) -> Result<Owned<Option<F::Value>>, crate::FsError> {
-        let (value, allocation) = persistent_io::clone_value::<F>(value, self.limits.maximum_name_bytes, self.accounting, None, 0)?;
+        let (value, allocation) = persistent_io::clone_value::<F>(
+            value,
+            self.limits.maximum_name_bytes,
+            self.accounting,
+            None,
+            0,
+        )?;
         let bytes = F::value_owned_bytes(&value);
         Ok(Owned::new(Some(value), allocation, bytes))
     }
@@ -960,12 +976,8 @@ where
                 let mut __object_work =
                     crate::AuthorityWork::native(__object_args.1, __object_args.2);
 
-                crate::AsyncObjectStore::put_hashed(
-                    self.store,
-                    __object_args.0,
-                    &mut __object_work,
-                )
-                .await
+                crate::AsyncObjectStore::put_hashed(self.store, __object_args.0, &mut __object_work)
+                    .await
             }
             .map_err(storage_error)?;
             drop(encoded);
@@ -993,7 +1005,8 @@ where
             )
             .await;
             __object_work.receipt(__object_result)
-        }; match res {
+        };
+        match res {
             Ok(receipt) => self.accounting.charge(receipt.work)?,
             Err(failure) => {
                 self.accounting.charge(*failure.work)?;

@@ -2648,7 +2648,6 @@ fn impossible_transaction_vector_allocation_releases_its_complete_claim()
         generation_error(failure),
         GenerationMutationError::AllocationFailed
     ));
-    drop(accounting);
     assert_eq!(allocations.live_bytes(), 0);
     Ok(())
 }
@@ -2657,6 +2656,10 @@ fn impossible_transaction_vector_allocation_releases_its_complete_claim()
 struct NoGenerationCalls;
 
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(
+    clippy::panic,
+    reason = "The fixture must fail if denied work reaches the provider."
+)]
 impl AsyncObjectStore for NoGenerationCalls {
     fn decoded_cache_get(
         &self,
@@ -2724,7 +2727,6 @@ async fn original_generation_denies_identity_scratch_before_provider_calls()
         mutation: FileMutation::ValidateRegular,
     }];
     let (operations, input_guard) = original_identity_operations(&source, &mut accounting)?;
-    drop(accounting);
     let limited = original.native_volume_work(WorkBudget {
         allocation_operations: 0,
         ..WorkBudget::UNBOUNDED
@@ -2751,7 +2753,6 @@ async fn original_generation_denies_identity_scratch_before_provider_calls()
     assert_eq!(original.receipt(), before);
     drop(error);
     drop(input_guard);
-    drop(accounting);
     drop(limited);
     assert_eq!(original.live_allocation_bytes(), baseline);
     Ok(())

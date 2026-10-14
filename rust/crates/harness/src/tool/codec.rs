@@ -149,10 +149,10 @@ pub(crate) const TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES: u64 = {
         "state",
     ];
     let mut bytes = crate::executor::json::preparation_serde_diagnostic_label_bytes();
-    let mut index = 0;
-    while index < LABELS.len() {
-        bytes += LABELS[index].len() as u64 + 4;
-        index += 1;
+    let mut remaining = LABELS;
+    while let Some((label, rest)) = remaining.split_first() {
+        bytes += label.len() as u64 + 4;
+        remaining = rest;
     }
     bytes
 };

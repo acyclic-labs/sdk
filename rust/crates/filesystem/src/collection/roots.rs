@@ -1,13 +1,11 @@
 use super::*;
 
-/// A checkout's base and working roots, which a collection treats as live.
-/// They change only through [`Self::set_prepared_root`] and [`Self::set_working`], which
-/// keep the registration exact.
+/// A checkout's roots and their live collection registration.
 pub(crate) struct CheckoutRoots {
-    pub(super) base: ObjectId,
+    pub(crate) base: ObjectId,
     pub(super) working: GenerationRoot,
     pub(super) config: crate::model::VolumeConfig,
-    pub(super) hold: Option<Hold>,
+    pub(crate) hold: Option<Hold>,
     // Last: both working and collection-held root buffers retire first.
     pub(super) working_control: crate::kernel::ProofDataClaim,
 }
@@ -61,8 +59,7 @@ impl CheckoutRoots {
         )
     }
 
-    /// Verifies the exact working/held vectors that move into an original
-    /// pinned reader. Cached slot storage and token lineage prove no payment.
+    /// Verifies the working and held vectors' original payment.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn same_original_scope(
         &self,
@@ -77,13 +74,9 @@ impl CheckoutRoots {
         let Some(hold) = &self.hold else {
             return true;
         };
-        let holds = hold
-            .collection
-            .holds
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        match holds.slots.get(hold.id).and_then(|slot| slot.held.as_ref()) {
-            Some(Held::Checkout {
+        let holds = hold.collection.holds();
+        match &holds.slots[hold.id] {
+            Slot::Occupied(Held::Checkout {
                 working, control, ..
             }) => control.is_native_original(original, root_parent_bytes(working)),
             _ => false,
@@ -91,30 +84,18 @@ impl CheckoutRoots {
     }
 
     pub(crate) fn logical_owned_bytes(&self) -> u64 {
-        crate::foundation::usize_to_u64(
-            self.working.parents.capacity() * std::mem::size_of::<crate::GenerationId>(),
-        ) + self.hold.as_ref().map_or(0, Hold::logical_owned_bytes)
+        root_parent_bytes(&self.working) + self.hold.as_ref().map_or(0, Hold::logical_owned_bytes)
     }
 
-    /// Only freshly cloned, measured root buffers receive these exact tags.
-    /// Collection slot capacity is cached shared storage, not handle custody.
+    /// Tags freshly admitted vectors, excluding shared slot backing.
     pub(crate) fn attach_control_custody(&mut self, owner: &Arc<crate::kernel::ProofDataCustody>) {
         self.working_control =
             crate::kernel::ProofDataClaim::control(owner, root_parent_bytes(&self.working));
         if let Some(hold) = &self.hold {
-            let mut holds = hold
-                .collection
-                .holds
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            let held = holds
-                .slots
-                .get_mut(hold.id)
-                .and_then(|slot| slot.held.as_mut())
-                .expect("a freshly admitted hold remains registered");
-            if let Held::Checkout {
+            let mut holds = hold.collection.holds();
+            if let Slot::Occupied(Held::Checkout {
                 working, control, ..
-            } = held
+            }) = &mut holds.slots[hold.id]
             {
                 *control =
                     crate::kernel::ProofDataClaim::control(owner, root_parent_bytes(working));
@@ -122,21 +103,8 @@ impl CheckoutRoots {
         }
     }
 
-    pub(crate) fn prepare_held_root(
-        &self,
-        working: &GenerationRoot,
-        accounting: &mut KernelAccounting<'_>,
-        owner: Option<&Arc<crate::kernel::ProofDataCustody>>,
-    ) -> Result<Option<(GenerationRoot, crate::kernel::ProofDataClaim)>, crate::FsError> {
-        self.hold
-            .as_ref()
-            .map(|_| clone_generation_root(working, accounting, owner))
-            .transpose()
-    }
-
-    /// Moves already admitted root copies after the publication seal.
-    /// Replacements destroy each old vector before retiring its tag.
-    pub(crate) fn set_prepared_root(
+    /// Installs admitted roots, retiring each old buffer before its guard.
+    pub(crate) fn set(
         &mut self,
         base: ObjectId,
         working: GenerationRoot,
@@ -144,17 +112,6 @@ impl CheckoutRoots {
         held: Option<(GenerationRoot, crate::kernel::ProofDataClaim)>,
     ) {
         self.base = base;
-        self.set_prepared_working(working, control, held);
-    }
-
-    /// Replaces only the working tree with admitted buffers; base lineage and
-    /// the checkout's base-root copy remain unchanged.
-    pub(crate) fn set_prepared_working(
-        &mut self,
-        working: GenerationRoot,
-        control: crate::kernel::ProofDataClaim,
-        held: Option<(GenerationRoot, crate::kernel::ProofDataClaim)>,
-    ) {
         if let Some(hold) = &self.hold {
             let (working, control) = held.expect("the existing registration has a prepared root");
             hold.update(Held::Checkout {
@@ -168,25 +125,6 @@ impl CheckoutRoots {
         }
         self.working = working;
         self.working_control = control;
-    }
-
-    /// The generation the checkout is based on.
-    pub(crate) const fn base(&self) -> ObjectId {
-        self.base
-    }
-
-    /// Replaces the working tree.
-    pub(crate) fn set_working(&mut self, working: GenerationRoot) {
-        if let Some(hold) = &self.hold {
-            hold.update(Held::Checkout {
-                base: self.base,
-                working: working.clone(),
-                config: self.config,
-                control: crate::kernel::ProofDataClaim::default(),
-            });
-        }
-        self.working = working;
-        self.working_control = crate::kernel::ProofDataClaim::default();
     }
 }
 

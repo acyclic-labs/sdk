@@ -18,9 +18,6 @@ where
             )
         })?;
         self.verify_observation_owner(owner, io).await?;
-        if self.read_admission(io).await?.is_none() {
-            return Ok(None);
-        }
         let _path;
         let (stream, held) = Self::observation_stream(&self.stream, &self.path, io)?;
         _path = held;
@@ -42,6 +39,9 @@ where
             io.check_cancellation()?;
         }
         if bounds.tail == 0 {
+            return Ok(None);
+        }
+        if self.read_admission(io).await?.is_none() {
             return Ok(None);
         }
         let record = self

@@ -45,7 +45,7 @@ impl<A, O> SharedCheckoutState<A, O> {
         }
     }
 
-    pub(super) fn record(&mut self, change: &ViewChange<'_>) {
+    pub(super) fn record(&mut self, change: &ViewChange<'_>) -> Result<(), MountSourceError> {
         record_view_change(
             &self.ledger,
             change,
@@ -53,8 +53,8 @@ impl<A, O> SharedCheckoutState<A, O> {
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
             )),
-        )
-        .expect("external SDK view recording");
+        )?;
         self.recorded_view = self.checkout.root().file_table;
+        Ok(())
     }
 }

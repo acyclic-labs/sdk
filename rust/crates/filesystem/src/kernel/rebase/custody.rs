@@ -65,6 +65,10 @@ impl ProofDataCustody {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    #[allow(
+        clippy::expect_used,
+        reason = "Claims are admitted before attachment and retire exactly once with their owned data."
+    )]
     pub(crate) fn non_native_retained_payload_bytes(&self) -> u64 {
         let completed = self.completed_data_work.lock();
         let native_live =
@@ -83,12 +87,20 @@ impl ProofDataCustody {
         self.physical_retained.load(Ordering::Acquire)
     }
 
+    #[allow(
+        clippy::expect_used,
+        reason = "Claims are admitted before attachment and retire exactly once with their owned data."
+    )]
     pub(crate) fn retained_payload_bytes(&self) -> u64 {
         self.retained_bytes()
             .checked_add(self.physical_retained_bytes())
             .expect("admitted proof payloads fit their original allocation ledger")
     }
 
+    #[allow(
+        clippy::expect_used,
+        reason = "Claims are admitted before attachment and retire exactly once with their owned data."
+    )]
     pub(crate) fn live_payload_counts(&self) -> (u64, u64) {
         let completed = self.completed_data_work.lock();
         let standing = completed
@@ -179,6 +191,10 @@ impl ProofDataCustody {
         Ok(())
     }
 
+    #[allow(
+        clippy::expect_used,
+        reason = "Claims are admitted before attachment and retire exactly once with their owned data."
+    )]
     pub(crate) fn release_operation_cache_bytes(&self, bytes: u64) {
         let mut completed = self.completed_data_work.lock();
         completed.live_cache_bytes = completed
@@ -236,6 +252,11 @@ impl ProofDataCustody {
         Ok(0)
     }
 
+    #[cfg(test)]
+    #[allow(
+        clippy::expect_used,
+        reason = "Exhausting the generation counter must fail rather than reuse an ownership identity."
+    )]
     pub(crate) fn take_completed_data_work(&self) -> WorkCounters {
         let mut completed = self.completed_data_work.lock();
         let generation = completed
@@ -344,6 +365,10 @@ impl ProofDataClaim {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    #[allow(
+        clippy::expect_used,
+        reason = "Claims are admitted before attachment and retire exactly once with their owned data."
+    )]
     pub(crate) fn native_data(
         owner: &Arc<ProofDataCustody>,
         retirement: crate::materializer::NativeResourceRetirement,
@@ -391,6 +416,10 @@ impl ProofDataClaim {
         Self::control_claim_in_report(owner, bytes, reported, &mut completed)
     }
 
+    #[allow(
+        clippy::expect_used,
+        reason = "Claims are admitted before attachment and retire exactly once with their owned data."
+    )]
     fn control_claim_in_report(
         owner: &Arc<ProofDataCustody>,
         bytes: u64,
@@ -425,6 +454,10 @@ impl Clone for ProofDataClaim {
 }
 
 impl Drop for ProofDataClaim {
+    #[allow(
+        clippy::expect_used,
+        reason = "Claims are admitted before attachment and retire exactly once with their owned data."
+    )]
     fn drop(&mut self) {
         if let Some(owner) = self.owner.upgrade() {
             let mut completed = owner.completed_data_work.lock();

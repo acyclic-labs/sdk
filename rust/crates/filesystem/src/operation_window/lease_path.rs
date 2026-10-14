@@ -28,29 +28,20 @@ pub(crate) fn encode(
     if let Some(work) = &mut work {
         work.admit(writes)?;
     }
-    let invalid = || crate::AuthorityStoreError::RejectedStatic("invalid lease path capacity");
-    let text = text.get_mut(..length).ok_or_else(invalid)?;
-    let (prefix, rest) = text
-        .split_at_mut_checked(PREFIX.len())
-        .ok_or_else(invalid)?;
-    prefix.copy_from_slice(PREFIX);
-    let (workspace_text, rest) = rest
-        .split_at_mut_checked(workspace.len() * 2)
-        .ok_or_else(invalid)?;
-    hex::encode_to_slice(workspace, workspace_text).map_err(|_| invalid())?;
-    let (separator, rest) = rest
-        .split_at_mut_checked(SEPARATOR.len())
-        .ok_or_else(invalid)?;
-    separator.copy_from_slice(SEPARATOR);
-    let (lease_text, rest) = rest
-        .split_at_mut_checked(lease.len() * 2)
-        .ok_or_else(invalid)?;
-    hex::encode_to_slice(lease, lease_text).map_err(|_| invalid())?;
-    let (slash, digits) = rest.split_first_mut().ok_or_else(invalid)?;
-    *slash = b'/';
+    text[..PREFIX.len()].copy_from_slice(PREFIX);
+    let mut cursor = PREFIX.len();
+    hex::encode_to_slice(workspace, &mut text[cursor..cursor + workspace.len() * 2])
+        .expect("fixed-width workspace lease path has its exact hex capacity");
+    cursor += workspace.len() * 2;
+    text[cursor..cursor + SEPARATOR.len()].copy_from_slice(SEPARATOR);
+    cursor += SEPARATOR.len();
+    hex::encode_to_slice(lease, &mut text[cursor..cursor + lease.len() * 2])
+        .expect("fixed-width lease identity has its exact hex capacity");
+    cursor += lease.len() * 2;
+    text[cursor] = b'/';
     number = expires_at_millis;
-    for digit in digits.iter_mut().rev() {
-        *digit = b'0' + (number % 10) as u8;
+    for position in (cursor + 1..length).rev() {
+        text[position] = b'0' + (number % 10) as u8;
         number /= 10;
     }
     if let Some(work) = work {

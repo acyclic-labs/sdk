@@ -103,7 +103,7 @@ impl ResourcePreparationRequest {
                     .input_files
                     .iter()
                     .take(index)
-                    .any(|previous| previous == file)
+                    .any(|prior| prior == file)
             {
                 return Err(invalid(work));
             }

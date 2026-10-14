@@ -106,6 +106,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .await
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The admitted lease and unresolved append error retain original custody through same-key resolution."
+    )]
     async fn pull_for(
         &mut self,
         worker: &Worker,

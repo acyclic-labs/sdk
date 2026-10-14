@@ -2,9 +2,17 @@
 fn absent_callback_context_is_stale() {
     assert_eq!(super::ffi(0, false, |_, _| Ok(0)), -libc::ESTALE);
 }
+use super::attribute_ops::acyclic_fs_darwin_mount_getxattr;
+use super::directory::{DirectoryRead, advance_directory_to_offset, ensure_directory_page};
+use super::file_ops::{
+    acyclic_fs_darwin_mount_create, acyclic_fs_darwin_mount_durable_writes,
+    acyclic_fs_darwin_mount_getattr, acyclic_fs_darwin_mount_write,
+};
+use super::namespace_ops::{acyclic_fs_darwin_mount_mkdir, acyclic_fs_darwin_mount_rename};
 use super::*;
 use crate::native_mount::MountPublication;
 use bytes::Bytes;
+use std::path::PathBuf;
 use std::process::Command;
 
 unsafe extern "C" {
@@ -22,6 +30,10 @@ type MemorySource = crate::native_mount::CheckoutMountSource<
     crate::facade::MemoryAuthorityBackend,
     crate::facade::MemoryObjectBackend,
 >;
+type MemoryCheckout = crate::native_mount::SharedCheckout<
+    crate::facade::MemoryAuthorityBackend,
+    crate::facade::MemoryObjectBackend,
+>;
 
 fn work(
     budget: crate::WorkBudget,
@@ -32,18 +44,7 @@ fn work(
 
 fn checkout(
     publication: MountPublication,
-) -> Result<
-    (
-        Arc<
-            crate::native_mount::SharedCheckout<
-                crate::facade::MemoryAuthorityBackend,
-                crate::facade::MemoryObjectBackend,
-            >,
-        >,
-        crate::model::VolumeConfig,
-    ),
-    Box<dyn std::error::Error>,
-> {
+) -> Result<(Arc<MemoryCheckout>, crate::model::VolumeConfig), Box<dyn std::error::Error>> {
     use crate::Fs;
     use crate::model::{CheckoutMode, FilesystemProfile, GenerationSelector, Lifecycle};
     use crate::native_mount::SharedCheckout;
@@ -97,10 +98,6 @@ fn test_context(
         Path::new("."),
         original,
     )?)
-}
-
-fn os(error: i32) -> std::io::Error {
-    std::io::Error::from_raw_os_error(error)
 }
 
 #[test]
@@ -470,7 +467,7 @@ fn content_changes_stamp_modification_and_status_times() -> TestResult {
     let created = FileMetadata {
         modified_ns: MetadataField::Value(1),
         changed_ns: MetadataField::Value(1),
-        ..create_metadata(0o644, libc::S_IFREG as u32, 0, 0)
+        ..create_metadata(0o644, u32::from(libc::S_IFREG), 0, 0)
     };
     context.mutate(|| source.create_file(&path, created, None, &work), &work)?;
     let times = || -> Result<_, Box<dyn std::error::Error>> {

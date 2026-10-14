@@ -49,6 +49,10 @@ fn logical_page_bytes<F: Format>(shape: DecodedPageShape) -> Option<u64> {
     container_bytes.checked_add(shape.nested_bytes)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "This state transition keeps admission, effects and resource retirement in one frame."
+)]
 pub(crate) fn decode_read_with_accounting<F: Format>(
     read: &ObjectRead,
     limits: DecodeLimits,
@@ -78,7 +82,7 @@ pub(crate) fn decode_read_with_accounting<F: Format>(
     }
     let (allocations, work, budget, _) = accounting
         .standalone_parts()
-        .ok_or(crate::FsError::HandleAllocationFailed)?;
+        .ok_or(crate::ObjectStoreError::Corrupt)?;
     let shape = F::decode_shape(read, limits)?;
     work.charge_items(usize_to_u64(shape.items), &budget)?;
     if let Some(owner) = data_custody {
@@ -205,7 +209,7 @@ fn clone_item<T>(
     }
     let (allocations, work, budget, _) = accounting
         .standalone_parts()
-        .ok_or(crate::FsError::HandleAllocationFailed)?;
+        .ok_or(crate::ObjectStoreError::Corrupt)?;
     if nested != 0 {
         admit_clone(
             nested,

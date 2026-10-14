@@ -133,9 +133,10 @@ impl ConversationMessage {
         let mut extensions = BTreeMap::new();
         for (key, file) in &self.extensions {
             let bytes = std::mem::size_of::<(String, FileRef)>() as u64;
-            let io = quota.work().as_deref_mut().expect("observed message clone");
-            io.admit_owned(bytes)?;
-            io.retain_owned(bytes)?;
+            if let Some(io) = quota.work().as_deref_mut() {
+                io.admit_owned(bytes)?;
+                io.retain_owned(bytes)?;
+            }
             quota.adopt(bytes)?;
             let key = crate::core::copy_text(key, quota)?;
             let file = file.clone_in_quota(quota)?;

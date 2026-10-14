@@ -101,6 +101,40 @@ impl<I, O> TaskDefinition<I, O> {
         Ok(definition)
     }
 
+    /// Publishes a funded copy of a resumable definition and its requirements.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn publish(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
+        let TaskImplementation::Resumable(machine) = &self.implementation else {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "live tasks have no resumable workflow",
+            });
+        };
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let result = (|| {
+            machine.identity_with_native_work(work)?;
+            let input = task_copy_value(&self.input_schema, Some(&io))?;
+            let output = task_copy_value(&self.output_schema, Some(&io))?;
+            let schemas = io.owned_bytes()?;
+            let (mut definition, _) =
+                Self::resumable_with_io(machine.clone(), input, output, Some(&io))?;
+            definition.requirements = task_copy_with_io(Some(&io), |quota| {
+                crate::core::copy(&self.requirements, quota, |value, _| {
+                    crate::core::owned_bytes(value)
+                })
+            })?;
+            let retained = io.owned_bytes()?;
+            definition.refresh_digest(Some(&io))?;
+            Ok((definition, schemas, retained))
+        })();
+        let retained = result.as_ref().map_or(0, |(_, _, retained)| *retained);
+        let ((mut definition, schemas, _), mut custody) =
+            crate::workflow::finish_native_io(result, io, retained)?;
+        definition.native_schema_custody = Some(custody.split_off(schemas)?);
+        definition.native_metadata_custody = Some(custody);
+        Ok(definition)
+    }
+
     pub(super) fn resumable_with_io(
         machine: Arc<dyn ResumableMachine>,
         input_schema: Value,
@@ -116,9 +150,6 @@ impl<I, O> TaskDefinition<I, O> {
                 "resumable task requires an implementation digest",
             ));
         }
-        crate::executor::with_history_io(io, |work| {
-            validate_task_schemas(&input_schema, &output_schema, true, work)
-        })?;
         #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             io.retain_owned(std::mem::size_of::<Self>() as u64)?;
@@ -268,6 +299,10 @@ impl<I, O> TaskDefinition<I, O> {
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Session opening keeps its owner fence and funded IO in one async frame."
+    )]
     async fn open_session(
         self: &Arc<Self>,
         context: Arc<TaskContext>,
@@ -281,6 +316,7 @@ impl<I, O> TaskDefinition<I, O> {
     {
         let observer = io.as_ref();
         let native = task_original_work(observer)?;
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let _ = native;
         let error = |code, reason| crate::executor::stock_boundary(observer, code, reason);
         let result = async {
@@ -324,23 +360,34 @@ impl<I, O> TaskDefinition<I, O> {
                 .await?;
             let owner_matches = journal.task_binding() == Some((task_id, &fence));
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            let mut owner_matches = owner_matches;
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if let Some(work) = native {
-                owner_matches &= context.native_metadata_matches(work)
-                    && context.original_task_binding_matches(task_id, &fence);
-            }
+            let owner_matches = owner_matches
+                & native.is_none_or(|work| {
+                    context.native_metadata_matches(work)
+                        && context.original_task_binding_matches(task_id, &fence)
+                });
             if !owner_matches {
                 return Err(error(
                     crate::wire::ErrorCode::Unauthorized,
                     "workflow journal is not bound to this task lease",
                 ));
             }
-            let retained = observe_task_open_admission(host.as_ref(), task_id, observer).await?;
-            context
-                .harness
-                .validate_observed_admission(&retained, observer)
-                .await?;
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            let original = native
+                .and_then(|_| context.owned_mailbox.as_ref())
+                .map(|owner| owner.admission());
+            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+            let original: Option<(&TaskAdmissionRecord, &WorkflowAdmission)> = None;
+            let observed;
+            let retained = if let Some((retained, _)) = original {
+                retained
+            } else {
+                observed = observe_task_open_admission(host.as_ref(), task_id, observer).await?;
+                context
+                    .harness
+                    .validate_observed_admission(&observed, observer)
+                    .await?;
+                &observed
+            };
             if retained.task != self.identity
                 || retained.machine != *task_machine_identity(machine.as_ref(), observer)?
                 || retained.input_schema != self.input_schema
@@ -356,16 +403,28 @@ impl<I, O> TaskDefinition<I, O> {
                     "task workflow differs from its admitted definition or scope",
                 ));
             }
-            let request_digest = crate::executor::preparation_digest(&retained, observer)?;
-            let initialized = initialize_task_machine(machine.as_ref(), &retained.input, observer)?;
-            let admission = WorkflowAdmission {
-                operation_id: retained.operation_id,
-                request_digest,
-                initial: MachineCheckpoint {
-                    machine: retained.machine,
-                    revision: 0,
-                    state: initialized,
-                },
+            let admission = if let Some((_, workflow)) = original {
+                WorkflowAdmission {
+                    operation_id: workflow.operation_id,
+                    request_digest: workflow.request_digest,
+                    initial: workflow.initial.copy(observer)?,
+                }
+            } else {
+                let request_digest = crate::executor::preparation_digest(retained, observer)?;
+                let initialized =
+                    initialize_task_machine(machine.as_ref(), &retained.input, observer)?;
+                WorkflowAdmission {
+                    operation_id: retained.operation_id,
+                    request_digest,
+                    initial: MachineCheckpoint {
+                        machine: crate::workflow::workflow_copy_identity(
+                            &retained.machine,
+                            observer,
+                        )?,
+                        revision: 0,
+                        state: initialized,
+                    },
+                }
             };
             let mut registry = MachineRegistry::default();
             crate::executor::with_history_io(observer, |work| {
@@ -414,6 +473,7 @@ impl<I, O> TaskDefinition<I, O> {
                 task_id,
                 fence,
                 host: Arc::clone(host),
+                owner: context.owned_mailbox.clone(),
                 workflow,
                 definition: Arc::clone(self) as Arc<dyn RegisteredTaskDefinition>,
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

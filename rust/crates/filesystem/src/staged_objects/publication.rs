@@ -90,8 +90,8 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                             ..WorkCounters::UNCHARGED
                         })?;
                     }
-                    if let Some(staged) = index.objects.get(&id) {
-                        if !index.drained.contains(&id) {
+                    if let Some(staged) = index.objects.get(&id)
+                        && !index.drained.contains(&id) {
                             if count != 0
                                 && bytes.saturating_add(staged.length()) > MAXIMUM_DRAIN_BYTES
                             {
@@ -100,7 +100,6 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                             bytes = bytes.saturating_add(staged.length());
                             count += 1;
                         }
-                    }
                     end += 1;
                 }
             }
@@ -128,7 +127,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                             bytes: bytes.clone(),
                         }),
                         Some(&Staged::Spilled { offset, length }) => {
-                            spilled.push((id, offset, length))
+                            spilled.push((id, offset, length));
                         }
                         None => {}
                     }

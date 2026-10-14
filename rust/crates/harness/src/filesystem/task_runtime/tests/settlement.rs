@@ -67,25 +67,49 @@ async fn cancelled_mail_reconciles_original_atomic_send_without_republication() 
     let file = payloads
         .stage(OperationId::from_bytes([106; 16]), "mail-body", b"7", None)?
         .await?;
+    let input = serde_json::to_value(&super::super::super::MailSendTaskCommand {
+        recipient: task,
+        payload: file,
+    })
+    .map_err(|error| Error::Invalid(error.to_string()))?;
     let lease = fixture
         .admit_command(
             &runtime,
             super::super::super::MAIL_SEND_TASK_COMMAND_KIND,
-            serde_json::to_value(&super::super::super::MailSendTaskCommand {
-                recipient: task,
-                payload: file,
-            })
-            .map_err(|error| Error::Invalid(error.to_string()))?,
+            input.clone(),
         )
         .await?;
-    for _ in 0..2 {
-        assert!(matches!(
-            runtime
-                .resume_task(lease.clone(), &runtime.commands(), 1, None)
-                .await,
-            TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { .. })
-        ));
+    let attempt = runtime
+        .resume_task(lease.clone(), &runtime.commands(), 1, None)
+        .await;
+    if let TaskWorkerAttempt::Unresolved { error, .. } = attempt {
+        return Err(error);
     }
+    assert!(matches!(
+        attempt,
+        TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { .. })
+    ));
+    let session = runtime
+        .open_task(task, LeaseFence::from(&lease.reservation))
+        .await?;
+    let command = serde_json::from_value(session.checkpoint().state["command"].clone())
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    drop(session);
+    let context = runtime
+        .harness()
+        .durable_context(task, lease.operation.operation_id, None)
+        .await?;
+    let acknowledgement = runtime
+        .commands()
+        .execute(
+            context.as_ref().clone(),
+            (&lease.reservation).into(),
+            command,
+            input,
+        )
+        .await?;
+    assert!(matches!(acknowledgement, TaskCommandProgress::Ready(_)));
+    drop(acknowledgement);
     assert_eq!(runtime.task_host().inbox(task, 0, 8).await?.len(), 1);
     drop(runtime);
     fixture.clock.0.store(20, Ordering::SeqCst);
@@ -133,10 +157,7 @@ async fn native_stock_builtin_precancel_preserves_original_recovery_before_dispa
         let cancellation = acyclic_fs::CancellationToken::new();
         let work =
             acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)
-                .map_err(|(cause, work)| Error::NativeConstruction {
-                cause,
-                work: work,
-            })?;
+                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = PreparationIo::from_native_work(&work)?;
         let runtime = fixture.runtime(Some(&io)).await?;
         let (lease, custody) = fixture
@@ -182,10 +203,7 @@ async fn native_stock_tool_lost_ack_reconciles_original_fence_without_redispatch
     let cancellation = acyclic_fs::CancellationToken::new();
     let work =
         acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)
-            .map_err(|(cause, work)| Error::NativeConstruction {
-                cause,
-                work: work,
-            })?;
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&work)?;
     let runtime = fixture.runtime(Some(&io)).await?;
     let (lease, custody) = fixture.native_lease(&runtime, &work).await?;
@@ -203,6 +221,7 @@ async fn native_stock_tool_lost_ack_reconciles_original_fence_without_redispatch
             assert_eq!(lease, original);
             lease
         }
+        TaskWorkerAttempt::Unresolved { error, .. } => return Err(error),
         _ => {
             return Err(Error::Invalid(
                 "native lost acknowledgement did not preserve original attempt".into(),

@@ -256,7 +256,8 @@ pub(super) async fn read_owned_blob_source<R: AsyncBlobSource>(
         };
         let completed_result = accounting.record_completed(completed);
         if let Err(error) = capacity_result.and(completed_result) {
-            drop((chunk, custody));
+            drop(chunk);
+            drop(custody);
             let _ = release_blob_bytes(retained, accounting);
             return Err(error);
         }
@@ -265,6 +266,10 @@ pub(super) async fn read_owned_blob_source<R: AsyncBlobSource>(
     Ok(None)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "This state transition keeps admission, effects and resource retirement in one frame."
+)]
 pub(super) async fn read_blob_chunk<R: AsyncBlobSource>(
     source: &mut R,
     maximum: usize,
@@ -284,7 +289,7 @@ pub(super) async fn read_blob_chunk<R: AsyncBlobSource>(
                 ..WorkCounters::UNCHARGED
             })?;
         }
-        let owned = buffer.as_mut().ok_or(BlobBuildError::InvalidIndexState)?;
+        let owned = buffer.as_mut().ok_or(BlobBuildError::TooLarge)?;
         reserve_blob_vec(owned, maximum, accounting)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = &native {
@@ -301,7 +306,7 @@ pub(super) async fn read_blob_chunk<R: AsyncBlobSource>(
                     ..crate::WorkCounters::UNCHARGED
                 })
             }?;
-            let owned = buffer.take().ok_or(BlobBuildError::InvalidIndexState)?;
+            let owned = buffer.take().ok_or(BlobBuildError::TooLarge)?;
             prepared = Some(
                 acyclic_stream::PreparedOwnedBytes::new(
                     owned.value,
@@ -338,7 +343,7 @@ pub(super) async fn read_blob_chunk<R: AsyncBlobSource>(
                     .ok_or(BlobBuildError::TooLarge)?,
                 None => buffer
                     .as_mut()
-                    .ok_or(BlobBuildError::InvalidIndexState)?
+                    .ok_or(BlobBuildError::TooLarge)?
                     .value
                     .get_mut(filled..)
                     .ok_or(BlobBuildError::TooLarge)?,
@@ -346,7 +351,7 @@ pub(super) async fn read_blob_chunk<R: AsyncBlobSource>(
             #[cfg(target_arch = "wasm32")]
             let destination = buffer
                 .as_mut()
-                .ok_or(BlobBuildError::InvalidIndexState)?
+                .ok_or(BlobBuildError::TooLarge)?
                 .value
                 .get_mut(filled..)
                 .ok_or(BlobBuildError::TooLarge)?;
@@ -395,7 +400,7 @@ pub(super) async fn read_blob_chunk<R: AsyncBlobSource>(
                     filled,
                 ));
             }
-            let mut buffer = buffer.ok_or(BlobBuildError::InvalidIndexState)?;
+            let mut buffer = buffer.ok_or(BlobBuildError::TooLarge)?;
             buffer.value.truncate(filled);
             let logical_owned_bytes = usize_to_u64(buffer.value.capacity());
             let bytes = owned_read_bytes(buffer)?;

@@ -275,7 +275,8 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
 
     #[allow(
         clippy::too_many_arguments,
-        reason = "coordinator admission binds independent owners"
+        clippy::too_many_lines,
+        reason = "All optional fences and the event share one conditional commit and its original custody."
     )]
     pub(super) async fn apply_internal(
         &mut self,

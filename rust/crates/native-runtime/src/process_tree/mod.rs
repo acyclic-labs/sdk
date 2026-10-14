@@ -517,7 +517,6 @@ impl ProcessTree {
         return self.terminate_with_meter(meter);
         #[cfg(windows)]
         {
-            self.guard.release_setup(meter)?;
             self.capture_terminate_descendants(meter)?;
             self.capture_close_stdin(meter)?;
             if self.child.is_some() {

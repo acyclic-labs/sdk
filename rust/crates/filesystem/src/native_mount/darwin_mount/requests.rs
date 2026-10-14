@@ -159,21 +159,20 @@ impl DarwinMountContext {
         };
         let result = crate::native_mount::run_native_mount_handler_on_meter(&work, operation);
         let completed = work.receipt();
-        if future_request {
-            if let Err(overflow) = self
+        if future_request
+            && let Err(overflow) = self
                 .handler_failure
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .completed_future_request_work
                 .try_add_assign(&completed)
-            {
-                match &result {
-                    Ok(_) => return Err(self.record_failure(overflow.into(), completed)),
-                    Err(cause) if !fatal(cause) => {
-                        self.record_failure(overflow.into(), completed);
-                    }
-                    Err(_) => {}
+        {
+            match &result {
+                Ok(_) => return Err(self.record_failure(overflow.into(), completed)),
+                Err(cause) if !fatal(cause) => {
+                    self.record_failure(overflow.into(), completed);
                 }
+                Err(_) => {}
             }
         }
         result.map_err(|cause| self.record_failure(cause, completed))

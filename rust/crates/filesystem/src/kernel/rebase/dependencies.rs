@@ -42,14 +42,6 @@ impl CheckoutDependencies {
         true
     }
 
-    pub(crate) fn logical_data(&self) -> (usize, u64, u64) {
-        (
-            Arc::as_ptr(&self.captured) as usize,
-            self.data_generation,
-            self.name_data_bytes,
-        )
-    }
-
     /// Validates and normalizes exact observations and mutation preconditions.
     pub fn new(
         observations: impl IntoIterator<Item = Dependency>,
@@ -122,6 +114,10 @@ impl CheckoutDependencies {
         self.captured.entries.is_empty()
     }
 
+    #[allow(
+        clippy::expect_used,
+        reason = "Exhausting the generation counter must fail rather than reuse an ownership identity."
+    )]
     pub(crate) fn clear(&mut self) {
         self.captured = Arc::default();
         self.name_data_bytes = 0;
@@ -141,6 +137,10 @@ impl CheckoutDependencies {
         })
     }
 
+    #[allow(
+        clippy::expect_used,
+        reason = "Exhausting the generation counter must fail rather than reuse an ownership identity."
+    )]
     pub(crate) fn clear_mutations(&mut self) {
         let mut retained_bytes = 0_u64;
         let mut cloned_bytes = 0_u64;
@@ -171,18 +171,6 @@ impl CheckoutDependencies {
         self.cloned_name_data_bytes = cloned_bytes;
     }
 
-    pub(crate) fn extend_observations(
-        &mut self,
-        dependencies: Vec<Dependency>,
-        maximum_dependencies: u32,
-    ) -> Result<(), DependencyError> {
-        self.extend(
-            dependencies,
-            maximum_dependencies,
-            DependencyUse::Observation,
-        )
-    }
-
     pub(crate) fn prepare_observations(
         &self,
         dependencies: Vec<Dependency>,
@@ -201,11 +189,6 @@ impl CheckoutDependencies {
         maximum_dependencies: u32,
     ) -> Result<DependencyExtension, DependencyError> {
         self.prepare(dependencies, maximum_dependencies, DependencyUse::Mutation)
-    }
-
-    pub(crate) fn commit(&mut self, extension: DependencyExtension) {
-        self.commit_with_data_custody::<WorkError>(extension, None, |_, _, _, _| Ok(()))
-            .expect("live dependency data fits the addressable memory space");
     }
 
     pub(crate) fn commit_with_data_custody<E: From<WorkError>>(
@@ -392,16 +375,6 @@ impl CheckoutDependencies {
     }
 
     #[cfg(any(feature = "native-mount", test))]
-    pub(crate) fn merged(&self, other: &Self) -> Option<Self> {
-        let cancellation = CancellationToken::new();
-        let mut accounting =
-            super::allocation::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-        self.merged_with_accounting(other, None, &mut accounting)
-            .ok()
-            .flatten()
-    }
-
-    #[cfg(any(feature = "native-mount", test))]
     pub(crate) fn merged_with_accounting(
         &self,
         other: &Self,
@@ -498,6 +471,10 @@ impl CheckoutDependencies {
     }
 
     #[cfg(any(feature = "native-mount", test))]
+    #[allow(
+        clippy::expect_used,
+        reason = "The newly constructed Arc has not been shared before this mutable access."
+    )]
     fn merged_with_data_claims<E: From<WorkError>>(
         &self,
         other: &Self,
@@ -570,17 +547,6 @@ impl CheckoutDependencies {
     pub(crate) fn same_capture(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.captured, &other.captured)
             && self.data_generation == other.data_generation
-    }
-
-    fn extend(
-        &mut self,
-        dependencies: Vec<Dependency>,
-        maximum_dependencies: u32,
-        usage: DependencyUse,
-    ) -> Result<(), DependencyError> {
-        let extension = self.prepare(dependencies, maximum_dependencies, usage)?;
-        self.commit(extension);
-        Ok(())
     }
 
     fn prepare(

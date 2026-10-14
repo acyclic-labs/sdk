@@ -82,7 +82,7 @@ impl ControlPlane {
                         source_binding.created()?.native_root_identity,
                         &source_binding.path,
                     )?;
-                    let parent_workspace = WorkspaceGraph::new(store.clone()).workspace(&self.fs, parent_root.workspace_id, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                    let parent_workspace = acyclic_fs::WorkspaceResolver::resolve(&(self.fs.clone(), WorkspaceGraph::new(store.clone())), parent_root.workspace_id)
                         .await
                         .map_err(display)?;
                     let parent_lazy = LazyWorkspace::open(parent_workspace, source, store.clone(), &mut acyclic_fs::kernel::KernelAccounting::Standalone {
@@ -165,9 +165,9 @@ impl ControlPlane {
                     binding.created()?.native_root_identity,
                     &binding.path,
                 )?;
-                let workspace = WorkspaceGraph::new(self.store.clone()).workspace(&self.fs, acyclic_fs::WorkspaceId::from_bytes(
+                let workspace = acyclic_fs::WorkspaceResolver::resolve(&(self.fs.clone(), WorkspaceGraph::new(self.store.clone())), acyclic_fs::WorkspaceId::from_bytes(
                         root.repository_workspace_id,
-                    ), WorkBudget::UNBOUNDED, &CancellationToken::new())
+                    ))
                     .await
                     .map_err(display)?;
                 roots.push((

@@ -27,6 +27,10 @@ pub(crate) struct PageBatch<'a, S: AsyncObjectStore, F: Format> {
     read_allocation: KernelOwnedAllocation,
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "The read boundary already validates and registers the retained container and payload sizes."
+)]
 pub(crate) async fn read_pages_with_accounting<'a, S, F, I>(
     store: &'a S,
     pages: I,

@@ -99,259 +99,250 @@ impl PiNativeCommandHost {
             return Ok(bound.clone());
         }
         if handles.preparation_owner.is_none() {
-            handles.preparation_owner =
-                Some((owner.clone(), Arc::clone(&shared), command.operation_id));
+            handles.preparation_owner = Some(owner.clone());
         }
         let view = if let Some(view) = self.live_view(owner.task_id()) {
             view
         } else {
-            if handles.root.as_ref().is_none_or(|root| root.view.is_none()) {
-                let cancellation = work.cancellation();
-                let budget = crate::pi_root_provider::allocation_budget();
-                let scratch_context = Arc::clone(&shared)
-                    .with_output_volume(&prepared.binding.scratch.volume)
-                    .await?;
-                if handles.session.is_none() {
-                    handles.session = Some(
-                        intent
-                            .publish_session(scratch_context.as_ref(), command.operation_id, work)
-                            .await?,
-                    );
-                }
-                let generation = generation(
-                    &handles
-                        .session
-                        .as_ref()
-                        .ok_or_else(|| {
-                            unauthorized("Pi session has no original publication custody")
-                        })?
-                        .0,
-                    work,
-                )?;
-                let mut conversation = self.protected.conversation_authority_with_native_work(
-                    owner.task_id(),
-                    input.binding.agent_id,
-                    context.scope().grants(),
-                    work,
-                )?;
-                let mut verifier = {
-                    let mut io = acyclic_harness::store::HistoryWork::new(
-                        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                    );
-                    let value = conversation.0.1.verifier(&mut Some(&mut io))?;
-                    (value, io.into_custody()?)
-                };
-                conversation.1.absorb(&mut verifier.1)?;
-                let (_, _, scope) = conversation.0;
-                let authority = (verifier.0, scope, conversation.1);
-                let namespace = NativeVolumeNamespace::MaterializedDirectory;
-                let io = PreparationIo::from_native_work(work)?;
-                let mut history = &io;
-                let scratch_name = prepared
-                    .binding
-                    .scratch
-                    .volume
-                    .storage_name(&mut Some(&mut history))?;
-                let scratch_workspace = self
-                    .resources
-                    .fs
-                    .open_workspace(&scratch_name, work, cancellation)
-                    .await?;
-                let scratch_generation = GenerationId::new(Digest::from_bytes(
-                    generation
-                        .0
-                        .as_resource()
-                        .key()
-                        .try_into()
-                        .map_err(|_| unauthorized("Pi scratch generation is not canonical"))?,
-                ));
-                let scratch_permit = handles
-                    .scratch_gate
-                    .reserve(
-                        &owner,
-                        (
-                            &scratch_workspace,
-                            &prepared.binding.scratch.volume,
-                            scratch_generation,
-                        ),
-                        command.operation_id,
-                        (work, cancellation),
-                        existing_only,
-                    )
-                    .await?;
-                let options = pi_native::native_view_options(
-                    &self.resources,
-                    root_session,
-                    owner.task_id(),
-                    2,
-                    view_volume_share(budget, 2)?,
-                    work,
-                )?;
-                let scratch_binding = BorrowedNativeVolumeBinding {
-                    host: &self.filesystem,
-                    volume: &prepared.binding.scratch.volume,
-                    generation: &generation.0,
-                    path: "scratch",
-                    writable: true,
-                    verifier: &authority.0,
-                    scope: &authority.1,
-                    publication: scratch_permit,
-                    namespace: &namespace,
-                };
-                if handles.root.is_none() {
-                    let session = &handles
-                        .session
-                        .as_ref()
-                        .ok_or_else(|| {
-                            unauthorized("Pi session has no original publication custody")
-                        })?
-                        .0;
-                    handles.root = Some(
-                        pi_native::native_root(
-                            &self.resources,
-                            root_session,
-                            &self.protected,
-                            &owner,
-                            &shared,
-                            &prepared.binding,
-                            &options.0,
-                            intent,
-                            session,
-                            std::slice::from_ref(&scratch_binding),
-                            work,
-                        )
+            let cancellation = work.cancellation();
+            let budget = crate::pi_root_provider::allocation_budget();
+            let scratch_context = Arc::clone(&shared)
+                .with_output_volume(&prepared.binding.scratch.volume)
+                .await?;
+            if handles.session.is_none() {
+                handles.session = Some(
+                    intent
+                        .publish_session(scratch_context.as_ref(), command.operation_id, work)
                         .await?,
-                    );
-                }
-                {
-                    let LiveHandles { root, session, .. } = &mut *handles;
-                    let session = &session
-                        .as_ref()
-                        .ok_or_else(|| {
-                            unauthorized("Pi session has no original publication custody")
-                        })?
-                        .0;
-                    root.as_mut()
-                        .ok_or(Error::Indeterminate(command.operation_id))?
-                        .create_directories(
-                            (&owner, &shared),
-                            &prepared.binding,
-                            (&options.0, intent, session),
-                            std::slice::from_ref(&scratch_binding),
-                            work,
-                        )
-                        .await?;
-                }
-                if handles.project_work.is_none() {
-                    handles.project_work =
-                        Some(work.native_volume_work(options.0.work_per_volume)?);
-                }
-                let (root_key, project) = prepared
-                    .binding
-                    .project_volumes
-                    .iter()
-                    .next()
-                    .ok_or_else(|| unauthorized("Pi actual fork has no selected project"))?;
-                let project_generation = GenerationRef::new(
-                    project.provider(),
-                    prepared.native_lazy.authored_generation.digest().as_bytes(),
-                    None,
-                    Some(work),
-                )?;
-                let write_capability = {
-                    let mut io = acyclic_harness::store::HistoryWork::new(
-                        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                    );
-                    let value = project.capability(VolumeOperation::Write, &mut Some(&mut io))?;
-                    (value, io.into_custody()?)
-                };
-                let writable = context.scope().grants().contains(&write_capability.0);
-                let project_permit = handles
-                    .project_gate
-                    .reserve(
-                        &owner,
-                        (
-                            prepared.workspace.workspace(),
-                            project,
-                            prepared.native_lazy.authored_generation,
-                        ),
-                        command.operation_id,
-                        (work, cancellation),
-                        existing_only,
-                    )
-                    .await?;
-                let project_capture = {
-                    let LiveHandles {
-                        root,
-                        project: retained_mount,
-                        project_allocation,
-                        project_work,
-                        ..
-                    } = &mut *handles;
-                    let root = root
-                        .as_ref()
-                        .ok_or(Error::Indeterminate(command.operation_id))?;
-                    root.mount_project_with_work(
+                );
+            }
+            let generation = generation(
+                &handles
+                    .session
+                    .as_ref()
+                    .ok_or_else(|| unauthorized("Pi session has no original publication custody"))?
+                    .0,
+                work,
+            )?;
+            let mut conversation = self.protected.conversation_authority_with_native_work(
+                owner.task_id(),
+                input.binding.agent_id,
+                context.scope().grants(),
+                work,
+            )?;
+            let mut verifier = {
+                let mut io = acyclic_harness::store::HistoryWork::new(
+                    acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+                );
+                let value = conversation.0.1.verifier(&mut Some(&mut io))?;
+                (value, io.into_custody()?)
+            };
+            conversation.1.absorb(&mut verifier.1)?;
+            let (_, _, scope) = conversation.0;
+            let authority = (verifier.0, scope, conversation.1);
+            let namespace = NativeVolumeNamespace::MaterializedDirectory;
+            let io = PreparationIo::from_native_work(work)?;
+            let mut history = &io;
+            let scratch_name = prepared
+                .binding
+                .scratch
+                .volume
+                .storage_name(&mut Some(&mut history))?;
+            let scratch_workspace = self
+                .resources
+                .fs
+                .open_workspace(&scratch_name, work, cancellation)
+                .await?;
+            let scratch_generation = GenerationId::new(Digest::from_bytes(
+                generation
+                    .0
+                    .as_resource()
+                    .key()
+                    .try_into()
+                    .map_err(|_| unauthorized("Pi scratch generation is not canonical"))?,
+            ));
+            let scratch_permit = reserve_publication(
+                &mut handles.scratch_gate,
+                &owner,
+                (
+                    &scratch_workspace,
+                    &prepared.binding.scratch.volume,
+                    scratch_generation,
+                ),
+                command.operation_id,
+                (work, cancellation),
+                existing_only,
+            )
+            .await?;
+            let options = pi_native::native_view_options(
+                &self.resources,
+                root_session,
+                owner.task_id(),
+                2,
+                view_volume_share(budget, 2)?,
+                work,
+            )?;
+            let scratch_binding = BorrowedNativeVolumeBinding {
+                host: &self.filesystem,
+                volume: &prepared.binding.scratch.volume,
+                generation: &generation.0,
+                path: "scratch",
+                writable: true,
+                verifier: &authority.0,
+                scope: &authority.1,
+                publication: scratch_permit,
+                namespace: &namespace,
+                mounted: None,
+            };
+            if handles.root.is_none() {
+                let session = &handles
+                    .session
+                    .as_ref()
+                    .ok_or_else(|| unauthorized("Pi session has no original publication custody"))?
+                    .0;
+                handles.root = Some(
+                    pi_native::native_root(
+                        &self.resources,
+                        root_session,
+                        &self.protected,
                         &owner,
                         &shared,
                         &prepared.binding,
-                        root_key,
-                        &prepared.workspace,
-                        &project_generation.0,
-                        &authority,
-                        writable,
-                        retained_mount,
-                        project_allocation,
-                        project_work
-                            .as_ref()
-                            .ok_or(Error::Indeterminate(command.operation_id))?,
+                        &options.0,
+                        intent,
+                        session,
+                        std::slice::from_ref(&scratch_binding),
                         work,
-                        cancellation,
                     )
-                    .await?
-                };
-                let route = project_capture
-                    .0
-                    .path
-                    .strip_prefix(&options.0.root)
-                    .map_err(|_| Error::NativeBoundary {
-                        code: acyclic_harness::wire::ErrorCode::Unauthorized,
-                        reason: "Pi mounted project escaped its original native root",
-                    })?
-                    .to_str()
-                    .ok_or(Error::NativeBoundary {
-                        code: acyclic_harness::wire::ErrorCode::Invalid,
-                        reason: "Pi native project route is not UTF-8",
-                    })?;
-                let bindings = [
-                    scratch_binding,
-                    BorrowedNativeVolumeBinding {
-                        host: &self.filesystem,
-                        volume: project,
-                        generation: &project_generation.0,
-                        path: route,
-                        writable,
-                        verifier: &authority.0,
-                        scope: &authority.1,
-                        publication: project_permit,
-                        namespace: &project_capture.0.namespace,
-                    },
-                ];
-                let guards = [shared.clone(), shared.clone()];
-                handles
-                    .root
-                    .as_mut()
+                    .await?,
+                );
+            }
+            {
+                let LiveHandles { root, session, .. } = &mut *handles;
+                let session = &session
+                    .as_ref()
+                    .ok_or_else(|| unauthorized("Pi session has no original publication custody"))?
+                    .0;
+                root.as_mut()
                     .ok_or(Error::Indeterminate(command.operation_id))?
-                    .prepare(&owner, &options.0, &bindings, &guards, work)
+                    .create_directories(
+                        (&owner, &shared),
+                        &prepared.binding,
+                        (&options.0, intent, session),
+                        std::slice::from_ref(&scratch_binding),
+                        work,
+                    )
                     .await?;
             }
-            Arc::clone(
-                handles
-                    .root
-                    .as_ref()
-                    .and_then(|root| root.view.as_ref())
-                    .ok_or(Error::Indeterminate(command.operation_id))?,
+            if handles.project_work.is_none() {
+                handles.project_work = Some(work.native_volume_work(options.0.work_per_volume)?);
+            }
+            let (root_key, project) = prepared
+                .binding
+                .project_volumes
+                .iter()
+                .next()
+                .ok_or_else(|| unauthorized("Pi actual fork has no selected project"))?;
+            let project_generation = GenerationRef::new(
+                project.provider(),
+                prepared.native_lazy.authored_generation.digest().as_bytes(),
+                None,
+                Some(work),
+            )?;
+            let write_capability = {
+                let mut io = acyclic_harness::store::HistoryWork::new(
+                    acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+                );
+                let value = project.capability(VolumeOperation::Write, &mut Some(&mut io))?;
+                (value, io.into_custody()?)
+            };
+            let writable = context.scope().grants().contains(&write_capability.0);
+            let project_permit = reserve_publication(
+                &mut handles.project_gate,
+                &owner,
+                (
+                    prepared.workspace.workspace(),
+                    project,
+                    prepared.native_lazy.authored_generation,
+                ),
+                command.operation_id,
+                (work, cancellation),
+                existing_only,
             )
+            .await?;
+            let project_capture = {
+                let LiveHandles {
+                    root,
+                    project: retained_mount,
+                    project_allocation,
+                    project_work,
+                    ..
+                } = &mut *handles;
+                let root = root
+                    .as_ref()
+                    .ok_or(Error::Indeterminate(command.operation_id))?;
+                root.mount_project_with_work(
+                    &owner,
+                    &shared,
+                    &prepared.binding,
+                    root_key,
+                    &prepared.workspace,
+                    &project_generation.0,
+                    &authority,
+                    writable,
+                    retained_mount,
+                    project_allocation,
+                    project_work
+                        .as_ref()
+                        .ok_or(Error::Indeterminate(command.operation_id))?,
+                    work,
+                    cancellation,
+                )
+                .await?
+            };
+            let route = project_capture
+                .0
+                .path
+                .strip_prefix(&options.0.root)
+                .map_err(|_| Error::NativeBoundary {
+                    code: acyclic_harness::wire::ErrorCode::Unauthorized,
+                    reason: "Pi mounted project escaped its original native root",
+                })?
+                .to_str()
+                .ok_or(Error::NativeBoundary {
+                    code: acyclic_harness::wire::ErrorCode::Invalid,
+                    reason: "Pi native project route is not UTF-8",
+                })?;
+            let project_mount = Arc::clone(
+                handles
+                    .project
+                    .as_ref()
+                    .ok_or(Error::Indeterminate(command.operation_id))?,
+            );
+            let project_mount: Arc<dyn acyclic_harness::filesystem::NativeMountedVolume> =
+                project_mount;
+            let bindings = [
+                scratch_binding,
+                BorrowedNativeVolumeBinding {
+                    host: &self.filesystem,
+                    volume: project,
+                    generation: &project_generation.0,
+                    path: route,
+                    writable,
+                    verifier: &authority.0,
+                    scope: &authority.1,
+                    publication: project_permit,
+                    namespace: &project_capture.0.namespace,
+                    mounted: Some(&project_mount),
+                },
+            ];
+            let guards = [shared.clone(), shared.clone()];
+            handles
+                .root
+                .as_ref()
+                .ok_or(Error::Indeterminate(command.operation_id))?
+                .prepare(&owner, &options.0, &bindings, &guards, work)
+                .await?
         };
         *entry
             .view
@@ -372,7 +363,7 @@ impl PiNativeCommandHost {
             view.manifest(),
             work,
         )?;
-        let mut staged = pi_native::stage_command(
+        let staged = pi_native::stage_command(
             result_context.as_ref(),
             command.operation_id,
             &request.0,
@@ -394,48 +385,20 @@ impl PiNativeCommandHost {
             work,
         )
         .await?;
-        let authority = self.authority(context, input, journal.clone(), work)?;
-        let mut provider_plan = effect_plan(
-            &staged.1.provider,
-            staged.1.guarantee,
-            &staged.1.effect_kind,
-            &staged.1.request,
-            &staged.1.result_schema,
-            work,
-        )?;
-        staged.2.absorb(&mut provider_plan.1)?;
-        staged.2.absorb(&mut work.claim(
-            std::mem::size_of::<
-                NativeProcessProvider<LocalStream, LocalAuthorityBackend, LocalObjectBackend>,
-            >() as u64,
-            1,
-            WorkCounters {
-                allocation_operations: 1,
-                ..WorkCounters::UNCHARGED
-            },
-        )?)?;
-        let provider = Arc::new(
-            NativeProcessProvider::new(
-                owner.clone(),
+        let bound = self
+            .bind_effect(
+                shared,
+                input,
+                owner,
                 command.operation_id,
-                provider_plan.0,
+                (staged.1, staged.2),
+                journal,
                 Some(view),
                 approval,
-                authority,
+                Some(staged.0),
+                work,
             )
-            .await?,
-        );
-        let effects = self.effects(context, input, &provider, work)?;
-        let bound = Arc::new(BoundEffect {
-            work: work.clone(),
-            effects,
-            owner,
-            journal,
-            context: shared,
-            command: command.operation_id,
-            staged: Some(staged.0),
-            plan: (staged.1, staged.2),
-        });
+            .await?;
         handles.effect = Some(bound.clone());
         Ok(bound)
     }

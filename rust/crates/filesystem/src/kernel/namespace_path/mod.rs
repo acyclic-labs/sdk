@@ -110,7 +110,7 @@ impl NamespacePath {
     /// Returns the exact parent path, or `None` for the namespace root.
     #[must_use]
     pub fn parent(&self) -> Option<Self> {
-        let (parent, name) = self.split_last()?;
+        let (parents, name) = self.split_last()?;
         let encoded_bytes = if self.components.len() == 1 {
             1
         } else {
@@ -118,7 +118,7 @@ impl NamespacePath {
                 .saturating_sub(u32::try_from(name.as_bytes().len()).unwrap_or(u32::MAX))
                 .saturating_sub(1)
         };
-        let components = parent.to_vec();
+        let components = parents.to_vec();
         Some(Self {
             components,
             encoded_bytes,

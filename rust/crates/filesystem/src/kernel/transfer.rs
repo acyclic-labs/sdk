@@ -103,15 +103,10 @@ pub async fn build_generation_export_manifest_async<S: AsyncObjectStore>(
         .validate()
         .map_err(GenerationExportManifestError::from)
         .map_err(|error| OperationFailure::before_work(error.into()))?;
-    let proof = prove_generation_closure(
-        store,
-        generation_root,
-        closure_limits,
-        budget,
-        cancellation,
-    )
-    .await
-    .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
+    let proof =
+        prove_generation_closure(store, generation_root, closure_limits, budget, cancellation)
+            .await
+            .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
     let manifest = GenerationExportManifest {
         volume_id,
         config,
@@ -176,6 +171,10 @@ pub async fn authenticate_generation_export_manifest_async<S: AsyncObjectStore>(
 }
 
 /// Reads one resumable manifest page using the backend's ordered batch primitive.
+#[allow(
+    clippy::too_many_lines,
+    reason = "This state transition keeps admission, effects and resource retirement in one frame."
+)]
 pub async fn export_generation_batch_async<S: AsyncObjectStore + ?Sized>(
     store: &S,
     manifest: &GenerationExportManifest,

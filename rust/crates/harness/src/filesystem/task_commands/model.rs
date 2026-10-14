@@ -1,6 +1,7 @@
 use super::*;
-use crate::filesystem::PreparationIo;
+use crate::executor::{ExecutionProgress, TurnOutput};
 use crate::filesystem::task_runtime::observed::boundary;
+use crate::filesystem::{FilesystemExecutionJournal, PreparationIo};
 use crate::wire::ErrorCode;
 
 impl<P, A, O> FilesystemTaskCommands<'_, P, A, O>
@@ -51,10 +52,23 @@ where
                     "model is outside the committed outbox",
                 ));
             }
-            let recorded = if stock && !latest.transition.state["mail"].is_null() {
+            let recorded = if stock
+                && latest
+                    .transition
+                    .state
+                    .get("mail")
+                    .is_some_and(|mail| !mail.is_null())
+            {
                 Some(
-                    OperationId::deserialize(&latest.transition.state["receive"]["operation_id"])
-                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                    OperationId::deserialize(
+                        latest
+                            .transition
+                            .state
+                            .get("receive")
+                            .and_then(|receive| receive.get("operation_id"))
+                            .unwrap_or(&Value::Null),
+                    )
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
                 )
             } else {
                 None
@@ -75,9 +89,14 @@ where
                 crate::filesystem::task_runtime::execution_operation(task, turn, io)?,
             )
         };
+        let require_journal = || {
+            journal
+                .as_ref()
+                .ok_or_else(|| boundary(io, ErrorCode::Storage, "model journal is absent"))
+        };
         if reconciliation_only
             && !was_dispatched(
-                journal.as_ref().expect("reconciliation journal").as_ref(),
+                require_journal()?.as_ref(),
                 operation,
                 MODEL_TASK_COMMAND_KIND,
                 io,
@@ -86,14 +105,12 @@ where
         {
             return mail::reconciled(io);
         }
-        if let Some((latest, receive)) = steering {
+        if let Some(steering) = steering {
             self.steer(
-                task,
                 &context,
                 fence,
                 &mut command,
-                latest,
-                receive,
+                steering,
                 reconciliation_only,
                 io,
             )
@@ -111,18 +128,21 @@ where
             selected_context: command.selected_context,
             max_steps: command.max_steps,
         };
-        let result: Result<(
-            crate::executor::ExecutionProgress<crate::executor::TurnOutput>,
-            crate::NativeCustody,
-        )> = 'execution: {
+        let result: Result<ExecutionProgress<TurnOutput>> = 'execution: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(io) = io {
-                let work = io.original_native_work().expect("native work");
+                let work = io.original_native_work().ok_or_else(|| {
+                    boundary(
+                        Some(io),
+                        ErrorCode::Unsupported,
+                        "model requires original native work",
+                    )
+                })?;
                 let context = match &command.selected_output_volume {
                     Some(volume) => context.with_output_volume(volume).await?,
                     None => context,
                 };
-                let journal = journal.as_ref().expect("native journal");
+                let journal = require_journal()?;
                 let executor = self.runtime.stock_executor_with_native_work(
                     task,
                     fence,
@@ -144,7 +164,14 @@ where
                 let result = executor
                     .execute_progress_with_native_context(&context, &input, journal.as_ref(), work)?
                     .await;
-                break 'execution result.map(|(progress, custody)| (progress, Some(custody)));
+                drop(executor);
+                drop(context);
+                if reconciliation_only {
+                    return Self::reconcile_model(result.map(drop), journal, Some(io)).await;
+                }
+                let (progress, custody) = result?;
+                io.absorb_native_custody(custody)?;
+                break 'execution Ok(progress);
             }
             {
                 let execution = self
@@ -164,61 +191,52 @@ where
                     Some(maximum) => execution.with_max_output_tokens(maximum)?,
                     None => execution,
                 };
-                let result = if reconciliation_only {
-                    execution.reconcile_progress(input).await
-                } else {
-                    execution.execute_progress(input).await
-                };
-                result.map(|progress| (progress, None))
+                if reconciliation_only {
+                    let result = execution.reconcile_progress(input).await;
+                    return Self::reconcile_model(result.map(drop), require_journal()?, io).await;
+                }
+                execution.execute_progress(input).await
             }
         };
-        if reconciliation_only {
-            match result {
-                Ok((progress, custody)) => drop((progress, custody)),
-                Err(Error::Indeterminate(_)) => {}
-                Err(error) => return Err(error),
-            }
-            return if journal
-                .as_ref()
-                .expect("reconciliation journal")
-                .is_quiescent(io)
-                .await?
-            {
-                mail::reconciled(io)
-            } else {
-                Ok(TaskCommandProgress::Indeterminate)
-            };
+        match result? {
+            ExecutionProgress::Ready(output) => ready(Outcome::Succeeded(output), io),
+            ExecutionProgress::Pending(_) => Ok(TaskCommandProgress::Pending),
+            ExecutionProgress::Rejected(reason) => rejected(reason, io),
         }
-        let (progress, custody) = result?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(custody) = custody {
-            io.expect("native observer")
-                .absorb_native_custody(custody)?;
+    }
+
+    async fn reconcile_model(
+        result: Result<()>,
+        journal: &FilesystemExecutionJournal<P, A, O>,
+        io: Option<&PreparationIo>,
+    ) -> Result<TaskCommandProgress> {
+        match result {
+            Ok(()) | Err(Error::Indeterminate(_)) => {}
+            Err(error) => return Err(error),
         }
-        #[cfg(target_arch = "wasm32")]
-        let _ = custody;
-        match progress {
-            crate::executor::ExecutionProgress::Ready(output) => {
-                ready(Outcome::Succeeded(output), io)
-            }
-            crate::executor::ExecutionProgress::Pending(_) => Ok(TaskCommandProgress::Pending),
-            crate::executor::ExecutionProgress::Rejected(reason) => rejected(reason, io),
+        if journal.is_quiescent(io).await? {
+            mail::reconciled(io)
+        } else {
+            Ok(TaskCommandProgress::Indeterminate)
         }
     }
 
     async fn steer(
         &self,
-        task: TaskId,
         context: &TaskContext,
         fence: &LeaseFence,
         command: &mut ModelTaskCommand,
-        latest: crate::workflow::WorkflowRecord,
-        receive: OperationId,
+        (latest, receive): (crate::workflow::WorkflowRecord, OperationId),
         reconciliation_only: bool,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
-        let results = latest.input["commands"]
-            .as_array()
+        let task = context.durable_task_id().ok_or_else(|| {
+            boundary(io, ErrorCode::Unauthorized, "steering has no admitted task")
+        })?;
+        let results = latest
+            .input
+            .get("commands")
+            .and_then(Value::as_array)
             .ok_or_else(|| boundary(io, ErrorCode::Unauthorized, "steering result is absent"))?;
         let [result] = results.as_slice() else {
             return Err(boundary(
@@ -307,20 +325,16 @@ where
                 "receiver parcel differs from original mail",
             ));
         }
-        let mut parts = match std::mem::replace(&mut command.input, ModelContent::Parts(Vec::new()))
-        {
-            ModelContent::Parts(parts) => parts,
-            content => {
-                let part = match content {
-                    ModelContent::Text(text) => crate::model::ModelContentPart::Text { text },
-                    ModelContent::Part(part) => part,
-                    ModelContent::Parts(_) => unreachable!(),
-                };
-                let mut parts = Vec::new();
-                crate::executor::stock_vec_push(&mut parts, part, io)?;
-                parts
-            }
-        };
+        let mut parts = Vec::new();
+        match std::mem::replace(&mut command.input, ModelContent::Parts(Vec::new())) {
+            ModelContent::Parts(existing) => parts = existing,
+            ModelContent::Text(text) => crate::executor::stock_vec_push(
+                &mut parts,
+                crate::model::ModelContentPart::Text { text },
+                io,
+            )?,
+            ModelContent::Part(part) => crate::executor::stock_vec_push(&mut parts, part, io)?,
+        }
         crate::executor::stock_vec_push(
             &mut parts,
             crate::model::ModelContentPart::File {

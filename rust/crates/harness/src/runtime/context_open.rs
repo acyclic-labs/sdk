@@ -141,9 +141,14 @@ impl AgentHarness {
         operation: OperationId,
         io: Option<&crate::executor::PreparationIo>,
         issued_purpose: IssuedContextPurpose,
-        owned_mailbox: Option<Arc<dyn OwnedTaskMailbox>>,
+        owned_mailbox: Option<(Arc<dyn OwnedTaskMailbox>, RuntimeScope, NativeCustody)>,
     ) -> Result<Arc<TaskContext>> {
-        let _ = &issued_purpose;
+        let (owned_mailbox, native_scope) = match owned_mailbox {
+            Some((mailbox, scope, custody)) => (Some(mailbox), Some((scope, custody))),
+            None => (None, None),
+        };
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let mut native_scope = native_scope;
         let native_work = task_original_work(io)?;
         let host = self.state.as_ref().ok_or_else(|| {
             crate::conversation::content_error(
@@ -165,9 +170,13 @@ impl AgentHarness {
                     1,
                     acyclic_fs::WorkCounters::default(),
                 )?;
-                let mut admitted = host
-                    .resume_scope_with_native_work(task, operation, work)?
-                    .await?;
+                let mut admitted = match native_scope.take() {
+                    Some(scope) => scope,
+                    None => {
+                        host.resume_scope_with_native_work(task, operation, work)?
+                            .await?
+                    }
+                };
                 custody.absorb(&mut admitted.1)?;
                 self.scope.validate_resumed_scope(&admitted.0, io)?;
                 admitted.0.extension_runtime = self.scope.extension_runtime.clone();
@@ -184,9 +193,11 @@ impl AgentHarness {
                 None::<NativeCustody>,
             ),
         };
-        let _ = &custody;
+        drop(native_scope);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut custody = custody;
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let _ = (issued_purpose, custody);
         let bound = scope.concurrency_bound(self.concurrency);
         let descendants = self.live.child(bound, native_work)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

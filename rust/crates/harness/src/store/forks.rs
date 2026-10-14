@@ -49,16 +49,13 @@ pub(super) fn fork_command_key_with_work(
     if let Some(observer) = quota.work().as_deref_mut() {
         observer.reserve_text(&mut text, capacity)?;
         quota.adopt(text.capacity() as u64)?;
-        quota
-            .work()
-            .as_deref_mut()
-            .expect("format observer")
-            .copy_bytes(capacity as u64)?;
+        quota.observer()?.copy_bytes(capacity as u64)?;
     } else {
         text.try_reserve_exact(capacity)
             .map_err(|_| Error::Invalid("fork command identity allocation failed".into()))?;
     }
-    write!(&mut text, "{prefix}{operation}").expect("fixed-width operation formatting");
+    write!(&mut text, "{prefix}{operation}")
+        .map_err(|_| Error::Invalid("fork command identity formatting failed".into()))?;
     let key = IdempotencyKey::new(text)?;
     let held = quota.retained();
     quota.transfer();

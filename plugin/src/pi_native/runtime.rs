@@ -166,7 +166,8 @@ impl PiNativeHostRuntime {
     ) -> Result<(PiNativeInvocation, acyclic_fs::NativeAllocation)> {
         self.validate(work)?;
         let projection = PiBoundInvocation {
-            runtime_digest: native_digest(self, crate::MAXIMUM_ADAPTER_STATE_BYTES, work)?,
+            runtime_digest: *digest_pi_value(self, crate::MAXIMUM_ADAPTER_STATE_BYTES, work)?
+                .as_bytes(),
             session_file,
             cwd,
             provider,
@@ -193,7 +194,8 @@ impl PiNativeHostRuntime {
         intent.validate(work)?;
         require_caller_environment(caller_environment)?;
         let input = &intent.invocation;
-        if input.runtime_digest != native_digest(self, crate::MAXIMUM_ADAPTER_STATE_BYTES, work)?
+        if input.runtime_digest
+            != *digest_pi_value(self, crate::MAXIMUM_ADAPTER_STATE_BYTES, work)?.as_bytes()
             || !input.environment.is_empty()
             || !input
                 .builtin_tools
@@ -263,22 +265,12 @@ impl PiBoundInvocation<'_> {
     }
 }
 
+#[derive(Serialize)]
 struct PiCallerEnvironment<'a> {
+    #[serde(flatten)]
     host: &'a BTreeMap<String, String>,
+    #[serde(flatten)]
     caller: &'a BTreeMap<String, String>,
-}
-impl Serialize for PiCallerEnvironment<'_> {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
-        use serde::ser::SerializeMap;
-        let mut map = serializer.serialize_map(Some(self.host.len() + self.caller.len()))?;
-        for (key, value) in self.host.iter().chain(self.caller.iter()) {
-            map.serialize_entry(key, value)?;
-        }
-        map.end()
-    }
 }
 
 pub(super) fn require_caller_environment(environment: &BTreeMap<String, String>) -> Result<()> {
@@ -324,7 +316,8 @@ impl PiNativeInvocation {
         work: &NativeMaterializationWork,
     ) -> Result<(NativeProcessRequest, acyclic_fs::NativeAllocation)> {
         runtime.validate(work)?;
-        if self.runtime_digest != native_digest(runtime, crate::MAXIMUM_ADAPTER_STATE_BYTES, work)?
+        if self.runtime_digest
+            != *digest_pi_value(runtime, crate::MAXIMUM_ADAPTER_STATE_BYTES, work)?.as_bytes()
         {
             return Err(invalid(
                 "Pi invocation changed its protected host configuration",
@@ -388,9 +381,51 @@ impl PiNativeInvocation {
                 "Pi native namespace differs from its admitted volume selection",
             ));
         }
+        let mut argv = [""; 18];
+        let prefix = runtime.executable_prefix.len();
+        for (target, value) in argv.iter_mut().zip(&runtime.executable_prefix) {
+            *target = value;
+        }
+        let arguments = [
+            "--print",
+            "--mode",
+            "json",
+            "--session",
+            native_argv_path(&self.session_file)?,
+            "--provider",
+            &self.provider,
+            "--model",
+            &self.model,
+            "--no-extensions",
+            "--no-mcp",
+            "-e",
+            native_argv_path(&runtime.extension)?,
+        ];
+        argv[prefix..prefix + arguments.len()].copy_from_slice(&arguments);
+        let mut count = prefix + arguments.len();
+        let mut tools = std::io::Cursor::new([0; 15]);
+        if self.builtin_tools.is_empty() {
+            argv[count] = "--no-builtin-tools";
+            count += 1;
+        } else {
+            use std::io::Write;
+            for (index, tool) in self.builtin_tools.iter().enumerate() {
+                write!(tools, "{}{tool}", if index == 0 { "" } else { "," })
+                    .expect("validated builtin names fit their buffer");
+            }
+            argv[count] = "--tools";
+            argv[count + 1] = std::str::from_utf8(&tools.get_ref()[..tools.position() as usize])
+                .expect("validated builtin names are ASCII");
+            count += 2;
+        }
+        if let Some(extension) = &runtime.provider_extension {
+            argv[count] = "-e";
+            argv[count + 1] = native_argv_path(extension)?;
+            count += 2;
+        }
         let projection = PiNativeRequestProjection {
             executable: &runtime.executable,
-            argv: PiNativeArgv(runtime, self),
+            argv: &argv[..count],
             cwd: &self.cwd,
             environment: PiCallerEnvironment {
                 host: &runtime.environment,
@@ -422,7 +457,7 @@ impl PiNativeInvocation {
 #[derive(Serialize)]
 struct PiNativeRequestProjection<'a> {
     executable: &'a Path,
-    argv: PiNativeArgv<'a>,
+    argv: &'a [&'a str],
     cwd: &'a Path,
     environment: PiCallerEnvironment<'a>,
     timeout_ms: u32,
@@ -435,88 +470,7 @@ struct PiNativeRequestProjection<'a> {
     view: &'a NativeViewManifest,
 }
 
-struct PiNativeArgv<'a>(&'a PiNativeHostRuntime, &'a PiNativeInvocation);
-impl Serialize for PiNativeArgv<'_> {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
-        use serde::ser::SerializeSeq;
-        let (runtime, invocation) = (self.0, self.1);
-        let count = runtime.executable_prefix.len()
-            + 13
-            + if invocation.builtin_tools.is_empty() {
-                1
-            } else {
-                2
-            }
-            + if runtime.provider_extension.is_some() {
-                2
-            } else {
-                0
-            };
-        let mut sequence = serializer.serialize_seq(Some(count))?;
-        for prefix in &runtime.executable_prefix {
-            sequence.serialize_element(prefix)?;
-        }
-        for argument in [
-            "--print",
-            "--mode",
-            "json",
-            "--session",
-            native_argv_path::<S::Error>(&invocation.session_file)?,
-            "--provider",
-            &invocation.provider,
-            "--model",
-            &invocation.model,
-            "--no-extensions",
-            "--no-mcp",
-            "-e",
-            native_argv_path::<S::Error>(&runtime.extension)?,
-        ] {
-            sequence.serialize_element(argument)?;
-        }
-        if invocation.builtin_tools.is_empty() {
-            sequence.serialize_element("--no-builtin-tools")?;
-        } else {
-            let mut tools = [0_u8; 15];
-            let mut remaining = tools.as_mut_slice();
-            for (index, tool) in invocation.builtin_tools.iter().enumerate() {
-                let separator = if index == 0 {
-                    b"".as_slice()
-                } else {
-                    b",".as_slice()
-                };
-                for bytes in [separator, tool.as_bytes()] {
-                    let (target, tail) =
-                        remaining.split_at_mut_checked(bytes.len()).ok_or_else(|| {
-                            <S::Error as serde::ser::Error>::custom(
-                                "Pi builtin names exceed their buffer",
-                            )
-                        })?;
-                    target.copy_from_slice(bytes);
-                    remaining = tail;
-                }
-            }
-            let unused = remaining.len();
-            let length = tools.len() - unused;
-            sequence.serialize_element("--tools")?;
-            sequence.serialize_element(
-                std::str::from_utf8(tools.get(..length).ok_or_else(|| {
-                    <S::Error as serde::ser::Error>::custom("Pi builtin buffer length differs")
-                })?)
-                .map_err(<S::Error as serde::ser::Error>::custom)?,
-            )?;
-        }
-        if let Some(extension) = &runtime.provider_extension {
-            sequence.serialize_element("-e")?;
-            sequence.serialize_element(native_argv_path::<S::Error>(extension)?)?;
-        }
-        sequence.end()
-    }
-}
-
-fn native_argv_path<E: serde::ser::Error>(path: &Path) -> std::result::Result<&str, E> {
+fn native_argv_path(path: &Path) -> Result<&str> {
     path.to_str()
-        .ok_or_else(|| E::custom("Pi invocation path is not UTF-8"))
+        .ok_or_else(|| invalid("Pi invocation path is not UTF-8"))
 }

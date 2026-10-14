@@ -82,14 +82,10 @@ impl McpStdioExchange {
         self.received = received;
         loop {
             let mut end = None;
-            let unscanned = self
-                .line
-                .get(scanned..)
-                .ok_or_else(|| error(work, ErrorCode::Invalid, "invalid MCP frame cursor"))?;
-            for (offset, byte) in unscanned.iter().enumerate() {
+            for (offset, byte) in self.line.iter().enumerate().skip(scanned) {
                 charge(work, 1, 1, 0)?;
                 if *byte == b'\n' {
-                    end = Some(scanned + offset);
+                    end = Some(offset);
                     break;
                 }
             }
@@ -97,7 +93,7 @@ impl McpStdioExchange {
             let body = self
                 .line
                 .get(..end)
-                .ok_or_else(|| error(work, ErrorCode::Invalid, "invalid MCP frame cursor"))?;
+                .ok_or_else(|| error(work, ErrorCode::Invalid, "MCP stdio frame is invalid"))?;
             let body = body.strip_suffix(b"\r").unwrap_or(body);
             let body = body.strip_prefix(b"\xef\xbb\xbf").unwrap_or(body);
             let (message, frame_custody) = decode_value(body, work)?;

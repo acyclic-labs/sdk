@@ -7,8 +7,7 @@ async fn tree_walk_and_grep_are_generation_bound_and_portable() {
     transaction
         .create_dir_all("/src", WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .expect("directory")
-        .value;
+        .expect("directory");
     for (path, text) in [
         ("/src/a.txt", "one\nneedle\n"),
         ("/src/b.txt", "needle two\n"),
@@ -27,8 +26,7 @@ async fn tree_walk_and_grep_are_generation_bound_and_portable() {
             &CancellationToken::new(),
         )
         .await
-        .expect("binary file")
-        .value;
+        .expect("binary file");
     let generation = publish_fixture(transaction).await;
     let entries = walk_git_tree(&generation, Some("src"), 10)
         .await
@@ -174,5 +172,14 @@ fn portable_git_names_decode_canonical_windows_names() {
     let name =
         crate::kernel::LogicalName::new(crate::kernel::NameEncoding::WindowsUtf16Le, bytes, 255)
             .expect("valid Windows name");
-    assert_eq!(name.unicode_text(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).ok().map(|receipt| receipt.value).as_deref(), Some("source-λ.rs"));
+    assert_eq!(
+        name.unicode_text(
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new()
+        )
+        .ok()
+        .map(|receipt| receipt.value)
+        .as_deref(),
+        Some("source-λ.rs")
+    );
 }

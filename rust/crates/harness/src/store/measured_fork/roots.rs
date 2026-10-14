@@ -148,10 +148,10 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     let cancelled_token = CancellationToken::new();
     let cancelled = NativeMaterializationWork::new(guarded_publication_budget(), &cancelled_token)
         .expect("fixture ledger fits its budget");
-    cancelled_token.cancel();
     let mut cancelled_io = HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(
         &cancelled,
     )?);
+    cancelled_token.cancel();
     assert!(matches!(
         aggregate
             .execute(command, Some(&owner), &mut Some(&mut cancelled_io))

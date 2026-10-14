@@ -1,7 +1,7 @@
 //! The Pi command host drives the existing fenced workflow.
 use super::*;
 use acyclic_harness::filesystem::PreparationIo;
-use acyclic_harness::store::HistoryIo;
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::{
     conversation::FileRef,
     distributed::{WorkPull, Worker},
@@ -19,30 +19,23 @@ impl PiControlHost<'_> {
         let PluginTaskBinding::Pi(binding) = &self.retained.task_binding else {
             return Err(boundary("Pi driver requires its original admitted root"));
         };
+        let admission = self
+            .runtime
+            .runtime
+            .task_host()
+            .observe_admission_with_native_work(binding.task_id, &self.work)?
+            .await?;
+        let definition = pi_task::PiTaskMachine::new(&self.work)?.definition(&self.work)?;
         pi_recovery::authenticate_pi_task(
-            &self.runtime.runtime,
+            &admission.0,
             binding,
             pi_recovery::PiTaskOrigin::RootState(self.retained),
             &self.work,
-        )
-        .await?;
-        let (recovered, custody) = {
-            let mut io = acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(
-                &self.work,
-            )?);
-            HistoryIo::retain_owned(
-                &mut io,
-                std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>())
-                    as u64,
-            )?;
-            let value = self
-                .runtime
-                .runtime
-                .task_host()
-                .recover_work(binding.task_id, &mut Some(&mut io))
-                .await?;
-            (value, io.into_custody()?)
-        };
+            definition.identity(),
+        )?;
+        drop(admission);
+        let (recovered, custody) =
+            pi_native_host::recover_task(&self.runtime, binding.task_id, &self.work).await?;
         match recovered {
             WorkPull::Claimed(lease) | WorkPull::Unresolved { lease, .. } => {
                 let result = self
@@ -61,23 +54,13 @@ impl PiControlHost<'_> {
                     available: Default::default(),
                     labels: BTreeMap::new(),
                 };
-                let result = async {
-                    let io = PreparationIo::from_native_work(&self.work)?;
-                    let value = self
-                        .runtime
-                        .runtime
-                        .run_operation(&worker, binding.task_id, self, 8, Some(&io))
-                        .await?;
-                    let PreparationIo::Native { custody, .. } = io else {
-                        unreachable!()
-                    };
-                    Ok::<_, acyclic_harness::Error>((
-                        value,
-                        custody
-                            .into_inner()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner),
-                    ))
-                }
+                let result = pi_native_host::run_operation(
+                    &self.runtime,
+                    &worker,
+                    binding.task_id,
+                    self,
+                    &self.work,
+                )
                 .await;
                 drop(worker);
                 drop(id.1);
@@ -296,9 +279,7 @@ impl PiControlHost<'_> {
         let owner = pi_owner::PiOwnerConfig::load(&self.resources.data, self.directory, work)?
             .into_native_shared(work)?;
         self.runtime.verify_owner_with_native_work(&owner, work)?;
-        if task == owner.policy().root_task
-            && command.operation_id == pi_root_inputs::preparation_operation(task, work)?
-        {
+        let root = if task == owner.policy().root_task {
             let PluginTaskBinding::Pi(binding) = &self.retained.task_binding else {
                 return Err(boundary("Pi root preparation requires a Pi state binding"));
             };
@@ -325,89 +306,66 @@ impl PiControlHost<'_> {
                     &mut Some(&mut &PreparationIo::from_native_work(work)?),
                 )
                 .await?;
-            let expected = pi_root_provider::guarded_pi_value(
-                &preparation.plan,
-                MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
-                work,
-            )?;
-            if preparation.command != command || expected.0 != payload {
-                return Err(acyclic_harness::Error::NativeBoundary {
-                    code: acyclic_harness::wire::ErrorCode::Conflict,
-                    reason: "Pi root command differs from original admission",
-                });
+            Some((preparation, journal_owner))
+        } else {
+            None
+        };
+        let context = if let Some((preparation, journal_owner)) = root {
+            if command.operation_id == pi_root_inputs::preparation_operation(task, work)? {
+                let expected = pi_root_provider::guarded_pi_value(
+                    &preparation.plan,
+                    MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
+                    work,
+                )?;
+                if preparation.command != command || expected.0 != payload {
+                    return Err(acyclic_harness::Error::NativeBoundary {
+                        code: acyclic_harness::wire::ErrorCode::Conflict,
+                        reason: "Pi root command differs from original admission",
+                    });
+                }
+                drop(expected);
+                let content = acyclic_harness::runtime::content_residency_verifier(
+                    Arc::clone(&context),
+                    Arc::clone(&journal_owner),
+                    Some(&PreparationIo::from_native_work(work)?),
+                )?;
+                let authority = owner.effect_authority_with_native_work(work)?;
+                let provider = pi_root_provider::root_provider(
+                    owner,
+                    self.resources,
+                    self.filesystem.clone(),
+                    self.stream.clone(),
+                    preparation,
+                    Some(journal_owner),
+                    work.clone(),
+                )?;
+                let effects = pi_owner::root_effects_with_native_work(
+                    self.stream.clone(),
+                    authority.0,
+                    authority.1,
+                    content,
+                    provider.clone(),
+                    work,
+                )?;
+                *self.root_provider.lock().await = Some(provider);
+                let commands = self.runtime.runtime.commands().with_effects(effects);
+                return if reconcile {
+                    commands
+                        .reconcile_with_native_work(context, fence, command, payload, work)?
+                        .await
+                } else {
+                    commands
+                        .execute_with_native_work(context, fence, command, payload, work)?
+                        .await
+                };
             }
-            drop(expected);
-            let content = acyclic_harness::runtime::content_residency_verifier(
-                Arc::clone(&context),
-                Arc::clone(&journal_owner),
-                Some(&PreparationIo::from_native_work(work)?),
-            )?;
-            let authority = owner.effect_authority_with_native_work(work)?;
-            let provider = pi_root_provider::root_provider(
-                owner,
-                self.resources,
-                self.filesystem.clone(),
-                self.stream.clone(),
-                preparation,
-                Some(journal_owner),
-                work.clone(),
-            )?;
-            let effects = pi_owner::root_effects_with_native_work(
-                self.stream.clone(),
-                authority.0,
-                authority.1,
-                content,
-                provider.clone(),
-                work,
-            )?;
-            *self.root_provider.lock().await = Some(provider);
-            let commands = self.runtime.runtime.commands().with_effects(effects);
-            return if reconcile {
-                commands
-                    .reconcile_with_native_work(context, fence, command, payload, work)?
-                    .await
-            } else {
-                commands
-                    .execute_with_native_work(context, fence, command, payload, work)?
-                    .await
-            };
-        }
-        let context = if task == owner.policy().root_task {
-            let PluginTaskBinding::Pi(binding) = &self.retained.task_binding else {
-                return Err(boundary("Pi root preparation requires a Pi state binding"));
-            };
-            let preparation = pi_root_inputs::PiRootPreparation::load(
-                (&self.resources.data, self.directory),
-                &self.runtime,
-                &self.filesystem,
-                binding,
-                pi_recovery::PiTaskOrigin::RootState(self.retained),
-                Some(context.clone()),
-                work,
-            )
-            .await?;
-            let journal_owner = self
-                .runtime
-                .runtime
-                .task_host()
-                .journal_owner(task, &fence, Some(&PreparationIo::from_native_work(work)?))
-                .await?
-                .into_native_shared(work)?;
-            journal_owner
-                .verify(
-                    false,
-                    &mut Some(&mut &PreparationIo::from_native_work(work)?),
-                )
-                .await?;
-            pi_root_provider::bind_root_output_context_with_native_work(
-                context,
+            pi_root_provider::bind_root_output_context(
                 &journal_owner,
                 owner,
                 self.resources,
                 self.filesystem.clone(),
                 self.stream.clone(),
-                &preparation.request.binding,
-                &preparation.request.root,
+                preparation,
                 work,
             )
             .await?

@@ -6,10 +6,7 @@ use std::os::windows::process::CommandExt as _;
 use std::process::Child;
 use std::process::Command;
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_BROKEN_PIPE, ERROR_NO_MORE_FILES, HANDLE, INVALID_HANDLE_VALUE,
-};
-use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+    CloseHandle, ERROR_BROKEN_PIPE, HANDLE, NTSTATUS, RtlNtStatusToDosError,
 };
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -19,8 +16,7 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::System::Pipes::{PIPE_NOWAIT, PeekNamedPipe, SetNamedPipeHandleState};
 use windows_sys::Win32::System::Threading::{
-    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, OpenThread, ResumeThread,
-    THREAD_SUSPEND_RESUME,
+    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED,
 };
 
 pub(super) use std::os::windows::io::AsRawHandle as Pipe;
@@ -166,8 +162,6 @@ pub(super) struct Guard {
     termination_sent: bool,
     pub(super) direct_termination_sent: bool,
     pub(super) cleanup_on_drop: bool,
-    snapshot: HANDLE,
-    thread: HANDLE,
 }
 
 // SAFETY: these exclusively owned kernel handles have no thread affinity.
@@ -211,7 +205,21 @@ pub(super) fn spawn_controlled(
             Ok(())
         }
     })?;
-    tree.guard.resume_process(child.id(), meter)
+    super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
+        #[link(name = "ntdll")]
+        unsafe extern "system" {
+            fn NtResumeProcess(process: HANDLE) -> NTSTATUS;
+        }
+        // SAFETY: the owned child is suspended and already assigned to this Job.
+        let status = unsafe { NtResumeProcess(child.as_raw_handle().cast()) };
+        if status < 0 {
+            // SAFETY: the returned NTSTATUS is a valid input to this conversion.
+            let error = unsafe { RtlNtStatusToDosError(status) };
+            Err(io::Error::from_raw_os_error(error.cast_signed()))
+        } else {
+            Ok(())
+        }
+    })
 }
 
 #[cfg(test)]
@@ -254,8 +262,6 @@ impl Guard {
             termination_sent: false,
             direct_termination_sent: false,
             cleanup_on_drop,
-            snapshot: std::ptr::null_mut(),
-            thread: std::ptr::null_mut(),
         }
     }
 
@@ -302,30 +308,10 @@ impl Guard {
     }
 
     pub(super) const fn pending(&self) -> bool {
-        !self.job.is_null() || !self.snapshot.is_null() || !self.thread.is_null()
-    }
-
-    pub(super) fn release_setup(
-        &mut self,
-        meter: Option<&dyn crate::NativeReadMeter>,
-    ) -> io::Result<()> {
-        for handle in [&mut self.thread, &mut self.snapshot] {
-            if !handle.is_null() {
-                super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
-                    // SAFETY: this exclusively owned handle is no longer borrowed.
-                    if unsafe { CloseHandle(*handle) } == 0 {
-                        return Err(io::Error::last_os_error());
-                    }
-                    *handle = std::ptr::null_mut();
-                    Ok(())
-                })?;
-            }
-        }
-        Ok(())
+        !self.job.is_null()
     }
 
     pub(super) fn close(&mut self, meter: Option<&dyn crate::NativeReadMeter>) -> io::Result<()> {
-        self.release_setup(meter)?;
         if !self.job.is_null() {
             super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
                 // SAFETY: cleanup observed an empty Job; this is its owned handle.
@@ -528,79 +514,4 @@ fn denied_admission_still_observes_unassigned_child_exit() {
     );
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     assert!(!temporary.path().join("tree-ready").exists());
-}
-
-impl Guard {
-    fn resume_process(
-        &mut self,
-        process_id: u32,
-        meter: Option<&dyn crate::NativeReadMeter>,
-    ) -> io::Result<()> {
-        super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-            // SAFETY: SDK returns a newly owned system-thread snapshot.
-            let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
-            if snapshot == INVALID_HANDLE_VALUE {
-                return Err(io::Error::last_os_error());
-            }
-            self.snapshot = snapshot;
-            Ok(())
-        })?;
-        // SAFETY: the thread snapshot output accepts zero initialization.
-        let mut entry: THREADENTRY32 = unsafe { zeroed() };
-        entry.dwSize =
-            u32::try_from(size_of::<THREADENTRY32>()).map_err(|_| io::ErrorKind::InvalidInput)?;
-        let mut found =
-            super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-                // SAFETY: owned live snapshot and initialized writable ABI record.
-                if unsafe { Thread32First(self.snapshot, &raw mut entry) } != 0 {
-                    return Ok(true);
-                }
-                let error = io::Error::last_os_error();
-                if error.raw_os_error() == i32::try_from(ERROR_NO_MORE_FILES).ok() {
-                    Ok(false)
-                } else {
-                    Err(error)
-                }
-            })?;
-        while found {
-            if let Some(meter) = meter {
-                meter.examine(1, 0)?;
-            }
-            if entry.th32OwnerProcessID == process_id {
-                super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-                    // SAFETY: ID belongs to the just-observed snapshot entry.
-                    let thread =
-                        unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
-                    if thread.is_null() {
-                        return Err(io::Error::last_os_error());
-                    }
-                    self.thread = thread;
-                    Ok(())
-                })?;
-                super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
-                    // SAFETY: owned live handle with resume access.
-                    if unsafe { ResumeThread(self.thread) } == u32::MAX {
-                        Err(io::Error::last_os_error())
-                    } else {
-                        Ok(())
-                    }
-                })?;
-                return self.release_setup(meter);
-            }
-            found =
-                super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-                    // SAFETY: owned snapshot and writable record remain valid.
-                    if unsafe { Thread32Next(self.snapshot, &raw mut entry) } != 0 {
-                        return Ok(true);
-                    }
-                    let error = io::Error::last_os_error();
-                    if error.raw_os_error() == i32::try_from(ERROR_NO_MORE_FILES).ok() {
-                        Ok(false)
-                    } else {
-                        Err(error)
-                    }
-                })?;
-        }
-        Err(io::ErrorKind::NotFound.into())
-    }
 }

@@ -129,7 +129,7 @@ pub(super) fn merge_workspace_backend<T, E: Into<WorkspaceError>>(
 pub(super) fn workspace_allocation_error(
     error: crate::kernel::allocation::AllocationError,
 ) -> WorkspaceError {
-    crate::collection::handle_allocation_error(error).into()
+    error.into_work_or(crate::FsError::HandleAllocationFailed).into()
 }
 
 pub(super) fn restore_absolute_path(

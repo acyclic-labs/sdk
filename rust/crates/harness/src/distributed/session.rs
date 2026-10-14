@@ -39,7 +39,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     #[allow(
         clippy::too_many_arguments,
         clippy::too_many_lines,
-        reason = "durable admission retains explicit authority and scheduling inputs"
+        reason = "Declaration and immutable session limits are one atomic two-record commit under explicit authority."
     )]
     pub(crate) async fn declare_session(
         &mut self,
@@ -108,7 +108,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let mut records = [OwnedBytes::new(), OwnedBytes::new()];
         let mut revision = expected_start;
         let mut committed_at_ms = self.next_commit_time(request.work())?;
-        for (index, (key, event)) in keys.iter().zip(&events).enumerate() {
+        for (record, (key, event)) in records.iter_mut().zip(keys.iter().zip(&events)) {
             if let SchedulerEvent::Declared { spec } = event {
                 self.verify_content(&spec.state, request.work()).await?;
                 self.scheduler
@@ -147,10 +147,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 encoded.work(),
             )?;
             drop(encoded);
-            let (record, retained) =
+            let (encoded_record, retained) =
                 operations::owned_bytes_from_retained_vec(bytes, request.work())?;
             request.adopt(retained)?;
-            records[index] = record;
+            *record = encoded_record;
             committed_at_ms = committed_at_ms.checked_add(1).ok_or_else(|| {
                 guarded_boundary(
                     request.work(),
@@ -222,7 +222,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Option<(u64, acyclic_stream::CommitId)>> {
         let mut positions = [None; 2];
-        for (index, (key, event)) in keys.iter().zip(events).enumerate() {
+        for (position, (key, event)) in positions.iter_mut().zip(keys.iter().zip(events)) {
             let mut custody = CodecQuota::new(work, 0)?;
             let Some((digest, existing, revision, commit_id)) =
                 read_intent(&self.client, key, Some(self.revision), custody.work()).await?
@@ -246,7 +246,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                     "session retry identity reused",
                 ));
             }
-            positions[index] = Some((revision, commit_id));
+            *position = Some((revision, commit_id));
         }
         match positions {
             [None, None] => Ok(None),

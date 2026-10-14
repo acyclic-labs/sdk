@@ -1,3 +1,7 @@
+#![allow(
+    clippy::indexing_slicing,
+    reason = "Query indices are enumerated once; parallel vectors share their length and cursor loops check bounds."
+)]
 use super::*;
 
 pub(super) fn active_order(
@@ -80,6 +84,11 @@ impl<'a> PathQueries<'a> {
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "This state transition keeps admission, effects and resource retirement in one frame."
+)]
 pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
     store: &S,
     generation: &crate::kernel::GenerationRoot,

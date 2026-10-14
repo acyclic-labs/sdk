@@ -1,6 +1,23 @@
 //! Native commands over the existing task runtime.
 use super::*;
 
+pub(crate) async fn recover_task(
+    runtime: &PiTaskRuntime,
+    task: TaskId,
+    work: &NativeMaterializationWork,
+) -> Result<(WorkPull, NativeAllocation)> {
+    let mut io = acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
+    io.retain_owned(
+        std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>()) as u64,
+    )?;
+    let recovered = runtime
+        .runtime
+        .task_host()
+        .recover_work(task, &mut Some(&mut io))
+        .await?;
+    Ok((recovered, io.into_custody()?))
+}
+
 impl PiNativeCommandHost {
     /// Run this future in a service background job, never the session actor.
     pub(crate) async fn run_child(
@@ -22,19 +39,7 @@ impl PiNativeCommandHost {
             available: ResourceRequest::default(),
             labels: BTreeMap::new(),
         };
-        let result = async {
-            let io = PreparationIo::from_native_work(&work)?;
-            let value = self
-                .runtime
-                .runtime
-                .run_operation(&worker, task, self, 8, Some(&io))
-                .await?;
-            Ok::<_, acyclic_harness::Error>((
-                value,
-                acyclic_harness::store::HistoryWork::new(io).into_custody()?,
-            ))
-        }
-        .await;
+        let result = run_operation(&self.runtime, &worker, task, self, &work).await;
         drop(worker);
         drop(custody);
         result
@@ -57,23 +62,7 @@ impl PiNativeCommandHost {
         work: &NativeMaterializationWork,
     ) -> Result<(Option<TaskWorkerAttempt>, NativeAllocation)> {
         self.child_admission(task, work).await?;
-        let observed = {
-            let mut io = acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-            );
-            HistoryIo::retain_owned(
-                &mut io,
-                std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>())
-                    as u64,
-            )?;
-            let value = self
-                .runtime
-                .runtime
-                .task_host()
-                .recover_work(task, &mut Some(&mut io))
-                .await?;
-            (value, io.into_custody()?)
-        };
+        let observed = recover_task(&self.runtime, task, work).await?;
         match observed.0 {
             WorkPull::Claimed(lease) => {
                 let attempted = self
@@ -154,6 +143,24 @@ impl PiNativeCommandHost {
         let (value, custody) = completed;
         Ok(TaskCommandProgress::ReadyWithNativeCustody { value, custody })
     }
+}
+
+pub(crate) async fn run_operation(
+    runtime: &PiTaskRuntime,
+    worker: &Worker,
+    task: TaskId,
+    commands: &dyn TaskCommandHost,
+    work: &NativeMaterializationWork,
+) -> Result<(Option<TaskWorkerAttempt>, NativeAllocation)> {
+    let io = PreparationIo::from_native_work(work)?;
+    let result = runtime
+        .runtime
+        .run_operation(worker, task, commands, 8, Some(&io))
+        .await?;
+    Ok((
+        result,
+        acyclic_harness::store::HistoryWork::new(io).into_custody()?,
+    ))
 }
 
 impl TaskCommandHost for PiNativeCommandHost {
@@ -295,7 +302,7 @@ impl TaskCommandHost for PiNativeCommandHost {
                                 &recovery.owner,
                                 recovery.command,
                                 &recovery.plan.0,
-                                Some(&recovery.work),
+                                Some(recovery.plan.1.work()),
                                 true,
                             )
                             .await?,
@@ -370,7 +377,7 @@ impl TaskCommandHost for PiNativeCommandHost {
                             &bound.owner,
                             bound.command,
                             &bound.plan.0,
-                            Some(&bound.work),
+                            Some(bound.plan.1.work()),
                             true,
                         )
                         .await?,

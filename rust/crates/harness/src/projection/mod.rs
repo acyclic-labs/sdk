@@ -151,14 +151,15 @@ pub async fn select_model_context(
                 )
             }
             MessageKind::ToolResult => {
-                let call_id = message
-                    .tool_call_id
-                    .as_deref()
-                    .expect("validated tool result identity");
+                let call_id = message.tool_call_id.as_deref().ok_or_else(|| {
+                    stock_boundary(io, Invalid, "tool result lacks call identity")
+                })?;
                 let mut linked = None;
                 if let Some(reply) = message.reply_to {
-                    for (id, projected) in selection.message_ids[..messages.len()]
+                    for (id, projected) in selection
+                        .message_ids
                         .iter()
+                        .take(messages.len())
                         .zip(&messages)
                         .rev()
                     {

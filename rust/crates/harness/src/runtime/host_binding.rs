@@ -14,7 +14,8 @@ impl AgentHarness {
                 &observed.machine,
                 Some(&observed.input_schema),
                 &observed.output_schema,
-                Some(&observed.input),
+                // The record already validated input; the registry checks exact schema identity.
+                None,
                 work,
             )?;
             if observed.resource_proofs.is_empty() {
@@ -34,61 +35,7 @@ impl AgentHarness {
             Ok(())
         })?;
         if !observed.resource_proofs.is_empty() {
-            let state = self.state.as_ref().ok_or_else(|| {
-                crate::executor::stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Unsupported,
-                    "resource-derived admission state is not bound",
-                )
-            })?;
-            let resumed = match native {
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                Some(work) => {
-                    let (scope, custody) = state
-                        .resume_scope_with_native_work(
-                            observed.task_id(),
-                            observed.operation_id,
-                            work,
-                        )?
-                        .await?;
-                    if !custody.work().shares_allocation_context(work) {
-                        return Err(crate::executor::stock_boundary(
-                            io,
-                            crate::wire::ErrorCode::Unauthorized,
-                            "resumed scope differs from its original metadata ledger",
-                        ));
-                    }
-                    (scope, Some(custody))
-                }
-                _ => (
-                    state
-                        .resume_scope(observed.task_id(), observed.operation_id)
-                        .await?,
-                    None::<NativeCustody>,
-                ),
-            };
-            let digest = crate::executor::with_history_io(io, |work| {
-                observed.canonical_digest_with_work(work)
-            })?;
-            if resumed
-                .0
-                .created_access
-                .as_ref()
-                .is_none_or(|access| access.admission_digest != digest)
-            {
-                return Err(crate::executor::stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "resource scope seal differs from observed admission",
-                ));
-            }
-            match native {
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                Some(_) => self.scope.validate_resumed_scope(&resumed.0, io)?,
-                _ => {
-                    self.scope.resume_sealed(resumed.0, observed.operation_id)?;
-                }
-            }
+            self.validate_created_scope(observed, io).await?;
         }
         if observed.policy != self.policy_identity
             || observed.extensions.as_ref() != self.scope.extensions()
@@ -114,6 +61,65 @@ impl AgentHarness {
                 crate::wire::ErrorCode::Conflict,
                 "retained execution route differs from runtime",
             ));
+        }
+        Ok(())
+    }
+
+    async fn validate_created_scope(
+        &self,
+        observed: &TaskAdmissionRecord,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        let native = task_original_work(io)?;
+        let state = self.state.as_ref().ok_or_else(|| {
+            crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unsupported,
+                "resource-derived admission state is not bound",
+            )
+        })?;
+        let resumed = match native {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Some(work) => {
+                let (scope, custody) = state
+                    .resume_scope_with_native_work(observed.task_id(), observed.operation_id, work)?
+                    .await?;
+                if !custody.work().shares_allocation_context(work) {
+                    return Err(crate::executor::stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Unauthorized,
+                        "resumed scope differs from its original metadata ledger",
+                    ));
+                }
+                (scope, Some(custody))
+            }
+            _ => (
+                state
+                    .resume_scope(observed.task_id(), observed.operation_id)
+                    .await?,
+                None::<NativeCustody>,
+            ),
+        };
+        let digest =
+            crate::executor::with_history_io(io, |work| observed.canonical_digest_with_work(work))?;
+        if resumed
+            .0
+            .created_access
+            .as_ref()
+            .is_none_or(|access| access.admission_digest != digest)
+        {
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "resource scope seal differs from observed admission",
+            ));
+        }
+        match native {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Some(_) => self.scope.validate_resumed_scope(&resumed.0, io)?,
+            _ => {
+                self.scope.resume_sealed(resumed.0, observed.operation_id)?;
+            }
         }
         Ok(())
     }

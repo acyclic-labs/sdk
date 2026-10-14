@@ -10,12 +10,12 @@ fn posix_profile_names_round_trip_through_utf8_on_windows() -> Result<(), Box<dy
     };
     let valid = LogicalName::new(
         NameEncoding::PosixBytes,
-        "uni-ÃƒÂ©Ã¤Â¸Â­.txt".as_bytes().to_vec(),
+        "uni-ÃƒÂ©Ã¤Â¸Â\u{ad}.txt".as_bytes().to_vec(),
         255,
     )?;
     assert_eq!(
         host_path(valid)?,
-        std::ffi::OsString::from("uni-ÃƒÂ©Ã¤Â¸Â­.txt")
+        std::ffi::OsString::from("uni-ÃƒÂ©Ã¤Â¸Â\u{ad}.txt")
     );
 
     let invalid = LogicalName::new(NameEncoding::PosixBytes, vec![0xff], 255)?;

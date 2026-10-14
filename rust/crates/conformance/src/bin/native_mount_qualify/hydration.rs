@@ -9,7 +9,8 @@ pub(super) async fn rename_hydration_case() -> Result<(), Failure> {
     let workspace = prepare_rename_fixture(root.path()).await?;
     let mount = workspace
         .mount(&mount_path, MountOptions::read_write())
-        .await?;
+        .await
+        .map_err(stop_failed_mount)?;
     let child = spawn_captured_child(
         Command::new(std::env::current_exe()?)
             .arg("--rename-hydration-child")

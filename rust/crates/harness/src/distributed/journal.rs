@@ -95,20 +95,16 @@ pub(super) fn coordinator_stream<P: StreamProvider>(
     Option<crate::runtime::NativeCustody>,
 )> {
     let path = COORDINATOR_PATH;
-    let portable = work.is_some()
-        && !work
-            .as_deref()
-            .is_some_and(operations::original_native_decode_mode);
-    if portable {
-        let work = work.as_deref_mut().expect("portable observer");
+    let portable = !work
+        .as_deref()
+        .is_some_and(operations::original_native_decode_mode);
+    if let Some(work) = work.as_deref_mut().filter(|_| portable) {
         work.admit_allocation(path.len() as u64)?;
         work.copy_bytes(path.len() as u64)?;
     }
     let stream = operations::stream(client, path, work)?;
-    if portable {
-        work.as_deref_mut()
-            .expect("portable observer")
-            .retain_owned(path.len() as u64)?;
+    if let Some(work) = work.as_deref_mut().filter(|_| portable) {
+        work.retain_owned(path.len() as u64)?;
     }
     Ok(stream)
 }
@@ -146,8 +142,9 @@ pub(super) async fn read_intent<P: StreamProvider>(
     let mut intent = None;
     while next < tail {
         let from = next;
-        let maximum = u32::try_from((tail - from).min(u64::from(READ_PAGE_SIZE)))
-            .map_err(|_| Error::Invalid("coordinator page exceeds read allowance".into()))?;
+        let maximum = u32::try_from(tail - from)
+            .unwrap_or(READ_PAGE_SIZE)
+            .min(READ_PAGE_SIZE);
         let mut source = read_records(client, &stream.0, from, maximum, quota.work()).await?;
         while let Some(record) = next_record(
             &mut source,

@@ -234,8 +234,10 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         request: acyclic_stream::CommitRequest,
         deadline: Option<u64>,
         meter: &mut AuthorityWork<'_>,
-        mut guard: Option<&mut G>,
+        guard: Option<&mut G>,
     ) -> Result<(acyclic_stream::CommitOutcome, ProviderAllocation), AuthorityError<G::Error>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut guard = guard;
         let submitted = meter.request_write_work(&request)?;
         meter.admit(submitted)?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -264,7 +266,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             return Ok(outcome);
         }
         meter.check()?;
-        seal(meter, guard.as_deref_mut()).await?;
+        seal(meter, guard).await?;
         meter.check()?;
         meter.admit(submitted)?;
         let result = match deadline {

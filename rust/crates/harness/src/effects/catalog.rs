@@ -202,7 +202,10 @@ impl EffectRegistry {
             custody = io.into_custody()?;
             self.native_metadata
                 .as_mut()
-                .expect("validated native catalog")
+                .ok_or(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Storage,
+                    reason: "native catalog lacks metadata custody",
+                })?
                 .absorb(&mut custody)?;
             id
         } else {

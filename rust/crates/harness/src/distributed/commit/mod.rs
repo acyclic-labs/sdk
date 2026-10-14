@@ -16,10 +16,6 @@ pub(crate) enum CommitPhase {
     Committed,
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "publication keeps authority, lease and work scopes separate"
-)]
 pub(crate) async fn append<P: StreamProvider, const N: usize>(
     (stream, client): (&Stream<P>, &Arc<P>),
     input: [OwnedBytes; N],
@@ -103,6 +99,10 @@ pub(crate) async fn append<P: StreamProvider, const N: usize>(
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "Acknowledgment and same-key recovery settle one originally admitted commit quota."
+)]
 pub(crate) async fn commit<P: StreamProvider>(
     (request, mut quota): (acyclic_stream::CommitRequest, CodecQuota<'_, '_>),
     client: &Arc<P>,
@@ -217,7 +217,8 @@ pub(crate) async fn commit<P: StreamProvider>(
 
 #[allow(
     clippy::too_many_arguments,
-    reason = "publication keeps authority, lease and work scopes separate"
+    clippy::too_many_lines,
+    reason = "Both execution and workflow guards must fence the same admitted append payload."
 )]
 pub(super) async fn append_if_execution_idle<P: StreamProvider>(
     client: &Arc<P>,

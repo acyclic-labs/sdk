@@ -78,7 +78,7 @@ fn scan(
             let header = framed
                 .iter()
                 .position(|byte| byte & 0x80 == 0)
-                .ok_or_else(|| boundary(work, Storage, "invalid length varint"))?
+                .ok_or_else(|| boundary(work, Storage, "event length prefix is invalid"))?
                 + 1;
             let length = framed.len() - input.len() - header;
             if let Some(nested) = nested {
@@ -89,9 +89,9 @@ fn scan(
                         items: 0,
                     })?;
                 }
-                let payload = framed
-                    .get(header..header + length)
-                    .ok_or_else(|| boundary(work, Storage, "invalid length-delimited field"))?;
+                let payload = framed.get(header..header + length).ok_or_else(|| {
+                    boundary(work, Storage, "event length-delimited field is invalid")
+                })?;
                 let (bytes, caps) = scan(payload, nested, work, guard)?;
                 buffers += bytes;
                 capabilities += caps;
@@ -222,19 +222,19 @@ impl<'a, 'b> Quota<'a, 'b> {
     pub(crate) fn transfer(&mut self) {
         self.bytes = 0;
     }
-    pub(super) fn json_error(&mut self, error: Error) -> Error {
+    pub(crate) fn json_error(&mut self, error: Error) -> Error {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut error = error;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Error::NativeJson { custody, .. } = &mut error
             && custody.is_none()
         {
+            let bytes = self.bytes;
             *custody = Some(
-                self.work
-                    .as_deref_mut()
-                    .expect("native codec observer")
-                    .take_native_custody(self.bytes)
-                    .expect("preclaimed diagnostic custody"),
+                match self.observer().and_then(|io| io.take_native_custody(bytes)) {
+                    Ok(custody) => custody,
+                    Err(error) => return error,
+                },
             );
             self.transfer();
         }

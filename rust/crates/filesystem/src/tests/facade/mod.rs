@@ -158,7 +158,7 @@ fn nfc_config() -> VolumeConfig {
 
 fn checkout_state<A, O>(checkout: &Checkout<A, O>) -> CheckoutState {
     CheckoutState {
-        base_generation_root: checkout.root.base(),
+        base_generation_root: checkout.root.base,
         generation_root: checkout.generation_root,
         base_root: checkout.base_root.clone(),
         root: checkout.root.clone(),

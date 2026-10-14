@@ -9,6 +9,11 @@ use crate::source_authorization::{
 };
 impl<P: StreamProvider> TaskJournalOwner<P> {
     /// Authorizes a bounded project selection under the original owner.
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "Explicit authority and bounds feed one funded authorization future without a request carrier."
+    )]
     pub async fn authorize_project_source(
         &self,
         context: &crate::runtime::TaskContext,
@@ -203,8 +208,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let caller_fence = self.fence.clone_with_work(quota.work())?;
         let project = snapshot.project.copy(quota.work())?;
         let reference = crate::core::copy_resource(snapshot.generation.as_resource(), &mut quota)?;
-        let generation =
-            crate::resources::GenerationRef::from_resource(reference, quota.work())?;
+        let generation = crate::resources::GenerationRef::from_resource(reference, quota.work())?;
         let native_snapshot = snapshot
             .native_snapshot
             .as_ref()

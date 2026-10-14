@@ -144,8 +144,8 @@ mod codec;
 mod definition;
 mod execution;
 mod state;
-pub(crate) use codec::control_reply;
 use codec::*;
+pub(crate) use codec::{control_reply, native_metadata_quota};
 use state::*;
 #[cfg(test)]
 #[path = "../pi_task_tests.rs"]

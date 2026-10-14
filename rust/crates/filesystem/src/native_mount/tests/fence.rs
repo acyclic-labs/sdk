@@ -162,8 +162,16 @@ fn bounded_parent_sweep_reclaims_stale_fences_and_preserves_live_owners()
     let stale_destination = temporary.path().join("stale");
     std::fs::create_dir(&live_destination)?;
     std::fs::create_dir(&stale_destination)?;
-    let live = MountDestinationGuard::acquire(&live_destination)?;
-    let mut stale = MountDestinationGuard::acquire(&stale_destination)?;
+    let live = MountDestinationGuard::acquire_canonical(
+        &live_destination
+            .canonicalize()
+            .map_err(|_| NativeMountError::InvalidDestination)?,
+    )?;
+    let mut stale = MountDestinationGuard::acquire_canonical(
+        &stale_destination
+            .canonicalize()
+            .map_err(|_| NativeMountError::InvalidDestination)?,
+    )?;
     let live_path = live.lock_path.clone();
     let stale_path = stale.lock_path.clone();
     stale.file.take();
@@ -201,7 +209,11 @@ fn independent_supervisors_concurrently_reclaim_one_crash_left_fence()
     let destination = temporary.path().join("mount");
     let release = temporary.path().join("release");
     std::fs::create_dir(&destination)?;
-    let mut crashed = MountDestinationGuard::acquire(&destination)?;
+    let mut crashed = MountDestinationGuard::acquire_canonical(
+        &destination
+            .canonicalize()
+            .map_err(|_| NativeMountError::InvalidDestination)?,
+    )?;
     let crash_left_path = crashed.lock_path.clone();
     crashed.file.take();
     drop(crashed);
@@ -371,7 +383,11 @@ fn measured_fence_native_delete_failure_preserves_typed_cause_and_custody()
     let temporary = tempfile::tempdir()?;
     let destination = temporary.path().join("mount");
     std::fs::create_dir(&destination)?;
-    let mut guard = MountDestinationGuard::acquire(&destination)?;
+    let mut guard = MountDestinationGuard::acquire_canonical(
+        &destination
+            .canonicalize()
+            .map_err(|_| NativeMountError::InvalidDestination)?,
+    )?;
     std::fs::remove_file(&guard.lock_path)?;
     std::fs::create_dir(&guard.lock_path)?;
     let cancellation = crate::CancellationToken::new();
@@ -393,7 +409,11 @@ fn measured_fence_cancellation_never_starts_a_native_leaf() -> Result<(), Box<dy
     let temporary = tempfile::tempdir()?;
     let destination = temporary.path().join("mount");
     std::fs::create_dir(&destination)?;
-    let mut guard = MountDestinationGuard::acquire(&destination)?;
+    let mut guard = MountDestinationGuard::acquire_canonical(
+        &destination
+            .canonicalize()
+            .map_err(|_| NativeMountError::InvalidDestination)?,
+    )?;
     let cancellation = crate::CancellationToken::new();
     cancellation.cancel();
     let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);

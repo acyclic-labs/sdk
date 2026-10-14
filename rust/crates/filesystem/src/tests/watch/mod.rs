@@ -363,6 +363,7 @@ fn linux_pending_rename_invalidates_rescan_completion() -> Result<(), Box<dyn st
             FilesystemProfile::Portable,
             VolumeLimits::default(),
         )?,
+        #[cfg(target_os = "linux")]
         to: None,
         allocation: None,
     });
@@ -391,6 +392,7 @@ fn linux_pending_rename_invalidates_rescan_completion() -> Result<(), Box<dyn st
             FilesystemProfile::Portable,
             VolumeLimits::default(),
         )?,
+        #[cfg(target_os = "linux")]
         to: None,
         allocation: None,
     });

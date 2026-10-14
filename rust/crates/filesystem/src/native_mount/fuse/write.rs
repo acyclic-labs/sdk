@@ -299,6 +299,7 @@ impl FuseProjection {
 
     #[allow(
         clippy::too_many_arguments,
+        clippy::too_many_lines,
         reason = "copy_file_range callback arguments"
     )]
     pub(super) fn copy_range(
