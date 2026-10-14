@@ -36,8 +36,9 @@ pub(super) async fn verify_snapshot(
     let _scope = owner.enter(work)?;
     require_root(owner, work)?;
     let slot = work.claim(
-        std::mem::size_of::<NativeViewPublicationError>() as u64,
-        1,
+        (std::mem::size_of::<NativeViewPublicationError>()
+            + std::mem::size_of::<acyclic_fs::native_mount::MountSourceError>()) as u64,
+        2,
         acyclic_fs::WorkCounters::UNCHARGED,
     )?;
     let snapshot = owner
@@ -165,7 +166,7 @@ where
                 .map_err(
                     |(cause, accounting_failure)| NativeMountPublicationFailure {
                         cause: cause.into(),
-                        accounting_failure,
+                        accounting_failure: accounting_failure.map(Box::new),
                         source_acknowledged: false,
                         publication: None,
                     },
