@@ -203,8 +203,7 @@ where
                         plan,
                         operation,
                         permit,
-                        super::super::adapter::NativeDemandCarrier::Native(work),
-                        cancellation,
+                        crate::kernel::KernelAccounting::native(work, cancellation),
                         before_publication,
                     )
                     .await?;
