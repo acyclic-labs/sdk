@@ -3,7 +3,7 @@ param(
     [ValidateSet('start', 'dependencies', 'finish')]
     [string] $Phase,
     [Parameter(Mandatory = $true)]
-    [ValidateSet('windows', 'windows-napi', 'windows-arm64', 'windows-clippy', 'windows-rust', 'windows-fork-join')]
+    [ValidateSet('windows', 'windows-napi', 'windows-arm64', 'windows-clippy', 'windows-rust', 'windows-rust-scenarios', 'windows-fork-join')]
     [string] $Lane
 )
 

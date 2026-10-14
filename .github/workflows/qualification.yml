@@ -97,12 +97,12 @@ jobs:
     if: needs.plan.outputs.matrix != '[]'
     strategy:
       fail-fast: false
-      max-parallel: 18
+      max-parallel: 19
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     env:
-      RUSTC_WRAPPER: ${{ matrix.lane != 'windows-rust' && 'sccache' || '' }}
+      RUSTC_WRAPPER: ${{ !startsWith(matrix.lane, 'windows-rust') && 'sccache' || '' }}
       SCCACHE_IDLE_TIMEOUT: '0'
       CARGO_BUILD_JOBS: ${{ matrix.workers }}
       CMAKE_BUILD_PARALLEL_LEVEL: ${{ matrix.workers }}

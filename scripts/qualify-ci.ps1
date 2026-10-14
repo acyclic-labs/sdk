@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('windows', 'windows-napi', 'windows-arm64', 'windows-clippy', 'windows-rust', 'windows-fork-join')]
+    [ValidateSet('windows', 'windows-napi', 'windows-arm64', 'windows-clippy', 'windows-rust', 'windows-rust-scenarios', 'windows-fork-join')]
     [string] $Lane
 )
 
@@ -13,7 +13,7 @@ New-Item -ItemType Directory -Force -Path `
     "$env:SDK_TEMP_DIR/observability" | Out-Null
 
 $clangDirectory = $null
-if ($Lane -in @('windows', 'windows-arm64', 'windows-rust', 'windows-fork-join')) {
+if ($Lane -in @('windows', 'windows-arm64', 'windows-rust', 'windows-rust-scenarios', 'windows-fork-join')) {
     $clangDirectories = @()
     if ($env:LLVM_PATH) {
         $clangDirectories += Join-Path $env:LLVM_PATH 'bin'
@@ -43,41 +43,59 @@ if ($Lane -in @('windows', 'windows-arm64', 'windows-rust', 'windows-fork-join')
 cargo fetch --locked
 
 $CargoTargetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $PWD 'target' }
+function Invoke-WindowsRustTests {
+    param([ValidateSet("units", "scenarios")][string] $Shard)
+    $metadata = (cargo metadata --locked --no-deps --format-version 1) -join "`n"
+    $selection = $metadata | node scripts/windows-rust-targets.mjs $Shard | ConvertFrom-Json
+    $targetArguments = @($selection.cargoArgs)
+    $exampleBuildArguments = @($selection.exampleBuildArgs)
+    Write-Host ("Windows Rust {0}: {1} targets" -f $Shard, @($selection.targets).Count)
+    if ($clangDirectory) {
+        $lldLink = Join-Path $clangDirectory 'lld-link.exe'
+        if (Test-Path -LiteralPath $lldLink) {
+            $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = $lldLink
+        }
+    }
+
+    # Keep the whole workspace selected: package subsets change feature
+    # unification. Both target shards retain ProjFS and all workspace features.
+    # This test also resolves the WASM crates and their web-sys dependency. Its
+    # generated feature cfg list is too large for sccache's Windows rustc spawn
+    # path (ERROR_FILENAME_EXCED_RANGE / OS error 206), so run this invocation
+    # directly through rustc while leaving the independent native builds cached.
+    $rustcWrapper = $env:RUSTC_WRAPPER
+    Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
+    try {
+        if ($exampleBuildArguments.Count -gt 0) {
+            cargo build @exampleBuildArguments --locked --profile test --target-dir "$CargoTargetDir"
+        }
+        try {
+            cargo nextest run @targetArguments --locked --profile ci --test-threads "$env:RUST_TEST_THREADS" --target-dir "$CargoTargetDir"
+        } finally {
+            $junit = Join-Path $CargoTargetDir 'nextest/ci/junit.xml'
+            if (Test-Path -LiteralPath $junit) {
+                Copy-Item -LiteralPath $junit -Destination "$env:SDK_TEMP_DIR/observability/rust.xml"
+            }
+        }
+        if ($Shard -eq 'units') {
+            cargo test --workspace --all-features --locked --doc --target-dir "$CargoTargetDir"
+        }
+    } finally {
+        if ($null -eq $rustcWrapper) {
+            Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
+        } else {
+            $env:RUSTC_WRAPPER = $rustcWrapper
+        }
+    }
+}
+
 switch ($Lane) {
     'windows-rust' {
-        if ($clangDirectory) {
-            $lldLink = Join-Path $clangDirectory 'lld-link.exe'
-            if (Test-Path -LiteralPath $lldLink) {
-                $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = $lldLink
-            }
-        }
-
-        # The workflow enables the Client-ProjFS optional feature before this lane, so
-        # the complete all-feature workspace, including ProjFS-backed acyclic-fs, runs
-        # from one build instead of separate portable, no-default, and link-only builds.
-        # This test also resolves the WASM crates and their web-sys dependency. Its
-        # generated feature cfg list is too large for sccache's Windows rustc spawn
-        # path (ERROR_FILENAME_EXCED_RANGE / OS error 206), so run this invocation
-        # directly through rustc while leaving the independent native builds cached.
-        $rustcWrapper = $env:RUSTC_WRAPPER
-        Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
-        try {
-            try {
-                cargo nextest run --workspace --all-features --locked --profile ci --test-threads "$env:RUST_TEST_THREADS"
-            } finally {
-                $junit = Join-Path $CargoTargetDir 'nextest/ci/junit.xml'
-                if (Test-Path -LiteralPath $junit) {
-                    Copy-Item -LiteralPath $junit -Destination "$env:SDK_TEMP_DIR/observability/rust.xml"
-                }
-            }
-            cargo test --workspace --all-features --locked --doc
-        } finally {
-            if ($null -eq $rustcWrapper) {
-                Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
-            } else {
-                $env:RUSTC_WRAPPER = $rustcWrapper
-            }
-        }
+        Invoke-WindowsRustTests units
+        return
+    }
+    'windows-rust-scenarios' {
+        Invoke-WindowsRustTests scenarios
         return
     }
     'windows-fork-join' {
