@@ -202,7 +202,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             crate::kernel::build_checkpoint_with_accounting(
                 &self.volume.fs.inner.objects,
                 CheckpointRequest {
-                    base: self.root.base(),
+                    base: self.root.base,
                     file_table: self.root.file_table,
                     merge_parent: None,
                 },

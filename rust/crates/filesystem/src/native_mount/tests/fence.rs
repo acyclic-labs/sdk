@@ -327,6 +327,7 @@ fn accepted_destination_fence_cleanup_survives_original_cancellation()
         &cancelled,
     )
     .map_err(|(error, _)| error)?;
+    let baseline = work.live_allocation_bytes();
     let mut guard = None;
     MountDestinationGuard::acquire_with_work(&destination, false, &work, &mut guard, false)?;
     let mut guard = guard.unwrap();
@@ -360,7 +361,7 @@ fn accepted_destination_fence_cleanup_survives_original_cancellation()
         "original cancellation is never replaced"
     );
     drop(guard);
-    assert_eq!(work.live_allocation_bytes(), 0);
+    assert_eq!(work.live_allocation_bytes(), baseline);
     Ok(())
 }
 

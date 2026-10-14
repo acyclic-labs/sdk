@@ -244,7 +244,7 @@ impl ViewGateReadAdmissions {
 pub(super) fn gate_allocation_error(
     error: crate::kernel::allocation::AllocationError,
 ) -> MountSourceError {
-    super::super::lazy::mount_engine_error(crate::collection::handle_allocation_error(error))
+    super::super::lazy::mount_engine_error(error.into_work_or(crate::FsError::HandleAllocationFailed))
 }
 
 pub(super) fn reconcile_reader_registry(

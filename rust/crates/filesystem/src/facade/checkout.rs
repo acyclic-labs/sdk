@@ -228,7 +228,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         let result = async {
-            self.reset_root(self.root.base(), &mut accounting, cancellation)
+            self.reset_root(self.root.base, &mut accounting, cancellation)
                 .await?;
             self.live_operation_id = None;
             self.prepared_merge_parent = None;
