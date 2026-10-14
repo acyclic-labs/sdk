@@ -184,21 +184,32 @@ impl McpCatalog {
 
     fn definition(&self, remote: &McpToolDefinition) -> Result<ToolDefinition> {
         crate::registry::validate_component_label(&remote.name, "MCP tool")?;
-        let mut output = json!({"type":"object", "required":["content","isError"],
-            "properties":{"content":{"type":"array","items":{"type":"object"}},
-                "structuredContent":{},"isError":{"type":"boolean"},"_meta":{"type":"object"}},
-            "additionalProperties":false});
+        let mut output = serde_json::Map::from_iter([
+            ("type".into(), json!("object")),
+            ("required".into(), json!(["content", "isError"])),
+            (
+                "properties".into(),
+                json!({"content":{"type":"array","items":{"type":"object"}},
+                "structuredContent":{},"isError":{"type":"boolean"},"_meta":{"type":"object"}}),
+            ),
+            ("additionalProperties".into(), json!(false)),
+        ]);
         if let Some(schema) = &remote.output_schema {
-            output["if"] = json!({"properties":{"isError":{"const":false}}});
-            output["then"] =
-                json!({"required":["structuredContent"],"properties":{"structuredContent":schema}});
+            output.insert(
+                "if".into(),
+                json!({"properties":{"isError":{"const":false}}}),
+            );
+            output.insert(
+                "then".into(),
+                json!({"required":["structuredContent"],"properties":{"structuredContent":schema}}),
+            );
         }
         Ok(ToolDefinition {
             name: format!("mcp.{}.{}", self.server, remote.name),
             revision: self.revision.clone(),
             description: remote.description.clone(),
             input_schema: remote.input_schema.clone(),
-            output_schema: output,
+            output_schema: Value::Object(output),
             projection_schema: self.projection_schema.clone(),
         })
     }

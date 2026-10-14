@@ -242,7 +242,13 @@ impl StockExecution<'_> {
                     preparation_format(format_args!("{purpose_key}:{step}:{index}"), work)
                 })?;
                 stock_vec_push(&mut observed, event, io)?;
-                let event = &observed[index];
+                let event = observed.last().ok_or_else(|| {
+                    stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Storage,
+                        "model observation was not retained",
+                    )
+                })?;
                 admission.observe(event, self.stock.limits, io)?;
                 let reference = stage_json(journal, input.operation_id, &key, event, io).await?;
                 journal

@@ -57,10 +57,12 @@ pub(in crate::executor) fn stock_authorize_tool(
             reason: "native tool authorization has no issued context",
         })?;
         return tool
-            .executor.authorize(None, Some(context), invocation, Some(work));
+            .executor
+            .authorize(None, Some(context), invocation, Some(work));
     }
     if let Some(context) = context {
-        tool.executor.authorize(None, Some(context), invocation, None)
+        tool.executor
+            .authorize(None, Some(context), invocation, None)
     } else {
         tool.executor.authorize(Some(scope), None, invocation, None)
     }
@@ -143,7 +145,10 @@ impl StockExecution<'_> {
             code: crate::wire::ErrorCode::Storage,
             reason: "stock policy has no issued task",
         })?;
-        let io = self.io.expect("native execution ledger");
+        let io = self.io.ok_or(crate::Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Storage,
+            reason: "native execution has no ledger",
+        })?;
         context.require_original_native_work(work)?;
         context.require_native_scope_restriction(&self.stock.tool_scope, work)?;
         for (identity, policy) in context
@@ -164,7 +169,10 @@ impl StockExecution<'_> {
             else {
                 continue;
             };
-            io.absorb_native_custody(custody.expect("native approval retains its prompt"))?;
+            io.absorb_native_custody(custody.ok_or(crate::Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Storage,
+                reason: "native approval lacks prompt custody",
+            })?)?;
             if let Some(progress) = self
                 .settle_approval(
                     journal,
