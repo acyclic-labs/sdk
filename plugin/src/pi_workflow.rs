@@ -79,8 +79,11 @@ impl PiControlHost<'_> {
         &self,
     ) -> acyclic_harness::Result<
         Option<(
-            (FileRef, pi_root_allocation::PiRootAllocation),
-            acyclic_fs::NativeAllocation,
+            Arc<pi_root_provider::PiRootProvider>,
+            (
+                (FileRef, pi_root_allocation::PiRootAllocation),
+                acyclic_fs::NativeAllocation,
+            ),
         )>,
     > {
         let Some(provider) = self.root_provider.lock().await.clone() else {
@@ -96,12 +99,13 @@ impl PiControlHost<'_> {
             pi_root_inputs::preparation_operation(task, &self.work)?,
             &mut Some(&mut &PreparationIo::from_native_work(&self.work)?),
         )?;
-        provider
+        let allocation = provider
             .observe_allocation_with_native_work(
                 acyclic_harness::EffectAttemptId::from_bytes(effect.into_bytes()),
                 &self.work,
             )
-            .await
+            .await?;
+        Ok(allocation.map(|allocation| (provider, allocation)))
     }
 
     pub(crate) async fn control_with_native_work(
@@ -283,7 +287,7 @@ impl PiControlHost<'_> {
                 return Err(boundary("Pi root preparation requires a Pi state binding"));
             };
             let preparation = pi_root_inputs::PiRootPreparation::load(
-                (&self.resources.data, self.directory),
+                &owner,
                 &self.runtime,
                 &self.filesystem,
                 binding,
