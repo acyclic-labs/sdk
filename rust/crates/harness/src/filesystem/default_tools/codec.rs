@@ -30,7 +30,7 @@ pub(in crate::filesystem) fn recursive_decode_slot_bytes<T>() -> u64 {
             serde::__private229::de::Content<'static>,
             serde::__private229::de::Content<'static>,
         )>()) as u64;
-    crate::filesystem::preparation_slot_bytes::<T>().max(typed) + 2 * 2 * content
+    crate::filesystem::preparation_slot_bytes::<T>().max(typed + 2 * 5 * content) + 2 * 2 * content
 }
 macro_rules! recursive_preparation_records {
     ($($record:ty => $schema:ident),+ $(,)?) => {$(
