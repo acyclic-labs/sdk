@@ -57,6 +57,8 @@ pub(super) struct ReadBudgetMeter {
     used_operations: AtomicU64,
     used_bytes: AtomicU64,
     used_allocations: AtomicU64,
+    examined_items: AtomicU64,
+    pub(super) item_limit: Option<u64>,
     read: AtomicU64,
     pub(super) memory: AtomicU64,
     operation_limit: u64,
@@ -201,14 +203,22 @@ impl NativeReadMeter for ReadBudgetMeter {
     fn release(&self, bytes: u64) {
         assert!(self.memory.fetch_sub(bytes, Ordering::AcqRel) >= bytes);
     }
-    fn examine(&self, _: u64, _: u64) -> io::Result<()> {
-        self.check()
+    fn examine(&self, items: u64, _: u64) -> io::Result<()> {
+        self.check()?;
+        self.record_examination(items, 0)
     }
-    fn admit_examination(&self, _: u64, _: u64) -> io::Result<()> {
-        self.check()
+    fn admit_examination(&self, items: u64, _: u64) -> io::Result<()> {
+        self.check()?;
+        match self.item_limit {
+            Some(limit) => self.preflight(&self.examined_items, items, limit),
+            None => Ok(()),
+        }
     }
-    fn record_examination(&self, _: u64, _: u64) -> io::Result<()> {
-        Ok(())
+    fn record_examination(&self, items: u64, _: u64) -> io::Result<()> {
+        match self.item_limit {
+            Some(limit) => Self::charge(&self.examined_items, items, limit).map(|_| ()),
+            None => Ok(()),
+        }
     }
     fn admit_bytes(&self, maximum: usize) -> io::Result<()> {
         self.preflight(&self.used_bytes, maximum as u64, self.byte_limit)

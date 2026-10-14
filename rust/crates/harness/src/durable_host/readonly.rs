@@ -222,6 +222,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[allow(
+        clippy::type_complexity,
+        reason = "The funded future returns existing owner, request and custody types without another carrier."
+    )]
     pub(crate) fn readonly_fork_journal_owner_with_native_work<'a>(
         self: &'a Arc<Self>,
         witness: &'a TaskAdmissionReadonlyWitness<P>,

@@ -159,7 +159,15 @@ where
             .lock()
             .map_err(|_| MountSourceError::Stale)?
             .publication;
-        if let Some((id, Some((destination, source, config, input)))) = remembered
+        if let Some((
+            id,
+            Some(SelectedImportProof {
+                destination,
+                source,
+                config,
+                input,
+            }),
+        )) = remembered
             && id == operation
         {
             self.replay_selected_publication(

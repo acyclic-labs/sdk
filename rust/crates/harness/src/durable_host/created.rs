@@ -64,6 +64,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(false)
     }
 
+    #[allow(
+        clippy::manual_async_fn,
+        reason = "The recursive future must expose its native Send guarantee through ProviderTask."
+    )]
     pub(super) fn created_access<'a>(
         &'a self,
         admission: &'a TaskAdmissionRecord,
@@ -95,6 +99,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "One recursive verification frame retains original proof custody through access sealing."
+    )]
     pub(super) async fn created_access_body(
         &self,
         admission: &TaskAdmissionRecord,

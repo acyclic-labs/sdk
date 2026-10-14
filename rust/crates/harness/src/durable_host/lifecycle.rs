@@ -268,6 +268,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     }
 
     #[cfg(feature = "filesystem")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The original native custody stays in the same journal reconstruction future."
+    )]
     pub(super) async fn journal_owner_record(
         self: &Arc<Self>,
         task_id: TaskId,

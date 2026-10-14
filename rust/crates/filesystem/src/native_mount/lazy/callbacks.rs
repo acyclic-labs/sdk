@@ -191,8 +191,8 @@ where
         self.authored.view_stamp()
     }
 
-    fn observe_view(&self, observer: Weak<dyn ViewObserver>) {
-        self.authored.observe_view(observer);
+    fn observe_view(&self, observer: Weak<dyn ViewObserver>) -> Result<(), MountSourceError> {
+        self.authored.observe_view(observer)
     }
 
     fn fence_changes(&self) -> Result<(), MountSourceError> {
@@ -313,7 +313,8 @@ where
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
-        self.open_proven(path, work).map(|(file, _)| file)
+        self.open_proven(path, work)
+            .map(|(file, _)| (file.file, file.bytes))
     }
 
     fn open_file_with_lookup(
@@ -322,18 +323,18 @@ where
     ) -> Result<(Arc<dyn MountOpenFile>, MountLookup), MountSourceError> {
         adapter::boundary(self.authored.cancellation(), |work| {
             self.open_file_with_lookup_with_meter(path, work)
-                .map(|((file, _), lookup)| (file, lookup))
+                .map(|(file, lookup)| (file.file, lookup))
         })
     }
     fn open_file_with_lookup_with_meter(
         &self,
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<((Arc<dyn MountOpenFile>, u64), MountLookup), MountSourceError> {
+    ) -> Result<(crate::native_mount::MountOpenClaim, MountLookup), MountSourceError> {
         let (file, proven) = self.open_proven(path, work)?;
         let lookup = match proven {
             Some(lookup) => lookup,
-            None => file.0.lookup_with_meter(work)?,
+            None => file.file.lookup_with_meter(work)?,
         };
         Ok((file, lookup))
     }

@@ -217,7 +217,8 @@ impl<A, O> DerefMut for SharedCheckoutGuard<'_, A, O> {
 impl<A, O> Drop for SharedCheckoutGuard<'_, A, O> {
     fn drop(&mut self) {
         if self.state.checkout.root().file_table != self.state.recorded_view {
-            self.state.record(&ViewChange::Everything);
+            self.state.ledger.notify_everything();
+            self.state.recorded_view = self.state.checkout.root().file_table;
         }
     }
 }

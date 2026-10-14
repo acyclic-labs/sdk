@@ -3,6 +3,10 @@ use super::*;
 use crate::conversation::{VolumeClass, VolumeOperation, VolumeOwner};
 use crate::resource_preparation::{CreatedResourceAccess, CreatedResourceReceipt};
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "Receipt validation and ownership transfer share one admitted quota until the access is sealed."
+)]
 pub(super) fn consume_receipts(
     admission: &TaskAdmissionRecord,
     receipts: &mut Vec<CreatedResourceReceipt>,
