@@ -43,7 +43,13 @@ pub(super) async fn read_invocation(
                 stock_boundary(Some(io), Invalid, "tool identity ownership overflows")
             })?;
         let argument_bytes = crate::executor::json::json_value_logical_owned_bytes(&arguments)?;
-        let source = source_hold.expect("observed value ownership");
+        let source = source_hold.ok_or_else(|| {
+            stock_boundary(
+                Some(io),
+                crate::wire::ErrorCode::Storage,
+                "observed tool value lacks ownership",
+            )
+        })?;
         let discarded = source
             .bytes()
             .checked_sub(strings)
@@ -80,7 +86,16 @@ pub(super) async fn read_result(
     if let Some(io) = io {
         // The Value conversion normalizes serde_json's private raw markers.
         let normalized = convert::<Value>(
-            (value, hold.expect("observed value ownership")),
+            (
+                value,
+                hold.ok_or_else(|| {
+                    stock_boundary(
+                        Some(io),
+                        crate::wire::ErrorCode::Storage,
+                        "observed tool value lacks ownership",
+                    )
+                })?,
+            ),
             maximum,
             128,
             io,
@@ -204,8 +219,7 @@ fn conversion_allowance<T: crate::filesystem::UploadRecord>(
                 size_of::<(String, Value)>(),
             ]
             .into_iter()
-            .max()
-            .expect("closed projection slots") as u64;
+            .fold(0, usize::max) as u64;
             (
                 slots
                     .checked_mul(content_slot)
@@ -245,6 +259,13 @@ fn convert<'a, T: crate::filesystem::UploadRecord>(
     maximum_depth: u32,
     io: &'a PreparationIo,
 ) -> Result<(T, crate::filesystem::DecodeReservation<'a>)> {
+    let missing_hold = || {
+        stock_boundary(
+            Some(io),
+            crate::wire::ErrorCode::Storage,
+            "tool conversion lacks ownership",
+        )
+    };
     let mut source_hold = Some(source.1);
     #[cfg(not(target_arch = "wasm32"))]
     let mut native = None;
@@ -271,9 +292,9 @@ fn convert<'a, T: crate::filesystem::UploadRecord>(
     let mut additional = Some(io.reserve_decode(conversion_allowance::<T>(shape, io)?)?);
     let total = source_hold
         .as_ref()
-        .expect("source ownership")
+        .ok_or_else(missing_hold)?
         .bytes()
-        .checked_add(additional.as_ref().expect("conversion ownership").bytes())
+        .checked_add(additional.as_ref().ok_or_else(missing_hold)?.bytes())
         .ok_or_else(|| {
             stock_boundary(
                 Some(io),
@@ -283,14 +304,8 @@ fn convert<'a, T: crate::filesystem::UploadRecord>(
         })?;
     #[cfg(not(target_arch = "wasm32"))]
     if io.original_native_work().is_some() {
-        source_hold
-            .take()
-            .expect("source ownership")
-            .into_retained();
-        additional
-            .take()
-            .expect("conversion ownership")
-            .into_retained();
+        source_hold.take().ok_or_else(missing_hold)?.into_retained();
+        additional.take().ok_or_else(missing_hold)?.into_retained();
         native = Some(io.take_native_custody(total)?);
     }
     let value: T = match serde_json::from_value(input) {
@@ -305,10 +320,7 @@ fn convert<'a, T: crate::filesystem::UploadRecord>(
                 });
             }
             let message = error.to_string();
-            additional
-                .take()
-                .expect("ordinary conversion ownership")
-                .into_retained();
+            additional.take().ok_or_else(missing_hold)?.into_retained();
             return Err(Error::Invalid(message));
         }
     };
@@ -335,14 +347,8 @@ fn convert<'a, T: crate::filesystem::UploadRecord>(
     let released = total.checked_sub(retained).ok_or_else(|| {
         stock_boundary(Some(io), Invalid, "owned tool conversion exceeds admission")
     })?;
-    source_hold
-        .take()
-        .expect("ordinary source ownership")
-        .into_retained();
-    additional
-        .take()
-        .expect("ordinary conversion ownership")
-        .into_retained();
+    source_hold.take().ok_or_else(missing_hold)?.into_retained();
+    additional.take().ok_or_else(missing_hold)?.into_retained();
     io.release(released)?;
     Ok((value, io.guard_owned(retained)?))
 }

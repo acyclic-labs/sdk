@@ -258,7 +258,8 @@ fn summary(source: &Context, through: usize) -> Result<ContextSummary> {
     Ok(ContextSummary {
         operation_id: crate::OperationId::new(),
         step: 0,
-        source_messages: through as u32,
+        source_messages: u32::try_from(through)
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?,
         source_digest: crate::executor::json::canonical_json_digest(&prefix, u64::MAX, &mut None)?,
         output: message(ModelRole::System, "summary")?
             .content
@@ -289,7 +290,7 @@ fn durable(
 ) -> Result<DurableContextProvider> {
     DurableContextProvider::new(
         stream,
-        StreamPath::new("context/test").unwrap(),
+        StreamPath::new("context/test")?,
         "memory",
         "1",
         maximum,

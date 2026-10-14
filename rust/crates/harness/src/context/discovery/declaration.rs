@@ -88,14 +88,10 @@ impl ContextDiscovery {
         &self,
         reader: &dyn ContentResidencyVerifier,
     ) -> Result<DiscoveredContext> {
-        let (instructions, skills, policy, limits) = (
-            self.instructions.as_slice(),
-            self.skills.as_slice(),
-            &self.policy,
-            self.limits,
-        );
+        let policy = &self.policy;
+        let limits = self.limits;
         limits.validate()?;
-        if instructions.len().saturating_add(skills.len()) > limits.directories as usize
+        if self.instructions.len().saturating_add(self.skills.len()) > limits.directories as usize
             || policy.instruction_names.len() > limits.entries as usize
         {
             return Err(Error::Invalid(
@@ -120,7 +116,7 @@ impl ContextDiscovery {
             limits,
         };
         let mut result = DiscoveredContext::default();
-        for scope in instructions {
+        for scope in &self.instructions {
             scope.root.validate(&mut None)?;
             if !scope.active_directory.is_empty() {
                 validate_content_path(&scope.active_directory, &mut None)?;
@@ -185,7 +181,7 @@ impl ContextDiscovery {
             }
         }
         if let Some(name) = &policy.skill_name {
-            result.skills = discover_skills(reader, skills, name, &mut work).await?;
+            result.skills = discover_skills(reader, &self.skills, name, &mut work).await?;
         }
         result.validate(&mut None)?;
         Ok(result)

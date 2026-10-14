@@ -273,6 +273,10 @@ pub(super) fn hashed_blob_object(
     Ok(object)
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
+)]
 pub(super) async fn accept_owned_blob_chunk<S: AsyncObjectStore>(
     batching: &mut BlobBatchStore<'_, S>,
     index: &mut BlobIndexBuilder,

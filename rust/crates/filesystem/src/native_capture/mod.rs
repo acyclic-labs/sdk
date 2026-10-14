@@ -24,7 +24,9 @@ mod model;
 #[cfg(all(test, unix))]
 mod native_view_baseline_tests;
 use accounting::*;
+#[cfg(windows)]
 mod sparse;
+#[cfg(windows)]
 use sparse::*;
 mod paths;
 use paths::*;
@@ -69,7 +71,7 @@ pub use entry::{capture_baseline, capture_paths, capture_root_identity, capture_
 pub(crate) use model::MAX_NATIVE_EXACT_CAPTURE_PATHS;
 pub(crate) use model::NativeViewBaseline;
 pub use model::{CaptureError, CaptureOptions, CapturePolicy, CaptureReceipt, WatchCaptureReceipt};
-#[cfg(windows)]
-pub(crate) use names::namespace_component_wide;
+pub(crate) use names::namespace_to_host_path_with_work;
 pub use names::{host_path_to_namespace, namespace_to_host_path};
-pub(crate) use names::{namespace_host_units_with_work, namespace_to_host_path_with_work};
+#[cfg(windows)]
+pub(crate) use names::{namespace_component_wide, namespace_host_units_with_work};

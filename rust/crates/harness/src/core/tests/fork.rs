@@ -6,7 +6,7 @@ use crate::resources::{ProviderRef, ResourceKind, ResourceRef, StreamRef};
 fn fork_is_invisible_until_one_seed_event_commits() -> Result<()> {
     let mut seed: ForkSeed =
         crate::contract::json_from_slice(include_bytes!("../../../fixtures/v2/fork-seed.json"))
-            .unwrap();
+            .map_err(|error| Error::Invalid(error.to_string()))?;
     seed.operation_id = operation(8);
     seed.parent = issuer().audience;
     seed.parent_revision = 1;

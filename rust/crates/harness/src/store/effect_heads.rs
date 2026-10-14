@@ -41,7 +41,7 @@ pub(super) fn charge(used: &mut u64, bytes: u64, maximum: u64) -> Result<()> {
     Ok(())
 }
 fn right(effect: EffectId, bit: u8) -> bool {
-    effect.into_bytes()[usize::from(bit / 8)] & (0x80 >> (bit % 8)) != 0
+    u128::from_be_bytes(effect.into_bytes()).rotate_left(u32::from(bit)) >> 127 != 0
 }
 
 pub(super) struct Tree<'a, P> {
@@ -335,7 +335,12 @@ pub(super) async fn publication<P: StreamProvider>(
                 Some(&effect),
                 quota.work(),
             )?;
-            let bytes = publication.indexes[0].2.clone();
+            let bytes = publication
+                .indexes
+                .first()
+                .ok_or_else(|| Error::Storage("effect publication index is missing".into()))?
+                .2
+                .clone();
             publication.add_index(stream, position, Ok((bytes, 0)), quota.work())?;
         }
         if let Some(io) = quota.work().as_deref_mut() {

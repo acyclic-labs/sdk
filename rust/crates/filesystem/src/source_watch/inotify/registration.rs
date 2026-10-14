@@ -49,22 +49,16 @@ pub(super) fn prepare_insert_with_work<W: SourceDemandReadWork>(
 pub(super) fn proc_fd_path(descriptor: i32) -> ([u8; 24], usize) {
     let mut path = [0_u8; 24];
     let prefix = b"/proc/self/fd/";
-    path[..prefix.len()].copy_from_slice(prefix);
-    let mut digits = [0_u8; 10];
-    let mut start = digits.len();
-    let mut value = descriptor as u32;
-    loop {
-        start -= 1;
-        digits[start] = b'0' + (value % 10) as u8;
-        value /= 10;
-        if value == 0 {
-            break;
-        }
+    let digits = rustix::path::DecInt::new(descriptor);
+    for (target, byte) in path.iter_mut().zip(prefix.iter().chain(digits.as_bytes())) {
+        *target = *byte;
     }
-    let length = prefix.len() + digits.len() - start;
-    path[prefix.len()..length].copy_from_slice(&digits[start..]);
-    (path, length)
+    (path, prefix.len() + digits.as_bytes().len())
 }
+#[allow(
+    clippy::too_many_lines,
+    reason = "Ancestor registration keeps its admitted allocations and rollback in one frame."
+)]
 pub(super) fn watch_ancestors<W: SourceDemandReadWork>(
     inotify: &OwnedFd,
     root: &OwnedFd,
@@ -105,12 +99,13 @@ pub(super) fn watch_ancestors<W: SourceDemandReadWork>(
             if length < 0 {
                 return Err(io::Error::last_os_error().into());
             }
+            let length = usize::try_from(length).map_err(|_| DemandError::InvalidRequest)?;
             work.record(WorkCounters {
                 source_bytes_read: length as u64,
                 ..WorkCounters::UNCHARGED
             })?;
-            if (length as usize) < capacity {
-                path.truncate(length as usize);
+            if length < capacity {
+                path.truncate(length);
                 break;
             }
             capacity = capacity.checked_mul(2).ok_or(WorkError::Overflow)?;
@@ -181,9 +176,12 @@ pub(super) fn watch_ancestors<W: SourceDemandReadWork>(
                 }
             }
             if let Some(index) = prior {
-                let old = ancestors[index].1.capacity() as u64;
+                let prior = ancestors
+                    .get_mut(index)
+                    .ok_or(DemandError::InvalidRequest)?;
+                let old = prior.1.capacity() as u64;
                 cleanup.record(ITEM, work)?;
-                ancestors[index].1 = std::mem::take(&mut pending);
+                prior.1 = std::mem::take(&mut pending);
                 work.release(old)?;
                 *retained -= old;
             } else {
@@ -234,14 +232,12 @@ impl Shared {
         if let Some(original) = &self.delivery.original {
             cleanup.records -= 1;
             original.state.with_original_leaf(|work| {
-                work.refund(crate::materializer::NativeResourceCredit::Items.delta(1))
-                    .expect("original reservation is balanced")
+                super::cancel_cleanup_credits(work, ITEM);
             });
         } else if self.delivery.birth_matches(work) {
             cleanup.records -= 1;
             work.with_original_leaf(|work| {
-                work.refund(crate::materializer::NativeResourceCredit::Items.delta(1))
-                    .expect("original reservation is balanced")
+                super::cancel_cleanup_credits(work, ITEM);
             });
         }
     }
@@ -271,7 +267,7 @@ impl Shared {
             )?;
             work.record(copied(bytes - 1))?;
             let mut path = Vec::with_capacity(length);
-            path.extend_from_slice(&prefix[..prefix_length]);
+            path.extend_from_slice(prefix.split_at(prefix_length).0);
             if !relative.is_empty() {
                 path.push(b'/');
                 path.extend_from_slice(relative);
@@ -300,6 +296,10 @@ impl Shared {
         result
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Admission keeps watch registration and its exact rollback in one frame."
+    )]
     pub(super) fn admit_with_work<W: SourceDemandReadWork>(
         &self,
         directory: &Path,
@@ -450,9 +450,8 @@ impl Shared {
             return Ok(());
         }
         let mut at = 0;
-        while at < watches.len() {
+        while let Some((path, descriptor)) = watches.get(at) {
             work.with_original_leaf(|work| work.started_io(ITEM))?;
-            let (path, descriptor) = &watches[at];
             if path.as_os_str().is_empty() || !path.starts_with(directory) {
                 at += 1;
                 continue;
@@ -505,7 +504,8 @@ impl Shared {
         work: &mut W,
     ) -> Result<(OwnedFd, u64), DemandError> {
         let name = name.as_bytes();
-        let bytes = name.len().checked_add(1).ok_or(WorkError::Overflow)? as u64;
+        let capacity = name.len().checked_add(1).ok_or(WorkError::Overflow)?;
+        let bytes = capacity as u64;
         let copied = copied(name.len() as u64);
         let reservation = work.reserve_cleanup_write()?;
         let buffer = match work.with_original_leaf(|work| {
@@ -516,7 +516,7 @@ impl Shared {
                 crate::WorkCounters::UNCHARGED,
             )?;
             work.record(copied)?;
-            let mut buffer = Vec::with_capacity(bytes as usize);
+            let mut buffer = Vec::with_capacity(capacity);
             buffer.extend_from_slice(name);
             buffer.push(0);
             Ok::<_, DemandError>(buffer)

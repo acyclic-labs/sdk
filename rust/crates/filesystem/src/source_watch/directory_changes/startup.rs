@@ -8,6 +8,10 @@ impl NativeSourceWatch {
     ) -> Result<Self, DemandError> {
         Self::open_watch(root.directory_handle(), delivery, true, None, true, work)
     }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "This state transition keeps admission, effects and resource retirement in one frame."
+    )]
     pub(crate) fn open_watch<W: SourceDemandReadWork>(
         root: std::os::windows::io::BorrowedHandle<'_>,
         delivery: Arc<Delivery>,
@@ -73,7 +77,7 @@ impl NativeSourceWatch {
                 native_wait_cancellation: Mutex::new(None),
                 delivery,
             }));
-            let state = shared.as_ref().expect("allocated reader");
+            let state = shared.as_ref().ok_or(DemandError::NativeWorkUnavailable)?;
             if native {
                 *state.thread.lock().unwrap_or_else(PoisonError::into_inner) =
                     Some(create_reader(state, work)?);
@@ -115,7 +119,7 @@ impl NativeSourceWatch {
             drop(reads);
             state.reading_changed.notify_all();
             Ok(Self {
-                shared: shared.take().expect("allocated reader"),
+                shared: shared.take().ok_or(DemandError::NativeWorkUnavailable)?,
             })
         })();
         if !native {
@@ -172,7 +176,10 @@ fn create_reader<W: SourceDemandReadWork>(
             None,
         )
     } {
-        Ok(handle) => Ok(unsafe { OwnedHandle::from_raw_handle(handle.0) }),
+        Ok(handle) => {
+            // SAFETY: successful CreateThread returned one owned handle.
+            Ok(unsafe { OwnedHandle::from_raw_handle(handle.0) })
+        }
         Err(error) => {
             // SAFETY: failed creation transferred no callback owner.
             drop(unsafe { Arc::from_raw(parameter) });
@@ -194,7 +201,8 @@ fn open<W: SourceDemandReadWork>(
     use windows::Win32::System::IO::IO_STATUS_BLOCK;
     let name = UNICODE_STRING::default();
     let attributes = OBJECT_ATTRIBUTES {
-        Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
+        Length: u32::try_from(size_of::<OBJECT_ATTRIBUTES>())
+            .map_err(|_| DemandError::InvalidRequest)?,
         RootDirectory: HANDLE(root.as_raw_handle()),
         ObjectName: &raw const name,
         ..OBJECT_ATTRIBUTES::default()
@@ -226,9 +234,10 @@ fn open<W: SourceDemandReadWork>(
     };
     if status.is_err() {
         // SAFETY: pure status translation.
-        return Err(
-            io::Error::from_raw_os_error(unsafe { RtlNtStatusToDosError(status) } as i32).into(),
-        );
+        return Err(io::Error::from_raw_os_error(
+            unsafe { RtlNtStatusToDosError(status) }.cast_signed(),
+        )
+        .into());
     }
     // SAFETY: successful creation transfers one owned handle.
     Ok(unsafe { OwnedHandle::from_raw_handle(handle.0) })

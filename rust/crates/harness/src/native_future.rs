@@ -129,7 +129,7 @@ mod tests {
     fn zero_sized_future_fits_an_exhausted_allocation_budget() -> Result<()> {
         let cancellation = CancellationToken::new();
         let work = NativeMaterializationWork::new(budget(1), &cancellation)
-            .expect("admitted original ledger");
+            .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
         let future = NativeFutureBundle::new(&work, || ZeroSizedFuture)?;
         drop(future);
         Ok(())
@@ -139,7 +139,7 @@ mod tests {
     fn actual_boxed_future_drops_under_original_live_custody() -> Result<()> {
         let cancellation = CancellationToken::new();
         let work = NativeMaterializationWork::new(budget(2), &cancellation)
-            .expect("admitted original ledger");
+            .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
         let baseline = work.remaining()?.peak_allocation_bytes;
         let dropped = AtomicBool::new(false);
         let future = NativeFutureBundle::new(&work, || DropProbe {

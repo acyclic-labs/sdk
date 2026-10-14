@@ -103,24 +103,20 @@ pub(super) fn host_kind(metadata: &HostStat) -> Result<FileKind, CaptureError> {
 }
 
 #[cfg(unix)]
-#[allow(clippy::unnecessary_wraps)]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "The shared capture path also handles platforms without device identities."
+)]
 pub(super) fn host_device_identity(metadata: &HostStat) -> Result<(u32, u32), CaptureError> {
-    Ok(split_device((metadata.raw.st_rdev as u64)))
-}
-
-#[cfg(target_os = "linux")]
-pub(super) fn split_device(device: u64) -> (u32, u32) {
-    (libc::major(device), libc::minor(device))
-}
-
-#[cfg(target_os = "macos")]
-pub(super) fn split_device(device: u64) -> (u32, u32) {
-    let low = u32::try_from(device & u64::from(u32::MAX)).unwrap_or(u32::MAX);
-    let native = i32::from_ne_bytes(low.to_ne_bytes());
-    (
-        u32::try_from(libc::major(native)).unwrap_or(u32::MAX),
-        u32::try_from(libc::minor(native)).unwrap_or(u32::MAX),
-    )
+    let device = metadata.raw.st_rdev;
+    #[cfg(target_os = "linux")]
+    let identity = (libc::major(device), libc::minor(device));
+    #[cfg(target_os = "macos")]
+    let identity = (
+        u32::try_from(libc::major(device)).unwrap_or(u32::MAX),
+        u32::try_from(libc::minor(device)).unwrap_or(u32::MAX),
+    );
+    Ok(identity)
 }
 
 #[cfg(not(unix))]
@@ -167,7 +163,9 @@ pub(super) fn preserve_unobserved_metadata(
     observed
 }
 
-pub(crate) fn system_time(value: &std::io::Result<cap_std::time::SystemTime>) -> MetadataField<i64> {
+pub(crate) fn system_time(
+    value: &std::io::Result<cap_std::time::SystemTime>,
+) -> MetadataField<i64> {
     let Ok(value) = value else {
         return MetadataField::Unavailable;
     };
@@ -185,11 +183,17 @@ pub(crate) fn system_time(value: &std::io::Result<cap_std::time::SystemTime>) ->
 
 #[cfg(unix)]
 pub(super) fn populate_platform_metadata(metadata: &HostStat, result: &mut FileMetadata) {
-    result.posix_mode = MetadataField::Value((metadata.raw.st_mode as u32));
-    result.posix_uid = MetadataField::Value((metadata.raw.st_uid as u32));
-    result.posix_gid = MetadataField::Value((metadata.raw.st_gid as u32));
-    let nanos = i128::from((metadata.raw.st_ctime as i64)) * 1_000_000_000
-        + i128::from((metadata.raw.st_ctime_nsec as i64));
+    #[allow(
+        clippy::unnecessary_cast,
+        clippy::cast_lossless,
+        reason = "mode_t is u16 on macOS and u32 on Linux."
+    )]
+    let mode = metadata.raw.st_mode as u32;
+    result.posix_mode = MetadataField::Value(mode);
+    result.posix_uid = MetadataField::Value(metadata.raw.st_uid);
+    result.posix_gid = MetadataField::Value(metadata.raw.st_gid);
+    let nanos =
+        i128::from(metadata.raw.st_ctime) * 1_000_000_000 + i128::from(metadata.raw.st_ctime_nsec);
     result.changed_ns =
         i64::try_from(nanos).map_or(MetadataField::Unavailable, MetadataField::Value);
 }

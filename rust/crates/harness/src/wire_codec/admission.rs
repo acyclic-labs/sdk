@@ -78,7 +78,7 @@ fn scan(
             let header = framed
                 .iter()
                 .position(|byte| byte & 0x80 == 0)
-                .expect("validated length varint")
+                .ok_or_else(|| boundary(work, Storage, "event length prefix is invalid"))?
                 + 1;
             let length = framed.len() - input.len() - header;
             if let Some(nested) = nested {
@@ -89,7 +89,10 @@ fn scan(
                         items: 0,
                     })?;
                 }
-                let (bytes, caps) = scan(&framed[header..header + length], nested, work, guard)?;
+                let payload = framed.get(header..header + length).ok_or_else(|| {
+                    boundary(work, Storage, "event length-delimited field is invalid")
+                })?;
+                let (bytes, caps) = scan(payload, nested, work, guard)?;
                 buffers += bytes;
                 capabilities += caps;
                 continue;

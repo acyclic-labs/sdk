@@ -192,7 +192,7 @@ impl ForkSeed {
                 )
                 .map(|_| ())?;
             }
-            for previous in &self.resources[..index] {
+            for previous in self.resources.iter().take(index) {
                 work.checkpoint()?;
                 if previous.source == resource.source {
                     return Err(work.invalid("fork selection appears twice"));
@@ -236,8 +236,9 @@ impl ForkSeed {
             )
             .map(|_| ())?;
             for previous in self.resources.iter().map(|capture| &capture.source).chain(
-                self.omissions[..index]
+                self.omissions
                     .iter()
+                    .take(index)
                     .map(|omission| &omission.selection.revision),
             ) {
                 work.checkpoint()?;
@@ -266,7 +267,7 @@ impl ForkSeed {
             {
                 return Err(work.invalid("fork attachment manifest is invalid or duplicated"));
             }
-            for previous in &self.attachment_manifests[..index] {
+            for previous in self.attachment_manifests.iter().take(index) {
                 work.checkpoint()?;
                 if previous == manifest {
                     return Err(work.invalid("fork attachment manifest is invalid or duplicated"));
@@ -322,7 +323,7 @@ impl ForkSeed {
             if !selected {
                 return Err(work.invalid("shared grant was not selected"));
             }
-            for previous in &self.shared_grants[..index] {
+            for previous in self.shared_grants.iter().take(index) {
                 work.checkpoint()?;
                 if previous.volume == grant.volume && previous.child_agent == grant.child_agent {
                     return Err(work.invalid("shared volume is granted twice to one agent"));
@@ -369,7 +370,7 @@ impl ForkSeed {
             {
                 return Err(work.invalid("owner needs no inherited reference grant"));
             }
-            for previous in &self.reference_grants[..index] {
+            for previous in self.reference_grants.iter().take(index) {
                 work.checkpoint()?;
                 if previous == grant {
                     return Err(work.invalid("reference grant appears twice"));

@@ -39,10 +39,12 @@ fn cancelled_native_import_retires_std_file_before_preserving_original_failure()
     let file = fixture_file(&path)?;
     let contender = fixture_file(&path)?;
     assert_eq!(
+        // SAFETY: file owns a live descriptor and flock takes no pointers.
         unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
         0
     );
     assert_ne!(
+        // SAFETY: contender owns a live descriptor and flock takes no pointers.
         unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
         0
     );
@@ -56,6 +58,7 @@ fn cancelled_native_import_retires_std_file_before_preserving_original_failure()
         Err(CaptureError::Kernel(error)) if matches!(*error, crate::FsError::Cancelled(_))
     ));
     assert_eq!(
+        // SAFETY: contender remains open after the imported file is retired.
         unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
         0
     );
