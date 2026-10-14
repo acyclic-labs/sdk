@@ -7,12 +7,11 @@ fn measured_read(
     owner: CallbackOwner,
     work: &mut DemandWork,
 ) -> Result<ViewReadLease, MountSourceError> {
-    work.check()
-        .map_err(super::super::lazy::mount_demand_error)?;
+    work.check().map_err(MountSourceError::from)?;
     let (result, budget) = {
         let (proofs, allocations, counters, mut budget) = work
             .admissions(|roots| &mut roots.view_gates)
-            .map_err(super::super::lazy::mount_demand_error)?;
+            .map_err(MountSourceError::from)?;
         let result = gate.try_read_for_callback_measured(
             owner,
             None,

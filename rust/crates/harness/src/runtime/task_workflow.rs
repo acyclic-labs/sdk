@@ -82,6 +82,7 @@ pub(super) fn retain_task_value<T>(
     value: (T, crate::NativeCustody),
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<T> {
+    let _ = io;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = task_original_work(io)? {
         if value
@@ -95,10 +96,16 @@ pub(super) fn retain_task_value<T>(
                 custody: value.1,
             });
         }
-        io.expect("original workflow IO")
-            .absorb_native_custody(value.1.expect("checked custody"))?;
+        let (Some(io), Some(custody)) = (io, value.1) else {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "original workflow custody is missing",
+            });
+        };
+        io.absorb_native_custody(custody)?;
         return Ok(value.0);
     }
+    let _ = io;
     Ok(value.0)
 }
 
@@ -213,7 +220,7 @@ impl ResumableTaskSession {
             None => {
                 self.host
                     .verify_dispatch_owner(self.task_id, &self.fence, io)?
-                    .await?
+                    .await?;
             }
         }
         let schema = self.definition.output_schema();
@@ -238,7 +245,7 @@ impl ResumableTaskSession {
             None => {
                 self.host
                     .verify_dispatch_owner(self.task_id, &self.fence, io)?
-                    .await?
+                    .await?;
             }
         }
         Ok(transition)

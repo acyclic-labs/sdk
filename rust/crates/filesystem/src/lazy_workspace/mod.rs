@@ -29,14 +29,12 @@ macro_rules! accounted {
     ($ctx:expr, |$work:ident, $cancel:ident| $call:expr) => {{
         (async {
             let $cancel = cancellation($ctx);
-            'sdk: {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some($work) = $ctx.native_work() {
-                    break 'sdk $call.await.map_err(LazyWorkspaceError::from);
-                }
-                let $work = $ctx.remaining()?;
-                accept_receipt($call.await, $ctx)
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some($work) = $ctx.native_work() {
+                return $call.await.map_err(LazyWorkspaceError::from);
             }
+            let $work = $ctx.remaining()?;
+            accept_receipt($call.await, $ctx)
         })
         .await
     }};

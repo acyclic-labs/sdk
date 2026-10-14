@@ -23,8 +23,7 @@ use bytes::Bytes;
 use futures::StreamExt as _;
 use std::sync::{Arc, Mutex, atomic::Ordering};
 
-#[path = "support/stream/mod.rs"]
-mod stream_fault;
+use crate::stream_fixture as stream_fault;
 use stream_fault::LostSessionAck;
 
 struct StoredContent(Arc<MemoryHarnessStorage>);

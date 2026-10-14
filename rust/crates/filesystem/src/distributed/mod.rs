@@ -76,6 +76,7 @@ mod records;
 mod reservations;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub(crate) use records::object_id_from_key;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use records::object_key;
 use records::*;
 mod accounting;

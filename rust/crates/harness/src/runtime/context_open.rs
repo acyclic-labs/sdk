@@ -160,7 +160,7 @@ impl AgentHarness {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let counter_bytes = (std::mem::size_of::<(AtomicUsize, Option<NativeCustody>)>()
             + 2 * std::mem::size_of::<usize>()) as u64;
-        let (scope, mut custody) = match native_work {
+        let (scope, custody) = match native_work {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Some(work) => {
                 let extra_self = (std::mem::size_of::<TaskContext>()
@@ -194,6 +194,10 @@ impl AgentHarness {
             ),
         };
         drop(native_scope);
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let mut custody = custody;
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let _ = (issued_purpose, custody);
         let bound = scope.concurrency_bound(self.concurrency);
         let descendants = self.live.child(bound, native_work)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

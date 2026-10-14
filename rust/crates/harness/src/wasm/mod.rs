@@ -4,6 +4,7 @@
     reason = "wasm-bindgen's exported ABI owns JavaScript values and byte buffers"
 )]
 
+use crate::runtime::dependencies::{dependency_target, validate_task_dependencies};
 use crate::wire_codec::{
     decode_command, decode_event_payload as decode_payload_wire, encode_apply_result,
     protocol_identity,
@@ -31,9 +32,8 @@ use crate::{
     resources::{ProviderRef, ResourceRef},
     runtime::{
         BatchGroupPolicy, DurableBatchRequest, TaskAdmissionRecord, TaskChild, TaskChildrenPage,
-        TaskRunLimits, batch_member_operation_id, dependency_target, task_admission_identities,
+        TaskRunLimits, batch_member_operation_id, task_admission_identities,
         task_definition_digest, validate_children_page, validate_children_request,
-        validate_task_dependencies,
     },
     tool::ToolDefinition,
     turn::prepare_turn,

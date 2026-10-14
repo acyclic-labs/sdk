@@ -168,6 +168,10 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
     }
 
     /// Discovers a private subtree at a stable generation.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The provider receives the grant, generation and cursor as separate borrowed fields."
+    )]
     fn list_private_directory<'a>(
         &'a self,
         _volume: &'a VolumeRef,

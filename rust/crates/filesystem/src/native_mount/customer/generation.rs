@@ -54,65 +54,23 @@ where
                 .map_err(|_| MountSourceError::Cancelled)?;
             let workspace = self.workspace();
             let expected_generation = self.id();
-            if mount.writable
-                && workspace.head(work, cancellation).await?.id() != expected_generation
-            {
-                return Err(WorkspaceError::StaleGeneration.into());
-            }
-            let mode = if mount.writable {
-                CheckoutMode::tracking_transaction()
-            } else {
-                CheckoutMode::read_only_pinned()
-            };
-            let checkout = workspace
-                .checkout(
-                    GenerationSelector::Exact(expected_generation),
-                    mode,
-                    work,
-                    cancellation,
-                )
-                .await?;
-            let mut checkout = if mount.writable {
-                checkout
-            } else {
-                checkout.into_unpublishable_capture_candidate()
-            };
-            let config = checkout.volume_config();
-            let mut accounting =
-                crate::kernel::allocation::KernelAccounting::native(work, cancellation);
-            let root = crate::workspace::customer_path_with_accounting(
-                &mount.subdirectory,
-                config,
-                &mut accounting,
+            let mut checkout = working_checkout(
+                &workspace,
+                expected_generation,
+                mount.writable,
+                work,
                 cancellation,
-            )?;
-            let root_custody = root.1;
-            let root = root.0;
-            if checkout
-                .lookup_no_follow(&root, work, cancellation)
-                .await
-                .map_err(WorkspaceError::from)?
-                .record
-                .is_none_or(|record| record.kind != FileKind::Directory)
-            {
-                return Err(WorkspaceError::NotDirectory.into());
-            }
-            if expected_root_identity.is_none() {
-                let candidate = checkout
-                    .private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(work, cancellation), cancellation)
-                    .map_err(WorkspaceError::from)?;
-                let reader = candidate
-                    .into_pinned_reader_with_native_work(work, cancellation)
-                    .map_err(WorkspaceError::from)?;
-                super::super::materialize_reader_paths(
-                    &reader,
-                    std::slice::from_ref(&root),
-                    options,
-                    super::super::MaterializeMode::ReconstructibleView,
-                    work,
-                )
-                .await?;
-            }
+            )
+            .await?;
+            let (root, root_custody) = prepare_root(
+                &mut checkout,
+                mount,
+                options,
+                expected_root_identity.is_none(),
+                &mut crate::kernel::KernelAccounting::native(work, cancellation),
+            )
+            .await?;
+            let mut accounting = crate::kernel::KernelAccounting::native(work, cancellation);
             let source_root = work.path(&options.destination, None)?;
             let mut custody = source_root.1;
             let source_root = source_root.0;
@@ -134,30 +92,15 @@ where
             let baseline = NativeViewBaseline::new(source_identity, !mount.writable);
             let source = options::checkout_source(checkout, (root, root_custody), mount, work)?;
             if expected_root_identity.is_some() {
-                let capture = work.native_volume_work(capture_budget)?;
-                source
-                    .capture_host(
-                        &source_root,
-                        &[MountPath::root()],
-                        source_identity,
-                        HostCaptureScope::Subtree,
-                        Some(baseline),
-                        &capture,
-                    )
-                    .await?;
-                if super::super::adapter::await_lock(
-                    source.shared_checkout().lock(),
-                    &mut super::super::adapter::NativeDemandCarrier::Native(&capture),
+                validate_recovered_capture(
+                    &source,
+                    &source_root,
+                    source_identity,
+                    baseline,
+                    work.native_volume_work(capture_budget)?,
                     cancellation,
-                    Some(source.cancellation()),
                 )
-                .await?
-                .has_pending_mutations()
-                {
-                    return Err(MountLifecycleError::NativePolicy(
-                        "journaled native allocation diverged from its original generation",
-                    ));
-                }
+                .await?;
             }
             if mount.writable
                 && workspace.head(work, cancellation).await?.id() != expected_generation
@@ -177,4 +120,138 @@ where
         })
         .await
     }
+}
+
+async fn working_checkout<A, O>(
+    workspace: &Workspace<A, O>,
+    expected_generation: GenerationId,
+    writable: bool,
+    work: &NativeMaterializationWork,
+    cancellation: &crate::CancellationToken,
+) -> Result<crate::Checkout<A, O>, MountLifecycleError>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    if writable && workspace.head(work, cancellation).await?.id() != expected_generation {
+        return Err(WorkspaceError::StaleGeneration.into());
+    }
+    let mode = if writable {
+        CheckoutMode::tracking_transaction()
+    } else {
+        CheckoutMode::read_only_pinned()
+    };
+    let checkout = workspace
+        .checkout(
+            GenerationSelector::Exact(expected_generation),
+            mode,
+            work,
+            cancellation,
+        )
+        .await?;
+    Ok(if writable {
+        checkout
+    } else {
+        checkout.into_unpublishable_capture_candidate()
+    })
+}
+
+async fn validate_recovered_capture<A, O>(
+    source: &CheckoutMountSource<A, O>,
+    source_root: &Path,
+    source_identity: NativeRootIdentity,
+    baseline: NativeViewBaseline,
+    capture: NativeMaterializationWork,
+    cancellation: &crate::CancellationToken,
+) -> Result<(), MountLifecycleError>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    source
+        .capture_host(
+            source_root,
+            &[MountPath::root()],
+            source_identity,
+            HostCaptureScope::Subtree,
+            Some(baseline),
+            &capture,
+        )
+        .await?;
+    if super::super::adapter::await_lock(
+        source.shared_checkout().lock(),
+        &mut super::super::adapter::NativeDemandCarrier::Native(&capture),
+        cancellation,
+        Some(source.cancellation()),
+    )
+    .await?
+    .has_pending_mutations()
+    {
+        return Err(MountLifecycleError::NativePolicy(
+            "journaled native allocation diverged from its original generation",
+        ));
+    }
+    Ok(())
+}
+
+async fn prepare_root<A, O>(
+    checkout: &mut crate::Checkout<A, O>,
+    mount: &MountOptions,
+    options: &crate::MaterializeOptions,
+    materialize: bool,
+    accounting: &mut crate::kernel::KernelAccounting<'_>,
+) -> Result<
+    (
+        crate::kernel::NamespacePath,
+        crate::kernel::KernelOwnedAllocation,
+    ),
+    MountLifecycleError,
+>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    let crate::kernel::KernelAccounting::NativeOriginal { work, cancellation } = &*accounting
+    else {
+        return Err(MountSourceError::OriginalSnapshotUnavailable.into());
+    };
+    let (work, cancellation) = (*work, *cancellation);
+    let config = checkout.volume_config();
+    let root = crate::workspace::customer_path_with_accounting(
+        &mount.subdirectory,
+        config,
+        accounting,
+        cancellation,
+    )?;
+    let root_custody = root.1;
+    let root = root.0;
+    if checkout
+        .lookup_no_follow(&root, work, cancellation)
+        .await
+        .map_err(WorkspaceError::from)?
+        .record
+        .is_none_or(|record| record.kind != FileKind::Directory)
+    {
+        return Err(WorkspaceError::NotDirectory.into());
+    }
+    if materialize {
+        let candidate = checkout
+            .private_candidate(
+                &mut crate::kernel::allocation::KernelAccounting::native(work, cancellation),
+                cancellation,
+            )
+            .map_err(WorkspaceError::from)?;
+        let reader = candidate
+            .into_pinned_reader_with_native_work(work, cancellation)
+            .map_err(WorkspaceError::from)?;
+        super::super::materialize_reader_paths(
+            &reader,
+            std::slice::from_ref(&root),
+            options,
+            super::super::MaterializeMode::ReconstructibleView,
+            work,
+        )
+        .await?;
+    }
+    Ok((root, root_custody))
 }

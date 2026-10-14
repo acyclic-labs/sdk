@@ -255,8 +255,9 @@ impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedStore<A> {
     ) -> Result<(Vec<DurableCommit>, crate::AuthorityAllocation), AuthorityStoreError> {
         let fault =
             select_authority_fault(&self.state, SimulationOperation::AuthorityReplay, work)?;
-        let (mut records, mut allocation) =
-            self.inner.replay(authority, after, limit, work).await?;
+        let (mut records, allocation) = self.inner.replay(authority, after, limit, work).await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut allocation = allocation;
         if matches!(fault, Some(SimulationFault::DuplicateAuthorityReplay)) && !records.is_empty() {
             let growth = records.len() == records.capacity();
             let count = records
@@ -295,7 +296,10 @@ impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedStore<A> {
                     }
                 records = replacement;
             }
-            let last = records.last().expect("nonempty replay page").clone();
+            let last = records
+                .last()
+                .ok_or(AuthorityStoreError::CorruptStatic("empty replay page"))?
+                .clone();
             records.push(last);
             work.charge(WorkCounters {
                 bytes_copied: std::mem::size_of::<DurableCommit>() as u64,

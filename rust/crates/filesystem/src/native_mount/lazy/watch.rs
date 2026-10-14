@@ -94,7 +94,7 @@ where
         let mut unconfirmed = false;
         let mut accounting = KernelAccounting::native(work, work.cancellation());
         for change in changes {
-            crate::native_host::NativeHostWork::check(work).map_err(mount_demand_error)?;
+            crate::native_host::NativeHostWork::check(work).map_err(MountSourceError::from)?;
             authored
                 .cancellation()
                 .check()
@@ -147,7 +147,8 @@ where
                 &change,
                 &mut adapter::NativeDemandCarrier::Native(work),
                 || {
-                    crate::native_host::NativeHostWork::check(work).map_err(mount_demand_error)?;
+                    crate::native_host::NativeHostWork::check(work)
+                        .map_err(MountSourceError::from)?;
                     work.admit(crate::WorkCounters::UNCHARGED)
                         .map_err(MountSourceError::NativeWork)?;
                     authored
@@ -157,7 +158,7 @@ where
                 },
             )?;
         }
-        crate::native_host::NativeHostWork::check(work).map_err(mount_demand_error)
+        crate::native_host::NativeHostWork::check(work).map_err(MountSourceError::from)
     }
 }
 
@@ -168,7 +169,7 @@ fn change_counts(
     changes
         .iter()
         .try_fold((0usize, 0usize, 0usize), |(n, s, l), change| {
-            crate::native_host::NativeHostWork::check(work).map_err(mount_demand_error)?;
+            crate::native_host::NativeHostWork::check(work).map_err(MountSourceError::from)?;
             work.charge(crate::materializer::NativeResourceCredit::Items.delta(1))
                 .map_err(MountSourceError::NativeWork)?;
             let extra = match change {

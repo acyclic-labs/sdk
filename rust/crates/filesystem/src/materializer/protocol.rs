@@ -170,7 +170,7 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         }
         while journal.preimages.len() < journal.plan.edits.len() {
             self.verify_effect_context(&journal).await?;
-            let mut preimage = self
+            let preimage = self
                 .backend
                 .capture(
                     journal
@@ -181,6 +181,8 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
                 )
                 .await
                 .map_err(MaterializationError::Backend)?;
+            #[cfg(not(target_arch = "wasm32"))]
+            let mut preimage = preimage;
             #[cfg(not(target_arch = "wasm32"))]
             if self.backend.native_work().is_some() {
                 let mut allocation = preimage

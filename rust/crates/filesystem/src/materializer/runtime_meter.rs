@@ -20,6 +20,15 @@ macro_rules! demand_meter {
         impl acyclic_native_runtime::NativeReadMeter for $owner {
             $(fn allocation_owner(&self) -> Option<std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>> { ($allocation_owner)(self) })?
             fn check(&self) -> std::io::Result<()> { self.io(|state| state.check()) }
+            fn reserve_cleanup_write(&self) -> std::io::Result<u64> {
+                self.io(|state| crate::native_host::NativeHostWork::reserve_cleanup_write(state))
+            }
+            fn cancel_cleanup_write(&self, reservation: u64) {
+                self.cancel(|state| state.refund(NativeResourceCredit::WriteOperations.delta(reservation)));
+            }
+            fn record_cleanup_write(&self, reservation: u64) -> std::io::Result<()> {
+                self.io(|state| crate::native_host::NativeHostWork::attempt_cleanup_write(state, reservation, || ()).1)
+            }
             fn reserve_operations(&self, kind: acyclic_native_runtime::NativeOperationKind, count: u64) -> std::io::Result<()> {
                 self.io(|state| state.reserve(crate::demand::DemandWork::operation_credit(kind).delta(count)))
             }

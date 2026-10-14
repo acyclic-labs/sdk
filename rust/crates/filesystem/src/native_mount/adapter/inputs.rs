@@ -16,7 +16,7 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
             .transpose()?;
         carrier
             .with_work(|work| work.check())
-            .map_err(super::lazy::mount_demand_error)?;
+            .map_err(MountSourceError::from)?;
         Ok(Self {
             carrier,
             bytes: 0,
@@ -41,7 +41,7 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
         let (values, bytes) = self
             .carrier
             .with_work(|work| crate::native_host::buffer(count, work))
-            .map_err(super::lazy::mount_demand_error)?;
+            .map_err(MountSourceError::from)?;
         self.bytes = self
             .bytes
             .checked_add(bytes)
@@ -110,7 +110,7 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
         } else {
             self.carrier
                 .with_work(|work| work.admit(delta))
-                .map_err(super::lazy::mount_demand_error)
+                .map_err(MountSourceError::from)
         }
     }
 
@@ -124,7 +124,7 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
         } else {
             self.carrier
                 .with_work(|work| work.record(delta))
-                .map_err(super::lazy::mount_demand_error)
+                .map_err(MountSourceError::from)
         }
     }
 
@@ -134,7 +134,7 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
             None => self
                 .carrier
                 .with_work(|work| work.charge(delta))
-                .map_err(super::lazy::mount_demand_error),
+                .map_err(MountSourceError::from),
         }
     }
 
@@ -152,7 +152,7 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
         } else {
             self.carrier
                 .with_work(|work| work.release(bytes))
-                .map_err(super::lazy::mount_demand_error)?;
+                .map_err(MountSourceError::from)?;
             self.bytes = self
                 .bytes
                 .checked_sub(bytes)

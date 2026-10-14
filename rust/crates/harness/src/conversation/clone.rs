@@ -1,5 +1,8 @@
 use super::*;
 
+pub(super) type RetainMessage<'callback, 'work> = dyn FnMut(u64, u64, &mut Option<&'work mut dyn crate::store::history::HistoryIo>) -> Result<()>
+    + 'callback;
+
 impl ConversationState {
     pub(super) fn require_native_work(
         &self,
@@ -27,13 +30,7 @@ impl ConversationState {
     pub(crate) fn copy<'work>(
         &self,
         work: &mut Option<&'work mut dyn crate::store::history::HistoryIo>,
-        mut retain: Option<
-            &mut dyn FnMut(
-                u64,
-                u64,
-                &mut Option<&'work mut dyn crate::store::history::HistoryIo>,
-            ) -> Result<()>,
-        >,
+        mut retain: Option<&mut super::clone::RetainMessage<'_, 'work>>,
     ) -> Result<(Self, u64)> {
         if retain.is_some() {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

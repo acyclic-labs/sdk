@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use crate::wire::ErrorCode::Unsupported;
 use futures::future::Either;
 

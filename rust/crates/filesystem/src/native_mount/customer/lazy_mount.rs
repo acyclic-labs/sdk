@@ -194,14 +194,15 @@ where
     pub fn import_selected<'a, F, Fut, E>(
         &'a self,
         destination: crate::LazySnapshotRef,
-        plan: crate::SelectedImportPlan,
-        allocation: NativeAllocation,
+        input: (crate::SelectedImportPlan, NativeAllocation),
         operation: crate::OperationId,
         permit: PublicationPermit,
-        work: &'a NativeMaterializationWork,
-        cancellation: &'a crate::CancellationToken,
+        accounting: &crate::kernel::KernelAccounting<'a>,
         before_publication: F,
-    ) -> impl Future<Output = Result<crate::LazySnapshotRef, E>> + Send + 'a
+    ) -> impl Future<Output = Result<crate::LazySnapshotRef, E>>
+    + Send
+    + 'a
+    + use<'a, A, O, D, S, E, F, Fut>
     where
         E: From<MountLifecycleError>
             + From<MountSourceError>
@@ -211,8 +212,14 @@ where
         F: for<'m> FnMut(&'m NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
-        let input = (plan, allocation);
+        let invocation = match accounting {
+            crate::kernel::KernelAccounting::NativeOriginal { work, cancellation } => {
+                Ok((*work, *cancellation))
+            }
+            _ => Err(MountSourceError::OriginalSnapshotUnavailable),
+        };
         async move {
+            let (work, cancellation) = invocation.map_err(E::from)?;
             let allocation = input.1;
             let plan = input.0;
             let result = async {
@@ -319,16 +326,18 @@ where
         &self,
         work: &NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::NativePublicationSnapshot, (MountLifecycleError, Option<MountSourceError>)>
-    {
-        self.settle(work).map_err(|cause| (cause, None))?;
+        accounting_failure: &mut Option<MountSourceError>,
+    ) -> Result<crate::NativePublicationSnapshot, MountLifecycleError> {
+        *accounting_failure = None;
+        self.settle(work)?;
         self.source
             .publication_snapshot(
                 super::super::adapter::NativeDemandCarrier::Native(work),
                 cancellation,
+                accounting_failure,
             )
             .await
-            .map_err(|(cause, accounting)| (cause.into(), accounting))
+            .map_err(Into::into)
     }
 
     /// Publishes and detaches, retaining the owner on any failure.

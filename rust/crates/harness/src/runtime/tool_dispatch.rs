@@ -48,7 +48,8 @@ impl TaskContext {
             None,
         )?;
         binding
-            .executor.authorize(None, Some(&context), &invocation, None)?;
+            .executor
+            .authorize(None, Some(&context), &invocation, None)?;
         if let Some(operation) = self.authorize_tool(tool, &invocation).await? {
             return Err(Error::Indeterminate(operation));
         }
@@ -141,6 +142,8 @@ impl TaskContext {
         command_router: Option<&dyn InteractionRouter>,
         scope: &RuntimeScope,
     ) -> Result<Option<OperationId>> {
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let _ = command_router;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
             work.remaining()?;
@@ -184,6 +187,8 @@ impl TaskContext {
                 .await?
             {
                 let ((approval_id, request), custody) = paid;
+                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                let _ = custody;
                 let outcome: (InteractionOutcome, Option<NativeCustody>) = match work {
                     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                     Some(work) => {
@@ -191,7 +196,10 @@ impl TaskContext {
                             .route_native_interaction(
                                 approval_id,
                                 request,
-                                custody.expect("native approval retains its prompt"),
+                                custody.ok_or(Error::NativeBoundary {
+                                    code: crate::wire::ErrorCode::Invalid,
+                                    reason: "native approval has no retained prompt",
+                                })?,
                                 work,
                                 command_router,
                                 scope,
@@ -252,12 +260,12 @@ impl TaskContext {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work
             && !matches!(&future, crate::store::HistoryContentFuture::Native(future) if future.work().shares_ledger(work))
-            {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Conflict,
-                    reason: "policy evaluator belongs to another ledger",
-                });
-            }
+        {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Conflict,
+                reason: "policy evaluator belongs to another ledger",
+            });
+        }
         let decision = future.await?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {

@@ -464,7 +464,7 @@ fn validate_label(
         inspect_native_metadata(native, value.len())?;
     }
     if value.is_empty()
-        || value.len() > MAX_LABEL_BYTES
+        || value.len() as u64 > MAX_LABEL_BYTES as u64
         || value.chars().any(char::is_control)
         || value.contains('/')
         || value.contains('\\')

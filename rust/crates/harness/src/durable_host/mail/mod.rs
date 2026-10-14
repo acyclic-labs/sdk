@@ -169,18 +169,17 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
 
     pub(super) async fn prepare_mail(
         &self,
-        sender: TaskId,
+        (sender, sender_admission): (TaskId, &TaskAdmissionRecord),
         recipient: TaskId,
         message: OperationId,
         payload: FileRef,
         io: Option<&PreparationIo>,
     ) -> Result<(OwnedBytes, FileRef)> {
         require_original(io)?;
-        let sender_admission = self.mail_admission(sender, io).await?;
         let recipient_admission = self.mail_admission(recipient, io).await?;
         let direct = authorize_route(
             sender,
-            &sender_admission,
+            sender_admission,
             recipient,
             &recipient_admission,
             io,
@@ -257,10 +256,23 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         let mut work = history.as_mut().map(|io| io as &mut dyn HistoryIo);
         owner.verify(false, &mut work).await?;
         let (bytes, payload) = self
-            .prepare_mail(owner.task_id(), recipient, message, payload, io)
+            .prepare_mail(
+                (owner.task_id(), owner.admission()),
+                recipient,
+                message,
+                payload,
+                io,
+            )
             .await?;
-        self.publish_mail(owner.task_id(), recipient, message, bytes, Some(owner), io)
-            .await?;
+        self.publish_mail(
+            (owner.task_id(), owner.admission()),
+            recipient,
+            message,
+            bytes,
+            Some(owner),
+            io,
+        )
+        .await?;
         Ok(payload)
     }
 
@@ -284,7 +296,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         let mut work: Option<&mut dyn HistoryIo> = None;
         owner.verify(true, &mut work).await?;
         let bytes = self
-            .prepare_mail(sender, recipient, message, payload, io)
+            .prepare_mail((sender, owner.admission()), recipient, message, payload, io)
             .await?
             .0;
         let retained = self
@@ -300,7 +312,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
     )]
     pub(super) async fn publish_mail(
         &self,
-        sender: TaskId,
+        (sender, sender_admission): (TaskId, &TaskAdmissionRecord),
         recipient: TaskId,
         message: OperationId,
         bytes: OwnedBytes,
@@ -358,9 +370,8 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                         "mail publication v3 identity differs",
                     ));
                 }
-                let admission = self.mail_admission(sender, io).await?;
                 let source = self
-                    .read_mail_source(&admission, &event.payload, &mut work)
+                    .read_mail_source(sender_admission, &event.payload, &mut work)
                     .await?;
                 drop(source);
                 source_verified = true;

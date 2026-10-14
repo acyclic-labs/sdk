@@ -53,7 +53,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 let folded = inputs
                     .carrier
                     .with_work(|leaf| crate::demand::lowercase_unicode_with_work(text, leaf))
-                    .map_err(super::lazy::mount_demand_error)?;
+                    .map_err(MountSourceError::from)?;
                 inputs.bytes = inputs
                     .bytes
                     .checked_add(folded.capacity() as u64)
