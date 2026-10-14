@@ -164,7 +164,7 @@ impl MemoryStore {
                     StoredBlob {
                         bytes: resident,
                         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                        custody,
+                        _custody: custody,
                     },
                 );
                 self.resident_bytes += length;
@@ -181,7 +181,7 @@ impl MemoryStore {
                 StoredFile {
                     reference: retained_reference,
                     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                    custody,
+                    _custody: custody,
                 },
             );
         }

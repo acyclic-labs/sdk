@@ -161,11 +161,7 @@ impl ContextInput {
                     let copied = (selected.selection.message_ids.len()
                         * std::mem::size_of::<uuid::Uuid>())
                         as u64;
-                    quota
-                        .work()
-                        .as_deref()
-                        .expect("observed selection")
-                        .admit_copy(copied)?;
+                    quota.observer()?.admit_copy(copied)?;
                     compaction::reserve_vector(
                         &mut message_ids,
                         selected.selection.message_ids.len(),
@@ -175,11 +171,7 @@ impl ContextInput {
                         (message_ids.capacity() * std::mem::size_of::<uuid::Uuid>()) as u64,
                     )?;
                     let result = (|| {
-                        quota
-                            .work()
-                            .as_deref_mut()
-                            .expect("observed selection")
-                            .copy_bytes(copied)?;
+                        quota.observer()?.copy_bytes(copied)?;
                         message_ids.extend_from_slice(&selected.selection.message_ids);
                         let checkpoint = match &selected.selection.checkpoint {
                             Some(file) => Some(file.clone_in_quota(&mut quota)?),

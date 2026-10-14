@@ -40,31 +40,19 @@ pub(crate) fn reserve_vector<T>(
     io.admit_copy(copied)?;
     io.admit_allocation(bytes)?;
     let mut quota = crate::wire_codec::CodecQuota::new(work, bytes)?;
-    quota
-        .work()
-        .as_deref_mut()
-        .expect("observed vector")
-        .copy_bytes(copied)?;
+    quota.observer()?.copy_bytes(copied)?;
     if let Err(cause) = values.try_reserve_exact(capacity - values.len()) {
-        return Err(quota
-            .work()
-            .as_deref()
-            .expect("observed vector")
-            .allocation_failure(cause));
+        return Err(quota.observer()?.allocation_failure(cause));
     }
     let actual = (values.capacity() * std::mem::size_of::<T>()) as u64;
     let reconciled = (|| {
         if actual > bytes {
-            let io = quota.work().as_deref_mut().expect("observed vector");
+            let io = quota.observer()?;
             io.admit_owned(actual - bytes)?;
             io.retain_owned(actual - bytes)?;
             quota.adopt(actual - bytes)?;
         }
-        quota
-            .work()
-            .as_deref_mut()
-            .expect("observed vector")
-            .release_owned(old)?;
+        quota.observer()?.release_owned(old)?;
         Ok(())
     })();
     if let Err(error) = reconciled {

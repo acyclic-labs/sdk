@@ -64,12 +64,12 @@ pub(crate) fn traced<'a, T: 'a>(
 ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<T>> {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let operation = span.clone();
-        Box::pin(span.scope(async move {
+        let context = span.clone();
+        Box::pin(context.scope(async move {
             let result = future.await;
-            operation.record("outcome", if result.is_ok() { "ok" } else { "err" });
+            span.record("outcome", if result.is_ok() { "ok" } else { "err" });
             if let Err(error) = &result {
-                operation.record("error.kind", error.kind());
+                span.record("error.kind", error.kind());
             }
             result
         }))

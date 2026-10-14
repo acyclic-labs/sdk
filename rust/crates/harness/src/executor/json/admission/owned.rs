@@ -60,10 +60,19 @@ fn tree(
 ) -> Result<Branches> {
     resident.visit(0, value.as_str().map_or(0, str::len), charge)?;
     let mut stack: [Option<Frame<'_>>; 257] = [const { None }; 257];
-    stack[0] = Some(Frame::new(value, schema, 0));
+    let invalid_frame = || {
+        boundary(
+            "JSON nesting limit exceeded",
+            Some(crate::wire::ErrorCode::Invalid),
+        )
+    };
+    *stack.first_mut().ok_or_else(invalid_frame)? = Some(Frame::new(value, schema, 0));
     let mut depth = 0;
     loop {
-        let frame = stack[depth].as_mut().unwrap();
+        let frame = stack
+            .get_mut(depth)
+            .and_then(Option::as_mut)
+            .ok_or_else(invalid_frame)?;
         let next = if let Some(object) = &mut frame.object {
             object
                 .next()
@@ -72,7 +81,10 @@ fn tree(
             frame.array.next().map(|(index, value)| (index, "", value))
         };
         let Some((index, key, field)) = next else {
-            let mut frame = stack[depth].take().unwrap();
+            let mut frame = stack
+                .get_mut(depth)
+                .and_then(Option::take)
+                .ok_or_else(invalid_frame)?;
             if frame.object.is_some() && !frame.schema.tag.is_empty() {
                 frame.counts.resolve(frame.tag.unwrap_or(0))?;
             }
@@ -80,14 +92,15 @@ fn tree(
                 return Ok(frame.counts);
             }
             depth -= 1;
-            stack[depth]
-                .as_mut()
-                .unwrap()
+            stack
+                .get_mut(depth)
+                .and_then(Option::as_mut)
+                .ok_or_else(invalid_frame)?
                 .counts
                 .add(frame.counts, frame.gate)?;
             continue;
         };
-        let child_depth = depth as u32 + 1;
+        let child_depth = u32::try_from(depth).map_err(|_| invalid_frame())? + 1;
         if frame.object.is_some() {
             resident.visit(child_depth, key.len(), charge)?;
         }
@@ -98,8 +111,11 @@ fn tree(
             frame.tag = Some(frame.schema.mask(field.as_str().map_or(b"", str::as_bytes)));
         }
         resident.visit(child_depth, field.as_str().map_or(0, str::len), charge)?;
-        if index == 0 && key.as_bytes() == RAW && std::ptr::eq(child, &ROOT) && field.is_string() {
-            let text = field.as_str().unwrap();
+        if index == 0
+            && key.as_bytes() == RAW
+            && std::ptr::eq(child, &ROOT)
+            && let Some(text) = field.as_str()
+        {
             charge.borrow_mut()(JsonCodecCharge::Inspect {
                 items: text.len() as u64,
             })?;
@@ -122,7 +138,7 @@ fn tree(
             frame.counts.add(selected, gate)?;
         } else {
             depth += 1;
-            stack[depth] = Some(Frame::new(field, child, gate));
+            *stack.get_mut(depth).ok_or_else(invalid_frame)? = Some(Frame::new(field, child, gate));
         }
     }
 }

@@ -1,30 +1,30 @@
 //! Bounded in-memory content shared by native and WASM hosts.
 
 #[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
-use crate::executor::json::canonical_json_digest;
-#[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
 use crate::conversation::FileDescriptor;
 use crate::conversation::{FileRef, VolumeRef, is_internal_path};
+#[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
+use crate::executor::json::canonical_json_digest;
 use crate::{Error, Result};
 use std::collections::{BTreeMap, HashMap};
 
 struct StoredFile {
     reference: FileRef,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    custody: Option<acyclic_fs::NativeAllocation>,
+    _custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 struct StoredBlob {
     bytes: Box<[u8]>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    custody: Option<acyclic_fs::NativeAllocation>,
+    _custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 struct PathRevision {
     generation: u64,
     file: FileRef,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    custody: Option<acyclic_fs::NativeAllocation>,
+    _custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 #[derive(Default)]
@@ -33,7 +33,7 @@ struct PathHistory {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     capacity_custody: Option<acyclic_fs::NativeAllocation>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    key_custody: Option<acyclic_fs::NativeAllocation>,
+    _key_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 /// Bounded owner-private immutable content state.
@@ -97,13 +97,17 @@ impl MemoryStore {
             return Err(Error::Invalid("staged file exceeds harness limits".into()));
         }
         let descriptor = FileDescriptor::from_bytes(bytes, media_type, &mut None)?;
-        let digest = canonical_json_digest(&(
-            &path,
-            descriptor.sha256(),
-            descriptor.byte_length(),
-            descriptor.media_type(),
-            &display_name,
-        ), u64::MAX, &mut None)?;
+        let digest = canonical_json_digest(
+            &(
+                &path,
+                descriptor.sha256(),
+                descriptor.byte_length(),
+                descriptor.media_type(),
+                &display_name,
+            ),
+            u64::MAX,
+            &mut None,
+        )?;
         let reference = FileRef::new(
             self.volume.clone(),
             path.to_owned(),

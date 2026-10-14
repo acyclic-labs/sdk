@@ -85,8 +85,7 @@ pub(crate) fn json_decode_owned_bytes(
             size_of::<(String, FileRef)>(),
         ]
         .into_iter()
-        .max()
-        .unwrap() as u64
+        .fold(0, usize::max) as u64
     };
     let value_slot = size_of::<Value>().max(size_of::<(String, Value)>()) as u64;
     let virtual_bytes =
@@ -104,8 +103,7 @@ pub(crate) fn json_decode_owned_bytes(
         size_of::<FileRef>(),
     ]
     .into_iter()
-    .max()
-    .unwrap() as u64;
+    .fold(0, usize::max) as u64;
     let mut diagnostic = diagnostic_bytes(input, EVENT_LABEL_BYTES, code)?;
     let mut conversation = 0;
     if snapshot {
