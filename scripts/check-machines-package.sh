@@ -103,31 +103,27 @@ for invalid_vcs_info in \
   ! printf '%s\n' "$invalid_vcs_info" | valid_vcs_info "$head"
 done
 
-source_root="$work/source"
 package_root="$work/package-source"
 test_root="$work/test"
-mkdir -p "$source_root" "$test_root"
-git archive "$head" | tar -x -C "$source_root"
+mkdir -p "$test_root"
 git clone --quiet --no-checkout -- "$root" "$package_root"
 git -C "$package_root" checkout --quiet --detach "$head"
 clean_head "$package_root" "$head"
 
 cargo_bin="cargo"
-source_manifest="$source_root/Cargo.toml"
-package_manifest="$package_root/Cargo.toml"
+manifest="$package_root/Cargo.toml"
 package_target="$work/package-target"
 package_target_argument="$package_target"
 if command -v wslpath >/dev/null 2>&1 && command -v cargo.exe >/dev/null 2>&1; then
   cargo_bin="cargo.exe"
-  source_manifest="$(wslpath -w "$source_manifest")"
-  package_manifest="$(wslpath -w "$package_manifest")"
+  manifest="$(wslpath -w "$manifest")"
   package_target_argument="$(wslpath -w "$package_target")"
 fi
-version="$("$cargo_bin" metadata --no-deps --format-version 1 --manifest-path "$source_manifest" | node -e 'let input=""; process.stdin.on("data", chunk => input += chunk).on("end", () => console.log(JSON.parse(input).packages.find(item => item.name === "acyclic-machines").version))')"
-"$cargo_bin" test --locked -p acyclic-machines -p acyclic-harness --manifest-path "$source_manifest" --target-dir "$package_target_argument"
+version="$("$cargo_bin" metadata --no-deps --format-version 1 --manifest-path "$manifest" | node -e 'let input=""; process.stdin.on("data", chunk => input += chunk).on("end", () => console.log(JSON.parse(input).packages.find(item => item.name === "acyclic-machines").version))')"
+"$cargo_bin" test --locked -p acyclic-machines -p acyclic-harness --manifest-path "$manifest" --target-dir "$package_target_argument"
 clean_head "$root" "$head"
 clean_head "$package_root" "$head"
-"$cargo_bin" package --locked --no-verify -p acyclic-machines --manifest-path "$package_manifest" --target-dir "$package_target_argument"
+"$cargo_bin" package --locked --no-verify -p acyclic-machines --manifest-path "$manifest" --target-dir "$package_target_argument"
 crate="$package_target/package/acyclic-machines-${version}.crate"
 strict_archive "$crate"
 tar -xOf "$crate" "acyclic-machines-${version}/.cargo_vcs_info.json" |
