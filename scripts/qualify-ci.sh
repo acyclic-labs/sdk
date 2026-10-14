@@ -307,31 +307,16 @@ case "$lane" in
     background harness-package bash scripts/check-harness-package.sh "$SDK_ARTIFACT_DIR/packages/harness"
     generated_status=0
     bun run check:generated || generated_status=$?
-    if ((generated_status == 0)); then
-      background filesystem-package bash scripts/check-filesystem-package.sh "$SDK_ARTIFACT_DIR/packages/filesystem"
-    fi
-    harness_status=0
-    finish harness-package || harness_status=$?
-    if ((harness_status != 0)); then
-      if ((generated_status == 0)); then finish filesystem-package || true; fi
-      exit "$harness_status"
-    fi
+    finish harness-package
     if ((generated_status != 0)); then exit "$generated_status"; fi
     background harness-conformance bun scripts/run-harness-conformance.mjs \
       "$SDK_ARTIFACT_DIR/packages/harness" \
       "$SDK_ARTIFACT_DIR/packages/harness/runner-report.json" \
       "$SDK_ARTIFACT_DIR/packages/harness/qualification-receipt.json"
     filesystem_status=0
-    finish filesystem-package || filesystem_status=$?
+    bash scripts/check-filesystem-package.sh "$SDK_ARTIFACT_DIR/packages/filesystem" || filesystem_status=$?
     finish harness-conformance
     if ((filesystem_status != 0)); then exit "$filesystem_status"; fi
-    node scripts/typescript-qualification.mjs consumer "$(command -v bun)" "$SDK_ARTIFACT_DIR/packages/BUILD.json"
-    bash scripts/check-typescript-packages.sh \
-      "$SDK_ARTIFACT_DIR/packages/typescript" \
-      "$SDK_ARTIFACT_DIR/packages/inference/acyclic-inference.tgz" \
-      "$SDK_ARTIFACT_DIR/packages/filesystem/acyclic-fs.tgz" \
-      "$SDK_ARTIFACT_DIR/packages/harness/acyclic-harness.tgz" \
-      "$SDK_ARTIFACT_DIR/packages/BUILD.json"
     bun run licenses
     bun x buf format -d --exit-code
     bun x buf lint

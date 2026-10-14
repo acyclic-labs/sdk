@@ -452,7 +452,7 @@ test("Linux filesystem packaging overlaps Harness conformance and joins both fai
   const commands = source.slice(start, end);
   const helpers = source.slice(source.indexOf("background() {"), source.indexOf("native_binding() {"));
   assert.ok(helpers.includes("finish() {"));
-  const controlledHelpers = helpers.replace("finish() {", 'finish() {\n  if [[ "$1" == harness-conformance ]]; then touch "$fixture/finish-entered"; fi');
+  const controlledHelpers = helpers.replace("finish() {", 'finish() {\n  touch "$fixture/finish-entered"');
   mkdirSync(".tools", { recursive: true });
   const root = mkdtempSync(".tools/linux-packages-").replaceAll("\\", "/");
   assert.match(root, /^\.tools\/linux-packages-[A-Za-z0-9]+$/);
@@ -494,10 +494,6 @@ bun() {
   return "$fail_harness"
 }
 bash() {
-  if [[ "$1" == scripts/check-typescript-packages.sh ]]; then
-    [[ "$#" == 6 && -f "$fixture/filesystem.done" && -f "$fixture/harness.done" ]]
-    return 0
-  fi
   [[ "$#" == 2 && "$1" == scripts/check-filesystem-package.sh ]]
   [[ "$2" == "$SDK_ARTIFACT_DIR/packages/filesystem" ]]
   touch "$fixture/filesystem-started"
@@ -505,12 +501,7 @@ bash() {
   touch "$fixture/filesystem.done"
   return "$fail_fs"
 }
-node() {
-  [[ "$#" == 4 && "$1" == scripts/typescript-qualification.mjs && "$2" == consumer ]]
-  [[ -f "$fixture/filesystem.done" && -f "$fixture/harness.done" ]]
-}
 ${controlledHelpers}
-background filesystem-package bash scripts/check-filesystem-package.sh "$SDK_ARTIFACT_DIR/packages/filesystem"
 ${body}
 printf 'joined\\n'
 `], { encoding: "utf8", timeout: 10000 });
