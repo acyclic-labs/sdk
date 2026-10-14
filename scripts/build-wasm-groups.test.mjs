@@ -4,24 +4,24 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 
-const source = readFileSync("scripts/build-windows-wasm.mjs", "utf8").replace(/^import .*;\r?\n/, "");
+const source = readFileSync("scripts/build-wasm-groups.mjs", "utf8").replace(/^import .*;\r?\n/, "");
 const build = readFileSync("scripts/build-wasm.mjs", "utf8");
 const inventory = build.slice(build.indexOf("const packages = {"), build.indexOf("const [packageArgument"));
 const names = [...inventory.matchAll(/^  ([a-z]+): \{/gm)].map(match => match[1]);
 
-for (const failure of [undefined, "stream", "spawn", "multiple", "root-multiple"]) {
-  test(`Windows WASM groups join every child: ${failure ?? "success"}`, async () => {
+for (const wrapper of ["", "sccache"]) for (const failure of [undefined, "stream", "spawn", "multiple", "root-multiple"]) {
+  test(`WASM groups join every child: ${failure ?? "success"}, wrapper=${wrapper || "disabled"}`, async () => {
     const calls = [];
     const completed = [];
     const paths = new Set();
     let live = 0, budget = 0, maximum = 0;
-    const state = { execPath: "fixture-node", env: { RUSTC_WRAPPER: "", CARGO_BUILD_JOBS: "16" }, exitCode: 0 };
+    const state = { execPath: "fixture-node", env: { RUSTC_WRAPPER: wrapper, CARGO_BUILD_JOBS: "16" }, exitCode: 0 };
     const errors = [];
     const spawn = (executable, args, options) => {
       assert.equal(executable, state.execPath);
       assert.equal(args[0], "scripts/build-wasm.mjs");
       assert.equal(options.stdio, "inherit");
-      assert.equal(options.env.RUSTC_WRAPPER, "");
+      assert.equal(options.env.RUSTC_WRAPPER, wrapper);
       const name = args[1];
       const directory = name === "harness" ? "harness-wasm"
         : ["actors", "stream"].includes(name)
@@ -68,7 +68,7 @@ for (const failure of [undefined, "stream", "spawn", "multiple", "root-multiple"
 test("Windows retains all check commands after grouped WASM builds with the wrapper disabled", () => {
   const script = readFileSync("scripts/qualify-ci.ps1", "utf8");
   const block = script.slice(script.indexOf("$rustcWrapper = $env:RUSTC_WRAPPER", script.indexOf("$wasmBindgenRoot")), script.indexOf("$StreamNativeRoot"));
-  const commands = ["Remove-Item Env:RUSTC_WRAPPER", "node scripts/build-windows-wasm.mjs", "bun x tsc -b --force --pretty false", "bun x tsc -p scripts --pretty false", "bun run check:docs", "} finally {"];
+  const commands = ["Remove-Item Env:RUSTC_WRAPPER", "node scripts/build-wasm-groups.mjs", "bun x tsc -b --force --pretty false", "bun x tsc -p scripts --pretty false", "bun run check:docs", "} finally {"];
   let previous = -1;
   for (const command of commands) {
     const index = block.indexOf(command);
@@ -77,4 +77,22 @@ test("Windows retains all check commands after grouped WASM builds with the wrap
   assert.ok(block.includes("$env:RUSTC_WRAPPER = $rustcWrapper"));
   assert.equal(JSON.parse(readFileSync("package.json", "utf8")).scripts.check,
     "bun run build:wasm && tsc -b --force --pretty false && tsc -p scripts --pretty false && bun run check:docs");
+});
+
+test("Linux warms isolated WASM targets within its worker budget before the complete test command", () => {
+  const script = readFileSync("scripts/qualify-ci.sh", "utf8");
+  const block = script.slice(script.indexOf("  linux)"), script.indexOf("  linux-musl|linux-arm64-musl)"));
+  const matrix = JSON.parse(readFileSync(".github/qualification-lanes.json", "utf8"));
+  const lane = matrix.find(entry => entry.lane === "linux") ?? assert.fail("missing Linux lane");
+  assert.equal(lane.workers, 16);
+  const prepare = block.indexOf("node scripts/build-wasm-groups.mjs");
+  assert.ok(prepare > block.indexOf("    client_bindings"));
+  assert.ok(prepare < block.indexOf("    bun run test"));
+  assert.ok(block.indexOf("finish napi") < prepare);
+  assert.ok(block.indexOf("ensure-wasm-bindgen.sh") < prepare);
+  assert.equal((block.match(/node scripts\/build-wasm-groups\.mjs/g) ?? []).length, 1);
+  assert.match(script, /^#![^\n]+\r?\nset -euo pipefail\r?\n/);
+  assert.match(block, /    node scripts\/build-wasm-groups\.mjs\r?\n    bun run test\r?\n/);
+  assert.equal(JSON.parse(readFileSync("package.json", "utf8")).scripts.test,
+    "bun run check && bun run check:types && mkdir -p target && bun test --parallel=4 --reporter=junit --reporter-outfile=target/bun-test.xml typescript/packages && bun run --filter '@acyclic-labs/fs' test:composition && bun run test:contracts");
 });
