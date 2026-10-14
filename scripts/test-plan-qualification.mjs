@@ -126,7 +126,7 @@ test("release lanes cover the Rust workspace, docs crate, and TypeScript workspa
   const linux = script.match(/^  linux\)\n([\s\S]*?)(?=^  \S[^\n]*\)\n|^esac\b)/m)?.[1];
   assert.ok(linux, "missing Linux package lane");
   const testCommand = linux.search(/^ +bun run test$/m);
-  const generatedCommand = linux.search(/^ +bun run check:generated$/m);
+  const generatedCommand = linux.search(/^ +bun run check:generated \|\| generated_status=\$\?$/m);
   assert.ok(testCommand >= 0, "Linux package lane must run tests");
   assert.ok(generatedCommand > testCommand, "Linux package generated check must follow tests");
 });

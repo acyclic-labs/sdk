@@ -301,8 +301,11 @@ case "$lane" in
     git restore --worktree -- \
       typescript/packages/filesystem/generated/wasm \
       typescript/packages/stream/generated/wasm
-    bun run check:generated
-    bash scripts/check-harness-package.sh "$SDK_ARTIFACT_DIR/packages/harness"
+    background harness-package bash scripts/check-harness-package.sh "$SDK_ARTIFACT_DIR/packages/harness"
+    generated_status=0
+    bun run check:generated || generated_status=$?
+    finish harness-package
+    if ((generated_status != 0)); then exit "$generated_status"; fi
     background harness-conformance bun scripts/run-harness-conformance.mjs \
       "$SDK_ARTIFACT_DIR/packages/harness" \
       "$SDK_ARTIFACT_DIR/packages/harness/runner-report.json" \
@@ -359,7 +362,7 @@ case "$lane" in
     node --test scripts/tiny-ci.test.mjs scripts/cargo-lock-policy.test.mjs scripts/publish-release-assets.test.mjs scripts/release-qualification-artifacts.test.mjs scripts/release-source.test.mjs
     node --test scripts/native-cache-evidence.test.mjs scripts/cache-save-decision.test.mjs scripts/cache-limits.test.mjs
     node --test scripts/test-typescript-qualification.mjs
-    node --test scripts/test-plan-qualification.mjs scripts/test-plan-qualification-gate.mjs scripts/test-plan-qualification-windows-rust.mjs scripts/build-windows-wasm.test.mjs
+    node --test scripts/test-plan-qualification.mjs scripts/test-plan-qualification-gate.mjs scripts/test-plan-qualification-windows-rust.mjs scripts/build-windows-wasm.test.mjs scripts/test-qualify-linux-package-overlap.mjs
     node --test scripts/test-contract-artifacts.mjs scripts/test-contract-targets.mjs
     node scripts/test-verify-release-binary.mjs
     cargo fmt --all -- --check
