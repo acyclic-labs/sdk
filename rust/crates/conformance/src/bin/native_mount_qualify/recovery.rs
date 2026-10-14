@@ -149,7 +149,10 @@ pub(super) fn crash_child(root: PathBuf, mount: PathBuf, ready: PathBuf) -> Resu
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)?;
         workspace.write_text("/alive.txt", "alive").await?;
-        let _mount = workspace.mount(&mount, MountOptions::read_write()).await?;
+        let _mount = workspace
+            .mount(&mount, MountOptions::read_write())
+            .await
+            .map_err(stop_failed_mount)?;
         #[cfg(windows)]
         fs::write(mount.join("unpublished.txt"), b"unpublished")?;
         #[cfg(not(windows))]
@@ -195,7 +198,10 @@ async fn verify_remounted_workspace(crash_root: &Path, mount: &Path) -> Result<(
         return Err::<(), Failure>("durable workspace lost crash fixture".into());
     }
     eprintln!("qualification phase: remounting the original ProjFS destination");
-    let resumed = workspace.mount(mount, MountOptions::read_write()).await?;
+    let resumed = workspace
+        .mount(mount, MountOptions::read_write())
+        .await
+        .map_err(stop_failed_mount)?;
     eprintln!("qualification phase: reading durable ProjFS content");
     let contents = fs::read(mount.join("alive.txt"))?;
     resumed.unmount().await?;

@@ -22,6 +22,10 @@ impl DirectoryRead {
         self.page = None;
     }
 
+    #[allow(
+        clippy::expect_used,
+        reason = "The admitted source page owns each entry name until it is popped."
+    )]
     pub(super) fn pop_entry(&mut self) -> bool {
         let Some(page) = &mut self.page else {
             return false;

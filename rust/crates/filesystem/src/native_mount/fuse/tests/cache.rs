@@ -25,7 +25,9 @@ pub(super) fn filtered_callback_error_replies_without_overwriting_parent_errno()
             span,
             work,
             crate::native_mount::fuse::fuse_copy_bytes(b"refused before copy", work).map(|_| ()),
-            |()| drop(reply)
+            |()| {
+                let _ = reply;
+            }
         );
         libc::EIO
     });
@@ -432,6 +434,10 @@ pub(super) fn releasing_deferred_items_wakes_the_invalidator()
 }
 
 #[test]
+#[allow(
+    clippy::mutable_key_type,
+    reason = "FuseOwned hashes and compares only its immutable path, never its accounting owner."
+)]
 pub(super) fn a_confirmation_at_a_position_lapses_when_its_name_changes()
 -> Result<(), Box<dyn std::error::Error>> {
     let (source, _) = shared_sources(posix_config())?;

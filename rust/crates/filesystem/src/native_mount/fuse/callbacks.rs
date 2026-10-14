@@ -12,10 +12,10 @@ impl FuseProjection {
         let result = self
             .core
             .request(|work| self.list_directory(inode, offset, &mut reply, work));
-        if let Err(error) = self.core.finish(result) {
-            if let Some(reply) = reply {
-                reply.error(errno_on(span, error));
-            }
+        if let Err(error) = self.core.finish(result)
+            && let Some(reply) = reply
+        {
+            reply.error(errno_on(span, error));
         }
     }
 }

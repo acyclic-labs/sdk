@@ -144,6 +144,10 @@ impl Diskutil {
     }
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "The assertion bounds the computed visit count before conversion."
+)]
 pub(super) const fn control_visits(timeout: Duration, interval: Duration) -> u64 {
     let visits = timeout.as_nanos().div_ceil(interval.as_nanos()) + 1;
     assert!(visits <= u64::MAX as u128);
@@ -212,7 +216,10 @@ impl DarwinRecoveryControl {
                 }
                 self.diskutil = Some(Diskutil::prepare(work.original())?);
             }
-            let child = self.diskutil.as_mut().expect("prepared fallback");
+            let child = self
+                .diskutil
+                .as_mut()
+                .ok_or(NativeMountError::ControlPending)?;
             let spawned = child.spawn(probe.0.as_c_str());
             if child.tree.is_none() {
                 self.diskutil = None;
@@ -221,11 +228,14 @@ impl DarwinRecoveryControl {
         }
         let (status, timed_out) = loop {
             work.check()?;
-            let child = self.diskutil.as_mut().expect("retained fallback");
+            let child = self
+                .diskutil
+                .as_mut()
+                .ok_or(NativeMountError::ControlPending)?;
             let status = child
                 .tree
                 .as_mut()
-                .expect("spawned process")
+                .ok_or(NativeMountError::ControlPending)?
                 .try_wait(Some(child.credit.as_ref()))
                 .map_err(|error| child.credit.work().runtime_error(error))?;
             let timed_out = Instant::now() >= child.deadline;
@@ -266,11 +276,11 @@ impl DarwinRecoveryControl {
     }
 
     pub(super) fn poll_direct(&mut self, work: &ProbeWork<'_>) -> Result<(), NativeMountError> {
-        if let Some(task) = &mut self.direct {
-            if let Poll::Ready(result) = task.poll(work)? {
-                self.direct = None;
-                result?;
-            }
+        if let Some(task) = &mut self.direct
+            && let Poll::Ready(result) = task.poll(work)?
+        {
+            self.direct = None;
+            result?;
         }
         Ok(())
     }
@@ -319,10 +329,10 @@ impl DarwinRecoveryControl {
         if self.direct.is_some() {
             return result;
         }
-        if let Some(child) = self.diskutil.as_mut().filter(|child| child.tree.is_some()) {
-            if let Err(error) = child.terminate(original.runtime_meter().as_ref()) {
-                return Err(result.err().unwrap_or(error));
-            }
+        if let Some(child) = self.diskutil.as_mut().filter(|child| child.tree.is_some())
+            && let Err(error) = child.terminate(original.runtime_meter().as_ref())
+        {
+            return Err(result.err().unwrap_or(error));
         }
         self.diskutil = None;
         result

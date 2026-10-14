@@ -1,6 +1,11 @@
 use super::*;
 use crate::demand::NativeMountAllocationCustody;
 
+pub(super) type RetainedFile = (
+    Arc<dyn MountOpenFile>,
+    Option<Arc<NativeMountAllocationCustody>>,
+);
+
 pub(super) const READ_WORK: WorkCounters = WorkCounters {
     backend_read_operations: 1,
     ..WorkCounters::UNCHARGED
@@ -103,7 +108,7 @@ pub(super) fn grow_map<K: std::hash::Hash + Eq, V>(
     replacement
         .allocation
         .as_mut()
-        .expect("funded map")
+        .ok_or(NativeMountError::ControlPending)?
         .reconcile_capacity(actual)?;
     replacement.extend(map.drain());
     drop(std::mem::replace(map, replacement));
@@ -113,13 +118,7 @@ pub(super) fn grow_map<K: std::hash::Hash + Eq, V>(
 pub(super) fn retained_file(
     work: &Work,
     (file, bytes): (Arc<dyn MountOpenFile>, u64),
-) -> Result<
-    (
-        Arc<dyn MountOpenFile>,
-        Option<Arc<NativeMountAllocationCustody>>,
-    ),
-    NativeMountError,
-> {
+) -> Result<RetainedFile, NativeMountError> {
     if bytes == 0 {
         return Ok((file, None));
     }
@@ -138,7 +137,7 @@ pub(super) fn retained_file(
             drop(file);
             let retired = work.state.lock().release(bytes);
             retired?;
-            Err(cause.into())
+            Err(cause)
         }
     }
 }
@@ -150,7 +149,11 @@ pub(super) fn source_bytes(
     work: &Work,
     use_bytes: impl FnOnce(&[u8]) -> Result<c_int, NativeMountError>,
 ) -> Result<c_int, NativeMountError> {
-    let crate::kernel::OwnedSourceChunk { bytes, logical_owned_bytes: capacity, intrinsic } = chunk;
+    let crate::kernel::OwnedSourceChunk {
+        bytes,
+        logical_owned_bytes: capacity,
+        intrinsic,
+    } = chunk;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| use_bytes(&bytes)));
     drop(bytes);
     if !intrinsic {
