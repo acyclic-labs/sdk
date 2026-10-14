@@ -439,6 +439,10 @@ impl NativeEventDelivery {
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The event transition holds the watcher state lock through queue admission and commit."
+    )]
     fn event_with_work<W: crate::demand::SourceDemandReadWork>(
         &self,
         relative: &Path,
@@ -2233,70 +2237,67 @@ impl NativeWatch {
                                 .map_err(demand_watch_error)?;
                         (relative, bytes, None)
                     };
+                    #[cfg(target_os = "linux")]
+                    let result = {
+                        let NativeWatchDriver::Source(watcher) = &self.watcher else {
+                            unreachable!("the authoritative source driver remains owned");
+                        };
+                        // The source owns registrations; never copy an SDK root cache or adopt previously queued path data.
+                        watcher
+                            .unadmit_with_work(&relative, work)
+                            .map_err(demand_watch_error)
+                    };
+                    #[cfg(windows)]
                     let result = (|| {
-                        #[cfg(target_os = "linux")]
-                        {
-                            let NativeWatchDriver::Source(watcher) = &self.watcher else {
-                                unreachable!("the authoritative source driver remains owned");
-                            };
-                            // The source owns registrations; never copy an SDK root cache or adopt previously queued path data.
-                            watcher
-                                .unadmit_with_work(&relative, work)
-                                .map_err(demand_watch_error)
-                        }
-                        #[cfg(windows)]
-                        {
-                            use std::os::windows::ffi::OsStrExt;
-                            let mut at = 0;
-                            while at < self.windows_directories.len() {
-                                work.started_io(WorkCounters {
-                                    items_examined: 1,
-                                    ..WorkCounters::UNCHARGED
-                                })
-                                .map_err(demand_watch_error)?;
-                                let observed = self
-                                    .windows_directories
-                                    .get(at)
-                                    .ok_or(NativeWatchError::WorkerUnavailable)?;
-                                let mut registered = observed.path.0.iter();
-                                let matches = relative
-                                    .as_os_str()
-                                    .encode_wide()
-                                    .all(|unit| registered.next() == Some(&unit))
-                                    && registered
-                                        .next()
-                                        .is_none_or(|unit| matches!(*unit, 47 | 92));
-                                if !matches {
-                                    at += 1;
-                                    continue;
-                                }
-                                self.windows_directories
-                                    .get_mut(at)
-                                    .ok_or(NativeWatchError::WorkerUnavailable)?
-                                    .watcher
-                                    .stop_with_work(work)
-                                    .map_err(demand_watch_error)?;
-                                if !self
-                                    .windows_directories
-                                    .get(at)
-                                    .ok_or(NativeWatchError::WorkerUnavailable)?
-                                    .watcher
-                                    .is_stopped()
-                                {
-                                    return Err(NativeWatchError::WorkerUnavailable);
-                                }
-                                work.started_io(WorkCounters {
-                                    bytes_copied: ((self.windows_directories.len() - at - 1)
-                                        as u64)
-                                        .checked_mul(size_of::<WindowsDirectoryWatch>() as u64)
-                                        .ok_or(WorkError::Overflow)?,
-                                    ..WorkCounters::UNCHARGED
-                                })
-                                .map_err(demand_watch_error)?;
-                                drop(self.windows_directories.remove(at));
+                        use std::os::windows::ffi::OsStrExt;
+                        let mut at = 0;
+                        while at < self.windows_directories.len() {
+                            work.started_io(WorkCounters {
+                                items_examined: 1,
+                                ..WorkCounters::UNCHARGED
+                            })
+                            .map_err(demand_watch_error)?;
+                            let observed = self
+                                .windows_directories
+                                .get(at)
+                                .ok_or(NativeWatchError::WorkerUnavailable)?;
+                            let mut registered = observed.path.0.iter();
+                            let matches = relative
+                                .as_os_str()
+                                .encode_wide()
+                                .all(|unit| registered.next() == Some(&unit))
+                                && registered
+                                    .next()
+                                    .is_none_or(|unit| matches!(*unit, 47 | 92));
+                            if !matches {
+                                at += 1;
+                                continue;
                             }
-                            Ok(())
+                            self.windows_directories
+                                .get_mut(at)
+                                .ok_or(NativeWatchError::WorkerUnavailable)?
+                                .watcher
+                                .stop_with_work(work)
+                                .map_err(demand_watch_error)?;
+                            if !self
+                                .windows_directories
+                                .get(at)
+                                .ok_or(NativeWatchError::WorkerUnavailable)?
+                                .watcher
+                                .is_stopped()
+                            {
+                                return Err(NativeWatchError::WorkerUnavailable);
+                            }
+                            work.started_io(WorkCounters {
+                                bytes_copied: ((self.windows_directories.len() - at - 1) as u64)
+                                    .checked_mul(size_of::<WindowsDirectoryWatch>() as u64)
+                                    .ok_or(WorkError::Overflow)?,
+                                ..WorkCounters::UNCHARGED
+                            })
+                            .map_err(demand_watch_error)?;
+                            drop(self.windows_directories.remove(at));
                         }
+                        Ok(())
                     })();
                     drop(relative);
                     drop(allocation);

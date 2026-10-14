@@ -13,6 +13,10 @@ pub(super) extern "C" fn run_reader(payload: *mut libc::c_void) -> *mut libc::c_
 }
 
 impl NativeSourceWatch {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Startup retains every cleanup slot until worker ownership transfers or rollback completes."
+    )]
     pub(crate) fn start_driver<W: SourceDemandReadWork>(
         directory: &crate::native_host::HostRoot,
         delivery: Arc<Delivery>,
@@ -69,7 +73,7 @@ impl NativeSourceWatch {
                 ownership,
                 delivery,
             }));
-            let initialized = shared.as_ref().expect("shared initialized");
+            let initialized = shared.as_ref().ok_or(DemandError::InvalidRequest)?;
             initialized.ownership.retain(control_bytes, work)?;
             control_transferred = true;
             work.started_io(READ)?;
@@ -87,8 +91,8 @@ impl NativeSourceWatch {
             root = Some(owned(unsafe {
                 libc::fcntl(directory.directory_fd(), libc::F_DUPFD_CLOEXEC, 0)
             })?);
-            let held_inotify = inotify.as_ref().expect("inotify initialized");
-            let held_root = root.as_ref().expect("root initialized");
+            let held_inotify = inotify.as_ref().ok_or(DemandError::InvalidRequest)?;
+            let held_root = root.as_ref().ok_or(DemandError::InvalidRequest)?;
             watch_ancestors(
                 held_inotify,
                 held_root,
@@ -130,17 +134,24 @@ impl NativeSourceWatch {
                 return Err(io::Error::last_os_error().into());
             }
             watches.push((PathBuf::new(), descriptor));
-            let initialized = shared.as_ref().expect("shared initialized");
+            let initialized = shared.as_ref().ok_or(DemandError::InvalidRequest)?;
             initialized.inotify.store(
-                inotify.take().expect("inotify initialized").into_raw_fd(),
+                inotify
+                    .take()
+                    .ok_or(DemandError::InvalidRequest)?
+                    .into_raw_fd(),
                 Ordering::Release,
             );
             initialized.wake.store(
-                wake.take().expect("wake initialized").into_raw_fd(),
+                wake.take()
+                    .ok_or(DemandError::InvalidRequest)?
+                    .into_raw_fd(),
                 Ordering::Release,
             );
             initialized.root.store(
-                root.take().expect("root initialized").into_raw_fd(),
+                root.take()
+                    .ok_or(DemandError::InvalidRequest)?
+                    .into_raw_fd(),
                 Ordering::Release,
             );
             *initialized
@@ -172,7 +183,7 @@ impl NativeSourceWatch {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .reserve_worker(work)?;
-            let initialized = shared.as_ref().expect("shared initialized");
+            let initialized = shared.as_ref().ok_or(DemandError::InvalidRequest)?;
             let _startup_reading = initialized
                 .reading
                 .lock()
@@ -182,7 +193,9 @@ impl NativeSourceWatch {
                 allocation_operations: 1,
                 ..WorkCounters::default()
             })?;
-            let reader = Arc::into_raw(Arc::clone(shared.as_ref().expect("shared initialized")));
+            let reader = Arc::into_raw(Arc::clone(
+                shared.as_ref().ok_or(DemandError::InvalidRequest)?,
+            ));
             let mut thread = std::mem::MaybeUninit::<libc::pthread_t>::uninit();
             // SAFETY: pthread_create writes the thread ID on success, and the raw Arc payload is consumed either by run_reader or by failure.
             let status = unsafe {
@@ -198,17 +211,17 @@ impl NativeSourceWatch {
                 drop(unsafe { Arc::from_raw(reader) });
                 return Err(io::Error::from_raw_os_error(status).into());
             }
-            // SAFETY: successful pthread_create initialized the ID.
             let cancelled = work.check().err();
             if cancelled.is_some() {
                 initialized.stopping.store(true, Ordering::Release);
             }
+            // SAFETY: successful pthread_create initialized the ID.
             Ok((unsafe { thread.assume_init() }, cancelled))
         })();
         match result {
             Ok((thread, cancelled)) => {
                 let watch = Self {
-                    shared: shared.expect("successful startup initialized shared"),
+                    shared: shared.ok_or(DemandError::InvalidRequest)?,
                     thread: Mutex::new(Some(thread)),
                 };
                 if let Some(error) = cancelled {
