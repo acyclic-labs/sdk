@@ -131,12 +131,7 @@ pub(crate) fn clone_messages(
             .chain(user.into_iter().map(|content| (ModelRole::User, content)))
             .chain(second.iter().map(|m| (m.role, &m.content)))
         {
-            let slot = std::mem::size_of::<ModelMessage>() as u64;
-            quota.observer()?.admit_copy(slot)?;
-            let (content, claim) = crate::model::clone_content(content, quota.work())?;
-            quota.adopt(claim)?;
-            quota.observer()?.copy_bytes(slot)?;
-            result.push(ModelMessage { role, content });
+            result.push(clone_message(role, content, &mut quota)?);
         }
         Ok(())
     })();
@@ -147,4 +142,21 @@ pub(crate) fn clone_messages(
     let claim = quota.retained();
     quota.transfer();
     Ok((result, claim))
+}
+
+pub(super) fn clone_message(
+    role: crate::model::ModelRole,
+    content: &crate::model::ModelContent,
+    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+) -> Result<crate::model::ModelMessage> {
+    let slot = std::mem::size_of::<crate::model::ModelMessage>() as u64;
+    if let Some(io) = quota.work().as_deref() {
+        io.admit_copy(slot)?;
+    }
+    let (content, claim) = crate::model::clone_content(content, quota.work())?;
+    quota.adopt(claim)?;
+    if let Some(io) = quota.work().as_deref_mut() {
+        io.copy_bytes(slot)?;
+    }
+    Ok(crate::model::ModelMessage { role, content })
 }
