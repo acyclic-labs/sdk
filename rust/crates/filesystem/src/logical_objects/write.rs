@@ -133,16 +133,17 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
             return Err(ObjectStoreError::EmptyWriteBatch.into());
         }
         let (mut requests, mut custody) = vector::<PutRequest>(writes.len(), work)?;
-        let (mut unique, unique_custody) = vector::<usize>(writes.len(), work)?;
+        let (mut unique, unique_custody) = vector::<Option<&ObjectWrite>>(writes.len(), work)?;
         let mut request_bytes = (requests.capacity() * size_of::<PutRequest>()) as u64;
         let mut total = 0u64;
-        for (index, write) in writes.iter().enumerate() {
+        for write in writes {
             self.validate_write(write.object_id, &write.bytes, work)?;
-            if let Some(&previous) = unique
+            if let Some(previous) = unique
                 .iter()
-                .find(|&&previous| writes[previous].object_id == write.object_id)
+                .flatten()
+                .find(|previous| previous.object_id == write.object_id)
             {
-                if writes[previous].bytes != write.bytes {
+                if previous.bytes != write.bytes {
                     return Err(ObjectStoreError::DigestMismatch.into());
                 }
                 continue;
@@ -172,7 +173,7 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
                 .ok_or(WorkError::Overflow)?;
             custody.absorb(&mut allocation)?;
             requests.push(request);
-            unique.push(index);
+            unique.push(Some(write));
             total = total
                 .checked_add(write.bytes.len() as u64)
                 .ok_or(WorkError::Overflow)?;
@@ -196,7 +197,6 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
                 self.finish_writes(
                     results.map(|value| value.map(|info| info.info().size).map_err(native_error)),
                     &mut unique,
-                    writes,
                     work,
                 )
                 .await
@@ -232,7 +232,6 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
                                 .map_err(ObjectStoreError::LogicalObjects)
                         }),
                         &mut unique,
-                        writes,
                         work,
                     )
                     .await;
@@ -240,7 +239,7 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
                 result.and(late)
             }
         };
-        let bytes = (unique.capacity() * size_of::<usize>()) as u64;
+        let bytes = (unique.capacity() * size_of::<Option<&ObjectWrite>>()) as u64;
         drop(unique);
         release(work, unique_custody, bytes)?;
         result?;
@@ -249,28 +248,27 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
     async fn finish_writes(
         &self,
         results: impl ExactSizeIterator<Item = Result<u64, ObjectStoreError>>,
-        unique: &mut [usize],
-        writes: &[ObjectWrite],
+        unique: &mut [Option<&ObjectWrite>],
         work: &mut KernelAccounting<'_>,
     ) -> Result<(), crate::FsError> {
         let count_valid = results.len() == unique.len();
         let mut failure = None;
-        for (index, result) in unique.iter_mut().zip(results) {
-            let length = writes[*index].bytes.len() as u64;
+        for (write, result) in unique.iter_mut().zip(results) {
+            let length = write.ok_or(ObjectStoreError::Corrupt)?.bytes.len() as u64;
             match result {
                 Ok(size) => {
                     record_write(work, length)?;
                     if size != length && failure.is_none() {
                         failure = Some(ObjectStoreError::Corrupt);
                     }
-                    *index = usize::MAX;
+                    *write = None;
                 }
                 Err(error) if precondition(&error) => {}
                 Err(error) => {
                     if failure.is_none() {
                         failure = Some(error);
                     }
-                    *index = usize::MAX;
+                    *write = None;
                 }
             }
         }
@@ -280,13 +278,9 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
         if let Some(error) = failure {
             return Err(error.into());
         }
-        for &index in unique.iter().filter(|&&index| index != usize::MAX) {
-            self.verify_existing(
-                writes[index].object_id,
-                writes[index].bytes.len() as u64,
-                work,
-            )
-            .await?;
+        for write in unique.iter().flatten() {
+            self.verify_existing(write.object_id, write.bytes.len() as u64, work)
+                .await?;
         }
         Ok(())
     }

@@ -133,7 +133,9 @@ mod decode;
 pub(crate) use batch::read_pages_with_accounting;
 use cache::admit_decoded_with_accounting;
 pub(crate) use cache::read_page_with_accounting;
-use decode::{claim_read_allocation, clone_page};
+use decode::claim_read_allocation;
+#[cfg(not(target_arch = "wasm32"))]
+use decode::clone_page;
 pub(crate) use decode::{clone_key, clone_value, decode_read_with_accounting};
 
 #[cfg(all(test, feature = "memory"))]

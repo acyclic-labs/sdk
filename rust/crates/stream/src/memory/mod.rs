@@ -6,12 +6,16 @@ use std::{
     sync::Arc,
 };
 
+#[cfg(any(test, not(target_arch = "wasm32")))]
+use crate::MAX_RECORD_BYTES;
 use crate::OwnedBytes as Bytes;
 #[cfg(test)]
 use crate::request::validate_append_size;
+use crate::request::{append_digest, commit_digest, condition_path, fork_digest, mutation_path};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::request::{
-    append_digest, commit_digest, condition_path, fork_digest, hash_conditions, hash_path,
-    hash_records, mutation_path, normalize_commit, request_hasher, validate_commit_shape,
+    hash_conditions, hash_path, hash_records, normalize_commit, request_hasher,
+    validate_commit_shape,
 };
 use async_trait::async_trait;
 use futures::{StreamExt as _, stream};
@@ -28,8 +32,8 @@ use crate::{
     ChildrenPageRequest, ChildrenRequest, CommitCondition, CommitConflict, CommitId,
     CommitMutation, CommitOutcome, CommitRequest, CommittedEnvelope, CommittedFork,
     CommittedMutation, ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation,
-    IdempotencyOutcome, MAX_ITEMS, MAX_RECORD_BYTES, ReadRequest, Record, RecordStream,
-    StreamBounds, StreamError, StreamPath, StreamProvider, SystemUnixMillisClock, UnixMillisClock,
+    IdempotencyOutcome, MAX_ITEMS, ReadRequest, Record, RecordStream, StreamBounds, StreamError,
+    StreamPath, StreamProvider, SystemUnixMillisClock, UnixMillisClock,
 };
 
 #[cfg(test)]

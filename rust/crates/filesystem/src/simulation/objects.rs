@@ -26,12 +26,16 @@ fn altered_read(
         .map_err(crate::async_storage::object_error)?;
     let mut copied = crate::kernel::Owned::<Vec<u8>>::allocate(retained, &mut accounting)
         .map_err(crate::async_storage::object_error)?;
-    copied.value.extend_from_slice(&read.bytes[..retained]);
+    copied.value.extend_from_slice(
+        read.bytes
+            .get(..retained)
+            .ok_or(ObjectStoreError::Corrupt)?,
+    );
     accounting
         .record_completed(delta)
         .map_err(crate::async_storage::object_error)?;
     if matches!(fault, Some(SimulationFault::CorruptObjectRead)) {
-        copied.value[0] ^= 0x80;
+        *copied.value.first_mut().ok_or(ObjectStoreError::Corrupt)? ^= 0x80;
     }
     read.bytes = match copied.allocation {
         KernelOwnedAllocation::Standalone => copied.value.into(),

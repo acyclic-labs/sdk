@@ -226,7 +226,12 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         #[cfg(not(target_arch = "wasm32"))]
         None,
     )?
-    .with_summary_context(prepared, storage.journal(), None)?;
+    .with_summary_context(
+        prepared,
+        storage.journal(),
+        #[cfg(not(target_arch = "wasm32"))]
+        None,
+    )?;
     let child_agent = AgentId::new();
     let child_private = VolumeRef::new(
         provider.clone(),

@@ -12,7 +12,6 @@ use indexed_db_futures::{
     transaction::{Transaction, TransactionDurability, TransactionMode, TransactionOptions},
     typed_array::Uint8Array,
 };
-use prost::Message;
 use std::{
     rc::Rc,
     sync::{Arc, Mutex},

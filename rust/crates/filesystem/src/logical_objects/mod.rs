@@ -63,10 +63,11 @@ fn accounting<'a>(
 }
 macro_rules! operate {
     ($context:ident, $work:ident, $body:expr) => {{
-        let mut $work = accounting($context)?;
-        let result = $body;
-        let spent = $work.spent();
-        drop($work);
+        let (result, spent) = {
+            let mut $work = accounting($context)?;
+            let result = $body;
+            (result, $work.spent())
+        };
         #[cfg(not(target_arch = "wasm32"))]
         let native = $context.original.is_some();
         #[cfg(target_arch = "wasm32")]

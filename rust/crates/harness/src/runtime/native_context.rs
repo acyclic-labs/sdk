@@ -98,9 +98,12 @@ impl TaskContext {
         work: &NativeMaterializationWork,
     ) -> Result<Arc<Self>> {
         self.require_original_native_work(work)?;
-        let purpose = self
-            .native_purpose
-            .expect("original native metadata purpose");
+        let purpose = self.native_purpose.ok_or_else(|| {
+            boundary(
+                crate::wire::ErrorCode::Unauthorized,
+                "original native metadata purpose is missing",
+            )
+        })?;
         if purpose == IssuedContextPurpose::Read {
             return Err(boundary(
                 crate::wire::ErrorCode::Unauthorized,

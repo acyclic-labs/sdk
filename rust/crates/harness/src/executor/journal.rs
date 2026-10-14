@@ -109,8 +109,9 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         &'a self,
         content: &'a ModelContent,
         io: Option<&'a PreparationIo>,
+        context: Option<&'a crate::runtime::TaskContext>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
-        if io.is_some() || content.native_configurations().next().is_some() {
+        if io.is_some() || (content.native_configurations().next().is_some() && context.is_none()) {
             return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unsupported,
@@ -118,6 +119,13 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
             ));
         }
         crate::conversation::BoundedContentFuture::new(io, || async move {
+            if content.native_configurations().next().is_some()
+                && let Some(context) = context
+            {
+                context
+                    .verify_model_contents(std::iter::once(content))
+                    .await?;
+            }
             for file in content.file_refs() {
                 self.verify_input_file(file, io)?.await?;
             }

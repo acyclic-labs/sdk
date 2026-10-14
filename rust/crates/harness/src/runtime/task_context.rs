@@ -75,9 +75,13 @@ impl TaskContext {
         }
     }
 
-    pub(crate) fn into_shared(mut self) -> Result<Arc<TaskContext>> {
+    pub(crate) fn into_shared(self) -> Result<Arc<TaskContext>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(mut custody) = self.native_custody.take() {
+        let mut context = self;
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let context = self;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(mut custody) = context.native_custody.take() {
             let mut slot = match custody.work().claim(
                 (2 * std::mem::size_of::<usize>()) as u64,
                 1,
@@ -85,7 +89,7 @@ impl TaskContext {
             ) {
                 Ok(slot) => slot,
                 Err(cause) => {
-                    drop(self);
+                    drop(context);
                     return Err(Error::NativeWork {
                         cause,
                         custody: Some(custody),
@@ -93,9 +97,9 @@ impl TaskContext {
                 }
             };
             custody.absorb(&mut slot)?;
-            self.native_custody = Some(custody);
+            context.native_custody = Some(custody);
         }
-        Ok(Arc::new(self))
+        Ok(Arc::new(context))
     }
 
     /// Selects an authenticated created destination without widening task authority.
@@ -123,7 +127,12 @@ impl TaskContext {
             return self
                 .project_output_binding(
                     &binding,
-                    io.original_native_work().expect("original context work"),
+                    io.original_native_work().ok_or_else(|| {
+                        native_context::boundary(
+                            crate::wire::ErrorCode::Invalid,
+                            "original context work is missing",
+                        )
+                    })?,
                 )
                 .await;
         }
@@ -251,6 +260,11 @@ impl TaskContext {
 
     /// Returns a separately cancellable bounded group for additional local work.
     #[must_use]
+    #[allow(
+        clippy::expect_used,
+        clippy::missing_panics_doc,
+        reason = "A child with no native work performs no fallible quota operations."
+    )]
     pub fn group(&self) -> RuntimeGroup {
         RuntimeGroup {
             harness: Arc::clone(&self.harness),
@@ -327,8 +341,11 @@ pub(crate) fn read_granted_with_work(
     {
         return Ok(true);
     }
-    for (slash, _) in file.path().match_indices('/') {
-        let prefix = &file.path()[..slash];
+    for prefix in file
+        .path()
+        .match_indices('/')
+        .filter_map(|(slash, _)| file.path().get(..slash))
+    {
         if !crate::conversation::is_internal_path(prefix)
             && contains_content_grant_with_work(
                 grants,

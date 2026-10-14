@@ -142,7 +142,11 @@ pub(crate) fn canonical_directory_path_held<W: NativeHostWork>(
             // SAFETY: the held descriptor and PATH_MAX-byte output remain live.
             if unsafe { libc::fcntl(current.as_raw_fd(), libc::F_GETPATH, path.as_mut_ptr()) } < 0 {
                 let error = io::Error::last_os_error();
-                return if error.raw_os_error() == Some(libc::ENAMETOOLONG) {
+                // F_GETPATH also reports a short output buffer as ENOSPC.
+                return if matches!(
+                    error.raw_os_error(),
+                    Some(libc::ENAMETOOLONG | libc::ENOSPC)
+                ) {
                     Ok(None)
                 } else {
                     Err(error)

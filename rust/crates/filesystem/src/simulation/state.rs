@@ -55,10 +55,14 @@ impl State {
         if self.trace.len() == self.options.maximum_trace_entries {
             return Err("simulation trace bound exhausted");
         }
-        let occurrence = self.occurrences[operation as usize]
+        let counter = self
+            .occurrences
+            .get_mut(operation as usize)
+            .ok_or("invalid simulation operation")?;
+        let occurrence = counter
             .checked_add(1)
             .ok_or("simulation operation occurrence overflow")?;
-        self.occurrences[operation as usize] = occurrence;
+        *counter = occurrence;
         let fault = self.faults.remove(&(operation, occurrence));
         let replaces_trace = self.trace.len() == self.trace.capacity();
         self.trace

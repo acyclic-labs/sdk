@@ -6,10 +6,14 @@ mod helpers;
 mod provider;
 mod request;
 mod root_bootstrap;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use crate::durable_host::TaskVolumeSnapshot;
+#[cfg(feature = "filesystem")]
 use crate::runtime::TaskAdmissionRecord;
 use crate::scheduler::diagnostic;
-use crate::wire::ErrorCode::{Invalid, Unauthorized, Unsupported};
+use crate::wire::ErrorCode::Invalid;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+use crate::wire::ErrorCode::{Unauthorized, Unsupported};
 use crate::{Capabilities, Error, OperationId, Result, TaskId};
 use crate::{
     core::Authority,

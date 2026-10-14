@@ -203,7 +203,9 @@ impl DurableWorkflowHost {
             Some(
                 page.0
                     .pop()
-                    .expect("checked single workflow record")
+                    .ok_or_else(|| {
+                        stock_boundary(io, Storage, "latest workflow record is missing")
+                    })?
                     .transition,
             ),
             page.1.take(),
@@ -430,7 +432,9 @@ impl DurableWorkflowHost {
                 record.prior.revision,
                 match digest {
                     Some(digest) => digest,
-                    None => crate::executor::json::canonical_json_digest(&record, u64::MAX, &mut None)?,
+                    None => {
+                        crate::executor::json::canonical_json_digest(&record, u64::MAX, &mut None)?
+                    }
                 },
             ),
         );

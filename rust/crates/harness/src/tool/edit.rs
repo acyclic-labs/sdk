@@ -1,4 +1,5 @@
 //! Portable exact text replacement.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use crate::wire::ErrorCode::{Conflict, Invalid};
 use crate::{Error, NativeCustody, Result};
 
