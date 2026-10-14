@@ -34,10 +34,12 @@ where
 }
 
 pub(crate) fn retain_original_decode_error<T>(
-    mut result: Result<T>,
+    result: Result<T>,
     _reservation: &mut u64,
     _observer: &mut dyn HistoryIo,
 ) -> Result<T> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let mut result = result;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Err(Error::NativeJson { custody, .. }) = &mut result
         && custody.is_none()

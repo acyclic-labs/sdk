@@ -4,6 +4,7 @@ use std::{fmt, sync::Arc};
 
 use crate::OwnedBytes as Bytes;
 use async_trait::async_trait;
+#[cfg(not(target_arch = "wasm32"))]
 use std::future::Future;
 use thiserror::Error;
 

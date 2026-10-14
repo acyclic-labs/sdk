@@ -273,7 +273,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .await
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "coordinator admission binds independent owners"
+    )]
     pub(super) async fn apply_internal(
         &mut self,
         idempotency_key: IdempotencyKey,

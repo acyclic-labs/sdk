@@ -70,12 +70,8 @@ pub(crate) fn decode_publication_evidence<'a, E: From<CanonicalDecodeError>>(
     let envelope_bytes = usize_to_u64(publication_payload_length())
         .checked_add(4 + 32)
         .ok_or(CanonicalDecodeError::LengthOverflow)?;
-    let maximum = u32::try_from(
-        maximum_payload_bytes
-            .checked_sub(envelope_bytes)
-            .unwrap_or(0),
-    )
-    .unwrap_or(u32::MAX);
+    let maximum =
+        u32::try_from(maximum_payload_bytes.saturating_sub(envelope_bytes)).unwrap_or(u32::MAX);
     if length > maximum {
         return Err(E::from(CanonicalDecodeError::FieldTooLarge {
             observed: length,

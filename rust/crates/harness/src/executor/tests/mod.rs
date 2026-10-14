@@ -202,7 +202,7 @@ use crate::{
     tool::ToolExecutor,
 };
 
-use futures::{FutureExt as _, stream};
+use futures::stream;
 
 use std::collections::HashMap;
 
@@ -341,25 +341,32 @@ struct ContextOnlyTool {
 }
 
 impl ToolExecutor for ContextOnlyTool {
-
-
-    fn execute<'a>(&'a self, invocation: ToolInvocation, context: Option<crate::runtime::ToolContext>) -> BoxFuture<'a, Result<ToolResult>> {
-let Some(context) = context else { return async { Err(Error::Unsupported("original context required".into())) }.boxed(); };
-        async move {
+    fn execute<'a>(
+        &'a self,
+        invocation: ToolInvocation,
+        context: Option<crate::runtime::ToolContext>,
+    ) -> BoxFuture<'a, Result<ToolResult>> {
+        let Some(context) = context else {
+            return Box::pin(async { Err(Error::Unsupported("original context required".into())) });
+        };
+        Box::pin(async move {
             assert_eq!(context.task().id(), self.admission);
             assert_eq!(context.operation_id(), invocation.operation_id);
             assert_eq!(context.call_id(), invocation.call_id);
             self.calls.fetch_add(1, Ordering::SeqCst);
             Err(Error::Storage("response lost after effect".into()))
-        }
-        .boxed()
+        })
     }
 
-
-
-    fn reconcile<'a>(&'a self, invocation: ToolInvocation, context: Option<crate::runtime::ToolContext>) -> BoxFuture<'a, Result<Option<ToolResult>>> {
-let Some(context) = context else { return async { Err(Error::Unsupported("original context required".into())) }.boxed(); };
-        async move {
+    fn reconcile<'a>(
+        &'a self,
+        invocation: ToolInvocation,
+        context: Option<crate::runtime::ToolContext>,
+    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+        let Some(context) = context else {
+            return Box::pin(async { Err(Error::Unsupported("original context required".into())) });
+        };
+        Box::pin(async move {
             assert_eq!(context.task().id(), self.admission);
             assert_eq!(context.operation_id(), invocation.operation_id);
             assert_eq!(context.call_id(), invocation.call_id);
@@ -367,8 +374,7 @@ let Some(context) = context else { return async { Err(Error::Unsupported("origin
             Ok(Some(ToolResult {
                 value: json!({"value":"hello"}),
             }))
-        }
-        .boxed()
+        })
     }
 }
 
@@ -438,18 +444,25 @@ impl ModelProvider for ScriptedModel {
 struct FakeTool(AtomicUsize);
 
 impl crate::tool::ToolExecutor for FakeTool {
-    fn execute<'a>(&'a self, invocation: ToolInvocation, _context: Option<crate::runtime::ToolContext>) -> BoxFuture<'a, Result<ToolResult>> {
+    fn execute<'a>(
+        &'a self,
+        invocation: ToolInvocation,
+        _context: Option<crate::runtime::ToolContext>,
+    ) -> BoxFuture<'a, Result<ToolResult>> {
         self.0.fetch_add(1, Ordering::SeqCst);
-        async move {
+        Box::pin(async move {
             Ok(ToolResult {
                 value: invocation.arguments,
             })
-        }
-        .boxed()
+        })
     }
 
-    fn reconcile<'a>(&'a self, _: ToolInvocation, _context: Option<crate::runtime::ToolContext>) -> BoxFuture<'a, Result<Option<ToolResult>>> {
-        async { Ok(None) }.boxed()
+    fn reconcile<'a>(
+        &'a self,
+        _: ToolInvocation,
+        _context: Option<crate::runtime::ToolContext>,
+    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+        Box::pin(async { Ok(None) })
     }
 }
 
@@ -487,7 +500,7 @@ impl Journal {
         bytes: acyclic_stream::OwnedBytes,
         media_type: &'static str,
     ) -> BoxFuture<'a, Result<FileRef>> {
-        async move {
+        Box::pin(async move {
             let key = format!("{operation_id}:{idempotency_key}");
             let mut stored = self.1.lock().unwrap();
             if let Some((reference, existing)) = stored.get(&key) {
@@ -514,8 +527,7 @@ impl Journal {
             )?;
             stored.insert(key, (reference.clone(), bytes));
             Ok(reference)
-        }
-        .boxed()
+        })
     }
 }
 
@@ -543,6 +555,7 @@ impl ExecutionJournal for Journal {
         &'a self,
         content: &'a ModelContent,
         io: Option<&'a PreparationIo>,
+        _context: Option<&'a crate::runtime::TaskContext>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         if io.is_some() {
             return Err(stock_boundary(

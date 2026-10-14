@@ -91,7 +91,8 @@ impl TaskRegistry {
                 .0
                 .iter()
                 .position(|stored| Arc::ptr_eq(stored, definition))?;
-            self.1[slot]
+            self.1
+                .get(slot)?
                 .downcast_ref::<Arc<TaskDefinition<I, O>>>()
                 .cloned()
         }
@@ -100,11 +101,13 @@ impl TaskRegistry {
     /// Registers an exact task version.
     pub fn register<I: 'static, O: 'static>(
         &mut self,
-        mut definition: TaskDefinition<I, O>,
+        definition: TaskDefinition<I, O>,
     ) -> Result<()>
     where
         TaskDefinition<I, O>: acyclic_stream::ProviderPlatform,
     {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let mut definition = definition;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let native = definition
             .native_metadata_custody

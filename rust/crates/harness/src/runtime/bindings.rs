@@ -208,11 +208,13 @@ impl Bindings {
         }
         crate::model::charge_items(startup, 1)?;
         crate::executor::with_history_io(startup, |work| self.scope.run_limits().validate(work))?;
-        let mut policy_identity = self
+        let policy_identity = self
             .policy
             .as_ref()
             .filter(|_| native.is_none())
             .map(|policy| policy.identity());
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let mut policy_identity = policy_identity;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let (Some(work), Some(policy)) = (native, &self.policy) {
             let (identity, custody) = policy.identity_with_native_work(work)?;
@@ -313,7 +315,7 @@ impl Bindings {
             .fork_preparer
             .map(|preparer| ForkBinding::new(preparer, startup))
             .transpose()?;
-        let mut runtime = AgentHarness {
+        let runtime = AgentHarness {
             live: TaskGroup::new(concurrency, native)?,
             tasks: self.tasks,
             tools: self.tools,
@@ -336,6 +338,8 @@ impl Bindings {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_configuration_custody: None,
         };
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let mut runtime = runtime;
         runtime.assert_durable_policy_bindings(native)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = startup {

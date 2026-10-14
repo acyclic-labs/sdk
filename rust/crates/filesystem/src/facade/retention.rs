@@ -7,13 +7,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         volume: &Volume<A, O>,
         generation_id: GenerationId,
         kind: RetentionKind,
-        mut label: Owned<String>,
+        label: Owned<String>,
         publication: Option<VerifiedPublication<A, O>>,
         budget: W,
         cancellation: &CancellationToken,
     ) -> W::Output<(), WorkspaceError> {
         let mut accounting = budget.accounting(cancellation);
         let result = async {
+            let mut label = label;
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native_work() {
                 if label.bytes != label.value.capacity() as u64

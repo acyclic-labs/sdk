@@ -118,7 +118,7 @@ impl HarnessBuilder {
     /// Registers one pinned typed task without replacing the rest of the registry.
     pub fn task<I: 'static, O: 'static>(mut self, value: TaskDefinition<I, O>) -> Result<Self>
     where
-        TaskDefinition<I, O>: Send + Sync,
+        TaskDefinition<I, O>: acyclic_stream::ProviderPlatform,
     {
         self.bindings.tasks.register(value)?;
         Ok(self)
@@ -193,8 +193,6 @@ impl HarnessBuilder {
         self.bindings.fork_preparer = Some(value);
         self
     }
-
-
 
     /// Sets the local live-task concurrency bound.
     #[must_use]

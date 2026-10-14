@@ -131,7 +131,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         accounting.admit(copied)?;
         let proof_bytes = crate::foundation::usize_to_u64(size_of::<Mutex<Proof>>());
         // This guard is declared before the physical proof so every error
-        let mut proof_allocation = accounting.claim_owned(proof_bytes, 1)?;
+        let proof_allocation = accounting.claim_owned(proof_bytes, 1)?;
+        let _ = &proof_allocation;
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut proof_allocation = proof_allocation;
         // Immutable proof maps remain shared by the canonical Arc COW engine.
         let dependencies = self.dependencies.independent_with_custody(custody);
         accounting.record_completed(copied)?;
@@ -197,8 +200,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             cancellation.check()?;
             original.cancellation().check()?;
             original.checkout_control_sink(&producer)?;
-            let base =
-                crate::collection::clone_generation_root(base, accounting, Some(&producer))?;
+            let base = crate::collection::clone_generation_root(base, accounting, Some(&producer))?;
             cancellation.check()?;
             let held = self
                 .root
@@ -357,9 +359,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             }
         };
         dependencies.base_root_control = control;
-        let mut root = self
-            .root
-            .replicate(accounting, native_owner)?;
+        let mut root = self.root.replicate(accounting, native_owner)?;
         if native_owner.is_none() {
             root.attach_control_custody(&dependencies.data_custody);
         }

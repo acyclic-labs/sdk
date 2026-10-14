@@ -16,7 +16,10 @@ pub(crate) enum CommitPhase {
     Committed,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "publication keeps authority, lease and work scopes separate"
+)]
 pub(crate) async fn append<P: StreamProvider, const N: usize>(
     (stream, client): (&Stream<P>, &Arc<P>),
     input: [OwnedBytes; N],
@@ -212,7 +215,10 @@ pub(crate) async fn commit<P: StreamProvider>(
     Ok((outcome, retained))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "publication keeps authority, lease and work scopes separate"
+)]
 pub(super) async fn append_if_execution_idle<P: StreamProvider>(
     client: &Arc<P>,
     stream: &Stream<P>,

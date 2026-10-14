@@ -69,9 +69,12 @@ impl TaskContext {
         }
     }
 
-    pub(crate) fn into_shared(mut self) -> Result<Arc<TaskContext>> {
+    pub(crate) fn into_shared(self) -> Result<Arc<TaskContext>> {
+        let context = self;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(mut custody) = self.native_custody.take() {
+        let mut context = context;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(mut custody) = context.native_custody.take() {
             let mut slot = match custody.work().claim(
                 (2 * std::mem::size_of::<usize>()) as u64,
                 1,
@@ -79,7 +82,7 @@ impl TaskContext {
             ) {
                 Ok(slot) => slot,
                 Err(cause) => {
-                    drop(self);
+                    drop(context);
                     return Err(Error::NativeWork {
                         cause,
                         custody: Some(custody),
@@ -87,9 +90,9 @@ impl TaskContext {
                 }
             };
             custody.absorb(&mut slot)?;
-            self.native_custody = Some(custody);
+            context.native_custody = Some(custody);
         }
-        Ok(Arc::new(self))
+        Ok(Arc::new(context))
     }
 
     /// Selects an authenticated created destination without widening task authority.
@@ -301,7 +304,10 @@ pub(crate) fn read_granted_with_work(
         return Ok(true);
     }
     for (slash, _) in file.path().match_indices('/') {
-        let prefix = &file.path()[..slash];
+        let prefix = file
+            .path()
+            .get(..slash)
+            .ok_or_else(|| Error::Invalid("invalid directory prefix".into()))?;
         if !crate::conversation::is_internal_path(prefix)
             && contains_content_grant_with_work(
                 grants,

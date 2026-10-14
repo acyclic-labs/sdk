@@ -9,8 +9,7 @@ mod records;
 pub(crate) use identity::{canonical_json_digest, json_byte_length};
 mod diagnostics;
 pub(crate) use diagnostics::{
-    audited_serde_diagnostic_bytes, json_decode_owned_bytes,
-    snapshot_json_admission,
+    audited_serde_diagnostic_bytes, json_decode_owned_bytes, snapshot_json_admission,
 };
 pub use diagnostics::{
     json_typed_diagnostic_owned_bytes, preparation_serde_diagnostic_label_bytes,
@@ -18,10 +17,9 @@ pub use diagnostics::{
 pub(crate) use serialization::count_json_bytes_trusted;
 mod schema;
 mod serialization;
-pub(crate) use admission::{
-    admit_json, admit_json_value_shape, json_owned_value_shape_bounded,
-    lexical_json_diagnostic_bytes,
-};
+#[cfg(feature = "filesystem")]
+pub(crate) use admission::{admit_json, lexical_json_diagnostic_bytes};
+pub(crate) use admission::{admit_json_value_shape, json_owned_value_shape_bounded};
 pub(crate) use records::json_value_logical_owned_bytes;
 pub use records::{json_from_slice_bounded, json_from_value_bounded};
 pub use serialization::{canonical_json_bytes_bounded, json_bytes_bounded, json_value_bounded};

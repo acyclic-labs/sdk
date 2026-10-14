@@ -99,6 +99,7 @@ impl DurableToolRunner<'_> {
         context: &ToolContext,
         io: Option<&PreparationIo>,
     ) -> Result<(ToolResult, NativeCustody)> {
+        let _ = io;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = native_work(io) {
             let (result, custody) = tool
@@ -121,6 +122,7 @@ impl DurableToolRunner<'_> {
         context: &ToolContext,
         io: Option<&PreparationIo>,
     ) -> Result<Option<(ToolResult, NativeCustody)>> {
+        let _ = io;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = native_work(io) {
             let (result, custody) = tool

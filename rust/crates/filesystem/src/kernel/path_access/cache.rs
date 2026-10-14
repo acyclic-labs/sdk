@@ -173,7 +173,7 @@ impl<'a, S> OperationReadCache<'a, S> {
                 // the caller retains the old baseline until this short leaf.
                 let (allocations, work, budget, _) = accounting
                     .standalone_parts()
-                    .expect("native residency keeps its physical guards");
+                    .ok_or(crate::FsError::HandleAllocationFailed)?;
                 if actual >= state.accounted_bytes {
                     allocations
                         .record_owned_bytes(actual - state.accounted_bytes, work)

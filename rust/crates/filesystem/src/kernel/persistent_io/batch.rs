@@ -263,7 +263,7 @@ impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
         let decoded = (|| {
             cancellation.check()?;
             accounting.check()?;
-            let source = self.sources.next().ok_or_else(|| invalid_batch_result())?;
+            let source = self.sources.next().ok_or_else(invalid_batch_result)?;
             let object_id = match source {
                 BatchSource::Cached(value) => {
                     let page = OwnedPage {
@@ -283,7 +283,7 @@ impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
                 }
                 BatchSource::Cold(object_id) => object_id,
             };
-            let read = self.reads.next().ok_or_else(|| invalid_batch_result())?;
+            let read = self.reads.next().ok_or_else(invalid_batch_result)?;
             let retained = match self.read_allocation {
                 KernelOwnedAllocation::Standalone => retained_bytes(&read),
                 #[cfg(not(target_arch = "wasm32"))]
@@ -292,7 +292,7 @@ impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
             self.remaining_owned_bytes = self
                 .remaining_owned_bytes
                 .checked_sub(retained)
-                .ok_or_else(|| invalid_batch_result())?;
+                .ok_or_else(invalid_batch_result)?;
             let decoded = decode_read_with_accounting::<F>(&read, limits, accounting, None);
             drop(read);
             if retained != 0 {

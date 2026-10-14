@@ -367,6 +367,10 @@ impl ModelProvider for MockAdapter {
         .map_err(|error| Error::Invalid(error.to_string()))?
         .len()
             + 64;
+        if request.request().model.options.get("context_tokens").is_some() {
+            eprintln!("MEDIA COUNT fixed={fixed} messages={message_tokens:?} native={:?}",
+                request.request().messages.iter().map(|message| message.content.contains_native_media()).collect::<Vec<_>>());
+        }
         Ok(ModelTokenCount {
             request_digest: if self.wrong_count_digest.load(Ordering::SeqCst) {
                 [99; 32]

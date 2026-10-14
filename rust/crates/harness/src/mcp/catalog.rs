@@ -189,9 +189,17 @@ impl McpCatalog {
                 "structuredContent":{},"isError":{"type":"boolean"},"_meta":{"type":"object"}},
             "additionalProperties":false});
         if let Some(schema) = &remote.output_schema {
-            output["if"] = json!({"properties":{"isError":{"const":false}}});
-            output["then"] =
-                json!({"required":["structuredContent"],"properties":{"structuredContent":schema}});
+            let fields = output
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("MCP output schema is not an object".into()))?;
+            fields.insert(
+                "if".into(),
+                json!({"properties":{"isError":{"const":false}}}),
+            );
+            fields.insert(
+                "then".into(),
+                json!({"required":["structuredContent"],"properties":{"structuredContent":schema}}),
+            );
         }
         Ok(ToolDefinition {
             name: format!("mcp.{}.{}", self.server, remote.name),

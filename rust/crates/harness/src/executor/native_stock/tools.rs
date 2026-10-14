@@ -50,6 +50,7 @@ pub(in crate::executor) fn stock_authorize_tool(
     invocation: &ToolInvocation,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
+    let _ = io;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = io.and_then(PreparationIo::original_native_work) {
         let context = context.ok_or_else(|| crate::Error::NativeBoundary {
@@ -57,10 +58,12 @@ pub(in crate::executor) fn stock_authorize_tool(
             reason: "native tool authorization has no issued context",
         })?;
         return tool
-            .executor.authorize(None, Some(context), invocation, Some(work));
+            .executor
+            .authorize(None, Some(context), invocation, Some(work));
     }
     if let Some(context) = context {
-        tool.executor.authorize(None, Some(context), invocation, None)
+        tool.executor
+            .authorize(None, Some(context), invocation, None)
     } else {
         tool.executor.authorize(Some(scope), None, invocation, None)
     }

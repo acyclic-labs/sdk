@@ -102,8 +102,12 @@ where
     };
     // Field order keeps the concrete proof data physically ahead of its guard.
     let mut output = (proof, guard);
-    if let ProofGuard::Standalone { .. } = &output.1 {
-        retain(accounting, output.1.retained_bytes()).map_err(E::from)?;
+    match &output.1 {
+        ProofGuard::Standalone { .. } => {
+            retain(accounting, output.1.retained_bytes()).map_err(E::from)?;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        ProofGuard::Native(_) => {}
     }
     if output.0.root.volume_id != request.volume_id {
         return Err(E::from(crate::FsError::Publication(

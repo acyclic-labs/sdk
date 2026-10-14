@@ -67,6 +67,7 @@ impl AuthorityRead {
         &mut self,
         work: &AuthorityWork<'_>,
     ) -> Result<Option<(acyclic_stream::Record, ProviderAllocation)>, AuthorityStoreError> {
+        let _ = work;
         match self {
             Self::Plain(stream) => stream
                 .next()
@@ -90,6 +91,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         request: acyclic_stream::ReadRequest,
         work: &AuthorityWork<'_>,
     ) -> Result<AuthorityRead, AuthorityStoreError> {
+        let _ = work;
         #[cfg(not(target_arch = "wasm32"))]
         if work.is_native() {
             return work

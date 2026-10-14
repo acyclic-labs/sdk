@@ -161,7 +161,8 @@ async fn interrupted_model_stream_reconciles_without_redispatch() -> Result<()> 
         async fn admit(
             &self,
             _: crate::runtime::TaskAdmissionRecord,
-        ) -> Result<crate::Admission<TaskId>> { Err(Error::Unsupported("test observer".into()))
+        ) -> Result<crate::Admission<TaskId>> {
+            Err(Error::Unsupported("test observer".into()))
         }
     }
     #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
@@ -197,9 +198,11 @@ async fn interrupted_model_stream_reconciles_without_redispatch() -> Result<()> 
                 }
             })
         }
-        async fn outcome(&self, _: TaskId) -> Result<Option<Outcome<Value>>> { Err(Error::Unsupported("test observer".into()))
+        async fn outcome(&self, _: TaskId) -> Result<Option<Outcome<Value>>> {
+            Err(Error::Unsupported("test observer".into()))
         }
-        async fn cancel(&self, _: TaskId) -> Result<()> { Err(Error::Unsupported("test observer".into()))
+        async fn cancel(&self, _: TaskId) -> Result<()> {
+            Err(Error::Unsupported("test observer".into()))
         }
 
         fn policy_identity(&self) -> Option<ComponentIdentity> {
@@ -403,10 +406,22 @@ async fn identical_model_bytes_keep_distinct_dispatch_identities() -> Result<()>
 async fn native_result_reads_obey_effective_limits_and_attenuated_grants() -> Result<()> {
     let journal = Journal::default();
     let file = journal
-        .stage(OperationId::new(), "media", &[1, 2, 3, 4], "image/png", None)?
+        .stage(
+            OperationId::new(),
+            "media",
+            &[1, 2, 3, 4],
+            "image/png",
+            None,
+        )?
         .await?;
     let options = journal
-        .stage(OperationId::new(), "options", b"{}", "application/json", None)?
+        .stage(
+            OperationId::new(),
+            "options",
+            b"{}",
+            "application/json",
+            None,
+        )?
         .await?;
     let content = ModelContent::Part(ModelContentPart::ToolResult {
         call_id: "media".into(),
@@ -451,7 +466,8 @@ async fn native_result_reads_obey_effective_limits_and_attenuated_grants() -> Re
             std::iter::once(&content),
             Limits::default(),
             Some(&denied),
-            None
+            None,
+            None,
         )
         .await,
         Err(Error::Unauthorized(_))
@@ -466,13 +482,17 @@ async fn native_result_reads_obey_effective_limits_and_attenuated_grants() -> Re
             std::iter::once(&content),
             Limits::default(),
             Some(&media_only),
-            None
+            None,
+            None,
         )
         .await,
         Err(Error::Unauthorized(_))
     ));
     let allowed = RuntimeScope::new(
-        crate::Capabilities::new([file.read_capability(&mut None)?, options.read_capability(&mut None)?]),
+        crate::Capabilities::new([
+            file.read_capability(&mut None)?,
+            options.read_capability(&mut None)?,
+        ]),
         Limits::default(),
     )?;
     assert!(matches!(
@@ -484,7 +504,8 @@ async fn native_result_reads_obey_effective_limits_and_attenuated_grants() -> Re
                 ..Limits::default()
             },
             Some(&allowed),
-            None
+            None,
+            None,
         )
         .await,
         Err(Error::Invalid(_))
@@ -503,7 +524,8 @@ async fn native_result_reads_obey_effective_limits_and_attenuated_grants() -> Re
             .iter(),
             Limits::default(),
             Some(&allowed),
-            None
+            None,
+            None,
         )
         .await,
         Err(Error::Unsupported(_))
@@ -522,6 +544,7 @@ async fn native_result_reads_obey_effective_limits_and_attenuated_grants() -> Re
         std::iter::once(&references),
         Limits::default(),
         Some(&allowed),
+        None,
         None,
     )
     .await?;

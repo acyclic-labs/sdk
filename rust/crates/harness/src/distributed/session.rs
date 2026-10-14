@@ -36,7 +36,11 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         .await
     }
 
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "durable admission retains explicit authority and scheduling inputs"
+    )]
     pub(crate) async fn declare_session(
         &mut self,
         owner: &Authority,

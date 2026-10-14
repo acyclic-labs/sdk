@@ -49,7 +49,7 @@ pub fn created_resource_capability(
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<String> {
     if operation.is_empty()
-        || operation.len() > crate::COMPONENT_LABEL_MAX_BYTES
+        || operation.len() as u64 > crate::COMPONENT_LABEL_MAX_BYTES as u64
         || operation.chars().any(char::is_control)
     {
         return Err(diagnostic(

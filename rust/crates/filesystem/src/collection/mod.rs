@@ -28,10 +28,10 @@ use std::ops::Deref;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::kernel::GenerationRoot;
-use crate::kernel::allocation::{
-    AllocationError, KernelAccounting, KernelOwnedAllocation,
-};
-use crate::performance::{WorkBudget, WorkCounters};
+use crate::kernel::allocation::{AllocationError, KernelAccounting, KernelOwnedAllocation};
+#[cfg(all(test, not(target_arch = "wasm32")))]
+use crate::performance::WorkBudget;
+use crate::performance::WorkCounters;
 use crate::storage::{ObjectId, ObjectStoreError};
 
 /// Collections whose swept objects are remembered; a closure proven before

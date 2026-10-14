@@ -350,6 +350,7 @@ async fn attribute_reload_modes_and_schema_bounds() -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 proptest::proptest! {
     #[test]
     fn file_spans_are_exact_and_bounded(start in 0u64..20, end in 0u64..20) {

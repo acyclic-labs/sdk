@@ -25,13 +25,17 @@ async fn later_model_references_fail_preflight_before_earlier_content_reads() ->
             contents.iter(),
             Limits::default(),
             Some(&first_only),
-            None
+            None,
+            None,
         )
         .await,
         Err(Error::Unauthorized(_))
     ));
     assert_eq!(journal.4.load(Ordering::SeqCst), 0);
-    let grants = Capabilities::new([first.read_capability(&mut None)?, second.read_capability(&mut None)?]);
+    let grants = Capabilities::new([
+        first.read_capability(&mut None)?,
+        second.read_capability(&mut None)?,
+    ]);
     let narrow = RuntimeScope::new(
         grants.clone(),
         Limits {
@@ -45,7 +49,8 @@ async fn later_model_references_fail_preflight_before_earlier_content_reads() ->
             contents.iter(),
             Limits::default(),
             Some(&narrow),
-            None
+            None,
+            None,
         )
         .await,
         Err(Error::Invalid(_))
@@ -57,6 +62,7 @@ async fn later_model_references_fail_preflight_before_earlier_content_reads() ->
         contents.iter(),
         Limits::default(),
         Some(&allowed),
+        None,
         None,
     )
     .await?;

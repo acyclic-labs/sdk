@@ -85,6 +85,7 @@ impl DependencyLedger {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), FsError> {
+        let _ = &staged;
         let mut proof = self.proof();
         let extension = proof
             .dependencies

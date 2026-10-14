@@ -238,13 +238,22 @@ impl VolumeRef {
     }
 }
 
-fn label_bytes(prefix: &str, digest: [u8; 32]) -> ([u8; 80], usize) {
+fn label_bytes(prefix: &str, digest: [u8; 32]) -> Result<([u8; 80], usize)> {
     let hash = blake3::Hash::from_bytes(digest).to_hex();
     let mut label = [0_u8; 80];
-    let length = prefix.len() + hash.len();
-    label[..prefix.len()].copy_from_slice(prefix.as_bytes());
-    label[prefix.len()..length].copy_from_slice(hash.as_bytes());
-    (label, length)
+    let length = prefix
+        .len()
+        .checked_add(hash.len())
+        .ok_or_else(|| Error::Invalid("identity label is too long".into()))?;
+    let text = label
+        .get_mut(..length)
+        .ok_or_else(|| Error::Invalid("identity label is too long".into()))?;
+    let (prefix_text, digest_text) = text
+        .split_at_mut_checked(prefix.len())
+        .ok_or_else(|| Error::Invalid("identity label is too long".into()))?;
+    prefix_text.copy_from_slice(prefix.as_bytes());
+    digest_text.copy_from_slice(hash.as_bytes());
+    Ok((label, length))
 }
 
 pub(crate) fn content_label(
@@ -252,8 +261,11 @@ pub(crate) fn content_label(
     digest: [u8; 32],
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<String> {
-    let (label, length) = label_bytes(prefix, digest);
-    let text = std::str::from_utf8(&label[..length]).expect("ASCII identity label");
+    let (label, length) = label_bytes(prefix, digest)?;
+    let text = label
+        .get(..length)
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .ok_or_else(|| Error::Invalid("invalid identity label".into()))?;
     match work.as_deref_mut() {
         Some(io) => io.clone_text(text),
         None => Ok(text.to_owned()),
@@ -265,8 +277,14 @@ pub(crate) fn contains_content_label(
     prefix: &str,
     digest: [u8; 32],
 ) -> bool {
-    let (label, length) = label_bytes(prefix, digest);
-    grants.contains(std::str::from_utf8(&label[..length]).expect("ASCII identity label"))
+    label_bytes(prefix, digest)
+        .ok()
+        .is_some_and(|(label, length)| {
+            label
+                .get(..length)
+                .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                .is_some_and(|text| grants.contains(text))
+        })
 }
 
 /// Operations that can be granted independently on a volume.
@@ -361,7 +379,7 @@ impl ContentGrant {
             for prefix in std::iter::once("").chain(
                 file.path()
                     .match_indices('/')
-                    .map(|(end, _)| &file.path()[..end]),
+                    .filter_map(|(end, _)| file.path().get(..end)),
             ) {
                 if file
                     .volume()

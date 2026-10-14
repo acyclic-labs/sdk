@@ -18,7 +18,8 @@ impl MachineIdentity {
         for label in [&self.name, &self.version] {
             if let Some(observer) = work.as_deref_mut() {
                 observer.check_cancellation()?;
-                observer.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
+                observer
+                    .codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
             }
             if !crate::contract::is_valid_component_label(label) {
                 return Err(crate::scheduler::diagnostic(
@@ -276,7 +277,7 @@ impl MachineRegistry {
                 work,
             )
         })?;
-        #[allow(unused_mut)]
+        #[allow(unused_mut, reason = "native branches mutate retained custody")]
         let mut transition_retained = 0;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let transition = if let Some(io) = io {

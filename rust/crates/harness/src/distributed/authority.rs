@@ -14,7 +14,10 @@ pub(crate) enum JournalWrite {
 
 impl<P: StreamProvider> DistributedCoordinator<P> {
     #[cfg(feature = "filesystem")]
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "authority, lease and work scopes remain explicit"
+    )]
     pub(crate) async fn journal_condition(
         &mut self,
         owner: &Authority,
@@ -157,7 +160,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     /// Cancels with exact retry; a parent fence always cancels the child's subtree.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "authority, lease and work scopes remain explicit"
+    )]
     pub async fn cancel_operation(
         &mut self,
         owner: &Authority,
@@ -238,7 +244,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     /// Fills a durable resume slot, optionally guarded by its selected command.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "authority, lease and work scopes remain explicit"
+    )]
     pub async fn resume_workflow(
         &mut self,
         owner: &Authority,
@@ -272,7 +281,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     /// Authenticates the exact durable owner before publishing a declaration.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "authority, lease and work scopes remain explicit"
+    )]
     pub async fn declare_operation(
         &mut self,
         owner: &Authority,

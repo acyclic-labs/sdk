@@ -163,6 +163,7 @@ pub(super) fn workspace_allocation(
     allocation: KernelOwnedAllocation,
     accounting: &KernelAccounting<'_>,
 ) -> Result<crate::AuthorityAllocation, WorkspaceError> {
+    let _ = accounting;
     match allocation {
         #[cfg(not(target_arch = "wasm32"))]
         KernelOwnedAllocation::NativeOriginal(allocation) => Ok(Some(allocation)),

@@ -24,6 +24,7 @@ mod memory;
 #[cfg(test)]
 use memory::Store;
 
+#[cfg(not(target_arch = "wasm32"))]
 macro_rules! native_modules {
     ($($visibility:vis $name:ident;)*) => {$(
         mod $name;
@@ -65,7 +66,11 @@ native_modules! {
     planning;
 }
 
-#[cfg(all(feature = "local", feature = "native-mount", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "local",
+    feature = "native-mount",
+    not(target_arch = "wasm32")
+))]
 mod directory_preparation;
 
 #[cfg(test)]

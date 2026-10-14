@@ -14,6 +14,7 @@ impl<'tools> DurableToolRunner<'tools> {
         work: NativeWork<'tools>,
     ) -> Result<Self> {
         let io = preparation_io(work)?;
+        let _ = &io;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work
             && !journal.supports_native_execution(work)?

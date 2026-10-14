@@ -281,6 +281,7 @@ impl<I, O> TaskDefinition<I, O> {
     {
         let observer = io.as_ref();
         let native = task_original_work(observer)?;
+        let _ = native;
         let error = |code, reason| crate::executor::stock_boundary(observer, code, reason);
         let result = async {
             let fence = task_copy_with_io(observer, |quota| {
@@ -321,7 +322,9 @@ impl<I, O> TaskDefinition<I, O> {
             })?;
             host.verify_execution_owner(task_id, &fence, observer)?
                 .await?;
-            let mut owner_matches = journal.task_binding() == Some((task_id, &fence));
+            let owner_matches = journal.task_binding() == Some((task_id, &fence));
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            let mut owner_matches = owner_matches;
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if let Some(work) = native {
                 owner_matches &= context.native_metadata_matches(work)

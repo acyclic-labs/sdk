@@ -146,7 +146,8 @@ pub(super) async fn read_intent<P: StreamProvider>(
     let mut intent = None;
     while next < tail {
         let from = next;
-        let maximum = (tail - from).min(u64::from(READ_PAGE_SIZE)) as u32;
+        let maximum = u32::try_from((tail - from).min(u64::from(READ_PAGE_SIZE)))
+            .map_err(|_| Error::Invalid("coordinator page exceeds read allowance".into()))?;
         let mut source = read_records(client, &stream.0, from, maximum, quota.work()).await?;
         while let Some(record) = next_record(
             &mut source,

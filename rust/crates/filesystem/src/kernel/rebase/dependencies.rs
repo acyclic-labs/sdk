@@ -361,7 +361,7 @@ impl CheckoutDependencies {
         for (region, expected) in staged {
             admit(0, 0, 0, 1)?;
             if let Some(existing) = captured.entries.get_mut(&region) {
-                existing.usage = existing.usage.with(usage)
+                existing.usage = existing.usage.with(usage);
             } else {
                 // The staged key owns its name buffer already; insertion
                 // moves that buffer rather than allocating or copying it.

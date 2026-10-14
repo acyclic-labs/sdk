@@ -36,7 +36,14 @@ fn visit<'a>(
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
     crate::model::charge_items(io, 1)?;
-    match marks[index] {
+    let mark = marks.get_mut(index).ok_or_else(|| {
+        crate::conversation::content_error(
+            io,
+            crate::wire::ErrorCode::Invalid,
+            "invalid task dependency index",
+        )
+    })?;
+    match *mark {
         1 => {
             return Err(crate::conversation::content_error(
                 io,
@@ -45,7 +52,7 @@ fn visit<'a>(
             ));
         }
         2 => return Ok(()),
-        _ => marks[index] = 1,
+        _ => *mark = 1,
     }
     for requirement in task(index).2 {
         crate::executor::with_history_io(io, |work| {
@@ -86,7 +93,13 @@ fn visit<'a>(
             ));
         }
     }
-    marks[index] = 2;
+    *marks.get_mut(index).ok_or_else(|| {
+        crate::conversation::content_error(
+            io,
+            crate::wire::ErrorCode::Invalid,
+            "invalid task dependency index",
+        )
+    })? = 2;
     Ok(())
 }
 

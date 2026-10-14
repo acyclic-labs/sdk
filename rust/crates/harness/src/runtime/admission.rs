@@ -449,6 +449,7 @@ impl TaskAdmissionRecord {
         body: Value,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(Self, u64)> {
+        let _ = &work;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if work
             .as_deref()
