@@ -79,10 +79,14 @@ async fn cancelled_mail_reconciles_original_atomic_send_without_republication() 
         )
         .await?;
     for _ in 0..2 {
+        let attempt = runtime
+            .resume_task(lease.clone(), &runtime.commands(), 1, None)
+            .await;
+        if let TaskWorkerAttempt::Unresolved { error, .. } = attempt {
+            return Err(error);
+        }
         assert!(matches!(
-            runtime
-                .resume_task(lease.clone(), &runtime.commands(), 1, None)
-                .await,
+            attempt,
             TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { .. })
         ));
     }
@@ -133,10 +137,7 @@ async fn native_stock_builtin_precancel_preserves_original_recovery_before_dispa
         let cancellation = acyclic_fs::CancellationToken::new();
         let work =
             acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)
-                .map_err(|(cause, work)| Error::NativeConstruction {
-                cause,
-                work: work,
-            })?;
+                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = PreparationIo::from_native_work(&work)?;
         let runtime = fixture.runtime(Some(&io)).await?;
         let (lease, custody) = fixture
@@ -182,10 +183,7 @@ async fn native_stock_tool_lost_ack_reconciles_original_fence_without_redispatch
     let cancellation = acyclic_fs::CancellationToken::new();
     let work =
         acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)
-            .map_err(|(cause, work)| Error::NativeConstruction {
-                cause,
-                work: work,
-            })?;
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&work)?;
     let runtime = fixture.runtime(Some(&io)).await?;
     let (lease, custody) = fixture.native_lease(&runtime, &work).await?;
