@@ -4,6 +4,9 @@ inputs:
   scope:
     description: Target and profile boundary for compiler output
     required: true
+  cache_size:
+    description: Compiler cache limit from the measured working set plus headroom
+    required: true
 outputs:
   downloads-key:
     description: Primary Cargo download cache key for the post-build save.
@@ -22,9 +25,11 @@ runs:
   steps:
     - name: Configure compiler cache
       shell: bash
+      env:
+        CACHE_SIZE: ${{ inputs.cache_size }}
       run: |
         echo "SCCACHE_DIR=${RUNNER_TEMP}/sccache" >> "$GITHUB_ENV"
-        echo "SCCACHE_CACHE_SIZE=2G" >> "$GITHUB_ENV"
+        echo "SCCACHE_CACHE_SIZE=$CACHE_SIZE" >> "$GITHUB_ENV"
         echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
     - name: Restore Cargo downloads
       id: downloads

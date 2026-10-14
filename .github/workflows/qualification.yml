@@ -100,9 +100,6 @@ jobs:
       MAKEFLAGS: -j${{ matrix.workers }}
       RAYON_NUM_THREADS: ${{ matrix.workers }}
       RUST_TEST_THREADS: ${{ matrix.workers }}
-      # Windows restores the compiler cache at ~70 MB/s rather than from
-      # co-located storage, so bound it near one run's working set.
-      SCCACHE_CACHE_SIZE: ${{ contains(matrix.runner, 'windows') && '3G' || '8G' }}
     # Complete qualification is governed by bounded operations and resource
     # limits, not a wall-clock cutoff across cold builds and package verification.
     steps:
@@ -120,6 +117,7 @@ jobs:
         uses: ./.github/actions/qualification-lane
         with:
           lane: ${{ matrix.lane }}
+          cache_size: ${{ matrix.cache_size }}
           artifact: ${{ matrix.artifact }}
           artifact_path: ${{ matrix.artifact_path }}
 

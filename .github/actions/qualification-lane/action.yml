@@ -4,6 +4,9 @@ inputs:
   lane:
     description: Lane name from .github/qualification-lanes.json
     required: true
+  cache_size:
+    description: Compiler cache limit from the measured working set plus headroom
+    required: true
   artifact:
     description: Artifact name prefix the lane retains, if any
     default: ''
@@ -21,25 +24,24 @@ runs:
       run: |
         .\scripts\windows-rust-setup.ps1 -Phase start -Lane '${{ inputs.lane }}'
 
-    # Core and full runs compile different invocations (tests, packaging,
-    # release builds), so each keeps its own compiler cache, sized to one
-    # run's working set. Windows restores at ~70 MB/s rather than from
-    # co-located storage, so its full cache stays smaller.
+    # Keep each lane's measured working set instead of allocating the largest
+    # packaging cache to every test and documentation lane.
     - name: Configure lane-local compiler cache
       id: sccache
       shell: bash
+      env:
+        CACHE_SIZE: ${{ inputs.cache_size }}
       run: |
-        scope=core size=2G
+        scope=core
         if [[ "${FORCE:-}" == true ]] || [[ "$GITHUB_EVENT_NAME" =~ ^(release|workflow_dispatch|schedule)$ ]]; then
-          scope=full size=8G
-          [[ "$RUNNER_OS" != Windows ]] || size=3G
+          scope=full
         fi
         echo "scope=$scope" >> "$GITHUB_OUTPUT"
         # Ephemeral target directories cannot reuse incremental state, and
         # incremental Rust invocations bypass sccache.
         echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
         echo "SCCACHE_DIR=${RUNNER_TEMP}/sccache" >> "$GITHUB_ENV"
-        echo "SCCACHE_CACHE_SIZE=$size" >> "$GITHUB_ENV"
+        echo "SCCACHE_CACHE_SIZE=$CACHE_SIZE" >> "$GITHUB_ENV"
 
     # Only compressed crate archives and indexes are cached: Cargo unpacks the
     # sources it needs far faster than a cache can restore them file by file.

@@ -25,10 +25,13 @@ jobs:
         platform:
           - name: linux-fuse
             runner: blacksmith-4vcpu-ubuntu-2404
+            cache_size: 448M
           - name: macos-nfs
             runner: blacksmith-6vcpu-macos-15
+            cache_size: 384M
           - name: windows-projfs
             runner: blacksmith-4vcpu-windows-2025
+            cache_size: 576M
     name: ${{ matrix.platform.name }}
     runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 20
@@ -52,6 +55,7 @@ jobs:
         uses: ./.github/actions/rust-build-cache
         with:
           scope: host-${{ matrix.platform.name }}
+          cache_size: ${{ matrix.platform.cache_size }}
 
       - name: Restore host npm downloads
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
