@@ -117,7 +117,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             source,
             store,
             #[cfg(not(target_arch = "wasm32"))]
-            allocation: None,
+            _allocation: None,
         };
         lazy.recover_pending_remove(ctx).await?;
         lazy.state(ctx).await?;

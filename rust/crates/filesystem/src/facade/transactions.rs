@@ -354,7 +354,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let mut input = (input.value.into_iter(), input.allocation);
         let mut batch = Owned::<Vec<AuthoredMutation>>::allocate(0, accounting)?;
         let mut count = 0_usize;
-        while let Some(mutation) = input.0.next() {
+        for mutation in input.0.by_ref() {
             let next = authored_mutation_operation_count(&mutation);
             if next > maximum {
                 return Err(FsError::TooManyPendingMutations);

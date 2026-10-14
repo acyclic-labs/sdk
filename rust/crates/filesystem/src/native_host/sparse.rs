@@ -56,8 +56,8 @@ pub(crate) fn filesystem_is_local<W: NativeHostWork>(
     const FILE_REMOTE_DEVICE: u32 = 0x10;
     let mut device = [0_u32; 2];
     let mut status = IO_STATUS_BLOCK::default();
-    // SAFETY: the handle is live for the call, and the buffer is exactly one `FILE_FS_DEVICE_INFORMATION` of the length passed.
     work.started_io(READ)?;
+    // SAFETY: the live handle and two-u32 buffer match FILE_FS_DEVICE_INFORMATION.
     let queried = unsafe {
         NtQueryVolumeInformationFile(
             HANDLE(directory.as_raw_handle()),

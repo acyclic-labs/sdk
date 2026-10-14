@@ -59,7 +59,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         cancellation: &CancellationToken,
     ) -> W::Output<bool, WorkspaceError> {
         let mut accounting = funding.accounting(cancellation);
-        let baseline = readonly_standalone_live(&mut accounting);
+        let baseline = readonly_standalone_live(&accounting);
         let result = async {
             let input_bytes = paths
                 .as_ref()

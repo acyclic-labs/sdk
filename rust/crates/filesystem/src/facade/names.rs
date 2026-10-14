@@ -219,7 +219,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 self.admit_binding_name(
                     path,
                     &pending.value,
-                    allowed.as_ref().map_or(&[], std::slice::from_ref),
+                    allowed.as_slice(),
                     accounting,
                     cancellation,
                 )

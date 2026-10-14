@@ -426,7 +426,9 @@ async fn native_flush_cancellation_removes_successful_prefix_only()
                 .await;
             __object_result
         },
-        Err(ObjectStoreError::Cancelled)
+        Err(ObjectStoreError::Native(
+            crate::NativeTreeMaterializationError::Cancelled
+        ))
     ));
     assert!(!store.index().objects.contains_key(&first));
     assert!(store.index().objects.contains_key(&second));

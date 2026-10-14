@@ -35,7 +35,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                     let bytes = options
                         .paths
                         .as_ref()
-                        .map_or(Ok(0), |paths| workspace_owned_strings_bytes(paths))
+                        .map_or(Ok(0), workspace_owned_strings_bytes)
                         .map_err(E::from)?;
                     let (mut allocation, admitted) = accounting.record_actual_owned(bytes)?;
                     admitted?;

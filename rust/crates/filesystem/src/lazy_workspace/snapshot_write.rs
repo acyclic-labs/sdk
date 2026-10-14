@@ -184,10 +184,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                         let cancel = cancel.clone();
                         async move {
                             let mut ctx = KernelAccounting::standalone(budget, &cancel);
-                            let result = if source.reference() != basis.source {
-                                Err(E::from(LazyWorkspaceError::StaleSource))
-                            } else {
+                            let result = if source.reference() == basis.source {
                                 seal::<_, E>(&mut before, &mut ctx).await
+                            } else {
+                                Err(E::from(LazyWorkspaceError::StaleSource))
                             };
                             result
                                 .map(|()| OperationReceipt {

@@ -184,7 +184,7 @@ impl NativeDemandSource {
         work: &mut CallbackWork,
     ) -> Result<Option<SourceDirectoryEntry>, DemandError> {
         let stat = match &entry.stat {
-            Some(stat) => stat.clone(),
+            Some(stat) => *stat,
             None => {
                 #[cfg(unix)]
                 let result = self.inner.root.stat(&directory.join(&entry.name), work);
@@ -287,7 +287,7 @@ impl NativeDemandSource {
             return Err(DemandError::InvalidRequest);
         }
         work.started_io(WorkCounters {
-            items_examined: maximum as u64 * self.excluded.paths.len() as u64,
+            items_examined: u64::from(maximum) * self.excluded.paths.len() as u64,
             ..WorkCounters::UNCHARGED
         })?;
         self.check(source, work)?;

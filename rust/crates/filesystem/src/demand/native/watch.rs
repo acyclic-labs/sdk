@@ -140,17 +140,14 @@ impl NativeDemandInner {
                 } else {
                     0
                 };
-                let name = match crate::kernel::LogicalName::new(
+                let name = if let Ok(name) = crate::kernel::LogicalName::new(
                     encoding,
                     bytes,
                     self.limits.maximum_component_bytes,
-                ) {
-                    Ok(name) => name,
-                    Err(_) => {
-                        drop(guard);
-                        work.release(ordinary)?;
-                        break;
-                    }
+                ) { name } else {
+                    drop(guard);
+                    work.release(ordinary)?;
+                    break;
                 };
                 if NamespacePath::validate_component_lengths(
                     names

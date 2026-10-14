@@ -60,19 +60,6 @@ pub(super) fn copy_string(
 ) -> Result<String, NativeTreeMaterializationError> {
     Ok(String::from_utf8(copy_image(text.as_bytes(), allocation)?).expect("copied UTF-8"))
 }
-pub(super) fn copy_slice<T, U>(
-    values: &[T],
-    allocation: &mut NativeAllocation,
-    mut copy: impl FnMut(&T, &mut NativeAllocation) -> Result<U, NativeTreeMaterializationError>,
-) -> Result<Vec<U>, NativeTreeMaterializationError> {
-    let (mut copied, mut capacity) =
-        crate::native_host::buffer(values.len(), &mut allocation.work())?;
-    allocation.absorb(&mut capacity)?;
-    for value in values {
-        copied.push(copy(value, allocation)?);
-    }
-    Ok(copied)
-}
 pub(super) fn duplicate_edit(
     edit: &MaterializationEdit,
     allocation: &mut NativeAllocation,

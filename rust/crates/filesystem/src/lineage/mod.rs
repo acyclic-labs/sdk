@@ -192,7 +192,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
                     WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
                 )
-                .map_err(|failure| WorkspaceError::from(failure.error))?
+                .map_err(|failure| failure.error)?
                 .value;
                 let generation = parent
                     .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
@@ -297,8 +297,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
                 &CancellationToken::new(),
             )
             .await
-            .map_err(|failure| failure.error)?
-            .value;
+            .map_err(|failure| failure.error)?;
         let initial = child
             .generation(
                 initial_generation,

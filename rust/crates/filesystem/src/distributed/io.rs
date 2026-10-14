@@ -234,19 +234,16 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         meter.admit(submitted)?;
         #[cfg(not(target_arch = "wasm32"))]
         if meter.is_native() {
-            let outcome = match guard.as_deref_mut() {
-                Some(guard) => {
-                    guard
-                        .native_commit(self.provider.as_ref(), request, deadline, meter)
-                        .await
-                }
-                None => {
-                    let result = self
-                        .provider
-                        .native_commit(request, deadline, meter.native_meter())
-                        .await;
-                    result.map(|result| result.map_err(AuthorityError::from))
-                }
+            let outcome = if let Some(guard) = guard.as_deref_mut() {
+                guard
+                    .native_commit(self.provider.as_ref(), request, deadline, meter)
+                    .await
+            } else {
+                let result = self
+                    .provider
+                    .native_commit(request, deadline, meter.native_meter())
+                    .await;
+                result.map(|result| result.map_err(AuthorityError::from))
             }
             .map_err(|error| meter.native_io_failure(error))??;
             let (value, allocation) = outcome.into_parts();
@@ -258,7 +255,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             return Ok(outcome);
         }
         meter.check()?;
-        seal(meter, guard.as_deref_mut()).await?;
+        seal(meter, guard).await?;
         meter.check()?;
         meter.admit(submitted)?;
         let result = match deadline {

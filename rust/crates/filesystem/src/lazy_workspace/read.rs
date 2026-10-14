@@ -50,11 +50,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<OwnedSourceChunk, LazyWorkspaceError> {
         let lookup = self.lookup(path, ctx).await?;
-        let result = if lookup.0.stat().kind != kind {
-            Err(LazyWorkspaceError::NotRegularFile)
-        } else {
+        let result = if lookup.0.stat().kind == kind {
             self.read_resolved(&lookup.0, path, range, maximum, ctx)
                 .await
+        } else {
+            Err(LazyWorkspaceError::NotRegularFile)
         };
         self.retire_lookup(lookup, ctx)?;
         result

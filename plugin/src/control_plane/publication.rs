@@ -140,7 +140,7 @@ impl ControlPlane {
                     .get(root_id)
                     .copied()
                     .ok_or_else(|| "published root generation is unavailable".to_owned())?;
-                let workspace = WorkspaceGraph::new(self.store.clone()).workspace(&self.fs, root.target_workspace_id, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                let workspace = acyclic_fs::WorkspaceResolver::resolve(&(self.fs.clone(), WorkspaceGraph::new(self.store.clone())), root.target_workspace_id)
                     .await
                     .map_err(display)?;
                 let published = workspace.generation(published_generation, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
@@ -232,13 +232,7 @@ impl ControlPlane {
             let limits = OperationReconcileLimits::default();
             let mut published_heads = BTreeMap::new();
             for (root_id, root) in &publication.candidate.plan.roots {
-                let source = WorkspaceGraph::new(self.store.clone())
-                    .workspace(
-                        &self.fs,
-                        root.source_workspace_id,
-                        WorkBudget::UNBOUNDED,
-                        &CancellationToken::new(),
-                    )
+                let source = acyclic_fs::WorkspaceResolver::resolve(&(self.fs.clone(), WorkspaceGraph::new(self.store.clone())), root.source_workspace_id)
                     .await
                     .map_err(display)?;
                 let rebase_key = derived_idempotency_key(

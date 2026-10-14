@@ -365,7 +365,7 @@ impl Cancelled<'_> {
                     *waiter
                         .registry_lease
                         .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) = new_lease.clone();
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = new_lease;
                 }
                 let index = if let Some(index) = free {
                     waiters[index] = Some(Arc::downgrade(&waiter));

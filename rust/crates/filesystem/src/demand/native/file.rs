@@ -9,7 +9,7 @@ struct NativeDemandFile {
     file: Arc<std::sync::RwLock<Arc<SourceFile>>>,
     #[cfg(not(windows))]
     file: Arc<SourceFile>,
-    ownership: Arc<SourcePayloadOwnership>,
+    _ownership: Arc<SourcePayloadOwnership>,
 }
 
 /// A source file held for reading. On Windows it gives way to whoever
@@ -69,7 +69,7 @@ impl NativeDemandFile {
             provider,
             source,
             relative,
-            ownership: Arc::new(ownership),
+            _ownership: Arc::new(ownership),
             expected,
             logical_bytes: opened.len(),
             #[cfg(windows)]

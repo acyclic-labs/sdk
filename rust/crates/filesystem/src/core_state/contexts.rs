@@ -493,7 +493,7 @@ impl LocalCoreStateStore {
                 let work = root._allocation.as_ref().expect("bound native work").work();
                 root.with_log(|log| {
                     native_records::load::<WorkspaceContext>(
-                        &root,
+                        root,
                         log,
                         context_id,
                         work,
@@ -548,7 +548,7 @@ impl LocalCoreStateStore {
                 let work = root._allocation.as_ref().expect("bound native work").work();
                 root.with_log(|log| {
                     native_records::compare_native_context(
-                        &root,
+                        root,
                         log,
                         context_id,
                         expected_revision,
@@ -593,7 +593,7 @@ impl LocalCoreStateStore {
                 let work = root._allocation.as_ref().expect("bound native work").work();
                 root.with_log(|log| {
                     native_records::load::<WorkspaceLineageRecord>(
-                        &root,
+                        root,
                         log,
                         workspace_id,
                         work,
@@ -634,7 +634,7 @@ impl LocalCoreStateStore {
                 let work = root._allocation.as_ref().expect("bound native work").work();
                 root.with_log(|log| {
                     native_records::compare_native_lineage(
-                        &root,
+                        root,
                         log,
                         workspace_id,
                         expected_revision,

@@ -18,6 +18,7 @@ pub(super) fn open_windows_root_name(
         )
     }
     .map_err(|error| io::Error::from_raw_os_error(error.code().0 & 0xffff))?;
+    // SAFETY: CreateFileW returned a fresh handle whose sole ownership moves into File.
     Ok(unsafe { File::from_raw_handle(handle.0) })
 }
 

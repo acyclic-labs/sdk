@@ -1,4 +1,4 @@
-//! Stock CoreLog projections retain physical payload custody in the original invocation.
+//! Stock `CoreLog` projections retain physical payload custody in the original invocation.
 use super::*;
 use crate::CancellationToken;
 use crate::materializer::{
@@ -161,7 +161,7 @@ pub(super) fn compare_native_lineage(
     check(work, cxl)?;
     if load::<WorkspaceLineageRecord>(root, log, id, work, cxl)?
         .as_ref()
-        .map_or(0, |value| (&value.0).revision)
+        .map_or(0, |value| value.0.revision)
         != expected
     {
         return Ok(false);

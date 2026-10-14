@@ -2,13 +2,12 @@ use super::*;
 fn retained(body: &OwnedBytes, work: &KernelAccounting<'_>) -> ObjectReadRetention {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = work.native_work() {
-        if body.matches_meter(&original.runtime_meter()) {
-            if let Some(capacity) = body.retained_capacity() {
+        if body.matches_meter(&original.runtime_meter())
+            && let Some(capacity) = body.retained_capacity() {
                 return ObjectReadRetention::Owned {
                     logical_bytes: capacity as u64,
                 };
             }
-        }
         return ObjectReadRetention::Shared;
     }
     ObjectReadRetention::Owned {

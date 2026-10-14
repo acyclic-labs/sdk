@@ -231,7 +231,10 @@ impl YieldingFile {
                     let status = meter
                         .examine(1, 0)
                         .map_err(crate::demand::native_demand_error)
-                        .map(|()| unsafe { WaitForSingleObject(*event, 10) });
+                        .map(|()| {
+                            // SAFETY: the owned I/O event remains live throughout the wait.
+                            unsafe { WaitForSingleObject(*event, 10) }
+                        });
                     match status {
                         Ok(WAIT_TIMEOUT) => continue,
                         Ok(WAIT_FAILED) => {

@@ -217,7 +217,7 @@ impl ControlPlane {
                         .roots
                         .get(&root_id)
                         .ok_or_else(|| "direct parent root is missing".to_owned())?;
-                    let parent = WorkspaceGraph::new(self.store.clone()).workspace(&self.fs, parent_root.workspace_id, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                    let parent = acyclic_fs::WorkspaceResolver::resolve(&(self.fs.clone(), WorkspaceGraph::new(self.store.clone())), parent_root.workspace_id)
                         .await
                         .map_err(display)?;
                     operations

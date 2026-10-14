@@ -70,8 +70,12 @@ impl HostStat {
         }
         #[cfg(windows)]
         {
-            self.raw.EndOfFile as u64
+            u64::from_ne_bytes(self.raw.EndOfFile.to_ne_bytes())
         }
+    }
+    /// Whether the native byte length is zero.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
     pub fn nlink(&self) -> u64 {
         #[cfg(unix)]
@@ -80,7 +84,7 @@ impl HostStat {
         }
         #[cfg(windows)]
         {
-            self.raw.NumberOfLinks as u64
+            u64::from(self.raw.NumberOfLinks)
         }
     }
     pub(crate) fn identity(&self) -> NativeRootIdentity {
@@ -94,8 +98,8 @@ impl HostStat {
         #[cfg(windows)]
         {
             NativeRootIdentity {
-                device: self.volume_serial_number as u64,
-                object: self.raw.FileId as u64,
+                device: u64::from(self.volume_serial_number),
+                object: u64::from_ne_bytes(self.raw.FileId.to_ne_bytes()),
             }
         }
     }
@@ -107,7 +111,7 @@ impl HostStat {
         }
         #[cfg(windows)]
         {
-            Ok(windows_time(self.raw.CreationTime as u64))
+            Ok(windows_time(u64::from_ne_bytes(self.raw.CreationTime.to_ne_bytes())))
         }
     }
     pub fn modified(&self) -> io::Result<cap_std::time::SystemTime> {
@@ -117,7 +121,7 @@ impl HostStat {
         }
         #[cfg(windows)]
         {
-            Ok(windows_time(self.raw.LastWriteTime as u64))
+            Ok(windows_time(u64::from_ne_bytes(self.raw.LastWriteTime.to_ne_bytes())))
         }
     }
     pub fn accessed(&self) -> io::Result<cap_std::time::SystemTime> {
@@ -127,7 +131,7 @@ impl HostStat {
         }
         #[cfg(windows)]
         {
-            Ok(windows_time(self.raw.LastAccessTime as u64))
+            Ok(windows_time(u64::from_ne_bytes(self.raw.LastAccessTime.to_ne_bytes())))
         }
     }
     #[cfg(unix)]

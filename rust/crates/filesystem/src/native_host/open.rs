@@ -56,10 +56,10 @@ pub(crate) fn create_directories<W: NativeHostWork>(
         }
         open_root_directory(base, work)?.0
     };
-    let relative = if base != Path::new(".") {
-        path.strip_prefix(base).map_err(|_| W::invalid_request())?
-    } else {
+    let relative = if base == Path::new(".") {
         path
+    } else {
+        path.strip_prefix(base).map_err(|_| W::invalid_request())?
     };
     let relative = relative.strip_prefix(".").unwrap_or(relative);
     #[cfg(unix)]
