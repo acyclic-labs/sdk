@@ -1,5 +1,6 @@
 //! Protected child allocation claims and seed publication.
 use super::*;
+use crate::conversation::FileRef;
 pub(super) fn creation_volumes(request: &ForkRequest) -> impl Iterator<Item = &VolumeRef> {
     [
         Some(&request.preparation.child_private_volume),
@@ -722,7 +723,7 @@ mod tests {
 
     #[test]
     fn fork_request_decodes_within_original_sixteen_mebibyte_budget() -> Result<()> {
-        let bytes = include_bytes!("../../../../fixtures/v2/fork-request.json");
+        let bytes = include_bytes!("../../../fixtures/v2/fork-request.json");
         let io = PreparationIo::from_budget(
             acyclic_fs::performance::work_budget(100_000, 16 * 1024 * 1024),
             &acyclic_fs::CancellationToken::new(),
