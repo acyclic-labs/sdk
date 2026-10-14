@@ -8,6 +8,21 @@ import YAML from './vendor/yaml.cjs';
 const workflows=fs.readdirSync('.github/workflows').filter(p=>/\.ya?ml$/.test(p));
 const read=name=>fs.readFileSync('.github/workflows/'+name,'utf8');
 const triggers=text=>text.match(/^on:\n([\s\S]*?)(?=^[^ #\s])/m)?.[1]??'';
+test('Linux host qualification uses the smallest registered runner and retains every scenario',()=>{
+ const job=YAML.parse(read('agent-host-qualification.yml')).jobs.qualify;
+ assert.deepEqual(job.strategy.matrix.platform,[
+  {name:'linux-fuse',runner:'blacksmith-2vcpu-ubuntu-2404',cache_size:'448M'},
+  {name:'macos-nfs',runner:'blacksmith-6vcpu-macos-15',cache_size:'384M'},
+  {name:'windows-projfs',runner:'blacksmith-4vcpu-windows-2025',cache_size:'576M'},
+ ]);
+ const registered=YAML.parse(fs.readFileSync('.github/actionlint.yaml','utf8'))['self-hosted-runner'].labels;
+ for(const platform of job.strategy.matrix.platform)assert.ok(registered.includes(platform.runner));
+ assert.equal(job['runs-on'],'${{ matrix.platform.runner }}');
+ assert.equal(job.env.CARGO_BUILD_JOBS,undefined,'Cargo follows the runner CPU count');
+ for(const name of ['Build host scenario','Run Pi installed diagnostics and native context qualification',
+  'Run codex scenario','Run codex executor scenario','Run claude scenario'])
+  assert.ok(job.steps.some(step=>step.name===name),name);
+});
 test('PRs and main have one static job, and tags/releases cannot start heavy work',()=>{
  const automatic=workflows.filter(name=>/^  (?:push|pull_request):/m.test(triggers(read(name))));
  assert.deepEqual(automatic,[STATIC]);
