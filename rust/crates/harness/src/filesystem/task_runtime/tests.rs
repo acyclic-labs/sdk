@@ -119,7 +119,10 @@ impl ToolExecutor for PendingTool {
             )?;
             Ok((
                 Some(ToolResult { value }),
-                custody.expect("native tool result"),
+                custody.ok_or(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "native tool result has no custody",
+                })?,
             ))
         })
     }
@@ -288,26 +291,24 @@ impl Fixture {
                 id: "deadline-owner".into(),
             },
         );
-        let signed = issuer
-            .issue(
-                "owner",
-                &Capabilities::new([
-                    "operation:declare".to_owned(),
-                    "operation:observe".to_owned(),
-                    "operation:cancel".to_owned(),
-                    "task:spawn:test.deadline@1".to_owned(),
-                    "tool:call:test.deadline".to_owned(),
-                    "model:generate".to_owned(),
-                    "mail:send".to_owned(),
-                    "mail:read".to_owned(),
-                    volume.capability(VolumeOperation::Read, &mut None)?,
-                    volume.capability(VolumeOperation::Write, &mut None)?,
-                ]),
-                Some(agent),
-                None,
-                &mut None,
-            )
-            .expect("scope proof");
+        let signed = issuer.issue(
+            "owner",
+            &Capabilities::new([
+                "operation:declare".to_owned(),
+                "operation:observe".to_owned(),
+                "operation:cancel".to_owned(),
+                "task:spawn:test.deadline@1".to_owned(),
+                "tool:call:test.deadline".to_owned(),
+                "model:generate".to_owned(),
+                "mail:send".to_owned(),
+                "mail:read".to_owned(),
+                volume.capability(VolumeOperation::Read, &mut None)?,
+                volume.capability(VolumeOperation::Write, &mut None)?,
+            ]),
+            Some(agent),
+            None,
+            &mut None,
+        )?;
         let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?
             .with_run_limits(
                 TaskRunLimits {
@@ -409,7 +410,7 @@ impl Fixture {
             self.stream.clone(),
             self.filesystem.clone(),
             &self.volume,
-            &self.issuer.verifier(&mut None).expect("verifier copy"),
+            &self.issuer.verifier(&mut None)?,
             &self.signed,
             &self.scope,
             &self.tasks,
@@ -479,7 +480,7 @@ impl Fixture {
         let payloads = FilesystemContentPublisher::new(
             self.filesystem.clone(),
             &(self.volume),
-            &self.issuer.verifier(&mut None).expect("verifier copy"),
+            &self.issuer.verifier(&mut None)?,
             &self.signed,
             65_536,
             None,
