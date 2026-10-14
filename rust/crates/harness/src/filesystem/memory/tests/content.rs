@@ -115,7 +115,7 @@ async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Resu
     let work = acyclic_fs::NativeMaterializationWork::new(FINITE_CONTENT_BUDGET, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction {
             cause,
-            work: Box::new(work),
+            work: work,
         })?;
     let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
     storage.publisher.supports_stage(Some(&io))?;
@@ -160,7 +160,7 @@ async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Resu
     )
     .map_err(|(cause, work)| Error::NativeConstruction {
         cause,
-        work: Box::new(work),
+        work: work,
     })?;
     let frame_io = crate::filesystem::PreparationIo::from_native_work(&frame_work)?;
     assert!(
@@ -236,7 +236,7 @@ async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Resu
         acyclic_fs::NativeMaterializationWork::new(denied, &acyclic_fs::CancellationToken::new())
             .map_err(|(cause, work)| Error::NativeConstruction {
             cause,
-            work: Box::new(work),
+            work: work,
         })?;
     let denied_io = crate::filesystem::PreparationIo::from_native_work(&denied_work)?;
     assert!(
@@ -274,7 +274,7 @@ async fn scheduler_native_stage_preserves_original_key_receipt_and_finite_hash_g
     let work = acyclic_fs::NativeMaterializationWork::new(FINITE_CONTENT_BUDGET, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction {
             cause,
-            work: Box::new(work),
+            work: work,
         })?;
     let operation = OperationId::new();
     let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
@@ -329,7 +329,7 @@ async fn scheduler_native_stage_preserves_original_key_receipt_and_finite_hash_g
     let denied_work = acyclic_fs::NativeMaterializationWork::new(denied, &cancellation).map_err(
         |(cause, work)| Error::NativeConstruction {
             cause,
-            work: Box::new(work),
+            work: work,
         },
     )?;
     let denied_io = crate::filesystem::PreparationIo::from_native_work(&denied_work)?;
@@ -368,7 +368,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
     let work = acyclic_fs::NativeMaterializationWork::new(FINITE_CONTENT_BUDGET, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction {
             cause,
-            work: Box::new(work),
+            work: work,
         })?;
     let baseline = work.live_allocation_bytes();
     let key = IdempotencyKey::new("acyclic.pi/input/root-task/original-operation/label")?;
@@ -377,7 +377,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
     let path_work = acyclic_fs::NativeMaterializationWork::new(path_budget, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction {
             cause,
-            work: Box::new(work),
+            work: work,
         })?;
     let path_io = crate::filesystem::PreparationIo::from_native_work(&path_work)?;
     let path_prefix = path_work.receipt();
@@ -538,7 +538,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
         acyclic_fs::NativeMaterializationWork::new(FINITE_CONTENT_BUDGET, &cancelled).map_err(
             |(cause, work)| Error::NativeConstruction {
                 cause,
-                work: Box::new(work),
+                work: work,
             },
         )?;
     let io = crate::filesystem::PreparationIo::from_native_work(&cancelled_work)?;
@@ -574,7 +574,7 @@ fn exhausted_native_custody_transfer_keeps_existing_guard_until_value_drops() ->
     )
     .map_err(|(cause, work)| Error::NativeConstruction {
         cause,
-        work: Box::new(work),
+        work: work,
     })?;
     let baseline = work.live_allocation_bytes();
     let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
@@ -609,12 +609,12 @@ fn rejected_foreign_native_custody_preserves_original_owned_data_guard() -> Resu
     let receiving = acyclic_fs::NativeMaterializationWork::new(FINITE_CONTENT_BUDGET, &token)
         .map_err(|(cause, work)| Error::NativeConstruction {
             cause,
-            work: Box::new(work),
+            work: work,
         })?;
     let producing = acyclic_fs::NativeMaterializationWork::new(FINITE_CONTENT_BUDGET, &token)
         .map_err(|(cause, work)| Error::NativeConstruction {
             cause,
-            work: Box::new(work),
+            work: work,
         })?;
     let receiver_io = crate::filesystem::PreparationIo::from_native_work(&receiving)?;
     let receiver_baseline = receiving.live_allocation_bytes();
