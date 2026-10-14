@@ -142,7 +142,7 @@ impl Read for MaterializationReader<'_> {
             return Ok(0);
         }
         if self.remaining_file_bytes == 0 {
-            if crate::native_host::stat_file(&self.file, &mut &*self.work)
+            if crate::native_host::stat_file(self.file, &mut &*self.work)
                 .map_err(std::io::Error::other)?
                 .len()
                 != self.original_length

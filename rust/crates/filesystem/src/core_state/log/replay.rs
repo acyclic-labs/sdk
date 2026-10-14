@@ -16,50 +16,47 @@ impl CoreLog {
                 .adopt_native(work)?;
         }
         let paths = root.record(CORE_LOG_FAMILY, &[0; 16])?;
-        let mut file = match work {
-            Some(work) => {
-                crate::native_host::create_directories(paths.directory(), &mut &*work)?;
-                match materialization_open_options(
-                    &paths.current,
-                    &crate::native_host::NativeOpenOptions::ReadWriteCreateNew,
-                    work,
-                ) {
-                    Ok(file) => {
-                        paths.sync()?;
-                        file
-                    }
-                    Err(crate::materializer::NativeTreeMaterializationError::Io(error))
-                        if error.kind() == std::io::ErrorKind::AlreadyExists =>
-                    {
-                        materialization_open_options(
-                            &paths.current,
-                            &crate::native_host::NativeOpenOptions::ReadWrite,
-                            work,
-                        )?
-                    }
-                    Err(error) => return Err(error.into()),
+        let mut file = if let Some(work) = work {
+            crate::native_host::create_directories(paths.directory(), &mut &*work)?;
+            match materialization_open_options(
+                &paths.current,
+                &crate::native_host::NativeOpenOptions::ReadWriteCreateNew,
+                work,
+            ) {
+                Ok(file) => {
+                    paths.sync()?;
+                    file
                 }
-            }
-            None => {
-                std::fs::create_dir_all(paths.directory())?;
-                match OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .create_new(true)
-                    .open(&paths.current)
+                Err(crate::materializer::NativeTreeMaterializationError::Io(error))
+                    if error.kind() == std::io::ErrorKind::AlreadyExists =>
                 {
-                    Ok(file) => {
-                        sync_directory(paths.directory())?;
-                        file
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                        OpenOptions::new()
-                            .read(true)
-                            .write(true)
-                            .open(&paths.current)?
-                    }
-                    Err(error) => return Err(error.into()),
+                    materialization_open_options(
+                        &paths.current,
+                        &crate::native_host::NativeOpenOptions::ReadWrite,
+                        work,
+                    )?
                 }
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            std::fs::create_dir_all(paths.directory())?;
+            match OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&paths.current)
+            {
+                Ok(file) => {
+                    sync_directory(paths.directory())?;
+                    file
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(&paths.current)?
+                }
+                Err(error) => return Err(error.into()),
             }
         };
         let mut bytes_allocation = work

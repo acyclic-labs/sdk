@@ -267,7 +267,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             )
             .await;
         record_authority_work(accounting, &work)?;
-        let (records, _allocation) = result?;
+        let (records, _allocation) = result.map_err(|error| match error {
+            #[cfg(not(target_arch = "wasm32"))]
+            AuthorityStoreError::NativeStream(acyclic_stream::StreamError::NotFound) => {
+                AuthorityStoreError::Missing
+            }
+            error => error,
+        })?;
         decode_first_creation_record(volume_id, &records, accounting)
     }
 

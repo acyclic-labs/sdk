@@ -31,7 +31,17 @@ impl NativeMountSession {
         let Some(stat) = &entry.stat else {
             return Ok(false);
         };
-        if let Some(guard) = &self.destination_guard {
+        let guard = self.destination_guard.as_ref();
+        #[cfg(windows)]
+        let guard = guard.or_else(|| {
+            self.driver
+                .as_ref()?
+                .retirement
+                .as_ref()?
+                .destination_guard
+                .as_ref()
+        });
+        if let Some(guard) = guard {
             for (name, file) in [
                 (
                     guard
