@@ -81,14 +81,10 @@ impl<'a> PiForkCoordinator<'a> {
             .observe_admission_with_native_work(source_task, work)?
             .await?;
         let maximum = self.owner.policy().maximum_payload_bytes;
-        let bytes = crate::pi_root_provider::canonical_pi_value(&admitted.0.input, maximum, work)?;
-        let original = crate::pi_root_provider::guarded_pi_decode::<PiTaskInput>(
-            &bytes.0,
-            maximum,
-            maximum,
-            acyclic_harness::wire::ErrorCode::Invalid,
+        let original = crate::pi_recovery::decode_recovery_value::<PiTaskInput>(
+            std::borrow::Cow::Borrowed(&admitted.0.input),
             acyclic_harness::JsonValueSchema::None,
-            crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES,
+            maximum,
             work,
         )?;
         let mut project = None;

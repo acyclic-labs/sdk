@@ -251,7 +251,14 @@ async fn native_command_reads_lazy_snapshot_and_publishes_on_finite_work()
         &mut command,
         Some(meter.as_ref()),
         &mut process,
-    )?;
+    )
+    .unwrap_or_else(|error| {
+        panic!(
+            "native process launch: {:?}; before: {before:?}; work: {:?}",
+            work.runtime_error(error),
+            work.receipt()
+        )
+    });
     let output = process
         .as_mut()
         .expect("spawned process")
@@ -263,7 +270,14 @@ async fn native_command_reads_lazy_snapshot_and_publishes_on_finite_work()
             |_| Ok(Default::default()),
             Some(meter.as_ref()),
             Some([stdout.0, stderr.0, Vec::new()]),
-        )?;
+        )
+        .unwrap_or_else(|error| {
+            panic!(
+                "native process wait: {:?}; work: {:?}",
+                work.runtime_error(error.error),
+                work.receipt()
+            )
+        });
     assert!(output.status.success(), "{:?}", output.stderr);
     assert_eq!(output.stdout, b"pinned snapshot");
     view.file_io(

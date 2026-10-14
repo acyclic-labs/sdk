@@ -2,7 +2,7 @@ use super::content_write::bound_content_writer;
 use super::*;
 
 /// One admitted task's mailbox borrowed from its current owner token.
-pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
+pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform + Any {
     fn validate_scope(
         &self,
         scope: &RuntimeScope,
@@ -10,6 +10,12 @@ pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
     ) -> Result<()>;
     #[cfg(feature = "filesystem")]
     fn task_binding(&self) -> (TaskId, &crate::scheduler::LeaseFence);
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn admission(&self) -> (&TaskAdmissionRecord, &WorkflowAdmission);
+    fn verify_owner<'a>(
+        &'a self,
+        io: Option<&'a crate::executor::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>>;
     fn send<'a>(
         &'a self,
         recipient: TaskId,
@@ -119,6 +125,22 @@ impl TaskContext {
         let mut context = self.as_ref().clone();
         context.output_content = Some(binding);
         context.into_shared()
+    }
+
+    /// Borrows the immutable admission retained by this context's original owner.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn admission(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<&TaskAdmissionRecord>> {
+        self.require_original_native_work(work)?;
+        let Some(owner) = &self.owned_mailbox else {
+            return Ok(None);
+        };
+        self.owned_task_binding(Some(&crate::executor::PreparationIo::from_native_work(
+            work,
+        )?))?;
+        Ok(Some(owner.admission().0))
     }
 
     /// Borrows the task and fence from this context's original owner.
@@ -322,6 +344,20 @@ pub(super) fn contains_content_grant_with_work<T: Serialize + ?Sized>(
     prefix: &str,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<bool> {
+    if let Some(io) = work.as_deref_mut() {
+        io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
+    }
+    if !grants
+        .0
+        .range::<str, _>((
+            std::ops::Bound::Included(prefix),
+            std::ops::Bound::Unbounded,
+        ))
+        .next()
+        .is_some_and(|grant| grant.starts_with(prefix))
+    {
+        return Ok(false);
+    }
     let digest = crate::executor::json::canonical_json_digest(
         value,
         acyclic_stream::MAX_RECORD_BYTES as u64,

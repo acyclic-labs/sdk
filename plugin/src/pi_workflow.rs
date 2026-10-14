@@ -292,13 +292,8 @@ impl PiControlHost<'_> {
                 work,
             )
             .await?;
-            let journal_owner = self
-                .runtime
-                .runtime
-                .task_host()
-                .journal_owner(task, &fence, Some(&PreparationIo::from_native_work(work)?))
-                .await?
-                .into_native_shared(work)?;
+            let journal_owner =
+                context.journal_owner::<acyclic_stream::LocalStream>(&fence, work)?;
             journal_owner
                 .verify(
                     false,

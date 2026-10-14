@@ -267,13 +267,18 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .read(reference, reference.descriptor().byte_length(), io)?
             .await?;
         reference.descriptor().verify(&bytes, &mut work)?;
-        let value: Value = match io {
+        let mut value: Value = match io {
             #[cfg(feature = "filesystem")]
             Some(io) => io.decode_json(&bytes)?,
             _ => crate::contract::json_from_slice(&bytes)
                 .map_err(|error| Error::Invalid(error.to_string()))?,
         };
-        let canonical = canonical_payload(&value, reference.descriptor().byte_length(), io)?;
+        value.sort_all_objects();
+        let canonical = match io {
+            #[cfg(feature = "filesystem")]
+            Some(io) => io.encode(&value, reference.descriptor().byte_length(), false)?,
+            _ => canonical_payload(&value, reference.descriptor().byte_length(), io)?,
+        };
         if canonical.as_ref() != bytes.as_ref() {
             return Err(Error::Invalid(
                 "durable task payload is not canonical JSON".into(),

@@ -146,7 +146,14 @@ pub(super) fn load<T: Logged>(
     check(work, cxl)?;
     let value = log.get::<T>(root, id, None, Some(cxl))?;
     check(work, cxl)?;
-    Ok(value.map(|(value, allocation)| (value, allocation.expect("native record allocation"))))
+    value
+        .map(|(value, allocation)| {
+            Ok((
+                value,
+                allocation.ok_or(crate::NativeTreeMaterializationError::MissingCustody)?,
+            ))
+        })
+        .transpose()
 }
 
 pub(super) fn compare_native_lineage(

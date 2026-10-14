@@ -111,12 +111,12 @@ impl Snapshot {
             std::mem::size_of::<crate::source_authorization::ProjectSourceAuthorization>(),
         ];
         let mut maximum = 0;
-        let mut index = 0;
-        while index < sizes.len() {
-            if sizes[index] > maximum {
-                maximum = sizes[index];
+        let mut remaining = sizes.as_slice();
+        while let Some((size, rest)) = remaining.split_first() {
+            if *size > maximum {
+                maximum = *size;
             }
-            index += 1;
+            remaining = rest;
         }
         maximum as u64
     };
@@ -180,7 +180,7 @@ impl Snapshot {
         let mut previous = None;
         for (index, event) in self.events.iter().enumerate() {
             verifier.verify_event(event, work)?;
-            for prior in &self.events[..index] {
+            for prior in self.events.iter().take(index) {
                 if let Some(io) = work.as_deref_mut() {
                     io.codec_charge(crate::executor::json::JsonCodecCharge::Work {
                         bytes: 0,

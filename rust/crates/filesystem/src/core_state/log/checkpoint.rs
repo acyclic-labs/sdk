@@ -23,7 +23,10 @@ impl CoreLog {
                 *candidate == key
             });
             if let Some(index) = index {
-                residents.0[index] = record;
+                *residents
+                    .0
+                    .get_mut(index)
+                    .ok_or(LocalCoreStateStoreError::Integrity)? = record;
             } else {
                 residents.0.push(record);
             }
@@ -87,9 +90,16 @@ impl CoreLog {
                 encoded: true,
             };
             let residents = self.residents();
-            let value = residents
-                .position(*key, work)?
-                .and_then(|index| residents.0[index].value.as_ref());
+            let value = if let Some(index) = residents.position(*key, work)? {
+                residents
+                    .0
+                    .get(index)
+                    .ok_or(LocalCoreStateStoreError::Integrity)?
+                    .value
+                    .as_ref()
+            } else {
+                None
+            };
             RecordValue::write_bare(value, &mut writer)?;
             crash_point("record written", self.flushed);
             if let Some(work) = work {

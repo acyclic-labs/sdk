@@ -11,8 +11,6 @@ async fn verify_binding<P: StreamProvider + 'static, A, O>(
     guard: &Arc<crate::runtime::TaskContext>,
     work: &NativeMaterializationWork,
 ) -> Result<()> {
-    let metadata = guard.native_work()?;
-    guard.verify_volume_owner(owner, metadata).await?;
     guard.require_volume(owner, binding.volume, binding.writable, work)?;
     let io = PreparationIo::from_native_work(work)?;
     for operation in [VolumeOperation::Read]

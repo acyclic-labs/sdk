@@ -2,9 +2,7 @@
 use super::*;
 use crate::conversation::FileRef;
 use acyclic_fs::kernel::{KernelAccounting, KernelOwnedAllocation, allocation::AllocationLedger};
-use acyclic_fs::{
-    CancellationToken, OperationReceipt, WorkBudget, WorkCounters, WorkspaceError,
-};
+use acyclic_fs::{CancellationToken, OperationReceipt, WorkBudget, WorkCounters, WorkspaceError};
 use std::sync::Mutex;
 mod codec;
 mod history;
@@ -326,13 +324,26 @@ impl PreparationIo {
     }
     pub(crate) fn reserve_decode(&self, bytes: u64) -> Result<DecodeReservation<'_>> {
         self.retain_owned(bytes)?;
-        Ok(DecodeReservation { io: self, bytes })
+        self.guard_owned(bytes)
     }
     pub(crate) fn guard_owned(&self, bytes: u64) -> Result<DecodeReservation<'_>> {
         if bytes > self.owned_bytes()? {
             return Err(self.invalid("owned buffer exceeds retained quota"));
         }
-        Ok(DecodeReservation { io: self, bytes })
+        let reservation = DecodeReservation {
+            io: self,
+            bytes,
+            #[cfg(not(target_arch = "wasm32"))]
+            custody: None,
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut reservation = reservation;
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.original_native_work().is_some() {
+            reservation.custody = Some(self.take_native_custody(bytes)?);
+            reservation.bytes = 0;
+        }
+        Ok(reservation)
     }
     pub(crate) fn guard_bytes(
         &self,
@@ -421,6 +432,21 @@ impl PreparationIo {
         value: &T,
         prefix: &str,
     ) -> Result<bool> {
+        self.charged(WorkCounters {
+            items_examined: 1,
+            ..Default::default()
+        })?;
+        if !grants
+            .0
+            .range::<str, _>((
+                std::ops::Bound::Included(prefix),
+                std::ops::Bound::Unbounded,
+            ))
+            .next()
+            .is_some_and(|grant| grant.starts_with(prefix))
+        {
+            return Ok(false);
+        }
         let digest = crate::executor::preparation_digest(value, Some(self))?;
         self.charged(WorkCounters {
             bytes_encoded: if self.original_native_work().is_some() {

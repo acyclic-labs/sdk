@@ -55,7 +55,10 @@ impl Serialize for MetadataValue<'_> {
                             map.serialize_entry(name, &MetadataValue(value, MetadataRole::Reply))?;
                         }
                         (MetadataRole::Results, "commands") => {
-                            map.serialize_entry(name, &MetadataValue(value, MetadataRole::Replies))?;
+                            map.serialize_entry(
+                                name,
+                                &MetadataValue(value, MetadataRole::Replies),
+                            )?;
                         }
                         (MetadataRole::Reply, "value") => map.serialize_entry(name, &())?,
                         _ => map.serialize_entry(name, value)?,
@@ -72,7 +75,7 @@ impl Serialize for MetadataValue<'_> {
 pub(super) const NATIVE_METADATA_MAXIMUM: u64 = crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) fn native_metadata_quota<T>(
+pub(crate) fn native_metadata_quota<T>(
     bytes: u64,
     lexical_items: u64,
 ) -> acyclic_harness::Result<u64> {
