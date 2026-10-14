@@ -36,8 +36,6 @@ mod objects;
 pub use objects::{AsyncObjectStore, PublicationScope};
 mod read_batch;
 pub use read_batch::read_many_sequential;
-#[cfg(feature = "memory")]
-pub(crate) use read_batch::merge_completed_object_read;
 pub(crate) use read_batch::object_error;
 
 #[cfg(all(test, feature = "memory"))]

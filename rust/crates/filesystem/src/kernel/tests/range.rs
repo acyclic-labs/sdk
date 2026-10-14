@@ -539,7 +539,7 @@ fn range_terminal_and_lower_layer_error_translation_is_total()
         maximum_spans: 1, limits: DecodeLimits::default(), budget: WorkBudget::UNBOUNDED,
     };
     let machine = RangeMachine::new(request, TraversalMode::Plan, &mut accounting)?;
-    let incomplete = machine.finish(&mut accounting).err()
+    let incomplete = machine.finish_plan(&mut accounting).err()
         .ok_or("incomplete range machine produced a plan")?;
     assert!(matches!(range_error(incomplete), ExtentReadError::IncompleteCoverage));
 

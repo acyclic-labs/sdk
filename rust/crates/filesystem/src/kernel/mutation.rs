@@ -353,7 +353,7 @@ impl MutationPlan {
         let mut accounting = super::allocation::KernelAccounting::standalone(budget, &cancellation);
         Self::compile_with_accounting(operations, limits, &mut accounting)
             .map(|(plan, _)| plan)
-            .map_err(|error| OperationFailure::new(plan_error(error), accounting.spent()))
+            .map_err(|error| OperationFailure::new(plan_error(&error), accounting.spent()))
     }
 
     pub(crate) fn compile_with_accounting(
@@ -561,10 +561,10 @@ fn path_use_count(operations: &[Mutation]) -> Option<usize> {
     })
 }
 
-fn plan_error(error: crate::FsError) -> MutationPlanError {
+fn plan_error(error: &crate::FsError) -> MutationPlanError {
     match error {
-        crate::FsError::Mutation(super::GenerationMutationError::Plan(error)) => error,
-        crate::FsError::Work(error) => error.into(),
+        crate::FsError::Mutation(super::GenerationMutationError::Plan(error)) => *error,
+        crate::FsError::Work(error) => (*error).into(),
         crate::FsError::PendingMutationAllocationFailed => MutationPlanError::AllocationFailed,
         _ => unreachable!("standalone planner only returns plan or work errors"),
     }

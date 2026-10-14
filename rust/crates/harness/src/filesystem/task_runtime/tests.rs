@@ -333,7 +333,7 @@ impl Fixture {
         )
         .map_err(|(cause, work)| Error::NativeConstruction {
             cause,
-            work: Box::new(work),
+            work: work,
         })?;
         let metadata_io = PreparationIo::from_native_work(&metadata_work)?;
         let (_, _, tasks, machines) = crate::durable_host::tests::created_fixture::test_registries(

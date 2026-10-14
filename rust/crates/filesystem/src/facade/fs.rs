@@ -42,15 +42,15 @@ impl<A, O> Fs<A, O> {
     pub fn capabilities(&self) -> EmbeddedCapabilities {
         self.inner.capabilities
     }
-    pub(crate) fn workspace_name_identity<W: FsWork>(
+    pub(crate) fn workspace_name_identity(
         &self,
         name: impl AsRef<str>,
-        budget: W,
+        budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> W::Output<(crate::WorkspaceName, crate::WorkspaceId), WorkspaceError> {
-        let mut accounting = budget.accounting(cancellation);
+    ) -> MeasuredResult<OperationReceipt<(crate::WorkspaceName, crate::WorkspaceId)>, WorkspaceError> {
+        let mut accounting = KernelAccounting::standalone(budget, cancellation);
         let result = self.workspace_name(name.as_ref(), &mut accounting, cancellation);
-        budget.finish(result, &accounting)
+        measured(result, &accounting)
     }
 
     pub(crate) fn workspace_name(
@@ -61,11 +61,11 @@ impl<A, O> Fs<A, O> {
     ) -> Result<(crate::WorkspaceName, crate::WorkspaceId), WorkspaceError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {
-            let name = crate::WorkspaceName::new(name, original, cancellation)?;
+            let name = crate::WorkspaceName::new(name, &original, cancellation)?;
             let id = self.workspace_id_for_name(&name, accounting, cancellation)?;
             return Ok((name, id));
         }
-        let named = crate::WorkspaceName::new(name, accounting.remaining()?, cancellation);
+        let named = crate::WorkspaceName::new(name, &accounting.remaining()?, cancellation);
         let spent = match &named {
             Ok(receipt) => receipt.work,
             Err(failure) => *failure.work,
@@ -88,14 +88,14 @@ impl<A, O> Fs<A, O> {
             return crate::WorkspaceId::derive(
                 self.inner.workspace_namespace,
                 destination,
-                original,
+                &original,
                 cancellation,
             );
         }
         let derived = crate::WorkspaceId::derive(
             self.inner.workspace_namespace,
             destination,
-            accounting.remaining()?,
+            &accounting.remaining()?,
             cancellation,
         );
         let work = match &derived {

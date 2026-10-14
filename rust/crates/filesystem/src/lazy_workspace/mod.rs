@@ -48,7 +48,7 @@ pub struct LazyWorkspace<A, O, D, S> {
     source: Arc<D>,
     store: S,
     #[cfg(not(target_arch = "wasm32"))]
-    allocation: Option<crate::NativeAllocation>,
+    _allocation: Option<crate::NativeAllocation>,
 }
 
 impl<A, O, D, S: Clone> LazyWorkspace<A, O, D, S> {
@@ -67,7 +67,7 @@ impl<A, O, D, S: Clone> LazyWorkspace<A, O, D, S> {
             workspace: self.workspace.clone(),
             source: Arc::clone(&self.source),
             store: self.store.clone(),
-            allocation,
+            _allocation: allocation,
         }))
     }
 }
@@ -95,6 +95,7 @@ mod publication_codec;
 mod qualification;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use publication_codec::publication_evidence;
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 mod selected_apply;
 mod selected_commit;
 mod selected_plan;

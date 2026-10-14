@@ -61,10 +61,12 @@ mod runtime_meter;
 ))]
 native_modules! {
     preflight;
-    directory_preparation;
     pub publication;
     planning;
 }
+
+#[cfg(all(feature = "local", feature = "native-mount", not(target_arch = "wasm32")))]
+mod directory_preparation;
 
 #[cfg(test)]
 mod tests;

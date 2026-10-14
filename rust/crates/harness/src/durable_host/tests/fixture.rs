@@ -217,7 +217,7 @@ where
         )
         .map_err(|(cause, work)| Error::NativeConstruction {
             cause,
-            work: Box::new(work),
+            work: work,
         })?;
         #[cfg(not(target_arch = "wasm32"))]
         let metadata_io = Some(crate::filesystem::PreparationIo::from_native_work(

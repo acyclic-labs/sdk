@@ -834,7 +834,7 @@ impl WindowsDirectorySink {
                 }
                 HostChange::File(_) => {}
                 HostChange::Everything | HostChange::Unconfirmed => {
-                    self.invalidate_measured(work)?
+                    self.invalidate_measured(work)?;
                 }
             }
         }
@@ -873,7 +873,7 @@ impl WindowsDirectorySink {
                 }
                 HostChangeWide::File(_) => {}
                 HostChangeWide::Everything | HostChangeWide::Unconfirmed => {
-                    self.invalidate_measured(work)?
+                    self.invalidate_measured(work)?;
                 }
             }
         }
@@ -1048,13 +1048,14 @@ fn namespace_starts_with_host_measured<W: crate::demand::SourceDemandReadWork>(
             return Ok(false);
         };
         if name.encoding() == crate::kernel::NameEncoding::WindowsUtf16Le {
-            let mut bytes = name.as_bytes().chunks_exact(2);
+            let (units, _) = name.as_bytes().as_chunks::<2>();
+            let mut bytes = units.iter();
             for unit in host.encode_wide() {
                 work.started_io(WorkCounters {
                     items_examined: 1,
                     ..WorkCounters::default()
                 })?;
-                if bytes.next() != Some(unit.to_le_bytes().as_slice()) {
+                if bytes.next() != Some(&unit.to_le_bytes()) {
                     return Ok(false);
                 }
             }
@@ -1505,7 +1506,7 @@ impl NativeWatch {
             Self::startup_control(work)?;
             Arc::new(NativeEventDelivery {
                 context,
-                sender: sender.clone(),
+                sender,
                 shared: Arc::clone(&shared),
                 queued: Arc::clone(&queued),
                 fenced: Arc::clone(&fenced),
@@ -1552,7 +1553,7 @@ impl NativeWatch {
         };
         let mut watched_directories = Vec::new();
         if use_adapter {
-            work.claim_allocation(0, u64::from((0) != 0), crate::WorkCounters::UNCHARGED)
+            work.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)
                 .map_err(demand_watch_error)?;
             watched_directories.try_reserve_exact(1).map_err(|error| {
                 NativeWatchError::NativeWork(
@@ -1694,7 +1695,7 @@ impl NativeWatch {
         if let NativeWatchDriver::StartupFailure(cause) = &watch.watcher {
             return Err(NativeWatchError::SourceStartupFailed {
                 cause: Arc::clone(cause),
-                watch,
+                watch: Box::new(watch),
             });
         }
         let checked = if let Some(original) = original {
@@ -1705,7 +1706,7 @@ impl NativeWatch {
         };
         match checked {
             Ok(()) => Ok(watch),
-            Err(cause) => Err(NativeWatchError::StartupFailed { cause, watch }),
+            Err(cause) => Err(NativeWatchError::StartupFailed { cause, watch: Box::new(watch) }),
         }
     }
 
@@ -1928,23 +1929,23 @@ impl NativeWatch {
             let result = (|| {
                 let mut held = self.held_root.open_dir_held(&[], work)?;
                 let mut component_start = 0;
-                for index in 0..path.len() {
+                for (index, &unit) in path.iter().enumerate() {
                     work.started_io(WorkCounters {
                         items_examined: 1,
                         ..WorkCounters::default()
                     })?;
-                    if path[index] != u16::from(b'\\') && index + 1 != path.len() {
+                    if unit != u16::from(b'\\') && index + 1 != path.len() {
                         continue;
                     }
-                    let length = if path[index] == u16::from(b'\\') {
+                    let length = if unit == u16::from(b'\\') {
                         index
                     } else {
                         index + 1
                     };
-                    let prefix = &path[..length];
+                    let prefix = path.get(..length).ok_or(DemandError::InvalidRequest)?;
                     let (next, identity) = match crate::native_host::open_windows_directory(
                         &held,
-                        &path[component_start..length],
+                        path.get(component_start..length).ok_or(DemandError::InvalidRequest)?,
                         false,
                         work,
                     ) {
@@ -1980,8 +1981,8 @@ impl NativeWatch {
                         }
                     }
                     if let Some(at) = found {
-                        if self.windows_directories[at].identity == identity
-                            && self.windows_directories[at].watcher.is_exact()
+                        let observed = self.windows_directories.get(at).ok_or(DemandError::InvalidRequest)?;
+                        if observed.identity == identity && observed.watcher.is_exact()
                         {
                             continue;
                         }
@@ -1992,8 +1993,8 @@ impl NativeWatch {
                             ..WorkCounters::default()
                         };
                         work.admit(copied)?;
-                        self.windows_directories[at].watcher.stop_with_work(work)?;
-                        if !self.windows_directories[at].watcher.is_stopped() {
+                        self.windows_directories.get_mut(at).ok_or(DemandError::InvalidRequest)?.watcher.stop_with_work(work)?;
+                        if !self.windows_directories.get(at).ok_or(DemandError::InvalidRequest)?.watcher.is_stopped() {
                             return Err(DemandError::WorkerUnavailable);
                         }
                         work.record(copied)?;
@@ -2232,7 +2233,8 @@ impl NativeWatch {
                                     ..WorkCounters::UNCHARGED
                                 })
                                 .map_err(demand_watch_error)?;
-                                let mut registered = self.windows_directories[at].path.0.iter();
+                                let observed = self.windows_directories.get(at).ok_or(NativeWatchError::WorkerUnavailable)?;
+                                let mut registered = observed.path.0.iter();
                                 let matches = relative
                                     .as_os_str()
                                     .encode_wide()
@@ -2244,11 +2246,10 @@ impl NativeWatch {
                                     at += 1;
                                     continue;
                                 }
-                                self.windows_directories[at]
-                                    .watcher
-                                    .stop_with_work(work)
+                                self.windows_directories.get_mut(at).ok_or(NativeWatchError::WorkerUnavailable)?
+                                    .watcher.stop_with_work(work)
                                     .map_err(demand_watch_error)?;
-                                if !self.windows_directories[at].watcher.is_stopped() {
+                                if !self.windows_directories.get(at).ok_or(NativeWatchError::WorkerUnavailable)?.watcher.is_stopped() {
                                     return Err(NativeWatchError::WorkerUnavailable);
                                 }
                                 work.started_io(WorkCounters {
@@ -3692,7 +3693,7 @@ pub enum NativeWatchError {
         #[source]
         cause: Arc<crate::source_watch::SourceWatchStartupFailure>,
         /// Same actual watcher, retained for explicitly bounded shutdown.
-        watch: NativeWatch,
+        watch: Box<NativeWatch>,
     },
     /// Original native preparation admission or allocation cause.
     #[error(transparent)]
@@ -3704,7 +3705,7 @@ pub enum NativeWatchError {
         #[source]
         cause: crate::NativeTreeMaterializationError,
         /// Same actual watcher, retained for explicitly bounded shutdown.
-        watch: NativeWatch,
+        watch: Box<NativeWatch>,
     },
     /// Original source reference is stale.
     #[error("source reference is stale")]

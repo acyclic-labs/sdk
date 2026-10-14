@@ -67,7 +67,7 @@ pub(crate) use generation_mutation::{
     apply_generation_mutations_retaining_with_accounting, clone_generation_root_with_accounting,
 };
 pub(crate) use list::{
-    list_tree_entries_async_with_accounting, list_tree_entries_at_or_after_async_with_accounting,
+    list_tree_entries_async_with_accounting,
 };
 pub(crate) use merge::{
     MergeGenerationBorrowedRequest, merge_generation_with_accounting,
@@ -173,10 +173,6 @@ pub use merge::{
     MergeConflict, MergeConflictResolution, MergeConflictSide, MergeGenerationError,
     MergeGenerationOutcome, MergeGenerationRequest, MergeGenerationResult, merge_generation_async,
 };
-#[cfg(test)]
-pub(crate) use merge::{
-    file_table_mutation, merge_directory_record_async, resolve_three, tree_mutation,
-};
 pub use metadata::{
     FileMetadata, MetadataField, decode_file_metadata, encode_file_metadata, file_metadata_id,
 };
@@ -196,8 +192,6 @@ pub use probe::{
     AuthenticatedGenerationProbe, AuthenticatedProbeError, ProbeLimits, capture_content_range_bytes,
 };
 pub(crate) use publication::contextual_publication_fingerprint;
-#[cfg(test)]
-pub(crate) use publication::encode_publication_payload;
 pub use publication::{
     PublicationError, PublicationFailure, PublicationIntent, PublicationReceipt, PublishGenerationRequest,
     PublishedGeneration, decode_published_generation, publish_generation,

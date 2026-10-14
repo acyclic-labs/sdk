@@ -27,7 +27,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     pub(crate) fn for_checkout_candidate<W: crate::facade::FsWork>(
         workspace: &Workspace<A, O>,
         checkout: Checkout<A, O>,
-        work: W,
+        work: &W,
         cancellation: &CancellationToken,
     ) -> W::Output<Self, WorkspaceError> {
         let accounting = work.accounting(cancellation);

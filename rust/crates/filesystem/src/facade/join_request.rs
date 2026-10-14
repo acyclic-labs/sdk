@@ -131,8 +131,9 @@ pub(super) fn hash_join_resolutions(
                 .ok_or(WorkError::Overflow)?,
         };
         let resolution_bytes = match resolution {
-            MergeConflictResolution::Select(_) => 2,
-            MergeConflictResolution::File(None) | MergeConflictResolution::Binding(None) => 2,
+            MergeConflictResolution::Select(_)
+            | MergeConflictResolution::File(None)
+            | MergeConflictResolution::Binding(None) => 2,
             MergeConflictResolution::Binding(Some(_)) => 18,
             MergeConflictResolution::File(Some(record)) => {
                 let payload_bytes = match record.payload {
