@@ -114,7 +114,7 @@ where
     ) -> Result<(), MountSourceError> {
         let (path, _allocation) = self.path(mounted, work)?;
         let resolution = self
-            .resolve(mounted, &path, ViewGate::callback_owner(), work)
+            .resolve(mounted, &path, ViewGate::callback_owner()?, work)
             .await?;
         let (lookup, _allocation) = match resolution {
             Resolution::Authored(_) => return Ok(()),

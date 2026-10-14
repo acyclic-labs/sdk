@@ -211,7 +211,6 @@ impl PreparedModelRequest {
             }
             let request_hold;
             let bytes_hold;
-            let request = request;
             // Bound JSON depth before the recursive capacity inventory.
             let bytes = io.encode(&request, io.remaining()?.bytes_encoded, true)?;
             bytes_hold = io.guard_bytes(&bytes)?;

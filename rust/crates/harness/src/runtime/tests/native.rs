@@ -52,14 +52,14 @@ fn native_scope_keeps_independent_input_custody_and_scalar_denial_codes() -> Res
         NativeMaterializationWork::new(budget, &cancellation).map_err(|(cause, work)| {
             Error::NativeConstruction {
                 cause,
-                work: Box::new(work),
+                work,
             }
         })?;
     let construction =
         NativeMaterializationWork::new(budget, &cancellation).map_err(|(cause, work)| {
             Error::NativeConstruction {
                 cause,
-                work: Box::new(work),
+                work,
             }
         })?;
     let (scope, custody) = RuntimeScope::new_with_native_work(
@@ -122,7 +122,7 @@ fn native_scope_clone_and_narrow_preserve_readonly_grants_and_original_bounds() 
     )
     .map_err(|(cause, work)| Error::NativeConstruction {
         cause,
-        work: Box::new(work),
+        work,
     })?;
     let (root, _root_custody) = RuntimeScope::new_with_native_work(
         Capabilities::copy(["read"], &work)?,
@@ -261,7 +261,7 @@ fn native_policy_identity_denies_cancelled_and_exhausted_copy_before_strings() -
     let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).map_err(
         |(cause, work)| Error::NativeConstruction {
             cause,
-            work: Box::new(work),
+            work,
         },
     )?;
     assert!(matches!(

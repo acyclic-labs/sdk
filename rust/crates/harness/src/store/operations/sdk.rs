@@ -226,7 +226,9 @@ pub(crate) async fn tail_optional_with_work<P: StreamProvider>(
             crate::distributed::native_call_result(original, tail)?.map(|output| *output.value()),
         );
     }
-    let result = if let Some(result) = result { result } else {
+    let result = if let Some(result) = result {
+        result
+    } else {
         if let Some(observer) = work.as_deref_mut() {
             observer.begin_call()?;
         }
@@ -249,7 +251,7 @@ pub(crate) async fn one_record<P: StreamProvider>(
     let mut quota = CodecQuota::new(work, 0)?;
     let mut records = match read_records(client, path, from, 1, quota.work()).await? {
         Ok(records) => records,
-        Err(error) if error == StreamError::NotFound => {
+        Err(StreamError::NotFound) => {
             return Ok(None);
         }
         Err(error) => {

@@ -417,7 +417,6 @@ where
         path,
         host_path,
         authenticated_metadata,
-        cancellation,
         receipt,
         before_effect,
     )

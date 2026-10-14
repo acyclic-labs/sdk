@@ -34,7 +34,10 @@ pub(crate) async fn acquire(
         .check()
         .map_err(|error| OperationFailure::new(error.to_string(), WorkCounters::default()))?;
     let work = NativeMaterializationWork::new(budget, cancellation)
-        .map_err(|(error, work)| OperationFailure::new(error.to_string(), *work))?;
+        .map_err(|(error, work)| OperationFailure {
+            error: error.to_string(),
+            work,
+        })?;
     let result = async {
         let read = WorkCounters {
             backend_read_operations: 1,

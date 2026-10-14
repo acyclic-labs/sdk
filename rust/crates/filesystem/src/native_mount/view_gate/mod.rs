@@ -124,16 +124,16 @@ impl ViewGate {
             .any(|slot| matches!(slot, Some(ReadSlot::Owner { owner: current, readers }) if *current == ViewReaderId::Callback(owner) && *readers != 0))
     }
 
-    pub(super) fn callback_owner() -> CallbackOwner {
+    pub(super) fn callback_owner() -> Result<CallbackOwner, MountSourceError> {
         CALLBACK_OWNER.with(|owner| {
             let mut id = owner.get();
             if id == 0 {
                 id = NEXT_CALLBACK_OWNER
                     .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-                    .expect("callback identity addressability exhausted");
+                    .map_err(|_| MountSourceError::Work(crate::WorkError::Overflow))?;
                 owner.set(id);
             }
-            CallbackOwner(id)
+            Ok(CallbackOwner(id))
         })
     }
 

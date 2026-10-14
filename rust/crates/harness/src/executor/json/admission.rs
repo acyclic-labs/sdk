@@ -43,23 +43,23 @@ impl Branches {
             for counts in child.gated {
                 child.always.add(counts)?;
             }
-            for index in 0..3 {
+            for (index, counts) in self.gated.iter_mut().enumerate() {
                 if gate & (1 << index) != 0 {
-                    self.gated[index].add(child.always)?;
+                    counts.add(child.always)?;
                 }
             }
         } else {
             self.always.add(child.always)?;
-            for index in 0..3 {
-                self.gated[index].add(child.gated[index])?;
+            for (counts, child) in self.gated.iter_mut().zip(child.gated) {
+                counts.add(child)?;
             }
         }
         Ok(())
     }
     fn resolve(&mut self, mask: u8) -> Result<()> {
-        for index in 0..3 {
+        for (index, counts) in self.gated.iter().enumerate() {
             if mask & (1 << index) != 0 {
-                self.always.add(self.gated[index])?;
+                self.always.add(*counts)?;
             }
         }
         self.gated = [Counts::default(); 3];
