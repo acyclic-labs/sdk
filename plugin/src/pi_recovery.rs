@@ -482,11 +482,10 @@ where
     A: acyclic_fs::AsyncAuthorityStore + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
 {
-    binding.validate_with_native_work(
+    binding.validate(
         None,
-        binding.project_volumes.keys().map(String::as_str),
+        binding.project_volumes.keys().map(|key| key.as_str()),
         true,
-        work,
     )?;
     let mut admission = runtime
         .task_host()
@@ -652,7 +651,7 @@ fn decode_recovery_value<T: serde::de::DeserializeOwned>(
                     .resize(checked_quota(retained_owned, diagnostics)?)
                     .map_err(acyclic_harness::Error::from)
             } else {
-                super::pi_root_provider::native_buffer_codec_charge(work, &mut custody, charge)
+                super::pi_root_provider::native_buffer_codec_charge(&mut custody, charge)
             }
         },
     );

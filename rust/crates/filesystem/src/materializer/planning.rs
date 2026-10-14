@@ -56,7 +56,7 @@ pub(super) async fn generation_plan<A: crate::AsyncAuthorityStore, O: crate::Asy
         path.remove(0);
         work.spent(shifted)?;
         drop(change);
-        changed_allocation.release(retired as u64)?;
+        changed_allocation.release(retired)?;
         let top = path.split('/').next().unwrap_or_default();
         let mut excluded = false;
         for name in request.excluded_names {

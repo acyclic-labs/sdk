@@ -171,7 +171,7 @@ impl<'a> AuthorityWork<'a> {
             .and_then(|n| n.checked_add(suffix.len()))
             .and_then(|n| n.checked_add(if generation.is_some() { 64 } else { 0 }))
             .filter(|n| *n <= acyclic_stream::MAX_PATH_BYTES)
-            .ok_or_else(|| AuthorityStoreError::RejectedStatic("fork path is too long"))?;
+            .ok_or(AuthorityStoreError::RejectedStatic("fork path is too long"))?;
         let writes = codec_work(length as u64, (PREFIX.len() + suffix.len()) as u64, 0);
         self.admit(writes)?;
         let mut text = [0_u8; acyclic_stream::MAX_PATH_BYTES];

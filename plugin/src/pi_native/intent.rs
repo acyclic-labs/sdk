@@ -1,11 +1,11 @@
 use super::*;
 use acyclic_harness::filesystem::PreparationIo;
+use acyclic_harness::store::HistoryIo;
 
-/// Seeded immutable input consumed only through the actual created child's `TaskContext`.
+/// Immutable launch content read by its admitted child.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiNativeLaunchIntent {
-    /// Original caller-selected routing label, not Task/Agent/session authority.
     pub(crate) agent_alias: String,
     pub(crate) child_session_id: String,
     pub(crate) source: PiNativeSourceCut,
@@ -38,7 +38,7 @@ impl PiNativeLaunchIntent {
             .file_bytes
             .min(crate::MAXIMUM_ADAPTER_STATE_BYTES);
         let intent = crate::pi_root_provider::guarded_pi_decode::<Self>(
-            bytes.as_ref(),
+            &bytes,
             maximum,
             std::mem::size_of::<Self>() as u64,
             acyclic_harness::wire::ErrorCode::Invalid,
@@ -62,10 +62,11 @@ impl PiNativeLaunchIntent {
                 "Pi original child alias must match [A-Za-z0-9_.-]{1,128}",
             ));
         }
+        let path = Path::new(&self.session_path);
         if self.maximum_bytes > crate::MAXIMUM_ADAPTER_STATE_BYTES
             || self.session_path.is_empty()
-            || Path::new(&self.session_path).is_absolute()
-            || Path::new(&self.session_path)
+            || path.is_absolute()
+            || path
                 .components()
                 .any(|part| !matches!(part, Component::Normal(_)))
         {
@@ -83,7 +84,6 @@ impl PiNativeLaunchIntent {
         )
     }
 
-    /// The approved CLI locator and staged SDK bytes must name the same leaf.
     pub(crate) fn request_with_work(
         &self,
         runtime: &PiNativeHostRuntime,
@@ -112,7 +112,6 @@ impl PiNativeLaunchIntent {
             .request_with_work(runtime, binding, manifest, work)
     }
 
-    /// Publishes on the caller's original work and retains the actual `FileRef` ownership through the prepared generation's final consumer.
     pub(crate) async fn publish_session(
         &self,
         context: &TaskContext,
@@ -140,7 +139,6 @@ impl PiNativeLaunchIntent {
     }
 }
 
-/// Child task content is bound through created-resource access, not a root signed scope pre-granted to guessed future child volume names.
 pub(crate) async fn stage_command(
     context: &TaskContext,
     command: OperationId,
@@ -161,9 +159,8 @@ pub(crate) async fn stage_command(
         .limits()
         .file_bytes
         .min(crate::MAXIMUM_ADAPTER_STATE_BYTES);
-    // Declared first so every staged payload drops before its combined allocation.
-    let mut custody = work.claim(0, 0, acyclic_fs::WorkCounters::default())?;
-    let mut request = stage_context_artifact(
+    let mut io = acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
+    let (request, custody) = stage_context_artifact(
         context,
         command,
         "request",
@@ -173,8 +170,8 @@ pub(crate) async fn stage_command(
         work,
     )
     .await?;
-    custody.absorb(&mut request.1)?;
-    let mut schema = stage_context_artifact(
+    io.absorb_native_custody(custody)?;
+    let (schema, custody) = stage_context_artifact(
         context,
         command,
         "schema",
@@ -184,19 +181,15 @@ pub(crate) async fn stage_command(
         work,
     )
     .await?;
-    custody.absorb(&mut schema.1)?;
-    let mut provider = pi_native_string(PI_NATIVE_PROVIDER, work)?;
-    custody.absorb(&mut provider.1)?;
-    let mut effect_kind = pi_native_string(NATIVE_PROCESS_EFFECT_KIND, work)?;
-    custody.absorb(&mut effect_kind.1)?;
+    io.absorb_native_custody(custody)?;
     let plan = TaskEffectPlan {
-        provider: provider.0,
+        provider: io.clone_text(PI_NATIVE_PROVIDER)?,
         guarantee: EffectGuarantee::AtMostOnce,
-        effect_kind: effect_kind.0,
-        request: request.0,
-        result_schema: schema.0,
+        effect_kind: io.clone_text(NATIVE_PROCESS_EFFECT_KIND)?,
+        request,
+        result_schema: schema,
     };
-    let mut payload = stage_context_artifact(
+    let (payload, custody) = stage_context_artifact(
         context,
         command,
         "plan",
@@ -206,18 +199,13 @@ pub(crate) async fn stage_command(
         work,
     )
     .await?;
-    custody.absorb(&mut payload.1)?;
-    let mut kind = pi_native_string(EFFECT_TASK_COMMAND_KIND, work)?;
-    custody.absorb(&mut kind.1)?;
-    Ok((
-        WorkflowCommand {
-            operation_id: command,
-            kind: kind.0,
-            payload: payload.0,
-        },
-        plan,
-        custody,
-    ))
+    io.absorb_native_custody(custody)?;
+    let command = WorkflowCommand {
+        operation_id: command,
+        kind: io.clone_text(EFFECT_TASK_COMMAND_KIND)?,
+        payload,
+    };
+    Ok((command, plan, io.into_custody()?))
 }
 
 async fn stage_context_artifact(
@@ -231,24 +219,11 @@ async fn stage_context_artifact(
 ) -> Result<(FileRef, acyclic_fs::NativeAllocation)> {
     let encoded = crate::pi_root_provider::guarded_pi_bytes(value, maximum, work)?;
     let operation = native_artifact_operation(command, role, work)?;
-    let mut buffer = [0; 96];
-    let mut writer = std::io::Cursor::new(buffer.as_mut_slice());
-    std::io::Write::write_fmt(&mut writer, format_args!("pi-native/{command}/{role}.json"))
-        .map_err(|_| invalid("Pi native artifact locator exceeds its fixed original bound"))?;
-    let length = usize::try_from(writer.position()).map_err(|_| {
-        acyclic_fs::NativeTreeMaterializationError::from(acyclic_fs::WorkError::Overflow)
-    })?;
-    let path = std::str::from_utf8(
-        buffer
-            .get(..length)
-            .ok_or(acyclic_fs::NativeTreeMaterializationError::InvalidLayout)?,
-    )
-    .map_err(|_| invalid("Pi native artifact locator is not UTF-8"))?;
+    let path = work.display(&format_args!("pi-native/{command}/{role}.json"))?;
     let io = PreparationIo::from_native_work(work)?;
     let (file, retained) = context
-        .stage_file_once(operation, path, &encoded.0, media_type, role, Some(&io))
+        .stage_file_once(operation, &path.0, &encoded.0, media_type, role, Some(&io))
         .await?;
-    drop(encoded);
     Ok((file, io.take_native_custody(retained)?))
 }
 
@@ -257,32 +232,12 @@ fn native_artifact_operation(
     role: &str,
     work: &NativeMaterializationWork,
 ) -> Result<OperationId> {
-    let digest = native_digest(&("acyclic.pi/native-content/v1", command, role), 1024, work)?;
+    let digest = digest_pi_value(&("acyclic.pi/native-content/v1", command, role), 1024, work)?;
     let mut operation = [0; 16];
-    operation.copy_from_slice(&digest[..16]);
+    operation.copy_from_slice(&digest.as_bytes()[..16]);
     Ok(OperationId::from_bytes(operation))
 }
 
-pub(super) fn native_digest(
-    value: &impl Serialize,
-    maximum: u64,
-    work: &NativeMaterializationWork,
-) -> Result<[u8; 32]> {
-    let encoded = crate::pi_root_provider::canonical_pi_value(value, maximum, work)?;
-    work.charge(WorkCounters {
-        bytes_hashed: encoded.0.len() as u64,
-        ..WorkCounters::default()
-    })?;
-    let digest = *blake3::hash(&encoded.0).as_bytes();
-    drop(encoded);
-    Ok(digest)
-}
-
-/// The production policy is the original admitted native-effect capability, restricted to the immutable protected host and this exact request.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "original task, immutable request and existing interaction owner"
-)]
 pub(crate) async fn approve_command(
     protected: &crate::pi_owner::PiOwnerConfig,
     owner: &TaskJournalOwner<acyclic_stream::LocalStream>,
@@ -298,12 +253,8 @@ pub(crate) async fn approve_command(
     >,
     work: &NativeMaterializationWork,
 ) -> Result<InteractionId> {
-    owner
-        .verify(
-            false,
-            &mut Some(&mut &PreparationIo::from_native_work(work)?),
-        )
-        .await?;
+    let io = PreparationIo::from_native_work(work)?;
+    owner.verify(false, &mut Some(&mut &io)).await?;
     let native_capability = "effect:provider:acyclic.pi.native";
     if context.durable_task_id() != Some(owner.task_id())
         || binding.task_id != owner.task_id()
@@ -328,68 +279,24 @@ pub(crate) async fn approve_command(
         ));
     }
     let request = invocation.request_with_work(runtime, binding, manifest, work)?;
-    let digest = request.0.approval_digest(
-        owner.task_id(),
-        command,
-        Some(&PreparationIo::from_native_work(work)?),
-    )?;
-    let approval = task_interaction_id(
-        owner.task_id(),
-        command,
-        &mut Some(&mut &PreparationIo::from_native_work(work)?),
-    )?;
-    let title = native_fixed_text(format_args!(
+    let digest = request
+        .0
+        .approval_digest(owner.task_id(), command, Some(&io))?;
+    let approval = task_interaction_id(owner.task_id(), command, &mut Some(&mut &io))?;
+    if "Run pinned Pi child ".len() + binding.native_session_id.len() > 256 {
+        return Err(acyclic_fs::NativeTreeMaterializationError::InvalidLayout.into());
+    }
+    let title = work.display(&format_args!(
         "Run pinned Pi child {}",
         binding.native_session_id
     ))?;
-    let title = pi_native_string(
-        std::str::from_utf8(
-            title
-                .0
-                .get(..title.1)
-                .ok_or(acyclic_fs::NativeTreeMaterializationError::InvalidLayout)?,
-        )
-        .map_err(|_| invalid("Pi interaction title is not UTF-8"))?,
-        work,
-    )?;
-    let interaction = (Interaction::approval(title.0, command, digest)?, title.1);
+    let interaction = Interaction::approval(title.0, command, digest)?;
     journal
-        .open_interaction(
-            approval,
-            &interaction.0,
-            Some(&PreparationIo::from_native_work(work)?),
-        )?
+        .open_interaction(approval, &interaction, Some(&io))?
         .await?;
-    owner
-        .verify(
-            false,
-            &mut Some(&mut &PreparationIo::from_native_work(work)?),
-        )
-        .await?;
-    let respond = native_fixed_text(format_args!("interaction:respond:{approval}"))?;
-    let encoded_grants = crate::pi_root_provider::guarded_pi_bytes(
-        &[
-            "interaction:resolve",
-            std::str::from_utf8(
-                respond
-                    .0
-                    .get(..respond.1)
-                    .ok_or(acyclic_fs::NativeTreeMaterializationError::InvalidLayout)?,
-            )
-            .map_err(|_| invalid("Pi interaction capability is not UTF-8"))?,
-        ],
-        1024,
-        work,
-    )?;
-    let grants = crate::pi_root_provider::guarded_pi_decode::<Capabilities>(
-        &encoded_grants.0,
-        1024,
-        std::mem::size_of::<Capabilities>() as u64,
-        acyclic_harness::wire::ErrorCode::Invalid,
-        JsonValueSchema::None,
-        NATIVE_CAPABILITIES_DIAGNOSTIC_LABEL_BYTES,
-        work,
-    )?;
+    owner.verify(false, &mut Some(&mut &io)).await?;
+    let respond = work.display(&format_args!("interaction:respond:{approval}"))?;
+    let grants = Capabilities::copy(["interaction:resolve", respond.0.as_str()], work)?;
     let responder = protected.conversation_authority_with_native_work(
         owner.task_id(),
         binding.agent_id,
@@ -406,23 +313,6 @@ pub(crate) async fn approve_command(
             &responder.0.2,
         )
         .await?;
-    owner
-        .verify(
-            false,
-            &mut Some(&mut &PreparationIo::from_native_work(work)?),
-        )
-        .await?;
+    owner.verify(false, &mut Some(&mut &io)).await?;
     Ok(approval)
-}
-
-fn native_fixed_text(arguments: std::fmt::Arguments<'_>) -> Result<([u8; 256], usize)> {
-    let mut bytes = [0; 256];
-    let mut writer = std::io::Cursor::new(bytes.as_mut_slice());
-    std::io::Write::write_fmt(&mut writer, arguments).map_err(|_| {
-        acyclic_harness::Error::from(acyclic_fs::NativeTreeMaterializationError::InvalidLayout)
-    })?;
-    let length = usize::try_from(writer.position()).map_err(|_| {
-        acyclic_fs::NativeTreeMaterializationError::from(acyclic_fs::WorkError::Overflow)
-    })?;
-    Ok((bytes, length))
 }

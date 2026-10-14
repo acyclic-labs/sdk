@@ -168,7 +168,7 @@ pub(super) fn compare_native_lineage(
     check(work, cxl)?;
     if load::<WorkspaceLineageRecord>(root, log, id, work, cxl)?
         .as_ref()
-        .map_or(0, |value| (&value.0).revision)
+        .map_or(0, |value| value.0.revision)
         != expected
     {
         return Ok(false);

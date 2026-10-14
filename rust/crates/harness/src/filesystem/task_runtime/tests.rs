@@ -192,6 +192,12 @@ impl ResumableMachine for Machine {
         &'a self,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<&'a MachineIdentity> {
+        if !self.supports_native_work() {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "control native machine disabled",
+            });
+        }
         work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
         Ok(&self.identity)
     }
@@ -715,3 +721,6 @@ mod admission;
 mod model;
 mod settlement;
 mod worker;
+
+#[cfg(all(windows, feature = "native-execution"))]
+mod native_mount;

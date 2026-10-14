@@ -49,7 +49,7 @@ impl PiRootPreparation {
         work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
         let owner = PiOwnerConfig::load(private_root, session, work)?;
         runtime.verify_owner_with_native_work(&owner, work)?;
-        owner.validate_root(binding, work)?;
+        owner.validate_root(binding)?;
         let admitted =
             super::pi_recovery::authenticate_pi_task(&runtime.runtime, binding, origin, work)
                 .await?;
@@ -192,7 +192,7 @@ fn validate_request(
     request: &PiRootRequest,
     work: &NativeMaterializationWork,
 ) -> Result<()> {
-    owner.validate_root(&request.binding, work)?;
+    owner.validate_root(&request.binding)?;
     request.root.validate(&request.binding, work)?;
     if !matches!(
         request.binding.scratch.allocation,

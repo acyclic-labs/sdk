@@ -1,15 +1,14 @@
-//! Native caller authentication using the original coordinator's signed scope.
-
+//! Native caller authentication through the coordinator's signed scope.
 use super::*;
-use acyclic_harness::filesystem::PreparationIo;
-use acyclic_harness::{Capabilities, TaskId, core::Scope};
+use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
+use acyclic_harness::{Capabilities, TaskId, core::Scope, filesystem::PreparationIo};
 
 pub(crate) const CALLER_ENVIRONMENT: &str = "ACYCLIC_PI_CALLER";
 const CALLER_CAPABILITY: &str = "pi:caller";
 
 pub(crate) fn is_environment_key(key: &str) -> bool {
     [
-        "ACYCLIC_PI_CALLER",
+        CALLER_ENVIRONMENT,
         "ACYCLIC_PI_ROUTE",
         "ACYCLIC_PI_TASK",
         "ACYCLIC_PI_TOKEN",
@@ -43,12 +42,30 @@ pub(crate) fn routing_session(scope: &Scope) -> Result<String, String> {
     Ok(claims.root_session)
 }
 
+fn identity(
+    root_session: &str,
+    native_session: &str,
+    task: TaskId,
+    work: &NativeMaterializationWork,
+) -> acyclic_harness::Result<(Vec<u8>, NativeAllocation)> {
+    pi_root_provider::guarded_pi_bytes(
+        &PiCallerClaims {
+            version: 1,
+            root_session,
+            native_session,
+            task,
+        },
+        MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
+        work,
+    )
+}
+
 pub(crate) fn issue(
     owner: &pi_owner::PiOwnerConfig,
     root_session: &str,
     binding: &PiTaskBinding,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> acyclic_harness::Result<(Scope, acyclic_fs::NativeAllocation)> {
+    work: &NativeMaterializationWork,
+) -> acyclic_harness::Result<(Scope, NativeAllocation)> {
     work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
     if root_session.is_empty() || binding.native_session_id.is_empty() {
         return Err(acyclic_harness::Error::NativeBoundary {
@@ -57,78 +74,38 @@ pub(crate) fn issue(
         });
     }
     let authority = owner.authority(work)?;
-    let identity = pi_root_provider::guarded_pi_bytes(
-        &PiCallerClaims {
-            version: 1,
-            root_session,
-            native_session: &binding.native_session_id,
-            task: binding.task_id,
-        },
-        MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
+    let identity = identity(
+        root_session,
+        &binding.native_session_id,
+        binding.task_id,
         work,
     )?;
-    let Ok(identity_text) = std::str::from_utf8(&identity.0) else {
-        drop(identity.0);
-        drop(identity.1);
-        return Err(acyclic_harness::Error::NativeBoundary {
-            code: acyclic_harness::wire::ErrorCode::Invalid,
-            reason: "Pi caller claims have invalid UTF-8",
-        });
-    };
     let capabilities = Capabilities::copy([CALLER_CAPABILITY], work)?;
     let mut io = acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
-    let value = authority.issuer.issue(
-        identity_text,
+    let scope = authority.issuer.issue(
+        std::str::from_utf8(&identity.0).expect("JSON encoder emits UTF-8"),
         &capabilities.0,
         Some(binding.agent_id),
         None,
         &mut Some(&mut io),
     )?;
-    let scope = (value, io.into_custody()?);
-    drop(identity.0);
-    drop(identity.1);
-    drop(capabilities.0);
-    drop(capabilities.1);
-    drop(authority);
-    Ok(scope)
+    Ok((scope, io.into_custody()?))
 }
 
-/// Issues the original coordinator proof without copying claims or encoding an unfunded native environment value.
+/// Encodes the signed caller scope for the native child's environment.
 pub(crate) fn issued_environment(
     owner: &pi_owner::PiOwnerConfig,
     root_session: &str,
     binding: &PiTaskBinding,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> acyclic_harness::Result<(BTreeMap<String, String>, acyclic_fs::NativeAllocation)> {
+    work: &NativeMaterializationWork,
+) -> acyclic_harness::Result<(BTreeMap<String, String>, NativeAllocation)> {
     let scope = issue(owner, root_session, binding, work)?;
-    let mut custody;
-    let encoded;
-    (encoded, custody) =
+    let (encoded, mut custody) =
         pi_root_provider::guarded_pi_bytes(&scope.0, MAXIMUM_CONTROL_MESSAGE_BYTES as u64, work)?;
-    drop(scope.0);
-    drop(scope.1);
-    let encoded = match String::from_utf8(encoded) {
-        Ok(value) => value,
-        Err(error) => {
-            drop(error);
-            drop(custody);
-            return Err(acyclic_harness::Error::NativeBoundary {
-                code: acyclic_harness::wire::ErrorCode::Invalid,
-                reason: "Pi caller scope has invalid UTF-8",
-            });
-        }
-    };
-    let mut key_custody;
-    let key;
-    (key, key_custody) = guarded_cli_text(&[CALLER_ENVIRONMENT], work)?;
-    if let Err(cause) = custody.absorb(&mut key_custody) {
-        drop(key);
-        drop(encoded);
-        return Err(acyclic_harness::Error::NativeWork {
-            cause,
-            custody: Some(custody),
-        });
-    }
+    drop(scope);
+    let encoded = String::from_utf8(encoded).expect("JSON encoder emits UTF-8");
+    let (key, mut key_custody) = guarded_cli_text(&[CALLER_ENVIRONMENT], work)?;
+    custody.absorb(&mut key_custody)?;
     Ok((BTreeMap::from([(key, encoded)]), custody))
 }
 
@@ -137,7 +114,7 @@ pub(crate) fn verify<'a>(
     state: &'a AdapterState,
     scope: &Scope,
     native_session: &str,
-    work: &acyclic_fs::NativeMaterializationWork,
+    work: &NativeMaterializationWork,
 ) -> acyclic_harness::Result<&'a PiTaskBinding> {
     let denied = |reason| acyclic_harness::Error::NativeBoundary {
         code: acyclic_harness::wire::ErrorCode::Invalid,
@@ -153,40 +130,27 @@ pub(crate) fn verify<'a>(
     if !scope.capabilities().iter().eq([CALLER_CAPABILITY]) {
         return Err(denied("Pi caller scope carries non-caller authority"));
     }
-    let binding = match &state.task_binding {
-        PluginTaskBinding::Pi(binding) if binding.native_session_id == native_session => {
-            Some(binding.as_ref())
-        }
-        _ => state
-            .routes
-            .values()
-            .find_map(|route| match &route.task_binding {
-                PluginTaskBinding::Pi(binding) if binding.native_session_id == native_session => {
-                    Some(binding.as_ref())
-                }
-                _ => None,
-            }),
-    }
-    .ok_or_else(|| denied("Pi caller task has no original admitted route"))?;
+    let binding = std::iter::once(&state.task_binding)
+        .chain(state.routes.values().map(|route| &route.task_binding))
+        .find_map(|binding| match binding {
+            PluginTaskBinding::Pi(binding) if binding.native_session_id == native_session => {
+                Some(binding.as_ref())
+            }
+            _ => None,
+        })
+        .ok_or_else(|| denied("Pi caller task has no original admitted route"))?;
     if scope.agent() != Some(binding.agent_id) {
         return Err(denied(
             "Pi caller task, agent or native session was substituted",
         ));
     }
-    let identity = pi_root_provider::guarded_pi_bytes(
-        &PiCallerClaims {
-            version: 1,
-            root_session: state.root_session_id.as_str(),
-            native_session,
-            task: binding.task_id,
-        },
-        MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
+    let identity = identity(
+        &state.root_session_id,
+        native_session,
+        binding.task_id,
         work,
     )?;
-    let original = scope.id().as_bytes() == identity.0.as_slice();
-    drop(identity.0);
-    drop(identity.1);
-    if !original {
+    if scope.id().as_bytes() != identity.0.as_slice() {
         return Err(denied("Pi caller differs from its original native session"));
     }
     Ok(binding)
