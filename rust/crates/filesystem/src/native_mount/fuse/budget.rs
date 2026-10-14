@@ -35,13 +35,12 @@ impl<T> FuseOwned<T> {
         if self.custody.is_none() {
             self.custody = Some(NativeMountAllocationCustody::new(&mut work.clone())?);
         }
-        work.with_original_leaf(|original| {
-            self.custody
-                .as_ref()
-                .expect("admitted owner")
-                .claim(bytes, original)
-        })
-        .map_err(Into::into)
+        let custody = self
+            .custody
+            .as_ref()
+            .ok_or(crate::DemandError::InvalidRequest)?;
+        work.with_original_leaf(|original| custody.claim(bytes, original))
+            .map_err(Into::into)
     }
 
     pub(super) fn adopt(
@@ -219,8 +218,9 @@ pub(super) fn fuse_path<'a>(
         let retained = work.with_original_leaf(|work| {
             path.custody
                 .as_ref()
-                .expect("path capacity custody")
+                .ok_or(crate::DemandError::InvalidRequest)?
                 .retain(bytes, work)
+                .map_err(crate::DemandError::from)
         });
         if let Err(error) = retained {
             drop(copied);
@@ -282,10 +282,9 @@ pub(super) fn fuse_replace_prefix(
     destination: &MountPath,
     work: &NativeMaterializationWork,
 ) -> Result<Option<FuseOwned<MountPath>>, NativeMountError> {
-    if !has_prefix(value, source) {
+    let Some(suffix) = value.components().strip_prefix(source.components()) else {
         return Ok(None);
-    }
-    let suffix = &value.components()[source.components().len()..];
+    };
     fuse_path(
         destination
             .components()

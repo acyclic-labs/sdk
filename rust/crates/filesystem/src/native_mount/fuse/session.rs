@@ -72,14 +72,13 @@ impl FuseSessionState {
                 return Err(NativeMountError::FuseShutdownFailed);
             }
         } else if let Some(before) = self.before {
-            let path =
-                std::ffi::CStr::from_bytes_with_nul(&self.path).expect("terminated destination");
-            let metadata = match work {
-                Some(work) => fuse_recovery_stat(path, &mut &*work)?,
-                None => {
-                    started(ReadOperations.delta(1))?;
-                    rustix::fs::stat(path).map_err(std::io::Error::from)?
-                }
+            let path = std::ffi::CStr::from_bytes_with_nul(&self.path)
+                .map_err(|_| NativeMountError::FuseShutdownFailed)?;
+            let metadata = if let Some(work) = work {
+                fuse_recovery_stat(path, &mut &*work)?
+            } else {
+                started(ReadOperations.delta(1))?;
+                rustix::fs::stat(path).map_err(std::io::Error::from)?
             };
             if (metadata.st_dev as u64, metadata.st_ino as u64) != before {
                 return Err(NativeMountError::FuseShutdownFailed);
@@ -92,7 +91,7 @@ impl FuseSessionState {
             started(ReadOperations.delta(1))?;
             self.worker
                 .take()
-                .expect("accepted SDK worker")
+                .ok_or(NativeMountError::FuseShutdownFailed)?
                 .join()
                 .map_err(|panic| NativeMountError::DriverPanicked {
                     operation: "FUSE SDK request worker",
@@ -107,6 +106,10 @@ impl FuseSessionState {
 }
 
 impl FuseSession {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Startup retains its admitted worker, mount and rollback controls in one frame."
+    )]
     pub(in crate::native_mount) fn start_into(
         request: &NativeMountRequest,
         source: Arc<dyn MountFilesystem>,
@@ -168,7 +171,7 @@ impl FuseSession {
         work.record_admitted(Copy.delta(bytes.len() as u64))?;
         let state = Arc::new(Mutex::new(FuseSessionState {
             path,
-            before: Some((metadata.st_dev as u64, metadata.st_ino as u64)),
+            before: Some((metadata.st_dev, metadata.st_ino)),
             unmounter: None,
             worker: None,
             device: None,
@@ -214,8 +217,7 @@ impl FuseSession {
             let mut session = fuser::Session::new(filesystem, &request.destination, &config)
                 .map_err(|error| {
                     core.take_handler_failure()
-                        .map(|failure| failure.0)
-                        .unwrap_or_else(|| error.into())
+                        .map_or_else(|| error.into(), |failure| failure.0)
                 })?;
             started.notifier = Some(session.notifier());
             started.unmounter = Some(session.unmount_callable());
@@ -253,9 +255,6 @@ impl FuseSession {
     ) -> Option<(NativeMountError, WorkCounters)> {
         self.core.take_handler_failure()
     }
-    pub(in crate::native_mount) fn handler_failed(&self) -> bool {
-        self.core.handler_failed.load(Ordering::Acquire)
-    }
     pub(in crate::native_mount) fn completed_callback_work(&self) -> WorkCounters {
         self.core.completed_callback_work()
     }
@@ -265,13 +264,6 @@ impl FuseSession {
             .unwrap_or_else(PoisonError::into_inner)
             .before
             .is_none()
-    }
-    pub(in crate::native_mount) fn controls_pending(&self) -> bool {
-        !self
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .is_retired()
     }
     pub(in crate::native_mount) fn retirement_ownership(&self) -> (bool, bool) {
         let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);

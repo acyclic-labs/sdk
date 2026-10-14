@@ -72,7 +72,7 @@ impl FuseRecoveryControl {
         while self
             .helper
             .as_mut()
-            .expect("accepted helper")
+            .ok_or(NativeMountError::FuseShutdownFailed)?
             .try_wait(Some(work.runtime_meter().as_ref()))
             .map_err(|error| work.runtime_error(error))?
             .is_none()

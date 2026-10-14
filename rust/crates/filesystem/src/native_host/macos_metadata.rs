@@ -19,6 +19,11 @@ pub(crate) fn open_macos_metadata_target<
     work: &mut W,
 ) -> Result<MacMetadataTarget, DemandError> {
     use std::os::unix::ffi::OsStrExt as _;
+    if path.as_os_str().is_empty() {
+        return Ok(MacMetadataTarget::Held(
+            clone_directory(root, work)?.into_std_file(),
+        ));
+    }
     with_parent_leaf(root, path, work, |parent, leaf, work| {
         let before = fstat(parent.as_raw_fd(), leaf, work)?;
         let kind = before.st_mode & libc::S_IFMT;

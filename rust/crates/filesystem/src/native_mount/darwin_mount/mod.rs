@@ -8,19 +8,19 @@
 use super::view_ledger::{copy_work, same_work, scan_work};
 use super::{
     ATTRIBUTE_PAGE_SIZE, DIRECTORY_PAGE_SIZE, MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES,
-    MountAttributeWriteMode, MountDirectoryEntry, MountFilesystem, MountLookup, MountNodeKind,
-    MountOpenFile, MountPath, MountSourceError, NativeMountError, NativeMountRequest, ViewObserver,
-    ViewOrigin, ViewStamp, create_metadata, metadata_or, system_time_ns,
+    MountAttributeWriteMode, MountFilesystem, MountLookup, MountNodeKind, MountOpenFile, MountPath,
+    MountSourceError, NativeMountError, NativeMountRequest, ViewObserver, ViewOrigin, ViewStamp,
+    create_metadata, metadata_or, system_time_ns,
 };
 use crate::kernel::{FileMetadata, MetadataField};
 use crate::{FileId, NativeAllocation, NativeMaterializationWork as Work, WorkCounters, WorkError};
 use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock, Weak};
+use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -45,12 +45,9 @@ mod change_labels;
 use change_labels::*;
 mod cleanup;
 use cleanup::*;
-mod file_ops;
-use file_ops::*;
-mod namespace_ops;
-use namespace_ops::*;
 mod attribute_ops;
-use attribute_ops::*;
+mod file_ops;
+mod namespace_ops;
 mod paths;
 use paths::*;
 
@@ -82,7 +79,6 @@ mod allocation;
 use allocation::*;
 
 mod directory;
-use directory::*;
 
 mod session;
 use session::*;

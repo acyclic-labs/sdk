@@ -40,10 +40,10 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_setxattr(
             libc::XATTR_REPLACE => MountAttributeWriteMode::Replace,
             _ => return Err(driver_errno(libc::EINVAL)),
         };
-        // SAFETY: the bridge retains each nonempty length-byte input.
         let input = if length == 0 {
             &[]
         } else {
+            // SAFETY: the bridge retains each nonempty length-byte input.
             unsafe { std::slice::from_raw_parts(value.cast::<u8>(), length) }
         };
         let bytes = copy_bytes(work, input)?;

@@ -100,18 +100,18 @@ impl TaskRegistry {
     /// Registers an exact task version.
     pub fn register<I: 'static, O: 'static>(
         &mut self,
-        mut definition: TaskDefinition<I, O>,
+        definition: TaskDefinition<I, O>,
     ) -> Result<()>
     where
         TaskDefinition<I, O>: acyclic_stream::ProviderPlatform,
     {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let mut definition = definition;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let native = definition
             .native_metadata_custody
             .as_ref()
             .map(|held| held.work().clone());
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let native: Option<&NativeWork> = None;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let registration_work = native
             .clone()
@@ -139,12 +139,10 @@ impl TaskRegistry {
         if let Some(work) = registration_work.as_ref() {
             if let Some(original) = native.as_ref() {
                 definition.require_native_identity(original)?;
+            }
+            if let Some(held) = definition.native_metadata_custody.as_mut() {
                 // The definition retains its value; registration funds the Arc header.
-                definition
-                    .native_metadata_custody
-                    .as_mut()
-                    .expect("native definition")
-                    .grow((2 * std::mem::size_of::<usize>()) as u64)
+                held.grow((2 * std::mem::size_of::<usize>()) as u64)
                     .map_err(Error::from)?;
             }
             let slots = self.0.len().checked_add(1).ok_or(Error::NativeBoundary {
@@ -154,16 +152,19 @@ impl TaskRegistry {
             let bytes = (slots.max(self.0.capacity())
                 * std::mem::size_of::<Arc<dyn RegisteredTaskDefinition>>()
                 + std::mem::size_of::<Self>()) as u64;
-            if self.1.is_none() {
-                self.1 = Some(
+            let held = match &mut self.1 {
+                Some(held) => {
+                    if slots > self.0.capacity() {
+                        held.grow(bytes.saturating_sub(held.bytes()))
+                            .map_err(Error::from)?;
+                    }
+                    held
+                }
+                slot @ None => slot.insert(
                     work.claim(bytes, 1, acyclic_fs::WorkCounters::UNCHARGED)
                         .map_err(Error::from)?,
-                );
-            } else if slots > self.0.capacity() {
-                let held = self.1.as_mut().expect("registry allocation");
-                held.grow(bytes.saturating_sub(held.bytes()))
-                    .map_err(Error::from)?;
-            }
+                ),
+            };
             if slots > self.0.capacity() {
                 self.0
                     .try_reserve_exact(slots - self.0.len())
@@ -175,13 +176,8 @@ impl TaskRegistry {
             let actual = (self.0.capacity()
                 * std::mem::size_of::<Arc<dyn RegisteredTaskDefinition>>()
                 + std::mem::size_of::<Self>()) as u64;
-            self.1
-                .as_mut()
-                .expect("registry allocation")
-                .reconcile_capacity(actual)
-                .map_err(Error::from)?;
+            held.reconcile_capacity(actual).map_err(Error::from)?;
         }
-        let _ = native;
         let definition = Arc::new(definition);
         #[cfg(target_arch = "wasm32")]
         self.1.push(Arc::new(definition.clone()));

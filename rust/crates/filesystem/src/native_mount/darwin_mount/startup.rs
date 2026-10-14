@@ -13,6 +13,10 @@ pub(super) struct DriverSessionResources {
 }
 
 pub(super) struct LoopState {
+    #[allow(
+        clippy::type_complexity,
+        reason = "The SDK loop retains these existing resources together until it exits."
+    )]
     pub(super) resources: Option<(
         Arc<DarwinMountContext>,
         Arc<DarwinOwned<CString>>,
@@ -33,6 +37,10 @@ impl DriverSessionResources {
         self.native.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "At most three options fill three pairs in the seven-element argument array."
+    )]
     pub(super) fn new(
         context: Arc<DarwinMountContext>,
         destination: &Path,
@@ -147,7 +155,7 @@ impl DriverSessionResources {
         &self,
         wait: Option<&crate::CancellationToken>,
     ) -> Result<(), NativeMountError> {
-        let mut native = self.native();
+        let native = self.native();
         if native.value == 0 || self.sdk_credit.remaining_work().backend_write_operations < 2 {
             return Ok(());
         }
@@ -179,6 +187,10 @@ impl DriverSessionResources {
 }
 
 impl Drop for DriverSessionResources {
+    #[allow(
+        clippy::expect_used,
+        reason = "Free without a wait token consumes birth-paid credit and has no fallible path."
+    )]
     fn drop(&mut self) {
         self.free(None).expect("birth-paid SDK destruction");
     }
@@ -219,9 +231,7 @@ impl DarwinMountSession {
             loop_result: None,
             native_root_identity: None,
         });
-        let session = out
-            .as_mut()
-            .expect("logical driver installed before SDK birth");
+        let session = out.as_mut().ok_or(NativeMountError::ControlPending)?;
         let owned = (Arc::clone(&session.unmount), original.clone());
         let allocation = original.claim(
             (std::mem::size_of_val(&owned) + std::mem::size_of::<NativeAllocation>()) as u64,
@@ -292,6 +302,10 @@ impl DarwinMountSession {
     }
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "The provider owns its resources until it announces exit and retires them."
+)]
 fn run_loop(
     (driver, original, _allocation): (Arc<DriverSessionResources>, Work, NativeAllocation),
 ) -> c_int {
@@ -318,14 +332,18 @@ fn run_loop(
         }
         original.charge(WRITE_WORK)?;
         let mut interrupted = 0;
+        let argc = c_int::try_from(
+            pointers
+                .iter()
+                .position(|pointer| *pointer == 0)
+                .unwrap_or(pointers.len()),
+        )
+        .map_err(|_| driver_errno(libc::EOVERFLOW))?;
         // SAFETY: the provider retains SDK, context, arguments, destination and callback owner.
         let status = unsafe {
             acyclic_fs_darwin_mount_run(
                 driver.pointer() as *mut c_void,
-                pointers
-                    .iter()
-                    .position(|pointer| *pointer == 0)
-                    .unwrap_or(7) as c_int,
+                argc,
                 pointers.as_ptr().cast(),
                 destination.as_ptr(),
                 Arc::as_ptr(&context) as usize,
