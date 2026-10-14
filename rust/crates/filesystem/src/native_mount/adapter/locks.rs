@@ -20,11 +20,11 @@ impl<A, O> CheckoutMountSource<A, O> {
             .with_work(|leaf| {
                 leaf.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)
             })
-            .map_err(super::lazy::mount_demand_error)?;
+            .map_err(MountSourceError::from)?;
         if let Err(error) = lease.attach_owned_payload(bytes) {
             carrier
                 .with_work(|leaf| leaf.release(bytes))
-                .map_err(super::lazy::mount_demand_error)?;
+                .map_err(MountSourceError::from)?;
             return Err(error);
         }
         Ok(Box::new(lease))
@@ -49,7 +49,7 @@ impl NativeDemandCarrier<'_> {
                 .map_err(MountSourceError::NativeWork),
             None => self
                 .with_work(|work| work.check())
-                .map_err(super::lazy::mount_demand_error),
+                .map_err(MountSourceError::from),
         }
     }
 }

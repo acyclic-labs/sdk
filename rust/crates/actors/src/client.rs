@@ -253,7 +253,7 @@ pub async fn connect(endpoint: &str, token: &str, ca: Option<&[u8]>) -> Result<C
             ));
         }
         let authorization = acyclic_workers::BearerAuth::new(token)
-            .map_err(|()| Error::Configuration("invalid Actors bearer credential".into()))?;
+            .map_err(|_| Error::Configuration("invalid Actors bearer credential".into()))?;
         let transport = tonic_web_wasm_client::Client::new_with_options(
             endpoint.as_str().trim_end_matches('/').to_owned(),
             tonic_web_wasm_client::options::FetchOptions::new()

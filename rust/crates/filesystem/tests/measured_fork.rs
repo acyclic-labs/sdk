@@ -38,7 +38,7 @@ async fn public_measured_fork_bounds_work_and_retries_the_original_publication()
     let fs = Fs::memory();
     let parent = fs.create_workspace("measured-parent", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     parent.write_text("/kept.txt", "original").await?;
-    let pinned = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let pinned = parent.head(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let key = IdempotencyKey::new();
     let cancellation = CancellationToken::new();
     let exhausted = parent
@@ -69,7 +69,7 @@ async fn public_measured_fork_bounds_work_and_retries_the_original_publication()
         .await?;
     created.work.verify(budget)?;
     assert!(created.work.backend_write_operations > 0);
-    let generation = created.value.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
+    let generation = created.value.head(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
     let retried = parent
         .fork::<_, _, acyclic_fs::WorkspaceError>(
             "measured-child",
@@ -108,7 +108,7 @@ async fn public_measured_fork_rejects_precancellation_and_foreign_generation()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let parent = fs.create_workspace("cancel-parent", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let pinned = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let pinned = parent.head(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let cancellation = CancellationToken::new();
     cancellation.cancel();
     let key = IdempotencyKey::new();
@@ -133,7 +133,7 @@ async fn public_measured_fork_rejects_precancellation_and_foreign_generation()
     let foreign = match parent
         .fork::<_, _, acyclic_fs::WorkspaceError>(
             "foreign-child",
-            ForkOptions::from_generation(other.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, IdempotencyKey::new()), acyclic_fs::PublicationPermit::Unrestricted,
+            ForkOptions::from_generation(other.head(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, IdempotencyKey::new()), acyclic_fs::PublicationPermit::Unrestricted,
             finite_budget()?,
             &CancellationToken::new(),
         &mut |_| {
@@ -328,7 +328,7 @@ async fn public_measured_fork_cancels_after_real_staging_and_retries_exactly()
     );
     let parent = fs.create_workspace("inflight-parent", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     parent.write_text("/kept.txt", "pinned").await?;
-    let pinned = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let pinned = parent.head(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let key = IdempotencyKey::new();
     armed.store(true, Ordering::SeqCst);
     let cancellation = CancellationToken::new();
@@ -358,7 +358,7 @@ async fn public_measured_fork_cancels_after_real_staging_and_retries_exactly()
             },
         )
         .await?;
-    let initial = created.value.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
+    let initial = created.value.head(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
     let retried = parent
         .fork::<_, _, acyclic_fs::WorkspaceError>(
             "inflight-child",

@@ -134,16 +134,11 @@ async fn native_command_reads_lazy_snapshot_and_publishes_on_finite_work()
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     let fence = LeaseFence::from(&lease.reservation);
     let work = NativeMaterializationWork::new(budget, &cancellation).map_err(|(cause, _)| cause)?;
-    let io = PreparationIo::from_native_work(&work)?;
-    let owner = runtime
-        .task_host()
-        .journal_owner(task, &fence, Some(&io))
-        .await?
-        .into_native_shared(&work)?;
     let context = runtime
         .task_context_with_native_work(task, &fence, &work)
         .await
         .expect("native task context retains its original allowance");
+    let owner = context.journal_owner::<MemoryStream>(&fence, &work)?;
     let source = tempfile::tempdir()?;
     std::fs::write(source.path().join("input.txt"), b"live source")?;
     let native = acyclic_fs::demand::native::NativeDemandSource::open(
@@ -236,7 +231,8 @@ async fn native_command_reads_lazy_snapshot_and_publishes_on_finite_work()
     stderr.0.clear();
     let executable =
         std::path::PathBuf::from(std::env::var_os("SystemRoot").expect("Windows root"))
-            .join("System32/cmd.exe");
+            .join("System32")
+            .join("cmd.exe");
     let mut command = Command::new(executable);
     command.creation_flags(0x08000000); // CREATE_NO_WINDOW.
     command
@@ -251,7 +247,14 @@ async fn native_command_reads_lazy_snapshot_and_publishes_on_finite_work()
         &mut command,
         Some(meter.as_ref()),
         &mut process,
-    )?;
+    )
+    .unwrap_or_else(|error| {
+        panic!(
+            "native process launch: {:?}; before: {before:?}; work: {:?}",
+            work.runtime_error(error),
+            work.receipt()
+        )
+    });
     let output = process
         .as_mut()
         .expect("spawned process")
@@ -263,7 +266,16 @@ async fn native_command_reads_lazy_snapshot_and_publishes_on_finite_work()
             |_| Ok(Default::default()),
             Some(meter.as_ref()),
             Some([stdout.0, stderr.0, Vec::new()]),
-        )?;
+        )
+        .unwrap_or_else(|error| {
+            panic!(
+                "native process wait: {:?}; stdout: {:?}; stderr: {:?}; work: {:?}",
+                work.runtime_error(error.error),
+                String::from_utf8_lossy(&error.stdout),
+                String::from_utf8_lossy(&error.stderr),
+                work.receipt()
+            )
+        });
     assert!(output.status.success(), "{:?}", output.stderr);
     assert_eq!(output.stdout, b"pinned snapshot");
     view.file_io(
@@ -284,19 +296,36 @@ async fn native_command_reads_lazy_snapshot_and_publishes_on_finite_work()
                 .map_err(|error| work.runtime_error(error))
         },
     )
-    .await?;
+    .await
+    .unwrap_or_else(|error| {
+        let mut cause: &dyn std::error::Error = &error;
+        while let Some(source) = cause.source() {
+            cause = source;
+        }
+        panic!(
+            "mounted write: {error:?}; root cause: {cause:?}; work: {:?}",
+            work.receipt()
+        )
+    });
     let published = view
         .publish(&owner)
         .await
         .expect("mounted publication stays within its allowance");
     assert!(published.0[0].1.is_lazy());
-    assert_eq!(
-        workspace
-            .read("/published.txt", 128, &work, &cancellation)
-            .await?
-            .as_ref(),
-        b"publish"
-    );
+    assert!(published.0[0].1.operation().is_some());
+    let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+        work: &work,
+        cancellation: &cancellation,
+    };
+    let cut = published.0[0]
+        .1
+        .lazy_snapshot(&mut accounting)?
+        .expect("lazy publication retains its exact cut");
+    let (content, used_source) = lazy
+        .read_at_snapshot(cut, "/published.txt", None, 128, &mut accounting)
+        .await?;
+    assert_eq!(content.bytes.as_ref(), b"publish");
+    assert!(!used_source);
     let receipt = work.receipt();
     receipt.verify(budget)?;
     assert!(receipt.backend_read_operations > before.backend_read_operations);

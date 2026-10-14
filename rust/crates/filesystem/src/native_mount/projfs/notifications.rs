@@ -64,20 +64,6 @@ pub(super) unsafe fn notification(
     let Some((data, runtime)) = runtime(callback_data) else {
         return HR_UNEXPECTED;
     };
-    let work = match runtime.native_work(true) {
-        Ok(work) => work,
-        Err(error) => {
-            let status = native_hresult(&error);
-            let mut failures = lock_recover(&runtime.post_operation_failure);
-            if failures.callback_failure.is_none() {
-                failures.callback_failure = Some((error, lock_recover(&runtime.work).receipt()));
-            }
-            return status;
-        }
-    };
-    if !runtime.writable {
-        return HR_NOT_SUPPORTED;
-    }
     let Some(path) = path_from(data.FilePathName) else {
         return HR_INVALID_DATA;
     };
@@ -98,6 +84,20 @@ pub(super) unsafe fn notification(
         && MetadataProbeGuard::is_active(&runtime.metadata_probes, &path)
     {
         return HR_OK;
+    }
+    let work = match runtime.native_work(true) {
+        Ok(work) => work,
+        Err(error) => {
+            let status = native_hresult(&error);
+            let mut failures = lock_recover(&runtime.post_operation_failure);
+            if failures.callback_failure.is_none() {
+                failures.callback_failure = Some((error, lock_recover(&runtime.work).receipt()));
+            }
+            return status;
+        }
+    };
+    if !runtime.writable {
+        return HR_NOT_SUPPORTED;
     }
     let file_id = file_id(data);
     // SAFETY: ProjFS passes these names as null or NUL-terminated strings

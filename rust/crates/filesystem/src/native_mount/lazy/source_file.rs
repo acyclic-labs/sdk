@@ -14,7 +14,7 @@ where
     ) -> Result<Option<(Arc<dyn MountOpenFile>, u64)>, MountSourceError> {
         carrier
             .with_work(|work| work.check())
-            .map_err(mount_demand_error)?;
+            .map_err(MountSourceError::from)?;
         {
             let detached = self.detached.lock().map_err(|_| MountSourceError::Stale)?;
             carrier.with_work(|work| mount_items(work, 1))?;
@@ -75,7 +75,7 @@ where
                 drop(file);
                 carrier
                     .with_work(|work| work.release(bytes))
-                    .map_err(mount_demand_error)?;
+                    .map_err(MountSourceError::from)?;
                 result
             })
         })
@@ -122,7 +122,7 @@ where
                 drop(file);
                 carrier
                     .with_work(|work| work.release(bytes))
-                    .map_err(mount_demand_error)?;
+                    .map_err(MountSourceError::from)?;
                 result
             })
         })
@@ -140,7 +140,7 @@ where
                 length,
                 &mut crate::kernel::KernelAccounting::native(work, work.cancellation()),
             )
-            .map_err(mount_demand_error)
+            .map_err(MountSourceError::from)
     }
 }
 

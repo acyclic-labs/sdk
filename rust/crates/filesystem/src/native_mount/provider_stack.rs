@@ -386,6 +386,7 @@ pub(super) fn run_with_meter<T>(
 pub(super) fn run<T>(callback: impl FnOnce() -> T) -> windows::core::Result<T> {
     run_with_meter(None, callback).map_err(|error| match error {
         ProviderFailure::Native(code) => windows::core::Error::from_hresult(code),
+        ProviderFailure::Work(error) => unreachable!("ordinary callback work failure: {error}"),
         _ => unreachable!("ordinary callbacks have no finite control admission"),
     })
 }

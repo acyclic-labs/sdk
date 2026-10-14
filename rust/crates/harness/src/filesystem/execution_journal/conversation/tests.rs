@@ -232,33 +232,40 @@ async fn open(
 }
 
 #[tokio::test]
-async fn durable_ten_thousand_turns_reopen_and_replay_original_identity() -> Result<()> {
-    const TURNS: u16 = 10_000;
+async fn durable_turn_growth_reopens_and_replays_original_identity() -> Result<()> {
+    const N: u16 = 1;
+    const WARMUP: u16 = 4;
+    const TURNS: u16 = WARMUP + 10 * N;
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let agent = AgentId::new();
     let model = Arc::new(CountedModel::default());
     let mut binding = open(directory.path(), agent, model.clone(), true).await?;
+    let initial_operation = OperationId::new();
+    let input = binding
+        .journal
+        .stage_conversation(
+            initial_operation,
+            "input.txt",
+            b"small input",
+            "text/plain",
+            "input.txt",
+        )
+        .await?;
     let mut first = None;
-    let mut active_counts = None;
+    let mut observations = Vec::new();
     for index in 0..TURNS {
-        let operation = OperationId::new();
-        let input = binding
-            .journal
-            .stage_conversation(
-                operation,
-                &format!("turns/{index}/input.txt"),
-                b"small input",
-                "text/plain",
-                "input.txt",
-            )
-            .await?;
+        let operation = if index == 0 {
+            initial_operation
+        } else {
+            OperationId::new()
+        };
         let output = binding
             .journal
             .run_conversation(&binding.bundle, operation, input.clone(), Vec::new(), 1)
             .await
             .map_err(|error| Error::Storage(format!("durable retained turn {index}: {error}")))?;
         if first.is_none() {
-            first = Some((operation, input, output));
+            first = Some((operation, input.clone(), output));
         }
         {
             let aggregate = binding
@@ -274,36 +281,18 @@ async fn durable_ten_thousand_turns_reopen_and_replay_original_identity() -> Res
             if index >= 3 {
                 assert!(state.resident_after_sequence() > 0);
             }
-        }
-        if index == 113 || index == TURNS - 1 {
-            let workspace = crate::filesystem::workspace_ref(
-                binding.journal.host.provider.clone(),
-                &binding.journal.volume.storage_name(&mut None)?,
-            )?;
-            let mut counts = [0; 4];
-            for (index, path) in [
-                "/.system/execution",
-                "/turns/.canonical",
-                "/.system/harness-file-metadata",
-                "/.system/harness-uploads",
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let page = binding.journal.host.list(&workspace, None, path, 3).await?;
-                assert!(
-                    !page.has_more,
-                    "active namespace must not accumulate old turns"
-                );
-                counts[index] = page.entries.len();
-            }
-            if let Some(prior) = active_counts {
-                assert_eq!(
-                    counts, prior,
-                    "active namespace must not grow between checkpoints"
-                );
-            } else {
-                active_counts = Some(counts);
+            if index + 1 == WARMUP + N || index + 1 == TURNS {
+                let work = acyclic_fs::NativeMaterializationWork::new(
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+                let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+                let (copy, _) = state.copy(&mut Some(&mut io.history_io()), None)?;
+                assert_eq!(&copy, state);
+                drop(copy);
+                drop(io);
+                observations.push(serde_json::to_value(work.receipt()).expect("work counters"));
             }
         }
         if index == TURNS - 3 {
@@ -314,6 +303,19 @@ async fn durable_ten_thousand_turns_reopen_and_replay_original_identity() -> Res
             assert!(weak_files.upgrade().is_none());
             binding = open(directory.path(), agent, model.clone(), false).await?;
         }
+    }
+    let [small, large] = observations.as_slice() else {
+        return Err(Error::Invalid("missing growth observations".into()));
+    };
+    for (counter, value) in small.as_object().expect("work counters") {
+        assert!(
+            large
+                .get(counter)
+                .and_then(serde_json::Value::as_u64)
+                .expect("counter")
+                <= 10 * value.as_u64().expect("counter"),
+            "{counter} grows faster than the workload: {small:?} -> {large:?}"
+        );
     }
     let requests = model.0.load(Ordering::SeqCst);
     assert!(

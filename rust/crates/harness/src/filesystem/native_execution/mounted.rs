@@ -79,6 +79,8 @@ pub trait NativeMountedVolume: Send + Sync {
     fn enter(&self, work: &NativeMaterializationWork) -> Result<NativeMountWorkScope>;
     /// Holds physical I/O against source retirement.
     fn io_lease(&self) -> Result<NativeSourceIoLease>;
+    /// Captures a provider-side edit before publication.
+    fn capture_host_path(&self, path: &Path, work: &NativeMaterializationWork) -> Result<()>;
     /// Actual mounted directory identity.
     fn identity(&self) -> Result<acyclic_fs::NativeRootIdentity>;
     /// Recognizes held SDK resources beside this mounted directory.
@@ -136,6 +138,9 @@ where
     fn io_lease(&self) -> Result<NativeSourceIoLease> {
         self.native_source_io_lease().map_err(Into::into)
     }
+    fn capture_host_path(&self, path: &Path, work: &NativeMaterializationWork) -> Result<()> {
+        self.capture_host_path(path, work).map_err(Into::into)
+    }
     fn identity(&self) -> Result<acyclic_fs::NativeRootIdentity> {
         self.native_root_identity()
             .ok_or_else(super::preparation_record::invalid)
@@ -160,17 +165,16 @@ where
         >,
     > {
         crate::NativeFutureBundle::new(work, || async move {
+            let mut accounting_failure = None;
             Ok(self
-                .publication_snapshot(work, work.cancellation())
+                .publication_snapshot(work, work.cancellation(), &mut accounting_failure)
                 .await
-                .map_err(
-                    |(cause, accounting_failure)| NativeMountPublicationFailure {
-                        cause: cause.into(),
-                        accounting_failure: accounting_failure.map(Box::new),
-                        source_acknowledged: false,
-                        publication: None,
-                    },
-                ))
+                .map_err(|cause| NativeMountPublicationFailure {
+                    cause: cause.into(),
+                    accounting_failure: accounting_failure.map(Box::new),
+                    source_acknowledged: false,
+                    publication: None,
+                }))
         })
     }
     fn publish<'a>(

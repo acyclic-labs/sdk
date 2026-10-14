@@ -80,8 +80,7 @@ where
                 .shared_checkout()
                 .publish(
                     crate::PublicationPermit::Unrestricted,
-                    work,
-                    cancellation,
+                    crate::kernel::KernelAccounting::native(work, cancellation),
                     Some(authored.cancellation()),
                     &mut adapter::source_publication_guard(
                         authored.callback_guard().cloned(),

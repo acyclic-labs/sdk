@@ -429,3 +429,29 @@ fn measured_fence_cancellation_never_starts_a_native_leaf() -> Result<(), Box<dy
     assert!(guard.lock_path.is_file());
     Ok(())
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn recovery_reclaims_a_dead_owner_lock_but_rejects_a_held_lock()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let destination = root.path().join("mount");
+    std::fs::create_dir(&destination)?;
+    let mut owner = MountDestinationGuard::acquire_canonical(&destination.canonicalize()?)?;
+    let marker = owner.lock_path.clone();
+    assert!(matches!(
+        NativeMountRecoveryOwner::acquire(&destination),
+        Err(NativeMountError::DestinationBusy)
+    ));
+    // A crashed process closes its file without deleting the on-disk marker.
+    drop(owner.file.take());
+    drop(owner);
+    assert!(marker.exists());
+    let mut recovery = NativeMountRecoveryOwner::acquire(&destination)?;
+    assert!(recovery.recover()?);
+    assert!(!recovery.cleanup_state()?.destination_fence_retained);
+    assert!(recovery.cleanup_state()?.namespace_detach_confirmed);
+    assert!(!destination.exists());
+    await_recovery_worker(recovery)?;
+    Ok(())
+}

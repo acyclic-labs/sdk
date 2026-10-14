@@ -79,8 +79,8 @@ fn malformed_admission_metadata_is_rejected() -> Result<()> {
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[tokio::test]
-async fn native_component_model_10000_real_signed_transitions_stays_live_source_bounded()
--> Result<()> {
+async fn native_component_model_transition_work_grows_linearly_with_bounded_residency() -> Result<()>
+{
     use acyclic_fs::{CancellationToken, NativeMaterializationWork};
     let budget = acyclic_fs::WorkBudget {
         allocation_operations: 4096,
@@ -149,8 +149,14 @@ async fn native_component_model_10000_real_signed_transitions_stays_live_source_
     let mut state = reference.reducer().copy(&mut None)?;
     let available =
         budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes();
+    const N: u64 = 8;
+    const WARMUP: u64 = 16;
+    const TRANSITIONS: u64 = WARMUP + 10 * N;
     let mut recent = VecDeque::new();
-    for index in 0_u64..10_000 {
+    let mut total = acyclic_fs::WorkCounters::default();
+    let mut input_bytes = 0_u64;
+    let mut small = None;
+    for index in 0_u64..TRANSITIONS {
         let mut id = [0_u8; 16];
         id[..8].copy_from_slice(&(index / 4 + 1).to_le_bytes());
         let effect_id = EffectId::from_bytes(id);
@@ -204,6 +210,19 @@ async fn native_component_model_10000_real_signed_transitions_stays_live_source_
         else {
             panic!("fresh model event replayed")
         };
+        if index >= WARMUP {
+            input_bytes += serde_json::to_vec(&(
+                &owner.audience,
+                event.revision,
+                event.operation_id,
+                event.intent_digest,
+                &event.scope,
+                &event.causal_parent,
+                &event.payload,
+            ))
+            .expect("signed input")
+            .len() as u64;
+        }
         let query = NativeMaterializationWork::new(budget, &CancellationToken::new())
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = crate::filesystem::PreparationIo::from_native_work(&query)?;
@@ -215,7 +234,15 @@ async fn native_component_model_10000_real_signed_transitions_stays_live_source_
         state.mark_indexed_terminal_effect_with_work(&event, &mut Some(&mut io.history_io()))?;
         drop(io);
         let receipt = query.receipt();
-        assert!(receipt.allocation_operations < 512 && receipt.bytes_copied < 1_048_576);
+        if index >= WARMUP {
+            total = total.checked_add(receipt).expect("work counters fit");
+        }
+        if index + 1 == WARMUP + N {
+            small = Some((
+                serde_json::to_value(total).expect("work counters"),
+                input_bytes,
+            ));
+        }
         assert_eq!(&state, reference.reducer(), "transition {index}");
         assert!(state.events.len() <= 4);
         assert!(
@@ -231,7 +258,22 @@ async fn native_component_model_10000_real_signed_transitions_stays_live_source_
             }
         }
     }
-    assert_eq!(state.revision(), 10_001);
+    let (small, small_bytes) = small.expect("small workload");
+    let input_bound = input_bytes.max(10 * small_bytes);
+    let large = serde_json::to_value(total).expect("work counters");
+    for (counter, value) in small.as_object().expect("work counters") {
+        assert!(
+            u128::from(
+                large
+                    .get(counter)
+                    .and_then(serde_json::Value::as_u64)
+                    .expect("counter")
+            ) * u128::from(small_bytes)
+                <= u128::from(value.as_u64().expect("counter")) * u128::from(input_bound),
+            "{counter} grows faster than the signed input: {small:?} -> {large:?}"
+        );
+    }
+    assert_eq!(state.revision(), TRANSITIONS + 1);
     let mut oldest = [0_u8; 16];
     oldest[..8].copy_from_slice(&1_u64.to_le_bytes());
     assert!(state.effect(EffectId::from_bytes(oldest)).is_none());

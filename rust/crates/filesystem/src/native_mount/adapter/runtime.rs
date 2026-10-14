@@ -107,14 +107,14 @@ impl CallbackRuntime {
         work: &mut crate::demand::DemandWork,
     ) -> Result<PreparedCallbackWait, MountSourceError> {
         work.check()
-            .map_err(crate::native_mount::lazy::mount_demand_error)?;
+            .map_err(crate::native_mount::MountSourceError::from)?;
         let bytes = std::mem::size_of::<ParkedCallback>() as u64;
         work.claim_allocation(
             bytes,
             u64::from((bytes) != 0),
             crate::WorkCounters::UNCHARGED,
         )
-        .map_err(crate::native_mount::lazy::mount_demand_error)?;
+        .map_err(crate::native_mount::MountSourceError::from)?;
         Ok(PreparedCallbackWait {
             parked: Arc::new(ParkedCallback {
                 woken: StdMutex::new(false),

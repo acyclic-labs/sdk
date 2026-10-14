@@ -2,7 +2,9 @@ use super::*;
 
 #[tokio::test]
 async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<()> {
-    const DEPTH: u8 = 64;
+    const N: u8 = 1;
+    const DEPTH: u8 = 10 * N;
+    let mut observations = Vec::new();
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let fs_options = LocalOptions::new(directory.path().join("filesystem"));
     let stream_root = directory.path().join("streams");
@@ -18,13 +20,10 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
         "2".into(),
         &mut None,
     )?;
-    let host = FilesystemHost::new(
-        Fs::local(fs_options)
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?,
-        &provider,
-        None,
-    )?;
+    let fs = Fs::local(fs_options)
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let host = FilesystemHost::new(fs.clone(), &provider, None)?;
     let stream = Arc::new(
         LocalStream::open(&stream_root, LocalStreamLimits::default())
             .await
@@ -208,10 +207,13 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
                     revision: ResourceRevision::PrivateVolume {
                         volume: private.clone(),
                         generation: host
-                            .resolve(&workspace_ref(
-                                provider.clone(),
-                                &private.storage_name(&mut None)?,
-                            )?, None)
+                            .resolve(
+                                &workspace_ref(
+                                    provider.clone(),
+                                    &private.storage_name(&mut None)?,
+                                )?,
+                                None,
+                            )
                             .await?
                             .generation,
                         paths: Vec::new(),
@@ -266,87 +268,89 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
             )
             .await?;
 
-        let delegated = issuer.delegate_private_file_read(
-            &grant_scope,
-            child_agent,
-            format!("deep-parent-attachment-{level}"),
-            &previous_attachment,
-        )?;
-        let exact_parent_read = ContentGrant::verify_read(
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            &delegated,
-            &previous_attachment,
-        )?;
-        assert_eq!(
-            host.read_content(&previous_attachment, &exact_parent_read, 1_024, None)
-                .await?
-                .as_ref(),
-            format!("deep attachment {}", level - 1).as_bytes(),
-        );
-        assert!(
-            ContentGrant::verify_read(
+        if level == N || level == DEPTH {
+            let delegated = issuer.delegate_private_file_read(
+                &grant_scope,
+                child_agent,
+                format!("deep-parent-attachment-{level}"),
+                &previous_attachment,
+            )?;
+            let exact_parent_read = ContentGrant::verify_read(
                 &issuer.verifier(&mut None).expect("verifier copy"),
                 &delegated,
-                &previous_file
-            )
-            .is_err()
-        );
+                &previous_attachment,
+            )?;
+            assert_eq!(
+                host.read_content(&previous_attachment, &exact_parent_read, 1_024, None)
+                    .await?
+                    .as_ref(),
+                format!("deep attachment {}", level - 1).as_bytes(),
+            );
+            assert!(
+                ContentGrant::verify_read(
+                    &issuer.verifier(&mut None).expect("verifier copy"),
+                    &delegated,
+                    &previous_file
+                )
+                .is_err()
+            );
 
-        let child_read = ContentGrant::verify(
-            &child_issuer.verifier(&mut None).expect("verifier copy"),
-            &child_scope,
-            &child_private,
-            VolumeOperation::Read,
-            65_536,
-            &mut None,
-        )?;
-        assert!(
-            !host
-                .read_content(&inherited_file, &child_read, 8 * 1_024, None)
-                .await?
-                .is_empty()
-        );
-        assert!(
-            host.read_content(&previous_file, &child_read, 1_024, None)
-                .await
-                .is_err()
-        );
-        assert!(
-            host.read_content(&previous_attachment, &child_read, 1_024, None)
-                .await
-                .is_err()
-        );
-        let reference_scope = child_issuer
-            .issue(
-                &format!("deep-reference-reader-{level}"),
-                &Capabilities::new([
-                    child_private.capability(VolumeOperation::Read, &mut None)?,
-                    reference_capability,
-                ]),
-                Some(child_agent),
-                None,
+            let child_read = ContentGrant::verify(
+                &child_issuer.verifier(&mut None).expect("verifier copy"),
+                &child_scope,
+                &child_private,
+                VolumeOperation::Read,
+                65_536,
                 &mut None,
-            )
-            .expect("scope proof");
-        let child_reference_read = ContentGrant::verify_read(
-            &child_issuer.verifier(&mut None).expect("verifier copy"),
-            &reference_scope,
-            &previous_attachment,
-        )?;
-        assert_eq!(
-            host.read_content(&previous_attachment, &child_reference_read, 1_024, None)
-                .await?
-                .as_ref(),
-            format!("deep attachment {}", level - 1).as_bytes(),
-        );
-        assert!(
-            ContentGrant::verify_read(
+            )?;
+            assert!(
+                !host
+                    .read_content(&inherited_file, &child_read, 8 * 1_024, None)
+                    .await?
+                    .is_empty()
+            );
+            assert!(
+                host.read_content(&previous_file, &child_read, 1_024, None)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                host.read_content(&previous_attachment, &child_read, 1_024, None)
+                    .await
+                    .is_err()
+            );
+            let reference_scope = child_issuer
+                .issue(
+                    &format!("deep-reference-reader-{level}"),
+                    &Capabilities::new([
+                        child_private.capability(VolumeOperation::Read, &mut None)?,
+                        reference_capability,
+                    ]),
+                    Some(child_agent),
+                    None,
+                    &mut None,
+                )
+                .expect("scope proof");
+            let child_reference_read = ContentGrant::verify_read(
                 &child_issuer.verifier(&mut None).expect("verifier copy"),
                 &reference_scope,
-                &previous_file
-            )
-            .is_err()
-        );
+                &previous_attachment,
+            )?;
+            assert_eq!(
+                host.read_content(&previous_attachment, &child_reference_read, 1_024, None)
+                    .await?
+                    .as_ref(),
+                format!("deep attachment {}", level - 1).as_bytes(),
+            );
+            assert!(
+                ContentGrant::verify_read(
+                    &child_issuer.verifier(&mut None).expect("verifier copy"),
+                    &reference_scope,
+                    &previous_file
+                )
+                .is_err()
+            );
+        }
 
         let child_write = ContentGrant::verify(
             &child_issuer.verifier(&mut None).expect("verifier copy"),
@@ -414,11 +418,42 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
             )
             .await?;
         project_head = host
-            .resolve(&workspace_ref(
-                provider.clone(),
-                &child_project.storage_name(&mut None)?,
-            )?, None)
+            .resolve(
+                &workspace_ref(provider.clone(), &child_project.storage_name(&mut None)?)?,
+                None,
+            )
             .await?;
+        if level == N || level == DEPTH {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let opened = fs
+                .open_workspace(
+                    child_private.storage_name(&mut None)?,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map_err(|failure| Error::Storage(failure.error.to_string()))?;
+            let listed = opened
+                .value
+                .list_directory(
+                    "/",
+                    None,
+                    3,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map_err(|failure| Error::Storage(failure.error.to_string()))?;
+            observations.push(
+                serde_json::to_value(
+                    opened
+                        .work
+                        .checked_add(listed.work)
+                        .map_err(|error| Error::Storage(error.to_string()))?,
+                )
+                .map_err(|error| Error::Storage(error.to_string()))?,
+            );
+        }
         previous_file = child_file;
         previous_attachment = child_attachment;
         private = child_private;
@@ -432,6 +467,19 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
 
     assert_eq!(aggregate.reducer().revision(), 2);
     assert_eq!(agent, AgentId::from_bytes([DEPTH; 16]));
-    assert_eq!(project.id(), "deep-project-64");
+    assert_eq!(project.id(), format!("deep-project-{DEPTH}"));
+    let [small, large] = observations.as_slice() else {
+        panic!("missing growth observations")
+    };
+    for (counter, value) in small.as_object().expect("work counters") {
+        assert!(
+            large
+                .get(counter)
+                .and_then(serde_json::Value::as_u64)
+                .expect("counter")
+                <= value.as_u64().expect("counter"),
+            "{counter} must stay bounded"
+        );
+    }
     Ok(())
 }

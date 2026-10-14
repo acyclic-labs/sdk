@@ -733,8 +733,7 @@ where
                 self.checkout
                     .publish(
                         crate::PublicationPermit::Unrestricted,
-                        work,
-                        work.cancellation(),
+                        crate::kernel::KernelAccounting::native(work, work.cancellation()),
                         Some(&self.cancellation),
                         &mut source_publication_guard(
                             self.native_callback_guard.clone(),
