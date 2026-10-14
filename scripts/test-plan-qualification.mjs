@@ -452,7 +452,7 @@ test("Linux filesystem packaging overlaps Harness conformance and joins both fai
   const commands = source.slice(start, end);
   const helpers = source.slice(source.indexOf("background() {"), source.indexOf("native_binding() {"));
   assert.ok(helpers.includes("finish() {"));
-  const controlledHelpers = helpers.replace("finish() {", 'finish() {\n  touch "$fixture/finish-entered"');
+  const controlledHelpers = helpers.replace("finish() {", 'finish() {\n  if [[ "$1" == harness-conformance ]]; then touch "$fixture/finish-entered"; fi');
   mkdirSync(".tools", { recursive: true });
   const root = mkdtempSync(".tools/linux-packages-").replaceAll("\\", "/");
   assert.match(root, /^\.tools\/linux-packages-[A-Za-z0-9]+$/);
@@ -502,6 +502,7 @@ bash() {
   return "$fail_fs"
 }
 ${controlledHelpers}
+background filesystem-package bash scripts/check-filesystem-package.sh "$SDK_ARTIFACT_DIR/packages/filesystem"
 ${body}
 printf 'joined\\n'
 `], { encoding: "utf8", timeout: 10000 });

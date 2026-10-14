@@ -307,14 +307,22 @@ case "$lane" in
     background harness-package bash scripts/check-harness-package.sh "$SDK_ARTIFACT_DIR/packages/harness"
     generated_status=0
     bun run check:generated || generated_status=$?
-    finish harness-package
+    if ((generated_status == 0)); then
+      background filesystem-package bash scripts/check-filesystem-package.sh "$SDK_ARTIFACT_DIR/packages/filesystem"
+    fi
+    harness_status=0
+    finish harness-package || harness_status=$?
+    if ((harness_status != 0)); then
+      if ((generated_status == 0)); then finish filesystem-package || true; fi
+      exit "$harness_status"
+    fi
     if ((generated_status != 0)); then exit "$generated_status"; fi
     background harness-conformance bun scripts/run-harness-conformance.mjs \
       "$SDK_ARTIFACT_DIR/packages/harness" \
       "$SDK_ARTIFACT_DIR/packages/harness/runner-report.json" \
       "$SDK_ARTIFACT_DIR/packages/harness/qualification-receipt.json"
     filesystem_status=0
-    bash scripts/check-filesystem-package.sh "$SDK_ARTIFACT_DIR/packages/filesystem" || filesystem_status=$?
+    finish filesystem-package || filesystem_status=$?
     finish harness-conformance
     if ((filesystem_status != 0)); then exit "$filesystem_status"; fi
     bun run licenses
