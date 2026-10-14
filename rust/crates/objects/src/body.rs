@@ -36,6 +36,7 @@ impl BodyReadBuffer {
         }
     }
     fn append(&mut self, written: usize, bytes: &[u8]) -> Result<(), BodyReadError> {
+        let _ = written;
         match self {
             Self::Ordinary(output) => output.extend_from_slice(bytes),
             #[cfg(not(target_arch = "wasm32"))]
@@ -59,6 +60,7 @@ impl BodyReadBuffer {
         Ok(())
     }
     fn freeze(self, written: usize) -> Result<acyclic_stream::OwnedBytes, BodyReadError> {
+        let _ = written;
         match self {
             Self::Ordinary(output) => Ok(output.into()),
             #[cfg(not(target_arch = "wasm32"))]
@@ -90,7 +92,7 @@ where
     #[cfg(target_arch = "wasm32")]
     let allocation = {
         let _ = mode;
-        ()
+        None
     };
     Ok(crate::v1::Guarded {
         value: Box::pin(future),
@@ -230,7 +232,7 @@ impl StoredBody {
                     meter.check().map_err(crate::v1::NativeObjectsError::from)?;
                 }
                 if start > end || end > body.len() {
-                    return Err(Error::from(Unavailable).into());
+                    Err(Error::from(Unavailable))?;
                 }
                 Ok(body.slice(start..end))
             });
@@ -241,7 +243,7 @@ impl StoredBody {
                 meter.check().map_err(crate::v1::NativeObjectsError::from)?;
             }
             if start > end || end > self.len() {
-                return Err(Error::from(Unavailable).into());
+                Err(Error::from(Unavailable))?;
             }
             match self {
                 Self::Memory(_) => unreachable!("memory reads use the direct path"),
@@ -285,7 +287,7 @@ impl StoredBody {
                         offset = part_end;
                     }
                     if written != end - start {
-                        return Err(Error::from(Unavailable).into());
+                        Err(Error::from(Unavailable))?;
                     }
                     output.freeze(written)
                 }

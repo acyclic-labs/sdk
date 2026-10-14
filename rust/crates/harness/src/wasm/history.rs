@@ -77,7 +77,7 @@ impl WasmBrowserHistoryReader {
     pub async fn open_browser(options: JsValue) -> Result<WasmBrowserHistoryReader, JsValue> {
         let options: BrowserHistoryOptions = from_js(options)?;
         let (client, issuer) = options.connect().await?;
-        let verifier = issuer.verifier(&mut None).expect("verifier copy");
+        let verifier = issuer.verifier(&mut None).map_err(js_error)?;
         let inner = HistoryReader::new(&client, verifier.audience(), &(verifier), &mut None)
             .map_err(js_error)?;
         Ok(Self { inner })
@@ -161,7 +161,7 @@ impl WasmBrowserAggregate {
         let schemas = schema_registry(schemas)?;
         let snapshot: Option<Snapshot> = snapshot.map(from_js).transpose()?;
         let (client, issuer) = options.connect().await?;
-        let verifier = issuer.verifier(&mut None).expect("verifier copy");
+        let verifier = issuer.verifier(&mut None).map_err(js_error)?;
         let authority = verifier.audience().clone();
         let inner = if let Some(snapshot) = snapshot {
             StreamAggregate::open(

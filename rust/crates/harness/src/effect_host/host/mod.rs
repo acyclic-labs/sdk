@@ -22,7 +22,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         work: NativeWork<'_>,
     ) -> Result<Arc<Self>> {
         let (authority, issuer, scope) = binding;
-        let mut host = Self {
+        let host = Self {
             stream,
             authority,
             issuer,
@@ -32,6 +32,8 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             providers,
             native_metadata: custody,
         };
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let mut host = host;
         #[cfg(feature = "filesystem")]
         let mut io = history(work)?;
         #[cfg(feature = "filesystem")]

@@ -87,7 +87,7 @@ impl DarwinMountContext {
         let guard = self.source.native_callback_guard();
         match (&self.callback_guard, &guard) {
             (Some(installed), Some(current)) if Arc::ptr_eq(installed, current) => {
-                verify_guard(Some(installed), selected.as_ref())?
+                verify_guard(Some(installed), selected.as_ref())?;
             }
             (None, None) => {}
             _ => return Err(NativeMountError::ControlPending),

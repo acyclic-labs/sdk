@@ -95,16 +95,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         cancellation: &CancellationToken,
     ) -> Result<Owned<VerifiedPublication<A, O>>, FsError> {
         let limits = closure_limits(config);
-        let (proof, mut allocation) = match accounting {
+        let (proof, allocation) = match accounting {
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { work: original, .. } => {
                 let (proof, mut allocation) = crate::kernel::closure::ProofContext::new(
                     &self.inner.objects,
                     limits,
-                    crate::kernel::closure::ProofMeter::Native { original, cancellation },
-                ).prove(generation_root)
+                    crate::kernel::closure::ProofMeter::Native {
+                        original,
+                        cancellation,
+                    },
+                )
+                .prove(generation_root)
                 .await?;
-                (proof, KernelOwnedAllocation::NativeOriginal(allocation.take_native()?))
+                (
+                    proof,
+                    KernelOwnedAllocation::NativeOriginal(allocation.take_native()?),
+                )
             }
             _ => {
                 let result = prove_generation_closure(
@@ -126,10 +133,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 (proof, allocation)
             }
         };
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut allocation = allocation;
         if proof.root.volume_id != volume_id {
             return Err(FsError::VolumeMismatch);
         }
         let root_bytes = root_parent_bytes(&proof.root)?;
+        let _ = root_bytes;
         let bytes = usize_to_u64(proof.objects.capacity() * size_of::<ObjectId>());
         drop(proof.root);
         #[cfg(not(target_arch = "wasm32"))]

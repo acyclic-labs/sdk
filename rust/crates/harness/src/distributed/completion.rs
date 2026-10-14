@@ -3,6 +3,10 @@ use super::*;
 
 /// Accepts and funds a completion before its physical action.
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+#[allow(
+    clippy::too_many_lines,
+    reason = "One accepted future retains the original completion payload, recovery and allocation custody."
+)]
 pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
     owner: &crate::durable_host::TaskJournalOwner<P>,
     template: crate::filesystem::NativePreparationCompletionTemplate,
@@ -20,10 +24,9 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
             reason: "native completion differs from its original observer and custody",
         });
     }
-    let maximum_bytes = template.output.maximum_len() as u64;
-    if maximum_bytes == 0
-        || maximum_bytes > acyclic_stream::MAX_RECORD_BYTES as u64
-    {
+    let maximum_len = template.output.maximum_len();
+    let maximum_bytes = maximum_len as u64;
+    if maximum_bytes == 0 || maximum_bytes > acyclic_stream::MAX_RECORD_BYTES as u64 {
         return Err(Error::NativeBoundary {
             code: wire::ErrorCode::Storage,
             reason: "native completion lacks its fixed prepaid output",
@@ -64,8 +67,9 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
             reason: "native completion requires its original owner tail",
         });
     }
-    let pool_bytes = (size_of::<Error>() as u64 + crate::executor::json::sdk_json_diagnostic_bytes())
-        .max(size_of::<acyclic_fs::MaterializationJournal>() as u64);
+    let pool_bytes = (size_of::<Error>() as u64
+        + crate::executor::json::sdk_json_diagnostic_bytes())
+    .max(size_of::<acyclic_fs::MaterializationJournal>() as u64);
     let (request, custody) = {
         let mut prepared = commit_request(template.key.clone(), 0, &mut work);
         prepared.1.reserve(2, &mut prepared.0.conditions)?;
@@ -86,7 +90,10 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
             .1
             .work()
             .as_deref_mut()
-            .expect("checked native observer")
+            .ok_or(Error::NativeBoundary {
+                code: wire::ErrorCode::Invalid,
+                reason: "native completion observer is absent",
+            })?
             .take_native_custody(retained)?;
         prepared.1.transfer();
         let (request, quota) = prepared;
@@ -105,7 +112,7 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
         let (mut prepared, sdk_custody) = native_response(
             original,
             client
-                .native_prepare_commit(request, maximum_bytes as usize, original.runtime_meter())
+                .native_prepare_commit(request, maximum_len, original.runtime_meter())
                 .await,
         )?;
         let Some(recovery) = prepared.take_recovery_future() else {
@@ -125,7 +132,6 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
             return Err(completion_error(error, observer.into_custody()));
         }
     };
-    drop(work);
     drop(io);
     // Unpolled payloads drop before their funding.
     let pending = (template, sdk, sdk_recovery, sdk_custody, observer);
@@ -139,7 +145,11 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
             // The accepted reservation covers every write within this fixed buffer.
             let mut output = std::io::Cursor::new(template.output.writable());
             let serialized = serde_json::to_writer(&mut output, &template.value);
-            let written = output.position() as usize;
+            let written =
+                usize::try_from(output.position()).map_err(|_| Error::NativeBoundary {
+                    code: wire::ErrorCode::Storage,
+                    reason: "native completion output position overflows",
+                })?;
             let charged = observer.record_completed(acyclic_fs::WorkCounters {
                 bytes_encoded: written as u64,
                 bytes_copied: written as u64,
@@ -152,7 +162,10 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
             })?;
             charged?;
             let crate::filesystem::NativePreparationCompletionTemplate {
-                mut journal, output, mut custody, ..
+                mut journal,
+                output,
+                mut custody,
+                ..
             } = template;
             journal.revision += 1;
             if let Err(cause) = sdk_custody.absorb(&mut custody) {
@@ -172,7 +185,10 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
             observer.admit_acknowledgment(output.len() as u64, 1)?;
             let original = observer
                 .original_native_work()
-                .expect("accepted completion ledger")
+                .ok_or(Error::NativeBoundary {
+                    code: wire::ErrorCode::Invalid,
+                    reason: "accepted completion ledger is absent",
+                })?
                 .clone();
             let mut optional = Some(&mut observer as &mut dyn HistoryIo);
             let mut quota = CodecQuota::from_retained(&mut optional, 0);
@@ -211,7 +227,10 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
             quota
                 .work()
                 .as_deref_mut()
-                .expect("accepted completion observer")
+                .ok_or(Error::NativeBoundary {
+                    code: wire::ErrorCode::Invalid,
+                    reason: "accepted completion observer is absent",
+                })?
                 .check_cancellation()?;
             if !committed {
                 return Err(Error::NativeBoundary {
@@ -254,11 +273,11 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
 
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 fn completion_error(mut error: Error, incoming: acyclic_fs::NativeAllocation) -> Error {
-    let custody = match &mut error {
-        Error::NativeWork { custody, .. }
-        | Error::NativeJson { custody, .. }
-        | Error::NativeStream { custody, .. } => custody,
-        _ => return error,
+    let (Error::NativeWork { custody, .. }
+    | Error::NativeJson { custody, .. }
+    | Error::NativeStream { custody, .. }) = &mut error
+    else {
+        return error;
     };
     if custody.is_none() {
         *custody = Some(incoming);

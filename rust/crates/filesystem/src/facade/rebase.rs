@@ -305,7 +305,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
         .await;
         candidate.retire(accounting)?;
-        let (mut rebased, mut prepared) = outcome?;
+        let (rebased, prepared) = outcome?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let (mut rebased, mut prepared) = (rebased, prepared);
         if let Err(error) = cancellation.check() {
             rebased.retire(accounting)?;
             return Err(error.into());

@@ -35,6 +35,10 @@ use std::sync::{
 use std::time::{Duration, SystemTime};
 
 #[cfg(test)]
+#[allow(
+    clippy::type_complexity,
+    reason = "The test gate pairs one admission signal with release of that same write."
+)]
 static TEST_WRITE_GATE: OnceLock<
     Mutex<
         Option<(
@@ -112,8 +116,6 @@ mod lookup;
 use lookup::*;
 mod session;
 pub(super) use session::FuseSession;
-#[cfg(test)]
-use session::{FuseSessionState, run_fuse_session};
 mod lifecycle;
 pub(super) use lifecycle::FuseRecoveryControl;
 use lifecycle::*;

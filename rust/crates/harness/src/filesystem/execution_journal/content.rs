@@ -14,7 +14,12 @@ where
     ) -> Result<(IdempotencyKey, String)> {
         let digest = {
             let _input_hold;
-            let input = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("{operation_id}:{idempotency_key}"), work))?;
+            let input = crate::executor::with_history_io(io, |work| {
+                crate::executor::preparation_format(
+                    format_args!("{operation_id}:{idempotency_key}"),
+                    work,
+                )
+            })?;
             _input_hold = io
                 .map(|io| io.guard_owned(input.capacity() as u64))
                 .transpose()?;
@@ -28,8 +33,15 @@ where
             }
             blake3::hash(input.as_bytes())
         };
-        let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("journal-{}", digest.to_hex()), work))?)?;
-        let path = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!(".system/execution/{operation_id}/{}.json", digest.to_hex()), work))?;
+        let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
+            crate::executor::preparation_format(format_args!("journal-{}", digest.to_hex()), work)
+        })?)?;
+        let path = crate::executor::with_history_io(io, |work| {
+            crate::executor::preparation_format(
+                format_args!(".system/execution/{operation_id}/{}.json", digest.to_hex()),
+                work,
+            )
+        })?;
         Ok((key, path))
     }
 
@@ -279,7 +291,9 @@ where
         }
         if let Some(io) = io {
             crate::model::charge_items(Some(io), 1)?;
-if let Some(io) = Some(io) { io.retain_owned(reference.logical_owned_bytes()?)?; }
+            if let Some(io) = Some(io) {
+                io.retain_owned(reference.logical_owned_bytes()?)?;
+            }
             reference.validate(&mut None)?;
             if reference.volume().class() == VolumeClass::AgentPrivate
                 && reference.volume().owner() != self.volume.owner()
@@ -355,6 +369,7 @@ if let Some(io) = Some(io) { io.retain_owned(reference.logical_owned_bytes()?)?;
         &self,
         content: &ModelContent,
         io: Option<&PreparationIo>,
+        context: Option<&crate::runtime::TaskContext>,
     ) -> Result<()> {
         let mut count = 0_usize;
         for _ in content.file_refs() {
@@ -402,6 +417,19 @@ if let Some(io) = Some(io) { io.retain_owned(reference.logical_owned_bytes()?)?;
                 ));
             }
             references.push((file, binding));
+        }
+        if self.owner.is_none()
+            && io.is_none()
+            && references.iter().any(|(_, binding)| binding.is_some())
+            && let Some(context) = context
+        {
+            context
+                .verify_model_contents(std::iter::once(content))
+                .await?;
+            for (file, _) in &references {
+                self.verify_input_file_with_io(file, io).await?;
+            }
+            return Ok(());
         }
         for (_, binding) in &references {
             if let Some(binding) = binding {
@@ -467,8 +495,7 @@ if let Some(io) = Some(io) { io.retain_owned(reference.logical_owned_bytes()?)?;
             owner.require_interaction_grant(&mut work)?;
             owner.verify(true, &mut work).await?;
         }
-        host.verify_approval(id, operation, digest, io)
-            .await?;
+        host.verify_approval(id, operation, digest, io).await?;
         if let Some((owner, _)) = &self.owner {
             owner.verify(true, &mut work).await?;
         }
@@ -476,4 +503,4 @@ if let Some(io) = Some(io) { io.retain_owned(reference.logical_owned_bytes()?)?;
     }
 }
 
-use crate::executor::{stock_boundary};
+use crate::executor::stock_boundary;

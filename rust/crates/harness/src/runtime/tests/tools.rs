@@ -80,8 +80,7 @@ async fn scoped_live_policy_preserves_ancestor_and_blocks_denied_tool() -> Resul
                 &narrowed.scope,
             )
             .await
-            .err()
-            .expect("original scoped veto");
+            .expect_err("original scoped veto");
         match error {
             Error::NativeDiagnostic {
                 code: crate::wire::ErrorCode::Unauthorized,

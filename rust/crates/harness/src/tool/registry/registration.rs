@@ -21,6 +21,7 @@ impl ToolRegistry {
         custody: &mut crate::NativeCustody,
         work: crate::NativeWork<'_>,
     ) -> Result<()> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut tool = tool;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let (original, definition_bytes, original_quota) =

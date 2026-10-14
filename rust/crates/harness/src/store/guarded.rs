@@ -3,6 +3,7 @@ use super::*;
 use crate::durable_host::TaskJournalOwner;
 
 fn guarded_publication_error(error: Error, operation: OperationId) -> Error {
+    let _ = &error;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if matches!(
         &error,

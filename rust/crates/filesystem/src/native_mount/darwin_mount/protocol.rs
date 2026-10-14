@@ -91,13 +91,13 @@ impl DarwinMountContext {
     ) -> Result<NativeStat, NativeMountError> {
         let node = lookup.node;
         let file_kind = match node.kind {
-            MountNodeKind::Regular => libc::S_IFREG as u32,
-            MountNodeKind::Directory => libc::S_IFDIR as u32,
-            MountNodeKind::SymbolicLink => libc::S_IFLNK as u32,
-            MountNodeKind::Fifo => libc::S_IFIFO as u32,
-            MountNodeKind::Socket => libc::S_IFSOCK as u32,
-            MountNodeKind::CharacterDevice => libc::S_IFCHR as u32,
-            MountNodeKind::BlockDevice => libc::S_IFBLK as u32,
+            MountNodeKind::Regular => u32::from(libc::S_IFREG),
+            MountNodeKind::Directory => u32::from(libc::S_IFDIR),
+            MountNodeKind::SymbolicLink => u32::from(libc::S_IFLNK),
+            MountNodeKind::Fifo => u32::from(libc::S_IFIFO),
+            MountNodeKind::Socket => u32::from(libc::S_IFSOCK),
+            MountNodeKind::CharacterDevice => u32::from(libc::S_IFCHR),
+            MountNodeKind::BlockDevice => u32::from(libc::S_IFBLK),
             MountNodeKind::Unsupported => return Err(driver_errno(libc::EOPNOTSUPP)),
         };
         let default_mode = if self.writable { 0o755 } else { 0o555 };

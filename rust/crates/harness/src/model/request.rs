@@ -1,5 +1,7 @@
 use super::*;
-use std::{collections::BTreeMap, mem::size_of};
+use std::collections::BTreeMap;
+#[cfg(feature = "filesystem")]
+use std::mem::size_of;
 
 /// Complete immutable provider-neutral model request.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

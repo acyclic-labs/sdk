@@ -4,6 +4,9 @@ use crate::executor::json::{JsonValueSchema as Schema, JsonValueShape};
 use std::mem::size_of;
 
 pub(crate) trait PreparationRecord: serde::de::DeserializeOwned {
+    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
     fn maximum_slot_bytes() -> u64 {
         preparation_slot_bytes::<Self>()
     }
@@ -80,10 +83,7 @@ pub(super) fn decode_allowance_with_code(
 ) -> Error {
     #[cfg(not(target_arch = "wasm32"))]
     if let (Some(code), Error::NativeBoundary { reason, .. }) = (code, &error) {
-        return Error::NativeBoundary {
-            code,
-            reason,
-        };
+        return Error::NativeBoundary { code, reason };
     }
     let _ = code;
     error

@@ -690,3 +690,11 @@ impl From<NativeMountStartupAdmissionError> for MountSourceError {
         }
     }
 }
+
+/// An opened identity and its admitted SDK payload size.
+pub struct MountOpenClaim {
+    /// The actual open-file identity.
+    pub file: Arc<dyn MountOpenFile>,
+    /// The payload claim retained by the native handle.
+    pub bytes: u64,
+}

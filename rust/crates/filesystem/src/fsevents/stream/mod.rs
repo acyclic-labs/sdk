@@ -87,8 +87,7 @@ impl EventStream {
     }
 
     fn birth_work<W: SourceDemandReadWork>(&self, work: &W) -> bool {
-        work.native_source_work().is_some_and(|work| {
-            let current = work.clone();
+        work.native_source_work().is_some_and(|current| {
             self.birth.as_ref().is_some_and(|birth| {
                 Arc::ptr_eq(&birth.state, &current.state)
                     && match (birth.resource.as_ref(), current.resource.as_ref()) {

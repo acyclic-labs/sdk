@@ -274,6 +274,7 @@ pub async fn load_canonical_checkpoint(
         limits,
         scope,
         io,
+        None,
     )
     .await?;
     for file in retained.0.metadata.values() {
@@ -366,6 +367,7 @@ async fn project_checkpoint_delta(
         limits,
         Some(scope),
         io,
+        None,
     )
     .await?;
     drop(selected.selection);

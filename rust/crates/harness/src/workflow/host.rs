@@ -204,7 +204,7 @@ impl DurableWorkflowHost {
                 page.0
                     .pop()
                     .ok_or_else(|| {
-                        stock_boundary(io, Storage, "latest workflow record is unavailable")
+                        stock_boundary(io, Storage, "latest workflow record is missing")
                     })?
                     .transition,
             ),

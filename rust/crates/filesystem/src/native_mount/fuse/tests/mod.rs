@@ -2,11 +2,12 @@ use super::super::{
     MountAttributePage, MountAttributeWriteMode, MountDirectoryPage, MountRangeAllocation,
     MountSourceError, ViewObserver,
 };
+use super::session::{FuseSessionState, run_fuse_session};
 use super::{
-    FuseSessionState, InodeEntry, KernelCacheItem, MAXIMUM_NEGATIVE_ENTRIES_PER_DIRECTORY,
-    MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile, MountPath,
-    MountSeekTarget, NativeMountError, ProjectionCore, ROOT_INODE, ViewStamp, callback_errno,
-    confirm_name, name_is_bound, run_fuse_session,
+    InodeEntry, KernelCacheItem, MAXIMUM_NEGATIVE_ENTRIES_PER_DIRECTORY, MountFilesystem,
+    MountLookup, MountNode, MountNodeKind, MountOpenFile, MountPath, MountSeekTarget,
+    NativeMountError, ProjectionCore, ROOT_INODE, ViewStamp, callback_errno, confirm_name,
+    name_is_bound,
 };
 use crate::FileId;
 use crate::kernel::FileMetadata;

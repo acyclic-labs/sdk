@@ -41,6 +41,7 @@ pub(super) struct StreamContext {
 // SAFETY: handlers are Send+Sync; the terminal slot has a single queue-local
 // writer/consumer and every raw reference has a real Arc strong owner.
 unsafe impl Send for StreamContext {}
+// SAFETY: shared callbacks never access the queue-local terminal slot concurrently.
 unsafe impl Sync for StreamContext {}
 
 pub(super) extern "C" fn release_context(info: *const c_void) {
@@ -55,6 +56,7 @@ pub(super) extern "C" fn terminal_suffix(info: *mut c_void) {
     // SAFETY: defer_terminal gave this original serial queue exactly one raw
     // Arc reference. No callback can still be accessing its queue-local slot.
     let context = unsafe { Arc::from_raw(info.cast::<StreamContext>()) };
+    // SAFETY: this terminal suffix is the serial queue's sole remaining slot consumer.
     let owner = unsafe { &mut *context.terminal.get() }
         .take()
         .expect("the original stream's sole terminal owner is present");

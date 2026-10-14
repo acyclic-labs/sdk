@@ -220,7 +220,9 @@ pub(crate) async fn tail_optional_with_work<P: StreamProvider>(
     path: &StreamPath,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Option<u64>> {
-    let mut result: Option<std::result::Result<u64, StreamError>> = None;
+    let result: Option<std::result::Result<u64, StreamError>> = None;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let mut result = result;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(original) = work.as_deref().and_then(|io| io.original_native_work()) {
         let tail = client

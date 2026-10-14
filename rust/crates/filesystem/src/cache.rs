@@ -792,15 +792,10 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
                 }
                 ReadPlan::Follower(flight) => {
                     if let Some(&index) = local_leaders.get(&request.object_id)
-                        && prepared
-                            .leaders
-                            .value
-                            .get(index)
-                            .is_some_and(|leader| Arc::ptr_eq(&leader.flight, &flight))
+                        && let Some(leader) = prepared.leaders.value.get_mut(index)
+                        && Arc::ptr_eq(&leader.flight, &flight)
                     {
-                        prepared.leaders.value[index].maximum_bytes = prepared.leaders.value[index]
-                            .maximum_bytes
-                            .max(request.maximum_bytes);
+                        leader.maximum_bytes = leader.maximum_bytes.max(request.maximum_bytes);
                         BatchSlot::LocalLeader(index)
                     } else {
                         BatchSlot::ExternalFollower(flight)

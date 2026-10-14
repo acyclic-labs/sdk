@@ -64,8 +64,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 let (closure, _allocation) = crate::kernel::closure::ProofContext::new(
                     &self.inner.objects,
                     closure_limits(config),
-                    crate::kernel::closure::ProofMeter::Native { original, cancellation },
-                ).prove_record_closure(records)
+                    crate::kernel::closure::ProofMeter::Native {
+                        original,
+                        cancellation,
+                    },
+                )
+                .prove_record_closure(records)
                 .await?;
                 return self
                     .flush_publication(
@@ -78,7 +82,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     )
                     .await;
             }
-            let meter = match crate::kernel::closure::ProofMeter::standalone(accounting.remaining()?, cancellation) {
+            let meter = match crate::kernel::closure::ProofMeter::standalone(
+                accounting.remaining()?,
+                cancellation,
+            ) {
                 Ok(meter) => meter,
                 Err(error) => {
                     merge_creation_backend_work(&mut accounting, WorkCounters::UNCHARGED)?;
@@ -86,12 +93,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 }
             };
             let proof = crate::kernel::closure::ProofContext::new(
-                &self.inner.objects, closure_limits(config), meter.clone(),
-            ).prove_record_closure(records).await;
+                &self.inner.objects,
+                closure_limits(config),
+                meter.clone(),
+            )
+            .prove_record_closure(records)
+            .await;
             let spent = meter.work();
             drop(meter);
             merge_creation_backend_work(&mut accounting, spent)?;
-            let (closure, guard) = proof.map_err(|error| FsError::from(crate::kernel::closure::closure_error(error)))?;
+            let (closure, guard) = proof
+                .map_err(|error| FsError::from(crate::kernel::closure::closure_error(error)))?;
             drop(guard);
             self.flush_publication(
                 crate::PublicationScope::Closure {
@@ -270,12 +282,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     pub(super) async fn put_encoded_with_accounting(
         &self,
         kind: ObjectKind,
-        mut encoded: (Vec<u8>, KernelOwnedAllocation),
+        encoded: (Vec<u8>, KernelOwnedAllocation),
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<ObjectId, FsError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {
+            let mut encoded = encoded;
             let allocation = match &mut encoded.1 {
                 KernelOwnedAllocation::NativeOriginal(allocation) => allocation,
                 KernelOwnedAllocation::Standalone => return Err(FsError::HandleAllocationFailed),

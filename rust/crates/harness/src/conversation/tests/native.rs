@@ -7,12 +7,8 @@ fn original_work(
     budget: acyclic_fs::WorkBudget,
     cancellation: &acyclic_fs::CancellationToken,
 ) -> Result<NativeMaterializationWork> {
-    NativeMaterializationWork::new(budget, cancellation).map_err(|(cause, work)| {
-        Error::NativeConstruction {
-            cause,
-            work: work,
-        }
-    })
+    NativeMaterializationWork::new(budget, cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

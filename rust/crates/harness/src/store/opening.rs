@@ -69,7 +69,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     Error::Invalid("projection suffix exceeds event allowance".into())
                 })?,
         )
-        .map_err(|error| Error::Invalid(error.to_string()))?;
+        .map_err(|_| Error::Invalid("projection suffix exceeds event allowance".into()))?;
         if count != 0 {
             replay_suffix(
                 client,

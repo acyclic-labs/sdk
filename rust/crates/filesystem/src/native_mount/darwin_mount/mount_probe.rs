@@ -58,15 +58,15 @@ impl MountProbe {
             if unsafe { libc::fcntl(fd, libc::F_GETPATH, path.as_mut_ptr()) } < 0 {
                 return Err(std::io::Error::last_os_error().into());
             }
-            let length = CStr::from_bytes_until_nul(&path)
+            let parent = CStr::from_bytes_until_nul(&path)
                 .map_err(|_| driver_errno(libc::EIO))?
-                .to_bytes()
-                .len();
+                .to_bytes();
+            let length = parent.len();
             let name = destination
                 .file_name()
                 .ok_or(NativeMountError::InvalidDestination)?
                 .as_bytes();
-            let separator = usize::from(length != 0 && path[length - 1] != b'/');
+            let separator = usize::from(parent.last().is_some_and(|byte| *byte != b'/'));
             let end = length
                 .checked_add(separator)
                 .and_then(|n| n.checked_add(name.len()))
@@ -75,11 +75,23 @@ impl MountProbe {
                 return Err(driver_errno(libc::ENAMETOOLONG));
             }
             work.charge(copy_work(name.len() as u64))?;
-            if separator != 0 {
-                path[length] = b'/';
-            }
-            path[length + separator..end].copy_from_slice(name);
-            shared(work, native_name(&path[..end], work)?).map(Self)
+            let path = path
+                .get_mut(..end)
+                .ok_or_else(|| driver_errno(libc::ENAMETOOLONG))?;
+            let suffix = path
+                .get_mut(length..)
+                .ok_or_else(|| driver_errno(libc::ENAMETOOLONG))?;
+            let suffix = if separator != 0 {
+                let (slash, suffix) = suffix
+                    .split_first_mut()
+                    .ok_or_else(|| driver_errno(libc::ENAMETOOLONG))?;
+                *slash = b'/';
+                suffix
+            } else {
+                suffix
+            };
+            suffix.copy_from_slice(name);
+            shared(work, native_name(path, work)?).map(Self)
         })();
         close.started_drop_io(WRITE_WORK);
         // SAFETY: closes the descriptor opened here on every result path.
@@ -103,8 +115,9 @@ impl MountProbe {
         if count <= 0 || mounts.is_null() {
             return Err(std::io::Error::last_os_error().into());
         }
+        let count = usize::try_from(count).map_err(|_| driver_errno(libc::EOVERFLOW))?;
         // SAFETY: positive count is the initialized table length, retained under MOUNT_TABLE.
-        let mounts = unsafe { std::slice::from_raw_parts(mounts, count as usize) };
+        let mounts = unsafe { std::slice::from_raw_parts(mounts, count) };
         for mount in mounts {
             work.check()?;
             // SAFETY: Darwin terminates f_mntonname.

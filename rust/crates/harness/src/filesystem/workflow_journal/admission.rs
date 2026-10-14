@@ -44,16 +44,18 @@ where
         &self,
         io: Option<&PreparationIo>,
     ) -> Result<Option<WorkflowAdmission>> {
-        let _path;
-        let path = crate::executor::with_history_io(io, |work| {
-            crate::executor::preparation_format(
-                format_args!("harness/v2/workflow-admissions/{}", self.id()),
-                work,
-            )
-        })?;
-        _path = io
-            .map(|io| io.guard_owned(path.capacity() as u64))
-            .transpose()?;
+        let (_path, path) = {
+            let path = crate::executor::with_history_io(io, |work| {
+                crate::executor::preparation_format(
+                    format_args!("harness/v2/workflow-admissions/{}", self.id()),
+                    work,
+                )
+            })?;
+            let held = io
+                .map(|io| io.guard_owned(path.capacity() as u64))
+                .transpose()?;
+            (held, path)
+        };
         let _stream_path;
         let (stream, held) = Self::observation_stream(&self.stream, &path, io)?;
         _stream_path = held;
@@ -93,36 +95,40 @@ where
                 "workflow admission sequence is invalid",
             ));
         }
-        let _reference_hold;
-        let reference_before = io.map(PreparationIo::owned_bytes).transpose()?;
-        let reference: FileRef = match io {
-            Some(io) => crate::filesystem::retain_decoded(io.decode(
-                std::marker::PhantomData::<FileRef>,
-                &entry.value,
-                crate::wire::ErrorCode::Storage,
-            )?),
-            None => crate::contract::json_from_slice(&entry.value).map_err(|error| {
-                Error::Storage(format!("workflow admission reference is invalid: {error}"))
-            })?,
-        };
-        _reference_hold = match (io, reference_before) {
-            (Some(io), Some(before)) => Some(io.guard_owned(
-                io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                    Error::Invalid("workflow admission reference custody underflow".into())
+        let (_reference_hold, reference) = {
+            let reference_before = io.map(PreparationIo::owned_bytes).transpose()?;
+            let reference: FileRef = match io {
+                Some(io) => crate::filesystem::retain_decoded(io.decode(
+                    std::marker::PhantomData::<FileRef>,
+                    &entry.value,
+                    crate::wire::ErrorCode::Storage,
+                )?),
+                None => crate::contract::json_from_slice(&entry.value).map_err(|error| {
+                    Error::Storage(format!("workflow admission reference is invalid: {error}"))
                 })?,
-            )?),
-            _ => None,
+            };
+            let held = match (io, reference_before) {
+                (Some(io), Some(before)) => Some(io.guard_owned(
+                    io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
+                        Error::Invalid("workflow admission reference custody underflow".into())
+                    })?,
+                )?),
+                _ => None,
+            };
+            (held, reference)
         };
-        let _expected_path;
-        let expected_path = crate::executor::with_history_io(io, |work| {
-            crate::executor::preparation_format(
-                format_args!(".system/workflows/{}/admission.json", self.id()),
-                work,
-            )
-        })?;
-        _expected_path = io
-            .map(|io| io.guard_owned(expected_path.capacity() as u64))
-            .transpose()?;
+        let (_expected_path, expected_path) = {
+            let expected_path = crate::executor::with_history_io(io, |work| {
+                crate::executor::preparation_format(
+                    format_args!(".system/workflows/{}/admission.json", self.id()),
+                    work,
+                )
+            })?;
+            let held = io
+                .map(|io| io.guard_owned(expected_path.capacity() as u64))
+                .transpose()?;
+            (held, expected_path)
+        };
         if reference.volume() != &self.volume
             || reference.path() != expected_path
             || reference.descriptor().media_type() != "application/json"
@@ -193,39 +199,45 @@ where
                 "workflow transitions exist without admission".into(),
             ));
         }
-        let _reference;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let reference = self.stage_payload(&admission, None, io).await?;
-        _reference = io
-            .map(|io| {
-                io.guard_owned(io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                    Error::Invalid("workflow admission reference custody underflow".into())
-                })?)
-            })
-            .transpose()?;
-        {
-            let _pinned_bytes;
-            let pinned_bytes = self.read_bound_content(&reference, io).await?;
-            _pinned_bytes = external_read_hold(&pinned_bytes, io)?;
-            let _pinned;
-            let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-            let pinned: WorkflowAdmission = match io {
-                Some(io) => crate::filesystem::retain_decoded(io.decode(
-                    std::marker::PhantomData::<WorkflowAdmission>,
-                    &pinned_bytes,
-                    crate::wire::ErrorCode::Storage,
-                )?),
-                None => crate::contract::json_from_slice(&pinned_bytes).map_err(|error| {
-                    Error::Storage(format!("workflow admission is invalid: {error}"))
-                })?,
-            };
-            _pinned = io
+        let (_reference, reference) = {
+            let reference = self.stage_payload(&admission, None, io).await?;
+            let held = io
                 .map(|io| {
                     io.guard_owned(io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                        Error::Invalid("workflow pinned admission custody underflow".into())
+                        Error::Invalid("workflow admission reference custody underflow".into())
                     })?)
                 })
                 .transpose()?;
+            (held, reference)
+        };
+        {
+            let (_pinned_bytes, pinned_bytes) = {
+                let pinned_bytes = self.read_bound_content(&reference, io).await?;
+                let held = external_read_hold(&pinned_bytes, io)?;
+                (held, pinned_bytes)
+            };
+            let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+            let (_pinned, pinned) = {
+                let pinned: WorkflowAdmission = match io {
+                    Some(io) => crate::filesystem::retain_decoded(io.decode(
+                        std::marker::PhantomData::<WorkflowAdmission>,
+                        &pinned_bytes,
+                        crate::wire::ErrorCode::Storage,
+                    )?),
+                    None => crate::contract::json_from_slice(&pinned_bytes).map_err(|error| {
+                        Error::Storage(format!("workflow admission is invalid: {error}"))
+                    })?,
+                };
+                let held = io
+                    .map(|io| {
+                        io.guard_owned(io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
+                            Error::Invalid("workflow pinned admission custody underflow".into())
+                        })?)
+                    })
+                    .transpose()?;
+                (held, pinned)
+            };
             pinned.validate(io)?;
             if pinned != admission {
                 return Err(Error::Conflict(
@@ -233,16 +245,18 @@ where
                 ));
             }
         }
-        let _path;
-        let path = crate::executor::with_history_io(io, |work| {
-            crate::executor::preparation_format(
-                format_args!("harness/v2/workflow-admissions/{}", self.id()),
-                work,
-            )
-        })?;
-        _path = io
-            .map(|io| io.guard_owned(path.capacity() as u64))
-            .transpose()?;
+        let (_path, path) = {
+            let path = crate::executor::with_history_io(io, |work| {
+                crate::executor::preparation_format(
+                    format_args!("harness/v2/workflow-admissions/{}", self.id()),
+                    work,
+                )
+            })?;
+            let held = io
+                .map(|io| io.guard_owned(path.capacity() as u64))
+                .transpose()?;
+            (held, path)
+        };
         let appended = self
             .append_reference(
                 &path,

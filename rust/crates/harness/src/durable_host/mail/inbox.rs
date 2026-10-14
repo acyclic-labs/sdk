@@ -2,6 +2,10 @@
 use super::*;
 
 impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The bounded replay keeps record custody until the authenticated page is complete."
+    )]
     pub(in super::super) async fn inbox_page(
         &self,
         task: TaskId,

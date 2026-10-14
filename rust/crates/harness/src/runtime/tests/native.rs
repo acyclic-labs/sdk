@@ -48,20 +48,10 @@ fn native_scope_keeps_independent_input_custody_and_scalar_denial_codes() -> Res
         items_examined: 1,
         ..WorkBudget::default()
     };
-    let original =
-        NativeMaterializationWork::new(budget, &cancellation).map_err(|(cause, work)| {
-            Error::NativeConstruction {
-                cause,
-                work,
-            }
-        })?;
-    let construction =
-        NativeMaterializationWork::new(budget, &cancellation).map_err(|(cause, work)| {
-            Error::NativeConstruction {
-                cause,
-                work,
-            }
-        })?;
+    let original = NativeMaterializationWork::new(budget, &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let construction = NativeMaterializationWork::new(budget, &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let (scope, custody) = RuntimeScope::new_with_native_work(
         Capabilities::copy(["read"], &original)?,
         Limits::default(),
@@ -120,10 +110,7 @@ fn native_scope_clone_and_narrow_preserve_readonly_grants_and_original_bounds() 
         },
         &cancellation,
     )
-    .map_err(|(cause, work)| Error::NativeConstruction {
-        cause,
-        work,
-    })?;
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let (root, _root_custody) = RuntimeScope::new_with_native_work(
         Capabilities::copy(["read"], &work)?,
         Limits::default(),
@@ -258,12 +245,8 @@ fn native_policy_identity_denies_cancelled_and_exhausted_copy_before_strings() -
     let cancellation = acyclic_fs::CancellationToken::new();
     let mut budget = acyclic_fs::performance::work_budget(256, 16_384);
     budget.bytes_copied = 0;
-    let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).map_err(
-        |(cause, work)| Error::NativeConstruction {
-            cause,
-            work,
-        },
-    )?;
+    let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     assert!(matches!(
         policy.identity_with_native_work(&work),
         Err(Error::NativeFilesystem { source, custody: None })

@@ -35,6 +35,7 @@ pub(super) fn tool_validate_projection(
         drop(content);
         return io.release(bytes).map_err(Into::into);
     }
+    drop(content);
     Ok(())
 }
 pub(super) fn tool_text(
@@ -50,11 +51,13 @@ pub(super) fn tool_text(
     Ok((value.to_string(), None))
 }
 pub(super) fn tool_success(
-    mut result: (ToolResult, NativeCustody),
+    result: (ToolResult, NativeCustody),
     io: Option<&PreparationIo>,
 ) -> Result<(Outcome<Value>, NativeCustody)> {
+    let _ = io;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = native_work(io) {
+        let mut result = result;
         let guard = result
             .1
             .as_mut()
@@ -96,7 +99,9 @@ pub(super) fn tool_outcome(
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let custody = None;
     let outcome = if let Some(reason) = failure {
-        let mut message = tool_text(format_args!("{}", reason.message()), io)?;
+        let message = tool_text(format_args!("{}", reason.message()), io)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let mut message = message;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let (Some(custody), Some(hold)) = (&mut custody, &mut message.1) {
             custody.absorb(hold)?;

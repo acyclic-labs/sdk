@@ -50,15 +50,19 @@ where
         owner.require_volume_grant(
             &self.volume,
             VolumeOperation::Read,
-            &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
+            &mut Some(
+                &mut crate::filesystem::PreparationIo::from_native_work(work)
+                    .map(crate::store::HistoryWork::new)?,
+            ),
         )?;
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             let file = {
                 owner
-                    .verify_read_access(&mut Some(&mut crate::filesystem::PreparationIo::from_native_work(
-                        work,
-                    ).map(crate::store::HistoryWork::new)?))
+                    .verify_read_access(&mut Some(
+                        &mut crate::filesystem::PreparationIo::from_native_work(work)
+                            .map(crate::store::HistoryWork::new)?,
+                    ))
                     .await?;
                 let _identity_hold;
                 let before = io.owned_bytes()?;
@@ -93,9 +97,10 @@ where
                         )
                     })?;
                 owner
-                    .verify_read_access(&mut Some(&mut crate::filesystem::PreparationIo::from_native_work(
-                        work,
-                    ).map(crate::store::HistoryWork::new)?))
+                    .verify_read_access(&mut Some(
+                        &mut crate::filesystem::PreparationIo::from_native_work(work)
+                            .map(crate::store::HistoryWork::new)?,
+                    ))
                     .await?;
                 file
             };
@@ -114,12 +119,17 @@ where
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ExecutionRecord>>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
             if io.is_none() {
-                let span = obs_span!("acyclic.harness.journal.replay", rev = after, items = crate::obs::Empty);
+                let span = obs_span!(
+                    "acyclic.harness.journal.replay",
+                    rev = after,
+                    items = crate::obs::Empty
+                );
                 return traced(span, async move {
                     let records = self.records(operation, after, maximum, io).await?;
                     crate::obs::obs_record!("items" = records.len());
                     Ok(records)
-                }).await;
+                })
+                .await;
             }
             let records = self.records(operation, after, maximum, io).await?;
             io.expect("bounded branch").remaining()?;
@@ -139,7 +149,8 @@ where
                     let bytes = self.load_content(reference, io).await?;
                     crate::obs::obs_record!("bytes" = bytes.len());
                     Ok(bytes)
-                }).await;
+                })
+                .await;
             }
             self.load_content(reference, io).await
         })
@@ -156,15 +167,20 @@ where
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = io.and_then(PreparationIo::original_native_work) {
                 let local = PreparationIo::from_native_work(work)?;
-                let result = self.append_validated(operation, None, key, event, Some(&local)).await;
+                let result = self
+                    .append_validated(operation, None, key, event, Some(&local))
+                    .await;
                 let retained = local.owned_bytes()?;
                 drop(local.into_native_custody(retained)?);
                 return result.map(|_| ());
             }
             let span = obs_span!("acyclic.harness.journal.append");
             traced(span, async move {
-                self.append_validated(operation, None, key, event, io).await.map(|_| ())
-            }).await
+                self.append_validated(operation, None, key, event, io)
+                    .await
+                    .map(|_| ())
+            })
+            .await
         })
     }
 
@@ -180,13 +196,22 @@ where
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = io.and_then(PreparationIo::original_native_work) {
                 let local = PreparationIo::from_native_work(work)?;
-                let result = self.append_validated(operation, Some(expected_tail), key, event, Some(&local)).await;
+                let result = self
+                    .append_validated(operation, Some(expected_tail), key, event, Some(&local))
+                    .await;
                 let retained = local.owned_bytes()?;
                 drop(local.into_native_custody(retained)?);
                 return result;
             }
-            let span = obs_span!("acyclic.harness.journal.append_if_tail", rev = expected_tail);
-            traced(span, self.append_validated(operation, Some(expected_tail), key, event, io)).await
+            let span = obs_span!(
+                "acyclic.harness.journal.append_if_tail",
+                rev = expected_tail
+            );
+            traced(
+                span,
+                self.append_validated(operation, Some(expected_tail), key, event, io),
+            )
+            .await
         })
     }
 
@@ -206,8 +231,11 @@ where
                     code: crate::wire::ErrorCode::Unsupported,
                     reason: "native staging requires an original dispatch owner",
                 })?;
-                owner.require_volume_grant(&self.volume, VolumeOperation::Write,
-                    &mut Some(&mut io.expect("native ledger").history_io()))?;
+                owner.require_volume_grant(
+                    &self.volume,
+                    VolumeOperation::Write,
+                    &mut Some(&mut io.expect("native ledger").history_io()),
+                )?;
                 Some((owner, work))
             }
             None => None,
@@ -216,11 +244,18 @@ where
             #[cfg(not(target_arch = "wasm32"))]
             if let Some((owner, work)) = native {
                 let local = PreparationIo::from_native_work(work)?;
-                owner.verify(false, &mut Some(&mut local.history_io())).await?;
-                let file = self.stage_with_io(operation, key, bytes, media, Some(&local)).await?;
-                owner.verify(false, &mut Some(&mut local.history_io())).await?;
+                owner
+                    .verify(false, &mut Some(&mut local.history_io()))
+                    .await?;
+                let file = self
+                    .stage_with_io(operation, key, bytes, media, Some(&local))
+                    .await?;
+                owner
+                    .verify(false, &mut Some(&mut local.history_io()))
+                    .await?;
                 let retained = file.logical_owned_bytes()?;
-                io.expect("native ledger").absorb_native_custody(local.into_native_custody(retained)?)?;
+                io.expect("native ledger")
+                    .absorb_native_custody(local.into_native_custody(retained)?)?;
                 return Ok(file);
             }
             let span = obs_span!("acyclic.harness.journal.stage", bytes = bytes.len());
@@ -233,15 +268,20 @@ where
         reference: &'a FileRef,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
-        crate::conversation::BoundedContentFuture::new(io, || self.verify_input_file_with_io(reference, io))
+        crate::conversation::BoundedContentFuture::new(io, || {
+            self.verify_input_file_with_io(reference, io)
+        })
     }
 
     fn verify_model_content<'a>(
         &'a self,
         content: &'a ModelContent,
         io: Option<&'a PreparationIo>,
+        context: Option<&'a crate::runtime::TaskContext>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
-        crate::conversation::BoundedContentFuture::new(io, || self.verify_model_content_with_io(content, io))
+        crate::conversation::BoundedContentFuture::new(io, || {
+            self.verify_model_content_with_io(content, io, context)
+        })
     }
 
     fn verify_selected_context<'a>(
@@ -250,7 +290,9 @@ where
         selected: &'a SelectedModelContext,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
-        crate::conversation::BoundedContentFuture::new(io, || self.verify_selected_context_with_io(operation, selected, io))
+        crate::conversation::BoundedContentFuture::new(io, || {
+            self.verify_selected_context_with_io(operation, selected, io)
+        })
     }
 
     fn open_interaction<'a>(
@@ -261,7 +303,10 @@ where
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
             #[cfg(not(target_arch = "wasm32"))]
-            let temporary = io.and_then(PreparationIo::original_native_work).map(PreparationIo::from_native_work).transpose()?;
+            let temporary = io
+                .and_then(PreparationIo::original_native_work)
+                .map(PreparationIo::from_native_work)
+                .transpose()?;
             #[cfg(not(target_arch = "wasm32"))]
             let active = temporary.as_ref().or(io);
             #[cfg(target_arch = "wasm32")]
@@ -277,7 +322,10 @@ where
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<InteractionOutcome>>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
             #[cfg(not(target_arch = "wasm32"))]
-            let temporary = io.and_then(PreparationIo::original_native_work).map(PreparationIo::from_native_work).transpose()?;
+            let temporary = io
+                .and_then(PreparationIo::original_native_work)
+                .map(PreparationIo::from_native_work)
+                .transpose()?;
             #[cfg(not(target_arch = "wasm32"))]
             let active = temporary.as_ref().or(io);
             #[cfg(target_arch = "wasm32")]
@@ -286,12 +334,12 @@ where
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(temporary) = temporary {
                 let retained = temporary.owned_bytes()?;
-                io.expect("native parent IO").absorb_native_custody(temporary.into_native_custody(retained)?)?;
+                io.expect("native parent IO")
+                    .absorb_native_custody(temporary.into_native_custody(retained)?)?;
             }
             Ok(outcome)
         })
     }
-
 }
 
-use crate::executor::{stock_boundary};
+use crate::executor::stock_boundary;

@@ -66,6 +66,7 @@ impl EventStream {
                     CREATE_FILE_EVENTS | CREATE_NO_DEFER,
                 )
             };
+            // SAFETY: path_array returned the owned CF reference released exactly once here.
             unsafe { (api.release)(paths) };
             paths_live = false;
             work.record(WorkCounters {
@@ -79,19 +80,21 @@ impl EventStream {
             let custody = ownership.as_ref().expect("startup custody");
             custody.retain(path_bytes + context_bytes, work)?;
             retained = custody.has_native_custody();
-            // SAFETY: null attributes select the original serial callback queue.
             queue =
+                // SAFETY: the label is terminated and null attributes select a serial queue.
                 unsafe { dispatch_queue_create(c"acyclic.fsevents".as_ptr(), std::ptr::null()) };
             if queue.is_null() {
                 return Err(native_error("cannot create the FSEvents dispatch queue"));
             }
             native_write(work, 0)?;
+            // SAFETY: both handles are live; the stream retains the original callback queue.
             unsafe { (api.stream_set_dispatch_queue)(stream, queue) };
             scheduled = true;
             native_write(work, 0)?;
             if let Some(published) = published_bytes {
                 published.store(path_bytes + context_bytes, Ordering::Release);
             }
+            // SAFETY: the held stream has its live context and serial dispatch queue installed.
             if unsafe { (api.stream_start)(stream) } == 0 {
                 return Err(native_error("cannot start an FSEvents stream"));
             }
@@ -114,9 +117,7 @@ impl EventStream {
                 } else {
                     (0, 0)
                 },
-                birth: work
-                    .native_source_work()
-                    .map(|work| work.clone().allocation_work()),
+                birth: work.native_source_work().map(|work| work.allocation_work()),
                 ownership: ownership.take().expect("startup custody"),
             })
         })();
@@ -134,6 +135,7 @@ impl EventStream {
         }
         if result.is_err() {
             if paths_live {
+                // SAFETY: paths_live retains the reference that no successful release consumed.
                 unsafe { (api.release)(paths) };
                 let _cleanup = work.record(WorkCounters {
                     backend_write_operations: 1,
@@ -177,9 +179,7 @@ impl EventStream {
                     } else {
                         (0, 0)
                     },
-                    birth: work
-                        .native_source_work()
-                        .map(|work| work.clone().allocation_work()),
+                    birth: work.native_source_work().map(|work| work.allocation_work()),
                 };
                 let _cleanup = failed.cleanup_admitted(work);
             }

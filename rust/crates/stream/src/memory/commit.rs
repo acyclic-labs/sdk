@@ -309,8 +309,7 @@ impl MemoryStream {
                 Ok((result, output_claim))
             });
         }
-        drop(conflicts);
-        drop(output_claim);
+        drop((conflicts, output_claim));
         crate::preparation::authority(&request, |path| {
             state.paths.get(path).map(|path| path.tail)
         })?;

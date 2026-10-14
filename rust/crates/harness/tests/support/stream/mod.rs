@@ -14,7 +14,8 @@ mod native;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use native::NativeFaultRecordCursor;
 
-#[async_trait::async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
     async fn inspect_idempotency(
         &self,

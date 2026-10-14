@@ -43,36 +43,32 @@ pub(super) fn open_unix<W: NativeHostWork>(
     flags: i32,
     work: &mut W,
 ) -> Result<File, W::Error> {
-    #[cfg(target_os = "linux")]
-    let mut flags = flags;
     let delta = if flags & (libc::O_WRONLY | libc::O_RDWR | libc::O_CREAT) != 0 {
         WRITE
     } else {
         READ
     };
-    loop {
-        let result = retry_io(work, delta, || {
-            use std::os::fd::FromRawFd as _;
-            // SAFETY: callers retain the parent and name; a successful open returns one owned descriptor.
-            let fd =
-                unsafe { libc::openat(directory, name.as_ptr(), flags, 0o666 as libc::c_uint) };
-            if fd < 0 {
-                Err(io::Error::last_os_error())
-            } else {
-                Ok(unsafe { File::from_raw_fd(fd) })
-            }
-        });
-        #[cfg(target_os = "linux")]
-        if result
-            .as_ref()
-            .is_err_and(|error| W::io_error_kind(error) == Some(io::ErrorKind::PermissionDenied))
-            && flags & libc::O_NOATIME != 0
-        {
-            flags &= !libc::O_NOATIME;
-            continue;
+    let result = retry_io(work, delta, || {
+        use std::os::fd::FromRawFd as _;
+        // SAFETY: callers retain the parent and name; a successful open returns one owned descriptor.
+        let fd = unsafe { libc::openat(directory, name.as_ptr(), flags, 0o666 as libc::c_uint) };
+        if fd < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            // SAFETY: openat returned a new descriptor; ownership transfers to this File.
+            Ok(unsafe { File::from_raw_fd(fd) })
         }
-        return result;
+    });
+    #[cfg(target_os = "linux")]
+    if result
+        .as_ref()
+        .is_err_and(|error| W::io_error_kind(error) == Some(io::ErrorKind::PermissionDenied))
+        && flags & libc::O_NOATIME != 0
+    {
+        drop(result);
+        return open_unix(directory, name, flags & !libc::O_NOATIME, work);
     }
+    result
 }
 
 #[cfg(unix)]

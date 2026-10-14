@@ -137,7 +137,13 @@ impl<P: StreamProvider> HistoryReader<P> {
         let count = u32::try_from(
             (cursor.through_revision - cursor.after_revision).min(u64::from(limits.maximum_events)),
         )
-        .map_err(|error| Error::Invalid(error.to_string()))?;
+        .map_err(|_| {
+            boundary(
+                quota.work(),
+                Invalid,
+                "history page exceeds event allowance",
+            )
+        })?;
         let mut events = Vec::new();
         self.read_page_records(cursor, limits, count, &mut next, &mut events, &mut quota)
             .await?;

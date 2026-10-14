@@ -14,6 +14,7 @@ pub struct FileDescriptor {
 }
 
 impl FileDescriptor {
+    #[cfg(feature = "filesystem")]
     pub(crate) fn logical_owned_bytes(&self) -> u64 {
         self.media_type.capacity() as u64
     }
@@ -295,6 +296,7 @@ impl FileRef {
         })
     }
 
+    #[cfg(feature = "filesystem")]
     pub(crate) fn logical_clone_owned_bytes(&self) -> Result<u64> {
         let owner = match &self.volume.owner {
             VolumeOwner::Project(text) | VolumeOwner::Session(text) => text.len() as u64,

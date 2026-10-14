@@ -215,7 +215,7 @@ where
             acyclic_fs::performance::work_budget(65_536, 64 * 1_024 * 1_024),
             &acyclic_fs::CancellationToken::new(),
         )
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work: work })?;
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         #[cfg(not(target_arch = "wasm32"))]
         let metadata_io = Some(crate::filesystem::PreparationIo::from_native_work(
             &metadata_work,

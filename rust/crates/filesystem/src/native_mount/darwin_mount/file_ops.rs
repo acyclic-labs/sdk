@@ -9,8 +9,8 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_getattr(
 ) -> c_int {
     ffi(address, false, |context, work| {
         let attributes = context.attributes(&*mount_path(path, work)?, handle, work)?;
-        // SAFETY: the bridge supplies a writable NativeStat.
         work.charge(copy_work(std::mem::size_of::<NativeStat>() as u64))?;
+        // SAFETY: the bridge supplies a writable NativeStat.
         unsafe { result.write(attributes) };
         Ok(0)
     })
@@ -28,8 +28,8 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_open(
         flags & libc::O_ACCMODE != libc::O_RDONLY,
         |context, work| {
             let opened = context.open(&*mount_path(path, work)?, 0, work)?;
-            // SAFETY: the bridge supplies a writable handle.
             work.charge(copy_work(std::mem::size_of::<u64>() as u64))?;
+            // SAFETY: the bridge supplies a writable handle.
             unsafe { handle.write(opened) };
             Ok(0)
         },
@@ -52,7 +52,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_create(
             || {
                 context.source.create_file(
                     &path,
-                    create_metadata(mode, libc::S_IFREG as u32, uid, gid),
+                    create_metadata(mode, u32::from(libc::S_IFREG), uid, gid),
                     None,
                     work,
                 )
@@ -60,8 +60,8 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_create(
             work,
         )?;
         let opened = context.open(&path, context.completed.load(Ordering::Acquire), work)?;
-        // SAFETY: the bridge supplies a writable handle.
         work.charge(copy_work(std::mem::size_of::<u64>() as u64))?;
+        // SAFETY: the bridge supplies a writable handle.
         unsafe { handle.write(opened) };
         Ok(0)
     })
@@ -103,8 +103,8 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_read(
             if bytes.len() > maximum as usize {
                 return Err(driver_errno(libc::EIO));
             }
-            // SAFETY: the reply fits the bridge's length-byte output buffer.
             work.charge(copy_work(bytes.len() as u64))?;
+            // SAFETY: the reply fits the bridge's length-byte output buffer.
             unsafe {
                 ptr::copy_nonoverlapping(bytes.as_ptr(), buffer.cast(), bytes.len());
             };
@@ -125,10 +125,10 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_write(
     ffi(address, true, |context, work| {
         let length = bounded_length(length).map_err(driver_errno)?;
         let offset = u64::try_from(offset).map_err(|_| driver_errno(libc::EINVAL))?;
-        // SAFETY: the bridge retains this readable length-byte input through the callback.
         let input = if length == 0 {
             &[]
         } else {
+            // SAFETY: the bridge retains this readable length-byte input through the callback.
             unsafe { std::slice::from_raw_parts(buffer.cast::<u8>(), length as usize) }
         };
         let bytes = copy_bytes(work, input)?;

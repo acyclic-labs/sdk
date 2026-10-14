@@ -5,10 +5,8 @@ use crate::{
     model::{Model, ModelEvent, ModelProvider, ModelRequest},
     runtime::{TaskDefinition, TaskRegistry},
 };
-use futures::{
-    future::BoxFuture,
-    stream::{self, BoxStream},
-};
+use acyclic_stream::{BoxProviderFuture as BoxFuture, BoxProviderStream as BoxStream};
+use futures::stream;
 use serde_json::Value;
 use std::sync::{
     Mutex,
@@ -90,8 +88,8 @@ async fn run_admitted_file_case<F, Fut>(
     handler: F,
 ) -> Result<()>
 where
-    F: Fn(crate::runtime::TaskContext) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = Result<()>> + Send + 'static,
+    F: Fn(crate::runtime::TaskContext) -> Fut + acyclic_stream::ProviderPlatform + 'static,
+    Fut: std::future::Future<Output = Result<()>> + acyclic_stream::ProviderTask + 'static,
 {
     use crate::runtime::{Bindings, ContentBindings};
     let mut bindings = Bindings::local();
@@ -226,15 +224,16 @@ async fn default_recursive_tools_are_present_and_unbound_routes_are_unavailable(
                 let context = crate::runtime::ToolContext::new(
                     Arc::new(task),
                     invocation.operation_id,
-                    &invocation.call_id, None,)?;
+                    &invocation.call_id,
+                    None,
+                )?;
                 assert!(matches!(
-                    tool.executor.authorize(None, Some(&context), &invocation, None),
+                    tool.executor
+                        .authorize(None, Some(&context), &invocation, None),
                     Err(Error::Unsupported(_))
                 ));
                 assert!(matches!(
-                    tool.executor
-                        .execute(invocation, Some(context))
-                        .await,
+                    tool.executor.execute(invocation, Some(context)).await,
                     Err(Error::Unsupported(_))
                 ));
                 Ok(())
@@ -288,7 +287,9 @@ async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
             let context = crate::runtime::ToolContext::new(
                 Arc::new(task.clone()),
                 invocation.operation_id,
-                &invocation.call_id, None,)?;
+                &invocation.call_id,
+                None,
+            )?;
             let result = tool
                 .executor
                 .execute(invocation.clone(), Some(context.clone()))
@@ -324,10 +325,13 @@ async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
                 },
             )?;
             let context = crate::runtime::ToolContext::new(
-                Arc::new(narrowed), invocation.operation_id, &invocation.call_id, None)?;
+                Arc::new(narrowed),
+                invocation.operation_id,
+                &invocation.call_id,
+                None,
+            )?;
             assert!(matches!(
-                tool.executor.execute(invocation, Some(context))
-                    .await,
+                tool.executor.execute(invocation, Some(context)).await,
                 Err(Error::Invalid(_))
             ));
             Ok(())
@@ -339,10 +343,13 @@ async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
         let invocation = invocation.clone();
         async move {
             let context = crate::runtime::ToolContext::new(
-                Arc::new(task), invocation.operation_id, &invocation.call_id, None)?;
+                Arc::new(task),
+                invocation.operation_id,
+                &invocation.call_id,
+                None,
+            )?;
             assert!(matches!(
-                tool.executor.execute(invocation, Some(context))
-                    .await,
+                tool.executor.execute(invocation, Some(context)).await,
                 Err(Error::Unauthorized(_)) | Err(Error::NotFound(_))
             ));
             Ok(())
@@ -404,26 +411,45 @@ async fn owner_private_directory_is_lazy_paged_and_generation_pinned() -> Result
         )
         .await?;
     let (generation, root) = storage.list_private_directory("", None, None, 8).await?;
-    assert!(
-        root.entries
-            .iter()
-            .any(|entry| entry.name.unicode_text(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).ok().map(|receipt| receipt.value).as_deref() == Some("notes"))
-    );
-    assert!(
-        !root
-            .entries
-            .iter()
-            .any(|entry| entry.name.unicode_text(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).ok().map(|receipt| receipt.value).as_deref() == Some(".system"))
-    );
+    assert!(root.entries.iter().any(|entry| {
+        entry
+            .name
+            .unicode_text(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .ok()
+            .map(|receipt| receipt.value)
+            .as_deref()
+            == Some("notes")
+    }));
+    assert!(!root.entries.iter().any(|entry| {
+        entry
+            .name
+            .unicode_text(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .ok()
+            .map(|receipt| receipt.value)
+            .as_deref()
+            == Some(".system")
+    }));
     let (_, notes) = storage
         .list_private_directory("notes", Some(&generation), None, 8)
         .await?;
-    assert!(
-        notes
-            .entries
-            .iter()
-            .any(|entry| entry.name.unicode_text(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).ok().map(|receipt| receipt.value).as_deref() == Some("one.txt"))
-    );
+    assert!(notes.entries.iter().any(|entry| {
+        entry
+            .name
+            .unicode_text(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .ok()
+            .map(|receipt| receipt.value)
+            .as_deref()
+            == Some("one.txt")
+    }));
     let limits = Limits {
         file_bytes: 4_096,
         render_bytes: 1_024,
@@ -457,7 +483,15 @@ async fn owner_private_directory_is_lazy_paged_and_generation_pinned() -> Result
         .await?;
     assert_eq!(pinned_notes.entries.len(), 1);
     assert_eq!(
-        pinned_notes.entries[0].name.unicode_text(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).ok().map(|receipt| receipt.value).as_deref(),
+        pinned_notes.entries[0]
+            .name
+            .unicode_text(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new()
+            )
+            .ok()
+            .map(|receipt| receipt.value)
+            .as_deref(),
         Some("one.txt")
     );
     let (_, current_notes) = storage
@@ -771,12 +805,18 @@ async fn local_builder_runs_through_ref_only_storage() -> Result<()> {
     let (generation, listed) = storage
         .list_delegated(&directory, "input", "input", None, None, 16)
         .await?;
-    assert!(
-        listed
-            .entries
-            .iter()
-            .any(|entry| entry.name.unicode_text(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).ok().map(|receipt| receipt.value).as_deref() == Some("note.txt"))
-    );
+    assert!(listed.entries.iter().any(|entry| {
+        entry
+            .name
+            .unicode_text(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .ok()
+            .map(|receipt| receipt.value)
+            .as_deref()
+            == Some("note.txt")
+    }));
     let (from_directory, body) = storage
         .read_delegated_path(&directory, "input", "input/note.txt", Some(&generation))
         .await?;
@@ -935,7 +975,7 @@ async fn typed_tasks_stage_and_resolve_only_with_owner_bound_grants() -> Result<
             assert!(
                 narrowed
                     .stage_file(
-                    None,
+                        None,
                         OperationId::from_bytes([93; 16]),
                         "task/denied.txt",
                         b"denied",

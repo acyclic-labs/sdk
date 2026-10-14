@@ -19,6 +19,10 @@ pub struct TaskVolumeSnapshot {
 #[cfg(feature = "filesystem")]
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
     /// Observes immutable snapshots and their retained output extent.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Snapshot validation and retained output accounting share one original quota."
+    )]
     pub async fn observe_volume_snapshots(
         &self,
         task: TaskId,

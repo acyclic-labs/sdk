@@ -30,7 +30,11 @@ pub use provider::{ModelDispatch, ModelEvent, ModelProvider};
 pub use request::{ModelRequest, PreparedModelRequest};
 
 use crate::store::HistoryIo;
-use crate::wire::ErrorCode::{Invalid, Storage, Unsupported};
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+use crate::wire::ErrorCode::Invalid;
+#[cfg(feature = "filesystem")]
+use crate::wire::ErrorCode::Storage;
+use crate::wire::ErrorCode::Unsupported;
 use crate::{
     Error, OperationId, Result,
     conversation::{FileRef, Limits},
@@ -38,7 +42,9 @@ use crate::{
 };
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
-use inventory::{add, overflow, slots};
+use inventory::slots;
+#[cfg(feature = "filesystem")]
+use inventory::{add, overflow};
 use preparation::{history_step, invalid, value_bound};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

@@ -97,7 +97,8 @@ where
     fs::create_dir(&destination)?;
     let remount = workspace
         .mount(&destination, MountOptions::read_write())
-        .await?;
+        .await
+        .map_err(stop_failed_mount)?;
     if fs::read(destination.join("nested/created.txt"))? != b"created-v2" {
         return Err("service handoff remount did not expose the published generation".into());
     }

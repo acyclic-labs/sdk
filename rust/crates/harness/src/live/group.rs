@@ -87,13 +87,7 @@ impl TaskGroup {
     pub fn child(&self, max_concurrency: usize, work: NativeWork<'_>) -> crate::Result<Self> {
         let mut child = Self::new(max_concurrency, work)?;
         Arc::get_mut(&mut child.state)
-            .ok_or_else(|| {
-                crate::executor::stock_boundary(
-                    None,
-                    crate::wire::ErrorCode::Storage,
-                    "new task group is already shared",
-                )
-            })?
+            .ok_or_else(|| crate::Error::Conflict("new task group is already shared".into()))?
             ._parent = Some(Arc::clone(&self.state));
         let admission = locked(&self.state.admission);
         let mut children = locked(&self.state.children);

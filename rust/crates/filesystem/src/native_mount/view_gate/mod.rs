@@ -57,11 +57,12 @@ impl ViewState {
     fn release_empty_registry(&mut self, gate: &ViewGate) {
         if self.occupied_slots == 0 && self.reader_slots.capacity() != 0 {
             self.reader_slots = Vec::new();
-            gate.reader_generation
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
-                    generation.checked_add(1)
-                })
-                .expect("admitted read registry generation");
+            let advanced = gate.reader_generation.fetch_update(
+                Ordering::AcqRel,
+                Ordering::Acquire,
+                |generation| generation.checked_add(1),
+            );
+            assert!(advanced.is_ok(), "admitted read registry generation");
         }
     }
 }
