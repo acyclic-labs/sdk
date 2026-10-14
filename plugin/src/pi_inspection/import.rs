@@ -112,12 +112,13 @@ where
         mount
             .import_selected(
                 checkpoint,
-                plan.0,
-                custody,
+                (plan.0, custody),
                 operation,
                 permit,
-                work,
-                work.cancellation(),
+                &acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                    work,
+                    cancellation: work.cancellation(),
+                },
                 before_publication,
             )
             .await

@@ -10,6 +10,14 @@ use crate::{
 
 const MAXIMUM_SAFE_REBASE_ATTEMPTS: usize = 8;
 
+#[derive(Default)]
+pub(super) struct PublicationProof<'a> {
+    pub(super) producer: Option<&'a std::sync::Arc<crate::kernel::ProofDataCustody>>,
+    pub(super) context: Option<crate::Digest>,
+    pub(super) evidence: Option<acyclic_stream::OwnedBytes>,
+    pub(super) fingerprint_permit: Option<PublicationPermit>,
+}
+
 /// Seals the exact current checkout candidate under one stable operation ID.
 ///
 /// Callers must retain `operation_id` across every ambiguous retry and must not
@@ -98,13 +106,9 @@ pub(super) async fn seal_checkout_with_permit_guarded_with_native_work<'a, A, O,
     operation_id: OperationId,
     permit: PublicationPermit,
     force: bool,
-    original: &'a crate::NativeMaterializationWork,
-    cancellation: &'a CancellationToken,
+    accounting: crate::kernel::KernelAccounting<'a>,
     before_publication: &'a mut F,
-    producer_custody: Option<&'a std::sync::Arc<crate::kernel::ProofDataCustody>>,
-    operation_context: Option<crate::Digest>,
-    operation_evidence: Option<acyclic_stream::OwnedBytes>,
-    original_fingerprint_permit: Option<PublicationPermit>,
+    proof: PublicationProof<'a>,
 ) -> Result<Option<(Option<OperationId>, crate::GenerationId)>, T>
 where
     A: AsyncAuthorityStore,
@@ -113,6 +117,13 @@ where
     F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
     Fut: std::future::Future<Output = Result<(), T>> + Send + 'static,
 {
+    let crate::kernel::KernelAccounting::NativeOriginal {
+        work: original,
+        cancellation,
+    } = accounting
+    else {
+        return Err(T::from(MountSourceError::OriginalSnapshotUnavailable));
+    };
     cancellation
         .check()
         .map_err(|error| T::from(crate::FsError::Cancelled(error)))?;
@@ -130,10 +141,10 @@ where
                 original,
                 cancellation,
                 before_publication,
-                producer_custody,
-                operation_context,
-                operation_evidence.clone(),
-                original_fingerprint_permit,
+                proof.producer,
+                proof.context,
+                proof.evidence.clone(),
+                proof.fingerprint_permit,
             )
             .await?
     {
@@ -158,28 +169,17 @@ where
                     original,
                     cancellation,
                     before_publication,
-                    producer_custody,
-                    operation_context,
-                    operation_evidence.clone(),
-                    original_fingerprint_permit,
+                    proof.producer,
+                    proof.context,
+                    proof.evidence.clone(),
+                    proof.fingerprint_permit,
                 )
                 .await?;
             if matches!(outcome, LivePublicationObservation::Conflict { .. }) && force {
-                let (decision, allocation) = checkout
-                    .rebase_head(
-                        checkout
-                            .volume_config()
-                            .limits
-                            .maximum_checkout_dependencies,
-                        original,
-                        cancellation,
-                    )
+                if rebase_conflicted(checkout, original, cancellation)
                     .await
-                    .map_err(T::from)?;
-                let conflicted = matches!(decision, RebaseDecision::Conflicted { .. });
-                drop(decision);
-                drop(allocation);
-                if conflicted {
+                    .map_err(T::from)?
+                {
                     return Ok(None);
                 }
             } else {
@@ -197,10 +197,10 @@ where
                 original,
                 cancellation,
                 before_publication,
-                producer_custody,
-                operation_context,
-                operation_evidence,
-                original_fingerprint_permit,
+                proof.producer,
+                proof.context,
+                proof.evidence,
+                proof.fingerprint_permit,
             )
             .await?;
         let ack = live_ack(operation_id, &outcome);
@@ -399,15 +399,16 @@ mod tests {
             OperationId::from_bytes([3; 16]),
             PublicationPermit::Unrestricted,
             true,
-            &original,
-            &cancellation,
+            crate::kernel::KernelAccounting::native(&original, &cancellation),
             &mut |_: &crate::NativeMaterializationWork| async {
                 Ok::<(), NativePublicationTestError>(())
             },
-            None,
-            None,
-            None,
-            None,
+            PublicationProof {
+                producer: None,
+                context: None,
+                evidence: None,
+                fingerprint_permit: None,
+            },
         )
         .await;
         let work_error = match result.expect_err("the original budget must bound every retry") {
@@ -477,15 +478,16 @@ mod tests {
             OperationId::from_bytes([0x61; 16]),
             PublicationPermit::Unrestricted,
             false,
-            &original,
-            &cancellation,
+            crate::kernel::KernelAccounting::native(&original, &cancellation),
             &mut |_: &crate::NativeMaterializationWork| async {
                 Ok::<(), NativePublicationTestError>(())
             },
-            None,
-            None,
-            None,
-            None,
+            PublicationProof {
+                producer: None,
+                context: None,
+                evidence: None,
+                fingerprint_permit: None,
+            },
         )
         .await?;
         assert_eq!(ack, Some((None, generation)));
@@ -547,15 +549,16 @@ mod tests {
             operation,
             PublicationPermit::Unrestricted,
             true,
-            &original,
-            &cancellation,
+            crate::kernel::KernelAccounting::native(&original, &cancellation),
             &mut |_: &crate::NativeMaterializationWork| async {
                 Ok::<(), NativePublicationTestError>(())
             },
-            None,
-            Some(context),
-            Some(evidence.clone()),
-            None,
+            PublicationProof {
+                producer: None,
+                context: Some(context),
+                evidence: Some(evidence.clone()),
+                fingerprint_permit: None,
+            },
         )
         .await;
         assert!(matches!(
@@ -571,15 +574,16 @@ mod tests {
             operation,
             PublicationPermit::Unrestricted,
             true,
-            &original,
-            &cancellation,
+            crate::kernel::KernelAccounting::native(&original, &cancellation),
             &mut |_: &crate::NativeMaterializationWork| async {
                 Ok::<(), NativePublicationTestError>(())
             },
-            None,
-            Some(crate::Digest::from_bytes([0x64; 32])),
-            Some(evidence.clone()),
-            None,
+            PublicationProof {
+                producer: None,
+                context: Some(crate::Digest::from_bytes([0x64; 32])),
+                evidence: Some(evidence.clone()),
+                fingerprint_permit: None,
+            },
         )
         .await?;
         assert_eq!(mismatch, None);
@@ -596,15 +600,16 @@ mod tests {
             operation,
             PublicationPermit::Unrestricted,
             true,
-            &original,
-            &cancellation,
+            crate::kernel::KernelAccounting::native(&original, &cancellation),
             &mut |_: &crate::NativeMaterializationWork| async {
                 Ok::<(), NativePublicationTestError>(())
             },
-            None,
-            Some(context),
-            Some(changed_evidence),
-            None,
+            PublicationProof {
+                producer: None,
+                context: Some(context),
+                evidence: Some(changed_evidence),
+                fingerprint_permit: None,
+            },
         )
         .await?;
         assert_eq!(changed_payload, None);
@@ -614,15 +619,16 @@ mod tests {
             operation,
             PublicationPermit::Unrestricted,
             true,
-            &original,
-            &cancellation,
+            crate::kernel::KernelAccounting::native(&original, &cancellation),
             &mut |_: &crate::NativeMaterializationWork| async {
                 Ok::<(), NativePublicationTestError>(())
             },
-            None,
-            Some(context),
-            Some(evidence.clone()),
-            None,
+            PublicationProof {
+                producer: None,
+                context: Some(context),
+                evidence: Some(evidence.clone()),
+                fingerprint_permit: None,
+            },
         )
         .await?;
         assert_eq!(ack, Some((Some(operation), generation)));
@@ -659,4 +665,25 @@ mod tests {
         drop(durable);
         Ok(())
     }
+}
+
+async fn rebase_conflicted<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    original: &crate::NativeMaterializationWork,
+    cancellation: &CancellationToken,
+) -> Result<bool, crate::FsError> {
+    let (decision, allocation) = checkout
+        .rebase_head(
+            checkout
+                .volume_config()
+                .limits
+                .maximum_checkout_dependencies,
+            original,
+            cancellation,
+        )
+        .await?;
+    let conflicted = matches!(decision, RebaseDecision::Conflicted { .. });
+    drop(decision);
+    drop(allocation);
+    Ok(conflicted)
 }

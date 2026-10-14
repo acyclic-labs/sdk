@@ -386,7 +386,7 @@ where
             if let Some(file) = &source_file {
                 return file
                     .read_range(offset, u64::from(length), &mut accounting)
-                    .map_err(mount_demand_error);
+                    .map_err(MountSourceError::from);
             }
             self.runtime.wait(|| async {
                 self.lazy

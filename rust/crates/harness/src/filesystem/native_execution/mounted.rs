@@ -160,17 +160,16 @@ where
         >,
     > {
         crate::NativeFutureBundle::new(work, || async move {
+            let mut accounting_failure = None;
             Ok(self
-                .publication_snapshot(work, work.cancellation())
+                .publication_snapshot(work, work.cancellation(), &mut accounting_failure)
                 .await
-                .map_err(
-                    |(cause, accounting_failure)| NativeMountPublicationFailure {
-                        cause: cause.into(),
-                        accounting_failure: accounting_failure.map(Box::new),
-                        source_acknowledged: false,
-                        publication: None,
-                    },
-                ))
+                .map_err(|cause| NativeMountPublicationFailure {
+                    cause: cause.into(),
+                    accounting_failure: accounting_failure.map(Box::new),
+                    source_acknowledged: false,
+                    publication: None,
+                }))
         })
     }
     fn publish<'a>(

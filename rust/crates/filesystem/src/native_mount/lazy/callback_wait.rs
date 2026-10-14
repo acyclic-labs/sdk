@@ -13,10 +13,10 @@ pub(in crate::native_mount) fn with_native_callback_carrier<T>(
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(carrier, prepared)));
     let release = carrier
         .with_work(|work| work.release(bytes))
-        .map_err(mount_demand_error);
+        .map_err(MountSourceError::from);
     let reconciled = carrier
         .with_work(|work| work.record(crate::WorkCounters::default()))
-        .map_err(mount_demand_error);
+        .map_err(MountSourceError::from);
     match result {
         Err(panic) => std::panic::resume_unwind(panic),
         Ok(Err(error)) => Err(error),

@@ -4,7 +4,7 @@ pub(super) async fn apply_metadata<A, O, E, F, Fut>(
     reader: &PinnedReader<A, O>,
     host_root: &Arc<(HostRoot, crate::NativeAllocation)>,
     path: &NamespacePath,
-    host_path: &Arc<(Vec<HostPathUnit>, crate::NativeAllocation)>,
+    host_path: &HeldHostPath,
     metadata: Option<FileMetadata>,
     receipt: &mut GenerationReceipt,
     before_effect: &mut Option<&mut F>,
@@ -82,7 +82,7 @@ where
 
 pub(super) async fn apply_host_attributes_offloaded(
     host_root: &Arc<(HostRoot, crate::NativeAllocation)>,
-    host_path: &Arc<(Vec<HostPathUnit>, crate::NativeAllocation)>,
+    host_path: &HeldHostPath,
     attributes: Vec<(Vec<u8>, acyclic_stream::OwnedBytes)>,
     retained: usize,
     receipt: &mut GenerationReceipt,
@@ -148,7 +148,7 @@ pub(super) async fn apply_host_attributes_offloaded(
 
 pub(super) async fn apply_host_metadata_offloaded(
     host_root: &Arc<(HostRoot, crate::NativeAllocation)>,
-    host_path: &Arc<(Vec<HostPathUnit>, crate::NativeAllocation)>,
+    host_path: &HeldHostPath,
     metadata: FileMetadata,
     receipt: &mut GenerationReceipt,
 ) -> Result<(), MaterializeError> {

@@ -1,5 +1,4 @@
 use super::super::adapter::NativeDemandCarrier;
-use super::super::lazy::mount_demand_error;
 use super::*;
 use crate::demand::NativeMountAllocationCustody;
 
@@ -9,14 +8,14 @@ pub(super) fn vector<T>(
 ) -> Result<(Vec<T>, Option<Arc<NativeMountAllocationCustody>>), MountSourceError> {
     carrier
         .with_work(|work| work.check())
-        .map_err(mount_demand_error)?;
+        .map_err(MountSourceError::from)?;
     if count == 0 {
         return Ok((Vec::new(), None));
     }
     let custody = carrier.new_custody()?;
     let (value, bytes) = carrier
         .with_work(|work| crate::native_host::buffer::<T, _>(count, work))
-        .map_err(mount_demand_error)?;
+        .map_err(MountSourceError::from)?;
     if let Err(error) = carrier.with_work(|work| {
         custody
             .retain(bytes, work)
@@ -25,8 +24,8 @@ pub(super) fn vector<T>(
         drop(value);
         carrier
             .with_work(|work| work.release(bytes))
-            .map_err(mount_demand_error)?;
-        return Err(mount_demand_error(error));
+            .map_err(MountSourceError::from)?;
+        return Err(MountSourceError::from(error));
     }
     Ok((value, Some(custody)))
 }
@@ -37,7 +36,7 @@ pub(super) fn charge(
 ) -> Result<(), MountSourceError> {
     carrier
         .with_work(|work| work.charge(delta))
-        .map_err(mount_demand_error)
+        .map_err(MountSourceError::from)
 }
 
 pub(super) fn map_bytes(capacity: usize) -> Result<u64, MountSourceError> {
@@ -92,7 +91,7 @@ pub(super) fn record(
             let bytes = map_bytes(count)?;
             carrier
                 .with_work(|work| next_custody.claim(bytes, work))
-                .map_err(mount_demand_error)?;
+                .map_err(MountSourceError::from)?;
             let mut next = HashMap::new();
             next.try_reserve(count)
                 .map_err(MountSourceError::Allocation)?;
@@ -100,7 +99,7 @@ pub(super) fn record(
             if actual > bytes {
                 carrier
                     .with_work(|work| next_custody.claim(actual - bytes, work))
-                    .map_err(mount_demand_error)?;
+                    .map_err(MountSourceError::from)?;
             } else {
                 next_custody.retire(bytes - actual)?;
             }
@@ -138,12 +137,12 @@ pub(super) fn adopt_backing(
     if owner
         .map(|owner| carrier.with_work(|work| owner.is_admitted(work)))
         .transpose()
-        .map_err(mount_demand_error)?
+        .map_err(MountSourceError::from)?
         .is_some_and(|admitted| !admitted)
     {
         carrier
             .with_work(|work| work.claim_allocation(bytes, 0, crate::WorkCounters::UNCHARGED))
-            .map_err(mount_demand_error)?;
+            .map_err(MountSourceError::from)?;
         Ok(bytes)
     } else {
         Ok(0)
@@ -159,7 +158,7 @@ pub(super) fn release_backing(
     } else {
         carrier
             .with_work(|work| work.release(bytes))
-            .map_err(mount_demand_error)
+            .map_err(MountSourceError::from)
     }
 }
 

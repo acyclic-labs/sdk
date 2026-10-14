@@ -382,8 +382,7 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
             || {
                 source.checkout.publish(
                     crate::PublicationPermit::Unrestricted,
-                    &job,
-                    &local_stop,
+                    crate::kernel::KernelAccounting::native(&job, &local_stop),
                     Some(source.cancellation()),
                     &mut before_publication,
                     Some(context),
@@ -428,8 +427,7 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
                     .checkout
                     .publish(
                         crate::PublicationPermit::Unrestricted,
-                        &retry,
-                        &retry_stop,
+                        crate::kernel::KernelAccounting::native(&retry, &retry_stop),
                         Some(source.cancellation()),
                         &mut |_| std::future::ready(Ok::<(), MountSourceError>(())),
                         Some(context),

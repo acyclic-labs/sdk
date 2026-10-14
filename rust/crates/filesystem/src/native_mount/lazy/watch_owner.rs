@@ -51,7 +51,7 @@ impl NativeMountSourceWatchOwner {
         } else {
             return Ok(false);
         };
-        result.map_err(mount_demand_error).map(|()| true)
+        result.map_err(MountSourceError::from).map(|()| true)
     }
 
     /// Stops the original watch on the supplied carrier.
@@ -63,7 +63,7 @@ impl NativeMountSourceWatchOwner {
             .original_native_work()
             .ok_or(MountSourceError::NativeUnsupported)?;
         let mut work = crate::NativeMaterializationWork::clone(&original);
-        crate::native_host::NativeHostWork::check(&work).map_err(mount_demand_error)?;
+        crate::native_host::NativeHostWork::check(&work).map_err(MountSourceError::from)?;
         if self.is_stopped() {
             return Ok(false);
         }
@@ -77,7 +77,7 @@ impl NativeMountSourceWatchOwner {
         } else {
             return Ok(false);
         };
-        result.map_err(mount_demand_error).map(|()| true)
+        result.map_err(MountSourceError::from).map(|()| true)
     }
 }
 

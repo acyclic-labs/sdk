@@ -1,26 +1,28 @@
 use super::*;
 
-pub(in crate::native_mount) fn mount_demand_error(error: DemandError) -> MountSourceError {
-    match error {
-        DemandError::Work(error) => MountSourceError::Work(error),
-        DemandError::Cancelled => MountSourceError::Cancelled,
-        DemandError::Mount(error) => *error,
-        DemandError::Io(error) => MountSourceError::Io(error, None),
-        DemandError::Allocation(error) => MountSourceError::Allocation(error),
-        DemandError::StaleSource | DemandError::StaleVersion | DemandError::StaleCursor => {
-            MountSourceError::Stale
+impl From<DemandError> for MountSourceError {
+    fn from(error: DemandError) -> Self {
+        match error {
+            DemandError::Work(error) => MountSourceError::Work(error),
+            DemandError::Cancelled => MountSourceError::Cancelled,
+            DemandError::Mount(error) => *error,
+            DemandError::Io(error) => MountSourceError::Io(error, None),
+            DemandError::Allocation(error) => MountSourceError::Allocation(error),
+            DemandError::StaleSource | DemandError::StaleVersion | DemandError::StaleCursor => {
+                MountSourceError::Stale
+            }
+            DemandError::Absent => MountSourceError::NotFound,
+            DemandError::NotDirectory => MountSourceError::Filesystem(crate::FsError::NotDirectory),
+            DemandError::NativeMetadata(error) => MountSourceError::Metadata(error),
+            #[cfg(feature = "native-watch")]
+            DemandError::Observation(error) => match *error {
+                crate::watch::NativeWatchError::Work(error) => MountSourceError::Work(error),
+                crate::watch::NativeWatchError::Cancelled(_) => MountSourceError::Cancelled,
+                crate::watch::NativeWatchError::Io(error) => MountSourceError::Io(error, None),
+                other => MountSourceError::Engine(other.to_string().into()),
+            },
+            _ => MountSourceError::Engine("source demand failed".into()),
         }
-        DemandError::Absent => MountSourceError::NotFound,
-        DemandError::NotDirectory => MountSourceError::Filesystem(crate::FsError::NotDirectory),
-        DemandError::NativeMetadata(error) => MountSourceError::Metadata(error),
-        #[cfg(feature = "native-watch")]
-        DemandError::Observation(error) => match *error {
-            crate::watch::NativeWatchError::Work(error) => MountSourceError::Work(error),
-            crate::watch::NativeWatchError::Cancelled(_) => MountSourceError::Cancelled,
-            crate::watch::NativeWatchError::Io(error) => MountSourceError::Io(error, None),
-            other => MountSourceError::Engine(other.to_string().into()),
-        },
-        _ => MountSourceError::Engine("source demand failed".into()),
     }
 }
 
@@ -51,5 +53,5 @@ pub(in crate::native_mount) fn mount_items(
         items_examined: count as u64,
         ..crate::WorkCounters::UNCHARGED
     })
-    .map_err(mount_demand_error)
+    .map_err(MountSourceError::from)
 }
