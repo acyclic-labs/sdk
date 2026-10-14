@@ -235,7 +235,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let dependencies = self.dependencies.proof().dependencies.clone();
         let classified = crate::kernel::classify_rebase_with_accounting(
             &probe.0,
-            GenerationId::new(self.root.base().digest),
+            GenerationId::new(self.root.base.digest),
             GenerationId::new(candidate_object.digest),
             &dependencies,
             maximum_conflicts,
@@ -257,7 +257,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         if matches!(classified.0, RebaseDecision::Conflicted { .. }) {
             return Ok(classified);
         }
-        if candidate_object == self.root.base() {
+        if candidate_object == self.root.base {
             cancellation.check()?;
             self.authority_head = Some(candidate_head);
             return Ok(classified);
@@ -357,7 +357,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let checkpoint = crate::kernel::build_checkpoint_with_accounting(
             &self.volume.fs.inner.objects,
             CheckpointRequest {
-                base: self.root.base(),
+                base: self.root.base,
                 file_table: self.root.file_table,
                 merge_parent: None,
             },
@@ -396,7 +396,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let merged = crate::kernel::merge_generation_with_accounting(
             &self.volume.fs.inner.objects,
             MergeGenerationRequest {
-                base_generation: self.root.base(),
+                base_generation: self.root.base,
                 base: base.0,
                 ours_generation: Some(candidate_object),
                 ours: ours.0,

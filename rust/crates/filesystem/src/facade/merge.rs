@@ -434,7 +434,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let merged = merge_generation_async(
             &self.volume.fs.inner.objects,
             MergeGenerationRequest {
-                base_generation: self.root.base(),
+                base_generation: self.root.base,
                 base: self.base_root.clone(),
                 ours_generation: (self.root.file_table == self.base_root.file_table)
                     .then_some(self.generation_root),
@@ -459,7 +459,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 root,
                 generation_id,
             } => {
-                self.root.set_working(root);
+                let held = self.root.hold.as_ref().map(|_| (root.clone(), Default::default()));
+                self.root.set(self.root.base, root, Default::default(), held);
                 self.generation_root = generation_root;
                 self.prepared_merge_parent = Some(theirs_id);
                 self.authority_head = Some(current_head);

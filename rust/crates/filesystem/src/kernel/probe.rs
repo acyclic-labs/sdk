@@ -960,5 +960,5 @@ pub enum AuthenticatedProbeError {
 }
 
 #[cfg(all(test, feature = "memory"))]
-#[path = "tests/probe.rs"]
+#[path = "tests/probe/mod.rs"]
 mod tests;

@@ -114,7 +114,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .ok_or(FsError::HandleAllocationFailed)?;
         allocations
             .claim_elements::<ProofDataCustody>(1, work, budget)
-            .map_err(crate::collection::handle_allocation_error)?;
+            .map_err(|error| error.into_work_or(FsError::HandleAllocationFailed))?;
         Ok(Arc::new(ProofDataCustody::default()))
     }
 
@@ -202,7 +202,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             cancellation.check()?;
             let held = self
                 .root
-                .prepare_held_root(working, accounting, Some(&producer))?;
+                .hold.as_ref()
+                .map(|_| crate::collection::clone_generation_root(working, accounting, Some(&producer)))
+                .transpose()?;
             return Ok(PreparedCheckoutRoots {
                 base,
                 held,
@@ -223,7 +225,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         cancellation.check()?;
         let held = self
             .root
-            .prepare_held_root(working, accounting, None)?
+            .hold.as_ref()
+            .map(|_| crate::collection::clone_generation_root(working, accounting, None))
+            .transpose()?
             .map(|(root, _)| {
                 let control = Self::root_control_claim(&root, producer.as_ref())?;
                 Ok::<_, FsError>((root, control))
@@ -284,7 +288,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .expect("an admitted generation-root vector has a representable capacity")
         });
         self.root
-            .set_prepared_root(generation, working, control, prepared.held);
+            .set(generation, working, control, prepared.held);
         self.base_root = prepared.base.0;
         self.dependencies.base_root_control = prepared.base.1;
     }

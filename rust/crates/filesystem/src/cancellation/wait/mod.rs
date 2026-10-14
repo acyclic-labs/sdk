@@ -1,49 +1,141 @@
 use super::*;
 
+pub(super) struct WaitMeter<'a> {
+    pub(super) allocations: &'a mut crate::kernel::allocation::AllocationLedger,
+    pub(super) work: &'a mut crate::WorkCounters,
+    pub(super) budget: crate::WorkBudget,
+}
+
 /// Future returned by [`CancellationToken::cancelled`].
 pub struct Cancelled<'a> {
-    pub(in crate::cancellation) token: CancellationToken,
-    pub(in crate::cancellation) waiter: Option<Arc<CancellationWaiter>>,
-    pub(in crate::cancellation) registered: Option<usize>,
-    pub(in crate::cancellation) meter: Option<WaitMeter<'a>>,
-    pub(in crate::cancellation) waiter_bytes: u64,
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(in crate::cancellation) native_original: Option<&'a crate::NativeMaterializationWork>,
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(in crate::cancellation) native_cleanup: Option<crate::materializer::NativeWorkReservation>,
+    pub(super) token: CancellationToken,
+    pub(super) waiter: Option<Arc<CancellationWaiter>>,
+    pub(super) meter: Option<WaitMeter<'a>>,
+    pub(super) waiter_bytes: u64,
 }
 
 #[derive(Debug, Error)]
 pub(crate) enum CancellationWaitError {
     #[error(transparent)]
     Work(#[from] crate::WorkError),
-    #[error("cancellation waiter allocation failed")]
-    AllocationFailed,
     #[cfg(not(target_arch = "wasm32"))]
     #[error(transparent)]
     Native(#[from] crate::NativeTreeMaterializationError),
 }
 
-impl Cancelled<'static> {
-    pub(crate) fn cleanup_items(&self) -> u64 {
-        u64::from(self.registered.is_some())
-    }
-    pub(crate) fn retained_waiter_bytes(&self) -> u64 {
-        self.waiter_bytes
-    }
-    pub(crate) fn same_token(&self, token: &CancellationToken) -> bool {
-        self.token.same_state(token)
+impl Cancelled<'_> {
+    pub(super) fn detach_meter(mut self) -> Cancelled<'static> {
+        self.meter.take();
+        Cancelled {
+            token: self.token.clone(),
+            waiter: self.waiter.take(),
+            meter: None,
+            waiter_bytes: std::mem::take(&mut self.waiter_bytes),
+        }
     }
 
-    /// Breaks terminal-task waker ownership before its meter is reclaimed.
-    /// Call outside that meter's lock. Registration and reserved cleanup remain
-    /// owned by this waiter until `finish`; no allocation claim is released here.
+    pub(super) fn register(
+        &mut self,
+        #[cfg(not(target_arch = "wasm32"))] original: Option<&crate::NativeMaterializationWork>,
+        #[cfg(target_arch = "wasm32")] _original: Option<&()>,
+    ) -> Result<(), CancellationWaitError> {
+        if self.waiter.is_some() || self.token.is_cancelled() {
+            return Ok(());
+        }
+        let mut head = self
+            .token
+            .state
+            .waiters
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if self.token.is_cancelled() {
+            return Ok(());
+        }
+        let bytes = std::mem::size_of::<CancellationWaiter>() as u64;
+        #[cfg(not(target_arch = "wasm32"))]
+        let (allocation, cleanup) = if let Some(original) = original {
+            original.admit(crate::WorkCounters {
+                allocation_operations: 1,
+                items_examined: 1,
+                ..crate::WorkCounters::UNCHARGED
+            })?;
+            original.admit_retained(bytes)?;
+            let cleanup = original.reserve_work(crate::WorkCounters {
+                items_examined: 3,
+                ..crate::WorkCounters::UNCHARGED
+            })?;
+            (
+                Some(original.claim(bytes, 1, crate::WorkCounters::UNCHARGED)?),
+                Some(cleanup),
+            )
+        } else {
+            (None, None)
+        };
+        if let Some(meter) = &mut self.meter {
+            let peak = meter
+                .allocations
+                .live_bytes()
+                .checked_add(bytes)
+                .ok_or(crate::WorkError::Overflow)?;
+            meter.work.admit(
+                &crate::WorkCounters {
+                    allocation_operations: 1,
+                    peak_allocation_bytes: peak,
+                    items_examined: 2,
+                    ..crate::WorkCounters::UNCHARGED
+                },
+                &meter.budget,
+            )?;
+            meter
+                .allocations
+                .claim_bytes(bytes, 1, meter.work, meter.budget)
+                .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
+            self.waiter_bytes = bytes;
+        }
+        let next = head.upgrade();
+        let waiter = Arc::new(CancellationWaiter {
+            links: Mutex::new(Some((Weak::new(), head.clone()))),
+            #[cfg(not(target_arch = "wasm32"))]
+            cleanup: parking_lot::Mutex::new(cleanup),
+            #[cfg(not(target_arch = "wasm32"))]
+            _native_allocation: allocation,
+            ..CancellationWaiter::default()
+        });
+        if let Some(next) = &next {
+            next.links
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_mut()
+                .expect("active head")
+                .0 = Arc::downgrade(&waiter);
+        }
+        *head = Arc::downgrade(&waiter);
+        self.waiter = Some(waiter);
+        if let Some(meter) = &mut self.meter {
+            meter.work.charge_items(1, &meter.budget)?;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = original {
+            original.record_admitted(crate::WorkCounters {
+                items_examined: 1,
+                ..crate::WorkCounters::UNCHARGED
+            })?;
+        }
+        Ok(())
+    }
+}
+
+impl Cancelled<'static> {
+    pub(crate) fn cleanup_items(&self) -> u64 {
+        u64::from(self.waiter.is_some())
+    }
+
     pub(crate) fn retire_waker(&mut self) {
         let waker = self.waiter.as_ref().and_then(|waiter| {
             waiter
                 .waker
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .unwrap_or_else(PoisonError::into_inner)
                 .take()
         });
         drop(waker);
@@ -54,33 +146,23 @@ impl Cancelled<'static> {
         allocations: &mut crate::kernel::allocation::AllocationLedger,
         work: &mut crate::WorkCounters,
         budget: crate::WorkBudget,
-        admission: &mut CancellationWaitAdmission,
     ) -> Result<(), CancellationWaitError> {
         work.admit(
             &crate::WorkCounters {
                 items_examined: self.cleanup_items(),
-                ..crate::WorkCounters::default()
+                ..crate::WorkCounters::UNCHARGED
             },
             &budget,
         )?;
         let future = Cancelled {
             token: self.token.clone(),
             waiter: self.waiter.take(),
-            registered: self.registered.take(),
             waiter_bytes: std::mem::take(&mut self.waiter_bytes),
             meter: Some(WaitMeter {
                 allocations,
                 work,
                 budget,
-                admission,
-                temporary_registry_bytes: 0,
-                pending_registry_bytes: 0,
-                cleanup_reserved: true,
             }),
-            #[cfg(not(target_arch = "wasm32"))]
-            native_original: None,
-            #[cfg(not(target_arch = "wasm32"))]
-            native_cleanup: self.native_cleanup.take(),
         };
         drop(future);
         Ok(())
@@ -89,113 +171,104 @@ impl Cancelled<'static> {
 
 impl Future for Cancelled<'_> {
     type Output = ();
-
-    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.get_mut().poll_result(context) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(Ok(())) => Poll::Ready(()),
-            Poll::Ready(Err(error)) => panic!("unbounded cancellation wait failed: {error}"),
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<()> {
+        let this = self.get_mut();
+        if this.token.is_cancelled() {
+            return Poll::Ready(());
+        }
+        this.register(None)
+            .expect("unbounded cancellation registration");
+        let Some(waiter) = &this.waiter else {
+            return Poll::Ready(());
+        };
+        let replace = !waiter
+            .waker
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|waker| waker.will_wake(context.waker()));
+        if replace {
+            // Waker clone/drop can reenter cancellation; no locks span them.
+            let replacement = context.waker().clone();
+            let previous = waiter
+                .waker
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .replace(replacement);
+            drop(previous);
+        }
+        if this.token.is_cancelled() {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
         }
     }
 }
 
 impl Drop for Cancelled<'_> {
     fn drop(&mut self) {
-        if self.waiter.is_none() && self.registered.is_none() && self.meter.is_none() {
+        let Some(waiter) = self.waiter.take() else {
             return;
-        }
-        let mut waiters = self
-            .token
-            .state
-            .waiters
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        #[cfg(not(target_arch = "wasm32"))]
-        let mut retired_backing = None;
-        #[cfg(not(target_arch = "wasm32"))]
-        let mut retired_lease = None;
-        if let Some(meter) = &mut self.meter {
-            meter.observe_registry(self.token.state.registry_generation.load(Ordering::Acquire));
-        }
-        if let Some(index) = self.registered {
-            if let Some(meter) = &mut self.meter {
-                meter
-                    .work
-                    .charge(
-                        &crate::WorkCounters {
-                            items_examined: 1,
-                            ..crate::WorkCounters::default()
-                        },
-                        &meter.budget,
-                    )
-                    .expect("cancellation cleanup allowance was reserved");
-            }
-            if let (Some(slot), Some(waiter)) = (waiters.get_mut(index), &self.waiter)
-                && slot
-                    .as_ref()
-                    .is_some_and(|slot| Weak::ptr_eq(slot, &Arc::downgrade(waiter)))
+        };
+        {
+            let mut head = self
+                .token
+                .state
+                .waiters
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if let Some((previous, next)) = waiter
+                .links
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
             {
-                *slot = None;
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(lease) = waiter
-                    .registry_lease
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .as_ref()
-                    && lease.registered.fetch_sub(1, Ordering::AcqRel) == 1
-                {
-                    retired_backing = Some(std::mem::take(&mut *waiters));
-                    self.token
-                        .state
-                        .registry_generation
-                        .fetch_add(1, Ordering::AcqRel);
-                    retired_lease = Some(lease.clone());
+                if let Some(previous) = previous.upgrade() {
+                    previous
+                        .links
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .as_mut()
+                        .expect("active predecessor")
+                        .1 = next.clone();
+                } else {
+                    *head = next.clone();
+                }
+                if let Some(next) = next.upgrade() {
+                    next.links
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .as_mut()
+                        .expect("active successor")
+                        .0 = previous;
                 }
             }
         }
-        drop(waiters);
         #[cfg(not(target_arch = "wasm32"))]
-        {
-            drop(retired_backing);
-            if let Some(lease) = retired_lease {
-                lease.retire_backing_deferred();
-            }
-            if self.registered.is_some()
-                && let Some(credit) = &mut self.native_cleanup
-            {
-                credit.record_deferred(crate::WorkCounters {
-                    items_examined: 1,
-                    ..crate::WorkCounters::UNCHARGED
-                });
-            }
+        if let Some(credit) = &mut *waiter.cleanup.lock() {
+            credit.record_deferred(crate::WorkCounters {
+                items_examined: 1,
+                ..crate::WorkCounters::UNCHARGED
+            });
         }
-        let waker = self.waiter.take().and_then(|waiter| {
-            let waker = waiter
-                .waker
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take();
-            drop(waiter);
-            waker
-        });
+        let waker = waiter
+            .waker
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        drop(waiter);
         if let Some(meter) = &mut self.meter {
-            meter.release(self.waiter_bytes);
-            self.waiter_bytes = 0;
-            let temporary = std::mem::take(&mut meter.temporary_registry_bytes);
-            let pending = std::mem::take(&mut meter.pending_registry_bytes);
-            meter.release(temporary);
-            meter.release(pending);
+            meter
+                .work
+                .charge_items(1, &meter.budget)
+                .expect("admitted unregister");
+            meter
+                .allocations
+                .release(self.waiter_bytes)
+                .expect("owned cancellation waiter");
         }
-        // A waker's destructor may cancel this very token. No registry/waker
-        // lock is held, and its newly freed backing must join the same receipt.
-        let dropped = catch_unwind(AssertUnwindSafe(|| drop(waker)));
-        if let Some(meter) = &mut self.meter {
-            meter.observe_registry(self.token.state.registry_generation.load(Ordering::Acquire));
-        }
-        if let Err(panic) = dropped {
+        if let Err(panic) = catch_unwind(AssertUnwindSafe(|| drop(waker))) {
             std::panic::resume_unwind(panic);
         }
     }
 }
-
-mod poll;

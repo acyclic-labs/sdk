@@ -1,5 +1,5 @@
 use super::*;
-use crate::cancellation::{CancellationWaitAdmission, CancellationWaitError, Cancelled};
+use crate::cancellation::{CancellationWaitError, Cancelled};
 use crate::kernel::{
     ProofDataCustody,
     allocation::{AllocationLedger, LogicalVecCapacity},
@@ -41,10 +41,6 @@ pub(crate) struct Admissions {
     pub(super) pending: WorkCounters,
     pub(super) poisoned: bool,
     pub(super) io_failure: Option<DemandError>,
-    cancellations: (
-        Vec<(CancellationToken, CancellationWaitAdmission)>,
-        LogicalVecCapacity,
-    ),
     observers: (Vec<Observer>, LogicalVecCapacity),
     pub(super) native_mount_admissions: (
         Vec<(Weak<NativeMountAllocationCustody>, u64)>,
@@ -98,12 +94,7 @@ impl Admissions {
                         .expect("bounded live bytes"),
                 )
             });
-        let released = self
-            .cancellations
-            .0
-            .iter()
-            .map(|(token, admission)| admission.freed_registry_bytes(token))
-            .chain(self.observers.0.iter().map(native_retired))
+        let released = self.observers.0.iter().map(native_retired)
             .try_fold(released, u64::checked_add)
             .expect("balanced retirement");
         #[cfg(feature = "native-mount")]
@@ -144,9 +135,6 @@ impl DemandWork {
         Ok(())
     }
     pub(crate) fn reconcile_cancellation_registry(&mut self) -> Result<(), crate::WorkError> {
-        for (token, admission) in &mut self.roots.cancellations.0 {
-            admission.reconcile_registry(token, &mut self.allocations)?;
-        }
         self.reconcile_native_controls()?;
         let observers = self.roots.observers.0.iter_mut().map(|entry| {
             let actual = observer_bytes(entry);
@@ -244,41 +232,10 @@ impl DemandWork {
         token: &CancellationToken,
     ) -> Result<Cancelled<'static>, CancellationWaitError> {
         self.reconcile_cancellation_registry()?;
-        if token.is_cancelled() {
-            return token.prepare_cancelled_measured(
-                &mut self.allocations,
-                &mut self.work,
-                self.budget,
-                &mut Default::default(),
-            );
-        }
-        let mut found = None;
-        for (index, (current, _)) in self.roots.cancellations.0.iter().enumerate() {
-            self.work.charge(&SCAN, &self.budget)?;
-            if current.same_state(token) {
-                found = Some(index);
-                break;
-            }
-        }
-        let index = match found {
-            Some(index) => index,
-            None => insert(
-                &mut self.roots.cancellations,
-                (token.clone(), Default::default()),
-                &mut self.allocations,
-                &mut self.work,
-                self.budget,
-            )
-            .map_err(|error| match error {
-                DemandError::Work(error) => CancellationWaitError::Work(error),
-                _ => CancellationWaitError::AllocationFailed,
-            })?,
-        };
         token.prepare_cancelled_measured(
             &mut self.allocations,
             &mut self.work,
             self.budget,
-            &mut self.roots.cancellations.0[index].1,
         )
     }
     pub(crate) fn finish_cancelled(
@@ -288,21 +245,10 @@ impl DemandWork {
         let reconciled = self
             .reconcile_cancellation_registry()
             .map_err(CancellationWaitError::from);
-        let mut empty = CancellationWaitAdmission::default();
-        let admission = if let Some((_, admission)) = self
-            .roots
-            .cancellations
-            .0
-            .iter_mut()
-            .find(|(token, _)| prepared.same_token(token)) { admission } else {
-            assert_eq!(prepared.retained_waiter_bytes(), 0);
-            &mut empty
-        };
         let finished = prepared.finish(
             &mut self.allocations,
             &mut self.work,
             self.budget,
-            admission,
         );
         reconciled.and(finished)
     }

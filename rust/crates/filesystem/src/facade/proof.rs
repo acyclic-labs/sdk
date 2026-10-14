@@ -121,11 +121,11 @@ impl DependencyLedger {
                             &mut WorkCounters::default(),
                             WorkBudget::UNBOUNDED,
                         )
-                        .map_err(crate::collection::handle_allocation_error)?;
+                        .map_err(|error| error.into_work_or(FsError::HandleAllocationFailed))?;
                 } else {
                     ledger
                         .release(live - retained)
-                        .map_err(crate::collection::handle_allocation_error)?;
+                        .map_err(|error| error.into_work_or(FsError::HandleAllocationFailed))?;
                 }
                 let mut next_ledger = *ledger;
                 let mut next_work = *work;
@@ -162,7 +162,7 @@ impl DependencyLedger {
                     .saturating_add(standing);
                 next_ledger
                     .claim_bytes(bytes, operations, &mut next_work, allowance)
-                    .map_err(crate::collection::handle_allocation_error)?;
+                    .map_err(|error| error.into_work_or(FsError::HandleAllocationFailed))?;
                 next_work.peak_allocation_bytes = earlier_peak.max(peak);
                 next_work.verify(budget)?;
                 self.data_custody.record_data_work(WorkCounters {
