@@ -84,17 +84,17 @@ background() {
   echo "$!" >"$SDK_TEMP_DIR/background-$name.pid"
 }
 finish() {
-  local name status=0 result=0
+  local name status=0 result=0 log_status=0
   for name in "$@"; do
     status=0
     wait "$(cat "$SDK_TEMP_DIR/background-$name.pid")" || status=$?
-    echo "::group::$name"
-    cat "$SDK_TEMP_DIR/background-$name.log"
-    echo "::endgroup::"
+    log_status=0
+    command node scripts/ci-background-log.mjs "$SDK_TEMP_DIR/background-$name.log" "$name" "$status" || log_status=$?
     if ((status != 0)); then
-      echo "::error::$name failed with exit status $status"
-      tail -n 80 "$SDK_TEMP_DIR/background-$name.log" >&2
       ((result != 0)) || result=$status
+    fi
+    if ((log_status != 0)); then
+      ((result != 0)) || result=$log_status
     fi
   done
   return "$result"
@@ -348,7 +348,7 @@ case "$lane" in
     bash scripts/test-ensure-rust-target.sh
     node scripts/check-workflow-runners.mjs
     node --test scripts/harness-provider-evidence.test.mjs
-    node --test scripts/check-harness-package.test.mjs
+    node --test scripts/check-harness-package.test.mjs scripts/ci-background-log.test.mjs
     install_tool actionlint_1.7.7_linux_amd64.tar.gz \
       https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz \
       023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757 \
