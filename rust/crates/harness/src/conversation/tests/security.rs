@@ -15,35 +15,31 @@ fn owner_bound_private_write_rejects_an_attached_agent_with_a_copied_capability(
         },
     );
     let read = private.capability(VolumeOperation::Read, &mut None)?;
-    let scope = issuer
-        .issue(
-            "write",
-            &crate::Capabilities::new([write.clone(), read.clone()]),
-            Some(owner),
-            None,
-            &mut None,
-        )
-        .expect("scope proof");
+    let scope = issuer.issue(
+        "write",
+        &crate::Capabilities::new([write.clone(), read.clone()]),
+        Some(owner),
+        None,
+        &mut None,
+    )?;
     ContentGrant::verify(
-        &issuer.verifier(&mut None).expect("verifier copy"),
+        &issuer.verifier(&mut None)?,
         &scope,
         &private,
         VolumeOperation::Write,
         u64::MAX,
         &mut None,
     )?;
-    let unsigned = issuer
-        .issue(
-            "copied-capability",
-            &crate::Capabilities::new([write.clone()]),
-            None,
-            None,
-            &mut None,
-        )
-        .expect("scope proof");
+    let unsigned = issuer.issue(
+        "copied-capability",
+        &crate::Capabilities::new([write.clone()]),
+        None,
+        None,
+        &mut None,
+    )?;
     assert!(
         ContentGrant::verify(
-            &issuer.verifier(&mut None).expect("verifier copy"),
+            &issuer.verifier(&mut None)?,
             &unsigned,
             &private,
             VolumeOperation::Write,
@@ -55,7 +51,7 @@ fn owner_bound_private_write_rejects_an_attached_agent_with_a_copied_capability(
     let inherited = issuer.attenuate(&scope, "child", crate::Capabilities::new([write.clone()]))?;
     assert_eq!(inherited.agent(), Some(owner));
     ContentGrant::verify(
-        &issuer.verifier(&mut None).expect("verifier copy"),
+        &issuer.verifier(&mut None)?,
         &inherited,
         &private,
         VolumeOperation::Write,
@@ -70,18 +66,16 @@ fn owner_bound_private_write_rejects_an_attached_agent_with_a_copied_capability(
             id: attached.to_string(),
         },
     );
-    let copied = foreign_issuer
-        .issue(
-            "copied",
-            &crate::Capabilities::new([write]),
-            Some(attached),
-            None,
-            &mut None,
-        )
-        .expect("scope proof");
+    let copied = foreign_issuer.issue(
+        "copied",
+        &crate::Capabilities::new([write]),
+        Some(attached),
+        None,
+        &mut None,
+    )?;
     assert!(
         ContentGrant::verify(
-            &foreign_issuer.verifier(&mut None).expect("verifier copy"),
+            &foreign_issuer.verifier(&mut None)?,
             &copied,
             &private,
             VolumeOperation::Write,
@@ -94,35 +88,21 @@ fn owner_bound_private_write_rejects_an_attached_agent_with_a_copied_capability(
     let delegated =
         issuer.delegate_private_file_read(&scope, attached, "attached-read", &exact_file)?;
     assert_eq!(delegated.agent(), Some(attached));
-    ContentGrant::verify_file_read(
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &delegated,
-        &exact_file,
-    )?;
+    ContentGrant::verify_file_read(&issuer.verifier(&mut None)?, &delegated, &exact_file)?;
     let internal = file(owner, ".system/execution/state.json")?;
     assert!(matches!(
-        ContentGrant::verify_read(
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            &scope,
-            &internal
-        ),
+        ContentGrant::verify_read(&issuer.verifier(&mut None)?, &scope, &internal),
         Err(Error::Unauthorized(_))
     ));
-    let internal_exact = issuer
-        .issue(
-            "internal-exact",
-            &crate::Capabilities::new([internal.read_capability(&mut None)?]),
-            Some(owner),
-            None,
-            &mut None,
-        )
-        .expect("scope proof");
+    let internal_exact = issuer.issue(
+        "internal-exact",
+        &crate::Capabilities::new([internal.read_capability(&mut None)?]),
+        Some(owner),
+        None,
+        &mut None,
+    )?;
     assert!(matches!(
-        ContentGrant::verify_file_read(
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            &internal_exact,
-            &internal
-        ),
+        ContentGrant::verify_file_read(&issuer.verifier(&mut None)?, &internal_exact, &internal),
         Err(Error::Unauthorized(_))
     ));
     assert!(matches!(
@@ -130,11 +110,7 @@ fn owner_bound_private_write_rejects_an_attached_agent_with_a_copied_capability(
         Err(Error::Unauthorized(_))
     ));
     let inherited_context = file(owner, ".system/inherited-conversation/prefix.json")?;
-    ContentGrant::verify_read(
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        &inherited_context,
-    )?;
+    ContentGrant::verify_read(&issuer.verifier(&mut None)?, &scope, &inherited_context)?;
     let directory = issuer.delegate_private_directory_read(
         &scope,
         attached,
@@ -143,7 +119,7 @@ fn owner_bound_private_write_rejects_an_attached_agent_with_a_copied_capability(
         "scratch",
     )?;
     let directory_grant = ContentGrant::verify_directory_read(
-        &issuer.verifier(&mut None).expect("verifier copy"),
+        &issuer.verifier(&mut None)?,
         &directory,
         &private,
         "scratch",
@@ -166,15 +142,13 @@ fn owner_bound_private_write_rejects_an_attached_agent_with_a_copied_capability(
             .require(&private, VolumeOperation::Write, None)
             .is_err()
     );
-    let foreign_owner_scope = foreign_issuer
-        .issue(
-            "copied-read",
-            &crate::Capabilities::new([read]),
-            Some(attached),
-            None,
-            &mut None,
-        )
-        .expect("scope proof");
+    let foreign_owner_scope = foreign_issuer.issue(
+        "copied-read",
+        &crate::Capabilities::new([read]),
+        Some(attached),
+        None,
+        &mut None,
+    )?;
     assert!(
         foreign_issuer
             .delegate_private_file_read(&foreign_owner_scope, attached, "invalid", &exact_file)
