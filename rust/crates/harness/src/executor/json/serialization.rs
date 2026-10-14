@@ -241,8 +241,7 @@ fn write<T: Serialize + ?Sized>(
         },
     ));
     let written = writer.written;
-    drop(writer);
-    drop(state);
+
     result.map_err(|error| scope.error(error))?;
     if let Some(error) = scope.failed.take() {
         return Err(error);
@@ -380,7 +379,7 @@ fn build<T: Serialize + ?Sized>(value: &T, scope: &mut Scope<'_>) -> Result<Valu
         decoder.end()?;
         Ok(value)
     });
-    drop(state);
+
     let mut value = result.map_err(|error| scope.error(error))?;
     let actual = json_value_logical_owned_bytes(&value)?;
     let released = checked(

@@ -14,10 +14,11 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             .await?
             .ok_or_else(|| boundary(work, NotFound, "effect is not in its owning conversation"))?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let custody = if original(work).is_some() {
-            Some(work.as_deref_mut().unwrap().take_native_custody(retained)?)
-        } else {
-            None
+        let custody = match work.as_deref_mut() {
+            Some(io) if io.original_native_work().is_some() => {
+                Some(io.take_native_custody(retained)?)
+            }
+            _ => None,
         };
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let custody = {
