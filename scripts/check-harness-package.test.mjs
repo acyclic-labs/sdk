@@ -1,8 +1,53 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import test from "node:test";
+
+test("Harness packaging stages the qualified bytes and rejects missing WASM before staging", () => {
+  const source = readFileSync("scripts/check-harness-package.sh", "utf8");
+  assert.doesNotMatch(source, /build-wasm\.mjs|bun x tsc|bun scripts\/check-metadata\.mjs/);
+  const lane = readFileSync("scripts/qualify-ci.sh", "utf8").split("  linux)\n")[1]?.split("  linux-musl|")[0] ?? assert.fail("missing Linux lane");
+  assert.ok(lane.indexOf("bun run test") < lane.indexOf("bash scripts/check-harness-package.sh"));
+  assert.ok(lane.includes("bun scripts/check-metadata.mjs"));
+  const start = source.indexOf("for generated in acyclic_harness_wasm.js");
+  const end = source.indexOf('cd "$npm_stage"', start);
+  assert.ok(start >= 0 && end > start);
+  const command = source.slice(start, end);
+  mkdirSync(".tools", { recursive: true });
+  const root = resolve(mkdtempSync(".tools/harness-built-")).replaceAll("\\", "/");
+  const packageRoot = join(root, "typescript/packages/harness");
+  const wasm = join(packageRoot, "generated/wasm").replaceAll("\\", "/");
+  const bash = process.platform === "win32" ? join(process.env.ProgramFiles ?? "C:/Program Files", "Git", "bin", "bash.exe") : "bash";
+  try {
+    for (const directory of [wasm, join(packageRoot, "generated/proto"), join(packageRoot, "dist")]) mkdirSync(directory, { recursive: true });
+    for (const name of ["package.json", "README.md", "CHANGELOG.md", "dist/index.js", "generated/proto/fixture.js",
+      ...["acyclic_harness_wasm.js", "acyclic_harness_wasm.d.ts", "acyclic_harness_wasm_bg.wasm", "acyclic_harness_wasm_bg.wasm.d.ts"].map(name => `generated/wasm/${name}`)]) {
+      writeFileSync(join(packageRoot, name), Buffer.from([0, 1, 2, 3]));
+    }
+    for (const missing of [false, true]) {
+      const work = join(root, missing ? "missing" : "complete").replaceAll("\\", "/");
+      mkdirSync(work);
+      if (missing) rmSync(join(wasm, "acyclic_harness_wasm_bg.wasm"));
+      const result = spawnSync(bash, ["-c", `set -euo pipefail\nwork='${work}'\nwasm_output='${wasm}'\n${command}`], {
+        cwd: root, encoding: "utf8", timeout: 60_000,
+      });
+      assert.ifError(result.error);
+      assert.equal(result.status, missing ? 1 : 0, result.stderr);
+      const staged = join(work, "npm-package");
+      if (missing) {
+        assert.match(result.stderr, /missing generated Harness artifact: acyclic_harness_wasm_bg\.wasm/);
+        assert.equal(existsSync(staged), false);
+      } else {
+        for (const name of ["dist/index.js", "generated/proto/fixture.js", "generated/wasm/acyclic_harness_wasm_bg.wasm"])
+          assert.deepEqual(readFileSync(join(staged, name)), readFileSync(join(packageRoot, name)));
+      }
+    }
+  } finally {
+    assert.ok(resolve(root).startsWith(resolve(".tools") + sep));
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("packaged Harness tests retain their inventory, logs and failure status at the lane's worker budget", () => {
   const source = readFileSync("scripts/check-harness-package.sh", "utf8");
