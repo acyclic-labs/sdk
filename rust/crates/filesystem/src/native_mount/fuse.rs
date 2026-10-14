@@ -317,6 +317,10 @@ struct InodeEntry {
     open_handles: u64,
     /// Version the kernel page cache was last admitted under.
     cached_content: Option<ContentVersion>,
+    /// Version of the regular file's attributes last handed to the kernel,
+    /// whose size bounds every read the kernel makes of it: content of any
+    /// other version would reach a reader cut to that size.
+    kernel_content: Option<ContentVersion>,
     /// Absent child names the kernel may hold as negative entries, each with
     /// a lower bound on the position its absence was derived after.
     negative_children: HashMap<Vec<u8>, ViewStamp>,
@@ -341,9 +345,17 @@ impl InodeEntry {
             lookup_references,
             open_handles: 0,
             cached_content: None,
+            kernel_content: None,
             negative_children: HashMap::new(),
             empty_since: None,
         }
+    }
+
+    /// Whether a read of `opened` agrees with the size the kernel bounds
+    /// its reads of this file by.
+    fn kernel_reads(&self, opened: &MountLookup) -> bool {
+        self.kernel_content
+            .is_none_or(|held| held == ContentVersion::of(opened))
     }
 
     fn binding(&self, path: &MountPath) -> Option<&Binding> {
@@ -799,6 +811,12 @@ struct ProjectionState {
     streams: DirectoryStreams,
     invalidation: InvalidationQueue,
     page_stores: PageStores,
+    /// Inodes whose attributes a reply is about to hand the kernel at
+    /// another content version than an earlier reply did. Of two replies
+    /// whose requests overlap, the kernel keeps whichever it applies first
+    /// and drops the other, so it may keep the older version's size: these
+    /// attributes are dropped as the state is released, before the reply.
+    superseded_attributes: Vec<u64>,
 }
 
 impl ProjectionState {
@@ -1003,6 +1021,16 @@ impl ProjectionState {
         );
         if let Some(entry) = self.by_inode.get_mut(&inode) {
             hold(&mut entry.kernel, stamp.unwrap_or(ViewStamp::ORIGIN));
+            if entry.lookup.node.kind == MountNodeKind::Regular {
+                let handed = ContentVersion::of(&entry.lookup);
+                if entry
+                    .kernel_content
+                    .replace(handed)
+                    .is_some_and(|held| held != handed)
+                {
+                    self.superseded_attributes.push(inode);
+                }
+            }
         }
         if admitted { CACHE_TTL } else { Duration::ZERO }
     }
@@ -1405,11 +1433,13 @@ impl ProjectionState {
     }
 
     /// Replaces the node facts of a handle's inode with facts read through
-    /// that handle after `stamp`.
+    /// that handle after `stamp`. The kernel applied the change the handle
+    /// made to its own size as it made it.
     fn apply_handle_facts(&mut self, inode: u64, lookup: MountLookup, stamp: Option<ViewStamp>) {
         if let Some(entry) = self.by_inode.get_mut(&inode)
             && entry.lookup.node.file_id == lookup.node.file_id
         {
+            entry.kernel_content = Some(ContentVersion::of(&lookup));
             entry.lookup = lookup;
             entry.facts = stamp;
         }
@@ -1550,9 +1580,10 @@ impl ProjectionState {
         })
     }
 
-    /// Emits a stream's buffered entries into one kernel listing reply;
+    /// Fills one kernel listing reply with a stream's buffered entries;
     /// [`FuseProjection::position_directory_stream`] reads the next source
-    /// page beforehand, outside this state's lock.
+    /// page beforehand, outside this state's lock. The reply is sent once
+    /// the state is released (see [`StateGuard`]).
     fn list_directory<L: DirectoryListing>(
         &mut self,
         source: &dyn MountFilesystem,
@@ -1560,12 +1591,12 @@ impl ProjectionState {
         stream: &mut DirectoryStream,
         mut listing: L,
         span: &tracing::Span,
-    ) {
+    ) -> ListingEnd<L> {
         if stream.emitted < 2 {
             let parent_inode = stream.parent_inode;
             let attr = match self.node_attr(inode) {
                 Ok(attr) => attr,
-                Err(error) => return listing.error(errno_on(span, error)),
+                Err(error) => return ListingEnd::Failed(listing, errno_on(span, error)),
             };
             // The kernel never instantiates dot entries, so they carry the
             // directory's own attributes without a cache lifetime.
@@ -1577,7 +1608,7 @@ impl ProjectionState {
                     ..attr
                 };
                 if listing.push(next, OsStr::new(name), &dot, &Duration::ZERO) {
-                    return listing.ok();
+                    return ListingEnd::Listed(listing);
                 }
                 stream.emitted = next;
             }
@@ -1587,7 +1618,7 @@ impl ProjectionState {
         loop {
             let next = stream.emitted.saturating_add(1);
             let Some(entry) = stream.entries.pop_front() else {
-                return listing.ok();
+                return ListingEnd::Listed(listing);
             };
             let child = ChildName::new(source, stream.path.child(entry.name.clone()));
             // A buffered entry is current only while its directory's listing
@@ -1631,20 +1662,30 @@ impl ProjectionState {
                 Err(error) => {
                     stream.entries.push_front(entry);
                     if listed {
-                        return listing.ok();
+                        return ListingEnd::Listed(listing);
                     }
-                    return listing.error(errno_on(span, error));
+                    return ListingEnd::Failed(listing, errno_on(span, error));
                 }
             };
+            let handed = self
+                .by_inode
+                .get(&attr.ino.0)
+                .map(|entry| entry.kernel_content);
+            let superseding = self.superseded_attributes.len();
             let ttl = if L::COUNTS_LOOKUPS {
                 self.admit_entry(source, attr.ino.0, &child, current)
             } else {
                 Duration::ZERO
             };
             if listing.push(next, OsStr::from_bytes(&entry.name), &attr, &ttl) {
+                // The full reply hands the kernel nothing of this entry.
+                if let (Some(handed), Some(listed)) = (handed, self.by_inode.get_mut(&attr.ino.0)) {
+                    listed.kernel_content = handed;
+                }
+                self.superseded_attributes.truncate(superseding);
                 self.release_listed_reference::<L>(attr.ino.0);
                 stream.entries.push_front(entry);
-                return listing.ok();
+                return ListingEnd::Listed(listing);
             }
             listed = true;
             stream.emitted = next;
@@ -1914,6 +1955,21 @@ fn intern_projected(
     Ok(inode)
 }
 
+/// How a filled listing reply ends, once the state is released.
+enum ListingEnd<L> {
+    Listed(L),
+    Failed(L, Errno),
+}
+
+impl<L: DirectoryListing> ListingEnd<L> {
+    fn send(self) {
+        match self {
+            Self::Listed(listing) => listing.ok(),
+            Self::Failed(listing, error) => listing.error(error),
+        }
+    }
+}
+
 /// One kernel directory listing reply. `READDIRPLUS` also instantiates every
 /// listed child, which the kernel counts as one lookup of it.
 trait DirectoryListing {
@@ -1987,10 +2043,18 @@ struct ProjectionCore {
 /// invalidator for kernel items the callback deferred, so they drop without
 /// waiting for the next change to the source (a source that cannot be
 /// watched reports none).
+///
+/// Releasing it also drops the kernel's attributes of every inode whose
+/// newer version a reply is about to hand it
+/// ([`ProjectionState::superseded_attributes`]). Every reply is sent after
+/// its callback releases the state, so the kernel drops them first, and
+/// they drop at once: dropping attributes alone waits on no page and on no
+/// request, unlike the invalidator's items.
 struct StateGuard<'a> {
     state: Option<MutexGuard<'a, ProjectionState>>,
     /// The invalidator's condition.
     wake: &'a Condvar,
+    notifier: &'a OnceLock<Notifier>,
 }
 
 impl std::ops::Deref for StateGuard<'_> {
@@ -2025,12 +2089,21 @@ impl StateGuard<'_> {
 
 impl Drop for StateGuard<'_> {
     fn drop(&mut self) {
-        let deferred = self
-            .state
-            .take()
-            .is_some_and(|state| !state.invalidation.deferred.is_empty());
+        let Some(mut state) = self.state.take() else {
+            return;
+        };
+        let deferred = !state.invalidation.deferred.is_empty();
+        let superseded = std::mem::take(&mut state.superseded_attributes);
+        drop(state);
         if deferred {
             self.wake.notify_all();
+        }
+        if let Some(notifier) = self.notifier.get() {
+            for inode in superseded {
+                // A negative offset drops the attributes but no pages.
+                // `ENOENT` means the kernel holds no such inode.
+                let _ = notifier.inval_inode(INodeNo(inode), -1, 0);
+            }
         }
     }
 }
@@ -2071,6 +2144,7 @@ impl ProjectionCore {
         StateGuard {
             state: Some(state),
             wake: &self.invalidation,
+            notifier: &self.notifier,
         }
     }
 
@@ -2431,6 +2505,7 @@ impl FuseSession {
             streams: DirectoryStreams::default(),
             invalidation: InvalidationQueue::default(),
             page_stores: PageStores::default(),
+            superseded_attributes: Vec::new(),
         };
         let core = Arc::new(ProjectionCore::new(source, state));
         let observer: Weak<ProjectionCore> = Arc::downgrade(&core);
@@ -3015,8 +3090,11 @@ impl FuseProjection {
                 return Err(libc::EISDIR);
             }
             // Facts a read-only open can stand on without the source: pages
-            // the kernel holds at the version these facts describe.
-            let held = (!changes_content(flags) && flags & libc::O_DIRECT == 0)
+            // the kernel holds at the version these facts describe. An open
+            // that stores no pages is for a read the kernel's pages could
+            // not serve, so it opens the source now: what it serves is then
+            // the version checked against the kernel's size below.
+            let held = (storing && !changes_content(flags) && flags & libc::O_DIRECT == 0)
                 .then(|| state.by_inode.get(&inode))
                 .flatten()
                 .filter(|entry| entry.cached_content == Some(ContentVersion::of(&entry.lookup)))
@@ -3056,10 +3134,21 @@ impl FuseProjection {
         if state.path(inode).ok() != Some(&path) {
             return Err(libc::ESTALE);
         }
-        let entry = state.by_inode.get_mut(&inode).ok_or(libc::ESTALE)?;
+        // A change this mount makes keeps the kernel's size current itself.
+        let changing = changes_content(flags) || state.page_stores.claims.contains_key(&file_id);
+        let entry = state.by_inode.get(&inode).ok_or(libc::ESTALE)?;
         if entry.lookup.node.file_id != file_id {
             return Err(libc::ESTALE);
         }
+        if !changing && !entry.kernel_reads(&refreshed) {
+            // The file changed around the mount since the kernel was handed
+            // its size, which would cut what this open reads to neither
+            // version whole. Refuse it as an open of a replaced file is
+            // refused; the kernel reads the attributes again first.
+            state.superseded_attributes.push(inode);
+            return Err(libc::ESTALE);
+        }
+        let entry = state.by_inode.get_mut(&inode).ok_or(libc::ESTALE)?;
         entry.lookup = refreshed;
         entry.facts = stamp;
         if let Some(binding) = entry.binding_mut(&path) {
@@ -3484,9 +3573,10 @@ impl FuseProjection {
         })();
         match listed {
             Ok((_names, _lease, mut stream, mut state)) => {
-                state.list_directory(source, inode, &mut stream, listing, span);
+                let listed = state.list_directory(source, inode, &mut stream, listing, span);
                 state.streams.park(inode, stream);
                 drop(state);
+                listed.send();
             }
             Err(error) => listing.error(errno_on(span, error)),
         }
@@ -4805,6 +4895,7 @@ mod tests {
             streams: super::DirectoryStreams::default(),
             invalidation: super::InvalidationQueue::default(),
             page_stores: PageStores::default(),
+            superseded_attributes: Vec::new(),
         }
     }
 
