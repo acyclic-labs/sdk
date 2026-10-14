@@ -23,6 +23,29 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
+    /// Checks an observed parent entry against this active mount's held resources.
+    pub fn owns_native_parent_entry(
+        &self,
+        entry: &crate::native_host::HostListedEntry,
+        work: &NativeMaterializationWork,
+    ) -> Result<bool, crate::NativeTreeMaterializationError> {
+        self.session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .ok_or(crate::NativeTreeMaterializationError::ExternalMutation)?
+            .owns_parent_entry(entry, work)
+    }
+
+    /// Returns this mount's original finite callback allowance.
+    pub fn native_work(&self) -> Result<NativeMaterializationWork, MountLifecycleError> {
+        self.source
+            .native_original_work()?
+            .ok_or(MountLifecycleError::NativePolicy(
+                "mounted volume has no original native work",
+            ))
+    }
+
     /// Accepts physical I/O on the mounted source's retirement gate.
     pub fn native_source_io_lease(
         &self,
@@ -180,8 +203,7 @@ where
                         plan,
                         operation,
                         permit,
-                        super::super::adapter::NativeDemandCarrier::Native(work),
-                        cancellation,
+                        crate::kernel::KernelAccounting::native(work, cancellation),
                         before_publication,
                     )
                     .await?;

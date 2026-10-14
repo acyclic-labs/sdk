@@ -81,11 +81,12 @@ impl crate::pi_host::PiControlHost<'_> {
                 work,
             )
             .await?;
-        let mut candidates = std::iter::once(relative)
-            .chain(relatives.into_iter().flatten())
-            .zip(std::iter::once(&request.path).chain(variants.iter()))
-            .peekable();
-        while let Some((path, candidate)) = candidates.next() {
+        for index in 0..=variants.len() {
+            let (path, candidate) = if index == 0 {
+                (relative, request.path.as_str())
+            } else {
+                (relatives[index - 1].expect("validated variant"), variants[index - 1].as_str())
+            };
             let path = logical_path(path, work)?;
             match selection.read(&path.0, *maximum_bytes, work).await {
                 Ok(bytes) => {
@@ -99,7 +100,7 @@ impl crate::pi_host::PiControlHost<'_> {
                         },
                     );
                 }
-                Err(error) if is_absent(&error) && candidates.peek().is_some() => {}
+                Err(error) if is_absent(&error) && index < variants.len() => {}
                 Err(error) => return Err(error),
             }
         }

@@ -16,10 +16,6 @@ pub(super) fn held_owned_bytes(held: &Held) -> u64 {
     crate::foundation::usize_to_u64(std::mem::size_of::<Slot>() + parents)
 }
 
-pub(crate) fn handle_allocation_error(error: AllocationError) -> crate::FsError {
-    error.into_work_or(crate::FsError::HandleAllocationFailed)
-}
-
 pub(crate) fn clone_generation_root(
     root: &GenerationRoot,
     accounting: &mut KernelAccounting<'_>,
@@ -44,26 +40,21 @@ pub(crate) fn clone_generation_root(
                 owner,
                 native_sink
                     .as_ref()
-                    .ok_or(crate::FsError::HandleAllocationFailed)?,
+                    .expect("native owner has an admitted sink"),
             )?,
         _ => return Err(crate::FsError::HandleAllocationFailed),
     };
     Ok((owned.0, control))
 }
 
-/// The same primitive constructor for standalone and original native work.
-/// Admissions are short accounting leaves; the allocator and copy run outside
-/// every original-work loan. The buffer precedes its paid guard on all exits.
+/// Clones the root outside accounting loans; the buffer precedes its guard.
 pub(crate) fn clone_generation_root_with_accounting(
     root: &GenerationRoot,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(GenerationRoot, KernelOwnedAllocation), crate::FsError> {
-    let requested = root
-        .parents
-        .len()
-        .checked_mul(std::mem::size_of::<crate::GenerationId>())
-        .map(crate::foundation::usize_to_u64)
-        .ok_or(crate::FsError::Work(crate::WorkError::Overflow))?;
+    let requested = crate::foundation::usize_to_u64(
+        root.parents.len() * std::mem::size_of::<crate::GenerationId>(),
+    );
     let mut parents = (
         Vec::new(),
         accounting.claim_owned(requested, u64::from(requested != 0))?,
@@ -73,12 +64,9 @@ pub(crate) fn clone_generation_root_with_accounting(
         accounting.release_owned(&mut parents.1, requested)?;
         return Err(crate::FsError::HandleAllocationFailed);
     }
-    let actual = parents
-        .0
-        .capacity()
-        .checked_mul(std::mem::size_of::<crate::GenerationId>())
-        .map(crate::foundation::usize_to_u64)
-        .ok_or(crate::FsError::Work(crate::WorkError::Overflow))?;
+    let actual = crate::foundation::usize_to_u64(
+        parents.0.capacity() * std::mem::size_of::<crate::GenerationId>(),
+    );
     let copied = WorkCounters {
         bytes_copied: requested,
         ..WorkCounters::UNCHARGED

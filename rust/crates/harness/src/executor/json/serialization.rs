@@ -241,8 +241,7 @@ fn write<T: Serialize + ?Sized>(
         },
     ));
     let written = writer.written;
-    drop(writer);
-    drop(state);
+
     result.map_err(|error| scope.error(error))?;
     if let Some(error) = scope.failed.take() {
         return Err(error);
@@ -380,7 +379,7 @@ fn build<T: Serialize + ?Sized>(value: &T, scope: &mut Scope<'_>) -> Result<Valu
         decoder.end()?;
         Ok(value)
     });
-    drop(state);
+
     let mut value = result.map_err(|error| scope.error(error))?;
     let actual = json_value_logical_owned_bytes(&value)?;
     let released = checked(
@@ -454,15 +453,7 @@ pub fn json_value_bounded<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Re
     code: Option<crate::wire::ErrorCode>,
     charge: &mut F,
 ) -> Result<Value> {
-    let mut inspect = |event| {
-        charge(match event {
-            JsonCodecCharge::Work { bytes, items } if bytes != 0 => JsonCodecCharge::Inspect {
-                items: bytes.saturating_add(items),
-            },
-            other => other,
-        })
-    };
-    let mut scope = scope(bounds, code, &mut inspect);
+    let mut scope = scope(bounds, code, charge);
     let value = build(value, &mut scope)?;
     scope.event(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
     scope.retained = 0;
@@ -477,15 +468,7 @@ pub(crate) fn count_json_bytes_trusted<
     code: Option<crate::wire::ErrorCode>,
     charge: &mut F,
 ) -> Result<u64> {
-    let mut inspect = |event| {
-        charge(match event {
-            JsonCodecCharge::Work { bytes, items } if bytes != 0 => JsonCodecCharge::Inspect {
-                items: bytes.saturating_add(items),
-            },
-            other => other,
-        })
-    };
-    let mut scope = scope(bounds, code, &mut inspect);
+    let mut scope = scope(bounds, code, charge);
     scope.event(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
     let size = write(value, &mut scope, None, bounds.maximum_bytes, false)?;
     scope.event(JsonCodecCharge::Work { bytes: 0, items: 0 })?;

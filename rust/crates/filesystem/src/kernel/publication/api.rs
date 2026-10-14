@@ -31,6 +31,14 @@ pub async fn publish_generation<O: crate::AsyncObjectStore, A: crate::AsyncAutho
     .map_err(|failure| OperationFailure::new(publication_error(failure.error), *failure.work))
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
+)]
+#[allow(
+    clippy::expect_used,
+    reason = "The standalone engine always supplies a budget to these standalone callbacks."
+)]
 pub(crate) async fn publish_generation_async_guarded<O, A, E, F, Fut>(
     objects: &O,
     authority: &A,
@@ -115,6 +123,10 @@ where
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(
+    clippy::type_complexity,
+    reason = "Either keeps rejected admission synchronous and successful work in its funded future."
+)]
 fn native_publication_owner<E, F, Fut>(
     original: crate::NativeMaterializationWork,
     mut factory: F,
@@ -174,6 +186,10 @@ where
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
+)]
 pub(crate) async fn publish_generation_async_guarded_with_native_work<'a, O, A, E, F, Fut>(
     objects: &O,
     authority: &A,

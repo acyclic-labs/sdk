@@ -39,5 +39,5 @@ pub(super) fn readonly_cleanup_standalone(
         .ok_or(WorkError::Overflow)?;
     allocations
         .release(retired)
-        .map_err(crate::collection::handle_allocation_error)
+        .map_err(|error| error.into_work_or(FsError::HandleAllocationFailed))
 }

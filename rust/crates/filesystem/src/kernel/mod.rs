@@ -66,9 +66,7 @@ pub(crate) use file_read::{decode_owned, owned_read_bytes};
 pub(crate) use generation_mutation::{
     apply_generation_mutations_retaining_with_accounting, clone_generation_root_with_accounting,
 };
-pub(crate) use list::{
-    list_tree_entries_async_with_accounting,
-};
+pub(crate) use list::list_tree_entries_async_with_accounting;
 pub(crate) use merge::{
     MergeGenerationBorrowedRequest, merge_generation_with_accounting,
     merge_generation_with_borrowed_map_resolutions_with_accounting,
@@ -184,8 +182,8 @@ pub use path_access::{
     observe_path_async, observe_paths_async,
 };
 pub(crate) use path_access::{
-    PathQueries, PathBatchMode, lookup_path_async_with_accounting, lookup_paths_with_accounting, observe_path_async_with_accounting,
-    observe_paths_async_with_accounting,
+    PathBatchMode, PathQueries, lookup_path_async_with_accounting, lookup_paths_with_accounting,
+    observe_path_async_with_accounting, observe_paths_async_with_accounting,
 };
 pub(crate) use persistent_point::retire_allocation;
 pub use probe::{
@@ -193,8 +191,8 @@ pub use probe::{
 };
 pub(crate) use publication::contextual_publication_fingerprint;
 pub use publication::{
-    PublicationError, PublicationFailure, PublicationIntent, PublicationReceipt, PublishGenerationRequest,
-    PublishedGeneration, decode_published_generation, publish_generation,
+    PublicationError, PublicationFailure, PublicationIntent, PublicationReceipt,
+    PublishGenerationRequest, PublishedGeneration, decode_published_generation, publish_generation,
 };
 pub(crate) use publication::{
     decode_publication_evidence_with_accounting, publish_generation_async_guarded,

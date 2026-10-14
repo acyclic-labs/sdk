@@ -15,7 +15,7 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<MountDirectoryPage, MountSourceError> {
         let (text, _allocation) = self.path(path, work)?;
-        let owner = ViewGate::callback_owner();
+        let owner = ViewGate::callback_owner()?;
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
         with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
             self.runtime.wait_prepared(prepared, || async {
@@ -64,13 +64,7 @@ where
                     .await?;
                 observation.ensure_publication_resolved()?;
                 let mut checkout = observation
-                    .observer(
-                        &mut crate::kernel::allocation::KernelAccounting::native(
-                            work,
-                            work.cancellation(),
-                        ),
-                        work.cancellation(),
-                    )
+                    .observer(&mut accounting, work.cancellation())
                     .map_err(mount_engine_error)?;
                 let (mut page, state, _page_allocation) = self
                     .lazy
@@ -84,61 +78,9 @@ where
                     )
                     .await
                     .map_err(lazy_error)?;
-                let mut output_carrier = adapter::NativeDemandCarrier::Native(work);
-                let mut output = adapter::InputBuffers::new(&mut output_carrier)?;
-                let mut entries = output.vec(page.entries.len())?;
-                let mut output_allocation =
-                    output.retain().ok_or(MountSourceError::NativeUnsupported)?;
-                for entry in &page.entries {
-                    work.charge(crate::materializer::NativeResourceCredit::Items.delta(1))
-                        .map_err(MountSourceError::NativeWork)?;
-                    let (name, allocation) = adapter::native_mount_name(&entry.name, carrier)?;
-                    if let Some(mut allocation) = allocation {
-                        output_allocation
-                            .absorb(&mut allocation)
-                            .map_err(MountSourceError::NativeWork)?;
-                    }
-                    let (child, _allocation) = copy_path(path.components(), Some(&name), work)?;
-                    let (child_text, _text_allocation) = self.path(&child, work)?;
-                    let (lookup, pin) = if let Some(node) = entry.source {
-                        let (lookup, _, _allocation) = self
-                            .lazy
-                            .inspect_unauthored(
-                                &mut checkout,
-                                &child_text,
-                                None,
-                                crate::lazy_workspace::InspectBasis {
-                                    state: Some(&state),
-                                    listed: Some(node),
-                                    unobserved: entry.unobserved,
-                                    ..crate::lazy_workspace::InspectBasis::default()
-                                },
-                                &mut accounting,
-                            )
-                            .await
-                            .map_err(lazy_error)?;
-                        let Some(lookup) = lookup else {
-                            continue;
-                        };
-                        self.project_unauthored(&child_text, lookup, work).await?
-                    } else {
-                        match self.resolve(&child, &child_text, owner, work).await? {
-                            Resolution::Absent => continue,
-                            Resolution::Authored(lookup) => {
-                                (self.project_authored(lookup, work).await?, None)
-                            }
-                            Resolution::Unauthored(lookup, _allocation) => {
-                                self.project_unauthored(&child_text, lookup, work).await?
-                            }
-                        }
-                    };
-                    entries.push(MountDirectoryEntry {
-                        name,
-                        node: lookup.node,
-                        metadata: lookup.metadata,
-                        pin,
-                    });
-                }
+                let (entries, mut output_allocation) = self
+                    .directory_entries(path, &page, &mut checkout, &state, carrier, owner)
+                    .await?;
                 if !self
                     .authored
                     .unchanged_since_with_meter(path, None, stamp, work)?
@@ -146,6 +88,7 @@ where
                 {
                     return Err(MountSourceError::Stale);
                 }
+                let mut output_carrier = adapter::NativeDemandCarrier::Native(work);
                 let next_cursor = if let Some(cursor) = page.next.take() {
                     let token = self.cursors.remember(generation, (stamp, cursor))?;
                     let mut continuation = adapter::InputBuffers::new(&mut output_carrier)?;
@@ -168,5 +111,75 @@ where
                 ))
             })
         })
+    }
+
+    async fn directory_entries(
+        &self,
+        path: &MountPath,
+        page: &crate::LazyDirectoryPage,
+        checkout: &mut crate::Checkout<A, O>,
+        state: &crate::LazyWorkspaceState,
+        carrier: &mut adapter::NativeDemandCarrier<'_>,
+        owner: super::super::view_gate::CallbackOwner,
+    ) -> Result<(Vec<MountDirectoryEntry>, crate::NativeAllocation), MountSourceError> {
+        let work = carrier
+            .original_native_work()
+            .ok_or(MountSourceError::NativeUnsupported)?;
+        let mut accounting = crate::kernel::KernelAccounting::native(&work, work.cancellation());
+        let mut output_carrier = adapter::NativeDemandCarrier::Native(&work);
+        let mut output = adapter::InputBuffers::new(&mut output_carrier)?;
+        let mut entries = output.vec(page.entries.len())?;
+        let mut output_allocation = output.retain().ok_or(MountSourceError::NativeUnsupported)?;
+        for entry in &page.entries {
+            work.charge(crate::materializer::NativeResourceCredit::Items.delta(1))
+                .map_err(MountSourceError::NativeWork)?;
+            let (name, allocation) = adapter::native_mount_name(&entry.name, carrier)?;
+            if let Some(mut allocation) = allocation {
+                output_allocation
+                    .absorb(&mut allocation)
+                    .map_err(MountSourceError::NativeWork)?;
+            }
+            let (child, _allocation) = copy_path(path.components(), Some(&name), &work)?;
+            let (child_text, _text_allocation) = self.path(&child, &work)?;
+            let (lookup, pin) = if let Some(node) = entry.source {
+                let (lookup, _, _allocation) = self
+                    .lazy
+                    .inspect_unauthored(
+                        checkout,
+                        &child_text,
+                        None,
+                        crate::lazy_workspace::InspectBasis {
+                            state: Some(state),
+                            listed: Some(node),
+                            unobserved: entry.unobserved,
+                            ..crate::lazy_workspace::InspectBasis::default()
+                        },
+                        &mut accounting,
+                    )
+                    .await
+                    .map_err(lazy_error)?;
+                let Some(lookup) = lookup else {
+                    continue;
+                };
+                self.project_unauthored(&child_text, lookup, &work).await?
+            } else {
+                match self.resolve(&child, &child_text, owner, &work).await? {
+                    Resolution::Absent => continue,
+                    Resolution::Authored(lookup) => {
+                        (self.project_authored(lookup, &work).await?, None)
+                    }
+                    Resolution::Unauthored(lookup, _allocation) => {
+                        self.project_unauthored(&child_text, lookup, &work).await?
+                    }
+                }
+            };
+            entries.push(MountDirectoryEntry {
+                name,
+                node: lookup.node,
+                metadata: lookup.metadata,
+                pin,
+            });
+        }
+        Ok((entries, output_allocation))
     }
 }

@@ -97,7 +97,10 @@ fn insert<K, V>(
                 ..WorkCounters::UNCHARGED
             };
             ctx.admit(copied)?;
-            table.ensure_for_push(usize::MAX, ctx)?;
+            let count = table.value.capacity().saturating_mul(2).max(1);
+            let mut replacement = Owned::allocate(count, ctx)?;
+            replacement.value.append(&mut table.value);
+            std::mem::replace(table, replacement).retire(ctx)?;
             ctx.record_completed(copied)?;
         }
         let moved = WorkCounters {
@@ -113,7 +116,9 @@ fn insert<K, V>(
         Ok(())
     })();
     if let Some(before) = before {
-        let (ledger, _, _, _) = ctx.standalone_parts().ok_or(LazyWorkspaceError::Concurrent)?;
+        let (ledger, _, _, _) = ctx
+            .standalone_parts()
+            .ok_or(LazyWorkspaceError::Concurrent)?;
         ledger
             .release(ledger.live_bytes() - before)
             .map_err(|e| e.into_work_or(crate::FsError::PendingMutationAllocationFailed))?;
@@ -137,9 +142,11 @@ fn put_node<K: Ord, T: MemoryLazyNode>(
         match position(table, id, ctx)? {
             Ok(i) => {
                 let (_, (stored, _)) = table.value.get(i).ok_or(LazyWorkspaceError::Concurrent)?;
-                if *stored != value.0 { return Err(LazyWorkspaceError::Concurrent); }
+                if *stored != value.0 {
+                    return Err(LazyWorkspaceError::Concurrent);
+                }
                 Ok(())
-            },
+            }
             Err(i) => {
                 let bytes = value.0.owned_bytes();
                 insert(table, i, &mut input, ctx)?;
@@ -172,9 +179,14 @@ impl LazyWorkspaceStore for MemoryLazyWorkspaceStore {
         let mut stored = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         match position(&stored.workspaces, &id, ctx)? {
             Ok(i) => {
-                let (_, workspace) = stored.workspaces.value.get_mut(i)
+                let (_, workspace) = stored
+                    .workspaces
+                    .value
+                    .get_mut(i)
                     .ok_or(LazyWorkspaceError::Concurrent)?;
-                if workspace.revision != revision { return Ok(false); }
+                if workspace.revision != revision {
+                    return Ok(false);
+                }
                 *workspace = state;
             }
             Err(i) if revision == 0 => {

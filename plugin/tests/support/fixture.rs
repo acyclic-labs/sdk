@@ -30,7 +30,7 @@ fn default_e2e_scratch_root() -> PathBuf {
 
 #[cfg(all(not(target_os = "linux"), not(target_os = "windows")))]
 fn default_e2e_scratch_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("plugin workspace root")
         .parent()

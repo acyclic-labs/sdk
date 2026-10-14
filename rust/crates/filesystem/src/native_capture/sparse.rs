@@ -1,7 +1,6 @@
 use super::*;
 
 /// Settles sparse allocation reports against bounded reads of their content.
-#[cfg(windows)]
 pub(super) async fn settled_sparse_ranges(
     native: &std::sync::Arc<acyclic_native_runtime::NativeFile>,
     metadata: &HostStat,

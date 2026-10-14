@@ -299,24 +299,7 @@ pub(super) fn write_ordinary(
             .ok_or_else(|| failed(NativeMountError::ControlPending))?
             .0
     };
-    let mut file = match crate::native_host::with_wide_path(
-        std::path::Path::new(&temporary),
-        &mut &*work,
-        |name, work| {
-            crate::native_host::open_windows_at(
-                from,
-                name,
-                windows::Win32::Storage::FileSystem::FILE_GENERIC_READ
-                    | windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE
-                    | windows::Win32::Storage::FileSystem::DELETE,
-                windows::Wdk::Storage::FileSystem::FILE_CREATE,
-                windows::Wdk::Storage::FileSystem::FILE_NON_DIRECTORY_FILE
-                    | windows::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT
-                    | windows::Wdk::Storage::FileSystem::FILE_DELETE_ON_CLOSE,
-                work,
-            )
-        },
-    ) {
+    let mut file = match create_ordinary_file(from, &temporary, work) {
         Ok(file) => file,
         Err(crate::NativeTreeMaterializationError::Io(error))
             if matches!(
@@ -351,76 +334,17 @@ pub(super) fn write_ordinary(
                 .map_err(NativeMountError::from)
                 .map_err(failed)?
             {
-                Some(held) => Some(held),
+                held @ Some(_) => held,
                 None => return Ok(Placed::Nothing),
             }
         }
         None => None,
     };
-    let published = if direct {
+    match if direct {
         Ok(())
-    } else if held.is_some() {
-        crate::native_host::with_wide_path(
-            std::path::Path::new(&temporary),
-            &mut &*work,
-            |from_name, work| {
-                crate::native_host::with_wide_path(
-                    std::path::Path::new(name),
-                    work,
-                    |to_name, _| {
-                        crate::native_host::rename_held(
-                            from,
-                            from_name,
-                            &directory,
-                            to_name,
-                            acyclic_native_runtime::RenameMode::Replace,
-                            None,
-                            &mut crate::NativeMaterializationWork::clone(projection.work),
-                        )
-                        .map_err(crate::materializer::native_materialization_work_error)
-                    },
-                )
-            },
-        )
     } else {
-        #[cfg(unix)]
-        {
-            crate::native_host::rename_held(
-                from,
-                std::path::Path::new(&temporary),
-                &directory,
-                std::path::Path::new(name),
-                acyclic_native_runtime::RenameMode::NoReplace,
-                None,
-                &mut &*work,
-            )
-        }
-        #[cfg(windows)]
-        {
-            crate::native_host::with_wide_path(
-                std::path::Path::new(&temporary),
-                &mut &*work,
-                |source_name, work| {
-                    crate::native_host::with_wide_path(
-                        std::path::Path::new(name),
-                        work,
-                        |target, work| {
-                            crate::native_host::rename_held(
-                                from,
-                                source_name,
-                                &directory,
-                                target,
-                                acyclic_native_runtime::RenameMode::NoReplace,
-                                None,
-                                work,
-                            )
-                        },
-                    )
-                },
-            )
-        }
-    };
-    match published {
+        publish_ordinary_file(from, &temporary, &directory, name, held.as_ref(), work)
+    } {
         Ok(()) => {
             crate::native_host::keep_windows_created_file(&file, &mut &*work)
                 .map_err(NativeMountError::from)
@@ -445,5 +369,101 @@ pub(super) fn write_ordinary(
             Ok(Placed::Retry)
         }
         Err(error) => Err(failed(error.into())),
+    }
+}
+
+fn create_ordinary_file(
+    from: &cap_std::fs::Dir,
+    temporary: &std::ffi::OsStr,
+    work: &crate::NativeMaterializationWork,
+) -> Result<std::fs::File, crate::NativeTreeMaterializationError> {
+    crate::native_host::with_wide_path(
+        std::path::Path::new(temporary),
+        &mut &*work,
+        |name, work| {
+            crate::native_host::open_windows_at(
+                from,
+                name,
+                windows::Win32::Storage::FileSystem::FILE_GENERIC_READ
+                    | windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE
+                    | windows::Win32::Storage::FileSystem::DELETE,
+                windows::Wdk::Storage::FileSystem::FILE_CREATE,
+                windows::Wdk::Storage::FileSystem::FILE_NON_DIRECTORY_FILE
+                    | windows::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT
+                    | windows::Wdk::Storage::FileSystem::FILE_DELETE_ON_CLOSE,
+                work,
+            )
+        },
+    )
+}
+
+fn publish_ordinary_file(
+    from: &cap_std::fs::Dir,
+    temporary: &std::ffi::OsStr,
+    directory: &cap_std::fs::Dir,
+    name: &std::ffi::OsStr,
+    held: Option<&std::fs::File>,
+    work: &crate::NativeMaterializationWork,
+) -> Result<(), crate::NativeTreeMaterializationError> {
+    if held.is_some() {
+        crate::native_host::with_wide_path(
+            std::path::Path::new(temporary),
+            &mut &*work,
+            |from_name, work| {
+                crate::native_host::with_wide_path(
+                    std::path::Path::new(name),
+                    work,
+                    |to_name, _| {
+                        crate::native_host::rename_held(
+                            from,
+                            from_name,
+                            directory,
+                            to_name,
+                            acyclic_native_runtime::RenameMode::Replace,
+                            None,
+                            &mut crate::NativeMaterializationWork::clone(work),
+                        )
+                        .map_err(crate::materializer::native_materialization_work_error)
+                    },
+                )
+            },
+        )
+    } else {
+        #[cfg(unix)]
+        {
+            crate::native_host::rename_held(
+                from,
+                std::path::Path::new(temporary),
+                directory,
+                std::path::Path::new(name),
+                acyclic_native_runtime::RenameMode::NoReplace,
+                None,
+                &mut &*work,
+            )
+        }
+        #[cfg(windows)]
+        {
+            crate::native_host::with_wide_path(
+                std::path::Path::new(temporary),
+                &mut &*work,
+                |source_name, work| {
+                    crate::native_host::with_wide_path(
+                        std::path::Path::new(name),
+                        work,
+                        |target, work| {
+                            crate::native_host::rename_held(
+                                from,
+                                source_name,
+                                directory,
+                                target,
+                                acyclic_native_runtime::RenameMode::NoReplace,
+                                None,
+                                work,
+                            )
+                        },
+                    )
+                },
+            )
+        }
     }
 }

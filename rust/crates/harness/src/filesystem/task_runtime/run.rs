@@ -173,26 +173,14 @@ where
             };
             #[cfg(target_arch = "wasm32")]
             let mut wake = self.host.workflow_input(task, fence, None).await?;
+            #[cfg(not(target_arch = "wasm32"))]
+            let mut next_transition = session.latest_transition(io).await?;
+            #[cfg(target_arch = "wasm32")]
+            let mut next_transition = session.latest_transition(None).await?;
             let mut advanced = 0;
             loop {
                 let revision = session.checkpoint().revision;
-                #[cfg(not(target_arch = "wasm32"))]
-                let _transition_custody;
-                #[cfg(not(target_arch = "wasm32"))]
-                let mut transition = if let Some(io) = io {
-                    let _work = io.original_native_work().ok_or(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Unsupported,
-                        reason: "native transition requires original observer",
-                    })?;
-                    let (value, custody) = session.latest_transition(Some(io)).await?;
-                    _transition_custody = custody;
-                    value
-                } else {
-                    _transition_custody = None;
-                    session.latest_transition(None).await?.0
-                };
-                #[cfg(target_arch = "wasm32")]
-                let mut transition = session.latest_transition(None).await?.0;
+                let (mut transition, _transition_custody) = next_transition;
                 if advanced == maximum_transitions
                     && transition.as_ref().is_none_or(|value| {
                         matches!(value.status, MachineStatus::Suspended)
@@ -345,7 +333,7 @@ where
                     None
                 };
                 #[cfg(not(target_arch = "wasm32"))]
-                if let Some(key) = native_input {
+                let stepped = if let Some(key) = native_input {
                     let Some(CommandDispatch::Ready { custody, .. }) = command_input.as_mut()
                     else {
                         unreachable!("native key requires retained command custody");
@@ -363,7 +351,7 @@ where
                                 custody,
                             )),
                         )
-                        .await?;
+                        .await?
                 } else if let Some(io) = io {
                     let work = io.original_native_work().ok_or(Error::NativeBoundary {
                         code: crate::wire::ErrorCode::Unsupported,
@@ -400,7 +388,7 @@ where
                                 custody,
                             )),
                         )
-                        .await?;
+                        .await?
                 } else {
                     session
                         .step(
@@ -409,10 +397,10 @@ where
                             input,
                             None,
                         )
-                        .await?;
-                }
+                        .await?
+                };
                 #[cfg(target_arch = "wasm32")]
-                session
+                let stepped = session
                     .step(
                         OperationId::from_bytes(bytes),
                         IdempotencyKey::new(format!("task-step:{revision}"))?,
@@ -420,6 +408,7 @@ where
                         None,
                     )
                     .await?;
+                next_transition = (Some(stepped.0), stepped.1);
                 advanced += 1;
             }
         };

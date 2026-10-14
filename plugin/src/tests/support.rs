@@ -43,10 +43,7 @@ pub(crate) async fn configured_test_service_bootstrap(
         pi_root_provider::allocation_budget(),
         &CancellationToken::new(),
     )
-    .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction {
-        cause,
-        work: Box::new(work),
-    })?;
+    .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
     let root = data.to_path_buf();
     Ok((lock, configured, root, work))
 }

@@ -2,8 +2,8 @@
 
 use super::codec::{CanonicalDecodeError, DecodeLimits, Decoder, Encoder};
 use super::types::digest_object;
+use crate::WorkCounters;
 use crate::storage::{ObjectId, ObjectKind, object_digest};
-use crate::{WorkCounters};
 
 const DOMAIN: &[u8; 8] = b"ACYFSMET";
 const VERSION: u16 = 1;
@@ -115,20 +115,35 @@ where
 {
     use super::codec::EncodeWorkStep;
     observe(EncodeWorkStep::Check)?;
-    let examined = WorkCounters { items_examined: 1, ..WorkCounters::default() };
+    let examined = WorkCounters {
+        items_examined: 1,
+        ..WorkCounters::default()
+    };
     observe(EncodeWorkStep::Admit(examined))?;
     let length = file_metadata_encoded_len(metadata);
     observe(EncodeWorkStep::Completed(examined))?;
     let length = length?;
-    let copied = [metadata.named_attributes, metadata.acl, metadata.security_descriptor]
-        .into_iter().filter(|field| matches!(field, MetadataField::Value(_))).count() as u64 * 32;
+    let copied = [
+        metadata.named_attributes,
+        metadata.acl,
+        metadata.security_descriptor,
+    ]
+    .into_iter()
+    .filter(|field| matches!(field, MetadataField::Value(_)))
+    .count() as u64
+        * 32;
     observe(EncodeWorkStep::Admit(WorkCounters {
-        items_examined: 12, bytes_encoded: length as u64, bytes_copied: copied,
+        items_examined: 12,
+        bytes_encoded: length as u64,
+        bytes_copied: copied,
         ..WorkCounters::default()
     }))?;
     let mut encoder = Encoder::with_exact_capacity(
-        DOMAIN, VERSION, length,
-        |step| observe(EncodeWorkStep::Allocation(step)), allocation_error,
+        DOMAIN,
+        VERSION,
+        length,
+        |step| observe(EncodeWorkStep::Allocation(step)),
+        allocation_error,
     )?;
     encode_metadata_fields(metadata, &mut encoder, &mut observe)?;
     Ok(encoder.finish())
@@ -137,10 +152,16 @@ where
 fn file_metadata_encoded_len(metadata: FileMetadata) -> Result<usize, CanonicalDecodeError> {
     metadata.validate()?;
     fn field<T>(value: &MetadataField<T>, payload: usize) -> usize {
-        match value { MetadataField::Unavailable => 1, MetadataField::Value(_) => 1 + payload }
+        match value {
+            MetadataField::Unavailable => 1,
+            MetadataField::Value(_) => 1 + payload,
+        }
     }
     fn object(value: MetadataField<ObjectId>) -> usize {
-        match value { MetadataField::Unavailable => 1, MetadataField::Value(value) => 1 + value.digest.as_bytes().len() }
+        match value {
+            MetadataField::Unavailable => 1,
+            MetadataField::Value(value) => 1 + value.digest.as_bytes().len(),
+        }
     }
     [
         field(&metadata.posix_mode, std::mem::size_of::<u32>()),
@@ -155,8 +176,12 @@ fn file_metadata_encoded_len(metadata: FileMetadata) -> Result<usize, CanonicalD
         object(metadata.named_attributes),
         object(metadata.acl),
         object(metadata.security_descriptor),
-    ].into_iter().try_fold(DOMAIN.len() + std::mem::size_of::<u16>(), |bytes, field| {
-        bytes.checked_add(field).ok_or(CanonicalDecodeError::LengthOverflow)
+    ]
+    .into_iter()
+    .try_fold(DOMAIN.len() + std::mem::size_of::<u16>(), |bytes, field| {
+        bytes
+            .checked_add(field)
+            .ok_or(CanonicalDecodeError::LengthOverflow)
     })
 }
 
@@ -173,7 +198,9 @@ fn encode_metadata_fields<E>(
                 MetadataField::Value(_) => (1 + $payload, $copied),
             };
             let completed = WorkCounters {
-                items_examined: 1, bytes_encoded: encoded, bytes_copied: copied,
+                items_examined: 1,
+                bytes_encoded: encoded,
+                bytes_copied: copied,
                 ..WorkCounters::default()
             };
             observe(super::codec::EncodeWorkStep::Admit(completed))?;
@@ -198,7 +225,8 @@ fn encode_metadata_fields<E>(
 
 /// Decodes the same record with admission and actual primitive/item completions.
 pub fn decode_file_metadata<E: From<CanonicalDecodeError>>(
-    bytes: &[u8], limits: DecodeLimits,
+    bytes: &[u8],
+    limits: DecodeLimits,
     observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<FileMetadata, E> {
     let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, limits.maximum_object_bytes, observe)?;
@@ -220,7 +248,12 @@ pub fn decode_file_metadata<E: From<CanonicalDecodeError>>(
             observe,
         )?,
         acl: decode_object(&mut decoder, ObjectKind::Blob, "acl", observe)?,
-        security_descriptor: decode_object(&mut decoder, ObjectKind::Blob, "security_descriptor", observe)?,
+        security_descriptor: decode_object(
+            &mut decoder,
+            ObjectKind::Blob,
+            "security_descriptor",
+            observe,
+        )?,
     };
     decoder.finish()?;
     metadata.validate()?;
@@ -230,7 +263,11 @@ pub fn decode_file_metadata<E: From<CanonicalDecodeError>>(
 
 /// Computes the typed authenticated identity of canonical metadata.
 pub fn file_metadata_id(metadata: FileMetadata) -> Result<ObjectId, CanonicalDecodeError> {
-    let bytes = encode_file_metadata(metadata, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
+    let bytes = encode_file_metadata(
+        metadata,
+        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+        |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+    )?;
     Ok(ObjectId {
         kind: ObjectKind::Metadata,
         digest: object_digest(ObjectKind::Metadata, &bytes),
@@ -321,7 +358,10 @@ fn decode_object<E: From<CanonicalDecodeError>>(
 ) -> Result<MetadataField<ObjectId>, E> {
     match decoder.u8(observe)? {
         0 => Ok(MetadataField::Unavailable),
-        1 => Ok(MetadataField::Value(digest_object(kind, decoder.fixed::<32, E>(observe)?))),
+        1 => Ok(MetadataField::Value(digest_object(
+            kind,
+            decoder.fixed::<32, E>(observe)?,
+        ))),
         tag => Err(CanonicalDecodeError::UnknownTag { field, tag }.into()),
     }
 }

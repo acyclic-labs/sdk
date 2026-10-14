@@ -156,10 +156,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         if let Some(wait) = wait {
             wait.check().map_err(|_| MountSourceError::Cancelled)?;
         }
-        let prepared = match wait {
-            Some(wait) => self.cancellation.prepare_cancel_with_cleanup_wait(wait),
-            None => self.cancellation.prepare_cancel_accepted_cleanup(),
-        }
+        let prepared = self.cancellation.prepare_cancel_cleanup(wait)
         .map_err(MountSourceError::NativeWork)?;
         self.capture_gate
             .lock()

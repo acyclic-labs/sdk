@@ -37,7 +37,10 @@ impl ResumableToolRegistry {
                 })?;
             }
             let middle = lower + (upper - lower) / 2;
-            let tool = &self.0[middle];
+            let tool = self
+                .0
+                .get(middle)
+                .ok_or_else(|| Error::Invalid("resumable tool index is invalid".into()))?;
             match (
                 tool.definition.name.as_str(),
                 tool.definition.revision.as_str(),

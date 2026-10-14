@@ -35,7 +35,7 @@ async fn verify_binding<P: StreamProvider + 'static, A, O>(
 impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send + Sync + 'static>
     NativeVolumeView<A, O>
 {
-    /// Prepares exact materialized generations through the protected SDK journal.
+    /// Prepares exact native bindings through the protected SDK journal.
     pub fn prepare<'a, P: StreamProvider + 'static>(
         owner: &'a Arc<TaskJournalOwner<P>>,
         guards: &'a [Arc<crate::runtime::TaskContext>],
@@ -60,13 +60,8 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
             let mut generations = crate::model::vec_with_capacity(bindings.len(), Some(&io))?;
             let mut selected = crate::model::vec_with_capacity(bindings.len(), Some(&plan_io))?;
             let mut edits = crate::model::vec_with_capacity(bindings.len(), Some(&plan_io))?;
+            let mut preserved = crate::model::vec_with_capacity(bindings.len(), Some(&plan_io))?;
             for (index, (binding, guard)) in bindings.iter().zip(guards).enumerate() {
-                if binding.namespace != &NativeVolumeNamespace::MaterializedDirectory {
-                    return Err(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Unsupported,
-                        reason: "native commands require materialized directory selections",
-                    });
-                }
                 if binding.path.is_empty()
                     || binding.path.contains(['\\', '\0'])
                     || binding
@@ -86,11 +81,31 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                         items_examined: 1,
                         ..Default::default()
                     })?;
-                    if overlap(path, Path::new(prior.path)) {
+                    if overlap(path, Path::new(prior.path))
+                        || (overlap(
+                            Path::new(binding.path.split('/').next().ok_or_else(invalid)?),
+                            Path::new(prior.path.split('/').next().ok_or_else(invalid)?),
+                        ) && binding.mounted.is_some() != prior.mounted.is_some())
+                    {
                         return Err(invalid());
                     }
                 }
-                let volume_work = work.native_volume_work(options.work_per_volume)?;
+                let volume_work = match (binding.namespace, binding.mounted) {
+                    (NativeVolumeNamespace::MaterializedDirectory, None) => {
+                        work.native_volume_work(options.work_per_volume)?
+                    }
+                    (NativeVolumeNamespace::LazyMount { .. }, Some(mount)) => {
+                        let original = mount.work()?;
+                        if !original.shares_ledger(work)
+                            || original.budget() != options.work_per_volume
+                            || !original.remaining()?.has_finite_allowances()
+                        {
+                            return Err(invalid());
+                        }
+                        original
+                    }
+                    _ => return Err(invalid()),
+                };
                 verify_binding(owner, binding, guard, &volume_work).await?;
                 let volume_io = PreparationIo::from_native_work(&volume_work)?;
                 let reference = super::super::fork_preparer::bounded_io::content_workspace(
@@ -98,10 +113,11 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                     binding.volume,
                     Some(&volume_io),
                 )?;
-                let workspace = (binding.host).open(&reference, Some(&volume_io))
-                .await?;
-                let generation = (binding.host).generation(&workspace, binding.generation, Some(&volume_io))
-                .await?;
+                let workspace = binding.host.open(&reference, Some(&volume_io)).await?;
+                let generation = binding
+                    .host
+                    .generation(&workspace, binding.generation, Some(&volume_io))
+                    .await?;
                 if binding.writable
                     && workspace
                         .head(&volume_work, work.cancellation())
@@ -116,7 +132,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                 mappings.push(NativeVolumeMapping {
                     volume: binding.volume.copy(&mut Some(&mut io.history_io()))?,
                     generation: binding.generation.clone_with_io(&io)?,
-                    namespace: NativeVolumeNamespace::MaterializedDirectory,
+                    namespace: binding.namespace.clone(),
                     path,
                     writable: binding.writable,
                     authority_revision: crate::executor::json::canonical_json_digest(
@@ -125,6 +141,27 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                         &mut Some(&mut io.history_io()),
                     )?,
                 });
+                selected.push(acyclic_fs::MaterializationPreparationSelection {
+                    provider_identity: crate::store::history::canonical_bytes_with_work(
+                        binding.volume.provider(),
+                        acyclic_stream::MAX_RECORD_BYTES as u64,
+                        &mut Some(&mut plan_io.history_io()),
+                    )?,
+                    volume: workspace.id().volume_id(),
+                    generation: generation.id(),
+                });
+                if let Some(mount) = binding.mounted {
+                    if mount.path() != mappings[index].path
+                        || !matches!(binding.namespace, NativeVolumeNamespace::LazyMount { snapshot } if snapshot.workspace_id == workspace.id() && snapshot.authored_generation == generation.id())
+                    {
+                        return Err(invalid());
+                    }
+                    mounted::verify_snapshot(mount.as_ref(), binding.namespace, &volume_work)
+                        .await?;
+                    preserved.push(binding.path);
+                    generations.push((None, volume_work));
+                    continue;
+                }
                 let top = binding.path.split('/').next().ok_or_else(invalid)?;
                 if !edits.iter().any(
                     |edit| matches!(edit, MaterializationEdit::Install { path, .. } if path == top),
@@ -136,16 +173,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                     plan_io.absorb_native_custody(custody)?;
                     edits.push(MaterializationEdit::Install { path, image });
                 }
-                selected.push(acyclic_fs::MaterializationPreparationSelection {
-                    provider_identity: crate::store::history::canonical_bytes_with_work(
-                        binding.volume.provider(),
-                        acyclic_stream::MAX_RECORD_BYTES as u64,
-                        &mut Some(&mut plan_io.history_io()),
-                    )?,
-                    volume: workspace.id().volume_id(),
-                    generation: generation.id(),
-                });
-                generations.push((generation, volume_work));
+                generations.push((Some(generation), volume_work));
             }
             edits.sort_unstable_by(|left, right| match (left, right) {
                 (
@@ -172,7 +200,17 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
             let operation = super::journal::operation(owner.task_binding().0, work)?;
             let retained = store.load(operation).await?;
             let backend = allocation.backend(work).await?;
-            backend.require_selected_root(&edits, &[])?;
+            backend.require_selected_root(&edits, &preserved, |entry| {
+                for binding in bindings {
+                    if let Some(mount) = binding.mounted
+                        && mount.path().parent() == Some(options.root.as_path())
+                        && mount.owns_parent_entry(entry, work)?
+                    {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            })?;
             let intent = if let Some(retained) = &retained {
                 let original = super::preparation_record::intent(retained, &io)?;
                 if (original.task, &original.original_fence) != owner.task_binding()
@@ -183,7 +221,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                 }
                 original
             } else {
-                backend.require_initial_empty()?;
+                backend.require_empty_staging()?;
                 let (operation_directory, custody) =
                     work.path(&allocation.operation_directory, None)?;
                 io.absorb_native_custody(custody)?;
@@ -235,6 +273,9 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
             };
             if journal.phase == MaterializationPhase::Preparing && journal.preimages.is_empty() {
                 for (binding, (generation, volume_work)) in bindings.iter().zip(&generations) {
+                    let Some(generation) = generation else {
+                        continue;
+                    };
                     verify().await?;
                     let completion = materializer.store().prepare_action(journal).await?;
                     let identity = materializer
@@ -278,7 +319,6 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                 bindings.iter().zip(generations).enumerate()
             {
                 verify().await?;
-                let identity = materializer.backend().mapping_root_identity(binding.path)?;
                 let callback = guards[index].volume_callback(
                     owner,
                     binding.volume,
@@ -296,17 +336,35 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                     Some(Arc::clone(&callback)),
                     Some(&volume_work),
                 );
-                let view = generation
-                    .attach_native_working_set(
-                        &mount,
-                        &acyclic_fs::MaterializeOptions::native(
-                            &intent.manifest.volumes[index].path,
-                        ),
-                        identity,
-                        options.work_per_volume,
-                        work.cancellation(),
+                let view = if let Some(mount) = binding.mounted {
+                    mounted::verify_snapshot(mount.as_ref(), binding.namespace, &volume_work)
+                        .await?;
+                    if materializer.backend().mapping_root_identity(binding.path)?
+                        != mount.identity()?
+                    {
+                        return Err(invalid());
+                    }
+                    VolumeView::Mounted {
+                        owner: Arc::clone(mount),
+                        _work_scope: mount.enter(&volume_work)?,
+                    }
+                } else {
+                    let identity = materializer.backend().mapping_root_identity(binding.path)?;
+                    VolumeView::Directory(
+                        generation
+                            .ok_or_else(invalid)?
+                            .attach_native_working_set(
+                                &mount,
+                                &acyclic_fs::MaterializeOptions::native(
+                                    &intent.manifest.volumes[index].path,
+                                ),
+                                identity,
+                                options.work_per_volume,
+                                work.cancellation(),
+                            )
+                            .await?,
                     )
-                    .await?;
+                };
                 volumes.push(PreparedVolume {
                     view,
                     publication: binding.publication,

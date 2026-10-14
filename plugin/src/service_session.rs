@@ -289,7 +289,7 @@ impl PiSession {
         }
         let relative_directory = work.path(relative_directory, None)?;
         let owner = pi_owner::PiOwnerConfig::load(&resources.0.data, &relative_directory.0, work)?;
-        owner.validate_root(binding, work)?;
+        owner.validate_root(binding)?;
         let stream_path = directory.join("stream");
         if !stream_path.is_dir() {
             return Err(RootError::Invalid(
@@ -452,10 +452,7 @@ impl PiSession {
             pi_root_provider::allocation_budget(),
             &CancellationToken::new(),
         )
-        .map_err(|(cause, work)| RootError::NativeConstruction {
-            cause,
-            work: Box::new(work),
-        })?;
+        .map_err(|(cause, work)| RootError::NativeConstruction { cause, work })?;
         *original_native_work = Some(work.clone());
         Ok(work)
     }

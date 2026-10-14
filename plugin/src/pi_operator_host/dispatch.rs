@@ -51,7 +51,7 @@ impl crate::pi_host::PiControlHost<'_> {
         }
         let actual = self.context(context, &fence, work).await?;
         let (context, owner, admitted, _) = &actual;
-        self.protected.validate_root(&admitted.binding, work)?;
+        self.protected.validate_root(&admitted.binding)?;
         if admitted.binding.native_session_id != prepared.session
             || admitted.binding.scratch.volume != prepared.private_volume
         {

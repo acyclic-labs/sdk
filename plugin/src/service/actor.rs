@@ -160,7 +160,7 @@ impl SessionHandle {
                                     .map_err(
                                         |(cause, work)| Error::NativeConstruction {
                                             cause,
-                                            work: Box::new(work),
+                                            work,
                                         },
                                     )?,
                                 );

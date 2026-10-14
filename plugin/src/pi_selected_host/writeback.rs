@@ -171,11 +171,12 @@ impl PiControlHost<'_> {
         let journal =
             prepare_writeback(&root, &generations, &self.resources.store, &options, work).await?;
         let digest_value = writeback_digest_value(&root, &generations, &journal);
-        let mut digest = crate::pi_root_provider::digest_pi_value(
+        let digest = crate::pi_root_provider::digest_pi_value(
             &digest_value,
             work.budget().bytes_encoded,
             work,
         )?;
+        let mut digest = work.display(&digest)?;
         let mut encoded = crate::pi_root_provider::canonical_pi_value(
             &digest_value,
             crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
@@ -190,8 +191,9 @@ impl PiControlHost<'_> {
         let root_display = work.display(&root.path.display())?;
         let source_display = self
             .native()?
-            .with_selected_project_path(input.source, &source.volume, |path| {
-                work.display(&path.display()).map_err(Error::from)
+            .project_mount(input.source, &source.volume)
+            .map(|(mount, _)| {
+                work.display(&mount.path().display()).map_err(Error::from)
             })
             .transpose()?;
         let descriptor = crate::pi_operator::PiPreparedApproval {

@@ -158,7 +158,8 @@ pub(crate) async fn release_fork_guard_with_work(
     release_frame(result, bytes, work)
 }
 
-pub(crate) struct ObservedForkPublicationGuard {
+/// A provider fence with its retained publication allocation.
+pub struct ObservedForkPublicationGuard {
     pub(crate) guard: Box<dyn ForkPublicationGuard>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) _allocation: Option<acyclic_fs::NativeAllocation>,
@@ -179,13 +180,13 @@ pub(in crate::fork) async fn acquire_fork_fence(
             ._allocation
             .as_ref()
             .is_some_and(|allocation| allocation.work().shares_ledger(native))
-        {
-            let ObservedForkPublicationGuard { guard, _allocation } = guard;
-            drop(guard);
-            return Err(Error::NativeWork {
-                cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
-                custody: _allocation,
-            });
-        }
+    {
+        let ObservedForkPublicationGuard { guard, _allocation } = guard;
+        drop(guard);
+        return Err(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
+            custody: _allocation,
+        });
+    }
     Ok(guard)
 }

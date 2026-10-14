@@ -6,7 +6,6 @@ pub(super) async fn apply_metadata<A, O, E, F, Fut>(
     path: &NamespacePath,
     host_path: &Arc<(Vec<HostPathUnit>, crate::NativeAllocation)>,
     metadata: Option<FileMetadata>,
-    cancellation: &CancellationToken,
     receipt: &mut GenerationReceipt,
     before_effect: &mut Option<&mut F>,
 ) -> Result<(), E>
@@ -17,6 +16,12 @@ where
     F: FnMut(NativeMaterializationActionPhase) -> Fut,
     Fut: Future<Output = Result<(), E>>,
 {
+    let cancellation = receipt
+        .custody
+        .work()
+        .state
+        .with_original_leaf(|original| original.cancellation().clone());
+    let cancellation = &cancellation;
     let metadata = match metadata {
         Some(metadata) => metadata,
         None => read_source!(reader, receipt, remaining, value,

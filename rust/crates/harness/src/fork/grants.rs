@@ -41,11 +41,7 @@ pub(in crate::fork) fn decode_fork_manifest(
         let items = decode_attachment_manifest(reference, bytes, None, Some(&io))?;
         let retained = io.owned_bytes()?;
         let custody = io.into_native_custody(retained)?;
-        owned
-            .work()
-            .as_deref_mut()
-            .expect("manifest observer")
-            .absorb_native_custody(custody)?;
+        owned.observer()?.absorb_native_custody(custody)?;
         owned.adopt(retained)?;
         return Ok(items);
     }
@@ -95,11 +91,7 @@ pub(in crate::fork) fn decode_fork_manifest(
                 crate::executor::json::JsonCodecCharge::Admission { .. } => owned
                     .retain(diagnostic_bytes)
                     .and_then(|()| owned.checkpoint()),
-                _ => owned
-                    .work()
-                    .as_deref_mut()
-                    .expect("manifest observer")
-                    .codec_charge(charge),
+                _ => owned.observer()?.codec_charge(charge),
             },
         )?;
     owned.release(diagnostic_bytes)?;
@@ -116,11 +108,7 @@ pub(in crate::fork) fn decode_fork_manifest(
         &mut |charge| match charge {
             crate::executor::json::JsonCodecCharge::Retain { bytes } => owned.retain(bytes),
             crate::executor::json::JsonCodecCharge::Release { bytes } => owned.release(bytes),
-            _ => owned
-                .work()
-                .as_deref_mut()
-                .expect("manifest observer")
-                .codec_charge(charge),
+            _ => owned.observer()?.codec_charge(charge),
         },
     )?;
     owned.retain((canonical.capacity() - canonical.len()) as u64)?;

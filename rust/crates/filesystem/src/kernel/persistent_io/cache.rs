@@ -20,10 +20,8 @@ pub(crate) async fn read_page_with_accounting<S: AsyncObjectStore, F: Format>(
     let standalone = original.is_none();
     #[cfg(target_arch = "wasm32")]
     let standalone = true;
-    if standalone {
-        if let Some(owner) = data_custody {
-            owner.record_completed_leaf_work(PAGE_READ)?;
-        }
+    if standalone && let Some(owner) = data_custody {
+        owner.record_completed_leaf_work(PAGE_READ)?;
     }
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = original {
@@ -82,7 +80,7 @@ async fn read_cold_object<S: AsyncObjectStore>(
     }
     let (allocations, work, budget, _) = accounting
         .standalone_parts()
-        .expect("native object reads use the original provider callback");
+        .ok_or(crate::ObjectStoreError::Corrupt)?;
     let prospective = *work;
     let mut remaining = prospective.remaining(budget)?;
     remaining.peak_allocation_bytes = budget
@@ -140,19 +138,23 @@ async fn read_cold_object<S: AsyncObjectStore>(
     work.verify(budget)?;
     let retained = retained_bytes(&receipt.value);
     claim_read_allocation(retained, 0, allocations, work, budget, data_custody, 0)?;
-    if let Some(owner) = data_custody {
-        if let Err(error) = owner.record_completed_leaf_work(WorkCounters {
+    if let Some(owner) = data_custody
+        && let Err(error) = owner.record_completed_leaf_work(WorkCounters {
             peak_allocation_bytes: allocations.live_bytes(),
             ..WorkCounters::UNCHARGED
-        }) {
-            drop(receipt.value);
-            allocations.release(retained).map_err(allocation_error)?;
-            return Err(error.into());
-        }
+        })
+    {
+        drop(receipt.value);
+        allocations.release(retained).map_err(allocation_error)?;
+        return Err(error.into());
     }
     Ok((receipt.value, retained))
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "This state transition keeps admission, effects and resource retirement in one frame."
+)]
 pub(crate) fn admit_decoded_with_accounting<S: AsyncObjectStore, F: Format>(
     store: &S,
     key: DecodedCacheKey,
@@ -195,7 +197,7 @@ pub(crate) fn admit_decoded_with_accounting<S: AsyncObjectStore, F: Format>(
         };
         let original = accounting
             .native_work()
-            .expect("original page admission keeps its accounting context");
+            .ok_or(crate::ObjectStoreError::Corrupt)?;
         original
             .remaining()
             .map_err(crate::ObjectStoreError::from)
@@ -224,7 +226,7 @@ pub(crate) fn admit_decoded_with_accounting<S: AsyncObjectStore, F: Format>(
     }
     let (allocations, work, budget, _) = accounting
         .standalone_parts()
-        .expect("original page admission uses the native cache hook");
+        .ok_or(crate::ObjectStoreError::Corrupt)?;
     let decoded = decoded.0;
     let PageLease::Owned(page) = decoded.page else {
         return Err(read_store_error(ObjectStoreError::Corrupt));

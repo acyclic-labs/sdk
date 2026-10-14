@@ -207,24 +207,21 @@ pub(super) fn acquire_lock(
         .allocation
         .as_ref()
         .map(|allocation| allocation.work().clone());
-    let lock = match &work {
-        Some(work) => {
-            crate::native_host::create_directories(paths.directory(), &mut &*work)?;
-            materialization_open_options(
-                &paths.lock,
-                &crate::native_host::NativeOpenOptions::ReadWriteCreate,
-                work,
-            )?
-        }
-        None => {
-            std::fs::create_dir_all(paths.directory())?;
-            OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .read(true)
-                .write(true)
-                .open(&paths.lock)?
-        }
+    let lock = if let Some(work) = &work {
+        crate::native_host::create_directories(paths.directory(), &mut &*work)?;
+        materialization_open_options(
+            &paths.lock,
+            &crate::native_host::NativeOpenOptions::ReadWriteCreate,
+            work,
+        )?
+    } else {
+        std::fs::create_dir_all(paths.directory())?;
+        OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&paths.lock)?
     };
     let cleanup = work
         .as_ref()

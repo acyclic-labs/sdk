@@ -23,7 +23,7 @@ where
             let observation = self
                 .checkout
                 .observe(
-                    ViewGate::callback_owner(),
+                    ViewGate::callback_owner()?,
                     inputs.carrier,
                     cancellation,
                     Some(&self.cancellation),

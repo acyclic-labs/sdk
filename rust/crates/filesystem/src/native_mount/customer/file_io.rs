@@ -2,8 +2,10 @@ use super::*;
 use crate::NativeTreeMaterializationError as Error;
 use crate::native_host::{HostRoot, NativeOpenOptions};
 
-pub(super) fn run<A, O, T>(
-    view: &NativeWorkingSet<A, O>,
+/// Runs bounded I/O against one witnessed native directory.
+pub fn native_file_io<T>(
+    source_root: &Path,
+    source_identity: NativeRootIdentity,
     path: &Path,
     write: bool,
     parents: bool,
@@ -17,8 +19,8 @@ pub(super) fn run<A, O, T>(
     {
         return Err(Error::InvalidLayout);
     }
-    let root = HostRoot::open(&view.source_root, &mut &*work)?;
-    if root.identity() != view.source_identity {
+    let root = HostRoot::open(source_root, &mut &*work)?;
+    if root.identity() != source_identity {
         return Err(Error::ExternalMutation);
     }
     let parent_path = path.parent().ok_or(Error::InvalidLayout)?;

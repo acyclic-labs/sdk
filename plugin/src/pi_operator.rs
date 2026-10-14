@@ -206,7 +206,8 @@ pub(crate) fn body_hash(
             "operator requires its bounded original session and SDK operation",
         ));
     }
-    pi_root_provider::digest_pi_value(body, crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64, work)
+    work.display(&pi_root_provider::digest_pi_value(body, crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64, work)?)
+        .map_err(Error::from)
 }
 fn capability(body: &PiOperatorBody, hash: &str) -> String {
     format!("pi:operator:{}:{hash}", body.session())
@@ -540,7 +541,7 @@ fn operator_decode_charge(
                 .absorb(&mut quota)
                 .map_err(acyclic_harness::Error::from)
         }
-        charge => pi_root_provider::native_buffer_codec_charge(work, custody, charge),
+        charge => pi_root_provider::native_buffer_codec_charge(custody, charge),
     }
 }
 
@@ -556,7 +557,7 @@ pub(crate) async fn run_cli(
         .map_err(|(cause, work)| {
             ControlRequestError::NativeWork(Error::NativeConstruction {
                 cause,
-                work: Box::new(work),
+                work,
             })
         })?;
     let cli = parse_cli(args).map_err(ControlRequestError::Response)?;

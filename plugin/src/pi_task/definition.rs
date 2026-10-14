@@ -10,7 +10,7 @@ impl PiTaskMachine {
             .map(|source| source.len() as u64 + 8)
             .sum();
         work.charge(acyclic_fs::WorkCounters {
-            items_examined: source_bytes,
+            items_examined: machine_sources().len() as u64,
             bytes_hashed: source_bytes,
             ..acyclic_fs::WorkCounters::default()
         })?;

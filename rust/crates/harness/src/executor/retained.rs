@@ -118,9 +118,15 @@ pub(crate) async fn retained_model_step<'a>(
             && *event_purpose == purpose
         {
             let event = retain_preparation(load_json::<ModelEvent>(journal, event, io).await?);
-            let index = events.len();
             stock_vec_push(&mut events, event, io)?;
-            admission.observe(&events[index], limits, io)?;
+            let event = events.last().ok_or_else(|| {
+                stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Storage,
+                    "model observation was not retained",
+                )
+            })?;
+            admission.observe(event, limits, io)?;
         }
     }
     if started.is_none() && !events.is_empty() {

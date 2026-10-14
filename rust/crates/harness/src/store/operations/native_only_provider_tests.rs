@@ -7,9 +7,19 @@ use acyclic_stream::{
     ForkReceipt, ForkRequest, IdempotencyObservation, NativeProviderFuture, NativeRecordStream,
     ReadRequest, RecordStream, StreamBounds, StreamError,
 };
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
-struct NativeOnly<P>(Arc<P>);
+struct NativeOnly<P>(Arc<P>, AtomicBool);
+
+impl<P> NativeOnly<P> {
+    fn ordinary_error(&self) -> StreamError {
+        self.1.store(true, Ordering::Relaxed);
+        StreamError::Unsupported
+    }
+}
 
 #[async_trait::async_trait]
 impl<P: StreamProvider> StreamProvider for NativeOnly<P> {
@@ -17,41 +27,41 @@ impl<P: StreamProvider> StreamProvider for NativeOnly<P> {
         &self,
         _: IdempotencyKey,
     ) -> std::result::Result<Option<IdempotencyObservation>, StreamError> {
-        panic!("ordinary inspection on a native-only provider")
+        Err(self.ordinary_error())
     }
     async fn tail(&self, _: StreamPath) -> std::result::Result<u64, StreamError> {
-        panic!("ordinary tail on a native-only provider")
+        Err(self.ordinary_error())
     }
     async fn bounds(&self, _: StreamPath) -> std::result::Result<StreamBounds, StreamError> {
-        panic!("ordinary bounds on a native-only provider")
+        Err(self.ordinary_error())
     }
     async fn append(&self, _: AppendRequest) -> std::result::Result<AppendOutcome, StreamError> {
-        panic!("ordinary append on a native-only provider")
+        Err(self.ordinary_error())
     }
     async fn fork(&self, _: ForkRequest) -> std::result::Result<ForkReceipt, StreamError> {
-        panic!("ordinary fork on a native-only provider")
+        Err(self.ordinary_error())
     }
     async fn read(&self, _: ReadRequest) -> std::result::Result<RecordStream, StreamError> {
-        panic!("ordinary read on a native-only provider")
+        Err(self.ordinary_error())
     }
     async fn follow(
         &self,
         _: StreamPath,
         _: u64,
     ) -> std::result::Result<RecordStream, StreamError> {
-        panic!("ordinary follow on a native-only provider")
+        Err(self.ordinary_error())
     }
     async fn children(&self, _: ChildrenRequest) -> std::result::Result<ChildStream, StreamError> {
-        panic!("ordinary children on a native-only provider")
+        Err(self.ordinary_error())
     }
     async fn commit(&self, _: CommitRequest) -> std::result::Result<CommitOutcome, StreamError> {
-        panic!("ordinary commit on a native-only provider")
+        Err(self.ordinary_error())
     }
     async fn read_commit(
         &self,
         _: CommitId,
     ) -> std::result::Result<CommittedEnvelope, StreamError> {
-        panic!("ordinary envelope read on a native-only provider")
+        Err(self.ordinary_error())
     }
     fn native_tail(
         &self,
@@ -98,22 +108,20 @@ async fn exercise<P: StreamProvider>(provider: Arc<P>) -> Result<()> {
     let issuer = AuthorityIssuer::new("native-only", [29; 32], authority.clone());
     let reducer = Reducer::new(
         authority.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
+        issuer.verifier(&mut None)?,
         SchemaRegistry::new(),
     );
     let command = Command {
         operation_id: OperationId::from_bytes([31; 16]),
         idempotency_key: crate::IdempotencyKey("native-only-reader".into()),
         expected_revision: 0,
-        scope: issuer
-            .issue(
-                "root",
-                &crate::Capabilities::new(["lifecycle:manage"]),
-                None,
-                None,
-                &mut None,
-            )
-            .expect("scope proof"),
+        scope: issuer.issue(
+            "root",
+            &crate::Capabilities::new(["lifecycle:manage"]),
+            None,
+            None,
+            &mut None,
+        )?,
         causal_parent: None,
         action: Action::TransitionLifecycle {
             to: LifecycleState::Active,
@@ -121,7 +129,9 @@ async fn exercise<P: StreamProvider>(provider: Arc<P>) -> Result<()> {
         },
     };
     let ApplyResult::Applied { event } = reducer.plan(&command)? else {
-        panic!("fresh lifecycle event")
+        return Err(Error::Invalid(
+            "fresh lifecycle event was not applied".into(),
+        ));
     };
     let encoded = crate::wire_codec::encode_event(&authority, &event, &mut None)?;
     let event_bytes = encoded.len() as u64;
@@ -138,19 +148,18 @@ async fn exercise<P: StreamProvider>(provider: Arc<P>) -> Result<()> {
         ordinary.commit(request).await?,
         CommitOutcome::Committed(_)
     ));
-    let client = Arc::new(NativeOnly(provider));
+    let client = Arc::new(NativeOnly(provider, AtomicBool::new(false)));
     let reader = HistoryReader::new(
         &client,
         &authority,
-        &(issuer.verifier(&mut None).expect("verifier copy")),
+        &(issuer.verifier(&mut None)?),
         &mut None,
     )?;
     let cancellation = CancellationToken::new();
     let native = NativeMaterializationWork::new(budget(), &cancellation)
-        .expect("finite original reader work");
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let mut io = crate::store::HistoryWork::new(
-        crate::filesystem::PreparationIo::from_native_work(&native)
-            .expect("original reader observer"),
+        crate::filesystem::PreparationIo::from_native_work(&native)?,
     );
     let cursor = reader.pin(0, Some(&mut io)).await?;
     assert_eq!(cursor.through_revision, 1);
@@ -174,14 +183,12 @@ async fn exercise<P: StreamProvider>(provider: Arc<P>) -> Result<()> {
     assert_eq!(bounds.tail, 1);
     drop(page);
     drop(cursor);
-    drop(work);
     drop(io.into_custody()?);
 
     let native = NativeMaterializationWork::new(budget(), &cancellation)
-        .expect("original checkpoint commit work");
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let mut io = crate::store::HistoryWork::new(
-        crate::filesystem::PreparationIo::from_native_work(&native)
-            .expect("original checkpoint observer"),
+        crate::filesystem::PreparationIo::from_native_work(&native)?,
     );
     let bytes = {
         let mut observer = Some(&mut io as &mut dyn crate::store::HistoryIo);
@@ -198,6 +205,10 @@ async fn exercise<P: StreamProvider>(provider: Arc<P>) -> Result<()> {
     )
     .await?;
     assert_eq!(io.into_custody()?.bytes(), 0);
+    assert!(
+        !client.1.load(Ordering::Relaxed),
+        "native operations called an ordinary provider method"
+    );
 
     Ok(())
 }

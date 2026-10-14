@@ -427,7 +427,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         A: Send + Sync,
         O: Send + Sync,
     {
-        let owner = ViewGate::callback_owner();
+        let owner = ViewGate::callback_owner()?;
         self.runtime.wait(|| async {
             Ok(self
                 .checkout

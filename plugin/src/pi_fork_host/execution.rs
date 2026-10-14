@@ -53,7 +53,8 @@ impl crate::pi_host::PiControlHost<'_> {
                 reason: "Pi requested alias already belongs to another admitted child" });
         }
         let coordinator = self.coordinator(work)?;
-        let existing = coordinator.load_plan(context, original).await?;
+        coordinator.require_input_read(context)?;
+        let existing = coordinator.load_original_plan(original).await?;
         if reconcile && existing.is_none() {
             return Ok(TaskCommandProgress::Pending);
         }

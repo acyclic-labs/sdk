@@ -21,10 +21,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
+mod file_io;
 mod lazy_mount;
 mod mount;
 mod options;
 mod working_set;
+pub use file_io::native_file_io;
 use working_set::*;
 mod generation;
 mod lifecycle;

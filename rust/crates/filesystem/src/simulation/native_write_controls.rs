@@ -56,13 +56,13 @@ async fn native_read_trace_denial_and_cancellation_precede_interceptor_and_backe
     let cancelled = CancellationToken::new();
     cancelled.cancel();
     assert!(matches!(
-        (store
+        store
             .read(
                 object.object_id(),
                 4,
                 &mut crate::AuthorityWork::native(&work, &cancelled)
             )
-            .await),
+            .await,
         Err(ObjectStoreError::Cancelled)
     ));
     assert_eq!(work.receipt(), before);
@@ -264,13 +264,13 @@ async fn native_scheduled_rejection_does_not_hash_or_write_payload() {
     let (_, store) = simulation.stores();
     let object = HashedObject::new(ObjectKind::TreePage, OwnedBytes::from_static(b"body"));
     assert!(matches!(
-        (store
+        store
             .put(
                 object.object_id(),
                 object.bytes().clone(),
                 &mut crate::AuthorityWork::native(&work, &cancellation)
             )
-            .await),
+            .await,
         Err(ObjectStoreError::Simulation("scheduled rejection"))
     ));
     assert_eq!(work.receipt().bytes_hashed, 0);

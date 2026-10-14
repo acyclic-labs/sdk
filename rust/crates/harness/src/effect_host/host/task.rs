@@ -210,7 +210,6 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<EffectStatus> {
         let mut retained = CodecQuota::new(work, 0)?;
-        let attestation = attestation;
         retained.adopt(attestation_owned(&attestation)?)?;
         let operation_id =
             OperationId::from_bytes(plan::identity(&(id, &attestation), retained.work())?);

@@ -61,7 +61,10 @@ impl CoreLog {
         {
             let residents = self.residents();
             if let Some(index) = residents.position(key, work)? {
-                return residents.0[index]
+                return residents
+                    .0
+                    .get(index)
+                    .ok_or(LocalCoreStateStoreError::Integrity)?
                     .value
                     .as_ref()
                     .map(copy)

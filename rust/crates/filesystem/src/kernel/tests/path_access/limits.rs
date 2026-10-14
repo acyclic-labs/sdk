@@ -3,7 +3,7 @@ async fn observation_dependency_storage_is_admitted_with_cache_residency()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, path) = fixture(&store).await?;
-    let cache_entries = maximum_cache_entries_for_components((&path).depth(), config())?;
+    let cache_entries = maximum_cache_entries_for_components(path.depth(), config())?;
     let (cache, cache_work) = setup_cache(&store, cache_entries, WorkBudget::UNBOUNDED, None)?;
     let dependency_bytes = u64::try_from(path.depth().saturating_add(1))?
         .checked_mul(u64::try_from(size_of::<Dependency>())?)

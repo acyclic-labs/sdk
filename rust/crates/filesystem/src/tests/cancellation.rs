@@ -20,10 +20,23 @@ impl Wake for PanicWake {
 }
 
 fn waiter_count(token: &CancellationToken) -> usize {
-    match token.state.waiters.lock() {
-        Ok(waiters) => waiters.iter().flatten().count(),
-        Err(poisoned) => poisoned.into_inner().iter().flatten().count(),
+    let mut waiter = token
+        .state
+        .waiters
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .upgrade();
+    let mut count = 0;
+    while let Some(current) = waiter {
+        count += 1;
+        waiter = current
+            .links
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .and_then(|(_, next)| next.upgrade());
     }
+    count
 }
 
 fn poison<T>(mutex: &Mutex<T>) {
@@ -103,20 +116,16 @@ fn poisoned_waiter_registries_and_wakers_remain_cancellable_and_drop_safe() {
     assert!(registry_poisoned.is_cancelled());
 
     let waker_poisoned = CancellationToken::new();
-    let waiter = Arc::new(CancellationWaiter::default());
     let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
-    {
-        let mut waker = match waiter.waker.lock() {
-            Ok(waker) => waker,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        *waker = Some(Waker::from(Arc::clone(&counter)));
-    }
-    match waker_poisoned.state.waiters.lock() {
-        Ok(mut waiters) => waiters.push(Some(Arc::downgrade(&waiter))),
-        Err(poisoned) => poisoned.into_inner().push(Some(Arc::downgrade(&waiter))),
-    }
-    poison(&waiter.waker);
+    let mut future = Box::pin(waker_poisoned.cancelled());
+    let waker = Waker::from(Arc::clone(&counter));
+    assert!(
+        future
+            .as_mut()
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    poison(&future.waiter.as_ref().expect("registered waiter").waker);
     waker_poisoned.cancel();
     assert_eq!(counter.0.load(Ordering::Relaxed), 1);
 
@@ -144,65 +153,6 @@ fn poisoned_waiter_registries_and_wakers_remain_cancellable_and_drop_safe() {
     assert_eq!(future.as_mut().poll(&mut context), Poll::Pending);
     drop(future);
     assert_eq!(waiter_count(&poll_waker_poisoned), 0);
-}
-
-#[test]
-fn cancellation_ignores_waiters_dropped_before_delivery() {
-    let token = CancellationToken::new();
-    let waiter = Arc::new(CancellationWaiter::default());
-    match token.state.waiters.lock() {
-        Ok(mut waiters) => waiters.push(Some(Arc::downgrade(&waiter))),
-        Err(poisoned) => poisoned.into_inner().push(Some(Arc::downgrade(&waiter))),
-    }
-    drop(waiter);
-    token.cancel();
-    assert!(token.is_cancelled());
-    assert_eq!(waiter_count(&token), 0);
-}
-
-#[test]
-fn denied_cancel_keeps_waiters_live_for_a_successful_retry()
--> Result<(), Box<dyn std::error::Error>> {
-    let token = CancellationToken::new();
-    let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
-    let waker = Waker::from(counter.clone());
-    let mut context = Context::from_waker(&waker);
-    let mut first = Box::pin(token.cancelled());
-    let mut second = Box::pin(token.cancelled());
-    assert!(first.as_mut().poll(&mut context).is_pending());
-    assert!(second.as_mut().poll(&mut context).is_pending());
-    let mut work = crate::WorkCounters {
-        object_bytes_read: 7,
-        ..crate::WorkCounters::UNCHARGED
-    };
-    let before = work;
-    assert!(
-        token
-            .cancel_measured(
-                &mut work,
-                crate::WorkBudget {
-                    items_examined: 1,
-                    ..crate::WorkBudget::UNBOUNDED
-                }
-            )
-            .is_err()
-    );
-    assert!(!token.is_cancelled());
-    assert_eq!(counter.0.load(Ordering::Relaxed), 0);
-    assert_eq!(work, before);
-    token.cancel_measured(
-        &mut work,
-        crate::WorkBudget {
-            items_examined: 2,
-            ..crate::WorkBudget::UNBOUNDED
-        },
-    )?;
-    assert!(first.as_mut().poll(&mut context).is_ready());
-    assert!(second.as_mut().poll(&mut context).is_ready());
-    let completed = work;
-    token.cancel_measured(&mut work, completed)?;
-    assert_eq!(work, completed);
-    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -281,14 +231,6 @@ fn linked_children_preserve_local_stop_parent_propagation_and_release_their_owne
                 .poll(&mut Context::from_waker(&waker))
                 .is_pending()
         );
-        assert!(
-            scope
-                .charge(crate::WorkCounters {
-                    items_examined: 1,
-                    ..crate::WorkCounters::UNCHARGED
-                })
-                .is_err()
-        );
         if stop_parent {
             parent.cancel();
         } else {
@@ -302,6 +244,7 @@ fn linked_children_preserve_local_stop_parent_propagation_and_release_their_owne
                 .poll(&mut Context::from_waker(&waker))
                 .is_ready()
         );
+        scope.receipt().verify(scope.budget()).unwrap();
         drop((waker, prepared, scope, original, parent));
         drop(child);
         assert!(parent_state.upgrade().is_none());

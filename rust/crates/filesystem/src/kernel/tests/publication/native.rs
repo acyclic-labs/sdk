@@ -117,10 +117,10 @@ async fn native_publication_owner_stale_after_await_fails_before_actual_cas() ->
         async move {
             sender.send(()).expect("owner scheduling channel");
             receiver.await.expect("owner continuation");
-            if epoch.load(Ordering::SeqCst) != observed {
-                Err(NativePublicationTestError::OwnerStale)
-            } else {
+            if epoch.load(Ordering::SeqCst) == observed {
                 Ok(())
+            } else {
+                Err(NativePublicationTestError::OwnerStale)
             }
         }
     };

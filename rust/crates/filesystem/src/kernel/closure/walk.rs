@@ -1,4 +1,5 @@
 use super::*;
+type PendingPage<N> = (ObjectId, Option<(N, ProofGuard)>, Option<(N, ProofGuard)>);
 
 pub(crate) struct ProofContext<'a, S> {
     store: &'a S,
@@ -281,14 +282,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
     ) -> Result<ProofVec<'a, (TreePage, ProofGuard)>, crate::FsError> {
         Self::require_kind(root, ObjectKind::TreePage)?;
         let mut leaves = ProofVec::new(&self.meter);
-        let mut pending: ProofVec<
-            'a,
-            (
-                ObjectId,
-                Option<(LogicalName, ProofGuard)>,
-                Option<(LogicalName, ProofGuard)>,
-            ),
-        > = ProofVec::new(&self.meter);
+        let mut pending: ProofVec<'a, PendingPage<LogicalName>> = ProofVec::new(&self.meter);
         pending.push((root, None, None))?;
         let mut pages = ProofVec::new(&self.meter);
         while let Some((page_id, lower, upper)) = pending.values.pop() {
@@ -474,14 +468,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
 
     async fn prove_attributes(&mut self, root: ObjectId) -> Result<(), crate::FsError> {
         Self::require_kind(root, ObjectKind::AttributePage)?;
-        let mut pending: ProofVec<
-            'a,
-            (
-                ObjectId,
-                Option<(AttributeName, ProofGuard)>,
-                Option<(AttributeName, ProofGuard)>,
-            ),
-        > = ProofVec::new(&self.meter);
+        let mut pending: ProofVec<'a, PendingPage<AttributeName>> = ProofVec::new(&self.meter);
         pending.push((root, None, None))?;
         let mut pages = ProofVec::new(&self.meter);
         while let Some((page_id, lower, upper)) = pending.values.pop() {

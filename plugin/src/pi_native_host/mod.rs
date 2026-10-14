@@ -1,8 +1,8 @@
 //! Native Pi commands composed with the original task, effect and filesystem owners.
 
 use crate::{
-    LocalAuthorityBackend, LocalLazyWorkspace, LocalObjectBackend, LocalSingleMount,
-    PiScratchAllocation, PiTaskBinding, ServiceResources, pi_caller,
+    LocalAuthorityBackend, LocalLazyWorkspace, LocalObjectBackend, LocalSingleMount, PiTaskBinding,
+    ServiceResources, pi_caller,
     pi_fork::{self, PiForkCoordinator, PiForkOperations, PreparedPiFork},
     pi_native::{self, PiNativeLaunchIntent, PiNativeRoot},
     pi_owner::PiOwnerConfig,
@@ -28,7 +28,7 @@ use acyclic_harness::{
     filesystem::{
         BorrowedNativeVolumeBinding, FilesystemExecutionJournal, FilesystemHost,
         NativeProcessAuthority, NativeProcessProvider, NativeVolumeNamespace, NativeVolumeView,
-        TaskCommandHost, TaskCommandProgress, TaskSourceInspection, TaskWorkerAttempt,
+        TaskCommandHost, TaskCommandProgress, TaskWorkerAttempt,
     },
     resources::GenerationRef,
     runtime::{ContentBindings, TaskAdmissionRecord, TaskContext},
@@ -48,6 +48,7 @@ pub(crate) type PiNativeLiveView = NativeVolumeView<LocalAuthorityBackend, Local
 
 mod authority;
 mod execution;
+pub(crate) use execution::{recover_task, run_operation};
 mod lifecycle;
 mod preparation;
 mod sources;
@@ -197,11 +198,11 @@ fn view_volume_share(budget: WorkBudget, volumes: u64) -> Result<WorkBudget> {
 }
 
 fn native_construction(
-    (cause, work): (acyclic_fs::NativeTreeMaterializationError, WorkCounters),
+    (cause, work): (acyclic_fs::NativeTreeMaterializationError, Box<WorkCounters>),
 ) -> Error {
     Error::NativeConstruction {
         cause,
-        work: Box::new(work),
+        work,
     }
 }
 fn unauthorized(reason: &'static str) -> Error {

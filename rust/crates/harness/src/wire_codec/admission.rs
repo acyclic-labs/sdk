@@ -133,13 +133,8 @@ pub(super) fn metadata_quota(authority: &Authority, event: &Event) -> Result<(u6
     let (issuer, agent) = event.scope.wire_parts();
     let buffer = |n: u64| n.checked_mul(2).and_then(|n| n.checked_add(8));
     let overflow = || Error::Storage("event metadata overflow".into());
-    let mut buffers = buffer(64).unwrap()
-        + buffer(36).unwrap()
-        + if agent.is_some() {
-            buffer(36).unwrap()
-        } else {
-            0
-        };
+    let mut buffers: u64 =
+        (64 * 2 + 8) + (36 * 2 + 8) + if agent.is_some() { 36 * 2 + 8 } else { 0 };
     let mut copied = 0_u64;
     for length in [
         EVENT_WIRE_VERSION.len(),
@@ -187,6 +182,11 @@ impl<'a, 'b> Quota<'a, 'b> {
     pub(crate) fn work(&mut self) -> &mut Option<&'b mut dyn HistoryIo> {
         self.work
     }
+    pub(crate) fn observer(&mut self) -> Result<&mut (dyn HistoryIo + 'b)> {
+        self.work
+            .as_deref_mut()
+            .ok_or_else(|| Error::Invalid("funded codec quota requires its observer".into()))
+    }
     pub(crate) fn replace(&mut self, bytes: u64) -> Result<()> {
         if let Some(work) = self.work.as_deref_mut() {
             if bytes <= self.bytes {
@@ -219,17 +219,19 @@ impl<'a, 'b> Quota<'a, 'b> {
     pub(crate) fn transfer(&mut self) {
         self.bytes = 0;
     }
-    pub(super) fn json_error(&mut self, mut error: Error) -> Error {
+    pub(crate) fn json_error(&mut self, error: Error) -> Error {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let mut error = error;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Error::NativeJson { custody, .. } = &mut error
             && custody.is_none()
         {
+            let bytes = self.bytes;
             *custody = Some(
-                self.work
-                    .as_deref_mut()
-                    .expect("native codec observer")
-                    .take_native_custody(self.bytes)
-                    .expect("preclaimed diagnostic custody"),
+                match self.observer().and_then(|io| io.take_native_custody(bytes)) {
+                    Ok(custody) => custody,
+                    Err(error) => return error,
+                },
             );
             self.transfer();
         }
