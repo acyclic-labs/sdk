@@ -299,7 +299,7 @@ impl Store {
         file.write_all(&bytes)?;
         file.sync_all()?;
         drop(file);
-        crate::durable_rename(&temporary, &self.path, crate::RenameMode::Replace)?;
+        crate::durable_rename(&temporary, &self.path, crate::RenameMode::Replace, None)?;
         Ok(())
     }
 
