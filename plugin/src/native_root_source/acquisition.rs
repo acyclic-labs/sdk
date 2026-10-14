@@ -255,7 +255,7 @@ where
     .map_err(native_source_error)?;
     let excluded = native_reserved_paths(work)?;
     let source = source
-        .exclude(excluded.0, work, work.cancellation())
+        .exclude(excluded.0, &work, work.cancellation())
         .map_err(native_source_error)?;
     drop(excluded.1);
     let source = Arc::new(source);
