@@ -86,10 +86,13 @@ test("Linux warms isolated WASM targets within its worker budget before the comp
   const lane = matrix.find(entry => entry.lane === "linux") ?? assert.fail("missing Linux lane");
   assert.equal(lane.workers, 16);
   const prepare = block.indexOf("node scripts/build-wasm-groups.mjs");
-  assert.ok(prepare > block.indexOf("    client_bindings"));
-  assert.ok(prepare < block.indexOf("    bun run test"));
-  assert.ok(block.indexOf("finish napi") < prepare);
-  assert.ok(block.indexOf("ensure-wasm-bindgen.sh") < prepare);
+  assert.ok(prepare >= 0);
+  for (const prerequisite of ["    client_bindings", "finish napi", "ensure-wasm-bindgen.sh"]) {
+    const index = block.indexOf(prerequisite);
+    assert.ok(index >= 0 && index < prepare, prerequisite);
+  }
+  const fullTest = block.indexOf("    bun run test");
+  assert.ok(fullTest >= 0 && prepare < fullTest);
   assert.equal((block.match(/node scripts\/build-wasm-groups\.mjs/g) ?? []).length, 1);
   assert.match(script, /^#![^\n]+\r?\nset -euo pipefail\r?\n/);
   assert.match(block, /    node scripts\/build-wasm-groups\.mjs\r?\n    bun run test\r?\n/);
