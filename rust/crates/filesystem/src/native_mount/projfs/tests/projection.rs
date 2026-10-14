@@ -387,10 +387,17 @@ fn closing_callback_admission_preserves_an_already_admitted_operation() {
     let admitted = gate.enter().expect("open callback gate");
     gate.close_admission();
     assert!(gate.enter().is_none());
-    assert_eq!(
-        gate.call_observed(0, || 7, |result| assert_eq!(*result, 7)),
-        7
-    );
+    let mut operated = false;
+    gate.call_observed(
+        0,
+        || {
+            operated = true;
+            Ok(())
+        },
+        |result| assert!(result.is_ok()),
+    )
+    .expect("the admitted callback completes");
+    assert!(operated);
     drop(admitted);
     gate.drain();
 }

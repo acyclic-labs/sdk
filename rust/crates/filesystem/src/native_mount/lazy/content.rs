@@ -322,12 +322,12 @@ where
         &self,
         path: &MountPath,
         pin: Option<MountContentPin>,
-        offset: u64,
-        length: u64,
+        range: crate::ByteRange,
         piece: u32,
         sink: &mut crate::native_mount::NativeMountContentSink<'_>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
+        let crate::ByteRange { offset, length } = range;
         let end = offset
             .checked_add(length)
             .ok_or(MountSourceError::Invalid("content range overflows".into()))?;
