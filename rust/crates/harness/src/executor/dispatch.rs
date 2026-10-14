@@ -92,8 +92,14 @@ impl StockExecution<'_> {
                     .provider
                     .reconcile_with_native_work(dispatch, &replayed, work)?
                     .await?;
-                io.expect("native stock session retains its original IO")
-                    .absorb_native_custody(custody)?;
+                io.ok_or_else(|| {
+                    stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Storage,
+                        "native stock session lacks its original IO",
+                    )
+                })?
+                .absorb_native_custody(custody)?;
                 continuation
             } else {
                 self.stock.provider.reconcile(dispatch, &replayed).await?
@@ -220,8 +226,14 @@ impl StockExecution<'_> {
                         .await?
                         .map(|result| {
                             let (event, custody) = result?;
-                            io.expect("native stock session retains its original IO")
-                                .absorb_native_custody(custody)?;
+                            io.ok_or_else(|| {
+                                stock_boundary(
+                                    io,
+                                    crate::wire::ErrorCode::Storage,
+                                    "native stock session lacks its original IO",
+                                )
+                            })?
+                            .absorb_native_custody(custody)?;
                             Ok(event)
                         }),
                 )
