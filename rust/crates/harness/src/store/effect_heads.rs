@@ -329,7 +329,40 @@ pub(super) async fn publication<P: StreamProvider>(
         transition.map(|(_, position)| position),
         quota.work(),
     )?;
-    let result = async {
+    let result = add_head_indexes(
+        &mut publication,
+        authority,
+        verifier,
+        event,
+        transition,
+        root,
+        &mut quota,
+    );
+    match result {
+        Ok(()) => Ok(publication),
+        Err(error) => {
+            let retained = publication.retained_owned();
+            drop(publication);
+            operations::release_owned_after_drop(Err(error), retained, quota.work())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;
+
+fn add_head_indexes(
+    publication: &mut operations::IndexedPublication,
+    authority: &Authority,
+    verifier: &AuthorityVerifier,
+    event: &Event,
+    transition: Option<(crate::EffectId, u64)>,
+    root: Option<Digest>,
+    quota: &mut CodecQuota<'_, '_>,
+) -> Result<()> {
+    let previous = event.revision - 1;
+
+    (|| {
         if let Some((effect, position)) = transition {
             let stream = path(
                 authority,
@@ -360,17 +393,5 @@ pub(super) async fn publication<P: StreamProvider>(
         let encoded = encoded
             .and_then(|bytes| operations::owned_bytes_from_retained_vec(bytes, quota.work()));
         publication.add_index(stream, previous, encoded, quota.work())
-    }
-    .await;
-    match result {
-        Ok(()) => Ok(publication),
-        Err(error) => {
-            let retained = publication.retained_owned();
-            drop(publication);
-            operations::release_owned_after_drop(Err(error), retained, quota.work())
-        }
-    }
+    })()
 }
-
-#[cfg(test)]
-mod tests;

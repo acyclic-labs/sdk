@@ -540,9 +540,9 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     )?;
     let mut history = StreamAggregate::open(
         &fixture.stream,
-        authority.clone(),
+        (authority.clone(),
         issuer.verifier(&mut None)?,
-        SchemaRegistry::new(),
+        SchemaRegistry::new()),
         None,
         crate::store::default_projection_read_limits(),
         crate::store::DEFAULT_TERMINAL_EFFECTS,
@@ -912,9 +912,9 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
         .expect("scope proof");
     let mut child = StreamAggregate::open(
         &fixture.stream,
-        child_authority,
+        (child_authority,
         child_issuer.verifier(&mut None)?,
-        SchemaRegistry::new(),
+        SchemaRegistry::new()),
         None,
         crate::store::default_projection_read_limits(),
         crate::store::DEFAULT_TERMINAL_EFFECTS,

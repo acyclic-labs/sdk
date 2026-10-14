@@ -15,7 +15,7 @@ use std::time::SystemTime;
 use thiserror::Error;
 
 /// Enters one driver callback's `acyclic.fs.mount.<callback>` span; the callback records `errno` on it when it fails.
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 macro_rules! callback_span {
     ($level:ident, $callback:ident $(, $field:ident = $value:expr)* $(,)?) => {
         tracing::span!(
@@ -148,7 +148,7 @@ fn create_metadata(mode: u32, kind: u32, uid: u32, gid: u32) -> FileMetadata {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn errno(error: &MountSourceError) -> i32 {
     match error.semantic_error() {
         MountSourceError::NotFound => libc::ENOENT,

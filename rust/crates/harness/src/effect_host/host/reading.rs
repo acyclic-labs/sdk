@@ -54,9 +54,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         let verifier = self.issuer.verifier(&mut observed)?;
         let aggregate = StreamAggregate::open(
             stream,
-            authority,
-            verifier,
-            self.schemas.copy(&mut observed)?,
+            (authority, verifier, self.schemas.copy(&mut observed)?),
             None,
             default_projection_read_limits(),
             DEFAULT_TERMINAL_EFFECTS,

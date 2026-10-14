@@ -66,6 +66,7 @@ impl EventStream {
         self.stream.is_null() && self.queue.is_null()
     }
 
+    #[cfg(test)]
     pub(crate) fn logical_owned_bytes(&self) -> u64 {
         self.owned_bytes
     }
@@ -86,8 +87,7 @@ impl EventStream {
     }
 
     fn birth_work<W: SourceDemandReadWork>(&self, work: &W) -> bool {
-        work.native_source_work().is_some_and(|work| {
-            let current = work.clone();
+        work.native_source_work().is_some_and(|current| {
             self.birth.as_ref().is_some_and(|birth| {
                 Arc::ptr_eq(&birth.state, &current.state)
                     && match (birth.resource.as_ref(), current.resource.as_ref()) {
@@ -268,7 +268,9 @@ impl Drop for EventStream {
         }
         let cancellation = crate::cancellation::CancellationToken::new();
         let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        self.stop_with_work(&mut work)
-            .expect("ordinary unbounded FSEvents cleanup is admissible");
+        if let Err(error) = self.stop_with_work(&mut work) {
+            work.record_native_io_failure(error);
+            work.poison_native_original_work();
+        }
     }
 }

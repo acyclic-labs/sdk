@@ -4,8 +4,6 @@ use crate::model::{
     AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, MutationMode,
 };
 use crate::native_mount::ViewOrigin;
-#[cfg(target_os = "linux")]
-use std::os::unix::ffi::OsStringExt;
 
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code, reason = "declares the NFS transport's C test hooks")]

@@ -115,9 +115,13 @@ fn held_cwd_ancestry_reconstructs_paths_beyond_native_path_max()
     let temporary = tempfile::tempdir()?;
     let mut expected = temporary.path().canonicalize()?;
     let mut directory = Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority())?;
-    let mut raw_name = vec![b'a'; 220];
+    let raw_name = vec![b'a'; 220];
     #[cfg(not(target_os = "macos"))]
-    { raw_name[0] = 0xff; }
+    let raw_name = {
+        let mut raw_name = raw_name;
+        raw_name[0] = 0xff;
+        raw_name
+    };
     let name = OsString::from_vec(raw_name);
     for _ in 0..24 {
         directory.create_dir(&name)?;
@@ -145,13 +149,18 @@ fn cancellation_stops_native_source_boundaries_before_io() -> Result<(), Box<dyn
     cancellation.cancel();
     let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
     let path = test_path("file");
+    #[cfg(windows)]
+    let path = &path;
+    let root_path = test_path("");
+    #[cfg(windows)]
+    let root_path = &root_path;
     assert!(matches!(
-        root.stat(&path, &mut work),
+        root.stat(path, &mut work),
         Err(DemandError::Cancelled)
     ));
     assert!(matches!(
         root.open_file(
-            &path,
+            path,
             #[cfg(windows)]
             nt::FILE_SYNCHRONOUS_IO_NONALERT,
             &mut work
@@ -159,7 +168,7 @@ fn cancellation_stops_native_source_boundaries_before_io() -> Result<(), Box<dyn
         Err(DemandError::Cancelled)
     ));
     assert!(matches!(
-        root.read_dir_stats(&test_path(""), &mut work),
+        root.read_dir_stats(root_path, &mut work),
         Err(DemandError::Cancelled)
     ));
     assert_eq!(work.work, WorkCounters::UNCHARGED);
@@ -192,13 +201,22 @@ fn held_rename_never_replaces_an_existing_destination() -> Result<(), Box<dyn st
     std::fs::write(temporary.path().join("source"), b"source")?;
     std::fs::write(temporary.path().join("destination"), b"destination")?;
     let root = test_root(temporary.path())?;
-    let directory = root.open_dir_held(&test_path(""), &mut ordinary_work())?;
+    let root_path = test_path("");
+    #[cfg(windows)]
+    let root_path = &root_path;
+    let directory = root.open_dir_held(root_path, &mut ordinary_work())?;
     let rename = || {
+        let source = test_path("source");
+        #[cfg(windows)]
+        let source = &source;
+        let destination = test_path("destination");
+        #[cfg(windows)]
+        let destination = &destination;
         rename_held(
             &directory,
-            &test_path("source"),
+            source,
             &directory,
-            &test_path("destination"),
+            destination,
             acyclic_native_runtime::RenameMode::NoReplace,
             None,
             &mut ordinary_work(),

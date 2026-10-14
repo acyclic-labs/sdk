@@ -1,5 +1,32 @@
 use super::*;
+use crate::kernel::NamespacePath;
+use crate::lazy_workspace::NativeSnapshotContext;
 use std::future::Future;
+
+mod changes;
+mod preparation;
+mod recovery;
+type SelectedPublication<'a> = Option<(
+    crate::LazySnapshotRef,
+    &'a crate::SelectedImportPlan,
+    crate::OperationId,
+)>;
+type CommittedPublication = (
+    crate::OperationId,
+    crate::GenerationId,
+    Option<SelectedImportProof>,
+    Option<crate::OperationId>,
+    Option<crate::OperationId>,
+);
+type MountedRecords = BTreeMap<FileId, (FileRecord, FileMetadata)>;
+struct PreparedPublication<A, O, E> {
+    _records: Vec<(FileRecord, FileMetadata)>,
+    _effects: E,
+    changes: Option<Vec<NamespacePath>>,
+    paths: Vec<String>,
+    candidate: CheckoutCandidate<A, O>,
+    operation: crate::OperationId,
+}
 
 impl<A, O, D, S> LazyMountSource<A, O, D, S>
 where
@@ -26,509 +53,21 @@ where
         Fut: Future<Output = Result<(), E>> + Send + 'static,
         E: From<MountSourceError> + From<crate::FsError> + Send + 'static,
     {
-        use crate::lazy_workspace::NativeSnapshotContext;
-
         let mut accounting_failure = None;
-        let result: Result<crate::NativePublicationSnapshot, E> = async {
-            let mut accounting = crate::kernel::KernelAccounting::native(work, cancellation);
-            let mut carrier = adapter::NativeDemandCarrier::Native(work);
-            let selected_proof = selected
-                .map(|(destination, plan, _)| {
-                    plan.input_digest(destination, &mut accounting)
-                        .map(|input| SelectedImportProof {
-                            destination,
-                            source: plan.source,
-                            config: plan.source_config,
-                            input,
-                        })
-                        .map_err(lazy_error)
-                })
-                .transpose()?;
-            let remembered = self
-                .removals
-                .lock()
-                .map_err(|_| MountSourceError::Stale)?
-                .publication;
-            if let (Some((operation, proof)), Some((_, _, requested))) = (remembered, selected)
-                && (operation != requested || proof != selected_proof)
-            {
-                return Err(MountSourceError::Stale.into());
-            }
-            let retained = {
-                let mut checkout = adapter::await_lock(
-                    self.authored.shared_checkout().lock(),
-                    &mut carrier,
-                    cancellation,
-                    Some(self.authored.cancellation()),
-                )
-                .await?;
-                checkout
-                    .has_retained_operation()
-                    .then(|| checkout.retained_operation_id())
-            };
-            let operation = remembered.map(|(operation, _)| operation);
-            let committed = match operation.or(selected.map(|(_, _, operation)| operation)) {
-                Some(operation) => self
-                    .lazy
-                    .operation_generation(
-                        IdempotencyKey::from_bytes(operation.into_bytes()),
-                        &mut accounting,
-                    )
-                    .await
-                    .map_err(lazy_error)?
-                    .map(|generation| (operation, generation)),
-                None => None,
-            };
-            if let Some((operation, generation)) = committed {
-                let proof = remembered.and_then(|(_, proof)| proof).or(selected
-                    .filter(|(_, _, requested)| *requested == operation)
-                    .and(selected_proof));
-                let context = if let Some(SelectedImportProof { input, .. }) = proof {
-                    let (snapshot, original_input) = self
-                        .lazy
-                        .selected_snapshot(operation, generation, &mut accounting)
-                        .await
-                        .map_err(lazy_error)?;
-                    if original_input != input {
-                        return Err(MountSourceError::Stale.into());
-                    }
-                    let cut = self
-                        .lazy
-                        .publication_cut(Some(operation), &mut accounting)
-                        .await
-                        .map_err(lazy_error)?;
-                    if cut.workspace_id != snapshot.workspace_id
-                        || cut.source != snapshot.source
-                        || cut.overlay != snapshot.overlay
-                        || cut.shadows != snapshot.shadows
-                    {
-                        return Err(MountSourceError::Stale.into());
-                    }
-                    NativeSnapshotContext::Selected { cut, input }
-                } else {
-                    NativeSnapshotContext::Lazy(
-                        self.lazy
-                            .publication_cut(Some(operation), &mut accounting)
-                            .await
-                            .map_err(lazy_error)?,
-                    )
-                };
-                *acknowledged = Some(crate::NativePublicationSnapshot {
-                    context,
-                    operation: Some(operation),
-                    generation,
-                });
-                if retained == Some(operation) {
-                    self.authored
-                        .shared_checkout()
-                        .publish(
-                            permit,
-                            work,
-                            cancellation,
-                            Some(self.authored.cancellation()),
-                            before_publication,
-                            Some(context),
-                            acknowledged,
-                        )
-                        .await
-                        .map_err(|(error, accounting)| {
-                            accounting_failure = accounting;
-                            error
-                        })?;
-                    if !acknowledged.is_some_and(|snapshot| {
-                        snapshot.operation() == Some(operation)
-                            && snapshot.generation() == generation
-                    }) {
-                        return Err(MountSourceError::Indeterminate.into());
-                    }
-                }
-                if let Some(SelectedImportProof {
-                    destination,
-                    source,
-                    config: source_config,
-                    input,
-                }) = proof
-                {
-                    self.lazy
-                        .finish_selected_import(
-                            operation,
-                            generation,
-                            destination,
-                            source,
-                            source_config,
-                            input,
-                            &mut accounting,
-                        )
-                        .await
-                        .map_err(lazy_error)?;
-                } else if !self
-                    .lazy
-                    .finish_mount_removals(&mut accounting)
-                    .await
-                    .map_err(lazy_error)?
-                {
-                    return Err(MountSourceError::Stale.into());
-                }
-                if remembered.is_some_and(|(id, _)| id == operation) {
-                    self.finish_detached_publication(work)?;
-                    self.clear_mount_removals()?;
-                }
-                return Ok(crate::NativePublicationSnapshot {
-                    context,
-                    operation: Some(operation),
-                    generation,
-                });
-            }
-            if let Some(operation) = operation {
-                if retained == Some(operation) {
-                    let cut = self
-                        .lazy
-                        .publication_cut(Some(operation), &mut accounting)
-                        .await
-                        .map_err(lazy_error)?;
-                    let context = match remembered.and_then(|(_, proof)| proof) {
-                        Some(SelectedImportProof { input, .. }) => {
-                            NativeSnapshotContext::Selected { cut, input }
-                        }
-                        None => NativeSnapshotContext::Lazy(cut),
-                    };
-                    self.authored
-                        .shared_checkout()
-                        .publish(
-                            permit,
-                            work,
-                            cancellation,
-                            Some(self.authored.cancellation()),
-                            before_publication,
-                            Some(context),
-                            acknowledged,
-                        )
-                        .await
-                        .map_err(|(error, accounting)| {
-                            accounting_failure = accounting;
-                            error
-                        })?;
-                    let published = acknowledged.ok_or(MountSourceError::Indeterminate)?;
-                    if let Some(SelectedImportProof {
-                        destination,
-                        source,
-                        config,
-                        input,
-                    }) = remembered.and_then(|(_, proof)| proof)
-                    {
-                        self.lazy
-                            .finish_selected_import(
-                                operation,
-                                published.generation(),
-                                destination,
-                                source,
-                                config,
-                                input,
-                                &mut accounting,
-                            )
-                            .await
-                            .map_err(lazy_error)?;
-                    } else if !self
-                        .lazy
-                        .finish_mount_removals(&mut accounting)
-                        .await
-                        .map_err(lazy_error)?
-                    {
-                        return Err(MountSourceError::Stale.into());
-                    }
-                    self.finish_detached_publication(work)?;
-                    self.clear_mount_removals()?;
-                    return Ok(published);
-                }
-                self.lazy
-                    .finish_mount_removals(&mut accounting)
-                    .await
-                    .map_err(lazy_error)?;
-                self.abort_detached_publication()?;
-                self.removals
-                    .lock()
-                    .map_err(|_| MountSourceError::Stale)?
-                    .publication = None;
-            }
-            let mut input_carrier = adapter::NativeDemandCarrier::Native(work);
-            let mut input = adapter::InputBuffers::new(&mut input_carrier)?;
-            let (removals, captured_records) = {
-                let state = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
-                let mut paths = input.vec(state.paths.len())?;
-                for (path, (id, _)) in &state.paths {
-                    input.items(1)?;
-                    let copied =
-                        crate::materializer::NativeResourceCredit::Copy.delta(path.len() as u64);
-                    input.admit(copied)?;
-                    let mut bytes = input.vec(path.len())?;
-                    bytes.extend_from_slice(path.as_bytes());
-                    input.record(copied)?;
-                    paths.push((
-                        String::from_utf8(bytes).map_err(|_| {
-                            MountSourceError::NativeWork(
-                                crate::NativeTreeMaterializationError::InvalidLayout,
-                            )
-                        })?,
-                        *id,
-                    ));
-                }
-                let records = state.records.clone();
-                (paths, records)
-            };
-            let dirty = self.dirty_detached_records(work).await?;
-            if removals.is_empty() && dirty.value.is_empty() && selected.is_none() {
-                let context = NativeSnapshotContext::Lazy(
-                    self.lazy
-                        .publication_cut(None, &mut accounting)
-                        .await
-                        .map_err(lazy_error)?,
-                );
-                self.authored
-                    .shared_checkout()
-                    .publish(
-                        permit,
-                        work,
-                        cancellation,
-                        Some(self.authored.cancellation()),
-                        before_publication,
-                        Some(context),
-                        acknowledged,
-                    )
-                    .await
-                    .map_err(|(error, accounting)| {
-                        accounting_failure = accounting;
-                        error
-                    })?;
-                let published = acknowledged.ok_or(MountSourceError::Indeterminate)?;
-                self.prune_detached()?;
-                return Ok(published);
-            }
-            let (fresh_operation, mut candidate, identities) = self
-                .prepare_removed_identity_candidate(&removals, &dirty.value, work)
-                .await?;
-            let mut paths = input.vec(removals.len())?;
-            paths.extend(removals.into_iter().map(|(path, _)| path));
-            let operation = selected.map_or(fresh_operation, |(_, _, operation)| operation);
-            let effects = match selected {
-                Some((destination, plan, _)) => Some(
-                    self.lazy
-                        .prepare_selected_import_into_checkout(
-                            destination,
-                            plan,
-                            &mut candidate.checkout,
-                            operation,
-                            &mut accounting,
-                        )
-                        .await
-                        .map_err(lazy_error)?,
-                ),
-                None => None,
-            };
-            let mut records = captured_records;
-            records.extend(
-                identities
-                    .into_iter()
-                    .map(|(record, metadata)| (record.file_id, (record, metadata))),
-            );
-            if let Some(effects) = &effects {
-                records.extend(
-                    effects
-                        .records
-                        .iter()
-                        .map(|(record, metadata)| (record.file_id, (*record, *metadata))),
-                );
-            }
-            records.extend(
-                dirty
-                    .value
-                    .iter()
-                    .map(|(record, metadata, _)| (record.file_id, (*record, *metadata))),
-            );
-            let records = records.into_values().collect::<Vec<_>>();
-            if let Err(error) = self
-                .stage_detached_records(&records, &dirty.value, work)
-                .await
-            {
-                self.abort_detached_publication()?;
-                return Err(error.into());
-            }
-            self.removals
-                .lock()
-                .map_err(|_| MountSourceError::Stale)?
-                .publication = Some((operation, selected_proof));
-            self.lazy
-                .prepare_mount_removals(
-                    &paths,
-                    effects
-                        .as_ref()
-                        .map_or(&[], |effects| effects.paths.as_slice()),
-                    &records,
-                    IdempotencyKey::from_bytes(operation.into_bytes()),
-                    &mut accounting,
-                )
-                .await
-                .map_err(lazy_error)?;
-            let cut = self
-                .lazy
-                .publication_cut(Some(operation), &mut accounting)
-                .await
-                .map_err(lazy_error)?;
-            let context = match selected_proof {
-                Some(SelectedImportProof { input, .. }) => {
-                    NativeSnapshotContext::Selected { cut, input }
-                }
-                None => NativeSnapshotContext::Lazy(cut),
-            };
-            let mut scratch_carrier = adapter::NativeDemandCarrier::Native(work);
-            let mut scratch = adapter::InputBuffers::new(&mut scratch_carrier)?;
-            let mut namespace_allocations = scratch.vec(paths.len())?;
-            let mut namespaces = scratch.vec(paths.len())?;
-            for path in &paths {
-                let namespace = self
-                    .lazy
-                    .namespace_path(path, &mut accounting)
-                    .map_err(lazy_error)?;
-                let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) =
-                    namespace.allocation
-                else {
-                    return Err(MountSourceError::NativeWork(
-                        crate::NativeTreeMaterializationError::InvalidLayout,
-                    )
-                    .into());
-                };
-                namespace_allocations.push(allocation);
-                namespaces.push(namespace.value);
-            }
-            let scope = match &effects {
-                Some(effects) => InstallScope::CombinedPaths(&namespaces, &effects.changes),
-                None => InstallScope::Paths(&namespaces),
-            };
-            let (installed, _allocation) = adapter::installed_changes(
-                &candidate.base,
-                &candidate.checkout,
-                scope,
-                &mut carrier,
-                cancellation,
+        let result = self
+            .apply_publication(
+                permit,
+                &mut crate::kernel::KernelAccounting::native(work, cancellation),
+                acknowledged,
+                before_publication,
+                selected,
+                &mut accounting_failure,
             )
-            .await?;
-            candidate.operation = Some(operation);
-            if self
-                .authored
-                .shared_checkout()
-                .install_candidate(
-                    candidate,
-                    &mut carrier,
-                    cancellation,
-                    Some(self.authored.cancellation()),
-                    |carrier| {
-                        adapter::record_view_change(
-                            &self.authored.shared_checkout().ledger,
-                            &ViewChange::Effect(&installed),
-                            carrier,
-                        )
-                    },
-                    |checkout, candidate, prepared| {
-                        cancellation
-                            .commit_if_both_live(self.authored.cancellation(), || {
-                                checkout.adopt_prepared_candidate(
-                                    &candidate.base,
-                                    candidate.checkout,
-                                    prepared,
-                                )
-                            })
-                            .map_err(|_| MountSourceError::Cancelled)
-                    },
-                )
-                .await?
-                .is_none()
-            {
-                return Err(MountSourceError::Stale.into());
-            }
-            self.authored
-                .shared_checkout()
-                .publish(
-                    permit,
-                    work,
-                    cancellation,
-                    Some(self.authored.cancellation()),
-                    before_publication,
-                    Some(context),
-                    acknowledged,
-                )
-                .await
-                .map_err(|(error, accounting)| {
-                    accounting_failure = accounting;
-                    error
-                })?;
-            let published = acknowledged.ok_or(MountSourceError::Indeterminate)?;
-            if let Some(SelectedImportProof {
-                destination,
-                source,
-                config,
-                input,
-            }) = selected_proof
-            {
-                self.lazy
-                    .finish_selected_import(
-                        operation,
-                        published.generation(),
-                        destination,
-                        source,
-                        config,
-                        input,
-                        &mut accounting,
-                    )
-                    .await
-                    .map_err(lazy_error)?;
-            } else if !self
-                .lazy
-                .finish_mount_removals(&mut accounting)
-                .await
-                .map_err(lazy_error)?
-            {
-                return Err(MountSourceError::Stale.into());
-            }
-            self.finish_detached_publication(work)?;
-            self.clear_mount_removals()?;
-            Ok(published)
-        }
-        .await;
-        if result.is_err() {
-            let cleanup: Result<(), MountSourceError> = async {
-                let mut carrier = adapter::NativeDemandCarrier::Native(work);
-                let retained = adapter::await_lock(
-                    self.authored.shared_checkout().lock(),
-                    &mut carrier,
-                    cancellation,
-                    Some(self.authored.cancellation()),
-                )
-                .await?
-                .has_retained_operation();
-                let mut accounting = crate::kernel::KernelAccounting::native(work, cancellation);
-                if !retained
-                    && self
-                        .lazy
-                        .mount_removal_publication(&mut accounting)
-                        .await
-                        .map_err(lazy_error)?
-                        == Some(false)
-                {
-                    self.lazy
-                        .finish_mount_removals(&mut accounting)
-                        .await
-                        .map_err(lazy_error)?;
-                    self.abort_detached_publication()?;
-                    self.removals
-                        .lock()
-                        .map_err(|_| MountSourceError::Stale)?
-                        .publication = None;
-                }
-                Ok(())
-            }
             .await;
-            if let Err(error) = cleanup {
-                accounting_failure = accounting_failure.or(Some(error));
-            }
+        if result.is_err()
+            && let Err(error) = self.cleanup_publication(work, cancellation).await
+        {
+            accounting_failure = accounting_failure.or(Some(error));
         }
         let accounting = work
             .admit(crate::WorkCounters::UNCHARGED)
@@ -541,6 +80,111 @@ where
         }
     }
 
+    async fn apply_publication<F, Fut, E>(
+        &self,
+        permit: crate::PublicationPermit,
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+        acknowledged: &mut Option<crate::NativePublicationSnapshot>,
+        before_publication: &mut F,
+        selected: SelectedPublication<'_>,
+        accounting_failure: &mut Option<MountSourceError>,
+    ) -> Result<crate::NativePublicationSnapshot, E>
+    where
+        F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static,
+        E: From<MountSourceError> + From<crate::FsError> + Send + 'static,
+    {
+        let crate::kernel::KernelAccounting::NativeOriginal { work, cancellation } = &*accounting
+        else {
+            return Err(MountSourceError::OriginalSnapshotUnavailable.into());
+        };
+        let (work, cancellation) = (*work, *cancellation);
+        let mut carrier = adapter::NativeDemandCarrier::Native(work);
+        let selected_proof = selected
+            .map(|(destination, plan, _)| {
+                plan.input_digest(destination, accounting)
+                    .map(|input| SelectedImportProof {
+                        destination,
+                        source: plan.source,
+                        config: plan.source_config,
+                        input,
+                    })
+                    .map_err(lazy_error)
+            })
+            .transpose()?;
+        if let Some(published) = self
+            .recover_publication(
+                permit,
+                accounting,
+                before_publication,
+                acknowledged,
+                (selected, selected_proof),
+                accounting_failure,
+            )
+            .await?
+        {
+            return Ok(published);
+        }
+        let mut input_carrier = adapter::NativeDemandCarrier::Native(work);
+        let mut input = adapter::InputBuffers::new(&mut input_carrier)?;
+        let (removals, captured_records) = self.removal_inputs(&mut input)?;
+        let dirty = self.dirty_detached_records(work).await?;
+        if removals.is_empty() && dirty.value.is_empty() && selected.is_none() {
+            return self
+                .publish_clean(
+                    permit,
+                    accounting,
+                    before_publication,
+                    acknowledged,
+                    accounting_failure,
+                )
+                .await;
+        }
+        let PreparedPublication {
+            operation,
+            mut candidate,
+            paths,
+            _effects,
+            changes,
+            _records,
+        } = self
+            .prepare_publication(
+                removals,
+                &dirty.value,
+                captured_records,
+                (selected, selected_proof),
+                &mut input,
+                accounting,
+            )
+            .await?;
+        let context = self
+            .publication_context(operation, None, selected_proof, accounting)
+            .await?;
+        let mut scratch_carrier = adapter::NativeDemandCarrier::Native(work);
+        let mut scratch = adapter::InputBuffers::new(&mut scratch_carrier)?;
+        let (_namespace_allocations, _namespaces, installed, _allocation) = self
+            .publication_changes(
+                &candidate,
+                &paths,
+                changes.as_deref(),
+                &mut scratch,
+                accounting,
+                &mut carrier,
+            )
+            .await?;
+        candidate.operation = Some(operation);
+        self.install_publication(candidate, &installed, &mut carrier, cancellation)
+            .await?;
+        self.complete_publication(
+            permit,
+            (context, operation, selected_proof),
+            accounting,
+            before_publication,
+            acknowledged,
+            accounting_failure,
+        )
+        .await
+    }
     pub(super) fn clear_mount_removals(&self) -> Result<(), MountSourceError> {
         let mut removals = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
         removals.paths.clear();

@@ -68,6 +68,24 @@ impl FileTool {
                 FileProjection::Search(mode),
             ),
         };
+        self.configure_schema(&mut input_schema, mode)?;
+        let definition = ToolDefinition {
+            name: name.into(),
+            revision: revision.into(),
+            description: description.into(),
+            input_schema,
+            output_schema,
+            projection_schema,
+        };
+        definition.validate(&mut None)?;
+        Ok(Tool {
+            definition,
+            executor: Arc::new(self),
+            projection: Arc::new(projection),
+        })
+    }
+
+    fn configure_schema(&self, input_schema: &mut Value, mode: ProjectionMode) -> Result<()> {
         let configuration = match self {
             Self::Patch {
                 maximum_work,
@@ -100,19 +118,6 @@ impl FileTool {
                 })?
                 .insert(key.into(), configuration);
         }
-        let definition = ToolDefinition {
-            name: name.into(),
-            revision: revision.into(),
-            description: description.into(),
-            input_schema,
-            output_schema,
-            projection_schema,
-        };
-        definition.validate(&mut None)?;
-        Ok(Tool {
-            definition,
-            executor: Arc::new(self),
-            projection: Arc::new(projection),
-        })
+        Ok(())
     }
 }

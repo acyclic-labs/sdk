@@ -87,6 +87,7 @@ impl DemandWork {
             None => operation(self),
         }
     }
+    #[cfg(any(windows, test))]
     pub(crate) fn take_for_native_queue(&mut self) -> Self {
         let shell = Self::new(WorkBudget::default(), &self.cancellation);
         std::mem::replace(self, shell)

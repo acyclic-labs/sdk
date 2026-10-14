@@ -8,9 +8,7 @@ async fn open_native_history(
     let mut io = HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
     let aggregate = StreamAggregate::open(
         provider,
-        authority(),
-        issuer().verifier(&mut None)?,
-        schemas(),
+        (authority(), issuer().verifier(&mut None)?, schemas()),
         None,
         default_projection_read_limits(),
         DEFAULT_TERMINAL_EFFECTS,

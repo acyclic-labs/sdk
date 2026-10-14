@@ -647,9 +647,9 @@ pub(crate) fn root_effects_with_native_work<P: StreamProvider + 'static>(
     let ((audience, issuer, scope), custody) = authorization;
     ConversationEffectHost::new(
         stream,
-        audience,
+        (audience,
         issuer,
-        scope,
+        scope),
         SchemaRegistry::new(),
         content,
         providers,

@@ -109,14 +109,14 @@ impl Api {
             })
         })();
         if result.is_err() {
-            work.record(WorkCounters {
+            let retired = work.record(WorkCounters {
                 backend_write_operations: 1,
                 ..WorkCounters::default()
-            })
-            .expect("failed framework bootstrap cleanup was admitted");
+            });
             // SAFETY: this attempt holds one loader reference and has exposed
             // no function table or stream. Successful bootstrap never closes it.
             unsafe { libc::dlclose(framework) };
+            retired?;
         }
         result
     }
@@ -148,8 +148,7 @@ impl Api {
                     work.refund(
                         crate::materializer::NativeResourceCredit::Items.delta(cleanup_records),
                     )
-                    .expect("original reservation is balanced")
-                });
+                })?;
                 return Err(error);
             }
         };
@@ -164,149 +163,28 @@ impl Api {
             work.release(slot_allocation)?;
             work.with_original_leaf(|work| {
                 work.refund(crate::materializer::NativeResourceCredit::Items.delta(cleanup_records))
-                    .expect("original reservation is balanced")
-            });
+            })?;
             return Err(error);
         }
-        let mut cleanup_remaining = cleanup_records;
         let mut payload = 0_u64;
         let mut array_bytes = 0_u64;
         let mut created_array = std::ptr::null();
         let mut result = (|| {
             for path in paths {
-                let bytes = path.as_os_str().as_bytes();
-                let length =
-                    isize::try_from(bytes.len()).map_err(|_| DemandError::InvalidRequest)?;
-                let owned = u64::try_from(bytes.len()).map_err(|_| crate::WorkError::Overflow)?;
-                let copy = work.reserve_source_copy(owned)?;
-                let cleanup = strings.len() as u64 + 1;
-                work.admit(WorkCounters {
-                    backend_write_operations: cleanup + 1,
-                    ..WorkCounters::default()
-                })?;
-                if owned == 0 {
-                    work.started_io(WorkCounters {
-                        allocation_operations: 1,
-                        ..WorkCounters::default()
-                    })?;
-                } else {
-                    work.claim_allocation(
-                        owned,
-                        u64::from((owned) != 0),
-                        crate::WorkCounters::UNCHARGED,
-                    )?;
-                }
-                if let Err(error) = native_write(work, cleanup) {
-                    work.release(owned)?;
-                    return Err(error);
-                }
-                // SAFETY: the string copies the bytes, valid for their length.
-                let string = unsafe {
-                    (self.string_create_with_bytes)(
-                        std::ptr::null(),
-                        bytes.as_ptr(),
-                        length,
-                        CF_STRING_ENCODING_UTF8,
-                        0,
-                    )
-                };
-                if string.is_null() {
-                    work.release(owned)?;
-                    return Err(DemandError::Io(std::io::Error::from(
-                        std::io::ErrorKind::NotFound,
-                    )));
-                }
-                strings.push(string);
-                payload += owned;
-                if let Some(copy) = copy {
-                    {
-                        let mut copy = copy;
-                        copy.record_completed(crate::WorkCounters {
-                            bytes_copied: owned,
-                            ..crate::WorkCounters::UNCHARGED
-                        })
-                    }
-                    .map_err(crate::native_name::original_name_error)?;
-                } else {
-                    work.record(WorkCounters {
-                        bytes_copied: owned,
-                        ..WorkCounters::UNCHARGED
-                    })?;
-                }
+                self.append_path_string(path, &mut strings, &mut payload, work)?;
             }
-            let count = isize::try_from(strings.len()).map_err(|_| DemandError::InvalidRequest)?;
-            work.admit(WorkCounters {
-                backend_write_operations: strings.len() as u64 + 2,
-                bytes_copied: slots,
-                ..WorkCounters::default()
-            })?;
-            if slots == 0 {
-                work.started_io(WorkCounters {
-                    allocation_operations: 1,
-                    ..WorkCounters::default()
-                })?;
-            } else {
-                work.claim_allocation(
-                    slots,
-                    u64::from((slots) != 0),
-                    crate::WorkCounters::UNCHARGED,
-                )?;
-            }
-            array_bytes = slots;
-            let copy = work.reserve_source_copy(slots)?;
-            native_write(work, strings.len() as u64 + 1)?;
-            // SAFETY: the array retains the valid strings with standard callbacks.
-            let array = unsafe {
-                (self.array_create)(
-                    std::ptr::null(),
-                    strings.as_ptr(),
-                    count,
-                    self.type_array_callbacks,
-                )
-            };
-            created_array = array;
-            if array.is_null() {
-                return Err(native_error("cannot create the FSEvents path array"));
-            }
-            if let Some(copy) = copy {
-                {
-                    let mut copy = copy;
-                    copy.record_completed(crate::WorkCounters {
-                        bytes_copied: slots,
-                        ..crate::WorkCounters::UNCHARGED
-                    })
-                }
-                .map_err(crate::native_name::original_name_error)?;
-            } else {
-                work.record(WorkCounters {
-                    bytes_copied: slots,
-                    ..WorkCounters::UNCHARGED
-                })?;
-            }
+            let array = self.create_path_array(
+                &strings,
+                slots,
+                &mut array_bytes,
+                &mut created_array,
+                work,
+            )?;
             Ok(array)
         })();
-        while let Some(string) = strings.pop() {
-            cleanup_remaining -= 1;
-            // SAFETY: each original string reference is released exactly once.
-            unsafe { (self.release)(string) };
-            let retired = work.record(WorkCounters {
-                backend_write_operations: 1,
-                ..WorkCounters::default()
-            });
-            let visited = work.with_original_leaf(|work| {
-                work.complete(
-                    crate::materializer::NativeResourceCredit::Items.delta(1),
-                    crate::materializer::NativeResourceCredit::Items.delta(1),
-                )
-            });
-            if let Err(error) = retired.and(visited) {
-                result = Err(error);
-            }
+        if let Err(error) = self.release_path_strings(&mut strings, cleanup_records, work) {
+            result = Err(error);
         }
-        work.with_original_leaf(|work| {
-            work.refund(crate::materializer::NativeResourceCredit::Items.delta(cleanup_remaining))
-                .expect("original reservation is balanced")
-        });
         drop(strings);
         work.release(slot_allocation)?;
         match result {
@@ -326,5 +204,167 @@ impl Api {
                 Err(error)
             }
         }
+    }
+    fn append_path_string<W: SourceDemandReadWork>(
+        &self,
+        path: &Path,
+        strings: &mut Vec<CfTypeRef>,
+        payload: &mut u64,
+        work: &mut W,
+    ) -> Result<(), DemandError> {
+        let bytes = path.as_os_str().as_bytes();
+        let length = isize::try_from(bytes.len()).map_err(|_| DemandError::InvalidRequest)?;
+        let owned = u64::try_from(bytes.len()).map_err(|_| crate::WorkError::Overflow)?;
+        let copy = work.reserve_source_copy(owned)?;
+        let cleanup = strings.len() as u64 + 1;
+        work.admit(WorkCounters {
+            backend_write_operations: cleanup + 1,
+            ..WorkCounters::default()
+        })?;
+        if owned == 0 {
+            work.started_io(WorkCounters {
+                allocation_operations: 1,
+                ..WorkCounters::default()
+            })?;
+        } else {
+            work.claim_allocation(
+                owned,
+                u64::from((owned) != 0),
+                crate::WorkCounters::UNCHARGED,
+            )?;
+        }
+        if let Err(error) = native_write(work, cleanup) {
+            work.release(owned)?;
+            return Err(error);
+        }
+        // SAFETY: the string copies the bytes, valid for their length.
+        let string = unsafe {
+            (self.string_create_with_bytes)(
+                std::ptr::null(),
+                bytes.as_ptr(),
+                length,
+                CF_STRING_ENCODING_UTF8,
+                0,
+            )
+        };
+        if string.is_null() {
+            work.release(owned)?;
+            return Err(DemandError::Io(std::io::Error::from(
+                std::io::ErrorKind::NotFound,
+            )));
+        }
+        strings.push(string);
+        *payload += owned;
+        if let Some(copy) = copy {
+            {
+                let recorded = copy.record_completed(crate::WorkCounters {
+                    bytes_copied: owned,
+                    ..crate::WorkCounters::UNCHARGED
+                });
+                drop(copy);
+                recorded
+            }
+            .map_err(crate::native_name::original_name_error)?;
+        } else {
+            work.record(WorkCounters {
+                bytes_copied: owned,
+                ..WorkCounters::UNCHARGED
+            })?;
+        }
+        Ok(())
+    }
+
+    fn create_path_array<W: SourceDemandReadWork>(
+        &self,
+        strings: &[CfTypeRef],
+        slots: u64,
+        array_bytes: &mut u64,
+        created_array: &mut CfTypeRef,
+        work: &mut W,
+    ) -> Result<CfTypeRef, DemandError> {
+        let count = isize::try_from(strings.len()).map_err(|_| DemandError::InvalidRequest)?;
+        work.admit(WorkCounters {
+            backend_write_operations: strings.len() as u64 + 2,
+            bytes_copied: slots,
+            ..WorkCounters::default()
+        })?;
+        if slots == 0 {
+            work.started_io(WorkCounters {
+                allocation_operations: 1,
+                ..WorkCounters::default()
+            })?;
+        } else {
+            work.claim_allocation(
+                slots,
+                u64::from((slots) != 0),
+                crate::WorkCounters::UNCHARGED,
+            )?;
+        }
+        *array_bytes = slots;
+        let copy = work.reserve_source_copy(slots)?;
+        native_write(work, strings.len() as u64 + 1)?;
+        // SAFETY: the array retains the valid strings with standard callbacks.
+        let array = unsafe {
+            (self.array_create)(
+                std::ptr::null(),
+                strings.as_ptr(),
+                count,
+                self.type_array_callbacks,
+            )
+        };
+        *created_array = array;
+        if array.is_null() {
+            return Err(native_error("cannot create the FSEvents path array"));
+        }
+        if let Some(copy) = copy {
+            {
+                let recorded = copy.record_completed(crate::WorkCounters {
+                    bytes_copied: slots,
+                    ..crate::WorkCounters::UNCHARGED
+                });
+                drop(copy);
+                recorded
+            }
+            .map_err(crate::native_name::original_name_error)?;
+        } else {
+            work.record(WorkCounters {
+                bytes_copied: slots,
+                ..WorkCounters::UNCHARGED
+            })?;
+        }
+        Ok(array)
+    }
+    fn release_path_strings<W: SourceDemandReadWork>(
+        &self,
+        strings: &mut Vec<CfTypeRef>,
+        mut cleanup_remaining: u64,
+        work: &mut W,
+    ) -> Result<(), DemandError> {
+        let mut result = Ok(());
+        while let Some(string) = strings.pop() {
+            cleanup_remaining -= 1;
+            // SAFETY: each original string reference is released exactly once.
+            unsafe { (self.release)(string) };
+            let retired = work.record(WorkCounters {
+                backend_write_operations: 1,
+                ..WorkCounters::default()
+            });
+            let visited = work.with_original_leaf(|work| {
+                work.complete(
+                    crate::materializer::NativeResourceCredit::Items.delta(1),
+                    crate::materializer::NativeResourceCredit::Items.delta(1),
+                )
+            });
+            if let Err(error) = retired.and(visited) {
+                result = Err(error);
+            }
+        }
+        let refunded = work.with_original_leaf(|work| {
+            work.refund(crate::materializer::NativeResourceCredit::Items.delta(cleanup_remaining))
+        });
+        if let Err(error) = refunded {
+            result = Err(error);
+        }
+        result
     }
 }

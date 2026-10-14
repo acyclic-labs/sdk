@@ -88,163 +88,29 @@ impl Scheduler {
         } else {
             OperationPhase::WaitingForCapacity
         };
-        macro_rules! state {
-            ($id:expr) => {
-                self.operations.get_mut(&$id).expect("validated operation")
-            };
-        }
-        match event {
-            SchedulerEvent::SessionConfigured { limits, .. } => {
-                self.sessions.insert(id, limits);
-            }
-            SchedulerEvent::ModelDispatchClaimed {
-                attempt_id,
-                step,
-                request_digest,
-                ceiling,
-                ..
-            } => {
-                self.model_claims
-                    .entry(id)
-                    .or_insert_with(|| TaskModelClaims {
-                        ceiling,
-                        attempts: BTreeMap::new(),
-                    })
-                    .attempts
-                    .entry(attempt_id)
-                    .or_default()
-                    .insert(step, request_digest);
-            }
-            SchedulerEvent::Declared { spec } => {
-                let spec = *spec;
-                if let Some(parent) = &spec.parent {
-                    self.child_slots.insert(
-                        (
-                            parent.operation_id,
-                            child_slot.take().expect("prepared child slot"),
-                        ),
-                        id,
-                    );
-                }
-                self.operations.insert(
-                    id,
-                    OperationState {
-                        spec,
-                        phase: OperationPhase::WaitingForDependencies,
-                        reservation: None,
-                        checkpoint: None,
-                        workflow: None,
-                        outcome: None,
-                        cancellation_requested: false,
-                        revision: 0,
-                    },
-                );
-            }
-            SchedulerEvent::WaitingForCapacity { .. } => {
-                state!(id).phase = OperationPhase::WaitingForCapacity;
-            }
-            SchedulerEvent::Admitted { reservation, .. }
-            | SchedulerEvent::PartiallyAdmitted { reservation, .. } => {
-                let state = state!(id);
-                state.reservation = Some(reservation);
-                state.phase = phase;
-            }
-            SchedulerEvent::Rejected { reason, .. } => {
-                let state = state!(id);
-                state.reservation = None;
-                state.phase = OperationPhase::Terminal;
-                state.outcome = Some(Outcome::Failed { message: reason });
-                self.completion_order.push(id);
-            }
-            SchedulerEvent::Started { .. } => state!(id).phase = OperationPhase::Running,
-            SchedulerEvent::Checkpointed { checkpoint, .. } => {
-                state!(id).checkpoint = Some(checkpoint);
-            }
-            SchedulerEvent::WaitingForChildren { .. } | SchedulerEvent::LeaseReleased { .. } => {
-                let phase = if matches!(event, SchedulerEvent::WaitingForChildren { .. }) {
-                    OperationPhase::WaitingForChildren
-                } else {
-                    OperationPhase::WaitingForCapacity
-                };
-                let state = state!(id);
-                state.reservation = None;
-                if state.cancellation_requested {
-                    state.phase = OperationPhase::Terminal;
-                    state.outcome = Some(Outcome::Cancelled);
-                    self.completion_order.push(id);
-                } else {
-                    state.phase = phase;
-                }
-            }
-            SchedulerEvent::WorkflowSuspended {
-                workflow_revision,
-                waiting_command,
-                ..
-            } => {
-                let state = state!(id);
-                state.workflow = Some(WorkflowSuspension {
-                    revision: workflow_revision,
-                    waiting_command,
-                    input: None,
-                });
-                state.reservation = None;
-                state.phase = OperationPhase::Suspended;
-            }
-            SchedulerEvent::WorkflowResumed { input, .. } => {
-                let state = state!(id);
-                state
-                    .workflow
-                    .as_mut()
-                    .expect("validated resume slot")
-                    .input = Some(input);
-                state.phase = OperationPhase::WaitingForCapacity;
-            }
-            SchedulerEvent::ReconciliationResumed { .. } => {
-                let state = state!(id);
-                state.phase = OperationPhase::Running;
-                state.outcome = None;
-            }
-            SchedulerEvent::CancellationRequested { .. } => {
-                for target in &cancellation {
-                    self.cancel_validated(*target);
-                }
-            }
-            SchedulerEvent::Completed { outcome, .. } => {
-                let state = state!(id);
-                state.phase = if matches!(outcome, Outcome::Indeterminate { .. }) {
-                    OperationPhase::Reconciling
-                } else {
-                    state.reservation = None;
-                    OperationPhase::Terminal
-                };
-                state.outcome = Some(outcome);
-                if state.phase == OperationPhase::Terminal && !self.completion_order.contains(&id) {
-                    self.completion_order.push(id);
-                }
-            }
-            SchedulerEvent::Orchestrated {
-                outcome, cancel, ..
-            } => {
-                for child in cancel {
-                    self.cancel_validated(child);
-                }
-                let state = state!(id);
-                state.phase = if matches!(outcome, Outcome::Indeterminate { .. }) {
-                    OperationPhase::Reconciling
-                } else {
-                    OperationPhase::Terminal
-                };
-                state.outcome = Some(outcome);
-                state.reservation = None;
-                if state.phase == OperationPhase::Terminal {
-                    self.completion_order.push(id);
-                }
-            }
-        }
+        self.apply_projected_event(event, child_slot, &cancellation, phase, work)?;
         if !cancelled {
-            state!(id).revision += 1;
+            self.operations
+                .get_mut(&id)
+                .ok_or_else(|| {
+                    diagnostic(
+                        work,
+                        crate::wire::ErrorCode::Storage,
+                        "validated operation is missing",
+                    )
+                })?
+                .revision += 1;
             if let Some(parent) = parent {
-                state!(parent).revision += 1;
+                self.operations
+                    .get_mut(&parent)
+                    .ok_or_else(|| {
+                        diagnostic(
+                            work,
+                            crate::wire::ErrorCode::Storage,
+                            "validated operation is missing",
+                        )
+                    })?
+                    .revision += 1;
             }
         }
         if let Some(io) = work.as_deref_mut() {
@@ -276,10 +142,13 @@ impl Scheduler {
         }
         Ok(true)
     }
-    fn cancel_validated(&mut self, id: OperationId) {
-        let state = self.operations.get_mut(&id).expect("validated operation");
+    fn cancel_validated(&mut self, id: OperationId) -> Result<()> {
+        let state = self
+            .operations
+            .get_mut(&id)
+            .ok_or_else(|| Error::Storage("validated operation is missing".into()))?;
         if state.phase == OperationPhase::Terminal {
-            return;
+            return Ok(());
         }
         state.revision += 1;
         if !matches!(
@@ -294,6 +163,7 @@ impl Scheduler {
         } else {
             state.cancellation_requested = true;
         }
+        Ok(())
     }
     /// Reserves completion-order slots before mutation so pushes cannot fail.
     fn reserve_completion(
@@ -371,6 +241,281 @@ impl Scheduler {
                 None => Error::Storage(cause.to_string()),
             });
         }
+        Ok(())
+    }
+    fn apply_projected_event(
+        &mut self,
+        event: SchedulerEvent,
+        mut child_slot: Option<String>,
+        cancellation: &[OperationId],
+        phase: OperationPhase,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        let id = event.operation_id();
+        macro_rules! state {
+            ($id:expr) => {
+                self.operations.get_mut(&$id).ok_or_else(|| {
+                    diagnostic(
+                        work,
+                        crate::wire::ErrorCode::Storage,
+                        "validated operation is missing",
+                    )
+                })?
+            };
+        }
+        match event {
+            SchedulerEvent::SessionConfigured { limits, .. } => {
+                self.sessions.insert(id, limits);
+            }
+            SchedulerEvent::ModelDispatchClaimed { .. } => self.apply_model_claim(&event, work)?,
+
+            SchedulerEvent::Declared { .. } => {
+                self.apply_declaration(event, child_slot.take(), work)?;
+            }
+
+            SchedulerEvent::WaitingForCapacity { .. } => {
+                state!(id).phase = OperationPhase::WaitingForCapacity;
+            }
+            SchedulerEvent::Admitted { reservation, .. }
+            | SchedulerEvent::PartiallyAdmitted { reservation, .. } => {
+                let state = state!(id);
+                state.reservation = Some(reservation);
+                state.phase = phase;
+            }
+            SchedulerEvent::Rejected { reason, .. } => {
+                let state = state!(id);
+                state.reservation = None;
+                state.phase = OperationPhase::Terminal;
+                state.outcome = Some(Outcome::Failed { message: reason });
+                self.completion_order.push(id);
+            }
+            SchedulerEvent::Started { .. } => state!(id).phase = OperationPhase::Running,
+            SchedulerEvent::Checkpointed { checkpoint, .. } => {
+                state!(id).checkpoint = Some(checkpoint);
+            }
+            SchedulerEvent::WaitingForChildren { .. } | SchedulerEvent::LeaseReleased { .. } => {
+                let phase = if matches!(event, SchedulerEvent::WaitingForChildren { .. }) {
+                    OperationPhase::WaitingForChildren
+                } else {
+                    OperationPhase::WaitingForCapacity
+                };
+                let state = state!(id);
+                state.reservation = None;
+                if state.cancellation_requested {
+                    state.phase = OperationPhase::Terminal;
+                    state.outcome = Some(Outcome::Cancelled);
+                    self.completion_order.push(id);
+                } else {
+                    state.phase = phase;
+                }
+            }
+            SchedulerEvent::WorkflowSuspended {
+                workflow_revision,
+                waiting_command,
+                ..
+            } => {
+                let state = state!(id);
+                state.workflow = Some(WorkflowSuspension {
+                    revision: workflow_revision,
+                    waiting_command,
+                    input: None,
+                });
+                state.reservation = None;
+                state.phase = OperationPhase::Suspended;
+            }
+            SchedulerEvent::WorkflowResumed { input, .. } => {
+                Self::resume_workflow(state!(id), input, work)?;
+            }
+
+            SchedulerEvent::ReconciliationResumed { .. } => {
+                let state = state!(id);
+                state.phase = OperationPhase::Running;
+                state.outcome = None;
+            }
+            SchedulerEvent::CancellationRequested { .. } => {
+                for target in cancellation {
+                    self.cancel_validated(*target)?;
+                }
+            }
+            SchedulerEvent::Completed { outcome, .. } => {
+                self.apply_completion(id, outcome, work)?;
+            }
+
+            SchedulerEvent::Orchestrated { .. } => self.apply_orchestration(event, work)?,
+        }
+        Ok(())
+    }
+
+    fn apply_declaration(
+        &mut self,
+        event: SchedulerEvent,
+        mut child_slot: Option<String>,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        let id = event.operation_id();
+        let SchedulerEvent::Declared { spec } = event else {
+            return Err(diagnostic(
+                work,
+                crate::wire::ErrorCode::Storage,
+                "invalid scheduler mutation phase",
+            ));
+        };
+
+        let spec = *spec;
+        if let Some(parent) = &spec.parent {
+            self.child_slots.insert(
+                (
+                    parent.operation_id,
+                    child_slot.take().ok_or_else(|| {
+                        diagnostic(
+                            work,
+                            crate::wire::ErrorCode::Storage,
+                            "prepared child slot is missing",
+                        )
+                    })?,
+                ),
+                id,
+            );
+        }
+        self.operations.insert(
+            id,
+            OperationState {
+                spec,
+                phase: OperationPhase::WaitingForDependencies,
+                reservation: None,
+                checkpoint: None,
+                workflow: None,
+                outcome: None,
+                cancellation_requested: false,
+                revision: 0,
+            },
+        );
+        Ok(())
+    }
+
+    fn apply_model_claim(
+        &mut self,
+        event: &SchedulerEvent,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        let id = event.operation_id();
+        let SchedulerEvent::ModelDispatchClaimed {
+            attempt_id,
+            step,
+            request_digest,
+            ceiling,
+            ..
+        } = event
+        else {
+            return Err(diagnostic(
+                work,
+                crate::wire::ErrorCode::Storage,
+                "invalid scheduler mutation phase",
+            ));
+        };
+
+        self.model_claims
+            .entry(id)
+            .or_insert_with(|| TaskModelClaims {
+                ceiling: *ceiling,
+                attempts: BTreeMap::new(),
+            })
+            .attempts
+            .entry(*attempt_id)
+            .or_default()
+            .insert(*step, *request_digest);
+        Ok(())
+    }
+
+    fn apply_orchestration(
+        &mut self,
+        event: SchedulerEvent,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        let id = event.operation_id();
+        macro_rules! state {
+            ($id:expr) => {
+                self.operations.get_mut(&$id).ok_or_else(|| {
+                    diagnostic(
+                        work,
+                        crate::wire::ErrorCode::Storage,
+                        "validated operation is missing",
+                    )
+                })?
+            };
+        }
+        let SchedulerEvent::Orchestrated {
+            outcome, cancel, ..
+        } = event
+        else {
+            return Err(diagnostic(
+                work,
+                crate::wire::ErrorCode::Storage,
+                "invalid scheduler mutation phase",
+            ));
+        };
+
+        for child in cancel {
+            self.cancel_validated(child)?;
+        }
+        let state = state!(id);
+        state.phase = if matches!(outcome, Outcome::Indeterminate { .. }) {
+            OperationPhase::Reconciling
+        } else {
+            OperationPhase::Terminal
+        };
+        state.outcome = Some(outcome);
+        state.reservation = None;
+        if state.phase == OperationPhase::Terminal {
+            self.completion_order.push(id);
+        }
+        Ok(())
+    }
+
+    fn apply_completion(
+        &mut self,
+        id: OperationId,
+        outcome: Outcome<FileRef>,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        let state = self.operations.get_mut(&id).ok_or_else(|| {
+            diagnostic(
+                work,
+                crate::wire::ErrorCode::Storage,
+                "validated operation is missing",
+            )
+        })?;
+        state.phase = if matches!(outcome, Outcome::Indeterminate { .. }) {
+            OperationPhase::Reconciling
+        } else {
+            state.reservation = None;
+            OperationPhase::Terminal
+        };
+        state.outcome = Some(outcome);
+        if state.phase == OperationPhase::Terminal && !self.completion_order.contains(&id) {
+            self.completion_order.push(id);
+        }
+
+        Ok(())
+    }
+    fn resume_workflow(
+        state: &mut OperationState,
+        input: FileRef,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        state
+            .workflow
+            .as_mut()
+            .ok_or_else(|| {
+                diagnostic(
+                    work,
+                    crate::wire::ErrorCode::Storage,
+                    "validated resume slot is missing",
+                )
+            })?
+            .input = Some(input);
+        state.phase = OperationPhase::WaitingForCapacity;
+
         Ok(())
     }
 }

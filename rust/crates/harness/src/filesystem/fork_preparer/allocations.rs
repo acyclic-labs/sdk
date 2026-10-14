@@ -69,10 +69,10 @@ impl bounded_io::UploadRecord for AllocationClaim {
 fn revision_owned_bytes(revision: &ResourceRevision) -> Result<u64> {
     use crate::core::{owned_sum, owned_vector};
     match revision {
-        ResourceRevision::History(reference) => reference.logical_owned_bytes(),
-        ResourceRevision::Context(reference) => reference.logical_owned_bytes(),
+        ResourceRevision::History(reference) => reference.as_resource().logical_owned_bytes(),
+        ResourceRevision::Context(reference) => reference.as_resource().logical_owned_bytes(),
         ResourceRevision::Process(reference) => reference.logical_owned_bytes(),
-        ResourceRevision::Artifact(reference) => reference.logical_owned_bytes(),
+        ResourceRevision::Artifact(reference) => reference.as_resource().logical_owned_bytes(),
         ResourceRevision::SharedVolume(volume) => volume.logical_owned_bytes(),
         ResourceRevision::Project { volume, generation } => owned_sum([
             volume.logical_owned_bytes()?,

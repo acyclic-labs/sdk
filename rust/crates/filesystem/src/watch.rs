@@ -2215,6 +2215,8 @@ impl NativeWatch {
         work: &mut W,
         original: Option<&crate::NativeMaterializationWork>,
     ) -> Result<(), NativeWatchError> {
+        #[cfg(target_os = "macos")]
+        let _ = work;
         #[cfg(any(target_os = "linux", windows))]
         if matches!(self.watcher, NativeWatchDriver::Source(_)) {
             for change in changes {

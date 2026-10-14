@@ -174,11 +174,14 @@ pub(super) type HostPathUnit = u8;
 #[cfg(windows)]
 pub(super) type HostPathUnit = u16;
 
+pub(super) type HeldHostPath = Arc<(Vec<HostPathUnit>, crate::NativeAllocation)>;
+pub(super) type HeldNamespacePath = Arc<(NamespacePath, crate::NativeAllocation)>;
+
 pub(super) fn materialize_host_path(
     prefix: Option<&Vec<HostPathUnit>>,
     names: &[LogicalName],
     receipt: &mut GenerationReceipt,
-) -> Result<Arc<(Vec<HostPathUnit>, crate::NativeAllocation)>, MaterializeError> {
+) -> Result<HeldHostPath, MaterializeError> {
     let prefix = prefix.map_or(&[][..], |prefix| prefix.as_slice());
     let mut length = prefix
         .len()

@@ -477,8 +477,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         self.checkout
             .publish(
                 permit,
-                &work,
-                work.cancellation(),
+                crate::kernel::KernelAccounting::native(&work, work.cancellation()),
                 Some(&self.cancellation),
                 &mut source_publication_guard(
                     self.native_callback_guard.clone(),

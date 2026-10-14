@@ -5,8 +5,7 @@
     reason = "one ordered scenario keeps each step next to the state it checks"
 )]
 
-#[path = "support/stream/mod.rs"]
-mod test_stream;
+use crate::stream_fixture as test_stream;
 
 use acyclic_fs::Fs;
 use acyclic_harness::filesystem::{FilesystemContentVerifier, FilesystemHost};
@@ -171,9 +170,11 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
     let stream = provider.clone();
     let mut aggregate = StreamAggregate::open(
         &stream,
-        authority.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
+        (
+            authority.clone(),
+            issuer.verifier(&mut None).expect("verifier copy"),
+            SchemaRegistry::new(),
+        ),
         None,
         acyclic_harness::store::default_projection_read_limits(),
         acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
@@ -234,9 +235,11 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
     registry.register(Arc::new(ResultProvider(result)), None)?;
     let effects = acyclic_harness::effect_host::ConversationEffectHost::new(
         stream.clone(),
-        authority.clone(),
-        issuer.copy(&mut None)?,
-        scope.copy(&mut None)?,
+        (
+            authority.clone(),
+            issuer.copy(&mut None)?,
+            scope.copy(&mut None)?,
+        ),
         SchemaRegistry::new(),
         verifier.clone(),
         registry,
@@ -260,9 +263,11 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         .await?;
     aggregate = StreamAggregate::open(
         &stream,
-        authority.clone(),
-        issuer.verifier(&mut None)?,
-        SchemaRegistry::new(),
+        (
+            authority.clone(),
+            issuer.verifier(&mut None)?,
+            SchemaRegistry::new(),
+        ),
         None,
         acyclic_harness::store::default_projection_read_limits(),
         acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
@@ -388,7 +393,9 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         Some(completed.clone())
     );
     provider.forbid_writes.store(false, Ordering::SeqCst);
-    for retained in 4..=10_004_u64 {
+    const N: u64 = 6;
+    let mut observations = Vec::new();
+    for retained in 4..=4 + 10 * N {
         if retained > 4 {
             provider.forbid_writes.store(false, Ordering::SeqCst);
             let revision = aggregate.reducer().revision();
@@ -419,25 +426,50 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                 )
                 .await?;
         }
-        if matches!(retained, 3 | 1_003 | 10_003) {
+        if retained == 4 + N || retained == 4 + 10 * N {
             provider.forbid_writes.store(true, Ordering::SeqCst);
             provider.observation_reads.store(0, Ordering::SeqCst);
             provider.observation_maximum.store(0, Ordering::SeqCst);
             provider.observation_tails.store(0, Ordering::SeqCst);
+            let io = acyclic_harness::filesystem::PreparationIo::from_budget(
+                acyclic_fs::performance::BOUNDARY_BUDGET,
+                &acyclic_fs::CancellationToken::new(),
+            )?;
+            let mut history_io = &io;
             let cold = HistoryReader::new(
                 &stream,
                 &authority,
                 &(issuer.verifier(&mut None).expect("verifier copy")),
-                &mut None,
+                &mut Some(&mut history_io),
             )?;
-            let cursor = cold.pin(0, None).await?;
+            let cursor = cold.pin(0, Some(&mut history_io)).await?;
             assert_eq!(
-                cold.effect(&cursor, effect_id, limits, None)
+                cold.effect(&cursor, effect_id, limits, Some(&mut history_io))
                     .await
                     .map(|state| state.map(|(state, _)| state))?,
                 Some(completed.clone())
             );
+            let acyclic_harness::filesystem::PreparationIo::Owned { work, .. } = &io else {
+                unreachable!("standalone measurement")
+            };
+            observations.push(work.lock().expect("work counters").0);
         }
+    }
+    let [small, large] = observations.as_slice() else {
+        panic!("missing growth observations")
+    };
+    assert!(small.allocation_operations > 0 && small.peak_allocation_bytes > 0);
+    let small = serde_json::to_value(small).expect("work counters");
+    let large = serde_json::to_value(large).expect("work counters");
+    for (counter, value) in small.as_object().expect("work counters") {
+        assert!(
+            large
+                .get(counter)
+                .and_then(serde_json::Value::as_u64)
+                .expect("counter")
+                <= value.as_u64().expect("counter"),
+            "{counter} must stay bounded"
+        );
     }
     let reader = HistoryReader::new(
         &stream,

@@ -498,13 +498,15 @@ where
 {
     let aggregate = acyclic_harness::store::StreamAggregate::open(
         stream,
-        issuer
-            .verifier(&mut None)
-            .expect("verifier copy")
-            .audience()
-            .clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
+        (
+            issuer
+                .verifier(&mut None)
+                .expect("verifier copy")
+                .audience()
+                .clone(),
+            issuer.verifier(&mut None).expect("verifier copy"),
+            SchemaRegistry::new(),
+        ),
         None,
         acyclic_harness::store::default_projection_read_limits(),
         acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
@@ -808,8 +810,7 @@ impl ResumableMachine for TaskMachine {
     }
 }
 
-#[path = "support/stream/mod.rs"]
-mod fault_stream;
+use crate::stream_fixture as fault_stream;
 use fault_stream::{ExecutionFaultMode, LostSessionAck};
 
 #[tokio::test]

@@ -256,12 +256,14 @@ async fn bind_conversation(
 ) -> Result<()> {
     let mut aggregate = StreamAggregate::open(
         stream,
-        Authority {
-            kind: AggregateKind::Conversation,
-            id: "mcp-fault".into(),
-        },
-        issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
+        (
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "mcp-fault".into(),
+            },
+            issuer.verifier(&mut None).expect("verifier copy"),
+            SchemaRegistry::new(),
+        ),
         None,
         acyclic_harness::store::default_projection_read_limits(),
         acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
@@ -503,15 +505,17 @@ async fn phase(
         .install_scoped(
             &mut tools,
             None,
-            &transport,
-            &projection,
-            OperationId::from_bytes([46; 16]),
-            InteractionId::from_bytes([47; 16]),
-            &signed,
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            approval.as_ref(),
-            1,
-            8192,
+            (&transport, &projection),
+            (
+                OperationId::from_bytes([46; 16]),
+                InteractionId::from_bytes([47; 16]),
+            ),
+            (
+                &signed,
+                &issuer.verifier(&mut None).expect("verifier copy"),
+                approval.as_ref(),
+            ),
+            (1, 8192),
         )
         .await?;
     let definition = tools

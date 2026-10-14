@@ -7,9 +7,7 @@ async fn extension_bytes_are_validated_before_ref_only_publication() -> Result<(
     let client = provider;
     let mut unbound = StreamAggregate::open(
         &client,
-        authority(),
-        issuer().verifier(&mut None)?,
-        schemas(),
+        (authority(), issuer().verifier(&mut None)?, schemas()),
         None,
         default_projection_read_limits(),
         DEFAULT_TERMINAL_EFFECTS,
@@ -43,9 +41,7 @@ async fn extension_bytes_are_validated_before_ref_only_publication() -> Result<(
     )?;
     let mut invalid = (StreamAggregate::open(
         &client,
-        authority(),
-        issuer().verifier(&mut None)?,
-        wrong_schemas,
+        (authority(), issuer().verifier(&mut None)?, wrong_schemas),
         None,
         default_projection_read_limits(),
         DEFAULT_TERMINAL_EFFECTS,
@@ -138,9 +134,11 @@ async fn configured_extension_cannot_publish_a_dangling_or_invalid_reference() -
     };
     let mut aggregate = StreamAggregate::open(
         &client,
-        authority.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        schemas.clone(),
+        (
+            authority.clone(),
+            issuer.verifier(&mut None).expect("verifier copy"),
+            schemas.clone(),
+        ),
         None,
         crate::store::default_projection_read_limits(),
         crate::store::DEFAULT_TERMINAL_EFFECTS,
@@ -194,9 +192,11 @@ async fn configured_extension_cannot_publish_a_dangling_or_invalid_reference() -
         .await?;
     let reopened = StreamAggregate::open(
         &client,
-        authority,
-        issuer.verifier(&mut None).expect("verifier copy"),
-        schemas,
+        (
+            authority,
+            issuer.verifier(&mut None).expect("verifier copy"),
+            schemas,
+        ),
         None,
         crate::store::default_projection_read_limits(),
         crate::store::DEFAULT_TERMINAL_EFFECTS,

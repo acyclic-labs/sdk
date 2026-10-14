@@ -139,7 +139,7 @@ where
                         work,
                         work.cancellation(),
                     ))
-                    .map_err(mount_demand_error)
+                    .map_err(MountSourceError::from)
             })
     }
     fn shutdown_with_meter(

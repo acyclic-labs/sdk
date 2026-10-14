@@ -70,9 +70,11 @@ async fn guarded_fork_reopen_and_child_replay_keep_original_identity_and_owner_f
     .map_err(|failure| failure.error)?;
     let mut reopened = StreamAggregate::open(
         &setup.fixture.stream,
-        seed.parent.clone(),
-        setup.parent_verifier.clone(),
-        SchemaRegistry::new(),
+        (
+            seed.parent.clone(),
+            setup.parent_verifier.clone(),
+            SchemaRegistry::new(),
+        ),
         None,
         default_projection_read_limits(),
         DEFAULT_TERMINAL_EFFECTS,
@@ -95,9 +97,11 @@ async fn guarded_fork_reopen_and_child_replay_keep_original_identity_and_owner_f
     assert_eq!(reopened.reducer().revision(), before + 1);
     let mut child = StreamAggregate::open(
         &setup.fixture.stream,
-        seed.child.clone(),
-        setup.child_verifier.clone(),
-        SchemaRegistry::new(),
+        (
+            seed.child.clone(),
+            setup.child_verifier.clone(),
+            SchemaRegistry::new(),
+        ),
         None,
         default_projection_read_limits(),
         DEFAULT_TERMINAL_EFFECTS,
@@ -134,9 +138,11 @@ async fn guarded_fork_reopen_and_child_replay_keep_original_identity_and_owner_f
     .map_err(|failure| failure.error)?;
     let mut reopened_child = StreamAggregate::open(
         &setup.fixture.stream,
-        seed.child.clone(),
-        setup.child_verifier,
-        SchemaRegistry::new(),
+        (
+            seed.child.clone(),
+            setup.child_verifier,
+            SchemaRegistry::new(),
+        ),
         None,
         default_projection_read_limits(),
         DEFAULT_TERMINAL_EFFECTS,
@@ -202,9 +208,11 @@ async fn guarded_child_rejects_original_event_one_with_wrong_binding_identity() 
     .map_err(|failure| failure.error)?;
     let mut child = StreamAggregate::open(
         &setup.fixture.stream,
-        seed.child.clone(),
-        setup.child_verifier,
-        SchemaRegistry::new(),
+        (
+            seed.child.clone(),
+            setup.child_verifier,
+            SchemaRegistry::new(),
+        ),
         None,
         default_projection_read_limits(),
         DEFAULT_TERMINAL_EFFECTS,

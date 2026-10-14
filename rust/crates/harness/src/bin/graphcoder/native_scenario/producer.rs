@@ -55,12 +55,8 @@ impl Producer {
         let approval = InteractionId::new();
         let verifier = caller.binding.verifier()?;
         let budget = self.config.tools.content_budget;
-        let work = acyclic_fs::NativeMaterializationWork::new(budget, &self.cancellation).map_err(
-            |(cause, work)| Error::NativeConstruction {
-                cause,
-                work,
-            },
-        )?;
+        let work = acyclic_fs::NativeMaterializationWork::new(budget, &self.cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = PreparationIo::from_native_work(&work)?;
         let fence = LeaseFence::from(&caller.lease.reservation);
         let owner = self
@@ -104,8 +100,8 @@ impl Producer {
                 host: self.files.as_ref(),
                 volume: &caller.project,
                 generation: &generation,
-                    namespace: &NativeVolumeNamespace::MaterializedDirectory,
-                    mounted: None,
+                namespace: &NativeVolumeNamespace::MaterializedDirectory,
+                mounted: None,
                 path: "project",
                 writable: false,
                 verifier: &verifier,

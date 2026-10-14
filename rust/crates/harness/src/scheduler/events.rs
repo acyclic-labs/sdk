@@ -175,6 +175,57 @@ impl SchedulerEvent {
             | Self::Orchestrated { operation_id, .. } => *operation_id,
         }
     }
+    fn copy_orchestration(&self, quota: &mut CodecQuota<'_, '_>) -> Result<Self> {
+        let Self::Orchestrated {
+            operation_id,
+            expected_revision,
+            outcome,
+            cancel,
+            reducer,
+            reduction_digest,
+        } = self
+        else {
+            return Err(quota.invalid("invalid orchestration copy"));
+        };
+
+        let outcome = outcome.copy_fields(quota)?;
+        for _ in cancel {
+            observe(quota.work())?;
+        }
+        let cancel = crate::core::copy_copy_vector(cancel, quota)?;
+        let reducer = reducer
+            .as_ref()
+            .map(|value| value.copy_fields(quota))
+            .transpose()?;
+        Ok(Self::Orchestrated {
+            operation_id: *operation_id,
+            expected_revision: *expected_revision,
+            outcome,
+            cancel,
+            reducer,
+            reduction_digest: *reduction_digest,
+        })
+    }
+    fn copy_completion(&self, quota: &mut CodecQuota<'_, '_>) -> Result<Self> {
+        let Self::Completed {
+            operation_id,
+            outcome,
+            fence,
+            execution_duration_ns,
+        } = self
+        else {
+            return Err(quota.invalid("invalid completion copy"));
+        };
+        Ok(Self::Completed {
+            operation_id: *operation_id,
+            outcome: outcome.copy_fields(quota)?,
+            fence: fence
+                .as_ref()
+                .map(|fence| fence.copy_fields(quota))
+                .transpose()?,
+            execution_duration_ns: *execution_duration_ns,
+        })
+    }
 }
 
 impl SchedulerEvent {
@@ -272,21 +323,8 @@ impl SchedulerEvent {
                 operation_id: *operation_id,
                 reason: copy_text(reason, quota)?,
             },
-            Self::ModelDispatchClaimed {
-                operation_id,
-                attempt_id,
-                step,
-                request_digest,
-                fence,
-                ceiling,
-            } => Self::ModelDispatchClaimed {
-                operation_id: *operation_id,
-                attempt_id: *attempt_id,
-                step: *step,
-                request_digest: *request_digest,
-                fence: fence.copy_fields(quota)?,
-                ceiling: *ceiling,
-            },
+            Self::ModelDispatchClaimed { .. } => self.copy_model_claim(quota)?,
+
             Self::Started {
                 operation_id,
                 fence,
@@ -344,47 +382,30 @@ impl SchedulerEvent {
                 operation_id: *operation_id,
                 fence: fence.copy_fields(quota)?,
             },
-            Self::Completed {
-                operation_id,
-                outcome,
-                fence,
-                execution_duration_ns,
-            } => Self::Completed {
-                operation_id: *operation_id,
-                outcome: outcome.copy_fields(quota)?,
-                fence: fence
-                    .as_ref()
-                    .map(|fence| fence.copy_fields(quota))
-                    .transpose()?,
-                execution_duration_ns: *execution_duration_ns,
-            },
-            Self::Orchestrated {
-                operation_id,
-                expected_revision,
-                outcome,
-                cancel,
-                reducer,
-                reduction_digest,
-            } => {
-                let outcome = outcome.copy_fields(quota)?;
-                for _ in cancel {
-                    observe(quota.work())?;
-                }
-                let cancel = crate::core::copy_copy_vector(cancel, quota)?;
-                let reducer = reducer
-                    .as_ref()
-                    .map(|value| value.copy_fields(quota))
-                    .transpose()?;
-                Self::Orchestrated {
-                    operation_id: *operation_id,
-                    expected_revision: *expected_revision,
-                    outcome,
-                    cancel,
-                    reducer,
-                    reduction_digest: *reduction_digest,
-                }
-            }
+            Self::Completed { .. } => self.copy_completion(quota)?,
+
+            Self::Orchestrated { .. } => self.copy_orchestration(quota)?,
         })
+    }
+    fn copy_model_claim(&self, quota: &mut CodecQuota<'_, '_>) -> Result<Self> {
+        match self {
+            Self::ModelDispatchClaimed {
+                operation_id,
+                attempt_id,
+                step,
+                request_digest,
+                fence,
+                ceiling,
+            } => Ok(Self::ModelDispatchClaimed {
+                operation_id: *operation_id,
+                attempt_id: *attempt_id,
+                step: *step,
+                request_digest: *request_digest,
+                fence: fence.copy_fields(quota)?,
+                ceiling: *ceiling,
+            }),
+            _ => Err(quota.invalid("invalid scheduler copy phase")),
+        }
     }
 }
 closed_clone!(SchedulerEvent);

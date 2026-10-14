@@ -41,6 +41,45 @@ struct PendingTool {
     native: AtomicBool,
 }
 impl ToolExecutor for PendingTool {
+    fn authorize(
+        &self,
+        _scope: Option<&RuntimeScope>,
+        context: Option<&ToolContext>,
+        invocation: &ToolInvocation,
+        work: crate::NativeWork<'_>,
+    ) -> Result<()> {
+        let denied = || Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            reason: "pending tool requires its original admitted call",
+        };
+        let context = context.ok_or_else(denied)?;
+        if context.operation_id() != invocation.operation_id
+            || context.call_id() != invocation.call_id
+            || invocation.name != "test.deadline"
+            || !context
+                .effective_scope()
+                .grants()
+                .contains("tool:call:test.deadline")
+        {
+            return Err(denied());
+        }
+        if let Some(work) = work {
+            self.supports_native_execution(work)?;
+            context.task().require_original_native_work(work)?;
+        }
+        Ok(())
+    }
+
+    fn resumable_machine_identity(
+        &self,
+        work: crate::NativeWork<'_>,
+    ) -> Result<Option<&MachineIdentity>> {
+        if let Some(work) = work {
+            self.supports_native_execution(work)?;
+        }
+        Ok(None)
+    }
+
     fn execute<'a>(
         &'a self,
         _: ToolInvocation,
@@ -337,10 +376,7 @@ impl Fixture {
             acyclic_fs::performance::work_budget(65_536, 64 * 1_024 * 1_024),
             &acyclic_fs::CancellationToken::new(),
         )
-        .map_err(|(cause, work)| Error::NativeConstruction {
-            cause,
-            work: work,
-        })?;
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work: work })?;
         let metadata_io = PreparationIo::from_native_work(&metadata_work)?;
         let (_, _, tasks, machines) = crate::durable_host::tests::created_fixture::test_registries(
             machine.clone(),

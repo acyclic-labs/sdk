@@ -103,9 +103,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         mut work: Option<&mut dyn HistoryIo>,
     ) -> Result<HistoryPage> {
         use crate::{
-            store::guarded_boundary as boundary,
-            wire::ErrorCode::{Invalid, Storage},
-            wire_codec::CodecQuota,
+            store::guarded_boundary as boundary, wire::ErrorCode::Invalid, wire_codec::CodecQuota,
         };
         let mut quota = CodecQuota::new(&mut work, 0)?;
         self.verifier
@@ -147,6 +145,41 @@ impl<P: StreamProvider> HistoryReader<P> {
             )
         })?;
         let mut events = Vec::new();
+        self.read_page_records(cursor, limits, count, &mut next, &mut events, &mut quota)
+            .await?;
+        quota.transfer();
+        Ok(HistoryPage {
+            events,
+            cursor: next,
+        })
+    }
+
+    pub(super) async fn committed_tail_with_work(
+        &self,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<u64> {
+        let tail =
+            crate::store::operations::tail_optional_with_work(&self.client, &self.path, work)
+                .await?;
+        if let Some(work) = work.as_deref() {
+            work.check_cancellation()?;
+        }
+        Ok(tail.unwrap_or(0))
+    }
+
+    async fn read_page_records(
+        &self,
+        cursor: &HistoryCursor,
+        limits: HistoryReadLimits,
+        count: u32,
+        next: &mut HistoryCursor,
+        events: &mut Vec<Event>,
+        quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    ) -> Result<()> {
+        use crate::{
+            store::guarded_boundary as boundary,
+            wire::ErrorCode::{Invalid, Storage},
+        };
         if count != 0 {
             let mut records = crate::store::operations::read_records(
                 &self.client,
@@ -197,7 +230,7 @@ impl<P: StreamProvider> HistoryReader<P> {
                 if let Some(io) = quota.work().as_deref_mut() {
                     io.admit_output(bytes, events.len() as u64 + 1)?;
                     let before = events.capacity();
-                    ensure_slot(&mut events, count as usize, io)?;
+                    ensure_slot(events, count as usize, io)?;
                     quota.adopt(
                         ((events.capacity() - before) * std::mem::size_of::<Event>()) as u64,
                     )?;
@@ -221,24 +254,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         } else if let Some(io) = quota.work().as_deref() {
             io.check_cancellation()?;
         }
-        quota.transfer();
-        Ok(HistoryPage {
-            events,
-            cursor: next,
-        })
-    }
-
-    pub(super) async fn committed_tail_with_work(
-        &self,
-        work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<u64> {
-        let tail =
-            crate::store::operations::tail_optional_with_work(&self.client, &self.path, work)
-                .await?;
-        if let Some(work) = work.as_deref() {
-            work.check_cancellation()?;
-        }
-        Ok(tail.unwrap_or(0))
+        Ok(())
     }
 }
 

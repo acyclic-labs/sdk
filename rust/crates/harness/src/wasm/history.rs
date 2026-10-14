@@ -166,9 +166,7 @@ impl WasmBrowserAggregate {
         let inner = if let Some(snapshot) = snapshot {
             StreamAggregate::open(
                 &client,
-                authority,
-                verifier,
-                schemas,
+                (authority, verifier, schemas),
                 Some(snapshot),
                 crate::store::default_projection_read_limits(),
                 crate::store::DEFAULT_TERMINAL_EFFECTS,
@@ -179,9 +177,7 @@ impl WasmBrowserAggregate {
         } else {
             StreamAggregate::open(
                 &client,
-                authority,
-                verifier,
-                schemas,
+                (authority, verifier, schemas),
                 None,
                 crate::store::default_projection_read_limits(),
                 crate::store::DEFAULT_TERMINAL_EFFECTS,

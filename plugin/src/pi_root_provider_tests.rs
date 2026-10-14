@@ -227,10 +227,7 @@ impl Fixture {
         };
         let fence = LeaseFence::from(&lease.reservation);
         let preparation = PiRootPreparation::load(
-            (
-                &resources.data,
-                session.strip_prefix(&resources.data).unwrap(),
-            ),
+            &owner,
             &runtime,
             &filesystem,
             &request.binding,
@@ -342,10 +339,7 @@ impl Fixture {
         .unwrap();
         let fence = LeaseFence::from(&self.lease.reservation);
         let preparation = PiRootPreparation::load(
-            (
-                &self.resources.data,
-                self.session.strip_prefix(&self.resources.data).unwrap(),
-            ),
+            &owner,
             &self.runtime,
             &self.filesystem,
             &self.request.binding,

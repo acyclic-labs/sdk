@@ -72,9 +72,7 @@ async fn open_projection<P: StreamProvider>(
 ) -> Result<StreamAggregate<P>> {
     StreamAggregate::open(
         client,
-        authority(),
-        issuer().verifier(&mut None)?,
-        schemas(),
+        (authority(), issuer().verifier(&mut None)?, schemas()),
         snapshot,
         limits,
         DEFAULT_TERMINAL_EFFECTS,

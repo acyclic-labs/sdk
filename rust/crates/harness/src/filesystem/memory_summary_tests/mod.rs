@@ -425,9 +425,9 @@ async fn append_later_summary_parent_messages(
         .clone();
     let mut writer = StreamAggregate::open(
         &storage.stream,
-        storage.conversation.clone(),
+        (storage.conversation.clone(),
         storage.verifier(),
-        SchemaRegistry::new(),
+        SchemaRegistry::new()),
         None,
         crate::store::default_projection_read_limits(),
         crate::store::DEFAULT_TERMINAL_EFFECTS,

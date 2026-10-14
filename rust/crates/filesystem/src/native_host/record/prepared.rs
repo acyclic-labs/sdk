@@ -31,32 +31,7 @@ impl PreparedMaterializationRecord {
         if current == temporary {
             return Err(E::InvalidLayout);
         }
-        #[cfg(unix)]
-        let mut names = [[0u8; RECORD_NAME_BYTES]; 2];
-        #[cfg(windows)]
-        let mut names = [[0u16; RECORD_NAME_BYTES]; 2];
-        for (output, path) in names.iter_mut().zip([temporary, current]) {
-            let bytes = path.as_os_str().as_encoded_bytes();
-            if bytes.len() >= RECORD_NAME_BYTES {
-                return Err(E::InvalidLayout);
-            }
-            #[cfg(unix)]
-            let copied = copy_work(bytes.len() as u64);
-            #[cfg(windows)]
-            let copied = WorkCounters {
-                bytes_encoded: (bytes.len() * 2) as u64,
-                ..WorkCounters::UNCHARGED
-            };
-            work.admit(copied)?;
-            for (output, byte) in output.iter_mut().zip(bytes) {
-                work.charge(ITEM)?;
-                if !byte.is_ascii() || *byte == 0 {
-                    return Err(E::InvalidLayout);
-                }
-                *output = (*byte).into();
-            }
-            work.record_admitted(copied)?;
-        }
+        let names = prepare_names(current, temporary, work)?;
         let (parent, _) = open_root_directory(parent_path, &mut &*work)?;
         if entry_identity(&parent, current, &mut &*work)?.is_none() {
             return Err(io::Error::from(io::ErrorKind::NotFound).into());
@@ -110,7 +85,7 @@ impl PreparedMaterializationRecord {
         #[cfg(unix)]
         let file = open_unix(
             parent.as_raw_fd(),
-            record_name(&names[0]),
+            record_name(&names[0])?,
             libc::O_RDWR
                 | libc::O_CREAT
                 | libc::O_EXCL
@@ -162,7 +137,9 @@ impl PreparedMaterializationRecord {
                 object_bytes_written: count as u64,
                 ..WorkCounters::UNCHARGED
             })?;
-            remaining = &remaining[count..];
+            remaining = remaining
+                .get(count..)
+                .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
         }
         let sync = WorkCounters {
             durability_operations: 1,
@@ -174,9 +151,9 @@ impl PreparedMaterializationRecord {
         #[cfg(unix)]
         rename_unix_names_once(
             &self.parent,
-            record_name(&self.names[0]),
+            record_name(&self.names[0])?,
             &self.parent,
-            record_name(&self.names[1]),
+            record_name(&self.names[1])?,
             acyclic_native_runtime::RenameMode::Replace,
         )?;
         #[cfg(windows)]
@@ -200,8 +177,9 @@ impl PreparedMaterializationRecord {
 }
 
 #[cfg(unix)]
-fn record_name(bytes: &[u8; RECORD_NAME_BYTES]) -> &std::ffi::CStr {
-    std::ffi::CStr::from_bytes_until_nul(bytes).expect("prepared terminated ASCII name")
+fn record_name(bytes: &[u8; RECORD_NAME_BYTES]) -> io::Result<&std::ffi::CStr> {
+    std::ffi::CStr::from_bytes_until_nul(bytes)
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))
 }
 
 impl Drop for PreparedMaterializationRecord {
@@ -215,7 +193,7 @@ impl Drop for PreparedMaterializationRecord {
             if unsafe {
                 libc::unlinkat(
                     self.parent.as_raw_fd(),
-                    record_name(&self.names[0]).as_ptr(),
+                    record_name(&self.names[0])?.as_ptr(),
                     0,
                 )
             } == 0
@@ -234,4 +212,43 @@ impl Drop for PreparedMaterializationRecord {
             )
         });
     }
+}
+
+fn prepare_names(
+    current: &Path,
+    temporary: &Path,
+    work: &NativeMaterializationWork,
+) -> Result<[[NativeUnit; RECORD_NAME_BYTES]; 2], NativeTreeMaterializationError> {
+    use NativeTreeMaterializationError as E;
+    let mut names = [[NativeUnit::default(); RECORD_NAME_BYTES]; 2];
+    for (output, path) in names.iter_mut().zip([temporary, current]) {
+        let bytes = path.as_os_str().as_encoded_bytes();
+        if bytes.len() >= RECORD_NAME_BYTES {
+            return Err(E::InvalidLayout);
+        }
+        #[cfg(unix)]
+        let copied = copy_work(bytes.len() as u64);
+        #[cfg(windows)]
+        let copied = WorkCounters {
+            bytes_encoded: (bytes.len() * 2) as u64,
+            ..WorkCounters::UNCHARGED
+        };
+        work.admit(copied)?;
+        for (output, byte) in output.iter_mut().zip(bytes) {
+            work.charge(ITEM)?;
+            if !byte.is_ascii() || *byte == 0 {
+                return Err(E::InvalidLayout);
+            }
+            #[cfg(unix)]
+            {
+                *output = *byte;
+            }
+            #[cfg(windows)]
+            {
+                *output = u16::from(*byte);
+            }
+        }
+        work.record_admitted(copied)?;
+    }
+    Ok(names)
 }

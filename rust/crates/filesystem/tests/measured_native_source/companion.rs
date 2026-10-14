@@ -156,8 +156,8 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
         let initial = workspace
             .operation_generation(
                 IdempotencyKey::from_bytes(operation.into_bytes()),
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
             )
             .await
             .map(|receipt| receipt.value)
@@ -181,8 +181,8 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
             .await?;
         let head = workspace
             .head(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
             )
             .await
             .map(|receipt| receipt.value)

@@ -5,6 +5,7 @@ use crate::native_host::NativeHostWork;
 pub(crate) trait SourceDemandReadWork:
     NativeHostWork<Error = DemandError, Allocation = u64, CleanupWrite = u64>
 {
+    #[cfg(windows)]
     fn with_native_read_meter<T>(
         &mut self,
         operation: impl FnOnce(&dyn acyclic_native_runtime::NativeReadMeter) -> T,
@@ -62,6 +63,7 @@ impl SourceDemandReadWork for DemandWork {
     fn with_ordinary_work<T>(&mut self, operation: impl FnOnce(&mut DemandWork) -> T) -> Option<T> {
         Some(operation(self))
     }
+    #[cfg(windows)]
     fn with_native_read_meter<T>(
         &mut self,
         operation: impl FnOnce(&dyn acyclic_native_runtime::NativeReadMeter) -> T,
@@ -81,6 +83,7 @@ impl SourceDemandReadWork for NativeMaterializationWork {
     fn native_source_work(&self) -> Option<NativeMaterializationWork> {
         Some(self.clone())
     }
+    #[cfg(windows)]
     fn with_native_read_meter<T>(
         &mut self,
         operation: impl FnOnce(&dyn acyclic_native_runtime::NativeReadMeter) -> T,
@@ -121,6 +124,7 @@ impl NativeHostWork for NativeMaterializationWork {
         self.claim_allocation(bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED)?;
         Ok(bytes)
     }
+    #[cfg(windows)]
     fn reserve_opaque_decode(&mut self, maximum: u64) -> Result<u64, DemandError> {
         self.claim_allocation(maximum, 0, WorkCounters::UNCHARGED)?;
         Ok(maximum)
@@ -135,12 +139,15 @@ impl NativeHostWork for NativeMaterializationWork {
     fn release(&mut self, bytes: u64) -> Result<(), DemandError> {
         self.with_original_leaf(|work| work.release(bytes))
     }
+    #[cfg(any(windows, target_os = "linux", test))]
     fn reserve_cleanup_write(&mut self) -> Result<u64, DemandError> {
         self.with_original_leaf(NativeHostWork::reserve_cleanup_write)
     }
+    #[cfg(any(windows, target_os = "linux", test))]
     fn cancel_cleanup_write(&mut self, reservation: u64) {
         self.with_original_leaf(|work| work.cancel_cleanup_write(reservation));
     }
+    #[cfg(any(windows, target_os = "linux", test))]
     fn attempt_cleanup_write<T>(
         &mut self,
         reservation: u64,

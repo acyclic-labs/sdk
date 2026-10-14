@@ -107,7 +107,8 @@ impl HostStatReader {
                 HANDLE(self.directory.as_raw_handle()),
                 FileIdExtdDirectoryInfo,
                 self.buffer.as_mut_ptr().cast(),
-                u32::try_from(Self::BUFFER_BYTES).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?,
+                u32::try_from(Self::BUFFER_BYTES)
+                    .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?,
             )
         };
         match result {
@@ -128,11 +129,11 @@ impl HostStatReader {
                 self.buffer.as_mut_ptr(),
                 Self::BUFFER_BYTES,
             )
-        } as isize;
+        };
         if count < 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(count as usize)
+        usize::try_from(count).map_err(|_| io::Error::other("directory byte count overflow"))
     }
     #[cfg(target_os = "macos")]
     fn refill(&mut self) -> io::Result<usize> {
@@ -242,15 +243,19 @@ impl HostStatReader {
             unsafe { std::slice::from_raw_parts(self.buffer.as_ptr().cast::<u8>(), self.filled) };
         let start = self.next.checked_add(header).ok_or_else(malformed)?;
         let fixed = bytes.get(self.next..start).ok_or_else(malformed)?;
-        let length = u16::from_ne_bytes([fixed[16], fixed[17]]) as usize;
+        let length = usize::from(u16::from_ne_bytes(
+            fixed
+                .get(16..18)
+                .ok_or_else(malformed)?
+                .try_into()
+                .map_err(|_| malformed())?,
+        ));
         if length <= header {
             return Err(malformed());
         }
         let end = self.next.checked_add(length).ok_or_else(malformed)?;
         let tail = bytes.get(start..end).ok_or_else(malformed)?;
-        let terminator = tail.iter().position(|b| *b == 0).ok_or_else(malformed)?;
-        let name = std::ffi::CStr::from_bytes_with_nul(&tail[..=terminator])
-            .expect("record ends at its first NUL");
+        let name = std::ffi::CStr::from_bytes_until_nul(tail).map_err(|_| malformed())?;
         if name.is_empty() || name.to_bytes().contains(&b'/') {
             return Err(malformed());
         }

@@ -45,9 +45,11 @@ pub(super) async fn publication_rejections(
     assert_eq!(aggregate.reducer().revision(), seed.parent_revision);
     let mut over_budget = StreamAggregate::open(
         &stream,
-        authority.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
+        (
+            authority.clone(),
+            issuer.verifier(&mut None).expect("verifier copy"),
+            SchemaRegistry::new(),
+        ),
         None,
         acyclic_harness::store::default_projection_read_limits(),
         acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
@@ -76,9 +78,11 @@ pub(super) async fn publication_rejections(
     assert_eq!(over_budget.reducer().revision(), seed.parent_revision);
     let mut incomplete = StreamAggregate::open(
         &stream,
-        authority.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
+        (
+            authority.clone(),
+            issuer.verifier(&mut None).expect("verifier copy"),
+            SchemaRegistry::new(),
+        ),
         None,
         acyclic_harness::store::default_projection_read_limits(),
         acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,

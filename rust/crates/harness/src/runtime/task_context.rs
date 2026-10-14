@@ -104,8 +104,13 @@ impl TaskContext {
 
     /// Selects an authenticated created destination without widening task authority.
     pub async fn with_output_volume(self: &Arc<Self>, volume: &VolumeRef) -> Result<Arc<Self>> {
+        let io = self.preparation_io()?;
         let binding = self.scope.created_content(Some(volume)).ok_or_else(|| {
-            Error::Unauthorized("output volume has no admitted creation binding".into())
+            crate::conversation::content_error(
+                io.as_ref(),
+                crate::wire::ErrorCode::Unauthorized,
+                "output volume has no admitted creation binding",
+            )
         })?;
         self.with_output_bindings(binding.clone()).await
     }

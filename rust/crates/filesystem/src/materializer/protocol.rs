@@ -203,7 +203,11 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
             journal = self.persist(journal).await?;
             guard().await?;
         }
-        journal.phase = MaterializationPhase::Prepared;
+        journal.phase = if journal.plan.edits.is_empty() {
+            MaterializationPhase::Applied
+        } else {
+            MaterializationPhase::Prepared
+        };
         self.persist(journal).await.map_err(Into::into)
     }
     pub(super) async fn replay<E, F, Fut>(

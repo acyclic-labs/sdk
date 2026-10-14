@@ -56,7 +56,7 @@ fn created_file_cases() -> Result<(), Box<dyn std::error::Error>> {
         ));
         if name != "large" {
             let reopened = source.open_file(&path)?;
-            let mut expected = vec![0; offset as usize];
+            let mut expected = vec![0; usize::try_from(offset)?];
             expected.extend_from_slice(&bytes);
             assert_eq!(reopened.read_up_to(0, 64)?.as_ref(), expected);
             if offset != 0 {

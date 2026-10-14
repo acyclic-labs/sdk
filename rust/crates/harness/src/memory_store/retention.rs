@@ -56,23 +56,7 @@ impl MemoryStore {
                 ));
             }
         }
-        for existing in self.paths.keys() {
-            #[cfg(feature = "filesystem")]
-            if let Some(io) = io {
-                let examine = acyclic_fs::WorkCounters {
-                    items_examined: 1,
-                    source_bytes_read: (existing.len() + path.len()) as u64,
-                    ..Default::default()
-                };
-                io.preflight(examine)?;
-                io.charge(examine)?;
-            }
-            if paths_conflict(existing, path) {
-                return Err(Error::Invalid(
-                    "file path conflicts with an existing directory".into(),
-                ));
-            }
-        }
+        self.validate_retained_path(path, io)?;
         if !self.files.contains_key(&file_key) {
             if self.files.len() as u64 >= self.maximum_resident_files {
                 return Err(Error::Invalid(
@@ -93,82 +77,7 @@ impl MemoryStore {
                 io.preflight(slots)?;
                 io.charge(slots)?;
             }
-            let blob_key = (
-                reference.descriptor().byte_length(),
-                *reference.descriptor().sha256(),
-            );
-            if let Some(existing) = self.blobs.get(&blob_key) {
-                #[cfg(feature = "filesystem")]
-                if let Some(io) = io {
-                    let compare = acyclic_fs::WorkCounters {
-                        source_bytes_read: bytes.len() as u64,
-                        items_examined: 1,
-                        ..Default::default()
-                    };
-                    io.preflight(compare)?;
-                    io.charge(compare)?;
-                }
-                if existing.bytes.as_ref() != bytes {
-                    return Err(Error::Invalid(
-                        "content digest was reused for different bytes".into(),
-                    ));
-                }
-            } else {
-                let length = bytes.len() as u64;
-                if length
-                    > self
-                        .maximum_resident_bytes
-                        .saturating_sub(self.resident_bytes)
-                {
-                    return Err(Error::Invalid(
-                        "memory content retention limit exceeded".into(),
-                    ));
-                }
-                #[cfg(feature = "filesystem")]
-                let key_bytes = std::mem::size_of_val(&blob_key) as u64;
-                #[cfg(feature = "filesystem")]
-                if let Some(io) = io {
-                    io.retain_owned(length + key_bytes)?;
-                    let copy = acyclic_fs::WorkCounters {
-                        bytes_copied: length,
-                        items_examined: 1,
-                        ..Default::default()
-                    };
-                    io.preflight(copy)?;
-                    let rehash = if self.blobs.len() == self.blobs.capacity() {
-                        self.blobs.len()
-                    } else {
-                        0
-                    };
-                    let slots = acyclic_fs::WorkCounters {
-                        items_examined: rehash as u64,
-                        ..Default::default()
-                    };
-                    io.preflight(slots)?;
-                    io.charge(slots)?;
-                    io.allocation_attempt(length)?;
-                }
-                let resident = Box::<[u8]>::from(bytes);
-                #[cfg(feature = "filesystem")]
-                if let Some(io) = io {
-                    io.charge(acyclic_fs::WorkCounters {
-                        bytes_copied: length,
-                        items_examined: 1,
-                        ..Default::default()
-                    })?;
-                }
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                let custody = native_cache_custody(io, length + key_bytes)?;
-                self.blobs.insert(
-                    blob_key,
-                    StoredBlob {
-                        bytes: resident,
-                        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                        _custody: custody,
-                    },
-                );
-                self.resident_bytes += length;
-            }
+            self.retain_blob(reference, bytes, io)?;
             let retained_reference = with_history_io(io, |work| reference.copy(work))?;
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let custody = native_cache_custody(
@@ -250,6 +159,112 @@ impl MemoryStore {
             file.version(),
         ))?)
         .map_err(|error| Error::Invalid(format!("file reference is not UTF-8: {error}")))
+    }
+
+    fn retain_blob(
+        &mut self,
+        reference: &FileRef,
+        bytes: &[u8],
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        let blob_key = (
+            reference.descriptor().byte_length(),
+            *reference.descriptor().sha256(),
+        );
+        if let Some(existing) = self.blobs.get(&blob_key) {
+            #[cfg(feature = "filesystem")]
+            if let Some(io) = io {
+                let compare = acyclic_fs::WorkCounters {
+                    source_bytes_read: bytes.len() as u64,
+                    items_examined: 1,
+                    ..Default::default()
+                };
+                io.preflight(compare)?;
+                io.charge(compare)?;
+            }
+            if existing.bytes.as_ref() != bytes {
+                return Err(Error::Invalid(
+                    "content digest was reused for different bytes".into(),
+                ));
+            }
+        } else {
+            let length = bytes.len() as u64;
+            if length
+                > self
+                    .maximum_resident_bytes
+                    .saturating_sub(self.resident_bytes)
+            {
+                return Err(Error::Invalid(
+                    "memory content retention limit exceeded".into(),
+                ));
+            }
+            #[cfg(feature = "filesystem")]
+            let key_bytes = std::mem::size_of_val(&blob_key) as u64;
+            #[cfg(feature = "filesystem")]
+            if let Some(io) = io {
+                io.retain_owned(length + key_bytes)?;
+                let copy = acyclic_fs::WorkCounters {
+                    bytes_copied: length,
+                    items_examined: 1,
+                    ..Default::default()
+                };
+                io.preflight(copy)?;
+                let rehash = if self.blobs.len() == self.blobs.capacity() {
+                    self.blobs.len()
+                } else {
+                    0
+                };
+                let slots = acyclic_fs::WorkCounters {
+                    items_examined: rehash as u64,
+                    ..Default::default()
+                };
+                io.preflight(slots)?;
+                io.charge(slots)?;
+                io.allocation_attempt(length)?;
+            }
+            let resident = Box::<[u8]>::from(bytes);
+            #[cfg(feature = "filesystem")]
+            if let Some(io) = io {
+                io.charge(acyclic_fs::WorkCounters {
+                    bytes_copied: length,
+                    items_examined: 1,
+                    ..Default::default()
+                })?;
+            }
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            let custody = native_cache_custody(io, length + key_bytes)?;
+            self.blobs.insert(
+                blob_key,
+                StoredBlob {
+                    bytes: resident,
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    _custody: custody,
+                },
+            );
+            self.resident_bytes += length;
+        }
+        Ok(())
+    }
+
+    fn validate_retained_path(&self, path: &str, io: Option<&PreparationIo>) -> Result<()> {
+        for existing in self.paths.keys() {
+            #[cfg(feature = "filesystem")]
+            if let Some(io) = io {
+                let examine = acyclic_fs::WorkCounters {
+                    items_examined: 1,
+                    source_bytes_read: (existing.len() + path.len()) as u64,
+                    ..Default::default()
+                };
+                io.preflight(examine)?;
+                io.charge(examine)?;
+            }
+            if paths_conflict(existing, path) {
+                return Err(Error::Invalid(
+                    "file path conflicts with an existing directory".into(),
+                ));
+            }
+        }
+        Ok(())
     }
 }
 

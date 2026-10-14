@@ -1,12 +1,10 @@
 use super::*;
 use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
 use crate::model::{
-    AccessMode, CaseSensitivity, CheckoutMode, ConcurrencyMode, ConsistencyMode, FilesystemProfile,
-    GenerationSelector, Lifecycle, MutationMode, UnicodePolicy, VolumeConfig, VolumeLimits,
+    AccessMode, CheckoutMode, ConsistencyMode, FilesystemProfile, GenerationSelector, Lifecycle,
+    MutationMode, VolumeConfig, VolumeLimits,
 };
-use crate::path::PortablePath;
 use crate::{ByteRange, CancellationToken, Fs, VolumeId, WatchBatch, WatchChange, WorkBudget};
-use bytes::Bytes;
 use std::time::{Duration, Instant};
 
 pub(super) async fn memory_volume(

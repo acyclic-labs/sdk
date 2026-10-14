@@ -90,8 +90,9 @@ impl Fixture {
     }
 
     async fn load(&self) -> Result<PiRootPreparation> {
+        let owner = PiOwnerConfig::load(&self.private, Path::new(""), &self.work)?;
         PiRootPreparation::load(
-            (&self.private, Path::new("")),
+            &owner,
             &self.runtime,
             &self.filesystem,
             &self.request.binding,
@@ -335,7 +336,7 @@ async fn pi_preparation_reads_original_pins_after_changed_heads_and_cold_reopen(
     assert_eq!(loaded.command, fixture.command);
     assert_eq!(loaded.request, fixture.request);
     let supplied = PiRootPreparation::load(
-        (&fixture.private, Path::new("")),
+        &PiOwnerConfig::load(&fixture.private, Path::new(""), &fixture.work).unwrap(),
         &fixture.runtime,
         &fixture.filesystem,
         &fixture.request.binding,
@@ -367,6 +368,9 @@ async fn pi_preparation_reads_original_pins_after_changed_heads_and_cold_reopen(
     drop(fixture.runtime);
     drop(fixture.filesystem);
     drop(fixture.raw);
+    fixture.work = work();
+    fixture.owner =
+        PiOwnerConfig::load(fixture.session.path(), Path::new(""), &fixture.work).unwrap();
     fixture.raw = acyclic_fs::LocalFs::local(acyclic_fs::LocalOptions::new(
         fixture.session.path().join("filesystem"),
     ))
@@ -449,7 +453,7 @@ async fn pi_preparation_rejects_other_original_keys_and_any_policy_drift() {
         let private = other.path();
         assert!(matches!(
             PiRootPreparation::load(
-                (private, Path::new("")),
+                &PiOwnerConfig::load(private, Path::new(""), &fixture.work).unwrap(),
                 &fixture.runtime,
                 &fixture.filesystem,
                 &fixture.request.binding,
@@ -458,7 +462,11 @@ async fn pi_preparation_rejects_other_original_keys_and_any_policy_drift() {
                 &fixture.work,
             )
             .await,
-            Err(Error::Unauthorized(_))
+            Err(Error::Unauthorized(_)
+                | Error::NativeBoundary {
+                    code: acyclic_harness::wire::ErrorCode::Unauthorized,
+                    ..
+                })
         ));
         assert_eq!(fixture.head().await, head);
         fixture.assert_idle().await;

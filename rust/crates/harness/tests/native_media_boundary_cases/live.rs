@@ -93,7 +93,7 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
             },
         ),
     ] {
-        agent.apply(Command {
+        agent.apply(&Command {
             operation_id: OperationId::new(),
             idempotency_key: IdempotencyKey::new(format!("native:{revision}"))?,
             expected_revision: revision,
@@ -580,7 +580,7 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
                 assert_eq!(adapter.counts.load(Ordering::SeqCst), counts + 1);
                 assert_eq!(adapter.generates.load(Ordering::SeqCst), generates + 1);
                 Box::pin(exercise_retained_native_boundary(
-                    host, volume, owner, scope, reader, selected, &writer, &context,
+                    host, volume, owner, scope, reader, selected, &writer,
                 )).await?;
                 Ok(())
             }
@@ -668,7 +668,7 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
             },
         ),
     ] {
-        agent.apply(Command {
+        agent.apply(&Command {
             operation_id: OperationId::new(),
             idempotency_key: IdempotencyKey::new(format!("native:{revision}"))?,
             expected_revision: revision,

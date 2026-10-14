@@ -89,16 +89,15 @@ impl McpCatalog {
         &self,
         registry: &mut ToolRegistry,
         previous: Option<&Self>,
-        transport: &Arc<dyn McpToolTransport>,
-        projection: &Arc<dyn ToolProjection>,
-        operation: OperationId,
-        interaction: InteractionId,
-        scope: &Scope,
-        verifier: &AuthorityVerifier,
-        approval: &dyn ToolApprovalVerifier,
-        maximum_tools: u32,
-        maximum_bytes: u32,
+        remote: (&Arc<dyn McpToolTransport>, &Arc<dyn ToolProjection>),
+        operation: (OperationId, InteractionId),
+        authorization: (&Scope, &AuthorityVerifier, &dyn ToolApprovalVerifier),
+        bounds: (u32, u32),
     ) -> Result<()> {
+        let (transport, projection) = remote;
+        let (operation, interaction) = operation;
+        let (scope, verifier, approval) = authorization;
+        let (maximum_tools, maximum_bytes) = bounds;
         self.validate_transport_binding(transport.as_ref())?;
         verifier.verify(scope, &mut None)?;
         if !scope

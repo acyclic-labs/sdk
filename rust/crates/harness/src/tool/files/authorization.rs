@@ -39,6 +39,60 @@ impl FileTool {
             scope.limits().file_bytes,
             &mut None,
         )?;
+        let (file, custody) = self.decode_source(scope, invocation, work, io)?;
+        let Some(file) = file else {
+            return Ok((None, custody));
+        };
+        self.public_path(file.path(), io)?;
+        crate::executor::with_history_io(io, |history| {
+            scope.limits().validate_file(&file, history)?;
+            if !crate::runtime::read_granted_with_work(scope.grants(), &file, history)? {
+                return Err(crate::store::guarded_boundary(
+                    history,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "file tool requires original source read grant",
+                ));
+            }
+            Ok(())
+        })?;
+        if let Self::Read = self {
+            let maximum = scope.limits().render_bytes.min(scope.limits().file_bytes);
+            if maximum == 0 || maximum == u64::MAX || file.descriptor().byte_length() > maximum {
+                return Err(error(
+                    crate::wire::ErrorCode::Invalid,
+                    "file exceeds text rendering bound",
+                ));
+            }
+        }
+        Ok((Some(file), custody))
+    }
+
+    fn public_path(&self, path: &str, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
+        crate::executor::with_history_io(io, |history| {
+            crate::conversation::validate_content_path(path, history)?;
+            if crate::conversation::is_internal_path(path) {
+                return Err(crate::store::guarded_boundary(
+                    history,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "file tools cannot access internal storage",
+                ));
+            }
+            Ok(())
+        })
+    }
+
+    fn decode_source(
+        &self,
+        scope: &RuntimeScope,
+        invocation: &ToolInvocation,
+        work: crate::NativeWork<'_>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(Option<FileRef>, crate::NativeCustody)> {
+        let error = |code, reason| {
+            crate::executor::with_history_io(io, |history| {
+                crate::store::guarded_boundary(history, code, reason)
+            })
+        };
         let (file, custody) = match *self {
             Self::Write => {
                 let input = decode::<WriteFileInput>(&invocation.arguments, work)?;
@@ -111,41 +165,6 @@ impl FileTool {
                 work,
             )?,
         };
-        self.public_path(file.path(), io)?;
-        crate::executor::with_history_io(io, |history| {
-            scope.limits().validate_file(&file, history)?;
-            if !crate::runtime::read_granted_with_work(scope.grants(), &file, history)? {
-                return Err(crate::store::guarded_boundary(
-                    history,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "file tool requires original source read grant",
-                ));
-            }
-            Ok(())
-        })?;
-        if let Self::Read = self {
-            let maximum = scope.limits().render_bytes.min(scope.limits().file_bytes);
-            if maximum == 0 || maximum == u64::MAX || file.descriptor().byte_length() > maximum {
-                return Err(error(
-                    crate::wire::ErrorCode::Invalid,
-                    "file exceeds text rendering bound",
-                ));
-            }
-        }
         Ok((Some(file), custody))
-    }
-
-    fn public_path(&self, path: &str, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
-        crate::executor::with_history_io(io, |history| {
-            crate::conversation::validate_content_path(path, history)?;
-            if crate::conversation::is_internal_path(path) {
-                return Err(crate::store::guarded_boundary(
-                    history,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "file tools cannot access internal storage",
-                ));
-            }
-            Ok(())
-        })
     }
 }

@@ -32,8 +32,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         if publication == MountPublication::PerMutation {
             self.publish(
                 crate::PublicationPermit::Unrestricted,
-                work,
-                cancellation,
+                crate::kernel::KernelAccounting::native(work, cancellation),
                 Some(lifetime),
                 &mut source_publication_guard(guard, Some(lifetime.clone())),
                 None,

@@ -48,7 +48,7 @@ fn owner_bound_private_write_rejects_an_attached_agent_with_a_copied_capability(
         )
         .is_err()
     );
-    let inherited = issuer.attenuate(&scope, "child", crate::Capabilities::new([write.clone()]))?;
+    let inherited = issuer.attenuate(&scope, "child", &crate::Capabilities::new([write.clone()]))?;
     assert_eq!(inherited.agent(), Some(owner));
     ContentGrant::verify(
         &issuer.verifier(&mut None)?,

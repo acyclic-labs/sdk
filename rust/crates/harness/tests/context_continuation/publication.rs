@@ -247,9 +247,11 @@ pub(super) async fn append_private_checkpoint_metadata(
         .await?;
     let mut history = acyclic_harness::store::StreamAggregate::open(
         storage.stream(),
-        storage.conversation().clone(),
-        storage.verifier(),
-        acyclic_harness::core::SchemaRegistry::new(),
+        (
+            storage.conversation().clone(),
+            storage.verifier(),
+            acyclic_harness::core::SchemaRegistry::new(),
+        ),
         None,
         acyclic_harness::store::default_projection_read_limits(),
         acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,

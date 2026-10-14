@@ -94,9 +94,11 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     )?;
     let mut original = StreamAggregate::open(
         &fixture.stream,
-        created.seed.parent.clone(),
-        created.parent_verifier.clone(),
-        SchemaRegistry::new(),
+        (
+            created.seed.parent.clone(),
+            created.parent_verifier.clone(),
+            SchemaRegistry::new(),
+        ),
         None,
         crate::store::default_projection_read_limits(),
         crate::store::DEFAULT_TERMINAL_EFFECTS,
@@ -135,9 +137,11 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
         .expect("scope proof");
     let mut parent = StreamAggregate::open(
         &fixture.stream,
-        created.seed.child.clone(),
-        parent_issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
+        (
+            created.seed.child.clone(),
+            parent_issuer.verifier(&mut None).expect("verifier copy"),
+            SchemaRegistry::new(),
+        ),
         None,
         crate::store::default_projection_read_limits(),
         crate::store::DEFAULT_TERMINAL_EFFECTS,

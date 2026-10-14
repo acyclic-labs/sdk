@@ -48,9 +48,7 @@ async fn bounded_resident_suffix_preserves_cold_retries_and_recovery() -> Result
     ));
     let mut restored = StreamAggregate::open(
         &client,
-        authority(),
-        issuer().verifier(&mut None)?,
-        schemas(),
+        (authority(), issuer().verifier(&mut None)?, schemas()),
         Some(snapshot),
         default_projection_read_limits(),
         DEFAULT_TERMINAL_EFFECTS,

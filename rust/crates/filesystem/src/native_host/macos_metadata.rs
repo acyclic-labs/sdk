@@ -6,7 +6,7 @@ pub(crate) enum MacMetadataTarget {
     Noop {
         parent: Dir,
         leaf: std::path::PathBuf,
-        device: u64,
+        device: libc::dev_t,
         inode: u64,
     },
 }
@@ -34,7 +34,7 @@ pub(crate) fn open_macos_metadata_target<
             let target = MacMetadataTarget::Noop {
                 parent,
                 leaf,
-                device: before.st_dev as u64,
+                device: before.st_dev,
                 inode: before.st_ino,
             };
             return Ok(target);
@@ -96,7 +96,7 @@ impl MacMetadataTarget {
                     let observed = unix_name(leaf.as_os_str(), work, |leaf, work| {
                         fstat(parent.as_raw_fd(), leaf, work)
                     })?;
-                    if observed.st_dev as u64 != device || observed.st_ino != inode {
+                    if observed.st_dev != device || observed.st_ino != inode {
                         return Err(io::Error::other("metadata target changed during no-op").into());
                     }
                     Ok(())

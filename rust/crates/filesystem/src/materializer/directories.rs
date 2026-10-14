@@ -1,5 +1,6 @@
 use super::*;
 
+#[cfg(windows)]
 pub(super) fn native_utf16_name_bytes(
     units: impl Iterator<Item = u16>,
 ) -> impl Iterator<Item = u8> {
