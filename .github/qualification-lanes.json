@@ -9,16 +9,16 @@
   },
   {
     "lane": "docs",
-    "runner": "blacksmith-4vcpu-ubuntu-2404",
-    "workers": 4,
+    "runner": "blacksmith-2vcpu-ubuntu-2404",
+    "workers": 2,
     "artifact": "",
     "artifact_path": "",
     "cache_size": "64M"
   },
   {
     "lane": "generation",
-    "runner": "blacksmith-4vcpu-ubuntu-2404",
-    "workers": 4,
+    "runner": "blacksmith-2vcpu-ubuntu-2404",
+    "workers": 2,
     "artifact": "",
     "artifact_path": "",
     "cache_size": "64M"

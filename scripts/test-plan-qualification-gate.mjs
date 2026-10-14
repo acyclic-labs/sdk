@@ -4,7 +4,7 @@ import test from "node:test";
 
 const lanes = JSON.parse(readFileSync(".github/qualification-lanes.json", "utf8"));
 
-test("the workspace gate uses sixteen CPUs while short independent workspaces stay at four", () => {
+test("the workspace gate uses sixteen CPUs while short independent workspaces use two", () => {
   const matrix = lanes;
   const gate = matrix.find(lane => lane.lane === "gate");
   assert.equal(gate.runner, "blacksmith-16vcpu-ubuntu-2404");
@@ -12,8 +12,11 @@ test("the workspace gate uses sixteen CPUs while short independent workspaces st
   assert.equal(gate.artifact, "");
   for (const name of ["docs", "generation"]) {
     const lane = matrix.find(lane => lane.lane === name);
-    assert.equal(lane.runner, "blacksmith-4vcpu-ubuntu-2404");
-    assert.equal(lane.workers, 4);
+    assert.equal(lane.runner, "blacksmith-2vcpu-ubuntu-2404");
+    assert.equal(lane.workers, 2);
+    assert.equal(lane.cache_size, "64M");
+    assert.equal(lane.artifact, "");
+    assert.ok(readFileSync(".github/actionlint.yaml", "utf8").includes(lane.runner));
   }
   const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");
   assert.ok(workflow.includes("runs-on: ${{ matrix.runner }}"));
