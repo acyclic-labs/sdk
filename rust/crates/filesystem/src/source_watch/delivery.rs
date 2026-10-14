@@ -72,16 +72,8 @@ impl Delivery {
         let Some(birth) = &self.original else {
             return false;
         };
-        let Some(current) = work.native_source_work() else {
-            return false;
-        };
-        let current = current.clone();
-        Arc::ptr_eq(&birth.state, &current.state)
-            && match (birth.resource.as_ref(), current.resource.as_ref()) {
-                (None, None) => true,
-                (Some(birth), Some(current)) => Arc::ptr_eq(birth, current),
-                _ => false,
-            }
+        work.native_source_work()
+            .is_some_and(|current| birth.shares_allocation_context(&current))
     }
 
     pub(super) fn failed_with_work<W: SourceDemandReadWork>(

@@ -229,10 +229,11 @@ fn clearing_reverted_mutations_preserves_observations() -> Result<(), Dependency
         CheckoutDependencies::new([observed.clone(), both.clone()], [mutated, both], 3)?;
     dependencies.clear_mutations();
     assert_eq!(dependencies.len(), 2);
-    assert!(dependencies.captured.contains_key(&observed.region));
+    assert!(dependencies.captured.entries.contains_key(&observed.region));
     assert!(
         dependencies
             .captured
+            .entries
             .values()
             .all(|state| { matches!(state.usage, DependencyUse::Observation) })
     );
@@ -259,12 +260,17 @@ fn merged_proofs_hold_both_histories_or_refuse_a_contradiction() -> Result<(), D
         .ok_or(DependencyError::ContradictoryState)?;
     assert_eq!(merged.len(), 3);
     assert_eq!(
-        merged.captured.get(&shared.region).map(|state| state.usage),
+        merged
+            .captured
+            .entries
+            .get(&shared.region)
+            .map(|state| state.usage),
         Some(DependencyUse::ObservationAndMutation)
     );
     assert_eq!(
         merged
             .captured
+            .entries
             .get(&observed.region)
             .map(|state| state.usage),
         Some(DependencyUse::Observation)
@@ -272,6 +278,7 @@ fn merged_proofs_hold_both_histories_or_refuse_a_contradiction() -> Result<(), D
     assert_eq!(
         merged
             .captured
+            .entries
             .get(&mutated.region)
             .map(|state| state.usage),
         Some(DependencyUse::Mutation)
@@ -346,6 +353,7 @@ fn dependency_bounds_and_extensions_are_atomic() -> Result<(), Box<dyn std::erro
     assert!(matches!(
         dependencies
             .captured
+            .entries
             .get(&first.region)
             .map(|state| state.usage),
         Some(DependencyUse::ObservationAndMutation)
@@ -366,30 +374,55 @@ fn dependency_data_budget_denies_cow_before_copy_and_eq_ignores_caches()
         region: DependencyRegion::DirectoryName { directory_id, name },
         expected: DependencyState::Absent,
     };
-    let mut proof = CheckoutDependencies::new([
-        dependency(LogicalName::new(NameEncoding::Utf8, padded, 64)?),
-    ], [], 8)?;
-    let exact = CheckoutDependencies::new([
-        dependency(LogicalName::new(NameEncoding::Utf8, b"key".to_vec(), 64)?),
-    ], [], 8)?;
-    assert_eq!(proof, exact, "capacity and allocation generation are not semantic proof");
+    let mut proof = CheckoutDependencies::new(
+        [dependency(LogicalName::new(
+            NameEncoding::Utf8,
+            padded,
+            64,
+        )?)],
+        [],
+        8,
+    )?;
+    let exact = CheckoutDependencies::new(
+        [dependency(LogicalName::new(
+            NameEncoding::Utf8,
+            b"key".to_vec(),
+            64,
+        )?)],
+        [],
+        8,
+    )?;
+    assert_eq!(
+        proof, exact,
+        "capacity and allocation generation are not semantic proof"
+    );
     assert_ne!(proof.logical_data().2, exact.logical_data().2);
     let held = proof.clone();
     let before = proof.logical_data();
-    let extension = proof.prepare_observations(vec![Dependency {
-        region: DependencyRegion::Metadata(FileId::from_bytes([72; 16])),
-        expected: DependencyState::Absent,
-    }], 8)?;
+    let extension = proof.prepare_observations(
+        vec![Dependency {
+            region: DependencyRegion::Metadata(FileId::from_bytes([72; 16])),
+            expected: DependencyState::Absent,
+        }],
+        8,
+    )?;
     let owner = Arc::new(ProofDataCustody::default());
     let mut allocations = super::super::allocation::AllocationLedger::default();
     let mut work = WorkCounters::default();
-    let budget = WorkBudget { peak_allocation_bytes: 3, ..WorkBudget::UNBOUNDED };
+    let budget = WorkBudget {
+        peak_allocation_bytes: 3,
+        ..WorkBudget::UNBOUNDED
+    };
     let denied = proof.commit_with_data_custody::<WorkError>(
-        extension, Some(&owner), |bytes, operations, copied, _| {
+        extension,
+        Some(&owner),
+        |bytes, operations, copied, _| {
             let mut next = work.checked_add(WorkCounters {
-                bytes_copied: copied, ..WorkCounters::default()
+                bytes_copied: copied,
+                ..WorkCounters::default()
             })?;
-            allocations.claim_bytes(bytes, operations, &mut next, budget)
+            allocations
+                .claim_bytes(bytes, operations, &mut next, budget)
                 .map_err(|error| error.into_work_or(WorkError::Overflow))?;
             work = next;
             Ok(())
@@ -400,7 +433,10 @@ fn dependency_data_budget_denies_cow_before_copy_and_eq_ignores_caches()
     assert!(Arc::ptr_eq(&proof.captured, &held.captured));
     assert_eq!(owner.retained_bytes(), 0);
     assert_eq!(work.allocation_operations, 0);
-    assert_eq!(work.bytes_copied, 0, "name fits but the actual map Arc must be admitted too");
+    assert_eq!(
+        work.bytes_copied, 0,
+        "name fits but the actual map Arc must be admitted too"
+    );
     assert_eq!(owner.physical_retained_bytes(), 0);
     assert_eq!(proof, held);
     Ok(())
