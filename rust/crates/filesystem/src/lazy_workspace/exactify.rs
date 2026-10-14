@@ -75,6 +75,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                         crate::kernel::retire_allocation(guard, 0, ctx)?;
                     }
                 }
+                if !transaction.checkout.has_pending_mutations() {
+                    continue;
+                }
                 generation = match self.commit(&mut transaction, permit, ctx).await? {
                     TransactionCommit::Committed(generation)
                     | TransactionCommit::AlreadyCommitted(generation) => generation.id(),
@@ -149,7 +152,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             while let Some(&index) = directories.value.get(next) {
                 ctx.check()?;
                 next += 1;
-                let directory = self.namespace_path(paths.value.get(index).ok_or(LazyWorkspaceError::Concurrent)?, ctx)?;
+                let directory = self.namespace_path(
+                    paths
+                        .value
+                        .get(index)
+                        .ok_or(LazyWorkspaceError::Concurrent)?,
+                    ctx,
+                )?;
                 let mut cursor = None;
                 let listed = async {
                     loop {
@@ -157,7 +166,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                             .list_directory_at(
                                 state,
                                 &mut checkout.value,
-                                paths.value.get(index).ok_or(LazyWorkspaceError::Concurrent)?,
+                                paths
+                                    .value
+                                    .get(index)
+                                    .ok_or(LazyWorkspaceError::Concurrent)?,
                                 cursor.take(),
                                 self.workspace
                                     .limits()
