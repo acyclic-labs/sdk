@@ -580,7 +580,7 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
                 assert_eq!(adapter.counts.load(Ordering::SeqCst), counts + 1);
                 assert_eq!(adapter.generates.load(Ordering::SeqCst), generates + 1);
                 Box::pin(exercise_retained_native_boundary(
-                    host, volume, owner, scope, reader, selected, &writer, &context,
+                    host, volume, owner, scope, reader, selected, &writer,
                 )).await?;
                 Ok(())
             }
@@ -635,6 +635,7 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
         .grant("model:generate")
         .grant("task:spawn:fixture.native_capture@1")
         .grant("tool:call:fixture.media_tool")
+        .grant("tool:call:example.convert_image")
         .grant(read.clone())
         .build()?;
     let next_bytes = br#"{"mode":"strict","scale":3}"#;

@@ -432,7 +432,7 @@ case "$lane" in
       cargo test -p acyclic-harness --locked "$@" 2>&1 | tee "$observability/harness-tests.log"
       grep -Eq 'test result: ok\. [1-9][0-9]* passed;' "$observability/harness-tests.log"
     }
-    for suite in wasm::task_runtime::default_tools::tests:: wasm::task_runtime::headless::tests::; do
+    for suite in filesystem::default_tools::tests:: memory_store::tests::; do
       CHROMEDRIVER="$(command -v chromedriver)" \
         harness_tests --features browser --target wasm32-unknown-unknown --lib "$suite"
     done

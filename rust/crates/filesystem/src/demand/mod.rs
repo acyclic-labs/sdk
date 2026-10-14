@@ -2,7 +2,9 @@
 
 use crate::cancellation::CancellationToken;
 use crate::kernel::{NamespacePath, NamespacePathError};
-use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkCounters};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::performance::WorkBudget;
+use crate::performance::{OperationFailure, OperationReceipt, WorkCounters};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use thiserror::Error;

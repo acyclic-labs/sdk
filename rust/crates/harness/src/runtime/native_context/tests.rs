@@ -32,8 +32,10 @@ fn exhaust_memory(
     let quota = original.claim(available, u64::from(available != 0), Default::default())?;
     let mut buffer = Vec::new();
     buffer
-        .try_reserve_exact(usize::try_from(available).expect("fixture byte bound"))
-        .expect("finite fixture allocation");
+        .try_reserve_exact(
+            usize::try_from(available).map_err(|error| Error::Invalid(error.to_string()))?,
+        )
+        .map_err(|error| Error::Invalid(error.to_string()))?;
     Ok((buffer, quota))
 }
 
@@ -327,6 +329,10 @@ async fn native_tool_scope_restricts_without_replacing_the_issued_context_or_lin
     ));
     drop(stock);
 
+    #[allow(
+        clippy::redundant_clone,
+        reason = "Cloning clears native authority; moving would bypass this regression."
+    )]
     let clone = tool.clone();
     assert!(matches!(
         clone.validate_stock_scope_with_native_work(&requested, limits, &original),

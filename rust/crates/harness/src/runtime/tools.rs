@@ -1,3 +1,4 @@
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use super::content_write::bound_content_writer;
 use super::*;
 
@@ -202,6 +203,8 @@ pub(crate) fn tool_approval_binding(
     invocation: &ToolInvocation,
     work: Option<&NativeWork>,
 ) -> Result<(OperationId, [u8; 32])> {
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    let _ = work;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let io = work
         .map(crate::filesystem::PreparationIo::from_native_work)
@@ -448,14 +451,24 @@ impl ToolContext {
     ) -> Result<(TaskAdmissionRecord, acyclic_fs::NativeAllocation)> {
         self.validate_native_mcp_context(work)?;
         let context = self.task();
-        let host = context.harness.host.as_ref().ok_or_else(|| native_context::boundary(
-            crate::wire::ErrorCode::Unsupported,
-            "original admission has no durable host",
-        ))?;
+        let host = context.harness.host.as_ref().ok_or_else(|| {
+            native_context::boundary(
+                crate::wire::ErrorCode::Unsupported,
+                "original admission has no durable host",
+            )
+        })?;
         context.verify_original_execution_owner(work).await?;
-        let observed = host.observe_admission_with_native_work(
-            context.durable_task_id().expect("validated durable tool context"), work,
-        )?.await?;
+        let observed = host
+            .observe_admission_with_native_work(
+                context.durable_task_id().ok_or_else(|| {
+                    native_context::boundary(
+                        crate::wire::ErrorCode::Unauthorized,
+                        "durable tool context has no task identity",
+                    )
+                })?,
+                work,
+            )?
+            .await?;
         if observed.0.operation_id != context.task_id {
             return Err(native_context::boundary(
                 crate::wire::ErrorCode::Unauthorized,

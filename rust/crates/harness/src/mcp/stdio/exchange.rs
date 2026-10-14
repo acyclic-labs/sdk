@@ -96,7 +96,9 @@ impl McpStdioExchange {
                 .ok_or_else(|| error(work, ErrorCode::Invalid, "MCP stdio frame is invalid"))?;
             let body = body.strip_suffix(b"\r").unwrap_or(body);
             let body = body.strip_prefix(b"\xef\xbb\xbf").unwrap_or(body);
-            let (message, mut frame_custody) = decode_value(body, work)?;
+            let (message, frame_custody) = decode_value(body, work)?;
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            let mut frame_custody = frame_custody;
             self.line.advance(end + 1);
             scanned = 0;
             if message.get("id").is_none() {

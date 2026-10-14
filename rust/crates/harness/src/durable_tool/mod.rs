@@ -1,6 +1,8 @@
 //! Pinned, journaled tool calls.
 use crate::executor::stock_boundary as boundary;
-use crate::wire::ErrorCode::{Conflict, Invalid, NotFound, Storage, Unauthorized, Unsupported};
+use crate::wire::ErrorCode::{Conflict, NotFound, Unauthorized, Unsupported};
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+use crate::wire::ErrorCode::{Invalid, Storage};
 use crate::{
     Error, NativeCustody, NativeWork, OperationId, Outcome, Result, TaskId,
     conversation::{FileRef, Limits},

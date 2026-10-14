@@ -191,6 +191,7 @@ fn read_chunk(
     owned: u64,
     ctx: &KernelAccounting<'_>,
 ) -> OwnedSourceChunk {
+    let _ = ctx;
     #[cfg(not(target_arch = "wasm32"))]
     if ctx.native_work().is_some() {
         return OwnedSourceChunk::intrinsic(bytes, owned);

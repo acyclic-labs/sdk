@@ -299,6 +299,10 @@ impl<I, O> TaskDefinition<I, O> {
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Session opening keeps its owner fence and funded IO in one async frame."
+    )]
     async fn open_session(
         self: &Arc<Self>,
         context: Arc<TaskContext>,
@@ -312,6 +316,8 @@ impl<I, O> TaskDefinition<I, O> {
     {
         let observer = io.as_ref();
         let native = task_original_work(observer)?;
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let _ = native;
         let error = |code, reason| crate::executor::stock_boundary(observer, code, reason);
         let result = async {
             let fence = task_copy_with_io(observer, |quota| {
@@ -352,12 +358,13 @@ impl<I, O> TaskDefinition<I, O> {
             })?;
             host.verify_execution_owner(task_id, &fence, observer)?
                 .await?;
-            let mut owner_matches = journal.task_binding() == Some((task_id, &fence));
+            let owner_matches = journal.task_binding() == Some((task_id, &fence));
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if let Some(work) = native {
-                owner_matches &= context.native_metadata_matches(work)
-                    && context.original_task_binding_matches(task_id, &fence);
-            }
+            let owner_matches = owner_matches
+                & native.is_none_or(|work| {
+                    context.native_metadata_matches(work)
+                        && context.original_task_binding_matches(task_id, &fence)
+                });
             if !owner_matches {
                 return Err(error(
                     crate::wire::ErrorCode::Unauthorized,

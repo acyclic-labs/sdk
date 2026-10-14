@@ -5,6 +5,7 @@ pub(super) fn context_contract<T: Serialize>(
     value: &T,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Value> {
+    let _ = io;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io
         && let Some(work) = io.original_native_work()

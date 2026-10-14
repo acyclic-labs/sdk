@@ -1,3 +1,4 @@
+#[cfg(not(target_arch = "wasm32"))]
 use std::collections::BTreeMap;
 use std::ops::Bound;
 use std::sync::{Arc, Mutex};
@@ -6,13 +7,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::Guarded;
 use super::{Error, Object, ObjectsProvider, request, wire};
-#[cfg(not(target_arch = "wasm32"))]
-use super::{
-    NativeObjectsError, ObjectsBatch, ObjectsNativeFuture, ObjectsNativeRequest,
-    ObjectsPutReceipt, native_future, native_input_meter, native_preparation_error,
-};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use super::{NativeObjectsCause, NativeObjectsSharedFailure};
+#[cfg(not(target_arch = "wasm32"))]
+use super::{
+    NativeObjectsError, ObjectsBatch, ObjectsNativeFuture, ObjectsNativeRequest, ObjectsPutReceipt,
+    native_future, native_input_meter, native_preparation_error,
+};
 use crate::body::{BodyReadError, BodyReadMode, StoredBody};
 use crate::obs;
 #[cfg(not(target_arch = "wasm32"))]

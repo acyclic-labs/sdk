@@ -208,6 +208,7 @@ pub(super) fn task_copy_text(
     task_copy_with_io(io, |quota| crate::core::copy_text(source, quota))
 }
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(super) fn task_copy_value(
     source: &Value,
     io: Option<&crate::executor::PreparationIo>,
@@ -219,6 +220,7 @@ pub(super) fn task_copy_value(
     })
 }
 
+#[cfg(any(test, feature = "filesystem"))]
 pub(super) fn task_copy_component(
     source: &ComponentIdentity,
     quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
@@ -230,6 +232,7 @@ pub(super) fn task_copy_component(
     })
 }
 
+#[cfg(any(test, feature = "filesystem"))]
 pub(super) fn task_copy_machine(
     source: &MachineIdentity,
     quota: &mut crate::wire_codec::CodecQuota<'_, '_>,

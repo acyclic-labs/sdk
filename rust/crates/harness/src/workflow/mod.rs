@@ -25,7 +25,9 @@ pub use records::{
 pub(crate) use records::{validate_workflow_commit, validate_workflow_next};
 
 use crate::executor::{PreparationIo, stock_boundary, with_history_io};
-use crate::wire::ErrorCode::{Conflict, Invalid, Storage, Unsupported};
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+use crate::wire::ErrorCode::Unsupported;
+use crate::wire::ErrorCode::{Conflict, Invalid, Storage};
 use crate::{Error, IdempotencyKey, NativeCustody, OperationId, Result, conversation::FileRef};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use io::{next_revision, validate_key};

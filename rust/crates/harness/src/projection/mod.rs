@@ -181,10 +181,10 @@ pub async fn select_model_context(
                         "selected tool result lacks its call",
                     ));
                 };
-                let _hold;
+
                 let (items, hold) =
                     attachments::resolve(message, resolver, limits.attachments, io).await?;
-                _hold = hold;
+                let _hold = hold;
                 let mut projection = None;
                 for item in items.iter() {
                     crate::model::charge_items(io, 1)?;
@@ -225,10 +225,10 @@ pub async fn select_model_context(
                     }
                     _ => FileProjectionPolicy::Reference,
                 };
-                let hold;
+
                 let (items, source_hold) =
                     attachments::resolve(message, resolver, limits.attachments, io).await?;
-                hold = source_hold;
+                let hold = source_hold;
                 let count = items.len().min(maximum_projected_attachments);
                 let omitted = items.len() - count;
                 let mut parts = crate::model::vec_with_capacity::<ModelContentPart>(

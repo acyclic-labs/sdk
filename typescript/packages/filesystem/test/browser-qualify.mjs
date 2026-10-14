@@ -130,7 +130,7 @@ async function launchChrome(profile) {
       "--disable-renderer-backgrounding",
       "about:blank",
     ],
-    { stdio: "ignore" },
+    { stdio: "ignore", windowsHide: true },
   );
   const exited = new Promise((resolveExit) => chrome.once("exit", resolveExit));
   // Chrome writes its chosen port and browser endpoint here once it listens.
@@ -157,6 +157,7 @@ async function launchChrome(profile) {
 async function launchFirefox(profile) {
   const driver = spawn(process.env.GECKODRIVER ?? "geckodriver", ["--port", "0"], {
     stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
   });
   const exited = new Promise(resolveExit => driver.once("close", resolveExit));
   let logs = "";

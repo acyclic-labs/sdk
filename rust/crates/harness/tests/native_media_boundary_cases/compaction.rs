@@ -5,9 +5,14 @@ pub(super) async fn exercise_media_compaction_fork_restart<A, O>(
     volume: VolumeRef,
     reader: Arc<ReaderSpy>,
     selected: &[(FileRef, NativeMediaPolicy)],
-    invocation: ToolInvocation,
-    result: ToolResultContent,
+    (invocation, result): (ToolInvocation, ToolResultContent),
     context: &acyclic_harness::runtime::TaskContext,
+    (task_host, task_issuer, task_scope, fence): (
+        &Arc<acyclic_harness::durable_host::CoordinatorTaskHost<MemoryStream>>,
+        &AuthorityIssuer,
+        &Scope,
+        &LeaseFence,
+    ),
 ) -> Result<()>
 where
     A: acyclic_fs::AsyncAuthorityStore + 'static,
@@ -58,13 +63,18 @@ where
     let scope = issuer
         .issue("media-parent", &grants, Some(agent), None, &mut None)
         .expect("scope proof");
-    let journal = FilesystemExecutionJournal::new(
-        stream.clone(),
+    let task = context
+        .durable_task_id()
+        .ok_or_else(|| Error::Unauthorized("compaction requires its admitted task".into()))?;
+    let operation = OperationId::new();
+    let journal = FilesystemExecutionJournal::for_task(
+        task_host.journal_owner(task, fence, None).await?,
+        operation,
+        operation,
         host.clone(),
         &volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &SchemaRegistry::new(),
-        &scope,
+        &task_issuer.verifier(&mut None)?,
+        task_scope,
         65_536,
         None,
     )?
@@ -118,6 +128,8 @@ where
         None,
     )?;
     let executor = StockExecutor::new(model.clone(), adapter.clone(), pipeline, tools.clone())
+        .with_limits(context.scope().limits())
+        .with_durable_task(task_host.clone(), task, fence.clone())
         .with_tool_authority(tool_scope.clone(), None)?
         .with_max_output_tokens(16)?
         .with_compaction_policy(CompactionPolicy::Threshold(ThresholdCompaction {
@@ -126,7 +138,7 @@ where
             retention: CompactionRetention::default(),
         }));
     let input = TurnInput {
-        operation_id: OperationId::new(),
+        operation_id: operation,
         selected_context: None,
         max_steps: 1,
         input: ModelContent::Parts(
@@ -189,7 +201,7 @@ where
     assert!(!admitted.request().messages.iter().any(|message| matches!(&message.content, ModelContent::Text(text) if text.starts_with("old history"))));
     let prefix = journal
         .stage(
-            OperationId::new(),
+            operation,
             "fork/media-prefix",
             &ModelPrefix::select(&admitted, None)?.canonical_bytes(None)?,
             ModelPrefix::MEDIA_TYPE,
@@ -425,31 +437,35 @@ where
             ContextPipeline::default(),
             tools.clone(),
         )
+        .with_limits(context.scope().limits())
+        .with_durable_task(task_host.clone(), task, fence.clone())
         .with_tool_authority(tool_scope.clone(), None)?
         .with_compaction_policy(CompactionPolicy::Disabled)
         .with_inherited_prefix(prefix.clone(), child_reader.clone())
     };
+    let child_operation = OperationId::new();
     let child_input = TurnInput {
-        operation_id: OperationId::new(),
+        operation_id: child_operation,
         input: ModelContent::Text("child continues".into()),
         selected_context: None,
         max_steps: 1,
     };
-    let open_journal = || {
-        FilesystemExecutionJournal::new(
-            stream.clone(),
+    let open_journal = async || {
+        FilesystemExecutionJournal::for_task(
+            task_host.journal_owner(task, fence, None).await?,
+            child_operation,
+            child_operation,
             host.clone(),
-            &child_private,
-            &child_issuer.verifier(&mut None).expect("verifier copy"),
-            &SchemaRegistry::new(),
-            &child_scope,
+            &volume,
+            &task_issuer.verifier(&mut None)?,
+            task_scope,
             65_536,
             None,
         )
         .map(|journal| journal.with_input_verifier(child_reader.clone()))
     };
     let child_output = child_executor()?
-        .execute_with_context(context, child_input.clone(), &open_journal()?)
+        .execute_with_context(context, child_input.clone(), &open_journal().await?)
         .await?;
     let captures = adapter
         .captures
@@ -475,7 +491,7 @@ where
     assert_eq!(media(parent_capture), media(child_capture));
     drop(child_aggregate);
     drop(aggregate);
-    let reopened = open_journal()?;
+    let reopened = open_journal().await?;
     assert_eq!(
         child_executor()?
             .execute_with_context(context, child_input, &reopened)

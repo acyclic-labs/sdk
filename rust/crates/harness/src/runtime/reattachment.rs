@@ -80,6 +80,10 @@ impl AgentHarness {
 
     /// Builds a registered admission using the caller's IO and optional parent scope.
     #[cfg(feature = "filesystem")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The admission boundary keeps the task identity, payload and authority explicit."
+    )]
     pub fn registered_admission(
         &self,
         operation: OperationId,

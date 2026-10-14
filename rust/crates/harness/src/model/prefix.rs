@@ -101,7 +101,7 @@ impl PreparedModelRequest {
                     "context verifier has no bounded capability",
                 ));
             }
-            let _bytes_hold;
+
             let (bytes, hold) = crate::conversation::verified_content_bytes(
                 verifier,
                 &reference,
@@ -109,7 +109,7 @@ impl PreparedModelRequest {
                 io,
             )
             .await?;
-            _bytes_hold = hold;
+            let _bytes_hold = hold;
             let segment: ModelPrefix = match io {
                 #[cfg(feature = "filesystem")]
                 Some(io) => crate::filesystem::retain_decoded(io.decode(

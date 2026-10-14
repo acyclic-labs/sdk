@@ -62,12 +62,17 @@ fn digest(
     request: &mut CommitRequest,
     work: &mut AuthorityWork<'_>,
 ) -> Result<[u8; 32], AuthorityStoreError> {
-    let CommitMutation::Append { path, records } = &request.mutations[0] else {
-        unreachable!("publication gates only append");
+    let Some(CommitMutation::Append { path, records }) = request.mutations.first() else {
+        return Err(AuthorityStoreError::RejectedStatic(
+            "publication gates only append",
+        ));
     };
+    let record = records.first().ok_or(AuthorityStoreError::RejectedStatic(
+        "empty publication gate append",
+    ))?;
     let mut bytes = (b"acyclic.stream.request.v1\0".len() + b"commit".len()) as u64;
     bytes = bytes
-        .checked_add(1 + 8 + path.as_str().len() as u64 + 8 + 8 + records[0].len() as u64)
+        .checked_add(1 + 8 + path.as_str().len() as u64 + 8 + 8 + record.len() as u64)
         .ok_or(crate::WorkError::Overflow)?;
     for condition in &request.conditions {
         let (path, scalar) = match condition {
@@ -136,7 +141,8 @@ fn qualified(
         work.admit(encoding)?;
     }
     let mut hex = [0; 32];
-    hex::encode_to_slice(authority.into_bytes(), &mut hex).expect("authority hex width");
+    hex::encode_to_slice(authority.into_bytes(), &mut hex)
+        .map_err(|_| crate::WorkError::Overflow)?;
     if work.is_native() {
         work.charge(encoding)?;
     }
@@ -221,7 +227,10 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         work.charge(actual)?;
         let output = result?;
         if actual.authority_bytes_read > acyclic_stream::MAX_COMMAND_BYTES as u64 {
-            return Err(authority_corrupt("publication observation exceeds the command bound", work));
+            return Err(authority_corrupt(
+                "publication observation exceeds the command bound",
+                work,
+            ));
         }
         if output.0.is_some() {
             work.hold_opaque(actual.authority_bytes_read)?;

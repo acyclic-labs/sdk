@@ -1,11 +1,15 @@
 use super::*;
+use crate::model::ModelContent;
 
 impl TaskContext {
-    pub(super) async fn verify_model_files(&self, messages: &[ModelMessage]) -> Result<()> {
+    pub(crate) async fn verify_model_contents<'a>(
+        &self,
+        contents: impl Iterator<Item = &'a ModelContent> + Clone + acyclic_stream::ProviderTask,
+    ) -> Result<()> {
         let limits = self.scope.limits();
-        for message in messages {
-            message.content.validate_limits(limits, &mut None)?;
-            for file in message.content.file_refs() {
+        for content in contents.clone() {
+            content.validate_limits(limits, &mut None)?;
+            for file in content.file_refs() {
                 limits.validate_file(file, &mut None)?;
                 if !read_granted(self.scope.grants(), file)? {
                     return Err(Error::Unauthorized(
@@ -14,9 +18,9 @@ impl TaskContext {
                 }
             }
         }
-        let configurations = messages
-            .iter()
-            .flat_map(|message| message.content.native_configurations())
+        let configurations = contents
+            .clone()
+            .flat_map(ModelContent::native_configurations)
             .map(|binding| {
                 let proof = binding.verify_original(
                     self.scope.extensions.as_ref(),
@@ -47,10 +51,7 @@ impl TaskContext {
                 None,
             )?;
         }
-        for file in messages
-            .iter()
-            .flat_map(|message| message.content.file_refs())
-        {
+        for file in contents.flat_map(ModelContent::file_refs) {
             if !configurations
                 .iter()
                 .any(|(binding, _)| &binding.configuration.content == file)
@@ -123,7 +124,14 @@ impl TaskContext {
         };
         let request =
             crate::model::PreparedModelRequest::prepare(request, self.scope.limits(), None)?;
-        self.verify_model_files(&request.request().messages).await?;
+        self.verify_model_contents(
+            request
+                .request()
+                .messages
+                .iter()
+                .map(|message| &message.content),
+        )
+        .await?;
         let capacity = binding.provider.context_capacity(&binding.model)?;
         capacity.validate()?;
         let output_tokens = max_output_tokens.unwrap_or(capacity.output_tokens);

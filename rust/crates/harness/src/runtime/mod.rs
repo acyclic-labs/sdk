@@ -71,7 +71,7 @@ pub use bindings::*;
 mod tools;
 pub use tools::*;
 mod children;
-mod dependencies;
+pub(crate) mod dependencies;
 pub(crate) use children::*;
 mod context_open;
 pub(crate) use context_open::*;
@@ -83,6 +83,7 @@ mod startup;
 mod task_context;
 pub use task_context::*;
 mod content_read;
+#[cfg(feature = "filesystem")]
 pub use content_read::*;
 mod content_write;
 mod groups;

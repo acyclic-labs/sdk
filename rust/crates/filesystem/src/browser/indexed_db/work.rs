@@ -1,5 +1,22 @@
 use super::*;
 
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "Finite integral Blob sizes below 2^64 are checked before conversion"
+)]
+pub(super) fn blob_length(blob: &Blob) -> Result<u64, AuthorityStoreError> {
+    let length = blob.size();
+    if !length.is_finite()
+        || length < 0.0
+        || length >= 18_446_744_073_709_551_616.0
+        || length.fract() != 0.0
+    {
+        return Err(corrupt("invalid Blob length"));
+    }
+    Ok(length as u64)
+}
+
 pub(super) fn admit(
     context: &crate::AuthorityWork<'_>,
     delta: WorkCounters,
@@ -66,7 +83,7 @@ impl crate::AuthorityWork<'_> {
         let bytes = self
             .fixed(tx, AUTHORITY_HEADS, &authority_key(authority), HEAD_BYTES)
             .await?
-            .ok_or_else(|| (AuthorityStoreError::Missing))?;
+            .ok_or_else(|| AuthorityStoreError::Missing)?;
         decode_head(&bytes).map_err(corrupt)
     }
     pub(super) async fn gate(
@@ -129,7 +146,7 @@ impl crate::AuthorityWork<'_> {
         blob: &Blob,
         length: u64,
     ) -> Result<Vec<u8>, AuthorityStoreError> {
-        if blob.size() != length as f64 {
+        if blob_length(blob)? != length {
             return Err(corrupt("invalid Blob length"));
         }
         let request = JsFuture::from(blob.array_buffer());
