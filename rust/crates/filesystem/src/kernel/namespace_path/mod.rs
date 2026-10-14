@@ -1,6 +1,6 @@
 //! Bounded profile-independent namespace paths.
 
-use super::allocation::{AllocationLedger, KernelAccounting, KernelOwnedAllocation};
+use super::allocation::{KernelAccounting, KernelOwnedAllocation};
 use super::{LogicalName, NameEncoding, TreePageError};
 use crate::model::{FilesystemProfile, VolumeLimits};
 use crate::path::PortablePath;
@@ -8,7 +8,7 @@ use crate::{CancellationToken, WorkBudget, WorkCounters};
 use thiserror::Error;
 mod allocation;
 mod operations;
-pub(super) use allocation::{NamespacePathStep, finish_owned, observe_path};
+pub(super) use allocation::finish_owned;
 
 /// Canonical absolute path represented as exact logical-name components.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]

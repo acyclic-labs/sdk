@@ -45,45 +45,6 @@ impl<A, O> SharedCheckoutState<A, O> {
         }
     }
 
-    pub(super) fn candidate(
-        &self,
-        operation: Option<OperationId>,
-        carrier: &mut NativeDemandCarrier<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<CheckoutCandidate<A, O>, MountSourceError>
-    where
-        A: AsyncAuthorityStore,
-        O: AsyncObjectStore,
-    {
-        match operation {
-            Some(operation) if self.publication_operation == Some(operation) => {}
-            Some(_) => return Err(MountSourceError::Stale),
-            None => self.ensure_publication_resolved()?,
-        }
-        let work = carrier
-            .original_native_work()
-            .ok_or(MountSourceError::NativeWork(
-                crate::NativeTreeMaterializationError::InvalidLayout,
-            ))?;
-        Ok(CheckoutCandidate {
-            base: self
-                .checkout
-                .private_candidate(
-                    &mut crate::kernel::allocation::KernelAccounting::native(&work, cancellation),
-                    cancellation,
-                )
-                .map_err(MountSourceError::from)?,
-            checkout: self
-                .checkout
-                .private_candidate(
-                    &mut crate::kernel::allocation::KernelAccounting::native(&work, cancellation),
-                    cancellation,
-                )
-                .map_err(MountSourceError::from)?,
-            operation,
-        })
-    }
-
     pub(super) fn record(&mut self, change: &ViewChange<'_>) {
         record_view_change(
             &self.ledger,

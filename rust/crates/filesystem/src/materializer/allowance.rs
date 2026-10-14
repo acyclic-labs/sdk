@@ -48,12 +48,12 @@ impl NativeResourceState {
 #[derive(Clone, Copy)]
 pub(crate) enum NativeResourceCredit {
     Items,
-    ReturnedItems,
     Copy,
     ReadOperations,
     WriteOperations,
     DurabilityOperations,
     ReadBytes,
+    AuthorityReadBytes,
     WriteBytes,
     AllocationOperations,
 }
@@ -61,12 +61,12 @@ impl NativeResourceCredit {
     pub(crate) fn counter(self, work: &mut WorkCounters) -> &mut u64 {
         match self {
             Self::Items => &mut work.items_examined,
-            Self::ReturnedItems => &mut work.items_returned,
             Self::Copy => &mut work.bytes_copied,
             Self::ReadOperations => &mut work.backend_read_operations,
             Self::WriteOperations => &mut work.backend_write_operations,
             Self::DurabilityOperations => &mut work.durability_operations,
             Self::ReadBytes => &mut work.source_bytes_read,
+            Self::AuthorityReadBytes => &mut work.authority_bytes_read,
             Self::WriteBytes => &mut work.output_bytes,
             Self::AllocationOperations => &mut work.allocation_operations,
         }
@@ -285,9 +285,8 @@ impl NativeResourceAllowance {
         excluded: Option<&Self>,
     ) -> Result<(), DemandError> {
         self.visit(excluded, &|_, state| {
-            state.pending = unused.remaining(state.pending).map_err(|error| {
+            state.pending = unused.remaining(state.pending).inspect_err(|_| {
                 state.poisoned = true;
-                error
             })?;
             Ok(Ok(()))
         })
@@ -301,9 +300,8 @@ impl NativeResourceAllowance {
         self.visit(excluded, &|scope, state| {
             let pending = maximum.remaining(state.pending);
             state.work.try_add_assign(&actual)?;
-            state.pending = pending.map_err(|error| {
+            state.pending = pending.inspect_err(|_| {
                 state.poisoned = true;
-                error
             })?;
             if actual.intersect_budget(maximum) != actual {
                 return Err(DemandError::InvalidRequest);
@@ -315,8 +313,12 @@ impl NativeResourceAllowance {
         &self,
         operation: impl FnOnce(&mut crate::demand::DemandWork) -> T,
     ) -> T {
-        self.metadata
-            .work()
-            .state(|state| state.scope(|work| &mut work.native_resource, Some(self.self_ref.clone()), operation))
+        self.metadata.work().state(|state| {
+            state.scope(
+                |work| &mut work.native_resource,
+                Some(self.self_ref.clone()),
+                operation,
+            )
+        })
     }
 }

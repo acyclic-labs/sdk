@@ -1,6 +1,21 @@
 use super::*;
 use crate::materializer::NativeMaterializationWork;
 use crate::storage::{HashedObject, ObjectKind};
+use crate::{CancellationToken, WorkBudget};
+
+async fn seeded_object() -> (crate::memory::MemoryObjectStore, HashedObject) {
+    let memory = crate::memory::MemoryObjectStore::default();
+    let object = HashedObject::new(ObjectKind::TreePage, OwnedBytes::from_static(b"body"));
+    memory
+        .put(
+            object.object_id(),
+            object.bytes().clone(),
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()),
+        )
+        .await
+        .expect("seed memory");
+    (memory, object)
+}
 
 fn budget() -> WorkBudget {
     let mut value = serde_json::to_value(WorkBudget::UNBOUNDED).expect("budget encoding");
@@ -12,26 +27,7 @@ fn budget() -> WorkBudget {
 
 #[tokio::test]
 async fn native_read_trace_denial_and_cancellation_precede_interceptor_and_backend() {
-    let memory = crate::memory::MemoryObjectStore::default();
-    let object = HashedObject::new(ObjectKind::TreePage, OwnedBytes::from_static(b"body"));
-    ({
-        let __object_args = (
-            object.object_id(),
-            object.bytes().clone(),
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result = crate::async_storage::AsyncObjectStore::put(
-            &memory,
-            __object_args.0,
-            __object_args.1,
-            &mut __object_work,
-        )
-        .await;
-        __object_work.receipt(__object_result)
-    })
-    .expect("seed memory");
+    let (memory, object) = seeded_object().await;
     let simulation = Simulation::wrap(reference_backends().0, memory, SimulationOptions::default())
         .expect("bounded simulation");
     let (_, store) = simulation.stores();
@@ -46,29 +42,27 @@ async fn native_read_trace_denial_and_cancellation_precede_interceptor_and_backe
     .expect("only actual accounting constructor");
     let before = work.receipt();
     assert!(
-        ({
-            let __object_args = (object.object_id(), 4, &work, &cancellation);
-            let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
-            let __object_result = store
-                .read(__object_args.0, __object_args.1, &mut __object_work)
-                .await;
-            __object_result
-        })
-        .is_err()
+        (store
+            .read(
+                object.object_id(),
+                4,
+                &mut crate::AuthorityWork::native(&work, &cancellation)
+            )
+            .await)
+            .is_err()
     );
     assert_eq!(work.receipt(), before);
     assert!(simulation.trace().expect("trace").is_empty());
     let cancelled = CancellationToken::new();
     cancelled.cancel();
     assert!(matches!(
-        ({
-            let __object_args = (object.object_id(), 4, &work, &cancelled);
-            let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
-            let __object_result = store
-                .read(__object_args.0, __object_args.1, &mut __object_work)
-                .await;
-            __object_result
-        }),
+        (store
+            .read(
+                object.object_id(),
+                4,
+                &mut crate::AuthorityWork::native(&work, &cancelled)
+            )
+            .await),
         Err(ObjectStoreError::Cancelled)
     ));
     assert_eq!(work.receipt(), before);
@@ -76,26 +70,7 @@ async fn native_read_trace_denial_and_cancellation_precede_interceptor_and_backe
 
 #[tokio::test]
 async fn native_read_partial_copy_keeps_original_capacity_until_last_byte_alias() {
-    let memory = crate::memory::MemoryObjectStore::default();
-    let object = HashedObject::new(ObjectKind::TreePage, OwnedBytes::from_static(b"body"));
-    ({
-        let __object_args = (
-            object.object_id(),
-            object.bytes().clone(),
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result = crate::async_storage::AsyncObjectStore::put(
-            &memory,
-            __object_args.0,
-            __object_args.1,
-            &mut __object_work,
-        )
-        .await;
-        __object_work.receipt(__object_result)
-    })
-    .expect("seed memory");
+    let (memory, object) = seeded_object().await;
     let simulation = Simulation::wrap(reference_backends().0, memory, SimulationOptions::default())
         .expect("bounded simulation");
     simulation
@@ -108,15 +83,14 @@ async fn native_read_partial_copy_keeps_original_capacity_until_last_byte_alias(
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(budget(), &cancellation).expect("original meter");
     let baseline = work.live_allocation_bytes();
-    let read = ({
-        let __object_args = (object.object_id(), 4, &work, &cancellation);
-        let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
-        let __object_result = store
-            .read(__object_args.0, __object_args.1, &mut __object_work)
-            .await;
-        __object_result
-    })
-    .expect("actual partial SDK copy");
+    let read = (store
+        .read(
+            object.object_id(),
+            4,
+            &mut crate::AuthorityWork::native(&work, &cancellation),
+        )
+        .await)
+        .expect("actual partial SDK copy");
     assert_eq!(read.bytes.as_ref(), b"bod");
     let alias = read.bytes.clone();
     let held = work.live_allocation_bytes();
@@ -131,26 +105,7 @@ async fn native_read_partial_copy_keeps_original_capacity_until_last_byte_alias(
 
 #[tokio::test]
 async fn native_read_batch_preserves_one_real_memory_frontier_with_fault_custody() {
-    let memory = crate::memory::MemoryObjectStore::default();
-    let object = HashedObject::new(ObjectKind::TreePage, OwnedBytes::from_static(b"body"));
-    ({
-        let __object_args = (
-            object.object_id(),
-            object.bytes().clone(),
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result = crate::async_storage::AsyncObjectStore::put(
-            &memory,
-            __object_args.0,
-            __object_args.1,
-            &mut __object_work,
-        )
-        .await;
-        __object_work.receipt(__object_result)
-    })
-    .expect("seed memory");
+    let (memory, object) = seeded_object().await;
     let simulation = Simulation::wrap(reference_backends().0, memory, SimulationOptions::default())
         .expect("bounded simulation");
     simulation
@@ -167,15 +122,13 @@ async fn native_read_batch_preserves_one_real_memory_frontier_with_fault_custody
         object_id: object.object_id(),
         maximum_bytes: 4,
     }; 2];
-    let batch = ({
-        let __object_args = (&requests, &work, &cancellation);
-        let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
-        let __object_result = store
-            .read_many(__object_args.0, &mut __object_work)
-            .await
-            .map(|(values, allocation)| (values, allocation.expect("native batch allocation")));
-        __object_result
-    })
+    let batch = (store
+        .read_many(
+            &requests,
+            &mut crate::AuthorityWork::native(&work, &cancellation),
+        )
+        .await
+        .map(|(values, allocation)| (values, allocation.expect("native batch allocation"))))
     .expect("one genuine batch");
     assert_eq!(batch.0.len(), 2);
     assert_eq!(batch.0[0].bytes[0], b'b' ^ 0x80);
@@ -217,13 +170,13 @@ async fn native_delayed_visibility_preserves_intrinsic_alias_custody() {
         )
         .expect("delay schedule");
     let (_, store) = simulation.stores();
-    ({
-        let __object_args = (object, &work, &cancellation);
-        let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
-        let __object_result = store.put_hashed(__object_args.0, &mut __object_work).await;
-        __object_result
-    })
-    .expect("delayed admission");
+    (store
+        .put_hashed(
+            object,
+            &mut crate::AuthorityWork::native(&work, &cancellation),
+        )
+        .await)
+        .expect("delayed admission");
     assert_eq!(work.receipt().bytes_hashed, hashed);
     assert_eq!(work.receipt().backend_write_operations, 0);
     assert_eq!(
@@ -269,20 +222,14 @@ async fn native_put_trace_denial_precedes_interceptor_and_provider_effects() {
     let object = HashedObject::new(ObjectKind::TreePage, OwnedBytes::from_static(b"body"));
     let before = work.receipt();
     assert!(
-        ({
-            let __object_args = (
+        (store
+            .put(
                 object.object_id(),
                 object.bytes().clone(),
-                &work,
-                &cancellation,
-            );
-            let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
-            let __object_result = store
-                .put(__object_args.0, __object_args.1, &mut __object_work)
-                .await;
-            __object_result
-        })
-        .is_err()
+                &mut crate::AuthorityWork::native(&work, &cancellation)
+            )
+            .await)
+            .is_err()
     );
     assert_eq!(work.receipt(), before);
     let state = simulation.state.lock().expect("state");
@@ -292,13 +239,13 @@ async fn native_put_trace_denial_precedes_interceptor_and_provider_effects() {
     assert_eq!(state.faults.len(), 1);
     drop(state);
     assert!(
-        ({
-            let __object_args = (object, &work, &cancellation);
-            let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
-            let __object_result = store.put_hashed(__object_args.0, &mut __object_work).await;
-            __object_result
-        })
-        .is_err()
+        (store
+            .put_hashed(
+                object,
+                &mut crate::AuthorityWork::native(&work, &cancellation)
+            )
+            .await)
+            .is_err()
     );
     assert_eq!(work.receipt(), before);
 }
@@ -317,19 +264,13 @@ async fn native_scheduled_rejection_does_not_hash_or_write_payload() {
     let (_, store) = simulation.stores();
     let object = HashedObject::new(ObjectKind::TreePage, OwnedBytes::from_static(b"body"));
     assert!(matches!(
-        ({
-            let __object_args = (
+        (store
+            .put(
                 object.object_id(),
                 object.bytes().clone(),
-                &work,
-                &cancellation,
-            );
-            let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
-            let __object_result = store
-                .put(__object_args.0, __object_args.1, &mut __object_work)
-                .await;
-            __object_result
-        }),
+                &mut crate::AuthorityWork::native(&work, &cancellation)
+            )
+            .await),
         Err(ObjectStoreError::Simulation("scheduled rejection"))
     ));
     assert_eq!(work.receipt().bytes_hashed, 0);
@@ -359,52 +300,42 @@ async fn native_write_hooks_preserve_original_cancellation_before_effects() {
         OwnedBytes::from_static(b"body"),
     );
     assert!(
-        ({
-            let __object_args = (object.object_id(), object.bytes().clone(), &work, &argument);
-            let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
-            let __object_result = store
-                .put(__object_args.0, __object_args.1, &mut __object_work)
-                .await;
-            __object_result
-        })
-        .is_err()
+        (store
+            .put(
+                object.object_id(),
+                object.bytes().clone(),
+                &mut crate::AuthorityWork::native(&work, &argument)
+            )
+            .await)
+            .is_err()
     );
     assert!(
-        ({
-            let __object_args = (object.clone(), &work, &argument);
-            let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
-            let __object_result = store.put_hashed(__object_args.0, &mut __object_work).await;
-            __object_result
-        })
-        .is_err()
+        (store
+            .put_hashed(
+                object.clone(),
+                &mut crate::AuthorityWork::native(&work, &argument)
+            )
+            .await)
+            .is_err()
     );
     let writes = [crate::storage::ObjectWrite {
         object_id: object.object_id(),
         bytes: object.bytes().clone(),
     }];
     assert!(
-        ({
-            let __object_args = (&writes, &work, &argument);
-            let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
-            let __object_result = store.put_many(__object_args.0, &mut __object_work).await;
-            __object_result
-        })
-        .is_err()
+        (store
+            .put_many(&writes, &mut crate::AuthorityWork::native(&work, &argument))
+            .await)
+            .is_err()
     );
     assert!(
-        ({
-            let __object_args = (
+        (store
+            .flush_before_publish(
                 crate::async_storage::PublicationScope::Everything,
-                &work,
-                &argument,
-            );
-            let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
-            let __object_result = store
-                .flush_before_publish(__object_args.0, &mut __object_work)
-                .await;
-            __object_result
-        })
-        .is_err()
+                &mut crate::AuthorityWork::native(&work, &argument)
+            )
+            .await)
+            .is_err()
     );
     assert!(
         simulation

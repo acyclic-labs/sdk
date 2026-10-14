@@ -18,7 +18,7 @@ where
     let operation = crate::OperationId::new();
     for _ in 0..MAXIMUM_PROMOTION_RETRIES {
         carrier.with_work(|work| mount_items(work, 1))?;
-        let (mut candidate, epoch, stamp) = authored
+        let mut candidate = authored
             .shared_checkout()
             .candidate(None, carrier, cancellation, Some(authored.cancellation()))
             .await?;
@@ -52,8 +52,6 @@ where
             .shared_checkout()
             .install_candidate(
                 candidate,
-                epoch,
-                stamp,
                 carrier,
                 cancellation,
                 Some(authored.cancellation()),
@@ -133,7 +131,11 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         for length in 1..path.components().len() {
-            let (parent, _allocation) = copy_path(&path.components()[..length], None, work)?;
+            let components = path
+                .components()
+                .get(..length)
+                .ok_or(MountSourceError::Stale)?;
+            let (parent, _allocation) = copy_path(components, None, work)?;
             self.runtime.wait(|| self.promote(&parent, work))?;
         }
         Ok(())

@@ -148,36 +148,6 @@ impl NamespacePath {
         copy_names(names.iter(), depth, encoded, accounting, cancellation)
     }
 
-    pub(crate) fn child_with_ledger(
-        &self,
-        name: &LogicalName,
-        limits: VolumeLimits,
-        ledger: &mut AllocationLedger,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<Self, NamespacePathError> {
-        let mut accounting =
-            KernelAccounting::borrowed_standalone(ledger, work, budget, cancellation);
-        self.child_with_accounting(name, limits, &mut accounting, cancellation)
-            .map(|(path, _)| path)
-            .map_err(path_error)
-    }
-
-    pub(crate) fn clone_with_ledger(
-        &self,
-        ledger: &mut AllocationLedger,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<Self, NamespacePathError> {
-        let mut accounting =
-            KernelAccounting::borrowed_standalone(ledger, work, budget, cancellation);
-        self.clone_with_accounting(&mut accounting, cancellation)
-            .map(|(path, _)| path)
-            .map_err(path_error)
-    }
-
     pub(crate) fn unicode_text_with_accounting(
         &self,
         accounting: &mut KernelAccounting<'_>,
@@ -208,7 +178,8 @@ impl NamespacePath {
         let result = (|| {
             owned.admit(delta)?;
             let bytes = vector::<u8>(length, &mut owned, cancellation)?;
-            let mut output = String::from_utf8(bytes).expect("empty UTF-8 buffer");
+            let mut output =
+                String::from_utf8(bytes).map_err(|_| NamespacePathError::NonUnicodeProjection)?;
             if self.is_root() {
                 output.push('/');
                 owned.record_completed(delta)?;

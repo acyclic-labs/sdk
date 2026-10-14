@@ -184,8 +184,6 @@ mod outcome;
 mod selection;
 mod state;
 mod volumes;
-#[cfg(feature = "filesystem")]
-pub(crate) use attachments::manifest_owned_bytes;
 pub use attachments::{
     Attachment, ReferencedAttachments, decode_attachment_manifest, encode_attachment_manifest,
     load_manifest, verified_attachment_manifest, verified_content_bytes,
@@ -291,115 +289,6 @@ fn conversation_error(
         crate::wire::ErrorCode::Unauthorized => Error::Unauthorized(reason.into()),
         crate::wire::ErrorCode::Conflict => Error::Conflict(reason.into()),
         _ => Error::Invalid(reason.into()),
-    }
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-fn native_owned_wire_inspect(
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<()> {
-    if let Some(io) = work.as_deref_mut() {
-        io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
-    }
-    Ok(())
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn native_owned_wire_object(
-    value: serde_json::Value,
-    fields: Option<&[&str]>,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<serde_json::Map<String, serde_json::Value>> {
-    native_owned_wire_inspect(work)?;
-    let serde_json::Value::Object(object) = value else {
-        return Err(conversation_error(
-            work,
-            crate::wire::ErrorCode::Invalid,
-            "wire value must be an object",
-        ));
-    };
-    for key in object.keys() {
-        native_owned_wire_inspect(work)?;
-        if fields.is_some_and(|fields| !fields.contains(&key.as_str())) {
-            return Err(conversation_error(
-                work,
-                crate::wire::ErrorCode::Invalid,
-                "wire object has an unknown field",
-            ));
-        }
-    }
-    Ok(object)
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn native_owned_wire_field(
-    object: &mut serde_json::Map<String, serde_json::Value>,
-    name: &str,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<serde_json::Value> {
-    object.remove(name).ok_or_else(|| {
-        conversation_error(
-            work,
-            crate::wire::ErrorCode::Invalid,
-            "wire object is missing a field",
-        )
-    })
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn native_owned_wire_text(
-    value: serde_json::Value,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<String> {
-    native_owned_wire_inspect(work)?;
-    match value {
-        serde_json::Value::String(text) => Ok(text),
-        _ => Err(conversation_error(
-            work,
-            crate::wire::ErrorCode::Invalid,
-            "wire value must be a string",
-        )),
-    }
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-fn native_owned_volume_class(
-    value: serde_json::Value,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<VolumeClass> {
-    native_owned_wire_inspect(work)?;
-    let name = match value {
-        serde_json::Value::String(name) => name,
-        serde_json::Value::Object(variants) if variants.len() == 1 => {
-            let (name, value) = variants.into_iter().next().expect("one enum variant");
-            native_owned_wire_inspect(work)?;
-            native_owned_wire_inspect(work)?;
-            if !value.is_null() {
-                return Err(conversation_error(
-                    work,
-                    crate::wire::ErrorCode::Invalid,
-                    "volume class is invalid",
-                ));
-            }
-            name
-        }
-        _ => {
-            return Err(conversation_error(
-                work,
-                crate::wire::ErrorCode::Invalid,
-                "volume class is invalid",
-            ));
-        }
-    };
-    match name.as_str() {
-        "project" => Ok(VolumeClass::Project),
-        "agent_private" => Ok(VolumeClass::AgentPrivate),
-        "session_shared" => Ok(VolumeClass::SessionShared),
-        _ => Err(conversation_error(
-            work,
-            crate::wire::ErrorCode::Invalid,
-            "volume class is invalid",
-        )),
     }
 }
 

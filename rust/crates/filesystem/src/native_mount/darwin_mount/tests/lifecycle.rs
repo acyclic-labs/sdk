@@ -49,6 +49,7 @@ fn actual_sdk_prebirth_interrupt_returns_without_creating_a_namespace() -> TestR
     let temporary = tempfile::tempdir()?;
     let cancellation = crate::CancellationToken::new();
     let work = work(crate::WorkBudget::UNBOUNDED, &cancellation)?;
+    let baseline = work.live_allocation_bytes();
     let resources = sdk(temporary.path(), &work)?;
     resources.interrupt(None)?;
     let (context, destination, pointers) = resources
@@ -93,7 +94,7 @@ fn actual_sdk_prebirth_interrupt_returns_without_creating_a_namespace() -> TestR
     drop(context);
     drop(destination);
     drop(resources);
-    assert_eq!(work.live_allocation_bytes(), 0);
+    assert_eq!(work.live_allocation_bytes(), baseline);
     assert!(cancellation.is_cancelled());
     Ok(())
 }

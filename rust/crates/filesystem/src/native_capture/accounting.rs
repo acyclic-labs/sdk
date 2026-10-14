@@ -5,7 +5,7 @@ pub(super) fn capture_work(
     cancellation: &CancellationToken,
 ) -> Result<crate::NativeMaterializationWork, OperationFailure<CaptureError>> {
     crate::NativeMaterializationWork::new(budget, cancellation)
-        .map_err(|(error, completed)| OperationFailure::new(CaptureError::from(error), completed))
+        .map_err(|(error, completed)| OperationFailure::new(CaptureError::from(error), *completed))
 }
 
 pub(super) struct CaptureWorkScope {

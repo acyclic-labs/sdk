@@ -8,6 +8,10 @@ use crate::{
 use prost::Message;
 use std::{future::Future, time::Duration};
 use tokio_util::sync::CancellationToken;
+#[cfg(any(
+    all(not(target_arch = "wasm32"), any(test, feature = "node-binding")),
+    all(target_arch = "wasm32", feature = "browser-binding")
+))]
 use tonic::codegen::{Body, Bytes, StdError};
 
 /// Monotonic cancellation handle shared by native and browser operations.
@@ -218,6 +222,10 @@ impl Client {
     }
 
     /// Execute a canonical protobuf service method after checked wire admission.
+    #[cfg(any(
+        all(feature = "node-binding", not(target_arch = "wasm32")),
+        all(feature = "browser-binding", target_arch = "wasm32")
+    ))]
     pub(crate) async fn call(
         &self,
         method: &str,
@@ -284,6 +292,10 @@ macro_rules! typed_methods {
 }
 operations!(typed_methods);
 
+#[cfg(any(
+    all(not(target_arch = "wasm32"), any(test, feature = "node-binding")),
+    all(target_arch = "wasm32", feature = "browser-binding")
+))]
 fn admit<W, D>(
     bytes: &[u8],
     validate: impl FnOnce(&W) -> Result<(), crate::ContractError>,
@@ -308,6 +320,10 @@ where
     D::try_from(wire).map_err(|error| Failure::local("malformed_response", error))
 }
 
+#[cfg(any(
+    all(not(target_arch = "wasm32"), any(test, feature = "node-binding")),
+    all(target_arch = "wasm32", feature = "browser-binding")
+))]
 fn response<W, D>(wire: W, maximum: usize) -> Result<Vec<u8>, Failure>
 where
     W: Message + From<D>,
@@ -337,6 +353,10 @@ fn request<T>(
     request
 }
 
+#[cfg(any(
+    all(not(target_arch = "wasm32"), any(test, feature = "node-binding")),
+    all(target_arch = "wasm32", feature = "browser-binding")
+))]
 async fn dispatch<T>(
     mut client: wire::workers_service_client::WorkersServiceClient<T>,
     method: &str,

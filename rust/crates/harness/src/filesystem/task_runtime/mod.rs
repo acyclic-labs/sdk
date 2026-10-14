@@ -442,6 +442,36 @@ where
             #[cfg(not(target_arch = "wasm32"))]
             native_custody: None,
         }));
+        if context.scope().resource_proofs().is_empty()
+            && context.scope().grants().contains(
+                &self
+                    .volume
+                    .capability(crate::conversation::VolumeOperation::Write, &mut None)?,
+            )
+        {
+            let context = context
+                .into_shared()?
+                .with_output_bindings(ContentBindings {
+                    reader: FilesystemContentVerifier::new(
+                        self.filesystem.clone(),
+                        &self.verifier,
+                        &self.signed,
+                        self.maximum_payload_bytes,
+                        None,
+                    )?,
+                    writer: Some(FilesystemContentPublisher::new(
+                        self.filesystem.clone(),
+                        &self.volume,
+                        &self.verifier,
+                        &self.signed,
+                        self.maximum_payload_bytes,
+                        None,
+                    )?),
+                })
+                .await?;
+            return Ok(Arc::try_unwrap(context)
+                .unwrap_or_else(|_| unreachable!("fresh context is unshared")));
+        }
         Ok(context)
     }
 

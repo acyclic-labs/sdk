@@ -247,7 +247,11 @@ where
                     bytes.extend_from_slice(path.as_bytes());
                     input.record(copied)?;
                     paths.push((
-                        String::from_utf8(bytes).expect("copied String is UTF-8"),
+                        String::from_utf8(bytes).map_err(|_| {
+                            MountSourceError::NativeWork(
+                                crate::NativeTreeMaterializationError::InvalidLayout,
+                            )
+                        })?,
                         *id,
                     ));
                 }
@@ -282,7 +286,7 @@ where
                 self.prune_detached()?;
                 return Ok(published);
             }
-            let (fresh_operation, mut candidate, identities, epoch, stamp) = self
+            let (fresh_operation, mut candidate, identities) = self
                 .prepare_removed_identity_candidate(&removals, &dirty.value, work)
                 .await?;
             let mut paths = input.vec(removals.len())?;
@@ -394,8 +398,6 @@ where
                 .shared_checkout()
                 .install_candidate(
                     candidate,
-                    epoch,
-                    stamp,
                     &mut carrier,
                     cancellation,
                     Some(self.authored.cancellation()),
@@ -532,13 +534,11 @@ where
             crate::OperationId,
             CheckoutCandidate<A, O>,
             Vec<(FileRecord, FileMetadata)>,
-            u64,
-            ViewStamp,
         ),
         MountSourceError,
     > {
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
-        let (mut transaction, epoch, stamp) = self
+        let mut transaction = self
             .authored
             .shared_checkout()
             .candidate(
@@ -629,6 +629,6 @@ where
         }
         let identity_records = identity_records.into_values().collect();
         let operation_id = crate::OperationId::new();
-        Ok((operation_id, transaction, identity_records, epoch, stamp))
+        Ok((operation_id, transaction, identity_records))
     }
 }

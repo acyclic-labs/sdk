@@ -77,43 +77,6 @@ pub(super) fn mount_native_ordinary(
     start_native_mount_prepared_with_meter(request, source, allow_nonempty, &work, storage, None)
 }
 
-/// Finite projection of the same native constructor and actual work prefix.
-pub fn mount_native_measured(
-    request: NativeMountRequest,
-    source: Arc<dyn MountFilesystem>,
-    budget: crate::WorkBudget,
-    cancellation: &crate::CancellationToken,
-) -> Result<crate::OperationReceipt<NativeMountSession>, (NativeMountError, crate::WorkCounters)> {
-    let work = match crate::NativeMaterializationWork::new(budget, cancellation) {
-        Ok(work) => work,
-        Err((error, work)) => {
-            return Err((
-                NativeMountError::StartupAdmissionFailed {
-                    cause: error.into(),
-                    source,
-                },
-                work,
-            ));
-        }
-    };
-    let prepared = match prepare_native_mount_start(&work) {
-        Ok(prepared) => prepared,
-        Err(cause) => {
-            return Err((
-                NativeMountError::StartupAdmissionFailed { cause, source },
-                work.receipt(),
-            ));
-        }
-    };
-    match start_native_mount_prepared_with_meter(request, source, false, &work, prepared, None) {
-        Ok(value) => Ok(crate::OperationReceipt {
-            value,
-            work: work.receipt(),
-        }),
-        Err(error) => Err((error, work.receipt())),
-    }
-}
-
 pub(super) fn start_native_mount_prepared_with_meter(
     request: NativeMountRequest,
     source: Arc<dyn MountFilesystem>,
@@ -316,11 +279,27 @@ pub fn detach_native_mount_destination_after_crash(
     destination: &Path,
 ) -> Result<(), NativeMountError> {
     let mut owner = NativeMountRecoveryOwner::acquire(destination)?;
-    match owner.detach() {
+    #[cfg(target_os = "macos")]
+    let initialized =
+        acyclic_native_runtime::initialize_native_io_services().map_err(NativeMountError::from);
+    #[cfg(not(target_os = "macos"))]
+    let initialized = Ok(());
+    let result = initialized.and_then(|()| {
+        let work = crate::NativeMaterializationWork::new(
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .map_err(|(error, _)| NativeMountError::from(error))?;
+        owner.detach(&work)
+    });
+    match result {
         Ok(_) => Ok(()),
-        Err(error) => Err(NativeMountError::RecoveryFailed {
-            error: Box::new(error),
-            owner,
-        }),
+        Err(error) => {
+            owner.mark_failed();
+            Err(NativeMountError::RecoveryFailed {
+                error: Box::new(error),
+                owner,
+            })
+        }
     }
 }

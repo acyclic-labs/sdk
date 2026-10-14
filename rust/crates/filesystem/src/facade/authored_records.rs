@@ -54,6 +54,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(file_id)
     }
 
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
     pub(crate) async fn compile_copied_record(
         &self,
         input: crate::kernel::Owned<NamespacePath>,
@@ -78,7 +79,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let mut input = crate::kernel::Owned::new(Some(input.value), input.allocation, bytes);
         let result = async {
             accounting.check()?;
-            let path = input.value.take().expect("copied path is consumed once");
+            let path = input.value.take().ok_or(FsError::InvalidDiff)?;
             if path.is_root() && record.kind != FileKind::Directory {
                 return Err(FsError::UnsupportedFileKind);
             }
@@ -319,15 +320,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
         self.apply_authored_transaction(vec![authored], budget, cancellation)
             .await
-            .map(|receipt| OperationReceipt {
-                value: receipt
-                    .value
-                    .created_file_ids
-                    .into_iter()
-                    .next()
-                    .flatten()
-                    .expect("one creation emits one file identity"),
-                work: receipt.work,
+            .and_then(|receipt| {
+                let value = receipt.value.created_file_ids.into_iter().next().flatten()
+                    .ok_or_else(|| OperationFailure::new(FsError::InvalidDiff, receipt.work))?;
+                Ok(OperationReceipt { value, work: receipt.work })
             })
     }
 }

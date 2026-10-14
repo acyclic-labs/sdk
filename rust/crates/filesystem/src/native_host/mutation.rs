@@ -156,10 +156,10 @@ impl HostRoot {
     ) -> Result<(), DemandError> {
         work.check()?;
         if target.is_empty()
-            || target[0] == 92
+            || target.first() == Some(&92)
                 && !target.starts_with(&[92, 92])
                 && !target.starts_with(&[92, 63, 63, 92])
-            || target.len() >= 2 && target[1] == 58 && (target.len() < 3 || target[2] != 92)
+            || matches!(target, [_, 58, ..]) && target.get(2) != Some(&92)
         {
             return Err(DemandError::InvalidRequest);
         }

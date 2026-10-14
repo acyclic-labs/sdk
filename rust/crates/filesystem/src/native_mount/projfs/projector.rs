@@ -113,25 +113,12 @@ impl Projector {
                         .contains_key(&child)
                         .then_some(false)
                 });
-                match previous {
-                    Some(was_directory) if was_directory == is_directory => continue,
-                    Some(true) => self.remove_tree(projection, &child),
-                    Some(false) => {
-                        let (owned, released) = self.release_recorded(projection, &child);
-                        if released? == Release::Busy {
-                            let mut state = lock_recover(&self.state);
-                            let pending = state.written.remove(&child).unwrap_or(WrittenEntry {
-                                owned,
-                                facts: None,
-                                basis: None,
-                            });
-                            state.relist.insert(child.clone());
-                            state.pending.entry(child).or_insert(pending);
-                            return Ok(Vec::new());
-                        }
-                    }
-                    None => {}
+                if previous == Some(is_directory) {
+                    continue;
                 }
+                let Some(child) = self.retire_previous_child(projection, child, previous)? else {
+                    return Ok(Vec::new());
+                };
                 let placed = write_entry(projection, &child, entry)?;
                 if placed == Placed::Retry {
                     names.remove(entry.component.as_slice());
@@ -183,6 +170,33 @@ impl Projector {
             self.written(path, facts, owned, basis);
         }
         result
+    }
+
+    fn retire_previous_child(
+        &self,
+        projection: Projection<'_>,
+        child: MountPath,
+        previous: Option<bool>,
+    ) -> Result<Option<MountPath>, String> {
+        match previous {
+            Some(true) => self.remove_tree(projection, &child),
+            Some(false) => {
+                let (owned, released) = self.release_recorded(projection, &child);
+                if released? == Release::Busy {
+                    let mut state = lock_recover(&self.state);
+                    let pending = state.written.remove(&child).unwrap_or(WrittenEntry {
+                        owned,
+                        facts: None,
+                        basis: None,
+                    });
+                    state.relist.insert(child.clone());
+                    state.pending.entry(child).or_insert(pending);
+                    return Ok(None);
+                }
+            }
+            None => {}
+        }
+        Ok(Some(child))
     }
 
     pub(super) fn release_recorded(
@@ -495,18 +509,19 @@ impl Projector {
                 let Some(written) = lock_recover(&self.state).pending.get(&path).copied() else {
                     return Ok(());
                 };
-                let replaced = replace_written(projection, &path, &written);
+                let mut current = written;
+                let replaced = replace_written(projection, &path, &mut current);
                 let mut state = lock_recover(&self.state);
                 match replaced {
-                    Ok(Replaced::Rewritten(current)) => {
+                    Ok(Placed::Owned(_) | Placed::Unowned) => {
                         state.record_attempt(&path, &written, Some(current));
                         Ok(())
                     }
-                    Ok(Replaced::Released) => {
+                    Ok(Placed::Nothing) => {
                         state.record_attempt(&path, &written, None);
                         Ok(())
                     }
-                    Ok(Replaced::Busy) => Ok(()),
+                    Ok(Placed::Retry) => Ok(()),
                     Err(error) => {
                         state.record_attempt(&path, &written, None);
                         Err(error)

@@ -43,7 +43,7 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
                 .into());
             }
             let _ = operation;
-            self.create_authority(destination, Epoch::GENESIS, work, guard.as_deref_mut())
+            self.create_authority(destination, Epoch::GENESIS, work, guard)
                 .await
         }
     }
@@ -57,12 +57,11 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
         guard: Option<&mut G>,
     ) -> impl Future<Output = Result<bool, AuthorityError<G::Error>>> + ProviderTask {
         async move {
-            let mut guard = guard;
             #[cfg(not(target_arch = "wasm32"))]
             if work.original.is_some() {
                 return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into());
             }
-            first_record(self, authority, commit, work, guard.as_deref_mut()).await
+            first_record(self, authority, commit, work, guard).await
         }
     }
 
@@ -76,12 +75,11 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
     ) -> impl Future<Output = Result<WorkspaceForkOutcome, AuthorityError<G::Error>>> + ProviderTask
     {
         async move {
-            let mut guard = guard;
             #[cfg(not(target_arch = "wasm32"))]
             if work.original.is_some() && guard.is_some() {
                 return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into());
             }
-            workspace_fork(self, fork, permit, work, guard.as_deref_mut()).await
+            workspace_fork(self, fork, permit, work, guard).await
         }
     }
 

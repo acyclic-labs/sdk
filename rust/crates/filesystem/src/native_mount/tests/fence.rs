@@ -41,24 +41,26 @@ fn administrative_last_drop_closes_real_fence_without_touching_residue()
     let original =
         crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .map_err(|(error, _)| error)?;
-    let mut owner =
-        NativeMountRecoveryOwner::acquire_with_original(&destination, original.clone())?;
-    let identity = owner.cleanup_state().fence_identity;
+    let mut owner = NativeMountRecoveryOwner::acquire_with_original(&destination, &original)?;
+    let identity = owner.cleanup_state()?.fence_identity;
     let cancellation = CancellationToken::new();
     let mut budget = WorkBudget::UNBOUNDED;
     budget.backend_read_operations = 0;
-    let (error, receipt) = owner
-        .detach_measured(budget, &cancellation)
+    let denied =
+        crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
+    let error = owner
+        .detach(&denied)
         .expect_err("the actual native observation is denied");
+    let receipt = denied.receipt();
     assert!(matches!(
         error,
         NativeMountError::Work(_)
             | NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(_))
     ));
     assert_eq!(receipt.backend_read_operations, 0);
-    assert!(owner.cleanup_state().destination_fence_retained);
-    assert!(owner.cleanup_state().measured_cleanup_failed);
-    assert_eq!(owner.cleanup_state().fence_identity, identity);
+    assert!(owner.cleanup_state()?.destination_fence_retained);
+    assert!(owner.cleanup_state()?.measured_cleanup_failed);
+    assert_eq!(owner.cleanup_state()?.fence_identity, identity);
     assert!(matches!(
         acquire_existing_mount_lock(&lock_path),
         Err(NativeMountError::DestinationBusy)
@@ -93,14 +95,14 @@ fn administrative_post_lock_acquisition_denial_retires_actual_opened_fence()
     let baseline =
         crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .map_err(|(error, _)| error)?;
-    let owner = NativeMountRecoveryOwner::acquire_with_original(&destination, baseline.clone())?;
+    let owner = NativeMountRecoveryOwner::acquire_with_original(&destination, &baseline)?;
     let writes = baseline.receipt().backend_write_operations;
     await_recovery_worker(owner)?;
     let mut budget = WorkBudget::UNBOUNDED;
     budget.backend_write_operations = writes + 2 + u64::from(cfg!(windows));
     let denied = crate::NativeMaterializationWork::new(budget, &CancellationToken::new())
         .map_err(|(error, _)| error)?;
-    let error = NativeMountRecoveryOwner::acquire_with_original(&destination, denied.clone())
+    let error = NativeMountRecoveryOwner::acquire_with_original(&destination, &denied)
         .expect_err("the actual post-lock registry unlock is denied");
     assert!(matches!(
         error,
@@ -133,21 +135,19 @@ fn administrative_retry_uses_same_fence_and_distinct_action_ledgers()
     std::fs::create_dir(&destination)?;
     std::fs::write(destination.join("authored"), b"retain")?;
     let mut owner = NativeMountRecoveryOwner::acquire(&destination)?;
-    let identity = owner.cleanup_state().fence_identity;
+    let identity = owner.cleanup_state()?.fence_identity;
     let mut budget = WorkBudget::UNBOUNDED;
     budget.backend_read_operations = 0;
-    assert!(
-        owner
-            .detach_measured(budget, &CancellationToken::new())
-            .is_err()
-    );
-    let receipt = owner
-        .detach_measured(WorkBudget::UNBOUNDED, &CancellationToken::new())
+    let denied = crate::NativeMaterializationWork::new(budget, &CancellationToken::new())
         .map_err(|(error, _)| error)?;
-    assert!(receipt.value);
-    assert!(receipt.work.backend_read_operations > 0);
-    assert_eq!(owner.cleanup_state().fence_identity, identity);
-    let state = owner.cleanup_state();
+    assert!(owner.detach(&denied).is_err());
+    let retry =
+        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .map_err(|(error, _)| error)?;
+    assert!(owner.detach(&retry)?);
+    assert!(retry.receipt().backend_read_operations > 0);
+    assert_eq!(owner.cleanup_state()?.fence_identity, identity);
+    let state = owner.cleanup_state()?;
     assert!(!state.destination_fence_retained && !state.controls_pending);
     await_recovery_worker(owner)?;
     assert_eq!(std::fs::read(destination.join("authored"))?, b"retain");
@@ -291,10 +291,12 @@ fn shared_destination_fence_retains_original_owner_after_denial()
         .expect_err("original write allowance denies cleanup");
     assert!(matches!(
         error,
-        NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(crate::WorkError::BudgetExceeded {
-            counter: "backend_write_operations",
-            ..
-        }))
+        NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(
+            crate::WorkError::BudgetExceeded {
+                counter: "backend_write_operations",
+                ..
+            }
+        ))
     ));
     assert!(guard.file.is_some());
     assert_eq!(

@@ -329,7 +329,7 @@ impl<A, O> JoinPlan<A, O> {
         &self,
         application: &JoinApplication<A, O>,
         idempotency_key: IdempotencyKey,
-        work: W,
+        work: &W,
         cancellation: &CancellationToken,
     ) -> W::Output<crate::JoinCommitWitness, WorkspaceError> {
         let mut accounting = work.accounting(cancellation);

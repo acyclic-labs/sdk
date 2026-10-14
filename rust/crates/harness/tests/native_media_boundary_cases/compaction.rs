@@ -7,7 +7,7 @@ pub(super) async fn exercise_media_compaction_fork_restart<A, O>(
     selected: &[(FileRef, NativeMediaPolicy)],
     invocation: ToolInvocation,
     result: ToolResultContent,
-    tool: Tool,
+    context: &acyclic_harness::runtime::TaskContext,
 ) -> Result<()>
 where
     A: acyclic_fs::AsyncAuthorityStore + 'static,
@@ -110,12 +110,13 @@ where
         ContextPlacement::Prepend,
     ))
         as Arc<dyn acyclic_harness::context::ContextStage>]);
-    let tool_scope = RuntimeScope::new(
-        Capabilities::new(["tool:call:example.convert_image"]),
-        Limits::default(),
-    )?;
+    let tool_scope = context.scope().clone();
     let mut tools = ToolRegistry::default();
-    tools.register((tool, None), &mut None, None)?;
+    tools.register(
+        (explicit_conversion::conversion_tool()?, None),
+        &mut None,
+        None,
+    )?;
     let executor = StockExecutor::new(model.clone(), adapter.clone(), pipeline, tools.clone())
         .with_tool_authority(tool_scope.clone(), None)?
         .with_max_output_tokens(16)?
@@ -138,7 +139,9 @@ where
                 .collect(),
         ),
     };
-    executor.execute(input.clone(), &journal).await?;
+    executor
+        .execute_with_context(context, input.clone(), &journal)
+        .await?;
     let records = journal.replay(input.operation_id, 0, 64, None)?.await?;
     assert_eq!(
         records
@@ -349,10 +352,13 @@ where
                         revision: ResourceRevision::PrivateVolume {
                             volume: volume.clone(),
                             generation: host
-                                .resolve(&workspace_ref(
-                                    volume.provider().clone(),
-                                    &volume.storage_name(&mut None)?,
-                                )?, None)
+                                .resolve(
+                                    &workspace_ref(
+                                        volume.provider().clone(),
+                                        &volume.storage_name(&mut None)?,
+                                    )?,
+                                    None,
+                                )
                                 .await?
                                 .generation,
                             paths: Vec::new(),
@@ -443,7 +449,7 @@ where
         .map(|journal| journal.with_input_verifier(child_reader.clone()))
     };
     let child_output = child_executor()?
-        .execute(child_input.clone(), &open_journal()?)
+        .execute_with_context(context, child_input.clone(), &open_journal()?)
         .await?;
     let captures = adapter
         .captures
@@ -471,7 +477,9 @@ where
     drop(aggregate);
     let reopened = open_journal()?;
     assert_eq!(
-        child_executor()?.execute(child_input, &reopened).await?,
+        child_executor()?
+            .execute_with_context(context, child_input, &reopened)
+            .await?,
         child_output
     );
     assert_eq!(

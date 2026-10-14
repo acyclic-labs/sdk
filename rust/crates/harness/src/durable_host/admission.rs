@@ -56,6 +56,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             policy_binding: None,
             effects: None,
             session_limits: None,
+            #[cfg(feature = "filesystem")]
             resource_creation: Vec::new(),
         })
     }
@@ -66,19 +67,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         limits.validate(&mut None)?;
         self.session_limits = Some(limits);
         Ok(self)
-    }
-
-    /// Admits through the existing task path while retaining the parent's lease.
-    pub async fn admit_owned(
-        &self,
-        admission: TaskAdmissionRecord,
-        fence: crate::scheduler::LeaseFence,
-    ) -> Result<Admission<TaskId>> {
-        let parent = admission
-            .parent
-            .ok_or_else(|| Error::Invalid("owned child admission has no parent".into()))?;
-        self.verify_owner(parent, &fence, false, &mut None).await?;
-        self.admit_record(admission, Some(fence)).await
     }
 
     #[allow(

@@ -132,6 +132,7 @@ impl StreamsDurableRecord {
 
     /// Admits each validated fixed-field copy immediately before it occurs,
     /// then records the completed copy. Earlier fields remain spent on refusal.
+    #[cfg(any(feature = "distributed", test))]
     pub(crate) fn decode_borrowed_with<'a, E, F>(
         encoded: &'a [u8],
         maximum_record_bytes: u64,

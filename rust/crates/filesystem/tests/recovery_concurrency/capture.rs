@@ -15,11 +15,7 @@ async fn capture_failures_reopen_original_partial_intent_without_physical_edits(
             let original = plan(u8::try_from(0x60 + ordinal).expect("small capture ordinal"));
             let materializer = JournaledMaterializer::new(store.clone(), backend.clone());
             assert!(matches!(
-                materializer
-                    .apply(original.clone(), &mut || async {
-                        Ok::<(), MaterializationError<_, _>>(())
-                    })
-                    .await,
+                materializer.apply(original.clone(), &mut permit).await,
                 Err(MaterializationError::Backend(_))
             ));
             drop(materializer);
@@ -55,11 +51,7 @@ async fn capture_failures_reopen_original_partial_intent_without_physical_edits(
             changed_order.edits.reverse();
             for changed in [changed_from, changed_to, changed_image, changed_order] {
                 assert!(matches!(
-                    restarted
-                        .apply(changed, &mut || async {
-                            Ok::<(), MaterializationError<_, _>>(())
-                        })
-                        .await,
+                    restarted.apply(changed, &mut permit).await,
                     Err(MaterializationError::PlanConflict)
                 ));
                 assert_eq!(
@@ -75,9 +67,7 @@ async fn capture_failures_reopen_original_partial_intent_without_physical_edits(
 
             // Recover the original operation, never allocate a substitute plan.
             let recovered = restarted
-                .recover(original.operation_id, recovery, &mut || async {
-                    Ok::<(), MaterializationError<_, _>>(())
-                })
+                .recover(original.operation_id, recovery, &mut permit)
                 .await
                 .expect("recover partially captured original plan")
                 .expect("original journal");
@@ -87,8 +77,6 @@ async fn capture_failures_reopen_original_partial_intent_without_physical_edits(
                     assert_eq!(recovered.phase, MaterializationPhase::Applied);
                     assert_eq!(tree.snapshot(), target_tree());
                     assert_eq!(recovered.preimages[..ordinal - 1], retained.preimages);
-                    #[cfg(not(target_arch = "wasm32"))]
-                    assert!(recovered.custody.is_none(), "ordinary receipt copy only");
                 }
                 MaterializationRecovery::RollBack => {
                     assert_eq!(recovered.phase, MaterializationPhase::RolledBack);
@@ -97,11 +85,7 @@ async fn capture_failures_reopen_original_partial_intent_without_physical_edits(
                     assert_eq!(recovered.restored, 0);
                     assert_eq!(tree.snapshot(), source_tree());
                     assert!(matches!(
-                        restarted
-                            .apply(original.clone(), &mut || async {
-                                Ok::<(), MaterializationError<_, _>>(())
-                            })
-                            .await,
+                        restarted.apply(original.clone(), &mut permit).await,
                         Err(MaterializationError::PlanConflict)
                     ));
                 }

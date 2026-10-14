@@ -99,7 +99,7 @@ impl ProjFsSession {
             callbacks: CallbackGate::start()?,
             _allocation: allocation,
         });
-        *out = Some(Self {
+        let session = out.insert(Self {
             controller: None,
             context: None,
             runtime: Some(Arc::clone(&runtime)),
@@ -113,8 +113,7 @@ impl ProjFsSession {
             capture_attempted: false,
         });
         runtime.projector.attach(Arc::clone(&runtime))?;
-        out.as_mut().expect("installed startup owner").controller =
-            Some(Arc::clone(&runtime.projector));
+        session.controller = Some(Arc::clone(&runtime.projector));
         let observer: Arc<dyn ViewObserver> = runtime.projector.clone();
         runtime
             .source
@@ -122,10 +121,17 @@ impl ProjFsSession {
         if let Some(packet) = retirement.as_mut() {
             prepare(packet)?;
         }
-        let session = out
-            .as_mut()
-            .expect("startup owner installed before SDK effects");
         session.retirement = retirement.take();
+        session.activate(request, &runtime, work, warm)
+    }
+
+    fn activate(
+        &mut self,
+        request: &NativeMountRequest,
+        runtime: &Arc<Runtime>,
+        work: &crate::NativeMaterializationWork,
+        warm: Option<ProjFsNamespaceQualification>,
+    ) -> Result<(), NativeMountError> {
         let guid = warm.map_or_else(
             || guid_from_key(u128::from_le_bytes(request.mount_id.into_bytes())),
             |warm| warm.instance_id,
@@ -159,13 +165,13 @@ impl ProjFsSession {
                 PrjStartVirtualizing(
                     &root_name,
                     &raw const callbacks,
-                    Some(Arc::as_ptr(&runtime).cast::<c_void>()),
+                    Some(Arc::as_ptr(runtime).cast::<c_void>()),
                     Some(&raw const options),
                 )
             }
             .map_err(|error| std::io::Error::from_raw_os_error(error.code().0))
         })?;
-        session.context = Some(context);
+        self.context = Some(context);
         let mut instance =
             windows::Win32::Storage::ProjectedFileSystem::PRJ_VIRTUALIZATION_INSTANCE_INFO::default(
             );
@@ -182,7 +188,7 @@ impl ProjFsSession {
         if warm.is_some_and(|warm| warm.instance_id != instance.InstanceID) {
             return Err(NativeMountError::InvalidDestination);
         }
-        session.qualification = Some(ProjFsNamespaceQualification {
+        self.qualification = Some(ProjFsNamespaceQualification {
             root_identity: runtime.metadata_root.identity(),
             instance_id: instance.InstanceID,
         });
@@ -266,8 +272,7 @@ impl ProjFsSession {
         self.namespace_outcome = Some(ProjFsNamespaceOutcome {
             capture_failure: self.capture_failure.take(),
             cleanup_failure,
-            qualification: self.qualification,
-            state,
+            _state: state,
             callbacks: Arc::clone(&runtime.post_operation_failure),
         });
         self.runtime = None;
@@ -373,7 +378,7 @@ impl ProjFsSession {
         let source = runtime.source.as_ref();
         flush_callback_gate(
             &runtime.callbacks,
-            Arc::clone(&runtime.post_operation_failure),
+            &runtime.post_operation_failure,
             |paths| {
                 let mut exact = Vec::new();
                 for (path, subtree) in paths {
@@ -497,14 +502,14 @@ pub(super) fn source_hresult(error: &MountSourceError) -> HRESULT {
         MountSourceError::AlreadyExists => HR_ALREADY_EXISTS,
         MountSourceError::Invalid(_) => HR_INVALID_DATA,
         MountSourceError::Unsupported(_) => HR_NOT_SUPPORTED,
-        MountSourceError::Engine(_) => HR_IO_DEVICE,
-        MountSourceError::Stale | MountSourceError::Cancelled => HR_FILE_INVALID,
-        MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled) => {
+        MountSourceError::Stale
+        | MountSourceError::Cancelled
+        | MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled) => {
             HR_FILE_INVALID
         }
-        MountSourceError::Io(error, _) => {
-            HRESULT::from_win32(error.raw_os_error().unwrap_or(1117) as u32)
-        }
+        MountSourceError::Io(error, _) => HRESULT::from_win32(u32::from_ne_bytes(
+            error.raw_os_error().unwrap_or(1117).to_ne_bytes(),
+        )),
         _ => HR_IO_DEVICE,
     }
 }
@@ -512,9 +517,9 @@ pub(super) fn source_hresult(error: &MountSourceError) -> HRESULT {
 pub(super) fn native_hresult(error: &NativeMountError) -> HRESULT {
     match error {
         NativeMountError::Source(error) => source_hresult(error),
-        NativeMountError::Io(error) => {
-            HRESULT::from_win32(error.raw_os_error().unwrap_or(1117) as u32)
-        }
+        NativeMountError::Io(error) => HRESULT::from_win32(u32::from_ne_bytes(
+            error.raw_os_error().unwrap_or(1117).to_ne_bytes(),
+        )),
         NativeMountError::Materialization(crate::NativeTreeMaterializationError::Cancelled) => {
             HR_FILE_INVALID
         }

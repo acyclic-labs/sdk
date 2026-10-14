@@ -35,6 +35,7 @@ pub(super) fn target_tree() -> BTreeMap<String, Vec<u8>> {
 
 impl MaterializationBackend for TreeBackend {
     type Error = TreeBackendError;
+
     async fn capture(
         &self,
         edit: &MaterializationEdit,
@@ -109,7 +110,7 @@ impl MaterializationBackend for TreeBackend {
     }
 }
 
-fn encode_preimages(values: [Option<Vec<u8>>; 2]) -> Vec<u8> {
+pub(super) fn encode_preimages(values: [Option<Vec<u8>>; 2]) -> Vec<u8> {
     let mut encoded = Vec::new();
     for value in values {
         match value {
@@ -128,7 +129,7 @@ fn encode_preimages(values: [Option<Vec<u8>>; 2]) -> Vec<u8> {
     encoded
 }
 
-fn decode_preimages(bytes: &[u8]) -> Result<[Option<Vec<u8>>; 2], TreeBackendError> {
+pub(super) fn decode_preimages(bytes: &[u8]) -> Result<[Option<Vec<u8>>; 2], TreeBackendError> {
     let mut cursor = 0;
     let mut values = [None, None];
     for value in &mut values {
@@ -160,38 +161,38 @@ fn decode_preimages(bytes: &[u8]) -> Result<[Option<Vec<u8>>; 2], TreeBackendErr
 
 #[derive(Clone)]
 pub(super) struct MutationCrashBackend {
-    pub(super) inner: TreeBackend,
-    pub(super) fail_capture: Arc<AtomicUsize>,
-    pub(super) fail_apply: Arc<AtomicUsize>,
-    pub(super) fail_restore: Arc<AtomicUsize>,
+    inner: TreeBackend,
+    fail_capture: Arc<AtomicUsize>,
+    fail_apply: Arc<AtomicUsize>,
+    fail_restore: Arc<AtomicUsize>,
 }
 
 impl MutationCrashBackend {
-    pub(super) fn new(inner: TreeBackend) -> Self {
+    pub(super) fn before_capture(inner: TreeBackend, ordinal: usize) -> Self {
         Self {
             inner,
-            fail_capture: Arc::new(AtomicUsize::new(0)),
+            fail_capture: Arc::new(AtomicUsize::new(ordinal)),
             fail_apply: Arc::new(AtomicUsize::new(0)),
             fail_restore: Arc::new(AtomicUsize::new(0)),
         }
     }
 
-    pub(super) fn before_capture(inner: TreeBackend, ordinal: usize) -> Self {
-        let backend = Self::new(inner);
-        backend.fail_capture.store(ordinal, Ordering::SeqCst);
-        backend
-    }
-
     pub(super) fn after_apply(inner: TreeBackend, ordinal: usize) -> Self {
-        let backend = Self::new(inner);
-        backend.fail_apply.store(ordinal, Ordering::SeqCst);
-        backend
+        Self {
+            inner,
+            fail_capture: Arc::new(AtomicUsize::new(0)),
+            fail_apply: Arc::new(AtomicUsize::new(ordinal)),
+            fail_restore: Arc::new(AtomicUsize::new(0)),
+        }
     }
 
     pub(super) fn after_restore(inner: TreeBackend, ordinal: usize) -> Self {
-        let backend = Self::new(inner);
-        backend.fail_restore.store(ordinal, Ordering::SeqCst);
-        backend
+        Self {
+            inner,
+            fail_capture: Arc::new(AtomicUsize::new(0)),
+            fail_apply: Arc::new(AtomicUsize::new(0)),
+            fail_restore: Arc::new(AtomicUsize::new(ordinal)),
+        }
     }
 
     fn trips(counter: &AtomicUsize) -> bool {
@@ -205,6 +206,7 @@ impl MutationCrashBackend {
 
 impl MaterializationBackend for MutationCrashBackend {
     type Error = TreeBackendError;
+
     async fn capture(
         &self,
         edit: &MaterializationEdit,

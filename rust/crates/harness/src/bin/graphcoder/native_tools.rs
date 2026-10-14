@@ -192,7 +192,7 @@ impl super::native::NativeSession {
             self.config.tools.content_budget,
             &cancellation,
         )
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) })?;
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = PreparationIo::from_native_work(&work)?;
         let binding = self.caller_binding(caller).await?;
         let issuer = AuthorityIssuer::new(&binding.issuer, binding.key, binding.authority.clone());

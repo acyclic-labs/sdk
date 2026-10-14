@@ -4,7 +4,7 @@ use crate::filesystem::{FilesystemContentPublisher, FilesystemContentVerifier};
 use crate::{
     Capabilities,
     conversation::{
-        ContentPublisher, FileRef,
+        FileRef,
         VolumeClass,
     },
     core::AuthorityIssuer,

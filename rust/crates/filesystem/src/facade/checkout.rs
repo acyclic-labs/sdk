@@ -83,7 +83,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
                 KernelOwnedAllocation::NativeOriginal(mut root_allocation) => {
                     let original = accounting
                         .native_work()
-                        .expect("native checkout allocation");
+                        .ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?;
                     let witness = original.checkout_control_sink(&custody)?;
                     let working = root_allocation.transfer_checkout_control(&custody, &witness)?;
                     let mut captured_control = native_pinned_allocation(captured_allocation)?

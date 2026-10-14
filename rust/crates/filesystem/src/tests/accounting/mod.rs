@@ -4,7 +4,7 @@ use crate::accounting::{
 };
 use crate::distributed::StreamAuthorityStore;
 use crate::foundation::{
-    AuthorityId, Digest, DurableCommit, Epoch, Head, OperationId, ProposedCommit, Sequence,
+    AuthorityId, Digest, DurableCommit, Head, OperationId, ProposedCommit, Sequence,
 };
 use crate::kernel::{RetentionKind, retention_authority_id, volume_authority_id};
 use crate::storage::{AuthorityStoreError, ObjectId, ObjectKind, ReplayLimit};

@@ -4,10 +4,12 @@ pub(crate) enum NativeOpenOptions {
     Read,
     ReadWrite,
     CreateNew,
+    #[cfg(feature = "local")]
     ReadWriteCreateNew,
     ReadWriteCreate,
 }
 
+#[cfg(feature = "local")]
 pub(crate) fn create_directories<W: NativeHostWork>(
     path: &Path,
     work: &mut W,
@@ -143,6 +145,7 @@ pub(crate) fn open_leaf<W: NativeHostWork>(
             NativeOpenOptions::Read => libc::O_RDONLY,
             NativeOpenOptions::ReadWrite => libc::O_RDWR,
             NativeOpenOptions::CreateNew => libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+            #[cfg(feature = "local")]
             NativeOpenOptions::ReadWriteCreateNew => libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
             NativeOpenOptions::ReadWriteCreate => libc::O_RDWR | libc::O_CREAT,
         };
@@ -251,7 +254,10 @@ pub(crate) fn prepare_ascii_leaf<const N: usize>(
     bytes: [u8; N],
     work: &NativeMaterializationWork,
 ) -> Result<[NativeUnit; N], NativeTreeMaterializationError> {
-    if N < 2 || bytes[N - 1] != 0 || matches!(&bytes[..N - 1], b"." | b"..") {
+    let Some((&0, prefix)) = bytes.split_last() else {
+        return Err(NativeTreeMaterializationError::InvalidLayout);
+    };
+    if prefix.is_empty() || matches!(prefix, b"." | b"..") {
         return Err(NativeTreeMaterializationError::InvalidLayout);
     }
     let item = WorkCounters {
@@ -261,19 +267,19 @@ pub(crate) fn prepare_ascii_leaf<const N: usize>(
         ..WorkCounters::UNCHARGED
     };
     let credit = work.reserve_work(WorkCounters {
-        items_examined: (N - 1) as u64,
+        items_examined: prefix.len() as u64,
         #[cfg(windows)]
-        bytes_encoded: (N - 1).checked_mul(2).ok_or(crate::WorkError::Overflow)? as u64,
+        bytes_encoded: prefix.len().checked_mul(2).ok_or(crate::WorkError::Overflow)? as u64,
         ..WorkCounters::UNCHARGED
     })?;
     let mut name = [0; N];
-    for (index, byte) in bytes[..N - 1].iter().copied().enumerate() {
+    for (&byte, unit) in prefix.iter().zip(&mut name) {
         crate::NativeMaterializationWork::admit(work, WorkCounters::UNCHARGED)?;
         credit.record_completed(item)?;
         if !byte.is_ascii() || matches!(byte, 0 | b'/' | b'\\' | b':') {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
-        name[index] = NativeUnit::from(byte);
+        *unit = NativeUnit::from(byte);
     }
     Ok(name)
 }

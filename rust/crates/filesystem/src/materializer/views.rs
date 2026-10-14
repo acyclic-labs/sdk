@@ -5,15 +5,13 @@ pub(crate) struct NativeInvocationView {
     pub(super) cancellation: crate::CancellationToken,
     pub(super) self_ref: Weak<Self>,
     pub(super) metadata: NativeAllocation,
+    pub(super) read_credit: NativeResourceCredit,
 }
 impl NativeInvocationView {
     pub(crate) fn check(&self) -> Result<(), crate::DemandError> {
         self.cancellation
             .check()
             .map_err(|_| crate::DemandError::Cancelled)
-    }
-    pub(crate) fn cancellation(&self) -> &crate::CancellationToken {
-        &self.cancellation
     }
     pub(crate) fn owns_resource(&self, resource: Option<&Arc<NativeResourceAllowance>>) -> bool {
         match (&self.metadata.work().resource, resource) {
@@ -57,12 +55,13 @@ impl NativeMaterializationWork {
         let cancellation =
             crate::CancellationToken::linked_child_with_native_work(self.cancellation(), self)?;
         let mut work = self.allocation_work();
-        work.bind_invocation(cancellation.clone())?;
+        work.bind_invocation(cancellation.clone(), NativeResourceCredit::ReadBytes)?;
         Ok((self.retain_source(work)?, cancellation))
     }
     fn bind_invocation(
         &mut self,
         cancellation: crate::CancellationToken,
+        read_credit: NativeResourceCredit,
     ) -> Result<(), NativeTreeMaterializationError> {
         let metadata = self.claim(
             std::mem::size_of::<NativeInvocationView>() as u64,
@@ -73,8 +72,20 @@ impl NativeMaterializationWork {
             cancellation,
             metadata,
             self_ref: self_ref.clone(),
+            read_credit,
         }));
         Ok(())
+    }
+    pub(crate) fn authority_read_meter(
+        &self,
+    ) -> Result<Arc<dyn acyclic_native_runtime::NativeReadMeter>, NativeTreeMaterializationError>
+    {
+        let mut work = self.allocation_work();
+        work.bind_invocation(
+            self.cancellation().clone(),
+            NativeResourceCredit::AuthorityReadBytes,
+        )?;
+        Ok(work.runtime_meter())
     }
     /// Adds a finite resource ceiling without changing the original ledger.
     pub fn native_volume_work(
@@ -131,10 +142,10 @@ impl NativeMaterializationWork {
                 _ => return Err(NativeTreeMaterializationError::InvalidLayout),
             };
         }
-        if let Some(view) = &work.invocation {
-            if !view.owns_resource(work.resource.as_ref()) {
-                work.bind_invocation(view.cancellation.clone())?;
-            }
+        if let Some(view) = &work.invocation
+            && !view.owns_resource(work.resource.as_ref())
+        {
+            work.bind_invocation(view.cancellation.clone(), view.read_credit)?;
         }
         let metadata = work.claim(
             std::mem::size_of::<NativeSourceExecutionView>() as u64,

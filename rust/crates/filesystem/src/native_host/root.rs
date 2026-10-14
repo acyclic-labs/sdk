@@ -46,7 +46,7 @@ impl HostRoot {
     ) -> Result<HostStat, W::Error> {
         #[cfg(windows)]
         if path.is_empty() || path == [46] {
-            return stat_windows_file(&self.directory, self.identity.device as u32, work);
+            return stat_windows_file(&self.directory, u32::try_from(self.identity.device).map_err(|_| W::invalid_request())?, work);
         }
         #[cfg(unix)]
         if path.as_os_str().is_empty() {
@@ -63,7 +63,7 @@ impl HostRoot {
                     nt::FILE_SYNCHRONOUS_IO_NONALERT,
                     work,
                 )?;
-                stat_windows_file(&file, self.identity.device as u32, work)
+                stat_windows_file(&file, u32::try_from(self.identity.device).map_err(|_| W::invalid_request())?, work)
             }
             #[cfg(unix)]
             {
@@ -82,7 +82,7 @@ impl HostRoot {
         }
         #[cfg(windows)]
         {
-            stat_windows_file(file, self.identity.device as u32, work)
+            stat_windows_file(file, u32::try_from(self.identity.device).map_err(|_| W::invalid_request())?, work)
         }
     }
     pub(crate) fn open_file<W: NativeHostWork>(
@@ -256,8 +256,9 @@ pub(crate) fn open_root_directory<W: NativeHostWork>(
 
 #[cfg(windows)]
 pub(super) fn wide_parent_leaf(path: &[u16]) -> Result<(&[u16], &[u16]), DemandError> {
-    let index = path.iter().rposition(|u| *u == 92);
-    let (parent, leaf) = index.map_or((&[][..], path), |i| (&path[..i], &path[i + 1..]));
+    let mut parts = path.rsplitn(2, |unit| *unit == 92);
+    let leaf = parts.next().ok_or(DemandError::InvalidRequest)?;
+    let parent = parts.next().unwrap_or_default();
     if leaf.is_empty() || path.first() == Some(&92) {
         return Err(DemandError::InvalidRequest);
     }
@@ -284,15 +285,13 @@ pub(crate) fn reports_every_change<W: NativeHostWork<Error = DemandError>>(
         )
     }
     .map_err(io::Error::from)?;
-    let mut length = 0;
     for unit in name {
         work.started_io(ITEM)?;
         if unit == 0 {
             break;
         }
-        length += 1;
     }
-    Ok(name[..length] == [78, 84, 70, 83])
+    Ok(name.starts_with(&[78, 84, 70, 83, 0]))
 }
 
 /// Allows attributes removed by `ProjFS` hydration.

@@ -46,7 +46,7 @@ where
         let mut carrier = NativeDemandCarrier::Native(work);
         let mut inputs = InputBuffers::new(&mut carrier)?;
         let name = inputs.attribute_name(name, self.profile, self.limits)?;
-        let (mut candidate, epoch, stamp) = self
+        let mut candidate = self
             .checkout
             .candidate(None, inputs.carrier, cancellation, Some(&self.cancellation))
             .await?;
@@ -57,8 +57,6 @@ where
         self.checkout
             .install_change(
                 candidate,
-                epoch,
-                stamp,
                 ViewChange::Node(self.file_id),
                 work,
                 &self.cancellation,
@@ -75,7 +73,7 @@ where
     ) -> Result<(), MountSourceError> {
         invoke(&self.runtime, work, || async {
             let cancellation = work.cancellation();
-            let (mut candidate, epoch, stamp) = self
+            let mut candidate = self
                 .checkout
                 .candidate(
                     None,
@@ -97,8 +95,6 @@ where
             self.checkout
                 .install_change(
                     candidate,
-                    epoch,
-                    stamp,
                     ViewChange::Node(self.file_id),
                     work,
                     &self.cancellation,
@@ -276,7 +272,7 @@ where
             let record = checkout
                 .read_file_record_by_id(self.file_id, work, work.cancellation())
                 .await?;
-            let file = checkout.detached_from_record(record, work, work.cancellation())?;
+            let file = checkout.detached_from_record(record, &work, work.cancellation())?;
             sparse::read_sparse(&file, offset, length, work, &self.cancellation).await
         })
     }
@@ -290,7 +286,7 @@ where
         sparse::validate_sparse_allocation(&range.1, work)?;
         invoke(&self.runtime, work, || async {
             let cancellation = work.cancellation();
-            let (mut candidate, epoch, stamp) = self
+            let mut candidate = self
                 .checkout
                 .candidate(
                     None,
@@ -315,8 +311,6 @@ where
             self.checkout
                 .install_change(
                     candidate,
-                    epoch,
-                    stamp,
                     ViewChange::Node(self.file_id),
                     work,
                     &self.cancellation,
@@ -388,7 +382,7 @@ where
     ) -> Result<(), MountSourceError> {
         invoke(&self.runtime, work, || async {
             let cancellation = work.cancellation();
-            let (mut candidate, epoch, stamp) = self
+            let mut candidate = self
                 .checkout
                 .candidate(
                     None,
@@ -404,8 +398,6 @@ where
             self.checkout
                 .install_change(
                     candidate,
-                    epoch,
-                    stamp,
                     ViewChange::Node(self.file_id),
                     work,
                     &self.cancellation,

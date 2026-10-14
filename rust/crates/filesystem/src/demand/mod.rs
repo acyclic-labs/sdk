@@ -49,7 +49,7 @@ pub(crate) use context::native_demand_read_error;
 pub(crate) use context::{CaptureTransientCustody, NativeDemandReadMeter, native_demand_error};
 #[cfg(not(target_arch = "wasm32"))]
 pub use ownership::NativeMountAllocationCustody;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub(crate) use ownership::SourcePayloadOwnership;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use source_work::SourceDemandReadWork;

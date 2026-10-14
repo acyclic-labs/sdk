@@ -88,6 +88,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         record.retire(ctx)?;
         result
     }
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
     pub(crate) async fn finish_selected_import(
         &self,
         operation: crate::OperationId,

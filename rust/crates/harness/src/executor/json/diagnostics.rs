@@ -1,5 +1,5 @@
 //! Checked ownership admission for history event and snapshot decoding.
-use super::{Error, JsonBounds, JsonCodecCharge, JsonValueSchema, JsonValueShape, Result};
+use super::{JsonBounds, JsonCodecCharge, JsonValueShape, Result};
 use crate::{
     conversation::{Attachment, ConversationMessage, FileRef},
     core::{ExtensionConfiguration, ExtensionDependency},
@@ -59,31 +59,6 @@ fn sum_with_code(values: &[u64], code: Option<crate::wire::ErrorCode>) -> Result
             .ok_or_else(|| super::boundary("event JSON admission overflow", code))
     })
 }
-pub(crate) fn event_payload_json_admission<F: FnMut(JsonCodecCharge) -> Result<()> + ?Sized>(
-    bytes: &[u8],
-    bounds: JsonBounds,
-    charge: &mut F,
-) -> Result<u64> {
-    let bounds = JsonBounds {
-        maximum_bytes: bounds
-            .maximum_bytes
-            .min(acyclic_stream::MAX_RECORD_BYTES as u64),
-        maximum_depth: bounds.maximum_depth.min(256),
-        ..bounds
-    };
-    let value_shape = super::admit_json_value_shape(
-        bytes,
-        bounds,
-        JsonValueSchema::EventPayload,
-        &mut |event| charge(event),
-    )?;
-    let maximum_owned_bytes = json_decode_owned_bytes(value_shape, false, None)?.0;
-    charge(JsonCodecCharge::Admission {
-        maximum_owned_bytes,
-        value_shape,
-    })?;
-    Ok(maximum_owned_bytes)
-}
 pub(crate) fn json_decode_owned_bytes(
     shape: JsonValueShape,
     snapshot: bool,
@@ -117,8 +92,8 @@ pub(crate) fn json_decode_owned_bytes(
     let virtual_bytes =
         super::json_value_virtual_owned_bytes(shape).map_err(|error| match (code, error) {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            (Some(code), Error::NativeBoundary { reason, .. }) => {
-                Error::NativeBoundary { code, reason }
+            (Some(code), crate::Error::NativeBoundary { reason, .. }) => {
+                crate::Error::NativeBoundary { code, reason }
             }
             (_, error) => error,
         })?;

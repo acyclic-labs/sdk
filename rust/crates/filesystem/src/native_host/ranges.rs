@@ -168,7 +168,7 @@ pub(crate) fn allocated_data_ranges<W: SourceDemandReadWork>(
             let mut used = 0;
             let mut prior_end = offset;
             for index in 0..returned / element {
-                let range = ranges[index];
+                let range = *ranges.get(index).ok_or(DemandError::InvalidRequest)?;
                 // The native ABI uses signed integers; reject their negative bit patterns.
                 i64::try_from(range.offset).map_err(|_| DemandError::InvalidRequest)?;
                 i64::try_from(range.length).map_err(|_| DemandError::InvalidRequest)?;
@@ -187,7 +187,7 @@ pub(crate) fn allocated_data_ranges<W: SourceDemandReadWork>(
                     ..WorkCounters::UNCHARGED
                 })?;
                 if start < range_end {
-                    ranges[used] = HostDataRange {
+                    *ranges.get_mut(used).ok_or(DemandError::InvalidRequest)? = HostDataRange {
                         offset: start,
                         length: range_end - start,
                     };

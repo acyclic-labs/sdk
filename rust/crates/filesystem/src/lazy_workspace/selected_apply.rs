@@ -9,7 +9,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
     LazyWorkspace<A, O, D, S>
 {
     /// Publishes a funded selected import without attaching a native mount.
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
     pub async fn import_selected<F, Fut, E>(
         &self,
         destination: LazySnapshotRef,
@@ -34,7 +33,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         before_publication(work).await?;
         self.publish_selected_import(destination, &input.0, operation, permit, work, before_publication).await
     }
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
     async fn publish_selected_import<F, Fut, E>(
         &self,
         destination: LazySnapshotRef,
@@ -73,15 +71,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         let committed = transaction.commit_with_native_work(
             Some((context, evidence, permit)), permit, work, work.cancellation(), &mut before_publication,
         ).await?;
-        let generation = match committed {
-            TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => generation,
-            _ => return Err(LazyWorkspaceError::Concurrent.into()),
+        let (TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation)) = committed else {
+            return Err(LazyWorkspaceError::Concurrent.into());
         };
         before_publication(work).await?;
         self.finish_selected_import(operation, generation.id(), destination, plan.source,
             plan.source_config, input, &mut ctx).await.map_err(E::from)
     }
-    #[cfg(feature = "native-mount")]
     pub(crate) async fn prepare_selected_import_into_checkout(
         &self,
         destination: LazySnapshotRef,
@@ -176,7 +172,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                     continue;
                 }
                 for (end, _) in entry.path.match_indices('/').skip(1) {
-                    let parent = &entry.path[..end];
+                    let (parent, _) = entry.path.split_at(end);
                     if plan.entries.iter().any(|entry| {
                         entry.path == parent
                             && entry
@@ -214,7 +210,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 };
                 let alias = (record.kind != FileKind::Directory)
                     .then(|| {
-                        plan.entries[..index].iter().find(|entry| {
+                        plan.entries.iter().take(index).find(|entry| {
                             entry
                                 .record
                                 .is_some_and(|(other, _)| other.file_id == record.file_id)
@@ -281,7 +277,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             _allocation: paths.allocation,
         })
     }
-    #[cfg(feature = "native-mount")]
     async fn stage_selected_path(
         &self,
         transaction: &mut crate::Transaction<A, O>,
