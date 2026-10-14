@@ -125,26 +125,21 @@ fn measured_kill_with_denied_observation_keeps_owned_child() -> io::Result<()> {
 
 #[cfg(windows)]
 #[test]
-fn denied_admission_after_suspended_spawn_retains_child() -> io::Result<()> {
+fn suspended_child_launch_fits_its_input_item_allowance() -> io::Result<()> {
     let temporary = tempfile::tempdir()?;
+    let mut command = command("exit-code", temporary.path());
+    let items = 1
+        + command.get_args().count()
+        + command.get_envs().count()
+        + usize::from(command.get_current_dir().is_some());
     let mut meter = crate::tests::ReadBudgetMeter::new(u64::MAX, 0);
-    meter.operation_denial = Some(crate::NativeOperationKind::Read);
+    meter.item_limit = Some(u64::try_from(items).map_err(|_| io::ErrorKind::InvalidInput)?);
     let mut custody = None;
-    assert!(
-        ProcessTree::spawn_controlled(
-            &mut command("exit-code", temporary.path()),
-            Some(&meter),
-            &mut custody
-        )
-        .is_err()
-    );
-    let mut tree = custody.take().expect("suspended child remains owned");
-    assert!(!tree.is_reaped());
-    assert_eq!(
-        tree.wait(Duration::from_secs(5)).unwrap_err().kind(),
-        io::ErrorKind::TimedOut
-    );
+    let spawned = ProcessTree::spawn_controlled(&mut command, Some(&meter), &mut custody);
+    let mut tree = custody.take().ok_or(io::ErrorKind::NotFound)?;
+    let status = spawned.and_then(|()| tree.wait(Duration::from_secs(5)));
     tree.terminate(None)?;
+    assert_eq!(status?.code(), Some(7));
     assert!(tree.is_reaped());
     Ok(())
 }
