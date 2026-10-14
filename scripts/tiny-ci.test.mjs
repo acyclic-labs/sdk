@@ -24,13 +24,15 @@ test('Linux host qualification uses the smallest registered runner and retains e
   ['Run Pi installed diagnostics and native context qualification',undefined,
    'suffix="" if [[ "$RUNNER_OS" == Windows ]]; then suffix=".exe"; fi ACYCLIC_BINARY="$CARGO_TARGET_DIR/debug/acyclic$suffix" node --experimental-strip-types --test plugin/tests/hosts/pi-context.test.ts plugin/tests/hosts/pi-bootstrap.test.ts plugin/tests/hosts/pi-installation.test.ts'],
   ['Run codex scenario',undefined,'cargo test -p acyclic-plugin --test e2e actual_codex_binary_executes_the_scripted_scenario -- --ignored --exact --nocapture'],
-  ['Run codex executor scenario',"(success() || failure()) && runner.os != 'Windows'",'cargo test -p acyclic-harness-codex --test e2e -- --ignored --nocapture'],
+  ['Run codex executor scenario',"(success() || failure()) && runner.os != 'Windows'",'cargo test -p acyclic-harness-codex --test e2e --target-dir "$RUNNER_TEMP/codex-executor-target" -- --ignored --nocapture'],
   ['Run claude scenario','success() || failure()','cargo test -p acyclic-plugin --test e2e actual_claude_binary_executes_the_scripted_scenario -- --ignored --exact --nocapture'],
  ];
  /** @param {ReturnType<typeof YAML.parse>} document */
  const verify=document=>{
   const qualification=document.jobs.qualify;
   assert.equal(qualification.if,undefined);
+  const locate=qualification.steps.find(step=>step.name==='Locate build outputs')??assert.fail('missing plugin target setup');
+  assert.ok(locate.run.includes('CARGO_TARGET_DIR=$RUNNER_TEMP/agent-host-target'));
   for(const environment of [document.env,qualification.env,...qualification.steps.map(step=>step.env)])
    assert.equal(environment?.CARGO_BUILD_JOBS,undefined,'Cargo follows the runner CPU count');
   for(const [name,condition,command] of scenarios){
