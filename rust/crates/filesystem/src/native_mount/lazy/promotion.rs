@@ -18,7 +18,7 @@ where
     let operation = crate::OperationId::new();
     for _ in 0..MAXIMUM_PROMOTION_RETRIES {
         carrier.with_work(|work| mount_items(work, 1))?;
-        let (mut candidate, epoch, stamp) = authored
+        let mut candidate = authored
             .shared_checkout()
             .candidate(None, carrier, cancellation, Some(authored.cancellation()))
             .await?;
@@ -52,8 +52,6 @@ where
             .shared_checkout()
             .install_candidate(
                 candidate,
-                epoch,
-                stamp,
                 carrier,
                 cancellation,
                 Some(authored.cancellation()),

@@ -125,9 +125,7 @@ pub(super) fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
         LazyWorkspaceError::NativeRecordIo(error, allocation) => {
             MountSourceError::Io(error, allocation)
         }
-        LazyWorkspaceError::NativeWork(error) => {
-            MountSourceError::NativeWork(error)
-        }
+        LazyWorkspaceError::NativeWork(error) => MountSourceError::NativeWork(error),
         LazyWorkspaceError::NativeRecordJson(error, allocation) => {
             MountSourceError::NativeRecordJson(error, allocation)
         }

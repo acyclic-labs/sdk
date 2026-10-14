@@ -41,15 +41,17 @@ fn administrative_last_drop_closes_real_fence_without_touching_residue()
     let original =
         crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .map_err(|(error, _)| error)?;
-    let mut owner =
-        NativeMountRecoveryOwner::acquire_with_original(&destination, &original)?;
+    let mut owner = NativeMountRecoveryOwner::acquire_with_original(&destination, &original)?;
     let identity = owner.cleanup_state()?.fence_identity;
     let cancellation = CancellationToken::new();
     let mut budget = WorkBudget::UNBOUNDED;
     budget.backend_read_operations = 0;
-    let (error, receipt) = owner
-        .detach_measured(budget, &cancellation)
+    let denied =
+        crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
+    let error = owner
+        .detach(&denied)
         .expect_err("the actual native observation is denied");
+    let receipt = denied.receipt();
     assert!(matches!(
         error,
         NativeMountError::Work(_)
@@ -136,16 +138,14 @@ fn administrative_retry_uses_same_fence_and_distinct_action_ledgers()
     let identity = owner.cleanup_state()?.fence_identity;
     let mut budget = WorkBudget::UNBOUNDED;
     budget.backend_read_operations = 0;
-    assert!(
-        owner
-            .detach_measured(budget, &CancellationToken::new())
-            .is_err()
-    );
-    let receipt = owner
-        .detach_measured(WorkBudget::UNBOUNDED, &CancellationToken::new())
+    let denied = crate::NativeMaterializationWork::new(budget, &CancellationToken::new())
         .map_err(|(error, _)| error)?;
-    assert!(receipt.value);
-    assert!(receipt.work.backend_read_operations > 0);
+    assert!(owner.detach(&denied).is_err());
+    let retry =
+        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .map_err(|(error, _)| error)?;
+    assert!(owner.detach(&retry)?);
+    assert!(retry.receipt().backend_read_operations > 0);
     assert_eq!(owner.cleanup_state()?.fence_identity, identity);
     let state = owner.cleanup_state()?;
     assert!(!state.destination_fence_retained && !state.controls_pending);

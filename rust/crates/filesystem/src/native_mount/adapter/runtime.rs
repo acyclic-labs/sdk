@@ -109,8 +109,12 @@ impl CallbackRuntime {
         work.check()
             .map_err(crate::native_mount::lazy::mount_demand_error)?;
         let bytes = std::mem::size_of::<ParkedCallback>() as u64;
-        work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)
-            .map_err(crate::native_mount::lazy::mount_demand_error)?;
+        work.claim_allocation(
+            bytes,
+            u64::from((bytes) != 0),
+            crate::WorkCounters::UNCHARGED,
+        )
+        .map_err(crate::native_mount::lazy::mount_demand_error)?;
         Ok(PreparedCallbackWait {
             parked: Arc::new(ParkedCallback {
                 woken: StdMutex::new(false),
@@ -142,13 +146,11 @@ impl CallbackRuntime {
         prepared: PreparedCallbackWait,
         create: impl FnOnce() -> F,
     ) -> F::Output {
-        let output = self.enter(|| {
+        let PreparedCallbackWait { parked, .. } = prepared;
+        self.enter(|| {
             let mut future = std::pin::pin!(tokio::task::unconstrained(create()));
-            Self::poll(future.as_mut(), &prepared.parked)
-        });
-        // Destroy the wait control before callers retire its charged bytes.
-        drop(prepared);
-        output
+            Self::poll(future.as_mut(), &parked)
+        })
     }
 
     pub(in crate::native_mount) fn verify_callback<

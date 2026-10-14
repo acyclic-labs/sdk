@@ -270,21 +270,16 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     witness.verify_preparation_origin_with_native_work(
                         query, &claim.1, origin, work,
                     )?;
-                    let mut io = crate::store::HistoryWork::new(crate::executor::PreparationIo::from_native_work(work)?);
-                    let original = crate::distributed::original_reservation_proof(
-                        &self.stream, self.verifier.audience(), &self.owner_scope, &self.verifier,
-                        witness.admission_operation(), &origin.creation_fence,
-                        &mut Some(&mut io),
+                    let io = PreparationIo::from_native_work(work)?;
+                    let owner = self.original_journal_owner(
+                        witness.task(), witness.admission_operation(), &origin.creation_fence, &io,
                     ).await?;
-                    let retained = original.0.logical_owned_bytes()?;
-                    let mut owner = self.journal_owner_record(witness.task(), &origin.creation_fence, Some(original.0), Some(&crate::executor::PreparationIo::from_native_work(work)?)).await?;
-                    owner.native_custody.as_mut().ok_or_else(denied)?.absorb(&mut io.take_native_custody(retained)?)?;
                     if owner.workflow.request_digest != origin.admission_digest {
                         return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                             reason: "original Started admission differs from the protected fork claim" });
                     }
-                    owner.require_task_context_binding(query.as_ref(), Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
-                    owner.verify_read_access(&mut Some(&mut crate::store::HistoryWork::new(crate::executor::PreparationIo::from_native_work(work)?))).await?;
+                    owner.require_task_context_binding(query.as_ref(), Some(&io))?;
+                    owner.verify_read_access(&mut Some(&mut io.history_io())).await?;
                     witness.verify_query_with_native_work(query, work).await?;
                     owner.into_native_shared(work)
                 }.await;
@@ -314,6 +309,35 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }),
             result => result,
         }
+    }
+
+    async fn original_journal_owner(
+        self: &Arc<Self>,
+        task: TaskId,
+        operation: OperationId,
+        fence: &crate::scheduler::LeaseFence,
+        io: &PreparationIo,
+    ) -> Result<TaskJournalOwner<P>> {
+        let (original, _) = crate::distributed::original_reservation_proof(
+            &self.stream,
+            self.verifier.audience(),
+            &self.owner_scope,
+            &self.verifier,
+            operation,
+            fence,
+            &mut Some(&mut io.history_io()),
+        )
+        .await?;
+        let retained = original.logical_owned_bytes()?;
+        let mut owner = self
+            .journal_owner_record(task, fence, Some(original), Some(io))
+            .await?;
+        owner
+            .native_custody
+            .as_mut()
+            .ok_or_else(denied)?
+            .absorb(&mut io.take_native_custody(retained)?)?;
+        Ok(owner)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -348,34 +372,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     reason: "protected native preparation belongs to another task",
                 });
             }
-            let mut io = crate::store::HistoryWork::new(
-                crate::executor::PreparationIo::from_native_work(work)?,
-            );
-            let original = crate::distributed::original_reservation_proof(
-                &self.stream,
-                self.verifier.audience(),
-                &self.owner_scope,
-                &self.verifier,
-                witness.admission_operation(),
-                &original_fence,
-                &mut Some(&mut io),
-            )
-            .await?;
-            let retained = original.0.logical_owned_bytes()?;
-            let mut owner = self
-                .journal_owner_record(
-                    task,
-                    &original_fence,
-                    Some(original.0),
-                    Some(&crate::executor::PreparationIo::from_native_work(work)?),
-                )
-                .await?;
-            owner
-                .native_custody
-                .as_mut()
-                .ok_or_else(denied)?
-                .absorb(&mut io.take_native_custody(retained)?)?;
-            Ok(owner)
+            let io = PreparationIo::from_native_work(work)?;
+            self.original_journal_owner(task, witness.admission_operation(), &original_fence, &io)
+                .await
         }
     }
 }

@@ -50,8 +50,10 @@ pub(super) fn write_listed_content(
         Some(pin) => projection.runtime.source.as_ref().read_pinned_with_meter(
             path,
             pin,
-            0,
-            size,
+            crate::ByteRange {
+                offset: 0,
+                length: size,
+            },
             WRITE_CHUNK_BYTES,
             &mut sink,
             projection.work,

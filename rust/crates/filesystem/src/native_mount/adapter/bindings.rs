@@ -13,7 +13,7 @@ where
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let path = self.namespace_inputs(path, &mut inputs)?;
-            let (candidate, epoch, stamp) = self
+            let candidate = self
                 .checkout
                 .candidate(
                     None,
@@ -22,7 +22,10 @@ where
                     Some(&self.cancellation),
                 )
                 .await?;
-            let mut inspector = candidate.checkout.inspector(&mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()), work.cancellation())?;
+            let mut inspector = candidate.checkout.inspector(
+                &mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()),
+                work.cancellation(),
+            )?;
             let node = inspector
                 .lookup_no_follow(&path, work, work.cancellation())
                 .await?
@@ -33,8 +36,6 @@ where
             let owned = inputs.clone_namespace(path.components(), self.limits)?;
             self.mutate(
                 candidate,
-                epoch,
-                stamp,
                 AuthoredMutation::Remove {
                     path: owned,
                     expected_file_id: expected,
@@ -58,7 +59,7 @@ where
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let source = self.namespace_inputs(source, &mut inputs)?;
             let destination = self.namespace_inputs(destination, &mut inputs)?;
-            let (candidate, epoch, stamp) = self
+            let candidate = self
                 .checkout
                 .candidate(
                     None,
@@ -67,7 +68,10 @@ where
                     Some(&self.cancellation),
                 )
                 .await?;
-            let mut inspector = candidate.checkout.inspector(&mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()), work.cancellation())?;
+            let mut inspector = candidate.checkout.inspector(
+                &mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()),
+                work.cancellation(),
+            )?;
             let moved = inspector
                 .lookup_no_follow(&source, work, work.cancellation())
                 .await?
@@ -87,8 +91,6 @@ where
             };
             self.mutate(
                 candidate,
-                epoch,
-                stamp,
                 change,
                 ViewChange::Moved {
                     from: &source,
@@ -113,7 +115,7 @@ where
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let source = self.namespace_inputs(source, &mut inputs)?;
             let destination = self.namespace_inputs(destination, &mut inputs)?;
-            let (candidate, epoch, stamp) = self
+            let candidate = self
                 .checkout
                 .candidate(
                     None,
@@ -122,7 +124,10 @@ where
                     Some(&self.cancellation),
                 )
                 .await?;
-            let mut inspector = candidate.checkout.inspector(&mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()), work.cancellation())?;
+            let mut inspector = candidate.checkout.inspector(
+                &mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()),
+                work.cancellation(),
+            )?;
             let node = inspector
                 .lookup_no_follow(&source, work, work.cancellation())
                 .await?
@@ -136,8 +141,6 @@ where
             };
             self.mutate(
                 candidate,
-                epoch,
-                stamp,
                 change,
                 ViewChange::Entry(&destination, node),
                 work,

@@ -172,15 +172,23 @@ impl CallbackGate {
         }
     }
 
-    pub(super) fn call_observed<T>(
+    pub(super) fn call_observed(
         &self,
         key: u128,
-        operation: impl FnOnce() -> T,
-        observe: impl FnOnce(&T),
-    ) -> T {
-        let shard = (key % self.shards.len() as u128) as usize;
+        operation: impl FnOnce() -> Result<(), MountSourceError>,
+        observe: impl FnOnce(&Result<(), MountSourceError>),
+    ) -> Result<(), MountSourceError> {
+        let Some(shard) = key
+            .checked_rem(self.shards.len() as u128)
+            .and_then(|index| usize::try_from(index).ok())
+            .and_then(|index| self.shards.get(index))
+        else {
+            let result = Err(MountSourceError::Work(crate::WorkError::Overflow));
+            observe(&result);
+            return result;
+        };
         // The SDK entry already owns admission through operation and observation.
-        let _serial = lock_recover(&self.shards[shard]);
+        let _serial = lock_recover(shard);
         let result = operation();
         observe(&result);
         result

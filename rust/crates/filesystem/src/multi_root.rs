@@ -291,7 +291,11 @@ where
 {
     type Error = WorkspaceLineageError<S::Error>;
     async fn resolve(&self, workspace_id: WorkspaceId) -> Result<Workspace<A, O>, Self::Error> {
-        self.1.workspace(&self.0, workspace_id, WorkBudget::UNBOUNDED, &CancellationToken::new()).await
+        let record = self.1.resolve(workspace_id).await?;
+        let workspace = self.0.open_workspace(&record.workspace_name, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await.map_err(|failure| failure.error)?.value;
+        if workspace.id() != workspace_id { return Err(WorkspaceLineageError::IncompatibleState); }
+        Ok(workspace)
     }
 }
 

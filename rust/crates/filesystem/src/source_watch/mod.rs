@@ -29,30 +29,6 @@ pub(super) const fn arc_control_bytes<T>() -> u64 {
     (payload_offset + std::mem::size_of::<T>()) as u64
 }
 
-/// Transfers a genuine before-birth terminal allowance into the existing original reservation engine.
-#[cfg(windows)]
-pub(super) fn prepare_native_cleanup_credit<W: SourceDemandReadWork>(
-    work: &mut W,
-    maximum: WorkCounters,
-) -> Result<Option<crate::materializer::NativeWorkReservation>, DemandError> {
-    work.check()?;
-    if !work.is_native_original() {
-        return Ok(None);
-    }
-    let source = work
-        .native_source_work()
-        .ok_or(DemandError::NativeWorkUnavailable)?;
-    let original = {
-        crate::native_host::NativeHostWork::check(&source)?;
-        source
-    }
-    .allocation_work();
-    original
-        .reserve_work(maximum)
-        .map(Some)
-        .map_err(crate::native_name::original_name_error)
-}
-
 fn cleanup_credits(delta: WorkCounters) -> [(crate::materializer::NativeResourceCredit, u64); 3] {
     use crate::materializer::NativeResourceCredit::{Items, ReadOperations, WriteOperations};
     [

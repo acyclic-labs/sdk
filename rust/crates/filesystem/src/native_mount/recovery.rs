@@ -233,18 +233,6 @@ impl NativeMountRecoveryOwner {
 
     /// Recovers through the same engine with an explicit unbounded allowance.
     pub fn recover(&mut self) -> Result<bool, NativeMountError> {
-        self.ordinary_action(true)
-    }
-
-    /// Detaches while preserving the destination and authored residue.
-    pub fn detach(&mut self) -> Result<bool, NativeMountError> {
-        self.ordinary_action(false)
-    }
-
-    pub(super) fn ordinary_action(
-        &mut self,
-        remove_destination: bool,
-    ) -> Result<bool, NativeMountError> {
         if !self.cleanup_state()?.destination_fence_retained {
             return Ok(false);
         }
@@ -253,61 +241,46 @@ impl NativeMountRecoveryOwner {
             self.mark_failed();
             return Err(error.into());
         }
-        self.measured_action(
-            remove_destination,
+        let work = crate::NativeMaterializationWork::new(
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )
-        .map(|receipt| receipt.value)
-        .map_err(|(error, _)| error)
+        .map_err(|(error, _)| {
+            self.mark_failed();
+            NativeMountError::from(error)
+        })?;
+        self.finish(true, &work)
     }
 
-    /// Detaches on finite work without removing the destination.
-    pub fn detach_measured(
+    /// Detaches on the caller's original work while preserving authored residue.
+    pub fn detach(
         &mut self,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<bool>, (NativeMountError, Box<crate::WorkCounters>)> {
-        self.measured_action(false, budget, cancellation)
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<bool, NativeMountError> {
+        self.finish(false, work)
     }
 
-    pub(super) fn measured_action(
+    fn finish(
         &mut self,
         remove_destination: bool,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<bool>, (NativeMountError, Box<crate::WorkCounters>)> {
-        let work = match crate::NativeMaterializationWork::new(budget, cancellation) {
-            Ok(work) => work,
-            Err((error, work)) => {
-                self.mark_failed();
-                return Err((error.into(), work));
-            }
-        };
-        let result = {
-            let mut state = self
-                .shared
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let Some(state) = state.as_mut() else {
-                return Err((NativeMountError::ControlPending, Box::new(work.receipt())));
-            };
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                state.finish_with_work(&self.shared.destination, remove_destination, &work)
-            }))
-            .unwrap_or_else(|panic| {
-                state.measured_cleanup_failed = true;
-                Err(NativeMountError::DriverPanicked {
-                    operation: "administrative action",
-                    panic: std::sync::Mutex::new(panic),
-                })
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<bool, NativeMountError> {
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = state.as_mut().ok_or(NativeMountError::ControlPending)?;
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            state.finish_with_work(&self.shared.destination, remove_destination, work)
+        }))
+        .unwrap_or_else(|panic| {
+            state.measured_cleanup_failed = true;
+            Err(NativeMountError::DriverPanicked {
+                operation: "administrative action",
+                panic: std::sync::Mutex::new(panic),
             })
-        };
-        let spent = work.receipt();
-        result
-            .map(|value| crate::OperationReceipt { value, work: spent })
-            .map_err(|error| (error, Box::new(spent)))
+        })
     }
 
     pub(super) fn mark_failed(&mut self) {
