@@ -8,7 +8,9 @@ test("Harness packaging stages the qualified bytes and rejects missing WASM befo
   const source = readFileSync("scripts/check-harness-package.sh", "utf8");
   assert.doesNotMatch(source, /build-wasm\.mjs|bun x tsc|bun scripts\/check-metadata\.mjs/);
   const lane = readFileSync("scripts/qualify-ci.sh", "utf8").split("  linux)\n")[1]?.split("  linux-musl|")[0] ?? assert.fail("missing Linux lane");
-  assert.ok(lane.indexOf("bun run test") < lane.indexOf("bash scripts/check-harness-package.sh"));
+  const workspaceTests = lane.indexOf("bun run test");
+  const packageCheck = lane.indexOf("bash scripts/check-harness-package.sh");
+  assert.ok(workspaceTests >= 0 && packageCheck > workspaceTests, "packaging requires preceding workspace qualification");
   assert.ok(lane.includes("bun scripts/check-metadata.mjs"));
   const start = source.indexOf("for generated in acyclic_harness_wasm.js");
   const end = source.indexOf('cd "$npm_stage"', start);
