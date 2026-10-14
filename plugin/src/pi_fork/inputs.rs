@@ -1,18 +1,12 @@
-//! Inputs of the original Pi fork.
+//! Immutable fork inputs and bounded copies on the coordinator's work context.
 use super::*;
+use acyclic_fs::NativeAllocation;
 use acyclic_harness::runtime::TaskSpawner as _;
+use acyclic_harness::{JsonValueSchema, filesystem::PreparationIo, runtime::TaskContext};
+use serde::de::DeserializeOwned;
 
-impl<'a> PiForkCoordinator<'a> {
-    pub(crate) async fn load_plan(
-        &self,
-        context: &acyclic_harness::runtime::TaskContext,
-        original: OperationId,
-    ) -> Result<Option<PiForkPlan>> {
-        self.require_input_read(context)?;
-        self.load_original_plan(original).await
-    }
-
-    /// Reads only the original protected piInputs directory.
+impl PiForkCoordinator<'_> {
+    /// Reads and validates the protected original plan.
     pub(crate) async fn load_original_plan(
         &self,
         original: OperationId,
@@ -31,22 +25,22 @@ impl<'a> PiForkCoordinator<'a> {
             return Ok(None);
         };
         let bytes = self.read_original_input(&reference.0).await?;
-        let mut decoded: (PiForkPlan, acyclic_fs::NativeAllocation) = self.decode_original_input(
-            bytes.as_ref(),
-            acyclic_harness::JsonValueSchema::RecursiveForkToolPlan,
+        let mut plan: (PiForkPlan, NativeAllocation) = self.decode_original_input(
+            &bytes,
+            JsonValueSchema::RecursiveForkToolPlan,
             FORK_PLAN_DIAGNOSTIC_LABEL_BYTES,
         )?;
-        self.validate_plan(&decoded.0, decoded.0.commit.caller)?;
-        if decoded.0.original != original {
+        self.validate_plan(&plan.0, plan.0.commit.caller)?;
+        if plan.0.original != original {
             return Err(Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Unauthorized,
                 reason: "Pi original plan locator changed",
             });
         }
         drop(reference.0);
-        decoded.1.absorb(&mut reference.1)?;
-        decoded.0._input_allocations = Some(decoded.1);
-        Ok(Some(decoded.0))
+        plan.1.absorb(&mut reference.1)?;
+        plan.0._input_allocations = Some(plan.1);
+        Ok(Some(plan.0))
     }
 
     pub(crate) async fn read_original_input(
@@ -56,40 +50,29 @@ impl<'a> PiForkCoordinator<'a> {
         let work = &self.work;
         self.runtime
             .verify_owner_with_native_work(&self.owner, work)?;
-        let actual = self
+        let context = self
             .runtime
             .runtime
             .harness()
             .durable_context(
                 self.owner.policy().root_task,
                 OperationId::from_bytes(self.owner.policy().root_task.into_bytes()),
-                Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
+                Some(&PreparationIo::from_native_work(work)?),
             )
             .await?;
-        return actual
-            .read_file(
-                reference,
-                Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
-            )
-            .await;
+        context
+            .read_file(reference, Some(&PreparationIo::from_native_work(work)?))
+            .await
     }
 
-    pub(super) fn require_input_read(
-        &self,
-        context: &acyclic_harness::runtime::TaskContext,
-    ) -> Result<()> {
-        let native = {
-            let mut io = acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?,
-            );
-            let value = self.owner.policy().journal.directory_read_capability(
-                crate::pi_root_inputs::ROOT_INPUT_DIRECTORY,
-                &mut Some(&mut io),
-            )?;
-            (value, io.into_custody()?)
-        };
-        let capability = native.0.as_str();
-        if !context.scope().grants().contains(capability) {
+    pub(crate) fn require_input_read(&self, context: &TaskContext) -> Result<()> {
+        let mut io =
+            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(&self.work)?);
+        let capability = self.owner.policy().journal.directory_read_capability(
+            crate::pi_root_inputs::ROOT_INPUT_DIRECTORY,
+            &mut Some(&mut io),
+        )?;
+        if !context.scope().grants().contains(&capability) {
             return Err(Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Unauthorized,
                 reason: "Pi caller lacks its original immutable input-directory read grant",
@@ -98,43 +81,36 @@ impl<'a> PiForkCoordinator<'a> {
         Ok(())
     }
 
-    pub(super) fn decode_original_input<T: serde::de::DeserializeOwned>(
+    pub(super) fn decode_original_input<T: DeserializeOwned>(
         &self,
         bytes: &[u8],
-        value_schema: &'static acyclic_harness::JsonValueSchema,
-        schema_label_bytes: u64,
-    ) -> Result<(T, acyclic_fs::NativeAllocation)> {
-        let work = &self.work;
+        schema: &'static JsonValueSchema,
+        labels: u64,
+    ) -> Result<(T, NativeAllocation)> {
+        let maximum = self.owner.policy().maximum_payload_bytes;
         crate::pi_root_provider::guarded_pi_decode(
             bytes,
-            self.owner.policy().maximum_payload_bytes,
-            self.owner.policy().maximum_payload_bytes,
-            acyclic_harness::wire::ErrorCode::Invalid,
-            value_schema,
-            schema_label_bytes,
-            work,
-        )
-    }
-
-    pub(super) fn decode_input_value<T: serde::de::DeserializeOwned>(
-        &self,
-        value: &serde_json::Value,
-        schema: &'static acyclic_harness::JsonValueSchema,
-        labels: u64,
-    ) -> Result<(T, acyclic_fs::NativeAllocation)> {
-        let work = &self.work;
-        let maximum = self.owner.policy().maximum_payload_bytes;
-        let bytes = crate::pi_root_provider::canonical_pi_value(value, maximum, work)?;
-        let (value, allocation) = crate::pi_root_provider::guarded_pi_decode(
-            &bytes.0,
             maximum,
             maximum,
             acyclic_harness::wire::ErrorCode::Invalid,
             schema,
             labels,
-            work,
+            &self.work,
+        )
+    }
+
+    pub(super) fn decode_input_value<T: DeserializeOwned>(
+        &self,
+        value: &impl Serialize,
+        schema: &'static JsonValueSchema,
+        labels: u64,
+    ) -> Result<(T, NativeAllocation)> {
+        let bytes = crate::pi_root_provider::canonical_pi_value(
+            value,
+            self.owner.policy().maximum_payload_bytes,
+            &self.work,
         )?;
-        Ok((value, allocation))
+        self.decode_original_input(&bytes.0, schema, labels)
     }
 
     pub(super) fn same_payload<T: Serialize>(
@@ -142,11 +118,10 @@ impl<'a> PiForkCoordinator<'a> {
         expected: &serde_json::Value,
         actual: &T,
     ) -> Result<bool> {
-        let work = &self.work;
         let actual = crate::pi_root_provider::guarded_pi_value(
             actual,
             self.owner.policy().maximum_payload_bytes,
-            work,
+            &self.work,
         )?;
         Ok(expected == &actual.0)
     }

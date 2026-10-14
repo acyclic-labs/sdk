@@ -33,7 +33,7 @@ impl crate::AsyncAuthorityStore for OpaqueAuthority {
             crate::AuthorityError::Authority(error.into_error(std::convert::identity))
         })?;
         if matches!(value, crate::CreateAuthorityOutcome::Existing(_)) {
-            crate::async_storage::seal(guard.as_deref_mut(), work).await?;
+            crate::async_storage::seal(guard, work).await?;
         }
         Ok(value)
     }
@@ -41,9 +41,8 @@ impl crate::AsyncAuthorityStore for OpaqueAuthority {
         &self,
         request: crate::GuardedAppend,
         work: &mut crate::AuthorityWork<'_>,
-        mut guard: Option<&mut G>,
-    ) -> Result<crate::AppendOutcome, crate::AuthorityError<G::Error>>
-    {
+        guard: Option<&mut G>,
+    ) -> Result<crate::AppendOutcome, crate::AuthorityError<G::Error>> {
         if work.original.is_some() {
             return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into());
         }
@@ -53,7 +52,7 @@ impl crate::AsyncAuthorityStore for OpaqueAuthority {
             )
             .into());
         }
-        crate::async_storage::seal(guard.as_deref_mut(), work).await?;
+        crate::async_storage::seal(guard, work).await?;
         work.cancellation
             .check()
             .map_err(|_| crate::AuthorityStoreError::Cancelled)?;
@@ -71,7 +70,7 @@ impl crate::AsyncAuthorityStore for OpaqueAuthority {
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<crate::Head, crate::AuthorityStoreError> {
         if work.original.is_some() {
-            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into());
+            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported);
         }
         work.cancellation
             .check()
@@ -89,7 +88,7 @@ impl crate::AsyncAuthorityStore for OpaqueAuthority {
     ) -> Result<(Vec<crate::DurableCommit>, crate::AuthorityAllocation), crate::AuthorityStoreError>
     {
         if work.original.is_some() {
-            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into());
+            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported);
         }
         work.cancellation
             .check()
@@ -105,7 +104,7 @@ impl crate::AsyncAuthorityStore for OpaqueAuthority {
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<crate::FenceOutcome, crate::AuthorityStoreError> {
         if work.original.is_some() {
-            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into());
+            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported);
         }
         work.cancellation
             .check()
@@ -119,12 +118,9 @@ impl crate::AsyncAuthorityStore for OpaqueAuthority {
         authority: crate::AuthorityId,
         operation: crate::OperationId,
         work: &mut crate::AuthorityWork<'_>,
-    ) -> Result<
-        Option<crate::DurableCommit>,
-        crate::AuthorityStoreError,
-    > {
+    ) -> Result<Option<crate::DurableCommit>, crate::AuthorityStoreError> {
         if work.original.is_some() {
-            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into());
+            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported);
         }
         work.cancellation
             .check()

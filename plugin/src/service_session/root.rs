@@ -271,17 +271,14 @@ impl PiSession {
                 .get(key)
                 .ok_or_else(|| invalid("Pi created root disappeared"))?;
             drop(
-                WorkspaceGraph::new(self.resources.store.clone())
-                    .register_root_with_native_work(
-                        handle.workspace.workspace(),
-                        work,
-                        work.cancellation(),
-                    )
+                WorkspaceGraph::new(self.resources.store.materialization(work.clone()))
+                    .register_root(handle.workspace.workspace())
                     .await
-                    .map_err(|(source, custody)| match source {
-                        acyclic_fs::WorkspaceLineageError::Workspace(source) => {
-                            RootError::NativeWorkspace { source, custody }
-                        }
+                    .map_err(|source| match source {
+                        acyclic_fs::WorkspaceLineageError::Workspace(source) => source.into(),
+                        acyclic_fs::WorkspaceLineageError::Store(
+                            acyclic_fs::LocalCoreStateStoreError::LazyWork(source),
+                        ) => source.into(),
                         source => RootError::Storage(display(source)),
                     })?,
             );
@@ -307,24 +304,20 @@ impl PiSession {
             });
         }
         drop(
-            WorkspaceContextRegistry::new(self.resources.store.clone())
-                .register_root_with_native_work(
+            WorkspaceContextRegistry::new(self.resources.store.materialization(work.clone()))
+                .register_root(
                     WorkspaceContextId::from_bytes(self.state.root_context_id),
-                    context,
-                    work,
-                    work.cancellation(),
+                    context.0,
                 )
                 .await
-                .map_err(|(source, custody)| match source {
-                    acyclic_fs::WorkspaceContextError::NativeFilesystem(source) => {
-                        RootError::NativeFilesystem {
-                            source: Box::new(source),
-                            custody,
-                        }
-                    }
+                .map_err(|source| match source {
+                    acyclic_fs::WorkspaceContextError::Store(
+                        acyclic_fs::LocalCoreStateStoreError::LazyWork(source),
+                    ) => source.into(),
                     source => RootError::Storage(display(source)),
                 })?,
         );
+        drop(context.1);
         self.state.pending_root_registration = false;
         drop(allocation.0.0);
         drop(allocation.1);

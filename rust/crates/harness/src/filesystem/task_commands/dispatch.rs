@@ -21,7 +21,21 @@ where
         let task = context
             .durable_task_id()
             .ok_or_else(|| boundary(io, ErrorCode::Unauthorized, "command has no admitted task"))?;
-        let admission = self.runtime.admission_observed(task, io).await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let original = io
+            .and_then(|io| io.original_native_work())
+            .map(|work| context.admission(work))
+            .transpose()?
+            .flatten();
+        #[cfg(target_arch = "wasm32")]
+        let original: Option<&crate::runtime::TaskAdmissionRecord> = None;
+        let observed;
+        let admission = if let Some(original) = original {
+            original
+        } else {
+            observed = self.runtime.admission_observed(task, io).await?;
+            &observed
+        };
         if context.as_ref().scope().grants() != &admission.grants
             || context.as_ref().scope().limits() != admission.limits
             || context.as_ref().scope().run_limits() != admission.run_limits
@@ -40,22 +54,43 @@ where
             ));
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if io.is_some()
-            && !context.original_task_binding_matches(task, &fence) {
-                return Err(boundary(
-                    io,
-                    ErrorCode::Unauthorized,
-                    "command differs from original task binding",
-                ));
+        if io.is_some() && !context.original_task_binding_matches(task, &fence) {
+            return Err(boundary(
+                io,
+                ErrorCode::Unauthorized,
+                "command differs from original task binding",
+            ));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let owner = io
+            .and_then(|io| io.original_native_work())
+            .map(|work| context.journal_owner::<P>(&fence, work))
+            .transpose()?;
+        #[cfg(target_arch = "wasm32")]
+        let owner: Option<Arc<crate::durable_host::TaskJournalOwner<P>>> = None;
+        match &owner {
+            Some(owner) => {
+                owner
+                    .verify(
+                        reconciliation_only,
+                        &mut io
+                            .map(|io| io.history_io())
+                            .as_mut()
+                            .map(|work| work as &mut dyn crate::store::HistoryIo),
+                    )
+                    .await?
             }
-        self.runtime
-            .owner_observed(task, &fence, reconciliation_only, io)
-            .await?;
+            None => {
+                self.runtime
+                    .owner_observed(task, &fence, reconciliation_only, io)
+                    .await?
+            }
+        }
         let progress = match command.kind.as_str() {
             TOOL_TASK_COMMAND_KIND => {
                 self.tool_command(
                     task,
-                    context,
+                    Arc::clone(&context),
                     &fence,
                     command.operation_id,
                     payload,
@@ -67,7 +102,7 @@ where
             MODEL_TASK_COMMAND_KIND => {
                 self.model_command(
                     task,
-                    context,
+                    Arc::clone(&context),
                     &fence,
                     command.operation_id,
                     payload,
@@ -79,7 +114,7 @@ where
             }
             EFFECT_TASK_COMMAND_KIND => {
                 self.effect_command(
-                    task,
+                    &context,
                     &fence,
                     command.operation_id,
                     payload,
@@ -119,7 +154,7 @@ where
                     &fence,
                     &command,
                     payload,
-                    admission.input,
+                    crate::model::clone_value(&admission.input, io)?,
                     reconciliation_only,
                     io,
                 )
@@ -175,9 +210,24 @@ where
             Err(error) if error.is_native_failure() => return Err(error),
             progress => progress,
         };
-        self.runtime
-            .owner_observed(task, &fence, reconciliation_only, io)
-            .await?;
+        match &owner {
+            Some(owner) => {
+                owner
+                    .verify(
+                        reconciliation_only,
+                        &mut io
+                            .map(|io| io.history_io())
+                            .as_mut()
+                            .map(|work| work as &mut dyn crate::store::HistoryIo),
+                    )
+                    .await?
+            }
+            None => {
+                self.runtime
+                    .owner_observed(task, &fence, reconciliation_only, io)
+                    .await?
+            }
+        }
         progress
     }
     pub(in crate::filesystem) async fn wait_ready_observed(

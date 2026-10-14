@@ -17,6 +17,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.task_id() == task && &self.fence == fence
     }
 
+    pub(crate) fn admission(&self) -> &TaskAdmissionRecord {
+        &self.admission
+    }
+
     pub(crate) fn input_limits(&self) -> crate::conversation::Limits {
         self.admission.limits
     }
@@ -164,6 +168,25 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         Ok(())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn scope(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(RuntimeScope, acyclic_fs::NativeAllocation)> {
+        if !self.native_shared_work_matches(work) {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "task owner uses another scope ledger",
+            });
+        }
+        let io = crate::executor::PreparationIo::from_native_work(work)?;
+        let (scope, retained) = self
+            .host
+            .authenticated_scope(&self.admission, &mut Some(&mut io.history_io()))
+            .await?;
+        Ok((scope, io.into_native_custody(retained)?))
+    }
+
     /// Returns the workflow pinned by the retained admission.
     #[must_use]
     pub const fn workflow_admission(&self) -> &crate::workflow::WorkflowAdmission {
@@ -180,11 +203,15 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 "workflow implementation differs from task admission".into(),
             ));
         }
-        let (next, transition, _, _) = self.host.machines.step(
-            &record.prior,
-            std::borrow::Cow::Borrowed(&record.input),
-            io,
-        )?;
+        let input = std::borrow::Cow::Borrowed(&record.input);
+        #[cfg(not(target_arch = "wasm32"))]
+        let input = match io {
+            Some(io) => {
+                std::borrow::Cow::Owned(crate::model::clone_value(&record.input, Some(io))?)
+            }
+            None => input,
+        };
+        let (next, transition, _, _) = self.host.machines.step(&record.prior, input, io)?;
         if record.checkpoint()? != (&next.machine, next.revision, &next.state)
             || transition != record.transition
         {

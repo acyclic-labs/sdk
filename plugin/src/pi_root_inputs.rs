@@ -49,10 +49,7 @@ impl PiRootPreparation {
         work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
         let owner = PiOwnerConfig::load(private_root, session, work)?;
         runtime.verify_owner_with_native_work(&owner, work)?;
-        owner.validate_root(binding, work)?;
-        let admitted =
-            super::pi_recovery::authenticate_pi_task(&runtime.runtime, binding, origin, work)
-                .await?;
+        owner.validate_root(binding)?;
         let context = if let Some(context) = context {
             context
         } else {
@@ -67,13 +64,24 @@ impl PiRootPreparation {
                 )
                 .await?
         };
-        if context.durable_task_id() != Some(admitted.0.binding.task_id) {
+        let admission = context
+            .admission(work)?
+            .ok_or_else(|| invalid("Pi preparation requires its original retained admission"))?;
+        let definition = super::pi_task::PiTaskMachine::new(work)?.definition(work)?;
+        let ((admitted, _), _custody) = super::pi_recovery::authenticate_pi_task(
+            admission,
+            binding,
+            origin,
+            work,
+            definition.identity(),
+        )?;
+        if context.durable_task_id() != Some(admitted.binding.task_id) {
             return Err(Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Unauthorized,
                 reason: "Pi root preparation context belongs to another original task",
             });
         }
-        let super::pi_task::PiTaskExecution::Host { root, preparation } = &admitted.0.execution
+        let super::pi_task::PiTaskExecution::Host { root, preparation } = &admitted.execution
         else {
             return Err(invalid(
                 "Pi root preparation requires its original host admission",
@@ -88,7 +96,7 @@ impl PiRootPreparation {
         let loaded = super::pi_root_provider::load_original_preparation_with_native_work(
             &owner,
             filesystem,
-            &admitted.0.binding,
+            &admitted.binding,
             root,
             context,
             work,
@@ -192,7 +200,18 @@ fn validate_request(
     request: &PiRootRequest,
     work: &NativeMaterializationWork,
 ) -> Result<()> {
-    owner.validate_root(&request.binding, work)?;
+    owner.validate_root(&request.binding)?;
+    let mut io = acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
+    let read = owner
+        .policy()
+        .journal
+        .directory_read_capability(ROOT_INPUT_DIRECTORY, &mut Some(&mut io))?;
+    if !owner.policy().grants.contains(&read) {
+        return Err(Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Unauthorized,
+            reason: "Pi root lacks its original input-directory read grant",
+        });
+    }
     request.root.validate(&request.binding, work)?;
     if !matches!(
         request.binding.scratch.allocation,

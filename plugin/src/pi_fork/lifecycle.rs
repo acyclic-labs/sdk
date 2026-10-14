@@ -56,7 +56,6 @@ impl<'a> PiForkCoordinator<'a> {
         self.authenticate(context, owner, fence).await?;
         self.validate_plan(plan, owner.task_id())?;
         self.require_original_plan(plan).await?;
-        let host = self.runtime.runtime.task_host();
         (owner)
             .verify(
                 false,
@@ -67,7 +66,8 @@ impl<'a> PiForkCoordinator<'a> {
             cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
             custody: None,
         })?;
-        self.authenticate_launch(context, plan).await?;
+        self.require_input_read(context)?;
+        self.authenticate_launch(plan).await?;
         let preparer = self.native_preparer(shared, owner, plan, source).await?;
         (owner)
             .verify(
@@ -100,20 +100,12 @@ impl<'a> PiForkCoordinator<'a> {
             .is_none()
         {
             let commands = self.runtime.runtime.commands().with_fork_preparer(preparer);
-            let recovered = {
-                let mut io = acyclic_harness::store::HistoryWork::new(
-                    PreparationIo::from_native_work(work)?,
-                );
-                HistoryIo::retain_owned(
-                    &mut io,
-                    std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>())
-                        as u64,
-                )?;
-                let value = host
-                    .recover_work(plan.preparation.task_id(), &mut Some(&mut io))
-                    .await?;
-                (value, io.into_custody()?)
-            };
+            let recovered = crate::pi_native_host::recover_task(
+                &self.runtime,
+                plan.preparation.task_id(),
+                work,
+            )
+            .await?;
             match recovered.0 {
                 WorkPull::Claimed(lease) | WorkPull::Unresolved { lease, .. } => {
                     let result = self
@@ -131,24 +123,14 @@ impl<'a> PiForkCoordinator<'a> {
                         available: ResourceRequest::default(),
                         labels: BTreeMap::new(),
                     };
-                    let result = {
-                        let io = PreparationIo::from_native_work(work)?;
-                        let value = self
-                            .runtime
-                            .runtime
-                            .run_operation(
-                                &worker,
-                                plan.preparation.task_id(),
-                                &commands,
-                                8,
-                                Some(&io),
-                            )
-                            .await?;
-                        (
-                            value,
-                            acyclic_harness::store::HistoryWork::new(io).into_custody()?,
-                        )
-                    };
+                    let result = crate::pi_native_host::run_operation(
+                        &self.runtime,
+                        &worker,
+                        plan.preparation.task_id(),
+                        &commands,
+                        work,
+                    )
+                    .await?;
                     drop(result);
                 }
             }
@@ -332,8 +314,7 @@ impl<'a> PiForkCoordinator<'a> {
             .resources
             .fs
             .open_workspace(&project_name.0, work, cancel)
-            .await
-            .map_err(|error| native_workspace_error((error, None)))?;
+            .await?;
         let generation = report
             .captures
             .iter()
@@ -374,36 +355,20 @@ impl<'a> PiForkCoordinator<'a> {
             )
             .await
             .map_err(crate::pi_fork_host::native_lazy_error)?;
-        let scratch_name = {
-            let mut io =
-                acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
-            let value = report
-                .child_private_volume
-                .storage_name(&mut Some(&mut io))?;
-            (value, io.into_custody()?)
-        };
-        let scratch = self
-            .resources
-            .fs
-            .open_workspace(&scratch_name.0, work, cancel)
-            .await
-            .map_err(|error| native_workspace_error((error, None)))?;
-        let mut binding = self.native_copy::<PiTaskBinding, _>(
+        let mut binding = self.decode_input_value::<PiTaskBinding>(
             &plan.commit.child,
             acyclic_harness::JsonValueSchema::None,
-            work,
+            FORK_PLAN_DIAGNOSTIC_LABEL_BYTES,
         )?;
-        let mut scratch_generation = self
-            .native_copy::<acyclic_harness::resources::GenerationRef, _>(
+        let mut scratch = self
+            .created_private(
+                &report.child_private_volume,
                 &report.child_private_generation,
-                acyclic_harness::JsonValueSchema::None,
-                work,
-            )?;
-        binding.0.scratch.allocation = PiScratchAllocation::Created(PiScratchCreation {
-            workspace_id: scratch.id().into_bytes(),
-            generation: scratch_generation.0,
-        });
-        binding.1.absorb(&mut scratch_generation.1)?;
+                cancel,
+            )
+            .await?;
+        binding.0.scratch.allocation = PiScratchAllocation::Created(scratch.0);
+        binding.1.absorb(&mut scratch.1)?;
         let result_binding = binding.0.results.as_mut().ok_or(Error::NativeBoundary {
             code: acyclic_harness::wire::ErrorCode::Unauthorized,
             reason: "Pi actual child lost its unmounted result intent",
@@ -421,33 +386,15 @@ impl<'a> PiForkCoordinator<'a> {
                 code: acyclic_harness::wire::ErrorCode::Unauthorized,
                 reason: "Pi creator report lost its actual result generation",
             })?;
-        let result_name = {
-            let mut io =
-                acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
-            let value = result_binding.volume.storage_name(&mut Some(&mut io))?;
-            (value, io.into_custody()?)
-        };
-        let results = self
-            .resources
-            .fs
-            .open_workspace(&result_name.0, work, cancel)
-            .await
-            .map_err(|error| native_workspace_error((error, None)))?;
-        let mut generation = self.native_copy::<acyclic_harness::resources::GenerationRef, _>(
-            generation,
-            acyclic_harness::JsonValueSchema::None,
-            work,
-        )?;
-        result_binding.allocation = PiScratchAllocation::Created(PiScratchCreation {
-            workspace_id: results.id().into_bytes(),
-            generation: generation.0,
-        });
-        binding.1.absorb(&mut generation.1)?;
-        binding.0.validate_with_native_work(
+        let mut result = self
+            .created_private(&result_binding.volume, generation, cancel)
+            .await?;
+        result_binding.allocation = PiScratchAllocation::Created(result.0);
+        binding.1.absorb(&mut result.1)?;
+        binding.0.validate(
             None,
-            binding.0.project_volumes.keys().map(String::as_str),
+            binding.0.project_volumes.keys().map(|key| key.as_str()),
             false,
-            work,
         )?;
         work.charge(acyclic_fs::WorkCounters {
             allocation_operations: 1,
@@ -468,6 +415,37 @@ impl<'a> PiForkCoordinator<'a> {
             .absorb(&mut admission_allocation)?;
         prepared._metadata_custody.absorb(&mut binding.1)?;
         Ok(prepared)
+    }
+
+    async fn created_private(
+        &self,
+        volume: &VolumeRef,
+        generation: &acyclic_harness::resources::GenerationRef,
+        cancel: &CancellationToken,
+    ) -> Result<(PiScratchCreation, acyclic_fs::NativeAllocation)> {
+        let work = &self.work;
+        let mut io =
+            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
+        let name = volume.storage_name(&mut Some(&mut io))?;
+        let workspace = self
+            .resources
+            .fs
+            .open_workspace(&name, work, cancel)
+            .await?;
+        let reference = generation.as_resource();
+        let (generation, custody) = acyclic_harness::resources::GenerationRef::new(
+            reference.provider(),
+            reference.key(),
+            reference.version(),
+            Some(work),
+        )?;
+        Ok((
+            PiScratchCreation {
+                workspace_id: workspace.id().into_bytes(),
+                generation,
+            },
+            custody.ok_or(acyclic_fs::NativeTreeMaterializationError::MissingCustody)?,
+        ))
     }
 
     pub(super) async fn publish(

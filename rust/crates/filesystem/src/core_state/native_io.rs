@@ -62,7 +62,8 @@ pub(super) fn reserve_slots<T>(
         values,
         needed,
         work,
-        slot.as_mut().expect("capacity custody"),
+        slot.as_mut()
+            .ok_or(crate::NativeTreeMaterializationError::MissingCustody)?,
     )
     .map_err(Into::into)
 }
@@ -142,7 +143,7 @@ impl Read for MaterializationReader<'_> {
             return Ok(0);
         }
         if self.remaining_file_bytes == 0 {
-            if crate::native_host::stat_file(&self.file, &mut &*self.work)
+            if crate::native_host::stat_file(self.file, &mut &*self.work)
                 .map_err(std::io::Error::other)?
                 .len()
                 != self.original_length
@@ -171,11 +172,14 @@ impl Read for MaterializationReader<'_> {
                 })
                 .map_err(std::io::Error::other)?;
         }
+        let buffer = buffer.get_mut(..length).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "read exceeds buffer")
+        })?;
         let count = crate::native_host::file_transfer(
             acyclic_native_runtime::NativeOperationKind::Read,
             length,
             self.work,
-            || self.file.read(&mut buffer[..length]),
+            || self.file.read(buffer),
         )
         .map_err(std::io::Error::other)?;
         self.remaining_file_bytes -= count as u64;

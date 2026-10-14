@@ -25,8 +25,12 @@ where
             ));
         }
         let mut results = CommandDispatch::empty_results();
+        let owner = context.context().owned_mailbox.as_ref();
         for command in outbox {
-            self.owner_observed(task, fence, false, io).await?;
+            match owner {
+                Some(owner) => owner.verify_owner(io)?.await?,
+                None => self.owner_observed(task, fence, false, io).await?,
+            }
             if command.payload.descriptor().byte_length() > self.maximum_payload_bytes {
                 #[cfg(not(target_arch = "wasm32"))]
                 if io.is_some() {
@@ -125,17 +129,16 @@ where
             match &progress {
                 #[cfg(not(target_arch = "wasm32"))]
                 Ok(TaskCommandProgress::ReadyWithNativeCustody { custody, .. }) => {
-                    self.owner_observed(
-                        task,
-                        fence,
-                        false,
-                        Some(&crate::executor::PreparationIo::from_native_work(
-                            custody.work(),
-                        )?),
-                    )
-                    .await?;
+                    let io = crate::executor::PreparationIo::from_native_work(custody.work())?;
+                    match owner {
+                        Some(owner) => owner.verify_owner(Some(&io))?.await?,
+                        None => self.owner_observed(task, fence, false, Some(&io)).await?,
+                    }
                 }
-                _ => self.owner_observed(task, fence, false, io).await?,
+                _ => match owner {
+                    Some(owner) => owner.verify_owner(io)?.await?,
+                    None => self.owner_observed(task, fence, false, io).await?,
+                },
             }
             match progress {
                 Ok(TaskCommandProgress::Pending) => {

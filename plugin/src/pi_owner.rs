@@ -364,16 +364,11 @@ impl PiOwnerConfig {
         ))
     }
 
-    pub(crate) fn validate_root(
-        &self,
-        binding: &super::PiTaskBinding,
-        work: &NativeMaterializationWork,
-    ) -> Result<()> {
-        binding.validate_with_native_work(
+    pub(crate) fn validate_root(&self, binding: &super::PiTaskBinding) -> Result<()> {
+        binding.validate(
             None,
-            binding.project_volumes.keys().map(String::as_str),
+            binding.project_volumes.keys().map(|key| key.as_str()),
             true,
-            work,
         )?;
         if binding.task_id != self.policy.root_task
             || binding.agent_id != self.policy.agent
@@ -549,6 +544,64 @@ impl PiOwnerConfig {
         let authority = owner.authority(work)?;
         drop(authority);
         Ok(owner)
+    }
+}
+
+impl super::pi_runtime::PiTaskRuntime {
+    pub(crate) fn verify_owner_with_native_work(
+        &self,
+        owner: &PiOwnerConfig,
+        work: &NativeMaterializationWork,
+    ) -> Result<()> {
+        work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
+        let current = &self.authority;
+        let policy = &owner.policy;
+        let invalid = || Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Unauthorized,
+            reason: "Pi owner differs from the original runtime credentials or policy",
+        };
+        if owner.version != 1
+            || owner.key == [0; 32]
+            || policy.agent.into_bytes() == [0; 16]
+            || &policy.grants != current.scope.grants()
+            || policy.limits != current.scope.limits()
+            || policy.run_limits != current.scope.run_limits()
+            || policy.session_limits != current.session_limits
+            || policy.concurrency != current.concurrency
+            || policy.maximum_payload_bytes != current.maximum_payload_bytes
+        {
+            return Err(invalid());
+        }
+        let mut io =
+            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
+        let grants = [
+            policy
+                .journal
+                .capability(VolumeOperation::Read, &mut Some(&mut io))?,
+            policy
+                .journal
+                .capability(VolumeOperation::Write, &mut Some(&mut io))?,
+        ];
+        let storage = Capabilities::copy(
+            policy
+                .grants
+                .iter()
+                .chain(grants.iter().map(String::as_str)),
+            work,
+        )?;
+        let issuer = owner.issuer_with_native_work(AggregateKind::Task, policy.root_task, work)?;
+        let task = work.display(&policy.root_task)?;
+        let signed = issuer.0.issue(
+            &task.0,
+            &storage.0,
+            Some(policy.agent),
+            None,
+            &mut Some(&mut io),
+        )?;
+        if signed != current.signed {
+            return Err(invalid());
+        }
+        Ok(())
     }
 }
 

@@ -83,19 +83,16 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
         .value;
     transaction
         .create_dir_all("/tree/nested", B, &cancel)
-        .await?
-        .value;
+        .await?;
     transaction
         .write_text("/tree/nested/file", "linked body")
         .await?;
     transaction
         .hard_link("/tree/nested/file", "/tree/nested/alias", B, &cancel)
-        .await?
-        .value;
+        .await?;
     transaction
         .hard_link("/tree/nested/file", "/outside-alias", B, &cancel)
-        .await?
-        .value;
+        .await?;
     transaction.write_text("/omitted", "not inherited").await?;
     transaction
         .commit(
@@ -110,8 +107,7 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
                 })
             },
         )
-        .await?
-        .value;
+        .await?;
     let source = workspace.head(B, &cancel).await?.value;
     let paths = vec![
         "/tree".to_owned(),

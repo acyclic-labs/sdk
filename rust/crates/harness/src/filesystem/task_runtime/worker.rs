@@ -35,9 +35,17 @@ where
                 reason: "native task context differs from original task lease",
             });
         }
-        let journal = self
-            .workflow_journal_with_native_work(task, fence, work)
-            .await?;
+        let owner = context.journal_owner::<P>(fence, work)?;
+        let journal = FilesystemWorkflowJournal::for_task(
+            Arc::clone(&owner),
+            Arc::clone(&self.filesystem),
+            &self.volume,
+            &self.verifier,
+            &self.signed,
+            self.maximum_payload_bytes
+                .min(owner.input_limits().file_bytes),
+            Some(&super::super::PreparationIo::from_native_work(work)?),
+        )?;
         self.harness
             .open_registered_task(task, fence, journal, Some(context))
             .await

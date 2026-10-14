@@ -82,7 +82,7 @@ pub(crate) fn publish_writeback<'a>(
             native_work,
         )?;
         if generations.original_snapshot.workspace_id != root.workspace
-            || digest.0 != confirmed_digest
+            || digest.to_hex().as_str() != confirmed_digest
         {
             return Err(selected_unauthorized(
                 "writeback lacks exact original-root user approval",
@@ -168,7 +168,7 @@ pub(crate) fn validate_applied_writeback(
         native_work.budget().bytes_encoded,
         native_work,
     )?;
-    if digest.0 != confirmed_digest {
+    if digest.to_hex().as_str() != confirmed_digest {
         return Err(selected_unauthorized(
             "completed writeback changed its exact user approval",
         ));

@@ -12,7 +12,6 @@ use crate::{
 use acyclic_fs::{
     CancellationToken, Digest, GenerationId, LazySnapshotRef, NativeMaterializationWork,
 };
-use acyclic_harness::filesystem::TaskWorkerAttempt;
 use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::{
     AgentId, Capabilities, Error, OperationId, Outcome, Result, TaskId,
@@ -88,28 +87,12 @@ pub(crate) fn original_operation(
     sdk_tool_call_id: &str,
     work: &NativeMaterializationWork,
 ) -> Result<OperationId> {
-    let bytes = (SDK_OPERATION_DOMAIN.len() as u64)
-        .checked_add(16 + 16 + 8)
-        .and_then(|bytes| bytes.checked_add(sdk_tool_call_id.len() as u64))
-        .ok_or(Error::NativeWork {
-            cause: acyclic_fs::WorkError::Overflow.into(),
-            custody: None,
-        })?;
-    work.charge(acyclic_fs::WorkCounters {
-        bytes_hashed: bytes,
-        ..acyclic_fs::WorkCounters::default()
-    })?;
-    let mut hash = blake3::Hasher::new();
-    hash.update(SDK_OPERATION_DOMAIN);
-    hash.update(&root.into_bytes());
-    hash.update(&caller.into_bytes());
-    hash.update(&(sdk_tool_call_id.len() as u64).to_le_bytes());
-    hash.update(sdk_tool_call_id.as_bytes());
-    let mut id = [0; 16];
-    for (target, byte) in id.iter_mut().zip(hash.finalize().as_bytes()) {
-        *target = *byte;
-    }
-    Ok(OperationId::from_bytes(id))
+    operation_id(
+        SDK_OPERATION_DOMAIN,
+        &[root.into_bytes(), caller.into_bytes()],
+        sdk_tool_call_id,
+        work,
+    )
 }
 
 pub(crate) fn derived(
@@ -117,9 +100,20 @@ pub(crate) fn derived(
     role: &str,
     work: &NativeMaterializationWork,
 ) -> Result<OperationId> {
-    let bytes = (FORK_OPERATION_DOMAIN.len() as u64)
-        .checked_add(16 + 8)
-        .and_then(|bytes| bytes.checked_add(role.len() as u64))
+    operation_id(FORK_OPERATION_DOMAIN, &[original.into_bytes()], role, work)
+}
+
+fn operation_id(
+    domain: &[u8],
+    identities: &[[u8; 16]],
+    label: &str,
+    work: &NativeMaterializationWork,
+) -> Result<OperationId> {
+    let bytes = (identities.len() as u64)
+        .checked_mul(16)
+        .and_then(|bytes| bytes.checked_add(domain.len() as u64))
+        .and_then(|bytes| bytes.checked_add(8))
+        .and_then(|bytes| bytes.checked_add(label.len() as u64))
         .ok_or(Error::NativeWork {
             cause: acyclic_fs::WorkError::Overflow.into(),
             custody: None,
@@ -129,14 +123,14 @@ pub(crate) fn derived(
         ..acyclic_fs::WorkCounters::default()
     })?;
     let mut hash = blake3::Hasher::new();
-    hash.update(FORK_OPERATION_DOMAIN);
-    hash.update(&original.into_bytes());
-    hash.update(&(role.len() as u64).to_le_bytes());
-    hash.update(role.as_bytes());
-    let mut id = [0; 16];
-    for (target, byte) in id.iter_mut().zip(hash.finalize().as_bytes()) {
-        *target = *byte;
+    hash.update(domain);
+    for identity in identities {
+        hash.update(identity);
     }
+    hash.update(&(label.len() as u64).to_le_bytes());
+    hash.update(label.as_bytes());
+    let mut id = [0; 16];
+    id.copy_from_slice(&hash.finalize().as_bytes()[..16]);
     Ok(OperationId::from_bytes(id))
 }
 
@@ -283,18 +277,6 @@ struct PiProjectSourcePolicy<'a> {
 #[cfg(test)]
 #[path = "../pi_fork_tests.rs"]
 pub(crate) mod tests;
-
-fn native_workspace_error(
-    (source, custody): (
-        acyclic_fs::WorkspaceError,
-        Option<acyclic_fs::NativeAllocation>,
-    ),
-) -> Error {
-    Error::NativeWorkspace {
-        source: Box::new(source),
-        custody,
-    }
-}
 
 fn task_id_text_matches(task: TaskId, expected: &str) -> bool {
     uuid::Uuid::from_bytes(task.into_bytes())
