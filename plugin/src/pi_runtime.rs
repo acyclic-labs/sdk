@@ -218,29 +218,6 @@ impl PiTaskRuntime {
         })
     }
 
-    pub(crate) fn verify_owner_with_native_work(
-        &self,
-        owner: &super::pi_owner::PiOwnerConfig,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness::Result<()> {
-        let candidate = owner.authority(work)?;
-        let current = &self.authority;
-        if candidate.signed != current.signed
-            || candidate.scope.grants() != current.scope.grants()
-            || candidate.scope.limits() != current.scope.limits()
-            || candidate.scope.run_limits() != current.scope.run_limits()
-            || candidate.session_limits != current.session_limits
-            || candidate.concurrency != current.concurrency
-            || candidate.maximum_payload_bytes != current.maximum_payload_bytes
-        {
-            return Err(acyclic_harness::Error::NativeBoundary {
-                code: acyclic_harness::wire::ErrorCode::Unauthorized,
-                reason: "Pi owner differs from the original runtime credentials or policy",
-            });
-        }
-        Ok(())
-    }
-
     pub(crate) async fn admit_root(
         &self,
         binding: &PiTaskBinding,
