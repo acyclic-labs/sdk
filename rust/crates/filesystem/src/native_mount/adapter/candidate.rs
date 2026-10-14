@@ -25,6 +25,20 @@ impl InstallScope<'_> {
 }
 
 impl InputBuffers<'_, '_> {
+    fn find_charged<T>(
+        &mut self,
+        entries: impl IntoIterator<Item = T>,
+        mut matches: impl FnMut(&T) -> bool,
+    ) -> Result<Option<T>, MountSourceError> {
+        for entry in entries {
+            self.items(1)?;
+            if matches(&entry) {
+                return Ok(Some(entry));
+            }
+        }
+        Ok(None)
+    }
+
     pub(super) fn clone_namespace(
         &mut self,
         names: &[LogicalName],
@@ -95,60 +109,16 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
         installed.nodes.push(change.file_id);
     }
     inputs.release(file_buffer_bytes)?;
-    let mut directories = inputs.vec::<(FileId, NamespacePath)>(diff.bindings.len())?;
-    for path in scope.paths() {
-        for length in 0..=path.depth() {
-            let prefix = inputs.clone_namespace(
-                path.components()
-                    .get(..length)
-                    .ok_or(MountSourceError::Work(WorkError::Overflow))?,
-                base.volume_config().limits,
-            )?;
-            for checkout in [base, candidate] {
-                if let Some(record) = checkout
-                    .inspector(
-                        &mut crate::kernel::allocation::KernelAccounting::native(
-                            &native,
-                            cancellation,
-                        ),
-                        cancellation,
-                    )?
-                    .lookup_no_follow(&prefix, &native, cancellation)
-                    .await?
-                    .record
-                {
-                    let mut relevant = false;
-                    for binding in &diff.bindings {
-                        inputs.items(1)?;
-                        if binding.directory_id == record.file_id {
-                            relevant = true;
-                            break;
-                        }
-                    }
-                    let mut known = false;
-                    for (file_id, _) in &directories {
-                        inputs.items(1)?;
-                        if *file_id == record.file_id {
-                            known = true;
-                            break;
-                        }
-                    }
-                    if relevant && !known {
-                        directories.push((
-                            record.file_id,
-                            inputs.clone_namespace(
-                                prefix.components(),
-                                base.volume_config().limits,
-                            )?,
-                        ));
-                    }
-                }
-            }
-            let bytes = prefix.retained_bytes();
-            drop(prefix);
-            inputs.release(bytes)?;
-        }
-    }
+    let directories = installed_directories(
+        base,
+        candidate,
+        scope,
+        &diff.bindings,
+        &mut inputs,
+        &native,
+        cancellation,
+    )
+    .await?;
     for binding in diff.bindings {
         let name_bytes = binding.name.retained_bytes() as u64;
         let history_bytes = binding
@@ -162,14 +132,11 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
         drop(binding.before);
         drop(binding.after);
         inputs.release(history_bytes)?;
-        let mut directory = None;
-        for (file_id, path) in &directories {
-            inputs.items(1)?;
-            if *file_id == binding.directory_id {
-                directory = Some(path);
-                break;
-            }
-        }
+        let directory = inputs
+            .find_charged(directories.iter(), |(file_id, _)| {
+                *file_id == binding.directory_id
+            })?
+            .map(|(_, path)| path);
         match (directory, scope) {
             (Some(directory), _) => installed.names.push((
                 inputs.clone_namespace(directory.components(), base.volume_config().limits)?,
@@ -201,4 +168,62 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
     drop(directories);
     inputs.release(bytes)?;
     Ok((installed, inputs.retain()))
+}
+
+async fn installed_directories<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    base: &Checkout<A, O>,
+    candidate: &Checkout<A, O>,
+    scope: InstallScope<'_>,
+    bindings: &[crate::DirectoryBindingChange],
+    inputs: &mut InputBuffers<'_, '_>,
+    native: &crate::NativeMaterializationWork,
+    cancellation: &CancellationToken,
+) -> Result<Vec<(FileId, NamespacePath)>, MountSourceError> {
+    let mut directories = inputs.vec::<(FileId, NamespacePath)>(bindings.len())?;
+    for path in scope.paths() {
+        for length in 0..=path.depth() {
+            let prefix = inputs.clone_namespace(
+                path.components()
+                    .get(..length)
+                    .ok_or(MountSourceError::Work(WorkError::Overflow))?,
+                base.volume_config().limits,
+            )?;
+            for checkout in [base, candidate] {
+                if let Some(record) = checkout
+                    .inspector(
+                        &mut crate::kernel::allocation::KernelAccounting::native(
+                            native,
+                            cancellation,
+                        ),
+                        cancellation,
+                    )?
+                    .lookup_no_follow(&prefix, native, cancellation)
+                    .await?
+                    .record
+                {
+                    let relevant = inputs
+                        .find_charged(bindings, |binding| binding.directory_id == record.file_id)?
+                        .is_some();
+                    let known = inputs
+                        .find_charged(directories.iter(), |(file_id, _)| {
+                            *file_id == record.file_id
+                        })?
+                        .is_some();
+                    if relevant && !known {
+                        directories.push((
+                            record.file_id,
+                            inputs.clone_namespace(
+                                prefix.components(),
+                                base.volume_config().limits,
+                            )?,
+                        ));
+                    }
+                }
+            }
+            let bytes = prefix.retained_bytes();
+            drop(prefix);
+            inputs.release(bytes)?;
+        }
+    }
+    Ok(directories)
 }
