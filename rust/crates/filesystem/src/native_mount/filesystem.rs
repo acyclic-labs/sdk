@@ -131,7 +131,7 @@ pub trait MountFilesystem: Send + Sync + 'static {
         &self,
         path: &MountPath,
         work: &NativeMaterializationWork,
-    ) -> Result<((Arc<dyn MountOpenFile>, u64), MountLookup), MountSourceError>;
+    ) -> Result<(crate::native_mount::MountOpenClaim, MountLookup), MountSourceError>;
     /// Opens the actual identity just created, without resolving a replacement.
     fn open_created_with_meter(
         &self,
@@ -359,7 +359,12 @@ pub trait MountFilesystem: Send + Sync + 'static {
     }
 
     /// Tells `observer` of every change to this source's view from now on, together with the origin that made it.
-    fn observe_view(&self, _observer: std::sync::Weak<dyn ViewObserver>) {}
+    fn observe_view(
+        &self,
+        _observer: std::sync::Weak<dyn ViewObserver>,
+    ) -> Result<(), MountSourceError> {
+        Ok(())
+    }
 
     /// Returns once every change made to what this source projects outside every view of it, and completed before the call, is recorded in the view.
     fn fence_changes(&self) -> Result<(), MountSourceError> {

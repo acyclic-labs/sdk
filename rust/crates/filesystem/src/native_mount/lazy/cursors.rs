@@ -24,7 +24,7 @@ impl<T> CursorTable<T> {
             };
             entries.remove(&oldest);
         }
-        entries.insert(token, (generation, cursor));
+        entries.insert(token, CursorEntry { generation, cursor });
         Ok(token.to_le_bytes())
     }
 
@@ -37,7 +37,10 @@ impl<T> CursorTable<T> {
             return Ok(None);
         };
         let bytes: [u8; 8] = cursor.try_into().map_err(|_| MountSourceError::Stale)?;
-        let (recorded, cursor) = self
+        let CursorEntry {
+            generation: recorded,
+            cursor,
+        } = self
             .entries
             .lock()
             .map_err(|_| MountSourceError::Stale)?

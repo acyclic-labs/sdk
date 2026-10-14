@@ -1,11 +1,14 @@
 use super::*;
 use crate::demand::NativeMountAllocationCustody;
 
+#[derive(Clone)]
+pub(super) struct ObserverEntry {
+    pub(super) observer: Weak<dyn ViewObserver>,
+    _custody: Option<Arc<NativeMountAllocationCustody>>,
+}
+
 pub(super) struct ObserverEntries {
-    pub(super) entries: Vec<(
-        Weak<dyn ViewObserver>,
-        Option<Arc<NativeMountAllocationCustody>>,
-    )>,
+    pub(super) entries: Vec<ObserverEntry>,
     custody: Arc<NativeMountAllocationCustody>,
 }
 
@@ -18,7 +21,10 @@ impl ViewLedger {
         let observer_custody = observer
             .upgrade()
             .and_then(|observer| observer.allocation_custody());
-        let entry = (observer, observer_custody);
+        let entry = ObserverEntry {
+            observer,
+            _custody: observer_custody,
+        };
         let entry_bytes = std::mem::size_of_val(&entry);
         let mut hub = self
             .observers
@@ -29,7 +35,7 @@ impl ViewLedger {
         storage::charge(carrier, scan_work(entries.len() as u64))?;
         let count = entries
             .iter()
-            .filter(|(observer, _)| observer.strong_count() != 0)
+            .filter(|entry| entry.observer.strong_count() != 0)
             .count()
             .checked_add(1)
             .ok_or(crate::WorkError::Overflow)?;
@@ -61,7 +67,7 @@ impl ViewLedger {
             next.extend(
                 entries
                     .iter()
-                    .filter(|(observer, _)| observer.strong_count() != 0)
+                    .filter(|entry| entry.observer.strong_count() != 0)
                     .cloned(),
             );
             next.push(entry);
@@ -86,7 +92,7 @@ impl ViewLedger {
         for observer in observers
             .iter()
             .flat_map(|entries| &entries.entries)
-            .filter_map(|(observer, _)| observer.upgrade())
+            .filter_map(|entry| entry.observer.upgrade())
         {
             observer.view_changed(position, ViewOrigin::current());
         }

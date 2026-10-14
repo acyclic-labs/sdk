@@ -115,37 +115,7 @@ impl MountDestinationGuard {
         if guard.is_some() {
             return Err(NativeMountError::ControlPending);
         }
-        let recovery_parent = if recovery {
-            let parent = destination
-                .parent()
-                .ok_or(NativeMountError::InvalidDestination)?;
-            if parent.as_os_str().is_empty() {
-                return Err(NativeMountError::InvalidDestination);
-            }
-            Some(parent)
-        } else {
-            None
-        };
-        let directory =
-            crate::native_host::open_root_directory(recovery_parent.unwrap_or(destination), work)
-                .map(|(directory, _)| directory)?;
-        if !allow_nonempty {
-            let (mut reader, allocation) = crate::native_host::read_dir_held(&directory, work)?;
-            #[cfg(unix)]
-            let result = reader.next(work);
-            #[cfg(windows)]
-            let result = reader.next(work);
-            drop(reader);
-            work.release(allocation)?;
-            match result? {
-                None => {}
-                Some((entry, allocation)) => {
-                    drop(entry);
-                    work.release(allocation)?;
-                    return Err(NativeMountError::InvalidDestination);
-                }
-            }
-        }
+        let directory = Self::destination_directory(destination, allow_nonempty, recovery, native)?;
         #[cfg(unix)]
         let canonical_owner = crate::native_host::canonical_directory_path_held(directory, work)?;
         #[cfg(windows)]
@@ -192,41 +162,7 @@ impl MountDestinationGuard {
                 .ok_or(crate::WorkError::Overflow)?,
             ..crate::WorkCounters::UNCHARGED
         };
-        let result = (|| {
-            work.check()?;
-            work.admit(hashed)?;
-            let mut identity = blake3::Hasher::new();
-            identity.update(b"acyclic-fs/native-mount-destination/v1\0");
-            #[cfg(unix)]
-            update_path_identity(&mut identity, canonical);
-            #[cfg(windows)]
-            for unit in canonical {
-                identity.update(&unit.to_le_bytes());
-            }
-            if let Some(leaf) = leaf {
-                #[cfg(unix)]
-                if separator {
-                    identity.update(b"/");
-                }
-                #[cfg(windows)]
-                if separator {
-                    identity.update(&u16::from(b'\\').to_le_bytes());
-                }
-                update_path_identity(&mut identity, Path::new(leaf));
-            }
-            work.record(hashed)?;
-            let hex = identity.finalize().to_hex();
-            let mut name = [0u8; NATIVE_FENCE_NAME_BYTES];
-            for (destination, byte) in name.iter_mut().zip(
-                NATIVE_FENCE_PREFIX
-                    .bytes()
-                    .chain(hex.bytes())
-                    .chain(NATIVE_FENCE_SUFFIX.bytes()),
-            ) {
-                *destination = byte;
-            }
-            Ok::<_, NativeMountError>(name)
-        })();
+        let result = Self::fence_name(canonical, leaf, separator, hashed, native);
         let recovery_directory: Result<Option<cap_std::fs::Dir>, NativeMountError> =
             if recovery && result.is_ok() {
                 #[cfg(unix)]
@@ -249,28 +185,7 @@ impl MountDestinationGuard {
         let name = result?;
         // Prepare all retirement names and accepted controls before either
         // registry or fence creation can mutate the destination namespace.
-        let (cleanup_name, birth_cleanup) = {
-            let mut terminated = [0u8; NATIVE_FENCE_NAME_BYTES + 1];
-            let copied = native.reserve_work(
-                crate::materializer::NativeResourceCredit::Copy
-                    .delta(NATIVE_FENCE_NAME_BYTES as u64),
-            )?;
-            terminated[..NATIVE_FENCE_NAME_BYTES].copy_from_slice(&name);
-            copied.record_completed(
-                crate::materializer::NativeResourceCredit::Copy
-                    .delta(NATIVE_FENCE_NAME_BYTES as u64),
-            )?;
-            let prepared = crate::native_host::prepare_ascii_leaf(terminated, native)?;
-            let credit = native.reserve_work(crate::WorkCounters {
-                backend_write_operations: 2,
-                #[cfg(windows)]
-                backend_read_operations: 1,
-                #[cfg(windows)]
-                items_examined: NATIVE_FENCE_NAME_BYTES as u64,
-                ..crate::WorkCounters::UNCHARGED
-            })?;
-            (Some(prepared), Some(credit))
-        };
+        let (cleanup_name, birth_cleanup) = Self::prepare_cleanup(&name, native)?;
         let parent = destination
             .parent()
             .ok_or(NativeMountError::InvalidDestination)?;
@@ -284,6 +199,145 @@ impl MountDestinationGuard {
             None => crate::native_host::open_root_directory(parent, work)
                 .map(|(directory, _)| directory)?,
         };
+        Self::acquire_files(
+            cleanup_name,
+            birth_cleanup,
+            parent_directory,
+            name,
+            recovery,
+            guard,
+            native,
+        )
+    }
+
+    fn destination_directory(
+        destination: &Path,
+        allow_nonempty: bool,
+        recovery: bool,
+        native: &NativeMaterializationWork,
+    ) -> Result<cap_std::fs::Dir, NativeMountError> {
+        use crate::native_host::NativeHostWork as _;
+        let work = &mut &*native;
+        let recovery_parent = if recovery {
+            let parent = destination
+                .parent()
+                .ok_or(NativeMountError::InvalidDestination)?;
+            if parent.as_os_str().is_empty() {
+                return Err(NativeMountError::InvalidDestination);
+            }
+            Some(parent)
+        } else {
+            None
+        };
+        let directory =
+            crate::native_host::open_root_directory(recovery_parent.unwrap_or(destination), work)
+                .map(|(directory, _)| directory)?;
+        if !allow_nonempty {
+            let (mut reader, allocation) = crate::native_host::read_dir_held(&directory, work)?;
+            #[cfg(unix)]
+            let result = reader.next(work);
+            #[cfg(windows)]
+            let result = reader.next(work);
+            drop(reader);
+            work.release(allocation)?;
+            match result? {
+                None => {}
+                Some((entry, allocation)) => {
+                    drop(entry);
+                    work.release(allocation)?;
+                    return Err(NativeMountError::InvalidDestination);
+                }
+            }
+        }
+        Ok(directory)
+    }
+
+    fn fence_name(
+        #[cfg(unix)] canonical: &Path,
+        #[cfg(windows)] canonical: &[u16],
+        leaf: Option<&std::ffi::OsStr>,
+        separator: bool,
+        hashed: crate::WorkCounters,
+        native: &NativeMaterializationWork,
+    ) -> Result<[u8; NATIVE_FENCE_NAME_BYTES], NativeMountError> {
+        use crate::native_host::NativeHostWork as _;
+        let work = &mut &*native;
+        work.check()?;
+        work.admit(hashed)?;
+        let mut identity = blake3::Hasher::new();
+        identity.update(b"acyclic-fs/native-mount-destination/v1\0");
+        #[cfg(unix)]
+        update_path_identity(&mut identity, canonical);
+        #[cfg(windows)]
+        for unit in canonical {
+            identity.update(&unit.to_le_bytes());
+        }
+        if let Some(leaf) = leaf {
+            #[cfg(unix)]
+            if separator {
+                identity.update(b"/");
+            }
+            #[cfg(windows)]
+            if separator {
+                identity.update(&u16::from(b'\\').to_le_bytes());
+            }
+            update_path_identity(&mut identity, Path::new(leaf));
+        }
+        work.record(hashed)?;
+        let hex = identity.finalize().to_hex();
+        let mut name = [0u8; NATIVE_FENCE_NAME_BYTES];
+        for (destination, byte) in name.iter_mut().zip(
+            NATIVE_FENCE_PREFIX
+                .bytes()
+                .chain(hex.bytes())
+                .chain(NATIVE_FENCE_SUFFIX.bytes()),
+        ) {
+            *destination = byte;
+        }
+        Ok::<_, NativeMountError>(name)
+    }
+
+    fn prepare_cleanup(
+        name: &[u8; NATIVE_FENCE_NAME_BYTES],
+        native: &NativeMaterializationWork,
+    ) -> Result<
+        (
+            Option<[crate::native_host::NativeUnit; NATIVE_FENCE_NAME_BYTES + 1]>,
+            Option<crate::NativeWorkReservation>,
+        ),
+        NativeMountError,
+    > {
+        let mut terminated = [0u8; NATIVE_FENCE_NAME_BYTES + 1];
+        let copied = native.reserve_work(
+            crate::materializer::NativeResourceCredit::Copy.delta(NATIVE_FENCE_NAME_BYTES as u64),
+        )?;
+        terminated[..NATIVE_FENCE_NAME_BYTES].copy_from_slice(name);
+        copied.record_completed(
+            crate::materializer::NativeResourceCredit::Copy.delta(NATIVE_FENCE_NAME_BYTES as u64),
+        )?;
+        let prepared = crate::native_host::prepare_ascii_leaf(terminated, native)?;
+        let credit = native.reserve_work(crate::WorkCounters {
+            backend_write_operations: 2,
+            #[cfg(windows)]
+            backend_read_operations: 1,
+            #[cfg(windows)]
+            items_examined: NATIVE_FENCE_NAME_BYTES as u64,
+            ..crate::WorkCounters::UNCHARGED
+        })?;
+        Ok((Some(prepared), Some(credit)))
+    }
+
+    fn acquire_files(
+        cleanup_name: Option<[crate::native_host::NativeUnit; NATIVE_FENCE_NAME_BYTES + 1]>,
+        birth_cleanup: Option<crate::NativeWorkReservation>,
+        parent_directory: cap_std::fs::Dir,
+        name: [u8; NATIVE_FENCE_NAME_BYTES],
+        recovery: bool,
+        guard: &mut Option<Self>,
+        native: &NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
+        use crate::native_host::NativeHostWork as _;
+        let work = &mut &*native;
         let registry = crate::native_host::open_leaf(
             &parent_directory,
             Path::new(NATIVE_REGISTRY_NAME),
@@ -340,13 +394,6 @@ impl MountDestinationGuard {
             || fs2::FileExt::unlock(registry),
         )?;
         Ok(())
-    }
-
-    pub(super) fn acquire(destination: &Path) -> Result<Self, NativeMountError> {
-        let canonical = destination
-            .canonicalize()
-            .map_err(|_| NativeMountError::InvalidDestination)?;
-        Self::acquire_canonical(&canonical)
     }
 
     pub(super) fn acquire_for_recovery(destination: &Path) -> Result<Self, NativeMountError> {

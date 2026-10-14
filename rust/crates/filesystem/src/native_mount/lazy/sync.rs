@@ -35,7 +35,12 @@ where
             let selected_proof = selected
                 .map(|(destination, plan, _)| {
                     plan.input_digest(destination, &mut accounting)
-                        .map(|input| (destination, plan.source, plan.source_config, input))
+                        .map(|input| SelectedImportProof {
+                            destination,
+                            source: plan.source,
+                            config: plan.source_config,
+                            input,
+                        })
                         .map_err(lazy_error)
                 })
                 .transpose()?;
@@ -78,7 +83,7 @@ where
                 let proof = remembered.and_then(|(_, proof)| proof).or(selected
                     .filter(|(_, _, requested)| *requested == operation)
                     .and(selected_proof));
-                let context = if let Some((_, _, _, input)) = proof {
+                let context = if let Some(SelectedImportProof { input, .. }) = proof {
                     let (snapshot, original_input) = self
                         .lazy
                         .selected_snapshot(operation, generation, &mut accounting)
@@ -137,7 +142,13 @@ where
                         return Err(MountSourceError::Indeterminate.into());
                     }
                 }
-                if let Some((destination, source, source_config, input)) = proof {
+                if let Some(SelectedImportProof {
+                    destination,
+                    source,
+                    config: source_config,
+                    input,
+                }) = proof
+                {
                     self.lazy
                         .finish_selected_import(
                             operation,
@@ -176,7 +187,9 @@ where
                         .await
                         .map_err(lazy_error)?;
                     let context = match remembered.and_then(|(_, proof)| proof) {
-                        Some((_, _, _, input)) => NativeSnapshotContext::Selected { cut, input },
+                        Some(SelectedImportProof { input, .. }) => {
+                            NativeSnapshotContext::Selected { cut, input }
+                        }
                         None => NativeSnapshotContext::Lazy(cut),
                     };
                     self.authored
@@ -196,8 +209,12 @@ where
                             error
                         })?;
                     let published = acknowledged.ok_or(MountSourceError::Indeterminate)?;
-                    if let Some((destination, source, config, input)) =
-                        remembered.and_then(|(_, proof)| proof)
+                    if let Some(SelectedImportProof {
+                        destination,
+                        source,
+                        config,
+                        input,
+                    }) = remembered.and_then(|(_, proof)| proof)
                     {
                         self.lazy
                             .finish_selected_import(
@@ -357,7 +374,9 @@ where
                 .await
                 .map_err(lazy_error)?;
             let context = match selected_proof {
-                Some((_, _, _, input)) => NativeSnapshotContext::Selected { cut, input },
+                Some(SelectedImportProof { input, .. }) => {
+                    NativeSnapshotContext::Selected { cut, input }
+                }
                 None => NativeSnapshotContext::Lazy(cut),
             };
             let mut scratch_carrier = adapter::NativeDemandCarrier::Native(work);
@@ -442,7 +461,13 @@ where
                     error
                 })?;
             let published = acknowledged.ok_or(MountSourceError::Indeterminate)?;
-            if let Some((destination, source, config, input)) = selected_proof {
+            if let Some(SelectedImportProof {
+                destination,
+                source,
+                config,
+                input,
+            }) = selected_proof
+            {
                 self.lazy
                     .finish_selected_import(
                         operation,
