@@ -47,8 +47,7 @@ async fn capture_omits_newly_ignored_paths_but_keeps_tracked_descendants() {
             &CancellationToken::new(),
         )
         .await
-        .expect("directories")
-        .value;
+        .expect("directories");
     transaction
         .write_text("/target/drop.bin", "drop")
         .await
@@ -195,8 +194,7 @@ async fn capture_preserves_metadata_and_hard_links_through_public_fork_primitive
             &CancellationToken::new(),
         )
         .await
-        .expect("metadata")
-        .value;
+        .expect("metadata");
     transaction
         .hard_link(
             "/source.txt",
@@ -205,13 +203,11 @@ async fn capture_preserves_metadata_and_hard_links_through_public_fork_primitive
             &CancellationToken::new(),
         )
         .await
-        .expect("hard link")
-        .value;
+        .expect("hard link");
     transaction
         .create_dir_all("/ignored", WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .expect("ignored directory")
-        .value;
+        .expect("ignored directory");
     transaction
         .write_text("/ignored/drop.txt", "drop")
         .await
@@ -267,8 +263,7 @@ async fn exact_capture_inherits_nested_ignore_rules_with_local_negation() {
     transaction
         .create_dir_all("/src", WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .expect("directory")
-        .value;
+        .expect("directory");
     transaction
         .write_text("/src/.gitignore", "*.tmp\n!keep.tmp\n")
         .await
@@ -348,8 +343,7 @@ async fn diff_uses_nested_ignores_without_creating_a_capture_workspace() {
     transaction
         .create_dir_all("/src", WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .expect("directory")
-        .value;
+        .expect("directory");
     transaction
         .write_text("/src/.gitignore", "*.tmp\n!keep.tmp\n")
         .await
@@ -446,8 +440,7 @@ async fn diff_uses_the_source_ignore_policy_for_deleted_paths() {
             &CancellationToken::new(),
         )
         .await
-        .expect("delete old file")
-        .value;
+        .expect("delete old file");
     publish_fixture(changed).await;
     let after = workspace
         .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
@@ -484,8 +477,7 @@ async fn ignored_ancestor_cannot_be_reincluded_by_nested_negation() {
     transaction
         .create_dir_all("/build", WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .expect("directory")
-        .value;
+        .expect("directory");
     transaction
         .write_text("/build/.gitignore", "!keep.txt\n")
         .await

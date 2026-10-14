@@ -7,8 +7,7 @@ async fn incremental_capture_honors_unchanged_nested_ignore() {
     initial
         .create_dir_all("/src", WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .expect("directory")
-        .value;
+        .expect("directory");
     initial
         .write_text("/src/.gitignore", "*.tmp\n")
         .await
@@ -92,8 +91,7 @@ async fn newly_ignored_merge_paths_exclude_tracked_changes() {
     initial
         .create_dir_all("/sub", WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .expect("subdirectory")
-        .value;
+        .expect("subdirectory");
     initial
         .write_text("/sub/.gitignore", "*.tmp\n")
         .await
@@ -124,8 +122,7 @@ async fn newly_ignored_merge_paths_exclude_tracked_changes() {
     build
         .create_dir_all("/build", WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .expect("build directory")
-        .value;
+        .expect("build directory");
     build
         .write_text("/build/output.bin", "generated")
         .await
@@ -312,8 +309,7 @@ async fn nested_gitignore_change_forces_exact_capture() {
     transaction
         .create_dir_all("/src", WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .expect("directory")
-        .value;
+        .expect("directory");
     transaction
         .write_text("/src/ignored.txt", "present before ignore")
         .await
