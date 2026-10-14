@@ -9,10 +9,10 @@ const workflow = YAML.parse(readFileSync(".github/workflows/release-acyclic.yml"
 
 test("native cache snapshot runs before leaving the build step and preserves its result", () => {
   const build = workflow.jobs.build.steps.find(step => step.name === "Build the unified executable");
-  const start = build.run.indexOf("record_native_cache() {");
-  const end = build.run.indexOf("trap record_native_cache EXIT", start);
+  const start = build.run.indexOf("trap '\n");
+  const end = build.run.indexOf("\n' EXIT", start);
   assert.ok(start >= 0 && end > start);
-  const trap = build.run.slice(start, end) + "trap record_native_cache EXIT\n";
+  const trap = build.run.slice(start, end + "\n' EXIT".length) + "\n";
   assert.ok(end < build.run.indexOf("node scripts/build-product.mjs"));
   assert.ok(build.run.includes('wait "${pids[$index]}"'));
   mkdirSync(".tools", { recursive: true });

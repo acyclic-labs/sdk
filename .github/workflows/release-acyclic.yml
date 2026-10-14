@@ -112,19 +112,18 @@ jobs:
           set -euo pipefail
           build_started=$(date +%s)
           # Capture the live daemon before the runner closes this step's processes.
-          record_native_cache() {
+          trap '
             status=$?
             trap - EXIT
             set +e
             build_finished=$(date +%s)
             mkdir -p "$RUNNER_TEMP/native-build-timings"
             sccache --show-stats --stats-format=json >"$RUNNER_TEMP/native-build-timings/sccache.json"
-            printf '%s\tNative builds\0%s\tCache snapshot and summary\0' "$build_started" "$build_finished" \
+            printf "%s\tNative builds\0%s\tCache snapshot and summary\0" "$build_started" "$build_finished" \
               >"$RUNNER_TEMP/native-build-timings/steps.tsv"
             node scripts/ci-summary.mjs "$RUNNER_TEMP/native-build-timings" "$CARGO_BUILD_TARGET native build"
             exit "$status"
-          }
-          trap record_native_cache EXIT
+          ' EXIT
           # Complete rust-toolchain.toml components once, before parallel builds
           # race to install them.
           cargo --version
