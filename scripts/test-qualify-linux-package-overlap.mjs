@@ -33,7 +33,12 @@ bash() {
       touch "$SDK_TEMP_DIR/harness-started"
       while [[ ! -f "$SDK_TEMP_DIR/generated-done" || ! -f "$SDK_TEMP_DIR/finish-entered" ]]; do sleep 0.01; done
       if (( ${generatedStatus} == 0 )); then
-        while [[ ! -f "$SDK_TEMP_DIR/filesystem-done" ]]; do sleep 0.01; done
+        if (( ${harnessStatus} != 0 )); then
+          while [[ ! -f "$SDK_TEMP_DIR/filesystem-started" ]]; do sleep 0.01; done
+          [[ ! -f "$SDK_TEMP_DIR/filesystem-done" ]]
+        else
+          while [[ ! -f "$SDK_TEMP_DIR/filesystem-done" ]]; do sleep 0.01; done
+        fi
       fi
       echo harness-complete
       touch "$SDK_TEMP_DIR/harness-done"
@@ -42,6 +47,10 @@ bash() {
       [[ "$#" == 2 && "$2" == "$SDK_ARTIFACT_DIR/packages/filesystem" ]]
       [[ -f "$SDK_TEMP_DIR/generated-done" && ! -f "$SDK_TEMP_DIR/harness-done" ]]
       touch "$SDK_TEMP_DIR/filesystem-started"
+      if (( ${harnessStatus} != 0 )); then
+        while [[ ! -f "$SDK_TEMP_DIR/filesystem-join-entered" ]]; do sleep 0.01; done
+        [[ -f "$SDK_TEMP_DIR/harness-done" ]]
+      fi
       echo filesystem-complete
       touch "$SDK_TEMP_DIR/filesystem-done"
       return ${filesystemStatus} ;;
@@ -77,6 +86,10 @@ node() {
 ${helpers}
 finish() {
   touch "$SDK_TEMP_DIR/finish-entered"
+  if [[ "$1" == filesystem-package && ${harnessStatus} != 0 ]]; then
+    [[ -f "$SDK_TEMP_DIR/filesystem-started" && ! -f "$SDK_TEMP_DIR/filesystem-done" ]]
+    touch "$SDK_TEMP_DIR/filesystem-join-entered"
+  fi
   local status=0
   fixture_finish "$@" || status=$?
   if [[ "$1" == harness-package && "$status" == 0 ]]; then touch "$SDK_TEMP_DIR/harness-joined"; fi
