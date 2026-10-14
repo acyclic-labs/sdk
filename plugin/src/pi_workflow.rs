@@ -1,6 +1,7 @@
 //! The Pi command host drives the existing fenced workflow.
 use super::*;
 use acyclic_harness::filesystem::PreparationIo;
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::{
     conversation::FileRef,
     distributed::{WorkPull, Worker},

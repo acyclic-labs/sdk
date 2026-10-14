@@ -243,7 +243,7 @@ impl PiSession {
                 }
             }
             let observations =
-                pi_recovery::observe_pi_session(&self.runtime, &self.state, &work).await?;
+                pi_recovery::observe_pi_session(&self.runtime.runtime, &self.state, &work).await?;
             let PluginTaskBinding::Pi(binding) = &self.state.task_binding else {
                 return Err(invalid("Pi original root binding is missing"));
             };
