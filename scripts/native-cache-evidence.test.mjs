@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import test from "node:test";
 import YAML from "./vendor/yaml.cjs";
@@ -20,11 +20,17 @@ test("native cache snapshot runs before leaving the build step and preserves its
   const bash = process.platform === "win32" ? join(process.env.ProgramFiles ?? "C:/Program Files", "Git", "bin", "bash.exe") : "bash";
   try {
     for (const [buildStatus, snapshotStatus] of [[0, 0], [7, 0], [0, 9], [7, 9]]) {
+      const finish = Math.floor(Date.now() / 1000);
+      writeFileSync(`${root}/summary.md`, "");
       const result = spawnSync(bash, ["-c", `set -euo pipefail
 RUNNER_TEMP='${root}'
+export GITHUB_STEP_SUMMARY='${root}/summary.md'
+CARGO_BUILD_TARGET=fixture-target
+build_started=${finish - 12}
+date() { printf '${finish}\\n'; }
 sccache() {
   [[ "$*" == '--show-stats --stats-format=json' ]]
-  printf '{"stats":{"compile_requests":1}}\\n'
+  printf '{"stats":{"compile_requests":5,"cache_hits":{"counts":{"Rust":2}},"cache_misses":{"counts":{"Rust":3}},"requests_not_cacheable":0}}\\n'
   return ${snapshotStatus}
 }
 ${trap}
@@ -32,7 +38,14 @@ exit ${buildStatus}
 `], { encoding: "utf8", timeout: 60_000 });
       assert.ifError(result.error);
       assert.equal(result.status, buildStatus, result.stderr);
-      assert.equal(JSON.parse(readFileSync(`${root}/native-build-timings/sccache.json`, "utf8")).stats.compile_requests, 1);
+      assert.equal(JSON.parse(readFileSync(`${root}/native-build-timings/sccache.json`, "utf8")).stats.compile_requests, 5);
+      for (const output of [result.stdout, readFileSync(`${root}/summary.md`, "utf8")]) {
+        assert.ok(output.includes("## fixture-target native build"));
+        assert.ok(output.includes("| `Native builds` | 12s |"));
+        assert.ok(output.includes("| Compile requests | 5 |"));
+        assert.ok(output.includes("| Cache hits | 2 |"));
+        assert.ok(output.includes("| Cache misses | 3 |"));
+      }
     }
   } finally {
     assert.ok(resolve(root).startsWith(resolve(".tools") + sep));
