@@ -48,11 +48,11 @@ where
                 SourceChangeRecorder {
                     lazy: Arc::downgrade(&lazy),
                     authored: Arc::downgrade(&authored),
-                    constructor_inputs: Mutex::new(Some((
-                        Arc::clone(&lazy),
+                    constructor_inputs: Mutex::new(Some(SourceConstructorInputs {
+                        lazy: Arc::clone(&lazy),
                         root,
-                        root_allocation,
-                    ))),
+                        allocation: root_allocation,
+                    })),
                 },
                 &mut carrier,
                 &mut retained,
@@ -66,7 +66,7 @@ where
                 &cancellation,
                 owner,
             )?;
-            let (retained_lazy, root, native_allocation) = sink
+            let inputs = sink
                 .constructor_inputs
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -74,7 +74,7 @@ where
                 .ok_or(MountSourceError::NativeWork(
                     crate::NativeTreeMaterializationError::InvalidLayout,
                 ))?;
-            drop(retained_lazy);
+            drop(inputs.lazy);
             let source_watch = if owner.watch.is_some() {
                 Some(owner)
             } else {
@@ -84,7 +84,7 @@ where
             Ok(Self {
                 lazy,
                 authored,
-                root,
+                root: inputs.root,
                 runtime,
                 cursors: CursorTable::new(),
                 source_view,
@@ -93,7 +93,7 @@ where
                 open_sources,
                 source_watch,
                 linked: Mutex::default(),
-                native_allocation,
+                native_allocation: inputs.allocation,
             })
         })();
         match result {

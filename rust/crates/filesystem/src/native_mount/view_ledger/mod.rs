@@ -11,9 +11,9 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
 use storage::ChangePositions;
-pub(super) use storage::{copy_work, scan_work};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub(super) use storage::same_work;
+pub(super) use storage::{copy_work, scan_work};
 use unicode_normalization::UnicodeNormalization as _;
 mod notifications;
 mod storage;
@@ -287,7 +287,7 @@ impl ViewLedger {
         for observer in observers
             .iter()
             .flat_map(|entries| &entries.entries)
-            .filter_map(|(observer, _)| observer.upgrade())
+            .filter_map(|entry| entry.observer.upgrade())
         {
             if recorded.is_err() || matches!(change, ViewChange::Unconfirmed) {
                 observer.view_unconfirmed(position);

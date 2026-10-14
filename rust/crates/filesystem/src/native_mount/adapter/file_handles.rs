@@ -71,7 +71,7 @@ where
         &self,
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<((Arc<dyn MountOpenFile>, u64), MountLookup), MountSourceError> {
+    ) -> Result<(crate::native_mount::MountOpenClaim, MountLookup), MountSourceError> {
         invoke(&self.runtime, work, || async {
             let mut carrier = NativeDemandCarrier::Native(work);
             let observation = self
@@ -92,10 +92,8 @@ where
                     "only regular files can own native handles".into(),
                 ));
             }
-            Ok((
-                self.attached_file(lookup.node.file_id, &mut carrier)?,
-                lookup,
-            ))
+            let (file, bytes) = self.attached_file(lookup.node.file_id, &mut carrier)?;
+            Ok((crate::native_mount::MountOpenClaim { file, bytes }, lookup))
         })
     }
 
