@@ -9,7 +9,7 @@ const build = readFileSync("scripts/build-wasm.mjs", "utf8");
 const inventory = build.slice(build.indexOf("const packages = {"), build.indexOf("const [packageArgument"));
 const names = [...inventory.matchAll(/^  ([a-z]+): \{/gm)].map(match => match[1]);
 
-for (const failure of [undefined, "stream", "spawn"]) {
+for (const failure of [undefined, "stream", "spawn", "multiple"]) {
   test(`Windows WASM groups join every child: ${failure ?? "success"}`, async () => {
     const calls = [];
     const paths = new Set();
@@ -29,6 +29,7 @@ for (const failure of [undefined, "stream", "spawn"]) {
       assert.ok(!paths.has(directory), `concurrent target directory: ${directory}`);
       paths.add(directory);
       const workers = Number(options.env.CARGO_BUILD_JOBS);
+      assert.equal(workers, name === "stream" ? 4 : 6, name);
       budget += workers; live++; maximum = Math.max(maximum, live);
       assert.ok(budget <= 16, `oversubscribed: ${budget}`);
       calls.push(name);
@@ -36,7 +37,7 @@ for (const failure of [undefined, "stream", "spawn"]) {
       setImmediate(() => {
         paths.delete(directory); budget -= workers; live--;
         if (failure === "spawn" && name === "stream") child.emit("error", new Error("spawn failed"));
-        child.emit("close", name === failure ? 7 : 0);
+        child.emit("close", name === failure || failure === "multiple" && ["stream", "harness"].includes(name) ? 7 : 0);
       });
       return child;
     };
@@ -47,7 +48,11 @@ for (const failure of [undefined, "stream", "spawn"]) {
     assert.equal(live, 0);
     assert.deepEqual(calls.slice().sort(), names.slice().sort());
     assert.equal(state.exitCode, failure ? 1 : 0);
-    assert.equal(errors.length, failure ? 1 : 0);
+    assert.equal(errors.length, failure === "multiple" ? 2 : failure ? 1 : 0);
+    if (failure === "multiple") {
+      assert.ok(errors.includes("Error: stream WASM build exited with 7"));
+      assert.ok(errors.includes("Error: harness WASM build exited with 7"));
+    }
     assert.equal(state.env.CARGO_BUILD_JOBS, "16");
   });
 }
