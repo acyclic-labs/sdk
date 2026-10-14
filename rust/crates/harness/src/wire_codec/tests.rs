@@ -8,13 +8,16 @@ pub(super) fn fixture() -> Vec<u8> {
         .as_str()
         .unwrap()
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
         .collect()
 }
 #[test]
 fn protocol_digest_and_error_semantics_are_preserved() -> Result<()> {
-    let mut envelope = wire::EventEnvelope::decode(fixture().as_slice()).unwrap();
+    let mut envelope = wire::EventEnvelope::decode(fixture().as_slice())
+        .map_err(|error| Error::Invalid(error.to_string()))?;
     for protocol in [
         wire::ProtocolIdentity {
             version: "1".into(),
@@ -98,7 +101,8 @@ fn native_command_envelopes_require_exact_payload_protocol_and_retry_identity() 
     assert_eq!(command.operation_id, OperationId::from_bytes([31; 16]));
     assert_eq!(command.idempotency_key, IdempotencyKey::new("native-once")?);
     let mut wrong = envelope.clone();
-    wrong.canonical_action_json = serde_json::to_vec_pretty(&action).unwrap();
+    wrong.canonical_action_json =
+        serde_json::to_vec_pretty(&action).map_err(|error| Error::Invalid(error.to_string()))?;
     assert!(matches!(
         decode_command_envelope(wrong),
         Err(Error::Invalid(_))

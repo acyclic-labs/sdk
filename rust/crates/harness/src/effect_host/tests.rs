@@ -68,7 +68,8 @@ fn host(
 #[test]
 fn native_host_metadata_survives_shared_clone_until_physical_drop() -> Result<()> {
     let token = CancellationToken::new();
-    let work = NativeMaterializationWork::new(budget(), &token).unwrap();
+    let work = NativeMaterializationWork::new(budget(), &token)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let baseline = work.live_allocation_bytes();
     let shared = host(&work, &work, false)?;
     let alias = shared.clone();
@@ -81,8 +82,10 @@ fn native_host_metadata_survives_shared_clone_until_physical_drop() -> Result<()
 #[test]
 fn native_host_rejects_foreign_metadata_scope_and_cancelled_source() -> Result<()> {
     let token = CancellationToken::new();
-    let work = NativeMaterializationWork::new(budget(), &token).unwrap();
-    let foreign = NativeMaterializationWork::new(budget(), &token).unwrap();
+    let work = NativeMaterializationWork::new(budget(), &token)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let foreign = NativeMaterializationWork::new(budget(), &token)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let baseline = work.live_allocation_bytes();
     assert!(host(&work, &foreign, false).is_err());
     assert!(host(&work, &work, true).is_err());

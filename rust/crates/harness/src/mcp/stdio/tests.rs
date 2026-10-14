@@ -196,7 +196,7 @@ fn admitted_deep_json_and_crlf_bom_survive_stream_cuts() {
         .exchange(None)
         .unwrap();
         for chunk in transcript.chunks(width) {
-            codec.push(chunk, None).unwrap().0;
+            codec.push(chunk, None).unwrap();
         }
         assert_eq!(codec.finish().unwrap().0, expected);
     }

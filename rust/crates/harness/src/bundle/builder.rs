@@ -194,8 +194,6 @@ impl HarnessBuilder {
         self
     }
 
-
-
     /// Sets the local live-task concurrency bound.
     #[must_use]
     pub fn concurrency(mut self, value: usize) -> Self {
@@ -244,12 +242,13 @@ impl HarnessBuilder {
     pub fn build(self) -> Result<HarnessBundle> {
         self.limits.validate(&mut None)?;
         let journal = self.journal;
+        let missing_journal = || Error::Invalid("execution journal binding is missing".into());
         let name = self.name.unwrap_or_else(|| "harness".into());
         if name.trim().is_empty() {
             return Err(Error::Invalid("harness name is empty".into()));
         }
         let capabilities = Capabilities::new(self.capabilities);
-        let scope = if let Some(bound) = self.bound_scope {
+        let mut scope = if let Some(bound) = self.bound_scope {
             bound.narrow(capabilities.clone(), self.limits)?
         } else {
             let root = RuntimeScope::new(capabilities.clone(), self.limits)?;
@@ -259,16 +258,13 @@ impl HarnessBuilder {
                 root.with_replayed_extensions(None)?
             }
         };
-        let scope = if let Some(runtime) = self.extension_runtime {
-            scope.with_extension_runtime(runtime)?
-        } else {
-            scope
-        };
+        if let Some(runtime) = self.extension_runtime {
+            scope = scope.with_extension_runtime(runtime)?;
+        }
         let mut bindings = self.bindings;
         bindings.scope = scope.clone();
         let agent_loop = self.agent_loop;
-        if let Some(component) = &agent_loop {
-            let component = Arc::clone(component);
+        if let Some(component) = agent_loop.as_ref().cloned() {
             bindings.tasks.register(TaskDefinition::live(
                 "acyclic.agent_loop",
                 "2",
@@ -281,9 +277,7 @@ impl HarnessBuilder {
         } else if agent_loop.is_some() {
             None
         } else {
-            let journal = journal
-                .as_ref()
-                .ok_or_else(|| Error::Invalid("execution journal binding is missing".into()))?;
+            let journal = journal.as_ref().ok_or_else(missing_journal)?;
             let (model, provider) = self
                 .model
                 .as_ref()
@@ -330,9 +324,7 @@ impl HarnessBuilder {
         }
         .bind_context(self.context);
         if executor.is_some() && journal.is_none() {
-            return Err(Error::Invalid(
-                "execution journal binding is missing".into(),
-            ));
+            return Err(missing_journal());
         }
         if capabilities.iter().any(|value| value.trim().is_empty()) {
             return Err(Error::Invalid("empty capability grant".into()));

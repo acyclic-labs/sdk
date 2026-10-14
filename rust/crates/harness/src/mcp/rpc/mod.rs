@@ -175,7 +175,13 @@ pub(super) fn check<T: DeserializeOwned>(value: &Value, work: NativeWork<'_>) ->
             }) => {
                 let (source, custody) = crate::filesystem::native_decoded((
                     source,
-                    held.expect("MCP typed admission"),
+                    held.ok_or_else(|| {
+                        error(
+                            Some(work),
+                            ErrorCode::Storage,
+                            "MCP typed admission lacks ownership",
+                        )
+                    })?,
                 ))?;
                 Err(Error::NativeJson {
                     code,
