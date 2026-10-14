@@ -16,50 +16,47 @@ impl CoreLog {
                 .adopt_native(work)?;
         }
         let paths = root.record(CORE_LOG_FAMILY, &[0; 16])?;
-        let mut file = match work {
-            Some(work) => {
-                crate::native_host::create_directories(paths.directory(), &mut &*work)?;
-                match materialization_open_options(
-                    &paths.current,
-                    &crate::native_host::NativeOpenOptions::ReadWriteCreateNew,
-                    work,
-                ) {
-                    Ok(file) => {
-                        paths.sync()?;
-                        file
-                    }
-                    Err(crate::materializer::NativeTreeMaterializationError::Io(error))
-                        if error.kind() == std::io::ErrorKind::AlreadyExists =>
-                    {
-                        materialization_open_options(
-                            &paths.current,
-                            &crate::native_host::NativeOpenOptions::ReadWrite,
-                            work,
-                        )?
-                    }
-                    Err(error) => return Err(error.into()),
+        let mut file = if let Some(work) = work {
+            crate::native_host::create_directories(paths.directory(), &mut &*work)?;
+            match materialization_open_options(
+                &paths.current,
+                &crate::native_host::NativeOpenOptions::ReadWriteCreateNew,
+                work,
+            ) {
+                Ok(file) => {
+                    paths.sync()?;
+                    file
                 }
-            }
-            None => {
-                std::fs::create_dir_all(paths.directory())?;
-                match OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .create_new(true)
-                    .open(&paths.current)
+                Err(crate::materializer::NativeTreeMaterializationError::Io(error))
+                    if error.kind() == std::io::ErrorKind::AlreadyExists =>
                 {
-                    Ok(file) => {
-                        sync_directory(paths.directory())?;
-                        file
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                        OpenOptions::new()
-                            .read(true)
-                            .write(true)
-                            .open(&paths.current)?
-                    }
-                    Err(error) => return Err(error.into()),
+                    materialization_open_options(
+                        &paths.current,
+                        &crate::native_host::NativeOpenOptions::ReadWrite,
+                        work,
+                    )?
                 }
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            std::fs::create_dir_all(paths.directory())?;
+            match OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&paths.current)
+            {
+                Ok(file) => {
+                    sync_directory(paths.directory())?;
+                    file
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(&paths.current)?
+                }
+                Err(error) => return Err(error.into()),
             }
         };
         let mut bytes_allocation = work
@@ -77,7 +74,9 @@ impl CoreLog {
                 &mut bytes,
                 size,
                 work,
-                bytes_allocation.as_mut().expect("read buffer"),
+                bytes_allocation
+                    .as_mut()
+                    .ok_or(crate::NativeTreeMaterializationError::MissingCustody)?,
             )?;
             work.charge(crate::WorkCounters {
                 bytes_copied: length,
@@ -148,20 +147,21 @@ impl CoreLog {
         let mut line_start = 0;
         while line_start < bytes.len() {
             let mut line_end = line_start;
-            while line_end < bytes.len() {
+            while let Some(&byte) = bytes.get(line_end) {
                 if let Some(work) = work {
                     work.charge(crate::WorkCounters {
                         items_examined: 1,
                         ..Default::default()
                     })?;
                 }
-                let byte = bytes[line_end];
                 line_end += 1;
                 if byte == b'\n' {
                     break;
                 }
             }
-            let line = &bytes[line_start..line_end];
+            let line = bytes
+                .get(line_start..line_end)
+                .ok_or(LocalCoreStateStoreError::Integrity)?;
             line_start = line_end;
             if let Some(work) = work {
                 work.charge(crate::WorkCounters {
@@ -210,7 +210,8 @@ impl CoreLog {
             }
             if let Some(work) = work {
                 // The decoded records retire before the frame's allocation.
-                let mut frame_allocation = allocation.expect("native frame allocation");
+                let mut frame_allocation =
+                    allocation.ok_or(crate::NativeTreeMaterializationError::MissingCustody)?;
                 for mut record in frame.change.0 {
                     let owned_bytes = record
                         .value
@@ -223,7 +224,10 @@ impl CoreLog {
                     record.allocation = Some(frame_allocation.split_off(owned_bytes)?);
                     let mut residents = log.residents();
                     if let Some(index) = index {
-                        residents.0[index] = record;
+                        *residents
+                            .0
+                            .get_mut(index)
+                            .ok_or(LocalCoreStateStoreError::Integrity)? = record;
                     } else {
                         residents.0.push(record);
                     }
@@ -255,7 +259,10 @@ impl CoreLog {
 fn native_corrupt_log(
     mut paths: RecordPaths<'_>,
 ) -> Result<LocalCoreStateStoreError, LocalCoreStateStoreError> {
-    let mut allocation = paths.allocation.take().expect("native record paths");
+    let mut allocation = paths
+        .allocation
+        .take()
+        .ok_or(crate::NativeTreeMaterializationError::MissingCustody)?;
     let current = paths.current;
     drop((paths.previous, paths.temporary, paths.lock));
     allocation.resize(current.capacity() as u64)?;
