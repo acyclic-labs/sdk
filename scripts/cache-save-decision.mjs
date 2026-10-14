@@ -19,6 +19,8 @@ export function cacheSaveDecision(matchedKey, snapshots) {
         Object.values(counts).some(value => typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)) {
       return { save: true, reason: "compiler snapshot incomplete" };
     }
+    // A restarted daemon reports zero requests even after an earlier build.
+    if (stats.compile_requests === 0) return { save: true, reason: "no compiler requests recorded" };
     if (Object.values(counts).some(value => value !== 0)) {
       return { save: true, reason: "compiler cache misses" };
     }

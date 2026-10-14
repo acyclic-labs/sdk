@@ -16,7 +16,7 @@ test("only a matched restore with complete zero-miss snapshots suppresses saving
       assert.equal(cacheSaveDecision("restored-prefix-key", [snapshot]).save, expected);
     };
     check({ stats: { compile_requests: 12, cache_misses: { counts: {} } } }, false);
-    check({ stats: { compile_requests: 0, cache_misses: { counts: { Rust: 0 } } } }, false);
+    check({ stats: { compile_requests: 0, cache_misses: { counts: { Rust: 0 } } } }, true);
     check({ stats: { compile_requests: 12, cache_misses: { counts: { Rust: 0, "C/C++": 1 } } } }, true);
     for (const value of [null, {}, { stats: {} }, { stats: { compile_requests: 1 } },
       { stats: { compile_requests: 1, cache_misses: { counts: [] } } },
@@ -32,6 +32,8 @@ test("only a matched restore with complete zero-miss snapshots suppresses saving
     assert.equal(cacheSaveDecision("matched", [prior, snapshot]).save, true);
     writeFileSync(prior, readFileSync(snapshot));
     assert.equal(cacheSaveDecision("matched", [prior, snapshot]).save, false);
+    writeFileSync(prior, JSON.stringify({ stats: { compile_requests: 0, cache_misses: { counts: {} } } }));
+    assert.equal(cacheSaveDecision("matched", [snapshot, prior]).save, true);
     const output = join(root, "output");
     writeFileSync(output, "");
     const result = spawnSync(process.execPath, ["scripts/cache-save-decision.mjs", "matched", snapshot], {

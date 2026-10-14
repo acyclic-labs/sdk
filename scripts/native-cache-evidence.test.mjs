@@ -149,4 +149,8 @@ test("every native target retains its live cache evidence from the current run a
   assert.equal(step.with["retention-days"], "${{ contains(github.workflow, 'Release') && 30 || 3 }}");
   assert.equal(step.with["if-no-files-found"], "ignore");
   assert.equal(workflow.jobs.build.env.SCCACHE_IDLE_TIMEOUT, "0");
+  const qualification = YAML.parse(readFileSync(".github/workflows/qualification.yml", "utf8"));
+  const hosts = YAML.parse(readFileSync(".github/workflows/agent-host-qualification.yml", "utf8"));
+  assert.equal(qualification.jobs.qualification.env.SCCACHE_IDLE_TIMEOUT, "0");
+  assert.equal(hosts.jobs.qualify.env.SCCACHE_IDLE_TIMEOUT, "0");
 });

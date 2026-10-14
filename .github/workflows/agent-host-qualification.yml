@@ -34,6 +34,7 @@ jobs:
     timeout-minutes: 20
     env:
       CARGO_INCREMENTAL: 0
+      SCCACHE_IDLE_TIMEOUT: '0'
       CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - name: Check out exact source
