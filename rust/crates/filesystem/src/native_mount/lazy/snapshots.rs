@@ -15,9 +15,8 @@ where
         let original = carrier
             .original_native_work()
             .ok_or(MountSourceError::OriginalSnapshotUnavailable)?;
-        self.publication_snapshot(carrier, cancellation)
-            .await
-            .map_err(|(error, _)| error)?
+        self.publication_snapshot(carrier, cancellation, &mut None)
+            .await?
             .lazy_snapshot(&mut crate::kernel::KernelAccounting::native(
                 &original,
                 cancellation,
@@ -30,8 +29,9 @@ where
         &self,
         mut carrier: adapter::NativeDemandCarrier<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<crate::NativePublicationSnapshot, (MountSourceError, Option<MountSourceError>)>
-    {
+        accounting_failure: &mut Option<MountSourceError>,
+    ) -> Result<crate::NativePublicationSnapshot, MountSourceError> {
+        *accounting_failure = None;
         let result = async {
             let original = carrier
                 .original_native_work()
@@ -110,13 +110,15 @@ where
             Ok(snapshot)
         }
         .await;
-        let accounting = carrier
-            .with_work(|work| work.record(crate::WorkCounters::UNCHARGED))
-            .map_err(mount_demand_error);
+        let accounting = carrier.with_work(|work| work.record(crate::WorkCounters::UNCHARGED));
         match (result, accounting) {
             (Ok(snapshot), Ok(())) => Ok(snapshot),
-            (Ok(_), Err(error)) | (Err(error), Ok(())) => Err((error, None)),
-            (Err(error), Err(accounting)) => Err((error, Some(accounting))),
+            (Ok(_), Err(error)) => Err(MountSourceError::from(error)),
+            (Err(error), Ok(())) => Err(error),
+            (Err(error), Err(accounting)) => {
+                *accounting_failure = Some(MountSourceError::from(accounting));
+                Err(error)
+            }
         }
     }
 
@@ -235,8 +237,7 @@ where
                 .shared_checkout()
                 .publish(
                     crate::PublicationPermit::Unrestricted,
-                    &original,
-                    cancellation,
+                    crate::kernel::KernelAccounting::native(&original, cancellation),
                     Some(self.authored.cancellation()),
                     &mut adapter::source_publication_guard(
                         self.authored.callback_guard().cloned(),

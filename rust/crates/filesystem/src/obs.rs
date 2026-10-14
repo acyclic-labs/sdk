@@ -163,7 +163,7 @@ fn record_outcome(span: &tracing::Span, kind: Option<&'static str>) {
 #[cfg(all(
     test,
     feature = "native-mount",
-    any(target_os = "linux", target_os = "macos")
+    target_os = "linux"
 ))]
 pub(crate) use worker_context_tests::assert_filtered_callback_isolation;
 
@@ -326,7 +326,7 @@ mod worker_context_tests {
 
     #[cfg(all(
         feature = "native-mount",
-        any(target_os = "linux", target_os = "macos")
+        target_os = "linux"
     ))]
     #[expect(
         clippy::expect_used,

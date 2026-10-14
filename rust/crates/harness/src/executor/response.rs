@@ -166,56 +166,15 @@ impl StockExecution<'_> {
             self.stock.limits,
             self.io,
         )?;
-        match (self.compaction_policy(), accounting) {
-            (crate::context::CompactionPolicy::Disabled, None) => Ok(prepared),
-            (crate::context::CompactionPolicy::Threshold(policy), Some(accounting)) => {
-                if self.model_capacity()? != Some(accounting.capacity) {
-                    return Err(stock_boundary(
-                        self.io,
-                        crate::wire::ErrorCode::Conflict,
-                        "selected capacity differs from captured accounting",
-                    ));
-                }
-                let input_tokens =
-                    with_history_io(self.io, |work| accounting.count.validate(&prepared, work))?;
-                if let Some(retained) = self
-                    .retained_compacted_response(journal, input, step, &projection, &records)
-                    .await?
-                {
-                    return Ok(retained);
-                }
-                let token_pressure = policy.needs_compaction(accounting.capacity, input_tokens)?;
-                let possible_message_pressure = projection.canonical.is_some()
-                    && projection.context.messages.len() > self.compaction_message_limit(true, 0);
-                if !possible_message_pressure && !token_pressure {
-                    return Ok(prepared);
-                }
-                let source = match &projection.canonical {
-                    Some(reference) => retain_preparation(
-                        load_json::<crate::context::Context>(journal, reference, self.io).await?,
-                    )?,
-                    None => crate::context::copy_context(&projection.context, self.io)?,
-                };
-                let stage_messages = projection
-                    .context
-                    .messages
-                    .len()
-                    .saturating_sub(source.messages.len());
-                let message_pressure = projection.canonical.is_some()
-                    && source.messages.len() > 1
-                    && source.messages.len() > self.compaction_message_limit(true, stage_messages);
-                if !message_pressure && !token_pressure {
-                    return Ok(prepared);
-                }
-                self.compact_response(journal, input, step, projection, accounting, source)
-                    .await
-            }
-            _ => Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Storage,
-                "captured accounting differs from compaction policy",
-            )),
-        }
+        self.resolve_response_accounting(
+            journal,
+            (input, step),
+            projection,
+            accounting,
+            prepared,
+            &records,
+        )
+        .await
     }
 
     pub(super) async fn retained_compacted_response(
@@ -265,51 +224,8 @@ impl StockExecution<'_> {
                     "compacted canonical source changed",
                 ));
             }
-            if let Some(checkpoint) = &retained.checkpoint {
-                let envelope = retain_preparation(
-                    load_json::<crate::context::CanonicalContextCheckpoint>(
-                        journal, checkpoint, self.io,
-                    )
-                    .await?,
-                )?;
-                envelope.validate(self.stock.limits, self.io)?;
-                let source = retain_preparation(
-                    load_json::<crate::context::Context>(journal, &envelope.source, self.io)
-                        .await?,
-                )?;
-                let base = retain_preparation(
-                    load_json::<crate::context::Context>(journal, &envelope.retained, self.io)
-                        .await?,
-                )?;
-                envelope.validate_projection(&source, &base, &proof, self.stock.limits, self.io)?;
-                if projection.canonical.as_ref() != Some(&envelope.source)
-                    || envelope.operation_id != input.operation_id
-                    || input
-                        .selected_context
-                        .as_ref()
-                        .is_none_or(|selected| selected.selection != envelope.selection)
-                {
-                    return Err(stock_boundary(
-                        self.io,
-                        crate::wire::ErrorCode::Storage,
-                        "canonical checkpoint differs from captured selection",
-                    ));
-                }
-            } else {
-                if projection.canonical.is_some() {
-                    return Err(stock_boundary(
-                        self.io,
-                        crate::wire::ErrorCode::Storage,
-                        "compacted canonical source has no checkpoint",
-                    ));
-                }
-                crate::context::validate_compaction(
-                    &proof,
-                    &projection.context,
-                    &retained.context,
-                    self.io,
-                )?;
-            }
+            self.validate_compacted_checkpoint(journal, input, projection, &retained, &proof)
+                .await?;
             let crate::context::CompactionPolicy::Threshold(policy) = self.compaction_policy()
             else {
                 return Err(stock_boundary(
@@ -350,5 +266,121 @@ impl StockExecution<'_> {
             return Ok(Some(request));
         }
         Ok(None)
+    }
+
+    async fn resolve_response_accounting(
+        &self,
+        journal: &dyn ExecutionJournal,
+        turn: (&TurnInput, u32),
+        projection: ResponseProjection,
+        accounting: Option<ContextAccounting>,
+        prepared: crate::model::PreparedModelRequest,
+        records: &[ExecutionRecord],
+    ) -> Result<crate::model::PreparedModelRequest> {
+        let (input, step) = turn;
+        match (self.compaction_policy(), accounting) {
+            (crate::context::CompactionPolicy::Disabled, None) => Ok(prepared),
+            (crate::context::CompactionPolicy::Threshold(policy), Some(accounting)) => {
+                if self.model_capacity()? != Some(accounting.capacity) {
+                    return Err(stock_boundary(
+                        self.io,
+                        crate::wire::ErrorCode::Conflict,
+                        "selected capacity differs from captured accounting",
+                    ));
+                }
+                let input_tokens =
+                    with_history_io(self.io, |work| accounting.count.validate(&prepared, work))?;
+                if let Some(retained) = self
+                    .retained_compacted_response(journal, input, step, &projection, records)
+                    .await?
+                {
+                    return Ok(retained);
+                }
+                let token_pressure = policy.needs_compaction(accounting.capacity, input_tokens)?;
+                let possible_message_pressure = projection.canonical.is_some()
+                    && projection.context.messages.len() > self.compaction_message_limit(true, 0);
+                if !possible_message_pressure && !token_pressure {
+                    return Ok(prepared);
+                }
+                let source = match &projection.canonical {
+                    Some(reference) => retain_preparation(
+                        load_json::<crate::context::Context>(journal, reference, self.io).await?,
+                    )?,
+                    None => crate::context::copy_context(&projection.context, self.io)?,
+                };
+                let stage_messages = projection
+                    .context
+                    .messages
+                    .len()
+                    .saturating_sub(source.messages.len());
+                let message_pressure = projection.canonical.is_some()
+                    && source.messages.len() > 1
+                    && source.messages.len() > self.compaction_message_limit(true, stage_messages);
+                if !message_pressure && !token_pressure {
+                    return Ok(prepared);
+                }
+                self.compact_response(journal, input, step, projection, accounting, source)
+                    .await
+            }
+            _ => Err(stock_boundary(
+                self.io,
+                crate::wire::ErrorCode::Storage,
+                "captured accounting differs from compaction policy",
+            )),
+        }
+    }
+
+    async fn validate_compacted_checkpoint(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        projection: &ResponseProjection,
+        retained: &ResponseProjection,
+        proof: &crate::context::CompactionReference,
+    ) -> Result<()> {
+        if let Some(checkpoint) = &retained.checkpoint {
+            let envelope = retain_preparation(
+                load_json::<crate::context::CanonicalContextCheckpoint>(
+                    journal, checkpoint, self.io,
+                )
+                .await?,
+            )?;
+            envelope.validate(self.stock.limits, self.io)?;
+            let source = retain_preparation(
+                load_json::<crate::context::Context>(journal, &envelope.source, self.io).await?,
+            )?;
+            let base = retain_preparation(
+                load_json::<crate::context::Context>(journal, &envelope.retained, self.io).await?,
+            )?;
+            envelope.validate_projection(&source, &base, proof, self.stock.limits, self.io)?;
+            if projection.canonical.as_ref() != Some(&envelope.source)
+                || envelope.operation_id != input.operation_id
+                || input
+                    .selected_context
+                    .as_ref()
+                    .is_none_or(|selected| selected.selection != envelope.selection)
+            {
+                return Err(stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Storage,
+                    "canonical checkpoint differs from captured selection",
+                ));
+            }
+        } else {
+            if projection.canonical.is_some() {
+                return Err(stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Storage,
+                    "compacted canonical source has no checkpoint",
+                ));
+            }
+            crate::context::validate_compaction(
+                proof,
+                &projection.context,
+                &retained.context,
+                self.io,
+            )?;
+        }
+        Ok(())
     }
 }

@@ -1,3 +1,4 @@
+#[cfg(feature = "filesystem")]
 use super::*;
 #[cfg(feature = "filesystem")]
 /// Borrowed original ROOT authentication, sealed by the actual owner.

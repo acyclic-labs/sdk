@@ -1,12 +1,11 @@
 //! The Pi command host drives the existing fenced workflow.
 use super::*;
 use acyclic_harness::filesystem::PreparationIo;
-use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::{
     conversation::FileRef,
     distributed::{WorkPull, Worker},
     filesystem::{TaskCommandHost, TaskCommandProgress, TaskWorkerAttempt},
-    runtime::TaskContext,
+    runtime::{TaskContext, TaskStateProvider},
     scheduler::LeaseFence,
     workflow::{MachineTransition, WorkflowCommand},
 };
@@ -19,21 +18,21 @@ impl PiControlHost<'_> {
         let PluginTaskBinding::Pi(binding) = &self.retained.task_binding else {
             return Err(boundary("Pi driver requires its original admitted root"));
         };
-        let admission = self
-            .runtime
-            .runtime
-            .task_host()
-            .observe_admission_with_native_work(binding.task_id, &self.work)?
-            .await?;
-        let definition = pi_task::PiTaskMachine::new(&self.work)?.definition(&self.work)?;
-        pi_recovery::authenticate_pi_task(
-            &admission.0,
-            binding,
-            pi_recovery::PiTaskOrigin::RootState(self.retained),
-            &self.work,
-            definition.identity(),
-        )?;
-        drop(admission);
+        {
+            let admission = self
+                .runtime
+                .runtime
+                .task_host()
+                .observe_admission_with_native_work(binding.task_id, &self.work)?
+                .await?;
+            pi_recovery::authenticate_pi_task(
+                &admission.0,
+                binding,
+                pi_recovery::PiTaskOrigin::RootState(self.retained),
+                &self.work,
+                self.runtime.definition.identity(),
+            )?;
+        }
         let (recovered, custody) =
             pi_native_host::recover_task(&self.runtime, binding.task_id, &self.work).await?;
         match recovered {
@@ -80,8 +79,11 @@ impl PiControlHost<'_> {
         &self,
     ) -> acyclic_harness::Result<
         Option<(
-            (FileRef, pi_root_allocation::PiRootAllocation),
-            acyclic_fs::NativeAllocation,
+            Arc<pi_root_provider::PiRootProvider>,
+            (
+                (FileRef, pi_root_allocation::PiRootAllocation),
+                acyclic_fs::NativeAllocation,
+            ),
         )>,
     > {
         let Some(provider) = self.root_provider.lock().await.clone() else {
@@ -97,12 +99,13 @@ impl PiControlHost<'_> {
             pi_root_inputs::preparation_operation(task, &self.work)?,
             &mut Some(&mut &PreparationIo::from_native_work(&self.work)?),
         )?;
-        provider
+        let allocation = provider
             .observe_allocation_with_native_work(
                 acyclic_harness::EffectAttemptId::from_bytes(effect.into_bytes()),
                 &self.work,
             )
-            .await
+            .await?;
+        Ok(allocation.map(|allocation| (provider, allocation)))
     }
 
     pub(crate) async fn control_with_native_work(
@@ -284,7 +287,7 @@ impl PiControlHost<'_> {
                 return Err(boundary("Pi root preparation requires a Pi state binding"));
             };
             let preparation = pi_root_inputs::PiRootPreparation::load(
-                (&self.resources.data, self.directory),
+                &owner,
                 &self.runtime,
                 &self.filesystem,
                 binding,
@@ -293,13 +296,8 @@ impl PiControlHost<'_> {
                 work,
             )
             .await?;
-            let journal_owner = self
-                .runtime
-                .runtime
-                .task_host()
-                .journal_owner(task, &fence, Some(&PreparationIo::from_native_work(work)?))
-                .await?
-                .into_native_shared(work)?;
+            let journal_owner =
+                context.journal_owner::<acyclic_stream::LocalStream>(&fence, work)?;
             journal_owner
                 .verify(
                     false,

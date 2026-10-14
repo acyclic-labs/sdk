@@ -1,15 +1,19 @@
 use super::*;
 
+type LinkBuffer<Allocation> = (Vec<u8>, std::ops::Range<usize>, Allocation);
+
 fn read_link_buffer<W: NativeHostWork>(
     parent: &Dir,
     name: &NativeLeaf,
     maximum: u64,
     work: &mut W,
-) -> Result<(Vec<u8>, std::ops::Range<usize>, W::Allocation), W::Error> {
+) -> Result<LinkBuffer<W::Allocation>, W::Error> {
     #[cfg(unix)]
-    let limit = maximum.saturating_add(1).min(isize::MAX as u64);
+    let limit = usize::try_from(maximum.saturating_add(1))
+        .unwrap_or(usize::MAX)
+        .min(isize::MAX.unsigned_abs());
     #[cfg(unix)]
-    let mut size = limit.min(256) as usize;
+    let mut size = limit.min(256);
     #[cfg(windows)]
     let size = maximum.saturating_mul(4).saturating_add(32).min(16 * 1024) as usize;
     #[cfg(windows)]
@@ -35,53 +39,16 @@ fn read_link_buffer<W: NativeHostWork>(
                 work.admit(reading)?;
                 work.started_io(READ)?;
                 #[cfg(unix)]
-                let read = {
-                    // SAFETY: held parent, leaf name and admitted output remain live for the syscall.
-                    let count = unsafe {
-                        libc::readlinkat(
-                            parent.as_raw_fd(),
-                            name.as_ptr(),
-                            bytes.as_mut_ptr().cast(),
-                            size,
-                        )
-                    };
-                    if count < 0 {
-                        Err(io::Error::last_os_error())
-                    } else {
-                        Ok(count as usize)
-                    }
-                };
+                let read = read_unix_link(
+                    parent,
+                    name,
+                    bytes.get_mut(..size).ok_or_else(W::invalid_request)?,
+                )
+                .map_err(W::Error::from);
                 #[cfg(windows)]
-                let read = {
-                    use std::os::windows::io::AsRawHandle as _;
-                    let mut count = 0;
-                    // SAFETY: held no-follow file and admitted output outlive the synchronous query.
-                    let result = unsafe {
-                        windows::Win32::System::IO::DeviceIoControl(
-                            win::HANDLE(file.as_raw_handle()),
-                            windows::Win32::System::Ioctl::FSCTL_GET_REPARSE_POINT,
-                            None,
-                            0,
-                            Some(bytes.as_mut_ptr().cast()),
-                            u32::try_from(size).map_err(|_| W::invalid_request())?,
-                            Some(&raw mut count),
-                            None,
-                        )
-                    };
-                    work.record(WorkCounters {
-                        source_bytes_read: u64::from(count),
-                        ..WorkCounters::UNCHARGED
-                    })?;
-                    if result
-                        .as_ref()
-                        .is_err_and(|error| matches!(error.code().0 & 0xffff, 122 | 234))
-                    {
-                        return Err(W::invalid_request());
-                    }
-                    result.map(|()| count as usize).map_err(io::Error::from)
-                };
+                let read = read_windows_link(&file, &mut bytes, size, work);
                 match read {
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                    Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::Interrupted) => {}
                     result => break result?,
                 }
             };
@@ -92,7 +59,7 @@ fn read_link_buffer<W: NativeHostWork>(
                     ..WorkCounters::UNCHARGED
                 })?;
                 if count == size {
-                    if size as u64 == limit {
+                    if size == limit {
                         return Err(W::invalid_request());
                     }
                     return Ok(None);
@@ -120,7 +87,7 @@ fn read_link_buffer<W: NativeHostWork>(
         result?;
         #[cfg(unix)]
         {
-            size = (size as u64).saturating_mul(2).min(limit) as usize;
+            size = size.saturating_mul(2).min(limit);
         }
     }
 }
@@ -132,11 +99,20 @@ fn link_target<W: NativeHostWork>(
 ) -> Result<std::ops::Range<usize>, W::Error> {
     let malformed = || W::Error::from(io::Error::from(io::ErrorKind::InvalidData));
     let word = |offset| {
-        let value: [u8; 2] = bytes.get(offset..offset + 2).ok_or_else(&malformed)?
-            .try_into().map_err(|_| malformed())?;
+        let value: [u8; 2] = bytes
+            .get(offset..offset + 2)
+            .ok_or_else(&malformed)?
+            .try_into()
+            .map_err(|_| malformed())?;
         Ok::<_, W::Error>(u16::from_le_bytes(value))
     };
-    let tag = u32::from_le_bytes(bytes.get(..4).ok_or_else(&malformed)?.try_into().map_err(|_| malformed())?);
+    let tag = u32::from_le_bytes(
+        bytes
+            .get(..4)
+            .ok_or_else(&malformed)?
+            .try_into()
+            .map_err(|_| malformed())?,
+    );
     let header = match tag {
         0xA000_000C => 20,
         0xA000_0003 => 16,
@@ -180,8 +156,12 @@ pub(crate) fn read_link_held<W: NativeHostWork>(
             let result = (|| {
                 work.started_io(copy_work(target.len() as u64))?;
                 wide.extend(
-                    bytes.get(target).ok_or_else(W::invalid_request)?
-                        .as_chunks::<2>().0.iter()
+                    bytes
+                        .get(target)
+                        .ok_or_else(W::invalid_request)?
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
                         .map(|&value| u16::from_le_bytes(value)),
                 );
                 work.check()
@@ -247,4 +227,57 @@ impl HostRoot {
             .map_err(|_| DemandError::InvalidRequest)?;
         Ok(bytes.slice(target))
     }
+}
+
+#[cfg(unix)]
+fn read_unix_link(parent: &Dir, name: &NativeLeaf, bytes: &mut [u8]) -> io::Result<usize> {
+    // SAFETY: held parent, terminated name and bounded output remain live during readlinkat.
+    let count = unsafe {
+        libc::readlinkat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            bytes.as_mut_ptr().cast(),
+            bytes.len(),
+        )
+    };
+    if count < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    usize::try_from(count).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))
+}
+
+#[cfg(windows)]
+fn read_windows_link<W: NativeHostWork>(
+    file: &File,
+    bytes: &mut [u8],
+    size: usize,
+    work: &mut W,
+) -> Result<usize, W::Error> {
+    use std::os::windows::io::AsRawHandle as _;
+    let mut count = 0;
+    // SAFETY: held no-follow file and admitted output outlive the synchronous query.
+    let result = unsafe {
+        windows::Win32::System::IO::DeviceIoControl(
+            win::HANDLE(file.as_raw_handle()),
+            windows::Win32::System::Ioctl::FSCTL_GET_REPARSE_POINT,
+            None,
+            0,
+            Some(bytes.as_mut_ptr().cast()),
+            u32::try_from(size).map_err(|_| W::invalid_request())?,
+            Some(&raw mut count),
+            None,
+        )
+    };
+    work.record(WorkCounters {
+        source_bytes_read: u64::from(count),
+        ..WorkCounters::UNCHARGED
+    })?;
+    if result
+        .as_ref()
+        .is_err_and(|error| matches!(error.code().0 & 0xffff, 122 | 234))
+    {
+        return Err(W::invalid_request());
+    }
+    result.map_err(|error| W::Error::from(io::Error::from(error)))?;
+    usize::try_from(count).map_err(|_| W::invalid_request())
 }

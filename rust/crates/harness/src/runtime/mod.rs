@@ -71,7 +71,7 @@ pub use bindings::*;
 mod tools;
 pub use tools::*;
 mod children;
-mod dependencies;
+pub(crate) mod dependencies;
 pub(crate) use children::*;
 mod context_open;
 pub(crate) use context_open::*;

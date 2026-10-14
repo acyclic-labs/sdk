@@ -1,7 +1,7 @@
 use super::super::HostChangeSink;
 use super::*;
 use crate::demand::DemandWork;
-use crate::native_host::{HostRoot, NativeHostWork, ordinary_error, ordinary_work};
+use crate::native_host::{HostRoot, ordinary_error, ordinary_work};
 use crate::{CancellationToken, WorkBudget, WorkCounters};
 use std::mem::size_of;
 use std::sync::{OnceLock, Weak};
@@ -242,19 +242,19 @@ fn stop_denial_and_precancellation_preserve_the_original_stream_for_retry() -> T
 }
 
 #[cfg(feature = "native-mount")]
+impl crate::fsevents::StreamTerminal for (std::sync::Arc<Shared>, CancellationToken) {
+    fn stream_stopped(&self) {
+        crate::fsevents::StreamTerminal::stream_stopped(self.0.as_ref());
+        self.1.cancel();
+    }
+}
+
+#[cfg(feature = "native-mount")]
 #[test]
 fn cleanup_wait_preserves_cancelled_birth_and_finishes_late_cancellation() -> TestResult {
-    use crate::demand::{DemandWork, NativeDemandReadMeter, SourceDemandReadWork};
-    use crate::native_host::NativeHostWork;
-    use crate::{CancellationToken, DemandError, WorkBudget, WorkCounters};
+    use crate::demand::{DemandWork, NativeDemandReadMeter};
+    use crate::{CancellationToken, DemandError};
     use std::sync::{Arc, Mutex};
-
-    impl crate::fsevents::StreamTerminal for (Arc<Shared>, CancellationToken) {
-        fn stream_stopped(&self) {
-            crate::fsevents::StreamTerminal::stream_stopped(self.0.as_ref());
-            self.1.cancel();
-        }
-    }
 
     crate::fsevents::EventStream::initialize_services()?;
     for late_wait in [false, true] {

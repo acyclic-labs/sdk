@@ -55,13 +55,36 @@ async fn native_stock_mail_command_uses_original_atomic_v3_send_and_custody() ->
         (TaskWorkerAttempt::Unresolved { error, .. }, _) => return Err(error),
         _ => return Err(Error::Invalid("mail outbox did not yield".into())),
     };
-    let (attempt, custody) = runtime
-        .resume_task_with_native_work(lease, custody, &runtime.commands(), 1, &work)
+    let fence = LeaseFence::from(&lease.reservation);
+    let context = runtime
+        .task_context_with_native_work(task, &fence, &work)
+        .await?;
+    let session = runtime
+        .open_task_with_native_work(task, &fence, Arc::clone(&context), &work)
+        .await?;
+    let command =
+        crate::filesystem::retain_decoded(io.value_decode_preparation::<WorkflowCommand>(
+            &session.checkpoint().state["command"],
+            crate::wire::ErrorCode::Storage,
+        )?)?;
+    drop(session);
+    let body = context.read_file(&command.payload, Some(&io)).await?;
+    let command_payload = crate::filesystem::retain_decoded(io.decode(
+        std::marker::PhantomData::<Value>,
+        &body,
+        crate::wire::ErrorCode::Storage,
+    )?)?;
+    drop(body);
+    let progress = runtime
+        .commands()
+        .execute_with_native_work(context, fence, command, command_payload, &work)?
         .await?;
     assert!(matches!(
-        attempt,
-        TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { .. })
+        &progress,
+        TaskCommandProgress::ReadyWithNativeCustody { custody, .. }
+            if custody.work().shares_ledger(&work)
     ));
+    drop(progress);
     assert!(custody.work().shares_ledger(&work));
     assert!(work.receipt().backend_write_operations > 0);
     let inbox = runtime
@@ -73,9 +96,6 @@ async fn native_stock_mail_command_uses_original_atomic_v3_send_and_custody() ->
     assert_eq!(inbox.0[0].task_id, task);
     let inbox_before = inbox.0[0].message_id.clone();
     drop(inbox);
-    let TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease }) = attempt else {
-        unreachable!();
-    };
     assert_eq!(lease.reservation, reservation);
     let (attempt, custody) = runtime
         .reconcile_task_with_native_work(lease, custody, &runtime.commands(), 1, 1_000, &work)

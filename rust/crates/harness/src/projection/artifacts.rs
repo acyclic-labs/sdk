@@ -9,9 +9,8 @@ pub(super) async fn read_invocation(
     maximum: u64,
     io: Option<&PreparationIo>,
 ) -> Result<(String, String, Value)> {
-    let source_hold;
     let (mut value, hold) = read_value(resolver, file, maximum, io).await?;
-    source_hold = hold;
+    let source_hold = hold;
     #[cfg(feature = "filesystem")]
     let strings_hold;
     crate::model::charge_items(io, 3)?;

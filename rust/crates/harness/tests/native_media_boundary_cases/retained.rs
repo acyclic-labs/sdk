@@ -13,7 +13,6 @@ pub(super) async fn exercise_retained_native_boundary<A, O>(
     reader: Arc<ReaderSpy>,
     selected: Vec<(FileRef, NativeMediaPolicy)>,
     writer: &FilesystemContentPublisher<A, O>,
-    live_context: &acyclic_harness::runtime::TaskContext,
 ) -> Result<()>
 where
     A: acyclic_fs::AsyncAuthorityStore + 'static,
@@ -387,19 +386,26 @@ where
             assert_eq!(captures.first(), first_capture.as_ref());
         }
         drop(execution);
-        drop(runtime);
         if pass == 2 {
             exercise_media_compaction_fork_restart(
                 host.clone(),
                 volume.clone(),
                 adapter.reader.clone(),
                 &expected,
-                invocation,
-                projection,
-                live_context,
+                (invocation, projection),
+                &context,
+                (
+                    runtime.task_host(),
+                    &issuer,
+                    &signed,
+                    fence
+                        .as_ref()
+                        .ok_or_else(|| Error::NotFound("original lease".into()))?,
+                ),
             )
             .await?;
         }
+        drop(runtime);
         if pass == 0 {
             writer
                 .stage(

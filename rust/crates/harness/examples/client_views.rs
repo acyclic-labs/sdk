@@ -349,7 +349,7 @@ pub fn trace() {
         action,
     };
     reducer
-        .apply(command(
+        .apply(&command(
             1,
             0,
             Action::BindConversation {
@@ -439,7 +439,7 @@ pub fn trace() {
         assert_eq!(reducer.operation_revision(op(2)), None);
     }
     reducer
-        .apply(command(
+        .apply(&command(
             2,
             1,
             Action::AppendConversationMessage {
@@ -449,7 +449,7 @@ pub fn trace() {
         .unwrap();
     let unrelated = message(2, 2, MessageKind::User, b"concurrent", None, None);
     reducer
-        .apply(command(
+        .apply(&command(
             3,
             2,
             Action::AppendConversationMessage {
@@ -633,7 +633,7 @@ pub fn trace() {
 
     let call = message(3, 3, MessageKind::ToolCall, b"{}", None, Some("call-1"));
     reducer
-        .apply(command(
+        .apply(&command(
             4,
             3,
             Action::AppendConversationMessage {
@@ -707,7 +707,7 @@ pub fn trace() {
         Some("call-1"),
     );
     reducer
-        .apply(command(
+        .apply(&command(
             5,
             4,
             Action::AppendConversationMessage {

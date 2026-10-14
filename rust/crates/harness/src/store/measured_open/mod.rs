@@ -21,9 +21,11 @@ async fn open_history(
         work.preflight()?;
         StreamAggregate::open(
             client,
-            authority,
-            issuer().verifier(&mut None).expect("verifier copy"),
-            schemas(),
+            (
+                authority,
+                issuer().verifier(&mut None).expect("verifier copy"),
+                schemas(),
+            ),
             None,
             limits,
             DEFAULT_TERMINAL_EFFECTS,

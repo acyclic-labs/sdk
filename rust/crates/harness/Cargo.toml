@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "acyclic-harness"
 version.workspace = true
 edition.workspace = true
@@ -11,6 +12,10 @@ readme = "README.md"
 exclude = ["benches"]
 documentation = "https://docs.rs/acyclic-harness"
 build = "build.rs"
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
 
 [lib]
 crate-type = ["rlib", "cdylib"]

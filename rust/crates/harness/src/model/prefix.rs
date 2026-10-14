@@ -85,88 +85,8 @@ impl PreparedModelRequest {
         io: Option<&PreparationIo>,
     ) -> Result<Self> {
         with_history_io(io, |work| limits.validate(work))?;
-        let mut next = Some(clone_file(prefix, io)?);
-        let mut segments = Vec::new();
-        let mut expected_count = None;
-        while let Some(reference) = next {
-            charge_items(io, 1)?;
-            with_history_io(io, |work| reference.validate(work))?;
-            if reference.descriptor().media_type() != ModelPrefix::MEDIA_TYPE {
-                return Err(Error::Invalid("model prefix media type is invalid".into()));
-            }
-            if !verifier.supports_read(reference.volume(), io)? {
-                return Err(crate::executor::stock_boundary(
-                    io,
-                    Unsupported,
-                    "context verifier has no bounded capability",
-                ));
-            }
-            let _bytes_hold;
-            let (bytes, hold) = crate::conversation::verified_content_bytes(
-                verifier,
-                &reference,
-                reference.descriptor().byte_length(),
-                io,
-            )
-            .await?;
-            _bytes_hold = hold;
-            let segment: ModelPrefix = match io {
-                #[cfg(feature = "filesystem")]
-                Some(io) => crate::filesystem::retain_decoded(io.decode(
-                    std::marker::PhantomData::<ModelPrefix>,
-                    &bytes,
-                    Storage,
-                )?)?,
-                _ => crate::contract::json_from_slice(&bytes)
-                    .map_err(|error| Error::Invalid(format!("invalid model prefix: {error}")))?,
-            };
-            #[cfg(feature = "filesystem")]
-            let _canonical_hold;
-            let canonical = segment.canonical_bytes(io)?;
-            #[cfg(feature = "filesystem")]
-            {
-                _canonical_hold = io
-                    .map(|io| io.guard_bytes(&canonical))
-                    .transpose()?
-                    .flatten();
-            }
-            charge_items(io, bytes.len() as u64)?;
-            if segment.version != 1
-                || segment.messages.is_empty()
-                || expected_count.is_some_and(|count| count != segment.total_messages)
-                || canonical.as_slice() != bytes.as_ref()
-            {
-                return Err(Error::Invalid(
-                    "model prefix contract differs from request".into(),
-                ));
-            }
-            let remaining = segment
-                .total_messages
-                .checked_sub(segment.messages.len())
-                .ok_or_else(|| Error::Invalid("model prefix message count is invalid".into()))?;
-            if segment.parent.is_none() != (remaining == 0) {
-                return Err(Error::Invalid(
-                    "model prefix parent count is invalid".into(),
-                ));
-            }
-            let total = segment
-                .total_messages
-                .checked_add(local.messages.len())
-                .ok_or_else(|| Error::Invalid("model prefix message count overflow".into()))?;
-            if total > limits.context_messages {
-                return Err(Error::Invalid(
-                    "inherited model context exceeds message limit".into(),
-                ));
-            }
-            // Nonempty segments strictly decrease this bounded count, rejecting cycles.
-            expected_count = Some(remaining);
-            next = segment.parent;
-            crate::executor::stock_vec_push(
-                &mut segments,
-                (segment.messages, segment.message_digest),
-                io,
-            )?;
-        }
+        let segments =
+            Self::read_prefix_segments(prefix, verifier, limits, local.messages.len(), io).await?;
         let mut messages = Vec::new();
         let mut hasher = blake3::Hasher::new();
         update_hasher(&mut hasher, b"harness:model-prefix:ordered:v1", io)?;
@@ -208,6 +128,98 @@ impl PreparedModelRequest {
             }
         }
         Self::encode_admitted(local, limits, io)
+    }
+
+    async fn read_prefix_segments(
+        prefix: &FileRef,
+        verifier: &dyn crate::conversation::ContentResidencyVerifier,
+        limits: Limits,
+        local_messages: usize,
+        io: Option<&PreparationIo>,
+    ) -> Result<Vec<(Vec<ModelMessage>, [u8; 32])>> {
+        let mut next = Some(clone_file(prefix, io)?);
+        let mut segments = Vec::new();
+        let mut expected_count = None;
+        while let Some(reference) = next {
+            charge_items(io, 1)?;
+            with_history_io(io, |work| reference.validate(work))?;
+            if reference.descriptor().media_type() != ModelPrefix::MEDIA_TYPE {
+                return Err(Error::Invalid("model prefix media type is invalid".into()));
+            }
+            if !verifier.supports_read(reference.volume(), io)? {
+                return Err(crate::executor::stock_boundary(
+                    io,
+                    Unsupported,
+                    "context verifier has no bounded capability",
+                ));
+            }
+
+            let (bytes, hold) = crate::conversation::verified_content_bytes(
+                verifier,
+                &reference,
+                reference.descriptor().byte_length(),
+                io,
+            )
+            .await?;
+            let _bytes_hold = hold;
+            let segment: ModelPrefix = match io {
+                #[cfg(feature = "filesystem")]
+                Some(io) => crate::filesystem::retain_decoded(io.decode(
+                    std::marker::PhantomData::<ModelPrefix>,
+                    &bytes,
+                    Storage,
+                )?)?,
+                _ => crate::contract::json_from_slice(&bytes)
+                    .map_err(|error| Error::Invalid(format!("invalid model prefix: {error}")))?,
+            };
+            #[cfg(feature = "filesystem")]
+            let _canonical_hold;
+            let canonical = segment.canonical_bytes(io)?;
+            #[cfg(feature = "filesystem")]
+            {
+                _canonical_hold = io
+                    .map(|io| io.guard_bytes(&canonical))
+                    .transpose()?
+                    .flatten();
+            }
+            charge_items(io, bytes.len() as u64)?;
+            if segment.version != 1
+                || segment.messages.is_empty()
+                || expected_count.is_some_and(|count| count != segment.total_messages)
+                || canonical.as_slice() != bytes.as_ref()
+            {
+                return Err(Error::Invalid(
+                    "model prefix contract differs from request".into(),
+                ));
+            }
+            let remaining = segment
+                .total_messages
+                .checked_sub(segment.messages.len())
+                .ok_or_else(|| Error::Invalid("model prefix message count is invalid".into()))?;
+            if segment.parent.is_none() != (remaining == 0) {
+                return Err(Error::Invalid(
+                    "model prefix parent count is invalid".into(),
+                ));
+            }
+            let total = segment
+                .total_messages
+                .checked_add(local_messages)
+                .ok_or_else(|| Error::Invalid("model prefix message count overflow".into()))?;
+            if total > limits.context_messages {
+                return Err(Error::Invalid(
+                    "inherited model context exceeds message limit".into(),
+                ));
+            }
+            // Nonempty segments strictly decrease this bounded count, rejecting cycles.
+            expected_count = Some(remaining);
+            next = segment.parent;
+            crate::executor::stock_vec_push(
+                &mut segments,
+                (segment.messages, segment.message_digest),
+                io,
+            )?;
+        }
+        Ok(segments)
     }
 }
 fn update_hasher(

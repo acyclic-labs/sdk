@@ -290,7 +290,7 @@ where
                             self.owner_observed(
                                 task,
                                 &fence,
-                                false,
+                                true,
                                 Some(&crate::filesystem::PreparationIo::from_native_work(
                                     custody.work(),
                                 )?),

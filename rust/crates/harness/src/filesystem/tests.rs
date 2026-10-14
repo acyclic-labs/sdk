@@ -665,9 +665,11 @@ async fn conversation_stream_admission_requires_resident_files() -> Result<()> {
     let stream = Arc::new(MemoryStream::default());
     let mut aggregate = StreamAggregate::open(
         &stream,
-        authority,
-        issuer.verifier(&mut None)?,
-        SchemaRegistry::new(),
+        (
+            authority,
+            issuer.verifier(&mut None)?,
+            SchemaRegistry::new(),
+        ),
         None,
         crate::store::default_projection_read_limits(),
         crate::store::DEFAULT_TERMINAL_EFFECTS,

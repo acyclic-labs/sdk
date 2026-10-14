@@ -4,9 +4,9 @@
     reason = "private producer-authenticated binary composition"
 )]
 
-use acyclic_harness::runtime::InteractionResolver as _;
 use super::native::{AuthorityBinding, Config, Files};
 use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
+use acyclic_harness::runtime::InteractionResolver as _;
 use acyclic_harness::{
     Error, Result, TaskId,
     conversation::VolumeRef,
@@ -381,9 +381,11 @@ impl super::native::NativeSession {
         registry.register(provider, None)?;
         let effects = ConversationEffectHost::new(
             self.stream.clone(),
-            binding.authority.clone(),
-            issuer,
-            binding.scope.copy(&mut None)?,
+            (
+                binding.authority.clone(),
+                issuer,
+                binding.scope.copy(&mut None)?,
+            ),
             SchemaRegistry::default(),
             reader,
             registry,

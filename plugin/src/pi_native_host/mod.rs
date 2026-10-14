@@ -18,7 +18,7 @@ use acyclic_harness::filesystem::PreparationIo;
 use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::store::HistoryIo;
 use acyclic_harness::{
-    Error, JsonValueSchema, OperationId, Outcome, Result, TaskId,
+    Error, OperationId, Outcome, Result, TaskId,
     conversation::VolumeOperation,
     core::{EffectStatus, SchemaRegistry},
     distributed::{WorkPull, Worker},
@@ -198,12 +198,12 @@ fn view_volume_share(budget: WorkBudget, volumes: u64) -> Result<WorkBudget> {
 }
 
 fn native_construction(
-    (cause, work): (acyclic_fs::NativeTreeMaterializationError, Box<WorkCounters>),
+    (cause, work): (
+        acyclic_fs::NativeTreeMaterializationError,
+        Box<WorkCounters>,
+    ),
 ) -> Error {
-    Error::NativeConstruction {
-        cause,
-        work,
-    }
+    Error::NativeConstruction { cause, work }
 }
 fn unauthorized(reason: &'static str) -> Error {
     Error::NativeBoundary {

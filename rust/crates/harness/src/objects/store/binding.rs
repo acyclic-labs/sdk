@@ -6,11 +6,11 @@ impl ObjectContentStore {
         bucket: wire::BucketRef,
         expected_provider: ProviderRef,
         volume: VolumeRef,
-        verifier: AuthorityVerifier,
-        owner_scope: Scope,
+        authorization: (AuthorityVerifier, Scope),
         scope: Scope,
         maximum_bytes: u64,
     ) -> Result<Arc<Self>> {
+        let (verifier, owner_scope) = authorization;
         volume.validate(&mut None)?;
         expected_provider.validate(&mut None)?;
         verifier.verify(&scope, &mut None)?;

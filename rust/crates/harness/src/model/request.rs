@@ -1,5 +1,7 @@
 use super::*;
-use std::{collections::BTreeMap, mem::size_of};
+use std::collections::BTreeMap;
+#[cfg(feature = "filesystem")]
+use std::mem::size_of;
 
 /// Complete immutable provider-neutral model request.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -68,91 +70,7 @@ impl ModelRequest {
             with_history_io(io, |work| message.content.validate_limits(limits, work))?;
             for part in message.content.parts() {
                 charge_items(io, 1)?;
-                match part {
-                    ModelContentPart::ToolCall {
-                        call_id,
-                        name,
-                        arguments,
-                    } => {
-                        charge_items(io, (call_id.len() as u64).saturating_add(name.len() as u64))?;
-                        crate::tool::ToolInvocation::validate_identity(
-                            call_id,
-                            Some(name),
-                            &mut None,
-                        )?;
-                        if message.role != ModelRole::Assistant || pending.contains_key(call_id) {
-                            return Err(Error::Invalid(
-                                "model tool call role or identity is invalid".into(),
-                            ));
-                        }
-                        let tool = tools
-                            .get(name)
-                            .ok_or_else(|| Error::Invalid("model tool call is unbound".into()))?;
-                        crate::executor::with_history_io(io, |work| {
-                            crate::executor::validate_json_schema_value(
-                                &tool.input_schema,
-                                arguments,
-                                "model tool arguments",
-                                work,
-                            )
-                        })?;
-                        pending.insert(call_id, name);
-                    }
-                    ModelContentPart::ToolResult {
-                        call_id,
-                        name,
-                        content,
-                    } => {
-                        charge_items(io, (call_id.len() as u64).saturating_add(name.len() as u64))?;
-                        crate::tool::ToolInvocation::validate_identity(
-                            call_id,
-                            Some(name),
-                            &mut None,
-                        )?;
-                        if message.role != ModelRole::Tool || pending.remove(call_id) != Some(name)
-                        {
-                            return Err(Error::Invalid(
-                                "model tool result has no matching call".into(),
-                            ));
-                        }
-                        let tool = tools
-                            .get(name)
-                            .ok_or_else(|| Error::Invalid("model tool result is unbound".into()))?;
-                        match io {
-                            #[cfg(feature = "filesystem")]
-                            Some(io) => {
-                                let _hold;
-                                let bytes =
-                                    io.encode(content, io.remaining()?.bytes_encoded, false)?;
-                                _hold = io.guard_bytes(&bytes)?;
-                                let envelope =
-                                    io.decode(std::marker::PhantomData::<Value>, &bytes, Storage)?;
-                                crate::executor::with_history_io(Some(io), |work| {
-                                    crate::executor::validate_json_schema_value(
-                                        &tool.projection_schema,
-                                        &envelope.0,
-                                        "model tool result",
-                                        work,
-                                    )
-                                })?;
-                            }
-                            _ => {
-                                let envelope = serde_json::to_value(content)
-                                    .map_err(|error| Error::Invalid(error.to_string()))?;
-                                crate::executor::validate_json_schema_value(
-                                    &tool.projection_schema,
-                                    &envelope,
-                                    "model tool result",
-                                    &mut None,
-                                )?;
-                            }
-                        }
-                    }
-                    _ if message.role == ModelRole::Tool => {
-                        return Err(Error::Invalid("tool role requires a paired result".into()));
-                    }
-                    _ => {}
-                }
+                Self::validate_part(message.role, part, &tools, &mut pending, io)?;
             }
             if message.role == ModelRole::Tool && message.content.parts().is_empty() {
                 return Err(Error::Invalid("tool role requires a paired result".into()));
@@ -163,6 +81,97 @@ impl ModelRequest {
         }
         if !pending.is_empty() {
             return Err(Error::Invalid("model tool exchange is incomplete".into()));
+        }
+        Ok(())
+    }
+    fn validate_tool_result(
+        tool: &crate::tool::ToolDefinition,
+        content: &ToolResultContent,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        match io {
+            #[cfg(feature = "filesystem")]
+            Some(io) => {
+                let _hold;
+                let bytes = io.encode(content, io.remaining()?.bytes_encoded, false)?;
+                _hold = io.guard_bytes(&bytes)?;
+                let envelope = io.decode(std::marker::PhantomData::<Value>, &bytes, Storage)?;
+                crate::executor::with_history_io(Some(io), |work| {
+                    crate::executor::validate_json_schema_value(
+                        &tool.projection_schema,
+                        &envelope.0,
+                        "model tool result",
+                        work,
+                    )
+                })?;
+            }
+            _ => {
+                let envelope = serde_json::to_value(content)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                crate::executor::validate_json_schema_value(
+                    &tool.projection_schema,
+                    &envelope,
+                    "model tool result",
+                    &mut None,
+                )?;
+            }
+        }
+        Ok(())
+    }
+    fn validate_part<'a>(
+        role: ModelRole,
+        part: &'a ModelContentPart,
+        tools: &BTreeMap<&String, &crate::tool::ToolDefinition>,
+        pending: &mut BTreeMap<&'a String, &'a String>,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        match part {
+            ModelContentPart::ToolCall {
+                call_id,
+                name,
+                arguments,
+            } => {
+                charge_items(io, (call_id.len() as u64).saturating_add(name.len() as u64))?;
+                crate::tool::ToolInvocation::validate_identity(call_id, Some(name), &mut None)?;
+                if role != ModelRole::Assistant || pending.contains_key(call_id) {
+                    return Err(Error::Invalid(
+                        "model tool call role or identity is invalid".into(),
+                    ));
+                }
+                let tool = tools
+                    .get(name)
+                    .ok_or_else(|| Error::Invalid("model tool call is unbound".into()))?;
+                crate::executor::with_history_io(io, |work| {
+                    crate::executor::validate_json_schema_value(
+                        &tool.input_schema,
+                        arguments,
+                        "model tool arguments",
+                        work,
+                    )
+                })?;
+                pending.insert(call_id, name);
+            }
+            ModelContentPart::ToolResult {
+                call_id,
+                name,
+                content,
+            } => {
+                charge_items(io, (call_id.len() as u64).saturating_add(name.len() as u64))?;
+                crate::tool::ToolInvocation::validate_identity(call_id, Some(name), &mut None)?;
+                if role != ModelRole::Tool || pending.remove(call_id) != Some(name) {
+                    return Err(Error::Invalid(
+                        "model tool result has no matching call".into(),
+                    ));
+                }
+                let tool = tools
+                    .get(name)
+                    .ok_or_else(|| Error::Invalid("model tool result is unbound".into()))?;
+                Self::validate_tool_result(tool, content, io)?;
+            }
+            _ if role == ModelRole::Tool => {
+                return Err(Error::Invalid("tool role requires a paired result".into()));
+            }
+            _ => {}
         }
         Ok(())
     }

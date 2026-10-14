@@ -82,6 +82,7 @@ pub(super) fn retain_task_value<T>(
     value: (T, crate::NativeCustody),
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<T> {
+    let _ = io;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = task_original_work(io)? {
         if value

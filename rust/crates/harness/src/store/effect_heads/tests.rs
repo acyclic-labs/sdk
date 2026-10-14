@@ -103,9 +103,7 @@ async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic
     let owner = authority();
     let mut aggregate = crate::store::StreamAggregate::open(
         &client,
-        owner.clone(),
-        verifier.clone(),
-        SchemaRegistry::new(),
+        (owner.clone(), verifier.clone(), SchemaRegistry::new()),
         None,
         crate::store::default_projection_read_limits(),
         crate::store::DEFAULT_TERMINAL_EFFECTS,

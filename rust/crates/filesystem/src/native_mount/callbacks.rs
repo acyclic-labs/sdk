@@ -248,5 +248,6 @@ pub(crate) fn run_native_mount_handler_on_meter<T>(
 pub struct NativeMountSourceLineage<'a> {
     pub(super) lazy_owner: Option<Arc<dyn std::any::Any + Send + Sync>>,
     pub(super) lazy_root: Option<&'a str>,
+    #[cfg(windows)]
     pub(super) capture_gate: &'a std::sync::Mutex<adapter::CaptureSourceGate>,
 }

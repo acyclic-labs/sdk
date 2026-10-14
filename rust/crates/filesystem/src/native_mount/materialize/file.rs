@@ -138,7 +138,9 @@ where
                         let control = file
                             .control_async(
                                 move |handle, meter| {
-                                    let meter = meter.expect("metered control");
+                                    let meter = meter.ok_or_else(|| {
+                                        std::io::Error::from(std::io::ErrorKind::InvalidInput)
+                                    })?;
                                     crate::native_host::punch_hole(
                                         handle,
                                         span.offset,

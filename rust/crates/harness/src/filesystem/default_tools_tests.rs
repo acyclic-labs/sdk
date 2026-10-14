@@ -108,9 +108,9 @@ async fn fixture() -> Result<Fixture> {
     let stream = Arc::new(MemoryStream::default());
     let mut parent = StreamAggregate::open(
         &stream,
-        authority,
+        (authority,
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
+        SchemaRegistry::new()),
         None,
         crate::store::default_projection_read_limits(),
         crate::store::DEFAULT_TERMINAL_EFFECTS,
@@ -183,7 +183,8 @@ async fn fixture() -> Result<Fixture> {
     })
 }
 
-#[tokio::test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
 async fn merge_rejects_foreign_receipts_and_success_shaped_nonoutcomes() -> Result<()> {
     let fixture = fixture().await?;
     let effect = OperationId::from_bytes([31; 16]);
@@ -221,7 +222,9 @@ async fn merge_rejects_foreign_receipts_and_success_shaped_nonoutcomes() -> Resu
         source_project: fixture.source.clone(),
         source_generation: fixture.source_generation.clone(),
         target_project: fixture.project.clone(),
-        expected_target_generation: fixture.host.generation_ref_id(inspected.target_head(), None)?,
+        expected_target_generation: fixture
+            .host
+            .generation_ref_id(inspected.target_head(), None)?,
         authorized_source: None,
         notice: ConversationMessage {
             id: uuid::Uuid::from_bytes([30; 16]),
@@ -253,11 +256,12 @@ async fn merge_rejects_foreign_receipts_and_success_shaped_nonoutcomes() -> Resu
     Ok(())
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn fork_initialization_retains_raw_child_message_and_independent_source_choice() -> Result<()> {
     let arguments = ForkToolArguments {
         id: AgentId::from_bytes([40; 16]),
-        msg: "exact é\0🦀\r\nchild task".into(),
+        msg: "exact Ã©\0ðŸ¦€\r\nchild task".into(),
         source: Some(TaskId::from_bytes([41; 16])),
     };
     let value = encode(&arguments, None)?;
@@ -278,7 +282,8 @@ fn fork_initialization_retains_raw_child_message_and_independent_source_choice()
     Ok(())
 }
 
-#[tokio::test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
 async fn actual_registry_keeps_shared_file_tools_and_refuses_contextless_recursive_execution()
 -> Result<()> {
     let storage = super::super::MemoryHarnessStorage::new(AgentId::new(), 65536).await?;
@@ -316,7 +321,11 @@ async fn actual_registry_keeps_shared_file_tools_and_refuses_contextless_recursi
             name: name.into(),
             arguments: json!({}),
         };
-        assert!(tool.executor.authorize(None, None, &invocation, None).is_err());
+        assert!(
+            tool.executor
+                .authorize(None, None, &invocation, None)
+                .is_err()
+        );
         assert!(
             tool.executor
                 .execute(invocation.clone(), None)

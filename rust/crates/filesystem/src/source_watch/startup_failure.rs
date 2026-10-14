@@ -48,6 +48,7 @@ impl std::error::Error for SourceWatchStartupFailure {
 }
 
 impl SourceWatchStartupFailure {
+    #[cfg(any(windows, target_os = "linux"))]
     pub(super) fn retain_failed_platform(
         self: &Arc<Self>,
         error: DemandError,

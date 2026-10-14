@@ -280,8 +280,8 @@ where
             },
             journal.as_ref(),
             &scope,
-            &reader,
-            &cursor,
+            (&reader,
+            &cursor),
             resolver.as_ref(),
             io,
         )

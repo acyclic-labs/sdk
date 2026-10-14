@@ -44,7 +44,7 @@ impl NativeSourceExecutionView {
         &self,
         operation: impl FnOnce(&mut crate::demand::DemandWork) -> T,
     ) -> T {
-        self.metadata.work().with_original_leaf(operation)
+        self.metadata.work().state(operation)
     }
 }
 impl NativeMaterializationWork {

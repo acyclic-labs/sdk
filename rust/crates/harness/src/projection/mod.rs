@@ -151,101 +151,11 @@ pub async fn select_model_context(
                 )
             }
             MessageKind::ToolResult => {
-                let call_id = message.tool_call_id.as_deref().ok_or_else(|| {
-                    stock_boundary(io, Invalid, "tool result lacks call identity")
-                })?;
-                let mut linked = None;
-                if let Some(reply) = message.reply_to {
-                    for (id, projected) in selection
-                        .message_ids
-                        .iter()
-                        .take(messages.len())
-                        .zip(&messages)
-                        .rev()
-                    {
-                        crate::model::charge_items(io, 1)?;
-                        if *id == reply {
-                            linked = Some(projected);
-                            break;
-                        }
-                    }
-                }
-                let Some(ModelMessage {
-                    content: ModelContent::Part(ModelContentPart::ToolCall { name, .. }),
-                    ..
-                }) = linked
-                else {
-                    return Err(stock_boundary(
-                        io,
-                        Invalid,
-                        "selected tool result lacks its call",
-                    ));
-                };
-                let _hold;
-                let (items, hold) =
-                    attachments::resolve(message, resolver, limits.attachments, io).await?;
-                _hold = hold;
-                let mut projection = None;
-                for item in items.iter() {
-                    crate::model::charge_items(io, 1)?;
-                    if item.label.as_deref() == Some("model_projection") {
-                        projection = Some(item);
-                        break;
-                    }
-                }
-                let projection = projection.ok_or_else(|| {
-                    stock_boundary(io, Invalid, "tool result lacks its model projection")
-                })?;
-                let content =
-                    artifacts::read_result(resolver, &projection.file, limits.render_bytes, io)
-                        .await?;
-                (
-                    ModelRole::Tool,
-                    ModelContent::Part(ModelContentPart::ToolResult {
-                        call_id: crate::executor::stock_string_copy(call_id, io)?,
-                        name: crate::executor::stock_string_copy(name, io)?,
-                        content,
-                    }),
-                )
+                project_tool_result(message, &selection, &messages, resolver, limits, io).await?
             }
             MessageKind::System | MessageKind::User | MessageKind::Assistant => {
-                let role = match message.kind {
-                    MessageKind::System => ModelRole::System,
-                    MessageKind::User => ModelRole::User,
-                    _ => ModelRole::Assistant,
-                };
-                let policy = match message.content.descriptor().media_type() {
-                    "image/png" | "image/jpeg" | "image/gif" | "image/webp" => {
-                        attachments::native_image(limits.render_bytes, io)?
-                    }
-                    kind if kind.starts_with("text/")
-                        && message.content.descriptor().byte_length() <= limits.render_bytes =>
-                    {
-                        FileProjectionPolicy::BoundedFull
-                    }
-                    _ => FileProjectionPolicy::Reference,
-                };
-                let hold;
-                let (items, source_hold) =
-                    attachments::resolve(message, resolver, limits.attachments, io).await?;
-                hold = source_hold;
-                let count = items.len().min(maximum_projected_attachments);
-                let omitted = items.len() - count;
-                let mut parts = crate::model::vec_with_capacity::<ModelContentPart>(
-                    1 + count + usize::from(omitted != 0),
-                    io,
-                )?;
-                parts.push(ModelContentPart::File {
-                    file: crate::model::clone_file(&message.content, io)?,
-                    policy,
-                });
-                attachments::append(items, hold, count, &mut parts, limits.render_bytes, io)?;
-                if omitted != 0 {
-                    parts.push(ModelContentPart::Text {
-                        text: attachments::omission_text(omitted, io)?,
-                    });
-                }
-                (role, ModelContent::Parts(parts))
+                project_message(message, resolver, limits, maximum_projected_attachments, io)
+                    .await?
             }
             _ => {
                 return Err(stock_boundary(
@@ -261,4 +171,110 @@ pub async fn select_model_context(
         selection,
         messages,
     })
+}
+
+async fn project_tool_result(
+    message: &crate::conversation::ConversationMessage,
+    selection: &ModelContextSelection,
+    messages: &[ModelMessage],
+    resolver: &dyn ContentResidencyVerifier,
+    limits: Limits,
+    io: Option<&PreparationIo>,
+) -> Result<(ModelRole, ModelContent)> {
+    let call_id = message
+        .tool_call_id
+        .as_deref()
+        .ok_or_else(|| stock_boundary(io, Invalid, "tool result lacks call identity"))?;
+    let mut linked = None;
+    if let Some(reply) = message.reply_to {
+        for (id, projected) in selection
+            .message_ids
+            .iter()
+            .take(messages.len())
+            .zip(messages)
+            .rev()
+        {
+            crate::model::charge_items(io, 1)?;
+            if *id == reply {
+                linked = Some(projected);
+                break;
+            }
+        }
+    }
+    let Some(ModelMessage {
+        content: ModelContent::Part(ModelContentPart::ToolCall { name, .. }),
+        ..
+    }) = linked
+    else {
+        return Err(stock_boundary(
+            io,
+            Invalid,
+            "selected tool result lacks its call",
+        ));
+    };
+    let (items, hold) = attachments::resolve(message, resolver, limits.attachments, io).await?;
+    let _hold = hold;
+    let mut projection = None;
+    for item in items.iter() {
+        crate::model::charge_items(io, 1)?;
+        if item.label.as_deref() == Some("model_projection") {
+            projection = Some(item);
+            break;
+        }
+    }
+    let projection = projection
+        .ok_or_else(|| stock_boundary(io, Invalid, "tool result lacks its model projection"))?;
+    let content =
+        artifacts::read_result(resolver, &projection.file, limits.render_bytes, io).await?;
+    Ok((
+        ModelRole::Tool,
+        ModelContent::Part(ModelContentPart::ToolResult {
+            call_id: crate::executor::stock_string_copy(call_id, io)?,
+            name: crate::executor::stock_string_copy(name, io)?,
+            content,
+        }),
+    ))
+}
+
+async fn project_message(
+    message: &crate::conversation::ConversationMessage,
+    resolver: &dyn ContentResidencyVerifier,
+    limits: Limits,
+    maximum_projected_attachments: usize,
+    io: Option<&PreparationIo>,
+) -> Result<(ModelRole, ModelContent)> {
+    let role = match message.kind {
+        MessageKind::System => ModelRole::System,
+        MessageKind::User => ModelRole::User,
+        _ => ModelRole::Assistant,
+    };
+    let policy = match message.content.descriptor().media_type() {
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp" => {
+            attachments::native_image(limits.render_bytes, io)?
+        }
+        kind if kind.starts_with("text/")
+            && message.content.descriptor().byte_length() <= limits.render_bytes =>
+        {
+            FileProjectionPolicy::BoundedFull
+        }
+        _ => FileProjectionPolicy::Reference,
+    };
+    let (items, hold) = attachments::resolve(message, resolver, limits.attachments, io).await?;
+    let count = items.len().min(maximum_projected_attachments);
+    let omitted = items.len() - count;
+    let mut parts = crate::model::vec_with_capacity::<ModelContentPart>(
+        1 + count + usize::from(omitted != 0),
+        io,
+    )?;
+    parts.push(ModelContentPart::File {
+        file: crate::model::clone_file(&message.content, io)?,
+        policy,
+    });
+    attachments::append(items, hold, count, &mut parts, limits.render_bytes, io)?;
+    if omitted != 0 {
+        parts.push(ModelContentPart::Text {
+            text: attachments::omission_text(omitted, io)?,
+        });
+    }
+    Ok((role, ModelContent::Parts(parts)))
 }

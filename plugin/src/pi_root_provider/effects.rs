@@ -65,11 +65,13 @@ impl PiRootProvider {
         name: &str,
         work: &NativeMaterializationWork,
     ) -> Result<Option<(FileRef, NativeAllocation)>> {
+        let grant = super::inputs::write_grant(&self.owner, work)?;
         observe_pi_input_at(
             &self.owner,
             &self.filesystem,
             self.artifact_with_native_work(effect, attempt, name, work)?,
             "application/json",
+            &grant.0,
             work,
         )
         .await

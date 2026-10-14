@@ -335,6 +335,7 @@ where
         &self,
         content: &ModelContent,
         io: Option<&PreparationIo>,
+        context: Option<&crate::runtime::TaskContext>,
     ) -> Result<()> {
         let mut count = 0_usize;
         for _ in content.file_refs() {
@@ -382,6 +383,19 @@ where
                 ));
             }
             references.push((file, binding));
+        }
+        if self.owner.is_none()
+            && io.is_none()
+            && references.iter().any(|(_, binding)| binding.is_some())
+            && let Some(context) = context
+        {
+            context
+                .verify_model_contents(std::iter::once(content))
+                .await?;
+            for (file, _) in &references {
+                self.verify_input_file_with_io(file, io).await?;
+            }
+            return Ok(());
         }
         for (_, binding) in &references {
             if let Some(binding) = binding {

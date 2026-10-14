@@ -50,6 +50,7 @@ pub(in crate::executor) fn stock_authorize_tool(
     invocation: &ToolInvocation,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
+    let _ = io;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = io.and_then(PreparationIo::original_native_work) {
         let context = context.ok_or_else(|| crate::Error::NativeBoundary {

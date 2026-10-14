@@ -304,9 +304,10 @@ where
         &'a self,
         content: &'a ModelContent,
         io: Option<&'a PreparationIo>,
+        context: Option<&'a crate::runtime::TaskContext>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         crate::conversation::BoundedContentFuture::new(io, || {
-            self.verify_model_content_with_io(content, io)
+            self.verify_model_content_with_io(content, io, context)
         })
     }
 

@@ -185,7 +185,9 @@ async fn interaction_request_and_answer_commit_only_after_exact_content_validati
     .into_iter()
     .enumerate()
     {
-        let mut next = command(revision as u8 + 9)?;
+        let mut next = command(
+            u8::try_from(revision).map_err(|error| Error::Invalid(error.to_string()))? + 9,
+        )?;
         next.expected_revision = revision as u64;
         next.scope = scope.clone();
         next.action = action;

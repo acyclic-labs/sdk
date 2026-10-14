@@ -152,7 +152,7 @@ async fn measured_cold_retirement_preserves_original_atomic_indexes() -> Result<
             expected
                 .events
                 .iter()
-                .take(cut as usize)
+                .take(usize::try_from(cut).map_err(|error| Error::Invalid(error.to_string()))?)
                 .cloned()
                 .collect::<Vec<_>>()
         );

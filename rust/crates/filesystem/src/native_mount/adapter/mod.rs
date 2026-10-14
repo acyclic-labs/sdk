@@ -52,6 +52,7 @@ pub(super) struct CaptureSourceGate {
     cancelled: bool,
     producers: u64,
     retired: bool,
+    #[cfg(windows)]
     pub(in crate::native_mount) namespace_bound: bool,
     ever_used: bool,
 }
@@ -113,7 +114,7 @@ fn engine_error(error: impl std::fmt::Display) -> MountSourceError {
 pub(super) fn capture_io_error(error: std::io::Error) -> MountSourceError {
     match crate::demand::native_demand_error(error) {
         crate::DemandError::Io(error) => engine_error(error),
-        error => super::lazy::mount_demand_error(error),
+        error => MountSourceError::from(error),
     }
 }
 

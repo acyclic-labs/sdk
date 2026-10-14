@@ -91,7 +91,8 @@ impl TaskRegistry {
                 .0
                 .iter()
                 .position(|stored| Arc::ptr_eq(stored, definition))?;
-            self.1[slot]
+            self.1
+                .get(slot)?
                 .downcast_ref::<Arc<TaskDefinition<I, O>>>()
                 .cloned()
         }

@@ -49,6 +49,7 @@ impl NativeHostWork for CallbackWork {
     fn claim(&mut self, bytes: u64) -> Result<u64, DemandError> {
         self.with_original_leaf(|work| NativeHostWork::claim(work, bytes))
     }
+    #[cfg(windows)]
     fn reserve_opaque_decode(&mut self, maximum: u64) -> Result<u64, DemandError> {
         self.with_original_leaf(|work| work.reserve_opaque_decode(maximum))
     }
@@ -62,12 +63,15 @@ impl NativeHostWork for CallbackWork {
     fn release(&mut self, bytes: u64) -> Result<(), DemandError> {
         self.with_original_leaf(|work| work.release(bytes))
     }
+    #[cfg(any(windows, target_os = "linux", test))]
     fn reserve_cleanup_write(&mut self) -> Result<u64, DemandError> {
         self.with_original_leaf(NativeHostWork::reserve_cleanup_write)
     }
+    #[cfg(any(windows, target_os = "linux", test))]
     fn cancel_cleanup_write(&mut self, reservation: u64) {
         self.with_original_leaf(|work| work.cancel_cleanup_write(reservation));
     }
+    #[cfg(any(windows, target_os = "linux", test))]
     fn attempt_cleanup_write<T>(
         &mut self,
         reservation: u64,
@@ -80,6 +84,7 @@ impl NativeHostWork for CallbackWork {
 }
 
 impl SourceDemandReadWork for CallbackWork {
+    #[cfg(windows)]
     fn with_native_read_meter<T>(
         &mut self,
         operation: impl FnOnce(&dyn acyclic_native_runtime::NativeReadMeter) -> T,

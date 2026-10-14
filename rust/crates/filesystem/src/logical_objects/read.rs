@@ -1,5 +1,6 @@
 use super::*;
 fn retained(body: &OwnedBytes, work: &KernelAccounting<'_>) -> ObjectReadRetention {
+    let _ = work;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = work.native_work() {
         if body.matches_meter(&original.runtime_meter())
@@ -15,6 +16,7 @@ fn retained(body: &OwnedBytes, work: &KernelAccounting<'_>) -> ObjectReadRetenti
     }
 }
 fn completed_bytes(error: &ObjectStoreError) -> Result<u64, WorkError> {
+    let _ = error;
     #[cfg(not(target_arch = "wasm32"))]
     if let ObjectStoreError::NativeObjects(error) = error {
         return native_payload_bytes(error);

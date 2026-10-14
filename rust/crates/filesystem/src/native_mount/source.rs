@@ -682,7 +682,7 @@ impl From<NativeMountStartupAdmissionError> for MountSourceError {
                 crate::NativeTreeMaterializationError::Work(error),
             ) => Self::Work(error),
             NativeMountStartupAdmissionError::Materialization(error) => Self::NativeWork(error),
-            NativeMountStartupAdmissionError::Demand(error) => lazy::mount_demand_error(error),
+            NativeMountStartupAdmissionError::Demand(error) => MountSourceError::from(error),
             NativeMountStartupAdmissionError::ServicesCold => Self::ServicesNotInitialized,
             NativeMountStartupAdmissionError::ServiceUnavailable(error) => {
                 Self::ServiceUnavailable(error)

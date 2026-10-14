@@ -204,11 +204,41 @@ impl NativeMountSession {
             })
     }
 
+    pub(super) fn capture_host_paths(
+        &self,
+        paths: &[MountPath],
+        work: &NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
+        #[cfg(target_os = "windows")]
+        {
+            self.driver
+                .as_ref()
+                .ok_or(NativeMountError::ControlPending)?
+                .capture_host_paths(paths, work)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            self.retained_source
+                .as_ref()
+                .ok_or(NativeMountError::ControlPending)?
+                .capture_host_paths_with_meter(
+                    self.destination(),
+                    paths,
+                    self.native_root_identity()
+                        .ok_or(NativeMountError::ControlPending)?,
+                    work,
+                )
+                .map_err(NativeMountError::Source)
+        }
+    }
+
     /// Flushes the actual SDK callbacks without borrowing work across a wait.
     pub fn flush_callbacks(
         &self,
         work: &NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
+        #[cfg(not(windows))]
+        let _ = work;
         match self.driver.as_ref() {
             #[cfg(target_os = "windows")]
             Some(session) => session.flush_callbacks(work),

@@ -23,7 +23,7 @@ impl PiSession {
             pi_owner::PiOwnerConfig::load(&self.resources.data, &self.relative_directory, work)?
                 .into_native_shared(work)?;
         let preparation = pi_root_inputs::PiRootPreparation::load(
-            (&self.resources.data, &self.relative_directory),
+            &owner,
             &self.runtime,
             &self.filesystem,
             binding,
@@ -53,8 +53,8 @@ impl PiSession {
         let observed = observer
             .observe_allocation_with_native_work(attempt, work)
             .await?;
-        let (allocation, handles) = if let Some(allocation) = observed {
-            (allocation, BTreeMap::new())
+        let (observer, allocation, handles) = if let Some(allocation) = observed {
+            (observer, allocation, BTreeMap::new())
         } else {
             let driver = self.command_host(work, None)?;
             let progress = driver.drive_root().await?;
@@ -76,23 +76,24 @@ impl PiSession {
                 return Err(error);
             }
             let handles = driver.created_roots().await;
-            let allocation = if let Some(allocation) = driver.root_output().await? {
-                allocation
+            let (observer, allocation) = if let Some(output) = driver.root_output().await? {
+                output
             } else {
                 let observer = self.root_observer(None, work).await?;
                 let attempt = EffectAttemptId::from_bytes(
                     observer.effect_id_with_native_work(work)?.into_bytes(),
                 );
-                observer
+                let allocation = observer
                     .observe_allocation_with_native_work(attempt, work)
                     .await?
                     .ok_or_else(|| {
                         invalid("Pi root has no authenticated successful allocation output")
-                    })?
+                    })?;
+                (observer, allocation)
             };
-            (allocation, handles)
+            (observer, allocation, handles)
         };
-        self.install_root_allocation(allocation, handles, work)
+        self.install_root_allocation(&observer, allocation, handles, work)
             .await
     }
 
@@ -109,12 +110,13 @@ impl PiSession {
             .ok_or_else(|| {
                 invalid("Pi Root source has no original successful allocation to restore")
             })?;
-        self.install_root_allocation(allocation, BTreeMap::new(), work)
+        self.install_root_allocation(&observer, allocation, BTreeMap::new(), work)
             .await
     }
 
     async fn install_root_allocation(
         &mut self,
+        observer: &pi_root_provider::PiRootProvider,
         mut allocation: (
             (FileRef, pi_root_allocation::PiRootAllocation),
             NativeAllocation,
@@ -131,17 +133,6 @@ impl PiSession {
         {
             return Err(invalid("Pi original scratch creation was substituted"));
         }
-        let read = self
-            .runtime
-            .runtime
-            .harness()
-            .durable_context(
-                binding.task_id,
-                acyclic_harness::OperationId::from_bytes(binding.task_id.into_bytes()),
-                Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
-            )
-            .await?;
-        let observer = self.root_observer(Some(Arc::clone(&read)), work).await?;
         let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
             work,
             cancellation: work.cancellation(),

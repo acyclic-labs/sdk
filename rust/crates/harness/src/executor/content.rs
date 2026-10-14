@@ -2,16 +2,17 @@ use super::*;
 
 pub(super) async fn verify_model_contents_scoped<'a>(
     journal: &dyn ExecutionJournal,
-    contents: impl Iterator<Item = &'a ModelContent> + Clone,
+    contents: impl Iterator<Item = &'a ModelContent> + Clone + acyclic_stream::ProviderTask,
     limits: Limits,
     scope: Option<&RuntimeScope>,
     io: Option<&PreparationIo>,
+    context: Option<&crate::runtime::TaskContext>,
 ) -> Result<()> {
     for content in contents.clone() {
         validate_model_content_scope(content, limits, scope, io)?;
     }
     for content in contents {
-        journal.verify_model_content(content, io)?.await?;
+        journal.verify_model_content(content, io, context)?.await?;
     }
     Ok(())
 }
@@ -71,6 +72,7 @@ impl StockExecution<'_> {
             self.original_context()
                 .map(crate::runtime::TaskContext::scope),
             self.io,
+            self.original_context(),
         )
         .await
     }
@@ -109,13 +111,25 @@ impl StockExecution<'_> {
             journal
                 .verify_selected_context(input.operation_id, selected, self.io)?
                 .await?;
-            for message in &selected.messages {
-                journal
-                    .verify_model_content(&message.content, self.io)?
-                    .await?;
-            }
+            verify_model_contents_scoped(
+                journal,
+                selected.messages.iter().map(|message| &message.content),
+                self.stock.limits,
+                scope,
+                self.io,
+                self.original_context(),
+            )
+            .await?;
         }
-        journal.verify_model_content(&input.input, self.io)?.await?;
+        verify_model_contents_scoped(
+            journal,
+            std::iter::once(&input.input),
+            self.stock.limits,
+            scope,
+            self.io,
+            self.original_context(),
+        )
+        .await?;
         Ok(())
     }
 }

@@ -69,7 +69,7 @@ use acyclic_fs::path::PortablePath;
 use acyclic_fs::{
     ApplyOptions, CancellationToken, CaptureOptions, CapturePolicy, DefaultTextMergeDriver,
     Generation, GitCommand, GitCommandOutput, GitCompatRepository, GitDirtyState,
-    GitFilesystemAction, GitFilesystemExecutor, GitFilesystemResult, GitGenerationRef,
+    GitFilesystemAction, GitFilesystemExecutor, GitFilesystemResult,
     GitIgnorePolicy, GitPublicationRecord, GitTreeRef, IdempotencyKey, JoinOutcome, LazyMount,
     LazyWorkspace, LineageMultiRootPublicationAuthorizer,
     LocalAuthorityBackend, LocalCoreStateStore, LocalFs, LocalObjectBackend, LocalOptions,
@@ -101,7 +101,7 @@ use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-#[cfg(any(test, not(target_os = "linux")))]
+#[cfg(not(target_os = "linux"))]
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{Mutex as AsyncMutex, watch};
 

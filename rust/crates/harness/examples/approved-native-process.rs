@@ -222,13 +222,15 @@ where
     runtime.task_host().start_task(&lease, &mut None).await?;
     let mut conversation = StreamAggregate::open(
         &stream.clone(),
-        issuer
-            .verifier(&mut None)
-            .expect("verifier copy")
-            .audience()
-            .clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
+        (
+            issuer
+                .verifier(&mut None)
+                .expect("verifier copy")
+                .audience()
+                .clone(),
+            issuer.verifier(&mut None).expect("verifier copy"),
+            SchemaRegistry::new(),
+        ),
         None,
         acyclic_harness::store::default_projection_read_limits(),
         acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
@@ -265,10 +267,7 @@ where
     let work_per_volume: WorkBudget = serde_json::from_value(allowances)?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(work_per_volume, &cancellation)
-        .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction {
-            cause,
-            work,
-        })?;
+        .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
     let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
     let fence = LeaseFence::from(&lease.reservation);
     let owner = runtime
@@ -435,13 +434,15 @@ where
     registry.register(process.clone(), None)?;
     let effects = ConversationEffectHost::new(
         stream.clone(),
-        issuer
-            .verifier(&mut None)
-            .expect("verifier copy")
-            .audience()
-            .clone(),
-        issuer.clone(),
-        scope.clone(),
+        (
+            issuer
+                .verifier(&mut None)
+                .expect("verifier copy")
+                .audience()
+                .clone(),
+            issuer.clone(),
+            scope.clone(),
+        ),
         SchemaRegistry::new(),
         content.clone(),
         registry,

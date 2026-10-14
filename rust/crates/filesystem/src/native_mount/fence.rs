@@ -73,6 +73,7 @@ impl crate::native_host::NativeHostWork for NativeFenceReleaseWork<'_> {
     fn claim(&mut self, _bytes: u64) -> Result<Self::Allocation, Self::Error> {
         Err(Self::Error::InvalidLayout)
     }
+    #[cfg(windows)]
     fn reserve_opaque_decode(&mut self, _bytes: u64) -> Result<Self::Allocation, Self::Error> {
         Err(Self::Error::InvalidLayout)
     }
@@ -86,12 +87,15 @@ impl crate::native_host::NativeHostWork for NativeFenceReleaseWork<'_> {
     fn release(&mut self, allocation: Self::Allocation) -> Result<(), Self::Error> {
         match allocation {}
     }
+    #[cfg(any(windows, target_os = "linux", test))]
     fn reserve_cleanup_write(&mut self) -> Result<Self::CleanupWrite, Self::Error> {
         Err(Self::Error::InvalidLayout)
     }
+    #[cfg(any(windows, target_os = "linux", test))]
     fn cancel_cleanup_write(&mut self, reservation: Self::CleanupWrite) {
         match reservation {}
     }
+    #[cfg(any(windows, target_os = "linux", test))]
     fn attempt_cleanup_write<T>(
         &mut self,
         reservation: Self::CleanupWrite,
@@ -396,6 +400,7 @@ impl MountDestinationGuard {
         Ok(())
     }
 
+    #[cfg(windows)]
     pub(super) fn acquire_for_recovery(destination: &Path) -> Result<Self, NativeMountError> {
         let name = destination
             .file_name()
@@ -408,6 +413,7 @@ impl MountDestinationGuard {
         Self::acquire_canonical(&parent.join(name))
     }
 
+    #[cfg(any(windows, test))]
     pub(super) fn acquire_canonical(canonical: &Path) -> Result<Self, NativeMountError> {
         let (lock_path, registry_path) = Self::paths_for_canonical(canonical)?;
         let registry = acquire_mount_lock(&registry_path, true)?;

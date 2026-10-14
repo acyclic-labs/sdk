@@ -1,3 +1,6 @@
+#[cfg(target_arch = "wasm32")]
+wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
+
 use super::directory::{MemoryStoreEntry, MemoryStoreEntryKind};
 use super::*;
 use crate::AgentId;
@@ -16,7 +19,8 @@ fn store(maximum_bytes: u64, maximum_files: u64) -> Result<MemoryStore> {
     MemoryStore::new(volume, 4_096, 4_096, maximum_bytes, maximum_files)
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn stages_deduplicated_bytes_under_file_and_byte_bounds() -> Result<()> {
     let mut store = store(3, 16)?;
     let first = store.stage("notes/one.txt", b"abc", "text/plain", "one.txt", true)?;
@@ -41,7 +45,8 @@ fn stages_deduplicated_bytes_under_file_and_byte_bounds() -> Result<()> {
     Ok(())
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn provider_version_rejects_changed_file_contract() -> Result<()> {
     let mut store = store(32, 8)?;
     let first = store.stage("notes/current.txt", b"one", "text/plain", "one.txt", true)?;
@@ -61,7 +66,8 @@ fn provider_version_rejects_changed_file_contract() -> Result<()> {
     Ok(())
 }
 
-#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
 fn path_history_is_generation_pinned_and_rejects_conflicts() -> Result<()> {
     let mut store = store(32, 8)?;
     let first = store.stage("notes/current.txt", b"one", "text/plain", "one.txt", true)?;

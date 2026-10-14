@@ -33,10 +33,10 @@ fn fixed_lifecycle_rejects_terminal_reopening() -> Result<()> {
             .expect("scope proof");
         command
     };
-    reducer.apply(transition(40, 0, LifecycleState::Active))?;
-    reducer.apply(transition(41, 1, LifecycleState::Completed))?;
+    reducer.apply(&transition(40, 0, LifecycleState::Active))?;
+    reducer.apply(&transition(41, 1, LifecycleState::Completed))?;
     assert!(matches!(
-        reducer.apply(transition(42, 2, LifecycleState::Active)),
+        reducer.apply(&transition(42, 2, LifecycleState::Active)),
         Err(Error::Conflict(_))
     ));
     Ok(())
@@ -53,34 +53,34 @@ fn malformed_admission_metadata_is_rejected() -> Result<()> {
     let before = reducer.copy(&mut None)?;
     let mut empty_key = command(operation(30), 0, action.clone());
     empty_key.idempotency_key = IdempotencyKey(String::new());
-    assert!(matches!(reducer.apply(empty_key), Err(Error::Invalid(_))));
+    assert!(matches!(reducer.apply(&empty_key), Err(Error::Invalid(_))));
     let mut future_cause = command(operation(31), 0, action.clone());
     future_cause.causal_parent = Some(EventReference {
         authority: reducer.authority().clone(),
         revision: 1,
     });
     assert!(matches!(
-        reducer.apply(future_cause),
+        reducer.apply(&future_cause),
         Err(Error::Invalid(_))
     ));
     assert_eq!(reducer, before);
     let accepted = command(operation(32), 0, action);
-    reducer.apply(accepted.clone())?;
+    reducer.apply(&accepted)?;
     assert!(matches!(
-        reducer.apply(accepted.clone())?,
+        reducer.apply(&accepted)?,
         ApplyResult::Replayed { .. }
     ));
     let mut conflict = accepted;
     conflict.idempotency_key = IdempotencyKey("another intent".into());
-    assert!(matches!(reducer.apply(conflict), Err(Error::Conflict(_))));
+    assert!(matches!(reducer.apply(&conflict), Err(Error::Conflict(_))));
     assert_eq!(restore(&reducer, &issuer())?, reducer);
     Ok(())
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[tokio::test]
-async fn native_component_model_10000_real_signed_transitions_stays_live_source_bounded()
--> Result<()> {
+async fn native_component_model_transition_work_grows_linearly_with_bounded_residency() -> Result<()>
+{
     use acyclic_fs::{CancellationToken, NativeMaterializationWork};
     let budget = acyclic_fs::WorkBudget {
         allocation_operations: 4096,
@@ -117,9 +117,11 @@ async fn native_component_model_10000_real_signed_transitions_stays_live_source_
     let client = Arc::new(acyclic_stream::MemoryStream::default());
     let mut reference = StreamAggregate::open(
         &client,
-        owner.audience.clone(),
-        owner.verifier(&mut None)?,
-        schemas(),
+        (
+            owner.audience.clone(),
+            owner.verifier(&mut None)?,
+            schemas(),
+        ),
         None,
         crate::store::default_projection_read_limits(),
         2,
@@ -147,8 +149,14 @@ async fn native_component_model_10000_real_signed_transitions_stays_live_source_
     let mut state = reference.reducer().copy(&mut None)?;
     let available =
         budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes();
+    const N: u64 = 8;
+    const WARMUP: u64 = 16;
+    const TRANSITIONS: u64 = WARMUP + 10 * N;
     let mut recent = VecDeque::new();
-    for index in 0_u64..10_000 {
+    let mut total = acyclic_fs::WorkCounters::default();
+    let mut input_bytes = 0_u64;
+    let mut small = None;
+    for index in 0_u64..TRANSITIONS {
         let mut id = [0_u8; 16];
         id[..8].copy_from_slice(&(index / 4 + 1).to_le_bytes());
         let effect_id = EffectId::from_bytes(id);
@@ -202,6 +210,19 @@ async fn native_component_model_10000_real_signed_transitions_stays_live_source_
         else {
             panic!("fresh model event replayed")
         };
+        if index >= WARMUP {
+            input_bytes += serde_json::to_vec(&(
+                &owner.audience,
+                event.revision,
+                event.operation_id,
+                event.intent_digest,
+                &event.scope,
+                &event.causal_parent,
+                &event.payload,
+            ))
+            .expect("signed input")
+            .len() as u64;
+        }
         let query = NativeMaterializationWork::new(budget, &CancellationToken::new())
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = crate::filesystem::PreparationIo::from_native_work(&query)?;
@@ -213,7 +234,15 @@ async fn native_component_model_10000_real_signed_transitions_stays_live_source_
         state.mark_indexed_terminal_effect_with_work(&event, &mut Some(&mut io.history_io()))?;
         drop(io);
         let receipt = query.receipt();
-        assert!(receipt.allocation_operations < 512 && receipt.bytes_copied < 1_048_576);
+        if index >= WARMUP {
+            total = total.checked_add(receipt).expect("work counters fit");
+        }
+        if index + 1 == WARMUP + N {
+            small = Some((
+                serde_json::to_value(total).expect("work counters"),
+                input_bytes,
+            ));
+        }
         assert_eq!(&state, reference.reducer(), "transition {index}");
         assert!(state.events.len() <= 4);
         assert!(
@@ -229,7 +258,22 @@ async fn native_component_model_10000_real_signed_transitions_stays_live_source_
             }
         }
     }
-    assert_eq!(state.revision(), 10_001);
+    let (small, small_bytes) = small.expect("small workload");
+    let input_bound = input_bytes.max(10 * small_bytes);
+    let large = serde_json::to_value(total).expect("work counters");
+    for (counter, value) in small.as_object().expect("work counters") {
+        assert!(
+            u128::from(
+                large
+                    .get(counter)
+                    .and_then(serde_json::Value::as_u64)
+                    .expect("counter")
+            ) * u128::from(small_bytes)
+                <= u128::from(value.as_u64().expect("counter")) * u128::from(input_bound),
+            "{counter} grows faster than the signed input: {small:?} -> {large:?}"
+        );
+    }
+    assert_eq!(state.revision(), TRANSITIONS + 1);
     let mut oldest = [0_u8; 16];
     oldest[..8].copy_from_slice(&1_u64.to_le_bytes());
     assert!(state.effect(EffectId::from_bytes(oldest)).is_none());

@@ -27,8 +27,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
     pub(in crate::native_mount) async fn publish<E, F, Fut>(
         &self,
         permit: crate::PublicationPermit,
-        work: &crate::NativeMaterializationWork,
-        cancellation: &CancellationToken,
+        accounting: crate::kernel::KernelAccounting<'_>,
         lifetime: Option<&CancellationToken>,
         before_publication: &mut F,
         context: Option<crate::lazy_workspace::NativeSnapshotContext>,
@@ -39,36 +38,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         Fut: Future<Output = Result<(), E>> + Send + 'static,
         E: From<FsError> + From<MountSourceError> + Send + 'static,
     {
+        let crate::kernel::KernelAccounting::NativeOriginal { work, cancellation } = accounting
+        else {
+            return Err((E::from(MountSourceError::OriginalSnapshotUnavailable), None));
+        };
         let mut carrier = NativeDemandCarrier::Native(work);
         let mut state = await_lock(self.lock(), &mut carrier, cancellation, lifetime)
             .await
             .map_err(|error| (E::from(error), None))?;
         let force = state.has_retained_operation();
         let early = |error: MountSourceError| (E::from(error), None);
-        let bytes = (std::mem::size_of::<(AtomicBool, crate::NativeAllocation)>()
-            + 2 * std::mem::size_of::<usize>()) as u64;
-        let allocation = work
-            .claim(bytes, 1, crate::WorkCounters::UNCHARGED)
-            .map_err(MountSourceError::NativeWork)
-            .map_err(early)?;
-        let submitted = Arc::new((AtomicBool::new(force), allocation));
+        let submitted = publication_flag(work, force).map_err(early)?;
         let operation = state.retained_operation_id();
-        let projection = state
-            .checkout
-            .private_candidate(
-                &mut crate::kernel::allocation::KernelAccounting::native(work, cancellation),
-                cancellation,
-            )
-            .map_err(MountSourceError::from)
+        let projected = state
+            .publication_candidate(operation, work, cancellation)
             .map_err(early)?;
-        let projected = SharedCheckoutState {
-            recorded_view: projection.root().file_table,
-            checkout: projection,
-            publication_operation: Some(operation),
-            publication_evidence: None,
-            publication: state.publication,
-            ledger: Arc::clone(&state.ledger),
-        };
         carrier.check(cancellation, lifetime).map_err(early)?;
         self.publishing.store(true, Ordering::Release);
         let mut original = std::mem::replace(&mut *state.state, projected);
@@ -88,74 +72,34 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 .ok_or(MountSourceError::NativeWork(
                     crate::NativeTreeMaterializationError::InvalidLayout,
                 ))?;
-            if original.publication_evidence.is_none()
-                && (force || original.checkout.has_pending_mutations())
-                && let Some(context) = context
-            {
-                let (digest, evidence) = crate::lazy_workspace::publication_evidence(
-                    context,
-                    operation,
-                    permit,
-                    &mut crate::kernel::KernelAccounting::native(work, cancellation),
-                )
-                .map_err(MountSourceError::from)?;
-                original.publication_evidence = Some((context, permit, digest, evidence));
-            }
-            let (context, fingerprint_permit, digest, evidence) =
-                match &original.publication_evidence {
-                    Some((context, permit, digest, evidence)) => (
-                        Some(*context),
-                        Some(*permit),
-                        Some(*digest),
-                        Some(evidence.clone()),
-                    ),
-                    None => (context, None, None, None),
-                };
+            let (context, mut proof) = original.publication_proof(
+                context,
+                operation,
+                permit,
+                work,
+                cancellation,
+                force,
+            )?;
             let producer = original.checkout.private_control_custody();
+            proof.producer = Some(&producer);
             let source_lifetime = lifetime.cloned();
             let guard_submitted = Arc::clone(&submitted);
             let mut guarded = move |work: &crate::NativeMaterializationWork| {
-                if source_lifetime
-                    .as_ref()
-                    .is_some_and(CancellationToken::is_cancelled)
-                {
-                    return futures::future::Either::Left(std::future::ready(Err(E::from(
-                        MountSourceError::Stale,
-                    ))));
-                }
-                let future = before_publication(work);
-                let lifetime = source_lifetime.clone();
-                let submitted = Arc::clone(&guard_submitted);
-                futures::future::Either::Right(async move {
-                    if lifetime
-                        .as_ref()
-                        .is_some_and(CancellationToken::is_cancelled)
-                    {
-                        return Err(E::from(MountSourceError::Stale));
-                    }
-                    future.await?;
-                    if lifetime
-                        .as_ref()
-                        .is_some_and(CancellationToken::is_cancelled)
-                    {
-                        return Err(E::from(MountSourceError::Stale));
-                    }
-                    submitted.0.store(true, Ordering::Release);
-                    Ok(())
-                })
+                publication_guard(
+                    work,
+                    &mut before_publication,
+                    source_lifetime.as_ref(),
+                    &guard_submitted,
+                )
             };
             let ack = super::publication::seal_checkout_with_permit_guarded_with_native_work(
                 &mut original.checkout,
                 operation,
                 permit,
                 force,
-                work,
-                cancellation,
+                crate::kernel::KernelAccounting::native(work, cancellation),
                 &mut guarded,
-                Some(&producer),
-                digest,
-                evidence,
-                fingerprint_permit,
+                proof,
             )
             .await?;
             if ack.is_some()
@@ -165,17 +109,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             }
             let (operation, generation) = ack.ok_or(MountSourceError::Stale)?;
             if let Some(context) = context {
-                *acknowledged = Some(match operation {
-                    Some(operation) => crate::NativePublicationSnapshot {
-                        context,
-                        operation: Some(operation),
-                        generation,
-                    },
-                    None => crate::NativePublicationSnapshot {
-                        context,
-                        operation: None,
-                        generation,
-                    },
+                *acknowledged = Some(crate::NativePublicationSnapshot {
+                    context,
+                    operation,
+                    generation,
                 });
             }
             Ok(())
@@ -191,10 +128,130 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         }
         drop(publication);
         drop(self.lock().await);
-        match (result, carrier.check(cancellation, lifetime)) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(primary), secondary) => Err((primary, secondary.err())),
-            (Ok(_), Err(error)) => Err((E::from(error), None)),
+        let secondary = carrier.check(cancellation, lifetime);
+        match result {
+            Ok(()) => secondary.map_err(|error| (E::from(error), None)),
+            Err(primary) => Err((primary, secondary.err())),
         }
     }
+}
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckoutState<A, O> {
+    fn publication_candidate(
+        &self,
+        operation: OperationId,
+        work: &crate::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<Self, MountSourceError> {
+        let projection = self
+            .checkout
+            .private_candidate(
+                &mut crate::kernel::allocation::KernelAccounting::native(work, cancellation),
+                cancellation,
+            )
+            .map_err(MountSourceError::from)?;
+        Ok(SharedCheckoutState {
+            recorded_view: projection.root().file_table,
+            checkout: projection,
+            publication_operation: Some(operation),
+            publication_evidence: None,
+            publication: self.publication,
+            ledger: Arc::clone(&self.ledger),
+        })
+    }
+
+    fn publication_proof<'p>(
+        &mut self,
+        context: Option<crate::lazy_workspace::NativeSnapshotContext>,
+        operation: OperationId,
+        permit: crate::PublicationPermit,
+        work: &crate::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+        force: bool,
+    ) -> Result<
+        (
+            Option<crate::lazy_workspace::NativeSnapshotContext>,
+            super::publication::PublicationProof<'p>,
+        ),
+        MountSourceError,
+    > {
+        if self.publication_evidence.is_none()
+            && (force || self.checkout.has_pending_mutations())
+            && let Some(context) = context
+        {
+            let (digest, evidence) = crate::lazy_workspace::publication_evidence(
+                context,
+                operation,
+                permit,
+                &mut crate::kernel::KernelAccounting::native(work, cancellation),
+            )
+            .map_err(MountSourceError::from)?;
+            self.publication_evidence = Some((context, permit, digest, evidence));
+        }
+        Ok(match &self.publication_evidence {
+            Some((context, permit, digest, evidence)) => (
+                Some(*context),
+                super::publication::PublicationProof {
+                    producer: None,
+                    context: Some(*digest),
+                    evidence: Some(evidence.clone()),
+                    fingerprint_permit: Some(*permit),
+                },
+            ),
+            None => (context, super::publication::PublicationProof::default()),
+        })
+    }
+}
+
+fn publication_guard<E, F, Fut>(
+    work: &crate::NativeMaterializationWork,
+    before_publication: &mut F,
+    lifetime: Option<&CancellationToken>,
+    submitted: &Arc<(AtomicBool, crate::NativeAllocation)>,
+) -> futures::future::Either<
+    std::future::Ready<Result<(), E>>,
+    impl Future<Output = Result<(), E>> + Send + 'static + use<E, F, Fut>,
+>
+where
+    F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut,
+    Fut: Future<Output = Result<(), E>> + Send + 'static,
+    E: From<MountSourceError> + Send + 'static,
+{
+    if lifetime.is_some_and(CancellationToken::is_cancelled) {
+        return futures::future::Either::Left(std::future::ready(Err(E::from(
+            MountSourceError::Stale,
+        ))));
+    }
+    let future = before_publication(work);
+    let lifetime = lifetime.cloned();
+    let submitted = Arc::clone(submitted);
+    futures::future::Either::Right(async move {
+        if lifetime
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+        {
+            return Err(E::from(MountSourceError::Stale));
+        }
+        future.await?;
+        if lifetime
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+        {
+            return Err(E::from(MountSourceError::Stale));
+        }
+        submitted.0.store(true, Ordering::Release);
+        Ok(())
+    })
+}
+
+fn publication_flag(
+    work: &crate::NativeMaterializationWork,
+    force: bool,
+) -> Result<Arc<(AtomicBool, crate::NativeAllocation)>, MountSourceError> {
+    let bytes = (std::mem::size_of::<(AtomicBool, crate::NativeAllocation)>()
+        + 2 * std::mem::size_of::<usize>()) as u64;
+    let allocation = work
+        .claim(bytes, 1, crate::WorkCounters::UNCHARGED)
+        .map_err(MountSourceError::NativeWork)?;
+    Ok(Arc::new((AtomicBool::new(force), allocation)))
 }

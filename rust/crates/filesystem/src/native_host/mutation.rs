@@ -106,11 +106,12 @@ impl HostRoot {
         device: libc::dev_t,
         work: &mut W,
     ) -> Result<(), DemandError> {
-        if !matches!(mode & libc::S_IFMT as u32, kind if kind == libc::S_IFCHR as u32 || kind == libc::S_IFBLK as u32)
+        let native_mode = libc::mode_t::try_from(mode).map_err(|_| DemandError::InvalidRequest)?;
+        if !matches!(native_mode & libc::S_IFMT, kind if kind == libc::S_IFCHR || kind == libc::S_IFBLK)
         {
             return Err(DemandError::InvalidRequest);
         }
-        let mode = libc::mode_t::try_from(mode).map_err(|_| DemandError::InvalidRequest)?;
+        let mode = native_mode;
         with_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
             // SAFETY: held parent and terminated leaf outlive the syscall.
             unix_mutation(work, || unsafe {
@@ -125,6 +126,42 @@ impl HostRoot {
         work: &mut W,
     ) -> Result<(), DemandError> {
         with_parent_leaf(&self.directory, path, work, bind_unix_socket_in)
+    }
+
+    #[cfg(all(unix, feature = "native-mount"))]
+    pub(crate) fn hard_link(
+        &self,
+        source: &Path,
+        destination: &Path,
+        work: &mut &NativeMaterializationWork,
+    ) -> Result<(), NativeTreeMaterializationError> {
+        use NativeTreeMaterializationError as Error;
+        let source_parent =
+            self.open_dir_held(source.parent().ok_or(Error::InvalidLayout)?, work)?;
+        let destination_parent =
+            self.open_dir_held(destination.parent().ok_or(Error::InvalidLayout)?, work)?;
+        unix_name(
+            source.file_name().ok_or(Error::InvalidLayout)?,
+            work,
+            |source, work| {
+                unix_name(
+                    destination.file_name().ok_or(Error::InvalidLayout)?,
+                    work,
+                    |destination, work| {
+                        // SAFETY: both held parents and terminated names outlive linkat.
+                        unix_mutation(work, || unsafe {
+                            libc::linkat(
+                                source_parent.as_raw_fd(),
+                                source.as_ptr(),
+                                destination_parent.as_raw_fd(),
+                                destination.as_ptr(),
+                                0,
+                            )
+                        })
+                    },
+                )
+            },
+        )
     }
     #[cfg(windows)]
     pub(crate) fn hard_link<W: SourceDemandReadWork>(
@@ -196,15 +233,21 @@ fn bind_unix_socket_in<W: SourceDemandReadWork>(
     #[cfg(target_os = "linux")]
     let base = {
         let prefix = b"/proc/self/fd/";
-        let fd = rustix::path::DecInt::new(parent.as_raw_fd() as u32);
+        let fd = rustix::path::DecInt::new(
+            u32::try_from(parent.as_raw_fd()).map_err(|_| DemandError::InvalidRequest)?,
+        );
         let digits = fd.as_bytes();
         work.started_io(WorkCounters {
             bytes_encoded: digits.len() as u64,
             ..WorkCounters::UNCHARGED
         })?;
         work.started_io(copy_work((prefix.len() + digits.len()) as u64))?;
-        path[..prefix.len()].copy_from_slice(prefix);
-        path[prefix.len()..prefix.len() + digits.len()].copy_from_slice(digits);
+        path.get_mut(..prefix.len())
+            .ok_or(DemandError::InvalidRequest)?
+            .copy_from_slice(prefix);
+        path.get_mut(prefix.len()..prefix.len() + digits.len())
+            .ok_or(DemandError::InvalidRequest)?
+            .copy_from_slice(digits);
         prefix.len() + digits.len()
     };
     #[cfg(target_os = "macos")]
@@ -218,8 +261,10 @@ fn bind_unix_socket_in<W: SourceDemandReadWork>(
             .position(|byte| *byte == 0)
             .ok_or(DemandError::InvalidRequest)?
     };
+    // SAFETY: sockaddr_un contains only integer fields and a character array.
     let mut address = unsafe { std::mem::zeroed::<libc::sockaddr_un>() };
-    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    address.sun_family =
+        libc::sa_family_t::try_from(libc::AF_UNIX).map_err(|_| DemandError::InvalidRequest)?;
     let length = (base + 1)
         .checked_add(leaf.to_bytes().len())
         .ok_or(crate::WorkError::Overflow)?;
@@ -227,15 +272,21 @@ fn bind_unix_socket_in<W: SourceDemandReadWork>(
         return Err(DemandError::InvalidRequest);
     }
     work.started_io(copy_work((length + leaf.to_bytes().len()) as u64))?;
-    path[base] = b'/';
-    path[base + 1..length].copy_from_slice(leaf.to_bytes());
-    for (destination, byte) in address.sun_path.iter_mut().zip(&path[..length]) {
-        *destination = *byte as libc::c_char;
+    *path.get_mut(base).ok_or(DemandError::InvalidRequest)? = b'/';
+    path.get_mut(base + 1..length)
+        .ok_or(DemandError::InvalidRequest)?
+        .copy_from_slice(leaf.to_bytes());
+    for (destination, byte) in address
+        .sun_path
+        .iter_mut()
+        .zip(path.get(..length).ok_or(DemandError::InvalidRequest)?)
+    {
+        *destination = libc::c_char::from_ne_bytes([*byte]);
     }
     let address_length = std::mem::offset_of!(libc::sockaddr_un, sun_path) + length + 1;
     #[cfg(target_os = "macos")]
     {
-        address.sun_len = address_length as u8;
+        address.sun_len = u8::try_from(address_length).map_err(|_| DemandError::InvalidRequest)?;
     }
     #[cfg(target_os = "linux")]
     let kind = libc::SOCK_STREAM | libc::SOCK_CLOEXEC;
@@ -247,34 +298,40 @@ fn bind_unix_socket_in<W: SourceDemandReadWork>(
         if fd < 0 {
             Err(io::Error::last_os_error())
         } else {
+            // SAFETY: socket returned a fresh descriptor owned by this call.
             Ok(unsafe { OwnedFd::from_raw_fd(fd) })
         }
     })?;
     #[cfg(target_os = "macos")]
+    // SAFETY: the fresh socket is held live while setting its descriptor flags.
     unix_mutation(work, || unsafe {
         libc::fcntl(socket.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC)
     })?;
-    // SAFETY: initialized sockaddr_un and held socket outlive bind and listen.
+    let address_length =
+        libc::socklen_t::try_from(address_length).map_err(|_| DemandError::InvalidRequest)?;
+    // SAFETY: initialized sockaddr_un and held socket outlive bind.
     unix_mutation(work, || unsafe {
         libc::bind(
             socket.as_raw_fd(),
             (&raw const address).cast(),
-            address_length as libc::socklen_t,
+            address_length,
         )
     })?;
+    // SAFETY: the held socket remains live during listen.
     unix_mutation(work, || unsafe { libc::listen(socket.as_raw_fd(), 128) })?;
     #[cfg(target_os = "macos")]
     {
         let held = stat_at(parent.as_raw_fd(), leaf, work)?;
         let mut observed = std::mem::MaybeUninit::<libc::stat>::uninit();
         work.started_io(READ)?;
+        // SAFETY: the terminated path and output stat remain live during lstat.
         if unsafe { libc::lstat(path.as_ptr().cast(), observed.as_mut_ptr()) } != 0 {
             return Err(io::Error::last_os_error().into());
         }
+        // SAFETY: lstat succeeded and initialized the output stat.
         let observed = unsafe { observed.assume_init() };
-        if held.raw.st_dev as u64 != observed.st_dev as u64
-            || held.raw.st_ino as u64 != observed.st_ino as u64
-        {
+        if held.raw.st_dev != observed.st_dev || held.raw.st_ino != observed.st_ino {
+            // SAFETY: the terminated path remains live during unlink.
             unix_mutation(work, || unsafe { libc::unlink(path.as_ptr().cast()) })?;
             return Err(io::Error::other("socket parent directory moved during bind").into());
         }
@@ -333,9 +390,10 @@ pub(crate) fn rename_held<W: NativeHostWork>(
             work,
         )?;
         if let Some(expected) = expected
-            && file_identity_and_length(&file, work)?.0 != expected {
-                return Err(io::Error::other("rename source identity changed").into());
-            }
+            && file_identity_and_length(&file, work)?.0 != expected
+        {
+            return Err(io::Error::other("rename source identity changed").into());
+        }
         set_windows_name(
             &file,
             to,

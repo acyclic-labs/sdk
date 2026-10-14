@@ -336,7 +336,8 @@ struct ColdSummaryStream {
     fail_read: std::sync::atomic::AtomicUsize,
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl acyclic_stream::StreamProvider for ColdSummaryStream {
     async fn inspect_idempotency(
         &self,
@@ -424,9 +425,9 @@ async fn append_later_summary_parent_messages(
         .clone();
     let mut writer = StreamAggregate::open(
         &storage.stream,
-        storage.conversation.clone(),
+        (storage.conversation.clone(),
         storage.verifier(),
-        SchemaRegistry::new(),
+        SchemaRegistry::new()),
         None,
         crate::store::default_projection_read_limits(),
         crate::store::DEFAULT_TERMINAL_EFFECTS,

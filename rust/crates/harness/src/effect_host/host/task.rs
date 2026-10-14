@@ -35,74 +35,8 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                 self.task_action(owner, effect_id, Some(plan), observed)
                     .await?;
             }
-            let stream = owner.stream();
-            let mut dispatch = reconcile_only.then_some(false);
-            loop {
-                let aggregate = self.aggregate(&stream, observed).await?;
-                let effect = self
-                    .effect_for_host(&aggregate.0, effect_id, observed)
-                    .await?;
-                if reconcile_only
-                    && (effect.0.provider != plan.provider
-                        || effect.0.guarantee != plan.guarantee
-                        || effect.0.effect_kind != plan.effect_kind
-                        || effect.0.request != plan.request
-                        || effect.0.result_schema != plan.result_schema)
-                {
-                    return Err(boundary(
-                        observed,
-                        Conflict,
-                        "effect differs from retained command",
-                    ));
-                }
-                if dispatch.is_none() {
-                    if !matches!(
-                        effect.0.status,
-                        EffectStatus::Planned
-                            | EffectStatus::Dispatched
-                            | EffectStatus::Indeterminate
-                    ) {
-                        return copy_status(&effect.0.status, observed);
-                    }
-                    self.providers.resolve(&effect.0, observed)?;
-                    dispatch = Some(
-                        effect.0.status == EffectStatus::Planned
-                            && matches!(
-                                self.task_action(owner, effect_id, None, observed).await?,
-                                crate::core::ApplyResult::Applied { .. }
-                            ),
-                    );
-                    continue;
-                }
-                if !matches!(
-                    effect.0.status,
-                    EffectStatus::Dispatched | EffectStatus::Indeterminate
-                ) {
-                    if !reconcile_only {
-                        owner.verify(true, observed).await?;
-                    }
-                    return copy_status(&effect.0.status, observed);
-                }
-                let attestation = if dispatch == Some(true) {
-                    owner.verify(false, observed).await?;
-                    Some(
-                        self.providers
-                            .dispatch_and_attest(&self.issuer, effect_id, &effect.0, observed)
-                            .await?,
-                    )
-                } else {
-                    self.providers
-                        .reconcile_and_attest(&self.issuer, effect_id, &effect.0, observed)
-                        .await?
-                };
-                return match attestation {
-                    Some(attestation) => {
-                        self.settle(effect_id, &effect.0, attestation, Some(owner), observed)
-                            .await
-                    }
-                    None => Ok(EffectStatus::Indeterminate),
-                };
-            }
+            self.resolve_task_effect(owner, effect_id, plan, reconcile_only, observed)
+                .await
         }
         .await?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -296,6 +230,83 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                 Err(error) if error.code() == Conflict => continue,
                 Err(error) => return Err(error),
             }
+        }
+    }
+
+    #[cfg(feature = "filesystem")]
+    async fn resolve_task_effect(
+        &self,
+        owner: &crate::durable_host::TaskJournalOwner<P>,
+        effect_id: EffectId,
+        plan: &TaskEffectPlan,
+        reconcile_only: bool,
+        observed: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<EffectStatus> {
+        let stream = owner.stream();
+        let mut dispatch = reconcile_only.then_some(false);
+        loop {
+            let aggregate = self.aggregate(&stream, observed).await?;
+            let effect = self
+                .effect_for_host(&aggregate.0, effect_id, observed)
+                .await?;
+            if reconcile_only
+                && (effect.0.provider != plan.provider
+                    || effect.0.guarantee != plan.guarantee
+                    || effect.0.effect_kind != plan.effect_kind
+                    || effect.0.request != plan.request
+                    || effect.0.result_schema != plan.result_schema)
+            {
+                return Err(boundary(
+                    observed,
+                    Conflict,
+                    "effect differs from retained command",
+                ));
+            }
+            if dispatch.is_none() {
+                if !matches!(
+                    effect.0.status,
+                    EffectStatus::Planned | EffectStatus::Dispatched | EffectStatus::Indeterminate
+                ) {
+                    return copy_status(&effect.0.status, observed);
+                }
+                self.providers.resolve(&effect.0, observed)?;
+                dispatch = Some(
+                    effect.0.status == EffectStatus::Planned
+                        && matches!(
+                            self.task_action(owner, effect_id, None, observed).await?,
+                            crate::core::ApplyResult::Applied { .. }
+                        ),
+                );
+                continue;
+            }
+            if !matches!(
+                effect.0.status,
+                EffectStatus::Dispatched | EffectStatus::Indeterminate
+            ) {
+                if !reconcile_only {
+                    owner.verify(true, observed).await?;
+                }
+                return copy_status(&effect.0.status, observed);
+            }
+            let attestation = if dispatch == Some(true) {
+                owner.verify(false, observed).await?;
+                Some(
+                    self.providers
+                        .dispatch_and_attest(&self.issuer, effect_id, &effect.0, observed)
+                        .await?,
+                )
+            } else {
+                self.providers
+                    .reconcile_and_attest(&self.issuer, effect_id, &effect.0, observed)
+                    .await?
+            };
+            return match attestation {
+                Some(attestation) => {
+                    self.settle(effect_id, &effect.0, attestation, Some(owner), observed)
+                        .await
+                }
+                None => Ok(EffectStatus::Indeterminate),
+            };
         }
     }
 }

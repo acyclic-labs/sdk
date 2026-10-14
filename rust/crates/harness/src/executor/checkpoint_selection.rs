@@ -67,8 +67,10 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
     reference: &FileRef,
     limits: Limits,
     scope: &RuntimeScope,
-    history: &crate::store::HistoryReader<P>,
-    cursor: &crate::store::HistoryCursor,
+    history: (
+        &crate::store::HistoryReader<P>,
+        &crate::store::HistoryCursor,
+    ),
     maximum_history_bytes: u64,
     io: Option<&PreparationIo>,
 ) -> Result<(
@@ -76,6 +78,7 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
     crate::context::Context,
     u64,
 )> {
+    let (history, cursor) = history;
     let limits = crate::context::restrict_context_limits(limits, scope.limits(), io)?;
     validate_checkpoint_json_reference(reference, limits, io)?;
     if maximum_history_bytes == 0 || cursor.after_revision > cursor.through_revision {
@@ -101,39 +104,7 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
     }
     #[cfg(feature = "filesystem")]
     let mut observer = io.map(PreparationIo::history_io);
-    {
-        #[cfg(feature = "filesystem")]
-        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        #[cfg(feature = "filesystem")]
-        let _pin_hold;
-        #[cfg(feature = "filesystem")]
-        let work = observer
-            .as_mut()
-            .map(|work| work as &mut dyn crate::store::history::HistoryIo);
-        #[cfg(not(feature = "filesystem"))]
-        let work = None;
-        let committed = history.pin(0, work).await?;
-        #[cfg(feature = "filesystem")]
-        {
-            _pin_hold = io
-                .map(|io| io.guard_owned(io.owned_bytes()? - before))
-                .transpose()?;
-        }
-        if cursor.authority != committed.authority {
-            return Err(stock_boundary(
-                io,
-                Unauthorized,
-                "checkpoint history belongs to another owner",
-            ));
-        }
-        if cursor.through_revision > committed.through_revision {
-            return Err(stock_boundary(
-                io,
-                Invalid,
-                "checkpoint history cut is not committed",
-            ));
-        }
-    }
+    validate_checkpoint_cut(history, cursor, io).await?;
     let (envelope, retained) =
         load_canonical_checkpoint(journal, reference, limits, Some(scope), io).await?;
     #[cfg(feature = "filesystem")]
@@ -184,6 +155,48 @@ pub(super) fn validate_checkpoint_json_reference(
             io,
             Invalid,
             "checkpoint JSON exceeds effective render limit",
+        ));
+    }
+    Ok(())
+}
+
+async fn validate_checkpoint_cut<P: acyclic_stream::StreamProvider>(
+    history: &crate::store::HistoryReader<P>,
+    cursor: &crate::store::HistoryCursor,
+    io: Option<&PreparationIo>,
+) -> Result<()> {
+    #[cfg(feature = "filesystem")]
+    let mut observer = io.map(PreparationIo::history_io);
+
+    #[cfg(feature = "filesystem")]
+    let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+    #[cfg(feature = "filesystem")]
+    let _pin_hold;
+    #[cfg(feature = "filesystem")]
+    let work = observer
+        .as_mut()
+        .map(|work| work as &mut dyn crate::store::history::HistoryIo);
+    #[cfg(not(feature = "filesystem"))]
+    let work = None;
+    let committed = history.pin(0, work).await?;
+    #[cfg(feature = "filesystem")]
+    {
+        _pin_hold = io
+            .map(|io| io.guard_owned(io.owned_bytes()? - before))
+            .transpose()?;
+    }
+    if cursor.authority != committed.authority {
+        return Err(stock_boundary(
+            io,
+            Unauthorized,
+            "checkpoint history belongs to another owner",
+        ));
+    }
+    if cursor.through_revision > committed.through_revision {
+        return Err(stock_boundary(
+            io,
+            Invalid,
+            "checkpoint history cut is not committed",
         ));
     }
     Ok(())

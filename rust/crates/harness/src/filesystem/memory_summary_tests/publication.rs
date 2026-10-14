@@ -94,9 +94,9 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     assert_ne!(later_checkpoint, reference);
     let mut aggregate = StreamAggregate::open(
         &storage.stream,
-        storage.conversation.clone(),
+        (storage.conversation.clone(),
         storage.verifier(),
-        SchemaRegistry::new(),
+        SchemaRegistry::new()),
         None,
         crate::store::default_projection_read_limits(),
         crate::store::DEFAULT_TERMINAL_EFFECTS,
@@ -226,7 +226,12 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         #[cfg(not(target_arch = "wasm32"))]
         None,
     )?
-    .with_summary_context(prepared, storage.journal(), None)?;
+    .with_summary_context(
+        prepared,
+        storage.journal(),
+        #[cfg(not(target_arch = "wasm32"))]
+        None,
+    )?;
     let child_agent = AgentId::new();
     let child_private = VolumeRef::new(
         provider.clone(),
@@ -419,7 +424,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         let mut reducer = aggregate.reducer().copy(&mut None)?;
         assert!(
             reducer
-                .apply(Command {
+                .apply(&Command {
                     operation_id: changed.operation_id,
                     idempotency_key: IdempotencyKey::new(format!(
                         "summary-witness-mutation-{mutation}"
@@ -521,9 +526,9 @@ async fn assert_summary_child_import(
     )?;
     let mut child = StreamAggregate::open(
         &storage.stream,
-        seed.child.clone(),
+        (seed.child.clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
+        SchemaRegistry::new()),
         None,
         crate::store::default_projection_read_limits(),
         crate::store::DEFAULT_TERMINAL_EFFECTS,
@@ -624,9 +629,9 @@ async fn assert_summary_child_import(
     let other_stream = Arc::new(MemoryStream::default());
     let mut unrelated = StreamAggregate::open(
         &other_stream,
-        seed.child.clone(),
+        (seed.child.clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
+        SchemaRegistry::new()),
         None,
         crate::store::default_projection_read_limits(),
         crate::store::DEFAULT_TERMINAL_EFFECTS,

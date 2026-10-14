@@ -29,10 +29,12 @@ impl crate::OperationWindowStore for IndexedDbAuthorityStore {
                 "invalid window replacement".to_owned(),
             ));
         }
-        let mut bytes = vec![0; self.maximum_payload_bytes.min(MAXIMUM_WINDOW_BYTES) as usize];
+        let capacity = usize::try_from(self.maximum_payload_bytes.min(MAXIMUM_WINDOW_BYTES))
+            .map_err(backend)?;
+        let mut bytes = vec![0; capacity];
         let mut writer = std::io::Cursor::new(bytes.as_mut_slice());
         serde_json::to_writer(&mut writer, &replacement).map_err(backend)?;
-        let length = writer.position() as usize;
+        let length = usize::try_from(writer.position()).map_err(backend)?;
         bytes.truncate(length);
         let cancellation = CancellationToken::new();
         let mut io = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
@@ -67,7 +69,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         authority: AuthorityId,
         commit: ProposedCommit,
         context: &mut crate::AuthorityWork<'_>,
-        mut guard: Option<&mut G>,
+        guard: Option<&mut G>,
     ) -> Result<bool, crate::AuthorityError<G::Error>> {
         if guard.is_some() {
             return crate::async_storage::first_record(self, authority, commit, context, guard)
@@ -103,7 +105,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         fork: WorkspaceForkCommit,
         permit: PublicationPermit,
         context: &mut crate::AuthorityWork<'_>,
-        mut guard: Option<&mut G>,
+        guard: Option<&mut G>,
     ) -> Result<WorkspaceForkOutcome, crate::AuthorityError<G::Error>> {
         if guard.is_some() || permit != PublicationPermit::Unrestricted {
             return crate::async_storage::workspace_fork(self, fork, permit, context, guard).await;
@@ -192,7 +194,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             CreateAuthorityOutcome::Created(head)
         };
         if matches!(value, CreateAuthorityOutcome::Existing(_)) {
-            crate::async_storage::seal(guard.as_deref_mut(), context).await?;
+            crate::async_storage::seal(guard, context).await?;
         }
         Ok(value)
     }
@@ -212,13 +214,17 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         let head = io.head(&tx, authority).await?;
         Ok(head)
     }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Fence, idempotency, and append checks share one IndexedDB transaction"
+    )]
     async fn compare_and_append<G: crate::AuthorityGuard>(
         &self,
         request: GuardedAppend,
         context: &mut crate::AuthorityWork<'_>,
-        mut guard: Option<&mut G>,
+        guard: Option<&mut G>,
     ) -> Result<AppendOutcome, crate::AuthorityError<G::Error>> {
-        crate::async_storage::seal(guard.as_deref_mut(), context).await?;
+        crate::async_storage::seal(guard, context).await?;
 
         let GuardedAppend {
             authority_id: authority,
@@ -235,8 +241,8 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         let actual = io.head(&tx, authority).await?;
         if epoch != actual.epoch {
             return Ok(AppendOutcome::Fenced {
-                    actual_epoch: actual.epoch,
-                });
+                actual_epoch: actual.epoch,
+            });
         }
         if let Some(bytes) = io
             .fixed(
@@ -250,8 +256,8 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             let op = decode_operation(&bytes).map_err(corrupt)?;
             if op.fingerprint != commit.fingerprint {
                 return Ok(AppendOutcome::IdempotencyConflict {
-                        committed_fingerprint: op.fingerprint,
-                    });
+                    committed_fingerprint: op.fingerprint,
+                });
             }
             work::charge(io, authority_fixed_read_work(0))?;
             let blob = io
@@ -312,11 +318,11 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         };
         if !admitted {
             return Ok(AppendOutcome::Fenced {
-                    actual_epoch: actual.epoch,
-                });
+                actual_epoch: actual.epoch,
+            });
         }
         let (durable, bytes) = self.prepare(io, authority, actual, commit)?;
-        self.write(&io, &tx, authority, &durable, &bytes).await?;
+        self.write(io, &tx, authority, &durable, &bytes).await?;
         io.commit(tx).await?;
         Ok(AppendOutcome::Committed(durable))
     }
@@ -432,7 +438,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .epoch
             .get()
             .checked_add(1)
-            .ok_or_else(|| (AuthorityStoreError::EpochExhausted))?;
+            .ok_or_else(|| AuthorityStoreError::EpochExhausted)?;
         let next = Head {
             epoch: Epoch::new(epoch).map_err(backend)?,
             ..actual
@@ -499,12 +505,12 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         context: &mut crate::AuthorityWork<'_>,
     ) -> Result<(Vec<DurableCommit>, crate::AuthorityAllocation), AuthorityStoreError> {
         if limit.records == 0 || limit.payload_bytes == 0 {
-            return Err((AuthorityStoreError::InvalidReplayLimit));
+            return Err(AuthorityStoreError::InvalidReplayLimit);
         }
         if limit.records > 4096 {
-            return Err((AuthorityStoreError::Rejected(
+            return Err(AuthorityStoreError::Rejected(
                 "browser replay page exceeds 4096 records".to_owned(),
-            )));
+            ));
         }
         let io = &mut *context;
         io.check()?;
@@ -534,7 +540,9 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             },
         )?;
         let mut blobs = Vec::new();
-        blobs.try_reserve_exact(count as usize).map_err(backend)?;
+        blobs
+            .try_reserve_exact(usize::try_from(count).map_err(backend)?)
+            .map_err(backend)?;
         let mut payload_bytes = 0;
         for offset in 0..count {
             let sequence = Sequence::new(start + offset);
@@ -546,10 +554,10 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             if sequence != after {
                 if payload_bytes + payload > limit.payload_bytes {
                     if payload_bytes == 0 {
-                        return Err((AuthorityStoreError::ReplayRecordTooLarge {
+                        return Err(AuthorityStoreError::ReplayRecordTooLarge {
                             observed: payload,
                             maximum: limit.payload_bytes,
-                        }));
+                        });
                     }
                     break;
                 }

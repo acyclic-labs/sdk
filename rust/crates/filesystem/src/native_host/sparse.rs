@@ -24,8 +24,8 @@ pub(crate) fn filesystem_is_local<W: NativeHostWork>(
     work: &mut W,
 ) -> Result<bool, W::Error> {
     let mut stats = std::mem::MaybeUninit::<libc::statfs>::uninit();
-    // SAFETY: `fstatfs` fills the provided out-struct for a live descriptor.
     work.started_io(READ)?;
+    // SAFETY: `fstatfs` fills the provided out-struct for a live descriptor.
     if unsafe { libc::fstatfs(directory.as_raw_fd(), stats.as_mut_ptr()) } != 0 {
         return Ok(false);
     }
@@ -284,7 +284,9 @@ pub(super) fn windows_copy_tail<W: SourceDemandReadWork>(
         offset = offset
             .checked_add(count as u64)
             .ok_or(crate::WorkError::Overflow)?;
-        remaining = remaining.get_mut(count..).ok_or(DemandError::InvalidRequest)?;
+        remaining = remaining
+            .get_mut(count..)
+            .ok_or(DemandError::InvalidRequest)?;
     }
     let mut offset = target_offset;
     let mut input = &*buffer;

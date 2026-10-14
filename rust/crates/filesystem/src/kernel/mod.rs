@@ -106,11 +106,13 @@ pub(crate) use closure::prove_blob_closure_async;
 pub use closure::{
     ClosureError, ClosureLimits, GenerationProof, GenerationProofFailure, prove_generation_closure,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use codec::Encoder;
 pub use codec::{
     CanonicalDecodeError, DecodeLimits, EncodeAllocationStep, EncodeError, EncodeWorkStep,
     ReadAllocationStep, encode,
 };
-pub(crate) use codec::{CanonicalInvariant, Decoder, Encoder};
+pub(crate) use codec::{CanonicalInvariant, Decoder};
 pub use export::{
     GenerationExportManifest, GenerationExportManifestError, decode_generation_export_manifest,
     encode_generation_export_manifest, validate_generation_export_manifest,
@@ -247,7 +249,7 @@ pub use types::{
     Extent, ExtentChild, ExtentKind, ExtentPage, ExtentPageError, FileKind, LogicalName,
     NameEncoding, TreeEntry, TreePage, TreePageError,
 };
-pub(crate) use volume::{
-    CONFIG_ENCODED_BYTES, decode_config, encode_config, encode_volume_created,
-};
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use volume::encode_config;
+pub(crate) use volume::{CONFIG_ENCODED_BYTES, decode_config, encode_volume_created};
 pub use volume::{VolumeCreated, VolumeCreatedError, decode_volume_created, volume_authority_id};

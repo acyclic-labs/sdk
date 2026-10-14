@@ -253,7 +253,7 @@ impl AuthorityIssuer {
         &self,
         parent: &Scope,
         id: impl Into<String>,
-        capabilities: Capabilities,
+        capabilities: &Capabilities,
     ) -> Result<Scope> {
         self.verifier(&mut None)?.verify(parent, &mut None)?;
         if !capabilities.is_subset_of(&parent.capabilities) {
@@ -263,7 +263,7 @@ impl AuthorityIssuer {
         }
         self.issue(
             &id.into(),
-            &capabilities,
+            capabilities,
             parent.agent,
             Some(parent.proof),
             &mut None,

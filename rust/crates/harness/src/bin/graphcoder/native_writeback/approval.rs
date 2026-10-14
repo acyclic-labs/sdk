@@ -148,9 +148,11 @@ impl NativeSession {
         )?;
         let aggregate = StreamAggregate::open(
             &self.stream,
-            binding.owner.authority.clone(),
-            issuer.verifier(&mut None)?,
-            SchemaRegistry::default(),
+            (
+                binding.owner.authority.clone(),
+                issuer.verifier(&mut None)?,
+                SchemaRegistry::default(),
+            ),
             None,
             acyclic_harness::store::default_projection_read_limits(),
             acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,

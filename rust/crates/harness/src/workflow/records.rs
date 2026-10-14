@@ -158,7 +158,7 @@ pub(super) fn validate_commands(
     with_history_io(io, |work| {
         for (index, command) in commands.iter().enumerate() {
             command.validate(work)?;
-            for previous in &commands[..index] {
+            for previous in commands.iter().take(index) {
                 if let Some(observer) = work.as_deref_mut() {
                     observer.codec_charge(crate::executor::json::JsonCodecCharge::Inspect {
                         items: 1,

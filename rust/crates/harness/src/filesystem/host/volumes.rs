@@ -344,9 +344,9 @@ pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider>
     crate::store::history::HistoryIo::check_cancellation(&aggregate_io)?;
     let mut aggregate = crate::store::StreamAggregate::open(
         stream,
-        audience,
+        (audience,
         verifier,
-        crate::core::SchemaRegistry::new(),
+        crate::core::SchemaRegistry::new()),
         None,
         crate::store::default_projection_read_limits(),
         crate::store::DEFAULT_TERMINAL_EFFECTS,

@@ -382,8 +382,7 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
             || {
                 source.checkout.publish(
                     crate::PublicationPermit::Unrestricted,
-                    &job,
-                    &local_stop,
+                    crate::kernel::KernelAccounting::native(&job, &local_stop),
                     Some(source.cancellation()),
                     &mut before_publication,
                     Some(context),
@@ -409,12 +408,12 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
         Err(MountSourceError::Stale)
     ));
     let retained = source.runtime.wait(|| async {
-        Ok(source
+        source
             .checkout
             .lock()
             .await
             .publication_operation
-            .ok_or(MountSourceError::Stale)?)
+            .ok_or(MountSourceError::Stale)
     })?;
     drop(job);
     drop(incoming);
@@ -428,8 +427,7 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
                     .checkout
                     .publish(
                         crate::PublicationPermit::Unrestricted,
-                        &retry,
-                        &retry_stop,
+                        crate::kernel::KernelAccounting::native(&retry, &retry_stop),
                         Some(source.cancellation()),
                         &mut |_| std::future::ready(Ok::<(), MountSourceError>(())),
                         Some(context),
@@ -439,7 +437,9 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
             },
             None,
         )?
-        .expect("retry retained publication");
+        .map_err(|(primary, cleanup)| {
+            format!("publication retry failed: {primary}; cleanup: {cleanup:?}")
+        })?;
     let published = acknowledged.ok_or("missing publication ACK")?;
     assert_eq!(published.operation(), Some(retained));
     assert_eq!(published.workspace_id(), workspace_id);

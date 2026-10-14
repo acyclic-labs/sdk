@@ -46,7 +46,7 @@ async fn identical_regular_payloads_use_native_clone_without_aliasing()
         checkout
             .create(
                 crate::AuthoredMutation::CreateFile {
-                    path: path,
+                    path,
                     bytes: (bytes.clone()).into(),
                     metadata: crate::kernel::FileMetadata::default(),
                 },

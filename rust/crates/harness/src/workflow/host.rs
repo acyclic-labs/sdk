@@ -203,7 +203,9 @@ impl DurableWorkflowHost {
             Some(
                 page.0
                     .pop()
-                    .expect("checked single workflow record")
+                    .ok_or_else(|| {
+                        stock_boundary(io, Storage, "latest workflow record is missing")
+                    })?
                     .transition,
             ),
             page.1.take(),
@@ -305,29 +307,10 @@ impl DurableWorkflowHost {
         io: Option<&PreparationIo>,
     ) -> Result<(MachineTransition, u64, u64)> {
         validate_key(&key, io)?;
-        if let Some((revision, digest)) = self.intents.get(&operation_id) {
-            let page = journal::page(self.journal.as_ref(), *revision, 1, io).await?;
-            let [record] = page.0.as_slice() else {
-                return Err(stock_boundary(
-                    io,
-                    Storage,
-                    "workflow retry record is unavailable",
-                ));
-            };
-            if crate::executor::preparation_digest(record, io)? != *digest {
-                return Err(stock_boundary(io, Storage, "workflow retry record changed"));
-            }
-            if record.idempotency_key != key || record.input != input {
-                return Err(stock_boundary(
-                    io,
-                    Conflict,
-                    "workflow operation identity is bound to another input",
-                ));
-            }
-            check(&record.transition)?;
-            let before = workflow_owned_bytes(io)?;
-            let transition = record.transition.copy(io)?;
-            return Ok((transition, 0, workflow_owned_bytes(io)? - before));
+        if let Some(replay) = self.intents.get(&operation_id) {
+            return self
+                .replay_transition(replay, &key, &input, check, io)
+                .await;
         }
         if self.terminal {
             return Err(stock_boundary(
@@ -385,35 +368,7 @@ impl DurableWorkflowHost {
         if let Some(io) = io {
             self.reserve_native_index(record.transition.commands.len(), io)?;
         }
-        let committed_record = record.copy(io)?;
-        let commit_key = IdempotencyKey(crate::executor::stock_string_copy(&key.0, io)?);
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let observed = if let Some(io) = io {
-            let work = io
-                .original_native_work()
-                .ok_or_else(|| unsupported("native commit requires the original ledger"))?;
-            let (observed, custody) = self
-                .journal
-                .commit_with_native_work(
-                    self.checkpoint.revision,
-                    commit_key,
-                    committed_record,
-                    work,
-                )?
-                .await?;
-            io.absorb_native_custody(custody)?;
-            observed
-        } else {
-            self.journal
-                .commit(self.checkpoint.revision, commit_key, committed_record)
-                .await?
-        };
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let observed = self
-            .journal
-            .commit(self.checkpoint.revision, commit_key, committed_record)
-            .await?;
-        let committed = observed;
+        let committed = self.commit_transition(&record, &key, io).await?;
         if committed != record {
             return Err(stock_boundary(
                 io,
@@ -430,7 +385,9 @@ impl DurableWorkflowHost {
                 record.prior.revision,
                 match digest {
                     Some(digest) => digest,
-                    None => crate::executor::json::canonical_json_digest(&record, u64::MAX, &mut None)?,
+                    None => {
+                        crate::executor::json::canonical_json_digest(&record, u64::MAX, &mut None)?
+                    }
                 },
             ),
         );
@@ -463,5 +420,77 @@ impl DurableWorkflowHost {
             self.index_custody = Some(incoming);
         }
         Ok(())
+    }
+
+    async fn replay_transition(
+        &self,
+        replay: &(u64, [u8; 32]),
+        key: &IdempotencyKey,
+        input: &Value,
+        check: impl FnOnce(&MachineTransition) -> Result<()>,
+        io: Option<&PreparationIo>,
+    ) -> Result<(MachineTransition, u64, u64)> {
+        let (revision, digest) = replay;
+
+        let page = journal::page(self.journal.as_ref(), *revision, 1, io).await?;
+        let [record] = page.0.as_slice() else {
+            return Err(stock_boundary(
+                io,
+                Storage,
+                "workflow retry record is unavailable",
+            ));
+        };
+        if crate::executor::preparation_digest(record, io)? != *digest {
+            return Err(stock_boundary(io, Storage, "workflow retry record changed"));
+        }
+        if &record.idempotency_key != key || &record.input != input {
+            return Err(stock_boundary(
+                io,
+                Conflict,
+                "workflow operation identity is bound to another input",
+            ));
+        }
+        check(&record.transition)?;
+        let before = workflow_owned_bytes(io)?;
+        let transition = record.transition.copy(io)?;
+        Ok((transition, 0, workflow_owned_bytes(io)? - before))
+    }
+
+    async fn commit_transition(
+        &self,
+        record: &WorkflowRecord,
+        key: &IdempotencyKey,
+        io: Option<&PreparationIo>,
+    ) -> Result<WorkflowRecord> {
+        let committed_record = record.copy(io)?;
+        let commit_key = IdempotencyKey(crate::executor::stock_string_copy(&key.0, io)?);
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let observed = if let Some(io) = io {
+            let work = io
+                .original_native_work()
+                .ok_or_else(|| unsupported("native commit requires the original ledger"))?;
+            let (observed, custody) = self
+                .journal
+                .commit_with_native_work(
+                    self.checkpoint.revision,
+                    commit_key,
+                    committed_record,
+                    work,
+                )?
+                .await?;
+            io.absorb_native_custody(custody)?;
+            observed
+        } else {
+            self.journal
+                .commit(self.checkpoint.revision, commit_key, committed_record)
+                .await?
+        };
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let observed = self
+            .journal
+            .commit(self.checkpoint.revision, commit_key, committed_record)
+            .await?;
+        let committed = observed;
+        Ok(committed)
     }
 }

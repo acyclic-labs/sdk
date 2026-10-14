@@ -61,61 +61,7 @@ impl IndexedPublication {
             )
             .and_then(|bytes| owned_bytes_from_retained_vec(bytes, work));
             publication.add_index(operation, 0, encoded, work)?;
-            let message = match &event.payload {
-                EventPayload::ConversationBound { .. } => Some((uuid::Uuid::nil(), 0)),
-                EventPayload::ConversationMessageAppended { message } => {
-                    Some((message.id, message.sequence))
-                }
-                EventPayload::ProjectMergePublished { receipt } => {
-                    Some((receipt.notice.id, receipt.notice.sequence))
-                }
-                _ => None,
-            };
-            if let Some((message_id, sequence)) = message {
-                if sequence == 0 && !matches!(event.payload, EventPayload::ConversationBound { .. })
-                {
-                    return Err(boundary(
-                        work,
-                        Invalid,
-                        "message sequence index requires a positive conversation sequence",
-                    ));
-                }
-                let location = MessageLocation {
-                    location,
-                    message_id,
-                    sequence,
-                };
-                let head =
-                    publication_path(authority, "harness/v2/conversation-heads/", None, work)?;
-                let encoded = crate::store::history::canonical_bytes_with_work(
-                    &location,
-                    acyclic_stream::MAX_RECORD_BYTES as u64,
-                    work,
-                )
-                .and_then(|bytes| owned_bytes_from_retained_vec(bytes, work));
-                publication.add_index(head, sequence, encoded, work)?;
-                if sequence > 0 {
-                    let bytes = publication
-                        .indexes
-                        .last()
-                        .ok_or_else(|| boundary(work, Storage, "message head index is missing"))?
-                        .2
-                        .clone();
-                    for (prefix, key) in [
-                        (
-                            "harness/v2/conversation-messages/",
-                            &message_id as &dyn std::fmt::Display,
-                        ),
-                        (
-                            "harness/v2/conversation-sequences/",
-                            &sequence as &dyn std::fmt::Display,
-                        ),
-                    ] {
-                        let path = publication_path(authority, prefix, Some(key), work)?;
-                        publication.add_index(path, 0, Ok((bytes.clone(), 0)), work)?;
-                    }
-                }
-            }
+            publication.add_message_indexes(authority, event, location, work)?;
             Ok(())
         })();
         match result {
@@ -238,6 +184,69 @@ impl IndexedPublication {
                 Storage,
                 "indexed publication append is invalid",
             ));
+        }
+        Ok(())
+    }
+
+    fn add_message_indexes(
+        &mut self,
+        authority: &Authority,
+        event: &Event,
+        location: OperationLocation<&Authority>,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        let message = match &event.payload {
+            EventPayload::ConversationBound { .. } => Some((uuid::Uuid::nil(), 0)),
+            EventPayload::ConversationMessageAppended { message } => {
+                Some((message.id, message.sequence))
+            }
+            EventPayload::ProjectMergePublished { receipt } => {
+                Some((receipt.notice.id, receipt.notice.sequence))
+            }
+            _ => None,
+        };
+        if let Some((message_id, sequence)) = message {
+            if sequence == 0 && !matches!(event.payload, EventPayload::ConversationBound { .. }) {
+                return Err(boundary(
+                    work,
+                    Invalid,
+                    "message sequence index requires a positive conversation sequence",
+                ));
+            }
+            let location = MessageLocation {
+                location,
+                message_id,
+                sequence,
+            };
+            let head = publication_path(authority, "harness/v2/conversation-heads/", None, work)?;
+            let encoded = crate::store::history::canonical_bytes_with_work(
+                &location,
+                acyclic_stream::MAX_RECORD_BYTES as u64,
+                work,
+            )
+            .and_then(|bytes| owned_bytes_from_retained_vec(bytes, work));
+            self.add_index(head, sequence, encoded, work)?;
+            if sequence > 0 {
+                let bytes = self
+                    .indexes
+                    .last()
+                    .ok_or_else(|| boundary(work, Storage, "message head index is missing"))?
+                    .2
+                    .clone();
+                for (prefix, key) in [
+                    (
+                        "harness/v2/conversation-messages/",
+                        &message_id as &dyn std::fmt::Display,
+                    ),
+                    (
+                        "harness/v2/conversation-sequences/",
+                        &sequence as &dyn std::fmt::Display,
+                    ),
+                ] {
+                    let path = publication_path(authority, prefix, Some(key), work)?;
+                    self.add_index(path, 0, Ok((bytes.clone(), 0)), work)?;
+                }
+            }
         }
         Ok(())
     }

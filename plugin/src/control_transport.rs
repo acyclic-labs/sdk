@@ -736,7 +736,7 @@ pub(crate) fn create_current_user_pipe(
     result
 }
 
-#[cfg(any(test, not(target_os = "linux")))]
+#[cfg(not(target_os = "linux"))]
 pub(crate) async fn handle_control_connection<S>(
     stream: S,
     control: Arc<impl ConcurrentControlRequestDispatcher + 'static>,

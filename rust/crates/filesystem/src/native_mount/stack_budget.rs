@@ -154,7 +154,7 @@ async fn lazy_workspace(
             "stack-budget",
             Arc::new(demand),
             LocalCoreStateStore::open_owned(root.join("core"))?,
-            crate::VolumeConfig::portable(if (&engine).capabilities().durable {
+            crate::VolumeConfig::portable(if engine.capabilities().durable {
                 crate::Lifecycle::Durable
             } else {
                 crate::Lifecycle::Ephemeral

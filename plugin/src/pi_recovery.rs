@@ -288,6 +288,7 @@ where
             work,
             pi_definition.identity(),
         )?;
+        drop(admission);
         authenticate_original_alias(
             runtime,
             task.binding.task_id,

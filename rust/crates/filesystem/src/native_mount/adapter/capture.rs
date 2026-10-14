@@ -44,7 +44,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         work.with_original_leaf(|leaf| leaf.check())
-            .map_err(super::super::lazy::mount_demand_error)?;
+            .map_err(MountSourceError::from)?;
         self.cancellation
             .check()
             .map_err(|_| MountSourceError::Cancelled)?;
@@ -173,8 +173,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
             self.checkout
                 .publish(
                     crate::PublicationPermit::Unrestricted,
-                    &work,
-                    cancellation,
+                    crate::kernel::KernelAccounting::native(&work, cancellation),
                     Some(&self.cancellation),
                     &mut source_publication_guard(
                         self.native_callback_guard.clone(),

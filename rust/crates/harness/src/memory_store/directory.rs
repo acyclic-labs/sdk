@@ -160,25 +160,7 @@ impl MemoryStore {
                 _ => None,
             };
             #[cfg(feature = "filesystem")]
-            if let Some(io) = io {
-                let history = self.paths.get(path);
-                if let Some(slots) = growth {
-                    let bytes = slots
-                        .checked_mul(std::mem::size_of::<PathRevision>())
-                        .ok_or_else(|| Error::Invalid("path history ownership overflow".into()))?
-                        as u64;
-                    io.retain_owned(bytes)?;
-                    io.allocation_attempt(bytes)?;
-                }
-                if history.is_none() {
-                    io.retain_owned(path.len() as u64)?;
-                    io.allocation_attempt(path.len() as u64)?;
-                    io.preflight(acyclic_fs::WorkCounters {
-                        bytes_copied: path.len() as u64,
-                        ..Default::default()
-                    })?;
-                }
-            }
+            self.admit_path_growth(path, growth, io)?;
             let retained_reference =
                 crate::executor::with_history_io(io, |work| reference.copy(work))?;
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -237,6 +219,36 @@ impl MemoryStore {
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 _custody: custody,
             });
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "filesystem")]
+    fn admit_path_growth(
+        &self,
+        path: &str,
+        growth: Option<usize>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            let history = self.paths.get(path);
+            if let Some(slots) = growth {
+                let bytes = slots
+                    .checked_mul(std::mem::size_of::<PathRevision>())
+                    .ok_or_else(|| Error::Invalid("path history ownership overflow".into()))?
+                    as u64;
+                io.retain_owned(bytes)?;
+                io.allocation_attempt(bytes)?;
+            }
+            if history.is_none() {
+                io.retain_owned(path.len() as u64)?;
+                io.allocation_attempt(path.len() as u64)?;
+                io.preflight(acyclic_fs::WorkCounters {
+                    bytes_copied: path.len() as u64,
+                    ..Default::default()
+                })?;
+            }
         }
         Ok(())
     }

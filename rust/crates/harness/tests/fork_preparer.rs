@@ -150,9 +150,11 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     )?;
     let mut aggregate = StreamAggregate::open(
         &stream,
-        parent.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
+        (
+            parent.clone(),
+            issuer.verifier(&mut None).expect("verifier copy"),
+            SchemaRegistry::new(),
+        ),
         None,
         acyclic_harness::store::default_projection_read_limits(),
         acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
@@ -332,10 +334,13 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
                 revision: ResourceRevision::PrivateVolume {
                     volume: parent_private.clone(),
                     generation: host
-                        .resolve(&workspace_ref(
-                            provider.clone(),
-                            &parent_private.storage_name(&mut None)?,
-                        )?, None)
+                        .resolve(
+                            &workspace_ref(
+                                provider.clone(),
+                                &parent_private.storage_name(&mut None)?,
+                            )?,
+                            None,
+                        )
                         .await?
                         .generation,
                     paths: Vec::new(),
@@ -614,13 +619,16 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         Some(recovered.clone()),
     );
     assert_eq!(
-        host.resolve(&workspace_ref(
-            provider.clone(),
-            &uncertain
-                .preparation
-                .child_private_volume
-                .storage_name(&mut None)?,
-        )?, None)
+        host.resolve(
+            &workspace_ref(
+                provider.clone(),
+                &uncertain
+                    .preparation
+                    .child_private_volume
+                    .storage_name(&mut None)?,
+            )?,
+            None
+        )
         .await?
         .generation,
         recovered.child_private_generation,

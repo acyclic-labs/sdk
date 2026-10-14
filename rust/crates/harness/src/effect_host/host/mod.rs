@@ -12,19 +12,17 @@ pub struct ConversationEffectHost<P> {
 }
 impl<P: StreamProvider> ConversationEffectHost<P> {
     /// Binds the signed conversation and catalog in one shared host.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         stream: Arc<P>,
-        authority: Authority,
-        issuer: AuthorityIssuer,
-        scope: Scope,
+        binding: (Authority, AuthorityIssuer, Scope),
         schemas: SchemaRegistry,
         content: Arc<dyn ContentResidencyVerifier>,
         providers: EffectRegistry,
         custody: NativeCustody,
         work: NativeWork<'_>,
     ) -> Result<Arc<Self>> {
-        let mut host = Self {
+        let (authority, issuer, scope) = binding;
+        let host = Self {
             stream,
             authority,
             issuer,
@@ -34,6 +32,8 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             providers,
             native_metadata: custody,
         };
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let mut host = host;
         #[cfg(feature = "filesystem")]
         let mut io = history(work)?;
         #[cfg(feature = "filesystem")]

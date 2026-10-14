@@ -7,6 +7,7 @@ where
         Some(super::NativeMountSourceLineage {
             lazy_owner: None,
             lazy_root: None,
+            #[cfg(windows)]
             capture_gate: &self.capture_gate,
         })
     }
@@ -732,8 +733,7 @@ where
                 self.checkout
                     .publish(
                         crate::PublicationPermit::Unrestricted,
-                        work,
-                        work.cancellation(),
+                        crate::kernel::KernelAccounting::native(work, work.cancellation()),
                         Some(&self.cancellation),
                         &mut source_publication_guard(
                             self.native_callback_guard.clone(),

@@ -170,12 +170,19 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         }
         while journal.preimages.len() < journal.plan.edits.len() {
             self.verify_effect_context(&journal).await?;
-            let mut preimage = self
+            let preimage = self
                 .backend
-                .capture(journal.plan.edits.get(journal.preimages.len())
-                    .ok_or(MaterializationError::IncompatibleJournal)?)
+                .capture(
+                    journal
+                        .plan
+                        .edits
+                        .get(journal.preimages.len())
+                        .ok_or(MaterializationError::IncompatibleJournal)?,
+                )
                 .await
                 .map_err(MaterializationError::Backend)?;
+            #[cfg(not(target_arch = "wasm32"))]
+            let mut preimage = preimage;
             #[cfg(not(target_arch = "wasm32"))]
             if self.backend.native_work().is_some() {
                 let mut allocation = preimage
@@ -196,7 +203,11 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
             journal = self.persist(journal).await?;
             guard().await?;
         }
-        journal.phase = MaterializationPhase::Prepared;
+        journal.phase = if journal.plan.edits.is_empty() {
+            MaterializationPhase::Applied
+        } else {
+            MaterializationPhase::Prepared
+        };
         self.persist(journal).await.map_err(Into::into)
     }
     pub(super) async fn replay<E, F, Fut>(
@@ -259,9 +270,14 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
                 (journal.applied - journal.restored - 1) as usize
             };
             self.verify_allocation(&journal).await?;
-            let edit = journal.plan.edits.get(index)
+            let edit = journal
+                .plan
+                .edits
+                .get(index)
                 .ok_or(MaterializationError::IncompatibleJournal)?;
-            let preimage = journal.preimages.get(index)
+            let preimage = journal
+                .preimages
+                .get(index)
                 .ok_or(MaterializationError::IncompatibleJournal)?;
             let effect = match self
                 .backend

@@ -86,6 +86,7 @@ impl ViewOrigin {
     }
 
     /// Attributes changes to this origin for the returned scope.
+    #[cfg(any(target_os = "linux", target_os = "macos", test))]
     pub(super) fn enter(self) -> ViewOriginScope {
         ViewOriginScope(CURRENT_ORIGIN.replace(self))
     }
@@ -97,8 +98,10 @@ impl ViewOrigin {
 }
 
 /// Restores the thread's previous origin when dropped.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(super) struct ViewOriginScope(ViewOrigin);
 
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 impl Drop for ViewOriginScope {
     fn drop(&mut self) {
         CURRENT_ORIGIN.set(self.0);
@@ -189,7 +192,7 @@ impl ViewLedger {
         let custody = carrier.new_custody()?;
         carrier
             .with_work(|work| custody.claim(std::mem::size_of::<Self>() as u64, work))
-            .map_err(super::lazy::mount_demand_error)?;
+            .map_err(MountSourceError::from)?;
         Ok(Arc::new(Self {
             _custody: Some(custody),
             ..Self::default()
@@ -323,7 +326,7 @@ impl ViewLedger {
         stamp: ViewStamp,
         work: &mut crate::demand::DemandWork,
     ) -> Result<bool, MountSourceError> {
-        work.check().map_err(super::lazy::mount_demand_error)?;
+        work.check().map_err(MountSourceError::from)?;
         Ok(stamp.precedes_none_of(&self.unconfirmed)
             && self.reported_unchanged_since(path, file_id, stamp, work)?)
     }
@@ -373,8 +376,7 @@ impl ViewLedger {
         stamp: ViewStamp,
         work: &mut crate::demand::DemandWork,
     ) -> Result<bool, MountSourceError> {
-        work.charge(scan_work(3))
-            .map_err(super::lazy::mount_demand_error)?;
+        work.charge(scan_work(3)).map_err(MountSourceError::from)?;
         Ok(stamp.precedes_none_of(&self.unconfirmed)
             && stamp.precedes_none_of(&self.everything)
             && storage::unchanged_since(&self.nodes, stamp, [key_of(&file_id)]))
@@ -485,19 +487,17 @@ fn admitted_names<T>(
         }
     }
     work.charge(scan_work(items))
-        .map_err(super::lazy::mount_demand_error)?;
+        .map_err(MountSourceError::from)?;
     if scratch != 0 {
         work.claim_allocation(
             scratch,
             u64::from((scratch) != 0),
             crate::WorkCounters::UNCHARGED,
         )
-        .map_err(super::lazy::mount_demand_error)?;
+        .map_err(MountSourceError::from)?;
     }
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(read));
-    let released = work
-        .release(scratch)
-        .map_err(super::lazy::mount_demand_error);
+    let released = work.release(scratch).map_err(MountSourceError::from);
     match result {
         Ok(value) => released.map(|()| value),
         Err(panic) => std::panic::resume_unwind(panic),

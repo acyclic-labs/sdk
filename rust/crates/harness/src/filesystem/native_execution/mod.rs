@@ -119,7 +119,6 @@ where
                 reason: "working volume changed its original owner",
             });
         }
-        owner.verify(false, &mut Some(&mut &io)).await?;
         owner.require_volume_grant(volume, operation, &mut Some(&mut &io))?;
         for (mapping, prepared) in self.manifest().volumes.iter().zip(&self.volumes) {
             if &mapping.volume == volume && (operation == VolumeOperation::Read || mapping.writable)
@@ -162,7 +161,7 @@ where
                 .map_err(Error::from),
             VolumeView::Mounted { owner: mount, .. } => {
                 let work = volume_work.with_source_io_lease(mount.io_lease()?)?;
-                acyclic_fs::native_mount::native_file_io(
+                let result = acyclic_fs::native_mount::native_file_io(
                     mount.path(),
                     mount.identity()?,
                     path,
@@ -171,7 +170,12 @@ where
                     &work,
                     io,
                 )
-                .map_err(Error::from)
+                .map_err(Error::from);
+                if write {
+                    mount.capture_host_path(path, volume_work).and(result)
+                } else {
+                    result
+                }
             }
         };
         self.require_volume(owner, volume, operation, work).await?;

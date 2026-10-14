@@ -127,12 +127,14 @@ async fn bind_conversation(
 ) -> Result<()> {
     let mut aggregate = StreamAggregate::open(
         stream,
-        Authority {
-            kind: AggregateKind::Conversation,
-            id: id.into(),
-        },
-        issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
+        (
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: id.into(),
+            },
+            issuer.verifier(&mut None).expect("verifier copy"),
+            SchemaRegistry::new(),
+        ),
         None,
         acyclic_harness::store::default_projection_read_limits(),
         acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,

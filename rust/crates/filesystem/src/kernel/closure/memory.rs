@@ -145,40 +145,40 @@ impl<'a> ProofMeter<'a> {
         object: ObjectId,
         maximum: u64,
     ) -> Result<(crate::storage::ObjectRead, ProofGuard), crate::FsError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Self::Native {
-            original,
-            cancellation,
-        } = self
-        {
-            cancellation.check()?;
-            let mut work = crate::AuthorityWork::native(original, cancellation);
-            let read = store
-                .read(object, maximum, &mut work)
-                .await
-                .map_err(crate::kernel::file_read::read_store_error)?;
-            return Ok((read, self.empty_guard()?));
+        match self {
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Native {
+                original,
+                cancellation,
+            } => {
+                cancellation.check()?;
+                let mut work = crate::AuthorityWork::native(original, cancellation);
+                let read = store
+                    .read(object, maximum, &mut work)
+                    .await
+                    .map_err(crate::kernel::file_read::read_store_error)?;
+                Ok((read, self.empty_guard()?))
+            }
+            Self::Standalone { cancellation, .. } => {
+                cancellation.check()?;
+                let remaining = self.with_accounting(|accounting| accounting.remaining())?;
+                let mut work = crate::AuthorityWork::new(remaining, cancellation);
+                let result = store.read(object, maximum, &mut work).await;
+                self.owned(|accounting| {
+                    crate::kernel::file_read::accept_standalone_object_read(
+                        work.receipt(result),
+                        accounting,
+                    )
+                    .map(|(read, bytes)| {
+                        (
+                            read,
+                            crate::kernel::allocation::KernelOwnedAllocation::Standalone,
+                            bytes,
+                        )
+                    })
+                })
+            }
         }
-        let Self::Standalone { cancellation, .. } = self else {
-            unreachable!("native proof read returned on its original ledger")
-        };
-        cancellation.check()?;
-        let remaining = self.with_accounting(|accounting| accounting.remaining())?;
-        let mut work = crate::AuthorityWork::new(remaining, cancellation);
-        let result = store.read(object, maximum, &mut work).await;
-        self.owned(|accounting| {
-            crate::kernel::file_read::accept_standalone_object_read(
-                work.receipt(result),
-                accounting,
-            )
-            .map(|(read, bytes)| {
-                (
-                    read,
-                    crate::kernel::allocation::KernelOwnedAllocation::Standalone,
-                    bytes,
-                )
-            })
-        })
     }
 
     pub(super) fn decode_steps<T>(
