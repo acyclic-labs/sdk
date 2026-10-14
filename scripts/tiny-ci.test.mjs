@@ -25,11 +25,12 @@ test('only expiry cleanup is scheduled',()=>{
 test('every cache save is main-only, with no per-run keys or automatic branch saves',()=>{
  const mainOnly=(condition,label)=>{
   const expression=condition.replace(/^\$\{\{\s*|\s*\}\}$/g,'')
-   .replace(/steps\.([\w-]+)\.outputs\.([\w-]+)/g,(_,step,output)=>`steps[${JSON.stringify(step)}].outputs[${JSON.stringify(output)}]`);
+   .replace(/steps\.([\w-]+)\.outputs\.([\w-]+)/g,(_,step,output)=>`steps[${JSON.stringify(step)}].outputs[${JSON.stringify(output)}]`)
+   .replace(/steps\.([\w-]+)\.outcome\b/g,(_,step)=>`steps[${JSON.stringify(step)}].outcome`);
   for(const ref of ['refs/heads/topic','refs/pull/451/merge','refs/heads/main'])for(const event of ['workflow_dispatch','push','pull_request','pull_request_target']){
    if(ref==='refs/heads/main'&&!event.startsWith('pull_request'))continue;
    for(const hit of ['true','false'])for(const save of ['true','false'])for(const key of ['', 'key']){
-    const steps=new Proxy({}, {get:()=>({outputs:new Proxy({}, {get:(_,name)=>
+    const steps=new Proxy({}, {get:()=>({outcome:'success',outputs:new Proxy({}, {get:(_,name)=>
      name==='save'?save:name==='cache-hit'||name==='downloads-hit'?hit:key})})});
     assert.equal(runInNewContext(expression,{github:{ref,event_name:event},steps,cancelled:()=>false},{timeout:1000}),false,label+': off-main or PR save');
    }
@@ -70,13 +71,15 @@ test('main qualification saves completed downloads and tools after failure, but 
  for(const step of saves){
   assert.ok(step.if.includes('!cancelled()'),step.name);
   const expression=step.if.replace(/^\$\{\{\s*|\s*\}\}$/g,'')
-   .replace(/steps\.([\w-]+)\.outputs\.([\w-]+)/g,(_,id,output)=>`steps[${JSON.stringify(id)}].outputs[${JSON.stringify(output)}]`);
-  for(const cancelled of [false,true])for(const key of ['', 'key'])for(const hit of ['true','false']){
-   const steps=new Proxy({}, {get:()=>({outputs:{'cache-primary-key':key,'cache-hit':hit}})});
+   .replace(/steps\.([\w-]+)\.outputs\.([\w-]+)/g,(_,id,output)=>`steps[${JSON.stringify(id)}].outputs[${JSON.stringify(output)}]`)
+   .replace(/steps\.([\w-]+)\.outcome\b/g,(_,id)=>`steps[${JSON.stringify(id)}].outcome`);
+  for(const cancelled of [false,true])for(const key of ['', 'key'])for(const hit of ['true','false'])for(const outcome of ['success','failure','skipped']){
+   const steps=new Proxy({}, {get:()=>({outcome,outputs:{'cache-primary-key':key,'cache-hit':hit}})});
    const saved=runInNewContext(expression,{github:{ref:'refs/heads/main',event_name:'workflow_dispatch'},steps,cancelled:()=>cancelled,success:()=>false},{timeout:1000});
-   assert.equal(saved,!cancelled&&key!==''&&hit!=='true',step.name);
+   assert.equal(saved,!cancelled&&key!==''&&hit!=='true'&&(step.name!=='Save Windows ARM64 compiler'||outcome==='success'),step.name);
   }
  }
+ assert.equal(action.runs.steps.find(step=>step.name==='Install Windows ARM64 compiler').id,'llvm-install');
 });
 
 test('all publishers use the one qualified source and explicit artifacts',()=>{
