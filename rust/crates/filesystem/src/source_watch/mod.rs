@@ -61,7 +61,7 @@ pub(super) fn reserve_cleanup_credits(
     }
     Ok(())
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[allow(
     clippy::expect_used,
     reason = "Cancellation refunds only credits reserved by the paired reservation function."
@@ -72,7 +72,7 @@ pub(super) fn cancel_cleanup_credits(work: &mut DemandWork, delta: WorkCounters)
             .expect("balanced cleanup credit");
     }
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) fn record_cleanup_credits(
     work: &mut DemandWork,
     delta: WorkCounters,
