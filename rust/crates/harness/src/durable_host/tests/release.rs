@@ -6,12 +6,8 @@ fn work(
     budget: acyclic_fs::WorkBudget,
     token: &acyclic_fs::CancellationToken,
 ) -> Result<acyclic_fs::NativeMaterializationWork> {
-    acyclic_fs::NativeMaterializationWork::new(budget, token).map_err(|(cause, work)| {
-        Error::NativeConstruction {
-            cause,
-            work: work,
-        }
-    })
+    acyclic_fs::NativeMaterializationWork::new(budget, token)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work: work })
 }
 
 impl<P, A, O> Fixture<P, A, O>
@@ -43,7 +39,7 @@ where
             Some(io),
         )?;
         let workflow = crate::filesystem::FilesystemWorkflowJournal::for_task(
-            self.host.journal_owner(task, &fence, Some(io)).await?,
+            Arc::new(self.host.journal_owner(task, &fence, Some(io)).await?),
             self.files.clone(),
             &self.storage,
             &self.issuer.verifier(&mut None)?,
