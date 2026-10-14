@@ -10,7 +10,7 @@ const workflow = YAML.parse(readFileSync(".github/workflows/release-acyclic.yml"
 test("native compiler caches refresh each run while restoring the previous working set", () => {
   const action = YAML.parse(readFileSync(".github/actions/rust-build-cache/action.yml", "utf8"));
   const compiler = action.runs.steps.find(step => step.name === "Restore compiler output");
-  assert.equal(compiler.uses, "actions/cache@caa296126883cff596d87d8935842f9db880ef25");
+  assert.equal(compiler.uses, "actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25");
   assert.equal(compiler.with.path, "${{ runner.temp }}/sccache");
   const [matchingInputs, matchingTarget] = compiler.with["restore-keys"].trim().split("\n");
   assert.equal(compiler.with.key, matchingInputs + "${{ github.run_id }}-${{ github.run_attempt }}");
@@ -27,6 +27,65 @@ test("native compiler caches refresh each run while restoring the previous worki
   const downloads = action.runs.steps.find(step => step.name === "Restore Cargo downloads");
   assert.equal(downloads.with.key, "rust-deps-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}");
   assert.doesNotMatch(downloads.with.key, /run_id|run_attempt/);
+});
+
+test("native restore summaries use matched-key outputs and post-build saves preserve cache versions", () => {
+  const action = YAML.parse(readFileSync(".github/actions/rust-build-cache/action.yml", "utf8"));
+  const summary = action.runs.steps.find(step => step.name === "Summarize cache restores");
+  for (const [id, label] of [["downloads", "DOWNLOAD"], ["compiler", "COMPILER"]]) {
+    assert.equal(summary.env[label + "_REQUESTED"], `\${{ steps.${id}.outputs.cache-primary-key }}`);
+    assert.equal(summary.env[label + "_MATCHED"], `\${{ steps.${id}.outputs.cache-matched-key }}`);
+    assert.equal(action.outputs[id + "-key"].value, `\${{ steps.${id}.outputs.cache-primary-key }}`);
+    assert.equal(action.outputs[id + "-hit"].value, `\${{ steps.${id}.outputs.cache-hit }}`);
+  }
+  assert.ok(summary.run.includes('tee -a "$GITHUB_STEP_SUMMARY"'));
+  assert.ok(summary.run.includes('${DOWNLOAD_MATCHED:-none}'));
+  assert.ok(summary.run.includes('${COMPILER_MATCHED:-none}'));
+  const hosts = YAML.parse(readFileSync(".github/workflows/agent-host-qualification.yml", "utf8"));
+  for (const steps of [workflow.jobs.build.steps, hosts.jobs.qualify.steps]) {
+    const restore = steps.find(step => step.uses === "./.github/actions/rust-build-cache");
+    assert.equal(restore.id, "rust-cache");
+    for (const [id, name] of [["compiler", "Save native compiler output"], ["downloads", "Save native Cargo downloads"]]) {
+      const save = steps.find(step => step.name === name);
+      const cached = action.runs.steps.find(step => step.id === id);
+      assert.equal(save.uses, "actions/cache/save@caa296126883cff596d87d8935842f9db880ef25");
+      assert.equal(save.with.path, cached.with.path);
+      assert.equal(save.with.key, `\${{ steps.rust-cache.outputs.${id}-key }}`);
+      assert.equal(save.if, `steps.rust-cache.outputs.${id}-key != '' && steps.rust-cache.outputs.${id}-hit != 'true'`);
+      assert.ok(steps.indexOf(save) > steps.findLastIndex(step => step.run));
+      assert.ok(steps.indexOf(save) > steps.findLastIndex(step => step.uses?.startsWith("actions/upload-artifact@")));
+    }
+  }
+});
+
+test("native restore summary prints exact requested and matched keys, including misses", () => {
+  const action = YAML.parse(readFileSync(".github/actions/rust-build-cache/action.yml", "utf8"));
+  const summary = action.runs.steps.find(step => step.name === "Summarize cache restores");
+  mkdirSync(".tools", { recursive: true });
+  const root = mkdtempSync(".tools/cache-restore-keys-");
+  const bash = process.platform === "win32" ? join(process.env.ProgramFiles ?? "C:/Program Files", "Git", "bin", "bash.exe") : "bash";
+  try {
+    for (const matched of ["compiler-current", "compiler-previous-run", ""]) {
+      const path = join(root, "summary.md");
+      writeFileSync(path, "");
+      const result = spawnSync(bash, ["-c", summary.run], {
+        encoding: "utf8", timeout: 60_000,
+        env: { ...process.env, GITHUB_STEP_SUMMARY: resolve(path).replaceAll("\\", "/"),
+          DOWNLOAD_REQUESTED: "downloads-requested", DOWNLOAD_MATCHED: "downloads-restored",
+          COMPILER_REQUESTED: "compiler-current", COMPILER_MATCHED: matched },
+      });
+      assert.ifError(result.error);
+      assert.equal(result.status, 0, result.stderr);
+      const expected = `| Compiler output | compiler-current | ${matched || "none"} |`;
+      for (const output of [result.stdout, readFileSync(path, "utf8")]) {
+        assert.ok(output.includes("| Cargo downloads | downloads-requested | downloads-restored |"));
+        assert.ok(output.includes(expected));
+      }
+    }
+  } finally {
+    assert.ok(resolve(root).startsWith(resolve(".tools") + sep));
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("native cache snapshot runs before leaving the build step and preserves its result", () => {

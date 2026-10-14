@@ -4,6 +4,19 @@ inputs:
   scope:
     description: Target and profile boundary for compiler output
     required: true
+outputs:
+  downloads-key:
+    description: Primary Cargo download cache key for the post-build save.
+    value: ${{ steps.downloads.outputs.cache-primary-key }}
+  downloads-hit:
+    description: Whether the Cargo download restore matched the primary key.
+    value: ${{ steps.downloads.outputs.cache-hit }}
+  compiler-key:
+    description: Primary compiler cache key for the post-build save.
+    value: ${{ steps.compiler.outputs.cache-primary-key }}
+  compiler-hit:
+    description: Whether the compiler restore matched the primary key.
+    value: ${{ steps.compiler.outputs.cache-hit }}
 runs:
   using: composite
   steps:
@@ -14,7 +27,8 @@ runs:
         echo "SCCACHE_CACHE_SIZE=2G" >> "$GITHUB_ENV"
         echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
     - name: Restore Cargo downloads
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      id: downloads
+      uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         # Cargo unpacks sources from the compressed archives faster than a
         # cache restores thousands of extracted files.
@@ -28,13 +42,25 @@ runs:
     # Exact hits skip the post-job save. Refresh each run's working set so
     # new source objects survive even when manifests have not changed.
     - name: Restore compiler output
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      id: compiler
+      uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: ${{ runner.temp }}/sccache
         key: rust-objects-v2-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', '**/Cargo.toml') }}-${{ github.run_id }}-${{ github.run_attempt }}
         restore-keys: |
           rust-objects-v2-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', '**/Cargo.toml') }}-
           rust-objects-v2-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-
+    - name: Summarize cache restores
+      shell: bash
+      env:
+        DOWNLOAD_REQUESTED: ${{ steps.downloads.outputs.cache-primary-key }}
+        DOWNLOAD_MATCHED: ${{ steps.downloads.outputs.cache-matched-key }}
+        COMPILER_REQUESTED: ${{ steps.compiler.outputs.cache-primary-key }}
+        COMPILER_MATCHED: ${{ steps.compiler.outputs.cache-matched-key }}
+      run: |
+        printf '### Rust build cache restores\n\n| Cache | Requested key | Matched key |\n| --- | --- | --- |\n| Cargo downloads | %s | %s |\n| Compiler output | %s | %s |\n\n' \
+          "$DOWNLOAD_REQUESTED" "${DOWNLOAD_MATCHED:-none}" \
+          "$COMPILER_REQUESTED" "${COMPILER_MATCHED:-none}" | tee -a "$GITHUB_STEP_SUMMARY"
     - name: Enable compiler cache
       uses: mozilla-actions/sccache-action@d651010b8da762cde178750d8eda7b5febfe147a # v0.0.9
       with:
