@@ -28,9 +28,10 @@ test("Windows Rust tests run independently without changing workspace or ignored
   assert.ok(body.includes('cargo nextest run --workspace --all-features --locked --profile ci --test-threads "$env:RUST_TEST_THREADS"'));
   assert.ok(body.includes("cargo test --workspace --all-features --locked --doc"));
   assert.equal((body.match(/--target-dir "\$CargoTargetDir" @testProfile/g) ?? []).length, 2);
-  const settings = [...body.matchAll(/'--config', '([^']+)'/g)].map(match => match[1]);
-  assert.deepEqual(settings, ["profile.test.opt-level=0", 'profile.test.package."*".opt-level=1',
-    "profile.test.package.acyclic-fs.opt-level=1", "profile.test.package.sha2.opt-level=3", "profile.test.package.blake3.opt-level=3"]);
+  assert.ok(body.includes("cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json"));
+  assert.ok(body.includes("$package.id -in $metadata.workspace_members -and $package.name -ne 'acyclic-fs'"));
+  assert.ok(body.includes(`'profile.test.package."' + $package.name + '".opt-level=0'`));
+  assert.doesNotMatch(body, /profile\.test\.opt-level|profile\.test\.package\."\*"/);
   assert.doesNotMatch(body, /DEBUG_ASSERTIONS|OVERFLOW_CHECKS|CARGO_PROFILE_TEST_OPT_LEVEL|Start-Process/);
   assert.ok(body.includes("nextest/ci/junit.xml"));
   assert.ok(body.includes('Copy-Item -LiteralPath $junit -Destination "$env:SDK_TEMP_DIR/observability/rust.xml"'));

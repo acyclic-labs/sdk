@@ -63,14 +63,16 @@ switch ($Lane) {
         Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
         # Uncached workspace compilation dominates this lane. Keep dependency
         # artifacts and the hot filesystem/hash paths at their existing settings.
-        $testProfile = @(
-            '--config', 'profile.test.opt-level=0',
-            '--config', 'profile.test.package."*".opt-level=1',
-            '--config', 'profile.test.package.acyclic-fs.opt-level=1',
-            '--config', 'profile.test.package.sha2.opt-level=3',
-            '--config', 'profile.test.package.blake3.opt-level=3'
-        )
         try {
+            $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
+            $testProfile = @(
+                foreach ($package in $metadata.packages | Sort-Object name) {
+                    if ($package.id -in $metadata.workspace_members -and $package.name -ne 'acyclic-fs') {
+                        '--config'
+                        'profile.test.package."' + $package.name + '".opt-level=0'
+                    }
+                }
+            )
             try {
                 cargo nextest run --workspace --all-features --locked --profile ci --test-threads "$env:RUST_TEST_THREADS" --target-dir "$CargoTargetDir" @testProfile
             } finally {
