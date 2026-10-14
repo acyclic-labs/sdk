@@ -4,6 +4,50 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join, resolve, sep } from "node:path";
 import test from "node:test";
 
+test("packaged Harness tests and native consumer use the private target despite an inherited shared target", () => {
+  const source = readFileSync("scripts/check-harness-package.sh", "utf8").replaceAll("\r\n", "\n");
+  const start = source.indexOf('"$cargo_bin" test --manifest-path');
+  const end = source.indexOf('mkdir -p "$output"', start);
+  assert.ok(start >= 0 && end > start);
+  const commands = source.slice(start, end);
+  const bash = process.platform === "win32" ? join(process.env.ProgramFiles ?? "C:/Program Files", "Git", "bin", "bash.exe") : "bash";
+  mkdirSync(".tools", { recursive: true });
+  for (const status of [0, 13]) {
+    const directory = mkdtempSync(".tools/harness-target-");
+    try {
+      const result = spawnSync(bash, ["-c", `set -euo pipefail
+work="$SDK_TARGET_FIXTURE"
+cargo_bin=cargo
+harness_version=0.2.0
+cargo_package_target="$work/package-target"
+export CARGO_TARGET_DIR="$work/shared-target"
+export RUST_TEST_THREADS=16
+cargo() {
+  local action="$1" previous="" argument target=""
+  for argument in "$@"; do
+    if [[ "$previous" == --target-dir ]]; then target="$argument"; fi
+    previous="$argument"
+  done
+  [[ "$target" == "$cargo_package_target" && "$target" != "$CARGO_TARGET_DIR" ]]
+  printf '%s\\n' "$action" >> "$work/calls"
+  if [[ "$action" == test ]]; then
+    [[ "$*" == "test --manifest-path acyclic-harness-0.2.0/Cargo.toml --all-features --offline --target-dir $cargo_package_target -- --test-threads=16" ]]
+    return ${status}
+  fi
+  [[ "$*" == "run --manifest-path acyclic-harness-0.2.0/Cargo.toml --all-features --offline --target-dir $cargo_package_target --example approved-native-process" ]]
+}
+${commands}
+`], { encoding: "utf8", timeout: 60_000, env: { ...process.env, SDK_TARGET_FIXTURE: directory.replaceAll("\\", "/") } });
+      assert.ifError(result.error);
+      assert.equal(result.status, status, result.stderr);
+      assert.equal(readFileSync(join(directory, "calls"), "utf8"), status ? "test\n" : "test\nrun\n");
+    } finally {
+      assert.ok(resolve(directory).startsWith(resolve(".tools") + sep));
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+});
+
 test("Harness packaging stages the qualified bytes and rejects missing WASM before staging", () => {
   const source = readFileSync("scripts/check-harness-package.sh", "utf8");
   assert.doesNotMatch(source, /build-wasm\.mjs|bun x tsc|bun scripts\/check-metadata\.mjs/);
@@ -73,8 +117,9 @@ test("packaged Harness tests retain their inventory, logs and failure status at 
 work='${root}'
 harness_version=0.2.0
 cargo_bin=cargo
+cargo_package_target="$work/package-target"
 cargo() {
-  [[ "$*" == 'test --manifest-path acyclic-harness-0.2.0/Cargo.toml --all-features --offline -- --test-threads=${workers ?? "1"}' ]]
+  [[ "$*" == "test --manifest-path acyclic-harness-0.2.0/Cargo.toml --all-features --offline --target-dir $cargo_package_target -- --test-threads=${workers ?? "1"}" ]]
   [[ "$RUST_MIN_STACK" -ge 8388608 ]]
   printf 'test fixture ... ok\\n'
   return ${status}

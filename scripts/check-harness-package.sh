@@ -134,8 +134,10 @@ cd "$work/crates"
 # Tokio worker running the native consumer within the same stack capacity.
 export RUST_MIN_STACK="${RUST_MIN_STACK:-8388608}"
 "$cargo_bin" test --manifest-path "acyclic-harness-$harness_version/Cargo.toml" --all-features --offline \
+  --target-dir "$cargo_package_target" \
   -- --test-threads="${RUST_TEST_THREADS:-1}" 2>&1 | tee "$work/rust-package-test.log"
 "$cargo_bin" run --manifest-path "acyclic-harness-$harness_version/Cargo.toml" --all-features --offline \
+  --target-dir "$cargo_package_target" \
   --example approved-native-process 2>&1 | tee "$work/rust-native-consumer.log"
 
 mkdir -p "$output"
