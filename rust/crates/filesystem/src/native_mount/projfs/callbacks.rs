@@ -193,11 +193,11 @@ impl CallbackGate {
 
 pub(super) fn flush_callback_gate(
     callbacks: &CallbackGate,
-    failure: Arc<Mutex<PostOperationFailures>>,
+    failure: &Mutex<PostOperationFailures>,
     capture: impl Fn(&[(MountPath, bool)]) -> Result<(), MountSourceError>,
 ) -> Result<(), NativeMountError> {
     callbacks.drain();
-    let mut pending = lock_recover(failure.as_ref())
+    let mut pending = lock_recover(failure)
         .pending_captures
         .iter()
         .map(|(path, capture)| (path.clone(), capture.serial, capture.subtree))
@@ -214,7 +214,7 @@ pub(super) fn flush_callback_gate(
         .collect::<Vec<_>>();
     let result = capture(&paths);
     {
-        let mut failure = lock_recover(failure.as_ref());
+        let mut failure = lock_recover(failure);
         for (path, serial, _) in pending {
             if failure
                 .pending_captures
@@ -237,7 +237,7 @@ pub(super) fn flush_callback_gate(
         }
     }
     callbacks.drain();
-    let failure = lock_recover(failure.as_ref());
+    let failure = lock_recover(failure);
     let failure = failure.unreplayable.clone().or_else(|| {
         failure
             .pending_captures

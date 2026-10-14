@@ -24,7 +24,11 @@ impl NativeSourceWatch {
         let mut shared = None;
         let mut bytes = 0;
         let result = (|| {
-            let mut active = super::super::prepare_native_cleanup_credit(work, io_work(3, 10))?;
+            let mut active = work
+                .native_source_work()
+                .map(|original| original.allocation_work().reserve_work(io_work(3, 10)))
+                .transpose()
+                .map_err(crate::native_name::original_name_error)?;
             let terminal = active
                 .as_mut()
                 .map(|credit| credit.partition_work(io_work(1, 5), None))

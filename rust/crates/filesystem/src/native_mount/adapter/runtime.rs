@@ -109,8 +109,12 @@ impl CallbackRuntime {
         work.check()
             .map_err(crate::native_mount::lazy::mount_demand_error)?;
         let bytes = std::mem::size_of::<ParkedCallback>() as u64;
-        work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)
-            .map_err(crate::native_mount::lazy::mount_demand_error)?;
+        work.claim_allocation(
+            bytes,
+            u64::from((bytes) != 0),
+            crate::WorkCounters::UNCHARGED,
+        )
+        .map_err(crate::native_mount::lazy::mount_demand_error)?;
         Ok(PreparedCallbackWait {
             parked: Arc::new(ParkedCallback {
                 woken: StdMutex::new(false),
@@ -142,9 +146,10 @@ impl CallbackRuntime {
         prepared: PreparedCallbackWait,
         create: impl FnOnce() -> F,
     ) -> F::Output {
+        let PreparedCallbackWait { parked, .. } = prepared;
         self.enter(|| {
             let mut future = std::pin::pin!(tokio::task::unconstrained(create()));
-            Self::poll(future.as_mut(), prepared.parked)
+            Self::poll(future.as_mut(), &parked)
         })
     }
 
@@ -189,12 +194,12 @@ impl CallbackRuntime {
                 changed: std::sync::Condvar::new(),
                 _allocation: None,
             });
-            Ok(Self::poll(future, parked))
+            Ok(Self::poll(future, &parked))
         })
     }
 
-    fn poll<F: Future + Unpin>(mut future: F, parked: Arc<ParkedCallback>) -> F::Output {
-        let waker = Waker::from(Arc::clone(&parked));
+    fn poll<F: Future + Unpin>(mut future: F, parked: &Arc<ParkedCallback>) -> F::Output {
+        let waker = Waker::from(Arc::clone(parked));
         let mut context = Context::from_waker(&waker);
         loop {
             if let Poll::Ready(output) = Pin::new(&mut future).poll(&mut context) {

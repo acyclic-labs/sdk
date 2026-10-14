@@ -495,18 +495,19 @@ impl Projector {
                 let Some(written) = lock_recover(&self.state).pending.get(&path).copied() else {
                     return Ok(());
                 };
-                let replaced = replace_written(projection, &path, &written);
+                let mut current = written;
+                let replaced = replace_written(projection, &path, &mut current);
                 let mut state = lock_recover(&self.state);
                 match replaced {
-                    Ok(Replaced::Rewritten(current)) => {
+                    Ok(Placed::Owned(_) | Placed::Unowned) => {
                         state.record_attempt(&path, &written, Some(current));
                         Ok(())
                     }
-                    Ok(Replaced::Released) => {
+                    Ok(Placed::Nothing) => {
                         state.record_attempt(&path, &written, None);
                         Ok(())
                     }
-                    Ok(Replaced::Busy) => Ok(()),
+                    Ok(Placed::Retry) => Ok(()),
                     Err(error) => {
                         state.record_attempt(&path, &written, None);
                         Err(error)

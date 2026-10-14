@@ -154,12 +154,6 @@ impl ViewObserver for Projector {
     }
 }
 
-pub(super) enum Replaced {
-    Rewritten(WrittenEntry),
-    Released,
-    Busy,
-}
-
 pub(super) fn rebased(path: &MountPath, from: &MountPath, to: &MountPath) -> Option<MountPath> {
     projfs_path_suffix(path, from).map(|suffix| {
         suffix

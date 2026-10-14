@@ -5,7 +5,6 @@
 use super::HostChange;
 use super::{Delivery, HostChangeWide};
 use crate::demand::{DemandError, DemandWork, SourceDemandReadWork, SourcePayloadOwnership};
-use crate::native_host::NativeHostWork;
 use crate::performance::WorkCounters;
 use std::io;
 use std::mem::size_of;

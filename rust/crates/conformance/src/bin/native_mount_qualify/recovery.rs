@@ -69,7 +69,12 @@ fn crash_recovery_inner(crash_root: &Path, mount: &Path, ready: &Path) -> Result
         }
         // The same owner first detaches without deleting the authored cache,
         // then releases its actual fence for the explicit preserving operation.
-        recovery.detach()?;
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .map_err(|(error, _)| error)?;
+        recovery.detach(&work)?;
         let preserved = recover_native_mount_destination_preserving_residue(mount)?
             .ok_or("crash recovery failed to preserve the stale ProjFS root")?;
         if !preserved.is_dir() || mount.exists() {

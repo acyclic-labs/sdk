@@ -2,8 +2,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
     async fn install_change(
         &self,
         candidate: CheckoutCandidate<A, O>,
-        epoch: u64,
-        stamp: ViewStamp,
         change: ViewChange<'_>,
         work: &crate::NativeMaterializationWork,
         lifetime: &CancellationToken,
@@ -13,8 +11,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         let publication = self
             .install_candidate(
                 candidate,
-                epoch,
-                stamp,
                 &mut NativeDemandCarrier::Native(work),
                 cancellation,
                 Some(lifetime),
@@ -52,8 +48,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
     pub(super) async fn install_candidate(
         &self,
         candidate: CheckoutCandidate<A, O>,
-        epoch: u64,
-        stamp: ViewStamp,
         carrier: &mut NativeDemandCarrier<'_>,
         cancellation: &CancellationToken,
         lifetime: Option<&CancellationToken>,
@@ -65,13 +59,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         ) -> Result<bool, MountSourceError>,
     ) -> Result<Option<MountPublication>, MountSourceError> {
         carrier.check(cancellation, lifetime)?;
-        if self.view_gate.generation() != epoch || self.ledger.stamp() != stamp {
+        if self.view_gate.generation() != candidate.epoch || self.ledger.stamp() != candidate.stamp
+        {
             return Ok(None);
         }
         // Observers may reenter the source, so dispatch before taking its write lease.
         record(carrier)?;
         let mut state = await_lock(self.lock(), carrier, cancellation, lifetime).await?;
-        if self.view_gate.generation() != epoch
+        if self.view_gate.generation() != candidate.epoch
             || state.publication_operation.is_some()
                 && state.publication_operation != candidate.operation
         {
