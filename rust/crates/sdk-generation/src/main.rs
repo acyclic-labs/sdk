@@ -2599,7 +2599,6 @@ fn collect_source_files_inner(
                     | "rust/crates/machines/src/generated/acyclic-machines-v1.bin"
                     | "rust/crates/objects/src/generated/acyclic-objects-v2.bin"
                     | "rust/crates/stream/proto/stream/v2/stream_descriptor.bin"
-                    | "rust/crates/workers/src/generated/acyclic-workers-v1.bin"
             );
             let plugin_install_asset = matches!(
                 relative_string.as_str(),

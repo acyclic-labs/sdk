@@ -329,6 +329,14 @@ fn actual_codex_binary_executes_the_scripted_scenario() {
         "codex-child-isolation.txt",
     );
     let mut host = codex_host_command(&codex, temporary.path(), &workspace, &provider);
+    let mut path = vec![npm_command_directory(temporary.path(), &package.native)];
+    if let Some(inherited) = std::env::var_os("PATH") {
+        path.extend(std::env::split_paths(&inherited));
+    }
+    host.env(
+        "PATH",
+        std::env::join_paths(path).expect("packaged Acyclic PATH"),
+    );
     let BoundedOutput {
         output,
         expired,
@@ -374,6 +382,18 @@ fn actual_codex_binary_executes_the_scripted_scenario() {
             },
         ],
     );
+}
+
+// npm links the package's `acyclic-plugin` command to the native executable.
+fn npm_command_directory(temporary: &Path, native: &Path) -> std::path::PathBuf {
+    let commands = temporary.join("command-bin");
+    fs::create_dir_all(&commands).expect("command directory");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(native, commands.join("acyclic-plugin"))
+        .expect("acyclic-plugin command");
+    #[cfg(windows)]
+    fs::hard_link(native, commands.join("acyclic-plugin.exe")).expect("acyclic-plugin command");
+    commands
 }
 
 #[test]

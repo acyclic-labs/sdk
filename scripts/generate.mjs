@@ -7,7 +7,7 @@ import { generatedDescriptors, writeChanged } from "./generated-bindings.mjs";
 import { filesystemDescriptorDigestSource } from "./filesystem-descriptor-digest.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-for (const key of ["actors", "workers", "stream"]) {
+for (const key of ["actors", "stream"]) {
   const facts = spawnSync("cargo", ["run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", "native-family", root, key], { cwd: root, encoding: "utf8" });
   if (facts.error) throw facts.error;
   if (facts.status !== 0) throw new Error(facts.stderr || `native-family ${key} generation failed`);
@@ -29,13 +29,6 @@ const actors = spawnSync(process.execPath, [join(root, "scripts/generate-actors.
 });
 if (actors.error) throw actors.error;
 if (actors.status !== 0) process.exit(actors.status ?? 1);
-
-const workers = spawnSync("cargo", ["run", "--offline", "--locked", "-p", "acyclic-workers", "--example", "workers-http-routes", "--", join(root, "proto"), join(root, "typescript/packages/workers/src/generated/semantic")], { cwd: root, stdio: "inherit" });
-if (workers.error) throw workers.error;
-if (workers.status !== 0) process.exit(workers.status ?? 1);
-run(["format", "-w", join(root, "proto/workers/v1/workers.proto")]);
-await serviceGenerate("Workers", join(root, "typescript/packages/workers/src/generated"), join(root, "typescript/packages/workers/src/generated/workers-service.ts"));
-copyFileSync(join(root, "typescript/packages/actors/src/generated/readonly.ts"), join(root, "typescript/packages/workers/src/generated/readonly.ts"));
 
 run(["generate"]);
 for (const [source, destination] of generatedDescriptors) {

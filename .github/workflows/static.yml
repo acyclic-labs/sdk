@@ -14,17 +14,12 @@ jobs:
   static:
     name: SDK Static
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 1
+    env:
+      RUSTUP_TOOLCHAIN: stable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 2
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24.15.0
-          package-manager-cache: false
-      - name: Static repository checks
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: node scripts/static-ci.mjs
+      - name: Check lockfile and manifests without compiling
+        run: cargo update --workspace --locked

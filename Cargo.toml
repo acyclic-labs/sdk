@@ -2,6 +2,7 @@
 # Publishable SDK families, private qualification/binding crates, and the
 # native product targets are listed explicitly so retired crates cannot return.
 members = [
+  "examples/sdk-services",
   "rust/crates/actors",
   "rust/crates/actors-napi",
   "rust/crates/actors-wasm",
@@ -73,9 +74,9 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 rmcp = { version = "=3.5.1", default-features = false }
 rusqlite = { version = "0.40", features = ["bundled"] }
 rustix = { version = "1.1.4", features = ["process"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std"] }
 rustls-platform-verifier = "=0.7.1"
-ruzstd = "0.9.0"
+ruzstd = "0.9.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_bytes = "0.11.19"
 serde_json = "1.0.145"

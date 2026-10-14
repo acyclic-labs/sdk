@@ -7,7 +7,7 @@ import { fixture } from "./fixtures/package.mjs";
 
 test("archive admission binds all payload bytes to the maintained producer and Rust authority", t => {
   const f = fixture(t), admitted = readPackage(f.args);
-  assert.equal(admitted.payload.size, 10);
+  assert.equal(admitted.payload.size, f.payload.size);
   for (const [name, bytes] of admitted.payload) assert.deepEqual(bytes, f.payload.get(name));
 });
 

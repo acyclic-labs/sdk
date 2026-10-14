@@ -4,7 +4,7 @@ Acyclic gives supported native coding-agent subagents independent, recursively
 forked distributed-filesystem workspaces. Recognized filesystem tools are
 routed into the child mount; process-level confinement is a separate,
 host-and-platform-qualified capability. It adds a familiar local-history interface
-through `acyclic git`; it never intercepts bare `git` and never changes the
+through `acyclic-plugin git`; it never intercepts bare `git` and never changes the
 filesystem SDK's fork, lease, conflict, merge, or recovery semantics.
 
 ## Install
@@ -14,7 +14,7 @@ binary and the Codex plugin assets:
 
 ```sh
 npm install -g @acyclic-labs/plugin
-acyclic install codex
+acyclic-plugin install codex
 ```
 
 Rust users can install the standalone executable from crates.io:
@@ -24,32 +24,50 @@ cargo install --locked acyclic-plugin
 acyclic --help
 ```
 
+Cargo names the executable `acyclic`, while the npm package and the guidance
+Acyclic gives agents call it `acyclic-plugin`. Link that name to it so agents
+can run it:
+
+```sh
+ln -s "$(command -v acyclic)" "$(dirname "$(command -v acyclic)")/acyclic-plugin"
+```
+
+On Windows, in PowerShell:
+
+```powershell
+$acyclic = (Get-Command acyclic).Source
+New-Item -ItemType HardLink -Path (Join-Path (Split-Path $acyclic) "acyclic-plugin.exe") -Target $acyclic
+```
+
 The Cargo installation provides the standalone CLI, service, hook runner, and
 MCP bridge. The npm package remains the distribution that also carries the
 Codex plugin, marketplace assets, and native qualification receipts for tagged
 release binaries. A source-built Cargo binary remains uncertified until that
 exact executable completes the native-mount qualification.
 
-Native hooks and the npm-installed `acyclic` command both run the installed
+Native hooks and the npm-installed `acyclic-plugin` command both run the installed
 Acyclic binary directly: installation verifies it against the release checksum
-once, and no interpreter starts on each run. Install scripts must be enabled.
+once, and no interpreter starts on each run. When the package manager skipped
+install scripts, as npm 12 does by default, the command's first run completes
+the installation.
 Codex runs command hooks through the session shell (`PowerShell` on Windows), so
 the Codex plugin delivers its per-prompt, per-tool, and subagent hooks to
 `acyclic __mcp`, a hook-only MCP server that Codex keeps connected for each
 thread and that lists no tools to the model; only `SessionStart`, which starts
 the service, and `SessionEnd` remain command hooks. Acyclic adds no
-model-visible MCP server or second command implementation to shell-capable
-hosts. Codex plugins do not inject
+workspace MCP server or second command implementation to shell-capable
+hosts. The separate [identity MCP server](identity-mcp.md) exposes customer
+login and identity operations with `acyclic-plugin identity-mcp`. Codex plugins do not inject
 arbitrary executables into `PATH`, so install the npm package globally when
-humans or agent shell commands need the `acyclic` executable.
+humans or agent shell commands need the `acyclic-plugin` command.
 
-`acyclic install <host>` changes only per-user host
+`acyclic-plugin install <host>` changes only per-user host
 configuration. Pass `--project` explicitly before Acyclic may create project
 configuration. No `init` command or repository marker exists.
 
 Supported target names are `codex`, `claude-code`, `cursor`, `copilot`,
 `opencode`, `vscode`, `claude-desktop`, `copilot-cloud`, `pydantic-ai`, and `pi`.
-`acyclic install --detected` installs detected local targets. Process
+`acyclic-plugin install --detected` installs detected local targets. Process
 confinement is certified only after that host/platform's escape suite passes;
 native-mount qualification alone does not make that claim. MCP-only and
 provisional targets say so at session start.
@@ -60,23 +78,31 @@ Normal commands and filesystem tools are transparently redirected to a child
 mount. Acyclic itself has this public command surface:
 
 ```text
-acyclic git <git-style argv...>
-acyclic agents
-acyclic discard agents/<ref>
-acyclic install <host> [--project]
-acyclic install --detected
-acyclic uninstall <host> [--purge]
-acyclic doctor [--json]
+acyclic-plugin git <git-style argv...>
+acyclic-plugin agents
+acyclic-plugin discard agents/<ref>
+acyclic-plugin install <host> [--project]
+acyclic-plugin install --detected
+acyclic-plugin uninstall <host> [--purge]
+acyclic-plugin doctor [--json]
+acyclic-plugin login [--json]
+acyclic-plugin signup --agent [--json]
+acyclic-plugin whoami [--json]
+acyclic-plugin orgs [--json]
+acyclic-plugin refresh [--json]
+acyclic-plugin logout [--json]
+acyclic-plugin bearer --org ID --output NEW_FILE [--json]
+acyclic-plugin identity-mcp
 ```
 
-`acyclic install pi [--project]` installs the executable-pinned Pi extension.
+`acyclic-plugin install pi [--project]` installs the executable-pinned Pi extension.
 Pi owns its context, compaction and model retries. Native session startup admits
 one durable root before selected workspace allocation. `acyclic_agents` observes
 the original task outcomes and `acyclic_cancel` orders cancellation through the
 existing coordinator; `/acyclic-doctor` reports qualification separately.
 Preparing roots are not usable workspace routes. Recursive workspace execution
 and platform qualification are not established by these controls.
-`acyclic uninstall pi` restores the owned settings and retains pinned assets;
+`acyclic-plugin uninstall pi` restores the owned settings and retains pinned assets;
 modified settings are preserved. The API target is Pi 1.1.0; see
 [Pi qualification](pi/README.md).
 
@@ -112,7 +138,34 @@ share the original invocation's finite work ledger. Producer custody is acquired
 before buffer/DTO growth and retained through final delivery; empty polls do not
 create replacement ledgers or retrospectively charge an ordinary read.
 
-`acyclic doctor` reports the packaged binary identity, plugin/cache version,
+Set `ACYCLIC_API_URL` to the public Edge origin, or pass `--endpoint ORIGIN`
+to each identity command. `acyclic-plugin signup --agent` generates an Ed25519 key,
+solves the server hashcash challenge, and saves an agent registration. It
+requires new or pending agent credentials. `refresh` renews agent-only certificates with
+a key signature. `login` upgrades an agent through device approval; identity
+and org reads require the resulting session. See the
+[wire contract](identity-api.md) for the pending signup retry contract.
+`acyclic-plugin login` prints a device approval URL and
+code on stderr, waits for approval, and saves the session. With `--json`, stdout
+contains one JSON result or error; device approval instructions on stderr are
+also JSON. Identity results never include access or refresh tokens.
+`acyclic-plugin logout` revokes the OAuth session and clears local session tokens,
+preserving agent keys. Failed revocation retains credentials for retry.
+
+Use `bearer --org ID --output NEW_FILE` after login to mint a short-lived organization bearer. The new output file contains the token; stdout contains only its account, expiry and filename. Existing files and credential sidecar names are refused. Unix output has mode 0600; on Windows use a private directory with its inherited ACL.
+
+The credential file defaults to `~/.acyclic/identity.json`. Override it with
+`ACYCLIC_IDENTITY_FILE` or `--credentials PATH`. Filenames ending in `.lock` or
+`.next` are reserved for credential sidecars. Existing Windows short filenames
+resolve to the same lock as their long name. It is bound to its API origin,
+written atomically, and locked across identity operations so two processes
+cannot reuse a rotating refresh token. Unix files have mode 0600; on Windows,
+use a private user directory with its inherited ACL. `whoami` and `orgs`
+refresh expiring access tokens automatically. A failed or ambiguous refresh
+clears the local session; sign in again rather than replaying a refresh token.
+
+
+`acyclic-plugin doctor` reports the packaged binary identity, plugin/cache version,
 marketplace and hook assets, service and durable recovery state, native mount
 backend, CLI availability, and an exact-binary-bound live
 platform-certification receipt. Its human and JSON forms are rendered from the
@@ -120,7 +173,7 @@ same stable check result. Uninstall drains the service and keeps durable
 workspace/recovery state by default; `--purge` also removes that state
 explicitly.
 
-Use `acyclic git status`, `diff`, `commit`, `switch`, `merge`, `rebase`, and
+Use `acyclic-plugin git status`, `diff`, `commit`, `switch`, `merge`, `rebase`, and
 the other documented local porcelain inside a managed workspace. Child refs
 are visible as `agents/...`; only a direct parent may merge or discard a child,
 and descendants publish upward one level at a time. Bare `git` continues to use
@@ -128,8 +181,8 @@ the checkout's real `.git` repository and is intentionally absent in child
 mounts.
 
 If a merge projects text conflict markers, edit the mounted files, declare each
-resolved path with `acyclic git add <path>`, and run
-`acyclic git merge --continue`; use `acyclic git merge --abort` to restore the
+resolved path with `acyclic-plugin git add <path>`, and run
+`acyclic-plugin git merge --continue`; use `acyclic-plugin git merge --abort` to restore the
 exact pre-merge workspace. Non-text conflicts are reported with typed paths and
 kinds rather than being flattened into text and must likewise be declared.
 

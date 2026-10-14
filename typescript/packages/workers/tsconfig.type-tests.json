@@ -1,0 +1,19 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "rootDir": ".",
+    "types": [
+      "node"
+    ],
+    "paths": {
+      "@acyclic-labs/workers": [
+        "./dist/index.d.ts"
+      ]
+    }
+  },
+  "include": [
+    "test/deployment.type-test.ts"
+  ]
+}

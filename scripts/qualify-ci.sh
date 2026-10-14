@@ -16,10 +16,6 @@ timing_start=$(($(date +%s) - SECONDS))
 trap 'printf "%s\t%s\0" "${EPOCHREALTIME:-$((timing_start + SECONDS))}" "$BASH_COMMAND" \
   >>"$observability/steps.tsv"' DEBUG
 
-full_qualification="${FORCE:-false}"
-case "${GITHUB_EVENT_NAME:-}" in
-  release|workflow_dispatch|schedule) full_qualification=true ;;
-esac
 # macOS ships shasum rather than sha256sum.
 sha256_matches() {
   local observed
@@ -88,7 +84,7 @@ background() {
   echo "$!" >"$SDK_TEMP_DIR/background-$name.pid"
 }
 finish() {
-  local name status=0
+  local name status=0 result=0
   for name in "$@"; do
     status=0
     wait "$(cat "$SDK_TEMP_DIR/background-$name.pid")" || status=$?
@@ -98,9 +94,10 @@ finish() {
     if ((status != 0)); then
       echo "::error::$name failed with exit status $status"
       tail -n 80 "$SDK_TEMP_DIR/background-$name.log" >&2
-      exit "$status"
+      ((result != 0)) || result=$status
     fi
   done
+  return "$result"
 }
 native_binding() {
   CARGO_TARGET_DIR="$target_dir-napi" cargo build -p acyclic-fs-napi --locked
@@ -117,7 +114,7 @@ stream_binding() {
 client_bindings() {
   local target family bundle
   target="$(rustc --version --verbose | sed -n 's/^host: //p')"
-  for family in actors workers; do
+  for family in actors; do
     bundle="$SDK_ARTIFACT_DIR/packages/$family-native/bundle"
     node "scripts/build-$family-native.mjs" build --target "$target" \
       --output "$bundle" --target-dir "$target_dir-$family-native"
@@ -183,11 +180,15 @@ pinned_pi() {
 
 case "$lane" in
   gate)
-    # These crates have independent workspaces and are absent from the root.
+    nextest --workspace --all-features --locked
+    ;;
+  docs)
+    # Independent workspaces qualify alongside the root workspace.
     cargo test --manifest-path rust/crates/sdk-docs/Cargo.toml --locked
+    ;;
+  generation)
     cargo test --manifest-path rust/crates/sdk-generation/Cargo.toml --locked
     node --test rust/crates/sdk-generation/scripts/test-qualify-typescript-snippets.mjs
-    nextest --workspace --all-features --locked
     ;;
   preflight)
     head="$(git rev-parse HEAD)"
@@ -307,6 +308,12 @@ case "$lane" in
       exit 1
     fi
     ;;
+  linux-runtime)
+    cargo fetch --locked
+    cargo test -p acyclic-fs --features native-mount --locked --lib -- \
+      --ignored --test-threads=1
+    fork_join_conformance
+    ;;
   linux)
     bash scripts/test-ensure-rust-target.sh
     source scripts/ensure-bun.sh
@@ -317,9 +324,6 @@ case "$lane" in
     # when the Blacksmith dependency cache is cold.
     cargo fetch --locked
     background napi native_binding
-    cargo test -p acyclic-fs --features native-mount --locked --lib -- \
-      --ignored --test-threads=1
-    fork_join_conformance
     bash scripts/check-inference-package.sh "$SDK_ARTIFACT_DIR/packages/inference"
     bash scripts/check-machines-package.sh "$SDK_ARTIFACT_DIR/packages/machines"
     finish napi
@@ -340,11 +344,14 @@ case "$lane" in
       typescript/packages/stream/generated/wasm
     bun run check:generated
     bash scripts/check-harness-package.sh "$SDK_ARTIFACT_DIR/packages/harness"
-    bash scripts/check-filesystem-package.sh "$SDK_ARTIFACT_DIR/packages/filesystem"
-    bun scripts/run-harness-conformance.mjs \
+    background harness-conformance bun scripts/run-harness-conformance.mjs \
       "$SDK_ARTIFACT_DIR/packages/harness" \
       "$SDK_ARTIFACT_DIR/packages/harness/runner-report.json" \
       "$SDK_ARTIFACT_DIR/packages/harness/qualification-receipt.json"
+    filesystem_status=0
+    bash scripts/check-filesystem-package.sh "$SDK_ARTIFACT_DIR/packages/filesystem" || filesystem_status=$?
+    finish harness-conformance
+    if ((filesystem_status != 0)); then exit "$filesystem_status"; fi
     bun run licenses
     bun x buf format -d --exit-code
     bun x buf lint
@@ -372,31 +379,28 @@ case "$lane" in
       --target "$target" --lib native_capture::
     ;;
   policy)
+    node scripts/static-ci.mjs
     node scripts/check-compatibility-digests.mjs
     bash scripts/test-qualify-ci-preflight.sh
     node --test scripts/wasm-size-report.test.mjs scripts/tracked-wasm-surfaces.test.mjs
-    if [[ "$full_qualification" != true ]]; then
-      cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      node --test scripts/test-plan-qualification.mjs
-      node --test scripts/test-contract-artifacts.mjs scripts/test-contract-targets.mjs
-      cargo fmt --all -- --check
-      exit 0
-    fi
     bash scripts/test-ensure-rust-target.sh
     node scripts/check-workflow-runners.mjs
     node --test scripts/harness-provider-evidence.test.mjs
+    node --test scripts/check-harness-package.test.mjs
     install_tool actionlint_1.7.7_linux_amd64.tar.gz \
       https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz \
       023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757 \
       "$TOOLS_DIR/actionlint-1.7.7" actionlint
-    "$TOOLS_DIR/actionlint-1.7.7/actionlint" .github/workflows/*.yml
+    node --test scripts/check-workflows.test.mjs
+    bash scripts/check-workflows.sh "$TOOLS_DIR/actionlint-1.7.7/actionlint"
     node scripts/publish-cargo-crates.mjs check
     node --test scripts/test-publish-cargo-crates.mjs
     node --test scripts/test-publish-npm-packages.mjs
-    node --test scripts/static-policy.test.mjs
-    node --test scripts/tiny-ci.test.mjs scripts/publish-release-assets.test.mjs scripts/release-qualification-artifacts.test.mjs scripts/release-source.test.mjs
+    node --test scripts/static-policy.test.mjs scripts/static-ci.test.mjs scripts/check-boundaries.test.mjs
+    node --test scripts/tiny-ci.test.mjs scripts/cargo-lock-policy.test.mjs scripts/publish-release-assets.test.mjs scripts/release-qualification-artifacts.test.mjs scripts/release-source.test.mjs
+    node --test scripts/native-cache-evidence.test.mjs scripts/cache-save-decision.test.mjs scripts/cache-limits.test.mjs
     node --test scripts/test-typescript-qualification.mjs
-    node --test scripts/test-plan-qualification.mjs
+    node --test scripts/test-plan-qualification.mjs scripts/test-plan-qualification-gate.mjs scripts/test-plan-qualification-windows-rust.mjs scripts/build-windows-wasm.test.mjs
     node --test scripts/test-contract-artifacts.mjs scripts/test-contract-targets.mjs
     node scripts/test-verify-release-binary.mjs
     cargo fmt --all -- --check
@@ -452,6 +456,10 @@ case "$lane" in
     source scripts/ensure-bun.sh
     wasm_bindgen_bin="$(bash scripts/ensure-wasm-bindgen.sh)"
     export PATH="$(dirname "$wasm_bindgen_bin"):$PATH"
+    # Package builds resolve the whole locked Cargo graph offline (family
+    # admission runs `cargo metadata`), including crates that only other
+    # targets compile, which the wasm32 builds above never download.
+    cargo fetch --locked
     bun install --frozen-lockfile
     bun run --filter '@acyclic-labs/fs' build
     # The combined browser pages consume the public Stream and Harness builds;
@@ -459,14 +467,25 @@ case "$lane" in
     bun run --filter '@acyclic-labs/objects' build
     bun run --filter '@acyclic-labs/stream' build
     bun run --filter '@acyclic-labs/harness' build
-    CHROME="$(command -v google-chrome || command -v chromium)" \
-      bun run --filter '@acyclic-labs/fs' test:browser
-    CHROME="$(command -v google-chrome || command -v chromium)" \
-      bun typescript/packages/filesystem/test/browser-qualify.mjs ../harness/test/browser-compaction.html
-    CHROME="$(command -v google-chrome || command -v chromium)" \
-      bun run --filter '@acyclic-labs/harness' test:browser:mcp
-    CHROME="$(command -v google-chrome || command -v chromium)" \
-      bun run --filter '@acyclic-labs/harness' test:client:browser
+    export CHROME="$(command -v google-chrome || command -v chromium)"
+    browser_qualification() {
+      local name="$1" start="$EPOCHREALTIME" status=0
+      shift
+      "$@" || status=$?
+      printf '%s\t%s\t%s\t%s\0' "$start" "$EPOCHREALTIME" "$status" "$*" >"$observability/browser-$name.tsv"
+      return "$status"
+    }
+    browser_pids=()
+    # Each driver owns its server and profile; overlap their browser cleanup.
+    browser_qualification fs bun run --filter '@acyclic-labs/fs' test:browser & browser_pids+=("$!")
+    browser_qualification compaction bun typescript/packages/filesystem/test/browser-qualify.mjs ../harness/test/browser-compaction.html & browser_pids+=("$!")
+    browser_qualification mcp bun run --filter '@acyclic-labs/harness' test:browser:mcp & browser_pids+=("$!")
+    browser_qualification client bun run --filter '@acyclic-labs/harness' test:client:browser & browser_pids+=("$!")
+    browser_status=0
+    for browser_pid in "${browser_pids[@]}"; do
+      if wait "$browser_pid"; then :; else browser_status=1; fi
+    done
+    if (( browser_status != 0 )); then exit "$browser_status"; fi
     ;;
   typescript)
     # Family admission resolves the locked Cargo graph offline before WASM
@@ -493,32 +512,52 @@ case "$lane" in
     fi
     source scripts/ensure-bun.sh
     cargo fetch --locked
-    background napi native_binding
     nextest --workspace --all-features --locked
     cargo test --workspace --all-features --locked --doc
-    finish napi
     native_mount_tests
     installed_graphcoder
     pinned_pi
     ;;
+  linux-arm64-bindings)
+    if ! command -v cc >/dev/null || ! command -v unzip >/dev/null || \
+      ! command -v pkg-config >/dev/null || ! pkg-config --exists fuse3; then
+      sudo apt-get update -qq
+      sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        --no-install-recommends build-essential pkg-config libfuse3-dev unzip
+    fi
+    source scripts/ensure-bun.sh
+    cargo fetch --locked
+    native_binding
+    ;;
+
   macos)
     bash scripts/test-ensure-rust-target.sh
     source scripts/ensure-bun.sh
     bun install --frozen-lockfile
     bash scripts/ensure-rust-target.sh x86_64-apple-darwin
     cargo fetch --locked
-    background napi native_binding
-    background x86_64 cargo check -p acyclic-fs -p acyclic-fs-napi --all-features \
+    finish_macos() {
+      local status="${1:-0}" background_status=0
+      trap - EXIT
+      finish napi x86_64 fork-join-build || background_status=$?
+      ((status != 0)) || status=$background_status
+      return "$status"
+    }
+    CARGO_BUILD_JOBS=2 background napi native_binding
+    CARGO_BUILD_JOBS=1 background x86_64 cargo check -p acyclic-fs -p acyclic-fs-napi --all-features \
       --target x86_64-apple-darwin --locked --target-dir "$target_dir-x86_64"
-    nextest --workspace --all-features --locked
-    cargo test --workspace --all-features --locked --doc
-    finish napi x86_64
+    CARGO_BUILD_JOBS=1 background fork-join-build cargo test -p acyclic-plugin --locked --test fork_join \
+      --no-run --target-dir "$target_dir-fork-join"
+    trap 'status=$?; finish_macos "$status" || status=$?; exit "$status"' EXIT
+    CARGO_BUILD_JOBS=8 nextest --workspace --all-features --locked
+    CARGO_BUILD_JOBS=8 cargo test --workspace --all-features --locked --doc
+    finish_macos
     installed_graphcoder
     pinned_pi
     stream_binding
     client_bindings
     native_mount_tests
-    fork_join_conformance
+    CARGO_TARGET_DIR="$target_dir-fork-join" fork_join_conformance
     ;;
   *)
     echo "unknown qualification lane: $lane" >&2

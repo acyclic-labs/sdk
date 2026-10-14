@@ -17,6 +17,11 @@ categories = ["filesystem", "data-structures"]
 name = "main"
 path = "tests/main.rs"
 
+[[test]]
+name = "cloud_contract"
+path = "tests/cloud_contract.rs"
+required-features = ["memory"]
+
 [[bench]]
 name = "filesystem"
 harness = false
@@ -49,6 +54,7 @@ base64 = { version = "0.23.1", optional = true }
 crc-fast = { version = "1.10.0", optional = true }
 
 [dev-dependencies]
+prost-reflect = { workspace = true, features = ["serde"] }
 proptest.workspace = true
 
 [build-dependencies]
@@ -148,3 +154,7 @@ workspace = true
 [[example]]
 name = "embedded_workspace"
 required-features = ["local"]
+
+[[example]]
+name = "record_cloud_contract"
+required-features = ["memory"]

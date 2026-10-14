@@ -1,1 +1,0 @@
-new Acyclic.Workers.V1.PublishVersionRequest { JavascriptModule = "invalid" };

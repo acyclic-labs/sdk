@@ -2,6 +2,8 @@
 
 ## 0.2.0 - Unreleased
 
+- Replace the separate Workers service with Cloud deployment through Objects and Actors; remove version aliases, job RPCs and native bindings.
+
 - Align the unified SDK candidate with the breaking Objects v2 public package transition.
 
 ## Unreleased

@@ -1,5 +1,7 @@
 # .NET producer tooling
 
+Current transport qualification covers Actors and Stream. The separate Workers service has been retired; Cloud Workers use the SDK Objects/Actors deployment clients. Installed qualification records below describe earlier source cuts and do not qualify this updated source.
+
 This backend generates C# messages and gRPC stubs from canonical Rust descriptor
 sets with maintained protoc and Grpc.Tools binaries. Rust manifest admission is
 shared with Java in `../../shared/authority.mjs`.

@@ -1,5 +1,7 @@
 # Swift transport producer
 
+Current transport qualification covers Actors and Stream. The separate Workers service has been retired; Cloud Workers use the SDK Objects/Actors deployment clients. Installed qualification records below describe earlier source cuts and do not qualify this updated source.
+
 This backend runs the maintained SwiftProtobuf and gRPC Swift generators against
 verified Rust descriptor exports. It emits a Swift package with public message,
 client and server types, exact runtime dependencies, licensing and a hashed

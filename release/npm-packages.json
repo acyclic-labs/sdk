@@ -6,6 +6,7 @@
   { "slug": "workers", "directory": "workers", "name": "@acyclic-labs/workers", "source": "typescript" },
   { "slug": "inference", "directory": "inference", "name": "@acyclic-labs/inference", "source": "typescript" },
   { "slug": "machines", "directory": "machines", "name": "@acyclic-labs/machines", "source": "typescript" },
+  { "slug": "swarm", "directory": "swarm", "name": "@acyclic-labs/swarm", "source": "typescript" },
   { "slug": "fs", "directory": "filesystem", "name": "@acyclic-labs/fs", "source": "typescript" },
   { "slug": "sdk", "directory": "sdk", "name": "@acyclic-labs/sdk", "source": "typescript" },
   { "slug": "plugin", "directory": "plugin", "name": "@acyclic-labs/plugin", "source": "plugin" }

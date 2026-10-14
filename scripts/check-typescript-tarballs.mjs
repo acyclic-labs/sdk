@@ -39,7 +39,7 @@ for (const entry of packageEntries) {
   }
 }
 
-const representativeExports = {
+export const representativeExports = {
   "@acyclic-labs/actors": "ActorsClient",
   "@acyclic-labs/fs": "openBrowserFs",
   "@acyclic-labs/harness": "Harness",
@@ -49,7 +49,8 @@ const representativeExports = {
   "@acyclic-labs/pi": "piProvider",
   "@acyclic-labs/sdk": "harness",
   "@acyclic-labs/stream": "MemoryStreamProvider",
-  "@acyclic-labs/workers": "WorkersClient",
+  "@acyclic-labs/swarm": "SwarmClient",
+  "@acyclic-labs/workers": "WorkersDeploymentClient",
 };
 const expectedExports = assembledDirectory
   ? Object.fromEntries(packageEntries.map(entry => [entry.name, representativeExports[entry.name]]))
@@ -95,7 +96,7 @@ const hasExportedFiles = (manifest, packageDirectory) => {
     target.startsWith("./") && existsSync(join(packageDirectory, target.slice(2))));
 };
 
-const probeSource = (runtime, names) => `
+export const probeSource = (runtime, names) => `
 const expected = ${JSON.stringify(names)};
 for (const [name, exportName] of Object.entries(expected)) {
   const module = await import(name);
@@ -139,11 +140,30 @@ const checks = {
   },
   "@acyclic-labs/pi": (m) => typeof m.piProvider === "function",
   "@acyclic-labs/sdk": (m) => typeof m.harness === "object" && typeof m.machines === "object",
-  "@acyclic-labs/workers": (m) => typeof m.WorkersClient === "function" && typeof m.SubmitJobRequestSchema === "object",
+  "@acyclic-labs/workers": (m) => typeof m.WorkersDeploymentClient === "function",
   "@acyclic-labs/stream": async (m) => {
     const provider = new m.MemoryStreamProvider();
     const appended = await provider.append("tarball/smoke", [new Uint8Array([7])]);
     return appended.ok && appended.tail === 1n && await provider.tail("tarball/smoke") === 1n;
+  },
+  "@acyclic-labs/swarm": async (m) => {
+    if (typeof m.SwarmHttpError !== "function") return false;
+    const client = new m.SwarmClient({
+      endpoint: "https://swarms.example.test", token: "tarball-smoke",
+      fetch: async (input, init) => {
+        if (String(input) !== "https://swarms.example.test/health" || init.method !== "GET"
+          || new Headers(init.headers).get("authorization") !== "Bearer tarball-smoke") {
+          throw new Error("Swarm tarball request differs from the public contract");
+        }
+        return new Response(JSON.stringify({ ok: true, version: "tarball-smoke" }), {
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+    const health = await client.health();
+    return health.ok === true && health.version === "tarball-smoke"
+      && typeof client.watch === "function" && typeof client.upload === "function"
+      && new m.SwarmHttpError(503, { error: "unavailable" }, null).status === 503;
   },
 };
 for (const [name, check] of Object.entries(checks)) {
@@ -153,6 +173,7 @@ for (const [name, check] of Object.entries(checks)) {
 }
 console.log(${JSON.stringify(runtime)} + " import and representative API checks passed for " + Object.keys(expected).length + " packages");
 for (const [name, exported] of Object.entries({ objects: "createObjectsV1GrpcClients", stream: "GrpcStreamProvider" })) {
+  if (!("@acyclic-labs/" + name in expected)) continue;
   const module = await import("@acyclic-labs/" + name + "/grpc");
   if (typeof module[exported] !== "function") throw new Error(name + " gRPC export is absent");
 }
@@ -263,8 +284,8 @@ const main = async () => {
     run("bun", ["inference-widths.mjs"], { cwd: tempRoot });
     const typeImports = Object.entries(expectedExports).map(([name, exportName], index) =>
       `import { ${exportName} as package${index} } from ${JSON.stringify(name)};`);
-    const grpcTypeImports = ['import { GrpcStreamProvider } from "@acyclic-labs/stream/grpc";', 'import { WorkersClient } from "@acyclic-labs/workers";', 'import { createObjectsV1GrpcClients } from "@acyclic-labs/objects/grpc";'];
-    await writeFile(join(tempRoot, "probe-types.ts"), `${typeImports.join("\n")}\n${grpcTypeImports.join("\n")}\nvoid [${typeImports.map((_, index) => `package${index}`).join(", ")}];\nvoid [GrpcStreamProvider, WorkersClient, createObjectsV1GrpcClients];\nconst actors = new package0({ endpoint: "https://actors.example.test", token: "tarball-smoke" });\nvoid actors;\n`);
+    const grpcTypeImports = ['import { GrpcStreamProvider } from "@acyclic-labs/stream/grpc";', 'import { createObjectsV1GrpcClients } from "@acyclic-labs/objects/grpc";'];
+    await writeFile(join(tempRoot, "probe-types.ts"), `${typeImports.join("\n")}\n${grpcTypeImports.join("\n")}\nvoid [${typeImports.map((_, index) => `package${index}`).join(", ")}];\nvoid [GrpcStreamProvider, createObjectsV1GrpcClients];\nconst actors = new package0({ endpoint: "https://actors.example.test", token: "tarball-smoke" });\nvoid actors;\n`);
     await writeFile(join(tempRoot, "tsconfig.types.json"), JSON.stringify({
       compilerOptions: {
         target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext",

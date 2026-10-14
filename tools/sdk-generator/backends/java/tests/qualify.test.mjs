@@ -12,7 +12,7 @@ function fixture(t, failure = "") {
   t.after(() => rmSync(root, { recursive: true }));
   const put = (path, bytes) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, bytes); };
   const authority = join(root, "authority");
-  const families = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v1/stream.proto"].map(source => {
+  const families = ["actors/v1/actors.proto", "stream/v1/stream.proto"].map(source => {
     put(join(authority, source), source);
     return { source, source_sha256: sha256(source), descriptor: "shared.bin", descriptor_sha256: sha256("descriptors") };
   });
@@ -54,7 +54,7 @@ function fixture(t, failure = "") {
     if (argv.at(-1).endsWith("InstalledConsumer.java")) return { status: 0, stdout: "", stderr: "" };
     if (argv.includes("InstalledConsumer")) return { status: failure === "positive" ? 1 : 0, stdout: "PASS: installed Java descriptors\n", stderr: "" };
     const name = argv.at(-1);
-    if (failure === "accepted" && name.endsWith("InvalidWorkerBytes.java")) return { status: 0, stdout: "", stderr: "" };
+    if (failure === "accepted" && name.endsWith("InvalidActorBytes.java")) return { status: 0, stdout: "", stderr: "" };
     return { status: 1, stdout: "", stderr: failure === "unrelated" ? "error: package missing\n"
       : `error: incompatible types: String cannot be converted to ${name.endsWith("InvalidOptionalInteger.java") ? "long" : "ByteString"}\n` };
   };
@@ -69,13 +69,13 @@ test("offline runner installs exact package and checks each invalid assignment s
   assert.ok(build.argv.includes("-s") && build.argv.includes("-gs"));
   for (const call of f.calls) assert.equal(call.options.env.JAVA_TOOL_OPTIONS, undefined);
   const negative = f.calls.filter(call => /Invalid.*\.java$/.test(call.argv.at(-1)));
-  assert.equal(negative.length, 3);
-  assert.equal(new Set(negative.map(call => call.argv.at(-1))).size, 3);
+  assert.equal(negative.length, 2);
+  assert.equal(new Set(negative.map(call => call.argv.at(-1))).size, 2);
   const positive = f.calls.find(call => call.argv.includes("InstalledConsumer"));
   assert.ok(positive.argv.some(arg => arg.startsWith("-Dsdk.qualified.jar=")));
-  assert.equal(new Set(positive.argv.slice(-3)).size, 1);
-  for (const path of positive.argv.slice(-3)) assert.equal(readFileSync(path, "utf8"), "descriptors");
-  assert.equal(result.negative_type_controls_rejected, 3);
+  assert.equal(new Set(positive.argv.slice(-2)).size, 1);
+  for (const path of positive.argv.slice(-2)) assert.equal(readFileSync(path, "utf8"), "descriptors");
+  assert.equal(result.negative_type_controls_rejected, 2);
   assert.equal(result.rust_backed_rpc_qualified, false);
   assert.deepEqual(JSON.parse(readFileSync(join(f.args.output, "qualification.json"))), result);
 });

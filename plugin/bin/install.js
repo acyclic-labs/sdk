@@ -347,7 +347,7 @@ function ensureInstalledLocked() {
   }
 }
 
-// The package's `acyclic` command links to `bin/acyclic`, which ships as an
+// The package's `acyclic-plugin` command links to `bin/acyclic`, which ships as an
 // interpreter-less placeholder so that every package manager links the command
 // to the executable itself. On Unix the install replaces it with the
 // executable; on Windows the command resolves `bin/acyclic` to `acyclic.exe`

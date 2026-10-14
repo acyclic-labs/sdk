@@ -1,23 +1,43 @@
 [
   {
     "lane": "gate",
+    "runner": "blacksmith-16vcpu-ubuntu-2404",
+    "workers": 16,
+    "artifact": "",
+    "artifact_path": "",
+    "cache_size": "1152M"
+  },
+  {
+    "lane": "docs",
+    "runner": "blacksmith-2vcpu-ubuntu-2404",
+    "workers": 2,
+    "artifact": "",
+    "artifact_path": "",
+    "cache_size": "64M"
+  },
+  {
+    "lane": "generation",
+    "runner": "blacksmith-2vcpu-ubuntu-2404",
+    "workers": 2,
+    "artifact": "",
+    "artifact_path": "",
+    "cache_size": "64M"
+  },
+  {
+    "lane": "linux",
+    "runner": "blacksmith-16vcpu-ubuntu-2404",
+    "workers": 16,
+    "artifact": "packages-linux",
+    "artifact_path": "packages",
+    "cache_size": "4096M"
+  },
+  {
+    "lane": "linux-runtime",
     "runner": "blacksmith-4vcpu-ubuntu-2404",
     "workers": 4,
     "artifact": "",
     "artifact_path": "",
-    "inputs": "rust",
-    "source_bound": false,
-    "scope": "both"
-  },
-  {
-    "lane": "linux",
-    "runner": "blacksmith-4vcpu-ubuntu-2404",
-    "workers": 4,
-    "artifact": "packages-linux",
-    "artifact_path": "packages",
-    "inputs": "repository",
-    "source_bound": true,
-    "scope": "full"
+    "cache_size": "3776M"
   },
   {
     "lane": "web",
@@ -25,29 +45,23 @@
     "workers": 4,
     "artifact": "",
     "artifact_path": "",
-    "inputs": "rust",
-    "source_bound": false,
-    "scope": "full"
-  },
-  {
-    "lane": "typescript",
-    "runner": "blacksmith-4vcpu-ubuntu-2404",
-    "workers": 4,
-    "artifact": "",
-    "artifact_path": "",
-    "inputs": "typescript",
-    "source_bound": false,
-    "scope": "core"
+    "cache_size": "960M"
   },
   {
     "lane": "linux-arm64",
+    "runner": "blacksmith-32vcpu-ubuntu-2404-arm",
+    "workers": 32,
+    "artifact": "",
+    "artifact_path": "",
+    "cache_size": "1088M"
+  },
+  {
+    "lane": "linux-arm64-bindings",
     "runner": "blacksmith-4vcpu-ubuntu-2404-arm",
     "workers": 4,
     "artifact": "packages-linux-arm64",
     "artifact_path": "packages",
-    "inputs": "rust",
-    "source_bound": false,
-    "scope": "full"
+    "cache_size": "1152M"
   },
   {
     "lane": "linux-musl",
@@ -55,9 +69,7 @@
     "workers": 4,
     "artifact": "",
     "artifact_path": "",
-    "inputs": "rust",
-    "source_bound": false,
-    "scope": "full"
+    "cache_size": "256M"
   },
   {
     "lane": "linux-arm64-musl",
@@ -65,29 +77,63 @@
     "workers": 4,
     "artifact": "",
     "artifact_path": "",
-    "inputs": "rust",
-    "source_bound": false,
-    "scope": "full"
+    "cache_size": "576M"
   },
   {
     "lane": "windows",
-    "runner": "blacksmith-4vcpu-windows-2025",
-    "workers": 4,
+    "runner": "blacksmith-16vcpu-windows-2025",
+    "workers": 16,
     "artifact": "stream-native-windows",
     "artifact_path": "stream-native-bundle",
-    "inputs": "product",
-    "source_bound": true,
-    "scope": "full"
+    "cache_size": "3072M"
+  },
+  {
+    "lane": "windows-rust",
+    "runner": "blacksmith-32vcpu-windows-2025",
+    "workers": 32,
+    "artifact": "",
+    "artifact_path": "",
+    "cache_size": "3072M"
+  },
+  {
+    "lane": "windows-fork-join",
+    "runner": "blacksmith-16vcpu-windows-2025",
+    "workers": 16,
+    "artifact": "",
+    "artifact_path": "",
+    "cache_size": "3072M"
+  },
+  {
+    "lane": "windows-napi",
+    "runner": "blacksmith-4vcpu-windows-2025",
+    "workers": 4,
+    "artifact": "",
+    "artifact_path": "",
+    "cache_size": "3072M"
+  },
+  {
+    "lane": "windows-arm64",
+    "runner": "blacksmith-4vcpu-windows-2025",
+    "workers": 4,
+    "artifact": "",
+    "artifact_path": "",
+    "cache_size": "3072M"
+  },
+  {
+    "lane": "windows-clippy",
+    "runner": "blacksmith-16vcpu-windows-2025",
+    "workers": 16,
+    "artifact": "",
+    "artifact_path": "",
+    "cache_size": "3072M"
   },
   {
     "lane": "macos",
-    "runner": "blacksmith-6vcpu-macos-15",
-    "workers": 4,
+    "runner": "blacksmith-12vcpu-macos-15",
+    "workers": 12,
     "artifact": "packages-macos",
     "artifact_path": "packages",
-    "inputs": "repository",
-    "source_bound": true,
-    "scope": "full"
+    "cache_size": "2496M"
   },
   {
     "lane": "policy",
@@ -95,8 +141,6 @@
     "workers": 4,
     "artifact": "",
     "artifact_path": "",
-    "inputs": "policy",
-    "source_bound": false,
-    "scope": "both"
+    "cache_size": "768M"
   }
 ]

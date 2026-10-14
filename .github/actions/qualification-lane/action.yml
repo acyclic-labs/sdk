@@ -4,6 +4,9 @@ inputs:
   lane:
     description: Lane name from .github/qualification-lanes.json
     required: true
+  cache_size:
+    description: Compiler cache limit from the measured working set plus headroom
+    required: true
   artifact:
     description: Artifact name prefix the lane retains, if any
     default: ''
@@ -19,32 +22,26 @@ runs:
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        .\scripts\windows-rust-setup.ps1 -Phase start
+        .\scripts\windows-rust-setup.ps1 -Phase start -Lane '${{ inputs.lane }}'
 
-    # Core and full runs compile different invocations (tests, packaging,
-    # release builds), so each keeps its own compiler cache, sized to one
-    # run's working set. Windows restores at ~70 MB/s rather than from
-    # co-located storage, so its full cache stays smaller.
+    # Keep each lane's measured working set instead of allocating the largest
+    # packaging cache to every test and documentation lane.
     - name: Configure lane-local compiler cache
-      id: sccache
       shell: bash
+      env:
+        CACHE_SIZE: ${{ inputs.cache_size }}
       run: |
-        scope=core size=2G
-        if [[ "${FORCE:-}" == true ]] || [[ "$GITHUB_EVENT_NAME" =~ ^(release|workflow_dispatch|schedule)$ ]]; then
-          scope=full size=8G
-          [[ "$RUNNER_OS" != Windows ]] || size=3G
-        fi
-        echo "scope=$scope" >> "$GITHUB_OUTPUT"
         # Ephemeral target directories cannot reuse incremental state, and
         # incremental Rust invocations bypass sccache.
         echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
         echo "SCCACHE_DIR=${RUNNER_TEMP}/sccache" >> "$GITHUB_ENV"
-        echo "SCCACHE_CACHE_SIZE=$size" >> "$GITHUB_ENV"
+        echo "SCCACHE_CACHE_SIZE=$CACHE_SIZE" >> "$GITHUB_ENV"
 
     # Only compressed crate archives and indexes are cached: Cargo unpacks the
     # sources it needs far faster than a cache can restore them file by file.
     - name: Restore shared dependencies
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      id: dependencies
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |
           ~/.cargo/registry/index
@@ -58,7 +55,7 @@ runs:
     - name: Unpack Windows crates
       if: runner.os == 'Windows'
       shell: pwsh
-      run: .\scripts\windows-rust-setup.ps1 -Phase dependencies
+      run: .\scripts\windows-rust-setup.ps1 -Phase dependencies -Lane '${{ inputs.lane }}'
 
     - name: Install exact Rust toolchain
       if: runner.os != 'Windows'
@@ -70,34 +67,23 @@ runs:
     # before use, so the first saved tools cache stays a safe starting point.
     # Bump the version when a pinned tool changes to refresh it.
     - name: Restore lane tools
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ${{ runner.temp }}/tools
-        key: sdk-tools-v7-${{ inputs.lane }}-${{ runner.os }}-${{ runner.arch }}
-
-    # Only main saves compiler output; every other run restores main's newest
-    # entry. Caches are branch-scoped, so a cache saved by a pull request would
-    # never warm another pull request's first run, and multi-gigabyte saves per
-    # pull request evict main's. Main pushes run the core lanes (see
-    # plan-qualification.mjs) and manual full runs on main warm the full lanes.
-    # Lane-local caches restore and save once instead of contending on sccache
-    # object writes. Cargo target directories are never cached.
-    - name: Restore lane build cache
+      id: tools
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: ${{ runner.temp }}/sccache
-        key: sdk-sccache-v5-${{ inputs.lane }}-${{ steps.sccache.outputs.scope }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
-        restore-keys: |
-          sdk-sccache-v5-${{ inputs.lane }}-${{ steps.sccache.outputs.scope }}-${{ runner.os }}-${{ runner.arch }}-
+        path: ${{ runner.temp }}/tools
+        key: sdk-tools-v7-${{ inputs.lane }}-${{ runner.os }}-${{ runner.arch }}${{ inputs.lane == 'windows-rust' && '-nextest-0.9.146' || '' }}
 
+    # Reuse compiler output within the job without retaining off-critical
+    # multi-gigabyte snapshots that compete with native release builds.
     - name: Enable compiler cache
+      if: inputs.lane != 'windows-rust'
       uses: mozilla-actions/sccache-action@d651010b8da762cde178750d8eda7b5febfe147a # v0.0.9
       with:
         version: v0.18.0
 
     - name: Find Visual Studio clang
       id: clang
-      if: runner.os == 'Windows'
+      if: runner.os == 'Windows' && (inputs.lane == 'windows' || inputs.lane == 'windows-arm64' || inputs.lane == 'windows-rust' || inputs.lane == 'windows-fork-join')
       shell: pwsh
       run: |
         $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
@@ -110,14 +96,15 @@ runs:
 
     - name: Restore Windows ARM64 compiler
       id: llvm-cache
-      if: runner.os == 'Windows' && steps.clang.outputs.found != 'true'
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      if: runner.os == 'Windows' && (inputs.lane == 'windows' || inputs.lane == 'windows-arm64' || inputs.lane == 'windows-rust' || inputs.lane == 'windows-fork-join') && steps.clang.outputs.found != 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}/llvm
         key: sdk-llvm-v1-20.1.8-${{ runner.os }}-${{ runner.arch }}
 
     - name: Install Windows ARM64 compiler
-      if: runner.os == 'Windows' && steps.clang.outputs.found != 'true'
+      id: llvm-install
+      if: runner.os == 'Windows' && (inputs.lane == 'windows' || inputs.lane == 'windows-arm64' || inputs.lane == 'windows-rust' || inputs.lane == 'windows-fork-join') && steps.clang.outputs.found != 'true'
       uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
       with:
         version: 20.1.8
@@ -128,7 +115,43 @@ runs:
     - name: Finish Windows Rust setup
       if: runner.os == 'Windows'
       shell: pwsh
-      run: .\scripts\windows-rust-setup.ps1 -Phase finish
+      run: .\scripts\windows-rust-setup.ps1 -Phase finish -Lane '${{ inputs.lane }}'
+
+    - name: Install Windows nextest
+      if: inputs.lane == 'windows-rust'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $PSNativeCommandUseErrorActionPreference = $true
+        $bin = Join-Path $env:RUNNER_TEMP 'tools/cargo/bin'
+        $nextest = Join-Path $bin 'cargo-nextest.exe'
+        if (-not (Test-Path -LiteralPath $nextest) -or
+            ((& $nextest nextest --version) -join "`n") -notmatch '^cargo-nextest 0\.9\.146(?:\s|$)') {
+          New-Item -ItemType Directory -Force -Path $bin | Out-Null
+          $archive = Join-Path $env:RUNNER_TEMP 'cargo-nextest-0.9.146-windows.tar.gz'
+          Invoke-WebRequest -OutFile $archive -Uri 'https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-x86_64-pc-windows-msvc.tar.gz'
+          $expected = '809b01f2c94d031ab6cf5f4d4a4f477c8f51b69c96ab3cb2fe4db7ecb222d0d3'
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
+            throw 'Windows nextest archive digest mismatch'
+          }
+          tar -xzf $archive -C $bin
+        }
+        if (((& $nextest nextest --version) -join "`n") -notmatch '^cargo-nextest 0\.9\.146(?:\s|$)') {
+          throw 'Windows qualification requires cargo-nextest 0.9.146'
+        }
+        Add-Content -LiteralPath $env:GITHUB_PATH -Value $bin
+
+    - name: Restore Windows Rust dependency builds
+      if: inputs.lane == 'windows-rust'
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      env:
+        CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        RUSTC_WRAPPER: ''
+      with:
+        shared-key: sdk-windows-rust-v1
+        workspaces: . -> target
+        cache-bin: false
+        save-if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}
 
     - name: Enable Windows ProjFS
       if: runner.os == 'Windows'
@@ -159,11 +182,11 @@ runs:
       env:
         SDK_TEMP_DIR: ${{ runner.temp }}/sdk
         SDK_ARTIFACT_DIR: ${{ runner.temp }}/artifacts
-        CARGO_TARGET_DIR: ${{ runner.temp }}/target
+        CARGO_TARGET_DIR: ${{ inputs.lane == 'windows-rust' && format('{0}/target', github.workspace) || format('{0}/target', runner.temp) }}
         BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-install-cache
         TOOLS_DIR: ${{ runner.temp }}/tools/${{ inputs.lane }}-${{ runner.arch }}
         LLVM_PATH: ${{ runner.temp }}/llvm
-      run: .\scripts\qualify-ci.ps1 -Lane windows
+      run: .\scripts\qualify-ci.ps1 -Lane "${{ inputs.lane }}"
 
     # Step wall times, the slowest tests and compiler cache statistics, kept
     # briefly even when the lane fails so slow steps and tests stay visible.
@@ -176,7 +199,9 @@ runs:
       run: |
         mkdir -p "$OBSERVABILITY"
         cp target/bun-test.xml "$OBSERVABILITY/" 2>/dev/null || true
-        sccache --show-stats --stats-format=json >"$OBSERVABILITY/sccache.json" || true
+        if [[ "$LANE" != windows-rust ]]; then
+          sccache --show-stats --stats-format=json >"$OBSERVABILITY/sccache.json" || true
+        fi
         node scripts/ci-summary.mjs "$OBSERVABILITY" "$LANE lane"
     - name: Retain lane timings
       if: ${{ !cancelled() }}
@@ -185,16 +210,30 @@ runs:
         name: timings-${{ inputs.lane }}-${{ github.run_id }}-${{ github.run_attempt }}
         path: ${{ runner.temp }}/sdk/observability
         if-no-files-found: ignore
-        retention-days: 7
+        retention-days: ${{ contains(github.workflow, 'Release') && 30 || 3 }}
 
-    # Saved even when a test fails: entries are content-addressed, and a red
-    # main must not leave pull requests compiling cold.
-    - name: Save lane build cache
-      if: ${{ !cancelled() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+    - name: Save shared dependencies
+      if: ${{ !cancelled() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && steps.dependencies.outputs.cache-primary-key != '' && steps.dependencies.outputs.cache-hit != 'true' }}
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: ${{ runner.temp }}/sccache
-        key: sdk-sccache-v5-${{ inputs.lane }}-${{ steps.sccache.outputs.scope }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+          ${{ runner.temp }}/bun-install-cache
+        key: ${{ steps.dependencies.outputs.cache-primary-key }}
+    - name: Save lane tools
+      if: ${{ !cancelled() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && steps.tools.outputs.cache-primary-key != '' && steps.tools.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/tools
+        key: ${{ steps.tools.outputs.cache-primary-key }}
+    - name: Save Windows ARM64 compiler
+      if: ${{ !cancelled() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && steps.llvm-install.outcome == 'success' && steps.llvm-cache.outputs.cache-primary-key != '' && steps.llvm-cache.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/llvm
+        key: ${{ steps.llvm-cache.outputs.cache-primary-key }}
 
     - name: Retain qualified outputs
       if: inputs.artifact != ''
@@ -205,4 +244,4 @@ runs:
         compression-level: 0
         if-no-files-found: error
         include-hidden-files: false
-        retention-days: 90
+        retention-days: ${{ contains(inputs.artifact, 'coverage') && 1 || contains(github.workflow, 'Release') && 30 || 3 }}

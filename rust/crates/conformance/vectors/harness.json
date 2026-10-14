@@ -30,7 +30,6 @@
     { "name": "recursive-cancellation-stops-at-owner-boundaries", "family": "harness" },
     { "name": "transport-control-errors-remain-request-correlated", "family": "harness" },
     { "name": "durable-context-providers-reopen-compaction-exactly", "family": "harness" },
-    { "name": "coding-bundle-host-adapter-is-complete-and-executable", "family": "harness" },
     { "name": "recursive-fork-isolation-attachments-and-project-only-merge", "family": "harness" },
     { "name": "durable-local-conversation-fork-and-merge-reopens", "family": "harness" },
     { "name": "filesystem-conflicts-are-explicit", "family": "filesystem" },

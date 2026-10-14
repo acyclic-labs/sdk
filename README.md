@@ -1,5 +1,11 @@
 # Acyclic SDK
 
+**Rapid agent swarms. Make any agentic workflow exponentially faster.**
+
+Acyclic Labs builds rapid agent swarms. Hand a task to a swarm and it fans the work out across many agents, each in its own sandbox, then merges what they produce, so long agentic workflows finish exponentially faster. The harness is open source and works without managed hosting; for managed swarms, see [acyclic.dev](https://acyclic.dev/agents).
+
+[Managed Agents](https://acyclic.dev/agents) is the hosted composition of the open-source Acyclic harness. It does not introduce a separate agent loop, and nothing about forking, recursion or durable execution is reserved for the hosted version.
+
 The Acyclic SDK is the open contract and composition layer for building recursive,
 fork-join agent systems. It contains the Rust harness, public service interfaces,
 customer-machine implementations, conformance suites, and TypeScript packages.
@@ -7,153 +13,13 @@ customer-machine implementations, conformance suites, and TypeScript packages.
 This repository contains a public release candidate. APIs remain pre-release
 until their family version is published and tagged.
 
-## What works in this release candidate
-
-- One `acyclic-harness` crate owning operation identities, authority, durable
-  reducer semantics, typed interactions, effects, atomic fork manifests,
-  resumable state machines, structured scheduling, and replaceable execution.
-- Direct Stream-backed Agent, Conversation, Session, Turn, and Task histories,
-  with deterministic native/WASM replay and snapshot-assisted restoration.
-- Provider-neutral model, context-stage, tool definition/executor/projection,
-  and custom-executor APIs; Stream-backed memory/retrieval/skills revisions,
-  digest-bound compaction, and a complete coding host-adapter bundle remain
-  ordinary code-defined compositions.
-- A framework-neutral `@acyclic-labs/harness` WASM/client package with reconnect,
-  generation-fenced cursors, an explicit-namespace atomic bounded IndexedDB cursor/outbox store,
-  bounded hydration, and
-  bidirectional pagination; thin React and Svelte bindings remain separate.
-- One transport-neutral Rust server port with separate HTTP/SSE/WebSocket and
-  gRPC adapter crates; embedded, JSONL/stdio, browser/Bun WebSocket, HTTP/SSE,
-  and gRPC clients negotiate the same descriptor and capabilities first. The
-  same owner- and scope-bound operation status and exact-retry cancellation
-  contract is available on every transport, including atomic recursive cancel.
-- Explicit Filesystem and Machines integration crates. Filesystem workspaces
-  support exact-generation reads and atomic idempotent mutation batches;
-  Machines references remain opaque and provider-bound.
-- Native dependency-free OpenAI-compatible streaming in `@acyclic-labs/harness`,
-  plus separately versioned AI SDK, Pi, and OpenCode bridge packages.
-- In-memory Filesystem, Stream, and Objects providers, plus a deterministic
-  process-local Machines simulator.
-- A single canonical Filesystem engine over the public Stream and Objects
-  provider traits, with memory and durable-local compositions, sparse
-  content-addressed generations, source capture, safe rebase and join,
-  S3 workspace views, native watchers and mounts, core-owned journaled
-  materialization, browser WASM persistence, a TypeScript facade, and an N-API
-  embedded engine.
-- A hierarchical Stream v1 Rust contract, bounded structural-sharing memory
-  provider, checksummed crash-recoverable local provider, authenticated gRPC
-  client/server adapter, exact retry semantics, immutable-prefix forks, gapless
-  follow, and atomic optimistic commits. The memory and local providers execute
-  the same semantic state machine; the local feature adds only bounded durable
-  publication and recovery.
-- An Objects v1 logical current-key contract with Rust and TypeScript gRPC/HTTP
-  clients, conditions, exact retry receipts, bounded listing and multipart
-  publication. Native memory and durable-local providers share one state machine;
-  local recovery authenticates inline small bodies and immutable larger bodies,
-  with grouped native batches and private compaction. Native Filesystem
-  compositions use the sole Objects v1 contract. Roots with obsolete format discriminators are rejected without conversion or
-  overwrite.
-- Candidate Actors v1 and Workers v1 public contracts with Rust validation,
-  generated TypeScript message types, and authenticated Rust and Node/Bun
-  TypeScript gRPC and HTTP clients. Their
-  Cloud service routes require separate qualification before hosted use.
-- An Inference v1 Rust client with immutable item-addressed Context revisions,
-  independent forks, exact edit/compact/transfer, recoverable Runs, inclusive
-  event replay, cancellation, four work meters, and admitted warm commitments.
-- A generated-contract TypeScript Inference client covering the same Context,
-  warm-retention, recoverable Run, watch, and cancellation lifecycle through an
-  authenticated protobuf-JSON transport.
-- A shape-free Machines v1 contract with immutable image qualification, exact
-  idempotency, checkpoints, fork sets, lifecycle recovery, stable endpoints,
-  events, usage receipts, a mutual-TLS/Unix client, and one bounded deterministic
-  simulator.
-- An executable bounded recursive workload and package-bound cross-language
-  conformance runner that retains per-case evidence, an immutable source identity,
-  and a deterministic qualification receipt with the exact release archives.
-- TypeScript contract facades for families whose public contract includes JavaScript.
-- Protobuf package boundaries ready for audited service schemas.
-
 ## Open-source boundary
 
 Everything shipped to or executed on a customer's machine belongs in this
-Apache-2.0 repository. That includes embedded and durable-local engines, local
-services and processes, browser implementations, native mounts, language
-bindings, local recovery, model adapters, and customer-hosted providers. Each
-component has one public source of truth; private repositories consume released
-SDK contracts and code instead of keeping copies.
-
-Private repositories contain only Acyclic-operated infrastructure such as
-  multi-tenant regional control planes, distributed replication and consensus,
-  internal administration, billing, and private
+Apache-2.0 repository. Private repositories contain only Acyclic-operated
+infrastructure such as multi-tenant regional control planes, distributed
+replication and consensus, internal administration, billing, and private
 qualification evidence.
-
-Build and test the local Acyclic workspace product without an account:
-
-```sh
-cargo test -p acyclic-plugin
-```
-
-The one product binary lives in `plugin`. It auto-starts one per-user
-service, derives workspace routing from canonical cwd, exposes local history as
-`acyclic git`, and packages thin capability-aware adapters for coding agents.
-There is no `init` command and no repository marker.
-
-The Filesystem API keeps the same workspace, generation, and sparse transaction
-shape when its execution boundary moves to the hosted service:
-
-```rust,no_run
-use acyclic_fs::{HostedFs, HostedFsOptions, IdempotencyKey};
-
-# async fn example() -> Result<(), Box<dyn std::error::Error>> {
-// Discovers ACYCLIC_FILESYSTEM_ENDPOINT and ACYCLIC_API_KEY.
-let filesystem = HostedFs::connect(HostedFsOptions::default()).await?;
-let workspace = filesystem.open_workspace("project").await?;
-let base = workspace.head().await?;
-let mut transaction = workspace.begin_transaction(IdempotencyKey::new());
-transaction.put_file("/README.md", b"canonical\n".to_vec());
-let outcome = transaction.commit(32).await?;
-let exact = workspace.generation(base.id().to_vec()).await?;
-# let _ = (outcome, exact);
-# Ok(())
-# }
-```
-
-TypeScript provides the same discovery contract through
-`openHostedFsFromEnv()`. Explicit options remain available in both SDKs for
-non-standard runtimes. When the deployment advertises source reconciliation,
-hosted workspaces also expose source state, reconcile, rescan, and seal through
-the canonical filesystem protocol; deployments without a source provider report
-that capability as unavailable.
-
-Use the high-level Inference API against an authenticated service. Placement,
-batching, KV movement, and rebalancing remain service internals:
-
-```rust,no_run
-use acyclic_inference::{Inference, text_item, wire};
-
-# async fn example() -> Result<(), acyclic_inference::Error> {
-let inference = Inference::connect(
-    "https://inference.example",
-    "account-token",
-    include_bytes!("trusted-ca.pem"),
-).await?;
-let mut creation = inference.context("model/revision");
-creation.items.push(text_item(wire::ItemKind::Instruction, "Answer from the supplied evidence.".into()));
-let base = inference.create_context(&creation).await?;
-let fork = wire::MutateContextRequest {
-    identity: Some(inference.identity()), source: base.to_vec(),
-    action: Some(wire::mutate_context_request::Action::Fork(wire::Empty {})),
-};
-let mutation = inference.mutate_context(&fork).await?;
-let branch = mutation.revision.try_into().map_err(|_| acyclic_inference::Error::Invalid("invalid revision"))?;
-let generation = inference.generate(branch, "Summarize the findings.", 1_024);
-let run_id = inference.generate_run(&generation).await?;
-let result = inference.inspect_run(run_id).await?;
-let events = inference.watch_run(run_id, 0).await?;
-# let _ = (result, events);
-# Ok(())
-# }
-```
 
 Run all implemented checks:
 
@@ -166,13 +32,9 @@ bun run check
 bun test
 ```
 
-The included memory providers are deterministic, process-local implementations.
-`SimulatedMachines` explicitly reports `ProcessLocalSimulation`: it runs no guest
-or operating-system process and provides no crash durability, isolation,
-distributed consistency, or production availability. Applications can bind a
-conforming customer-hosted provider or the Acyclic managed service without
-changing orchestration code.
+- [What works in this release candidate](docs/release-candidate.md)
 
 See [ARCHITECTURE.md](ARCHITECTURE.md), [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and
 [provenance/README.md](provenance/README.md) before importing source.
-Open-source Acyclic SDK and in-memory reference providers
+
+[TypeScript service examples](typescript/packages/sdk/README.md) Â· [Rust service examples](rust/README.md) Â· [llms.txt](llms.txt)

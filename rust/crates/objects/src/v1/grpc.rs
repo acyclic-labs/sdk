@@ -66,7 +66,7 @@ impl GrpcObjects {
         Ok(self)
     }
 
-    /// Connects with optional private CA trust and PEM client certificate/key identity.
+    /// Connects with PEM client identity, trusting only the declared CA or otherwise platform roots.
     pub async fn connect(
         endpoint: &str,
         token: &str,

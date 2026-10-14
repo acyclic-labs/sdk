@@ -174,6 +174,7 @@ impl Service<http::Request<Body>> for TlsService {
 }
 #[tokio::test]
 async fn platform_roots_and_exclusive_ca() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let Some((pem, mut server, unrelated, mode)) =
         acyclic_grpc_observability::tests::tls_fixture(module_path!())?
     else {

@@ -395,5 +395,5 @@ pub use workspace_context::{
     WorkspaceRootId, WorkspaceRoute, WorkspaceRouteKind,
 };
 
-#[cfg(all(feature = "browser", target_arch = "wasm32"))]
+#[cfg(feature = "browser")]
 pub mod browser;

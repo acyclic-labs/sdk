@@ -60,8 +60,8 @@ defmodule InstalledProbe do
     check(is_binary(error) and String.contains?(error, field), "invalid field accepted or unrelated rejection: #{field}")
   end
   def run(paths) do
-    check(length(paths) == 3, "three Rust descriptor sets required")
-    expected_names = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v1/stream.proto"]
+    check(length(paths) == 2, "two Rust descriptor sets required")
+    expected_names = ["actors/v1/actors.proto",  "stream/v1/stream.proto"]
     files = Enum.zip(paths, expected_names) |> Enum.map(fn {path, name} ->
       set = Google.Protobuf.FileDescriptorSet.decode(File.read!(path))
       file = Enum.find(set.file, &(&1.name == name))
@@ -86,10 +86,9 @@ defmodule InstalledProbe do
       for name <- [method.input_type, method.output_type], do: roundtrip(sample(name, messages, enum_types, 1))
       method.name
     end
-    check(length(methods) == 25, "incomplete RPC inventory")
+    check(length(methods) == 19, "incomplete RPC inventory")
     bytes = <<0, 255>>
     roundtrip(%Acyclic.Actors.V1.CreateActorRequest{code_sha256: bytes})
-    roundtrip(%Acyclic.Workers.V1.PublishVersionRequest{javascript_module: bytes})
     wire = roundtrip(%Acyclic.Stream.V1.ReadRequest{from: 18_446_744_073_709_551_615, limit: 4_294_967_295})
     check(wire == <<16,255,255,255,255,255,255,255,255,255,1,24,255,255,255,255,15>>, "unsigned maximum wire differs")
     check(roundtrip(%Acyclic.Stream.V1.AppendRequest{if_tail: 0}) == <<24,0>>, "optional zero presence differs")
@@ -98,9 +97,8 @@ defmodule InstalledProbe do
     roundtrip(%Acyclic.Stream.V1.AppendResponse{outcome: {:conflict, %Acyclic.Stream.V1.TailConflict{actual_tail: 456}}})
     roundtrip(%Acyclic.Stream.V1.AppendResponse{outcome: nil})
     reject(%Acyclic.Actors.V1.CreateActorRequest{code_sha256: :invalid_bytes}, "code_sha256")
-    reject(%Acyclic.Workers.V1.PublishVersionRequest{javascript_module: :invalid_bytes}, "javascript_module")
     reject(%Acyclic.Stream.V1.AppendRequest{if_tail: "invalid integer"}, "if_tail")
-    IO.puts("PASS Elixir Rust message/enum/service descriptors, 25 populated RPC message pairs, bytes, unsigned bounds, optional presence, oneofs and 3 runtime type rejections")
+    IO.puts("PASS Elixir Rust message/enum/service descriptors, 19 populated RPC message pairs, bytes, unsigned bounds, optional presence, oneofs and 2 runtime type rejections")
   end
 end
 

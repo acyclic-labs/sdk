@@ -1,0 +1,91 @@
+{
+  "source": {
+    "repository": "acyclic-labs/cloud",
+    "commit": "97325910f07c62d04ef63457adb4ce90732be715",
+    "files": [
+      "svc/workers/README.md",
+      "ops/prober/src/accept.rs::publish_code",
+      "ops/prober/src/public_request.rs::actor_create",
+      "ops/prober/src/public_request.rs::tests::actor_create_acknowledgement_requires_requested_identity",
+      "svc/actors/src/server/tests.rs::deleted_worker_exits_returns_its_slot_and_stays_absent_after_restart",
+      "svc/edge-workers/src/tests.rs::deployment_and_custom_hosts_use_current_registry_and_preserve_http"
+    ],
+    "normalization": "Canonical protobuf JSON. Code is the exact Cloud worker.mjs probe. Digest replaces the acknowledgement test digest; actor ID is the test acknowledgement ID. Create uses Cloud public_request limits. Invoke preserves the Edge test envelope and duplicate headers; delete uses the Worker lifecycle test key. Responses are test assertion values, not a live capture.",
+    "blobs": {
+      "svc/workers/README.md": "90ac6c3344ff5022768ccbf74bcb7c50267914ad",
+      "ops/prober/src/accept.rs": "6323a5a9298aacdcd5e0c1378df1ebdb62a35d20",
+      "ops/prober/src/public_request.rs": "9d2892da374328cb907420a6b3e45cdbbb43eba5",
+      "ops/prober/src/worker.mjs": "630d13f171412cc680933972f1a3ca914fc05a4b",
+      "svc/actors/src/server/tests.rs": "a90e824ee26be6edeb8516ebadfb8eea17c2d9c5",
+      "svc/edge-workers/src/tests.rs": "ea8198ff7e4558f227d39e5e4f1b5f90d633c78c"
+    }
+  },
+  "code": "// The probe's Worker: no `actor` export, so it runs as a stateless Actor.\n// Its reply names it and echoes the request method.\nexport default {\n  async fetch(request) {\n    return Response.json({worker: 'probe', method: request.method});\n  },\n};\n",
+  "publish": {
+    "request": {
+      "bucket": {
+        "name": "actors-code"
+      },
+      "objectKey": "sha256/b141ab5594bdbea591aba109fd1cd68edd799fe02d79fd65c1a494454e86b0d6",
+      "mutation": {
+        "idempotencyKey": "publish-code"
+      }
+    },
+    "sha256": "b141ab5594bdbea591aba109fd1cd68edd799fe02d79fd65c1a494454e86b0d6"
+  },
+  "create": {
+    "request": {
+      "codeSha256": "sUGrVZS9vqWRq6EJ/RzWjt15n+Atef1lwaSURU6GsNY=",
+      "homeRegion": "la",
+      "limits": {
+        "handlerTimeoutMillis": "30000",
+        "memoryBytes": "268435456",
+        "checkpointBytes": "1048576"
+      },
+      "idempotencyKey": "create-once"
+    },
+    "response": {
+      "actor": {
+        "actorId": "verification-actor",
+        "codeSha256": "sUGrVZS9vqWRq6EJ/RzWjt15n+Atef1lwaSURU6GsNY=",
+        "homeRegion": "la",
+        "configurationRevision": "1"
+      }
+    }
+  },
+  "invoke": {
+    "request": {
+      "actorId": "verification-actor",
+      "method": "POST",
+      "url": "https://app.team.run.acyclic.dev/hello?q=1",
+      "body": "aW5wdXQ=",
+      "headers": [
+        {
+          "name": "content-type",
+          "value": "text/plain"
+        }
+      ]
+    },
+    "response": {
+      "status": 201,
+      "body": "b3V0cHV0",
+      "headers": [
+        {
+          "name": "set-cookie",
+          "value": "a=1"
+        },
+        {
+          "name": "set-cookie",
+          "value": "b=2"
+        }
+      ]
+    }
+  },
+  "delete": {
+    "request": {
+      "actorId": "verification-actor",
+      "idempotencyKey": "delete"
+    },
+    "response": {}
+  }
+}

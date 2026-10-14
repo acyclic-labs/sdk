@@ -9,16 +9,10 @@
       "schemaDigest": "sha256:ae7b6bf87e8be61996eba12f6a40de69d3d151b7c68f3b155ec26a25a21e3c6d",
       "descriptorDigest": "sha256:657a72cdea8a52a3fcb4ca545d6ff988f20b1d57293d5c33d6ed0f76b779e897"
     },
-    "workers": {
-      "version": "0.2.0",
-      "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:c8fa507d88f24a0e644e1c0fded4364ec33e2468b47db1db2a2fc24762492a80",
-      "descriptorDigest": "sha256:aa586c0713d6a9b327b2eba75cc59662ba1114d77f793cc06169a7c08283ae42"
-    },
     "harness": {
       "version": "0.2.0",
       "schemaDigest": "sha256:c8acf71df64ceebc4b7047bda105223a4ac83428feb59ebf146c67b093bffa4b",
-      "conformanceDigest": "sha256:a8de2d0a1c26369ebbbf123db6a26c0beb7ec4dc1650832c0c5ee0b4a8165cb7"
+      "conformanceDigest": "sha256:3b9ffcc21007714337ab0fb32417941e49f5f9bef7d55e5f4418cae005a443df"
     },
     "filesystem": {
       "version": "0.2.0",
@@ -43,8 +37,8 @@
     },
     "machines": {
       "version": "0.2.0",
-      "schemaDigest": "sha256:4891b8988e76618b1c87f261921b26d6d7d708f3f2aab348b0ca19aed7acba77",
-      "descriptorDigest": "sha256:68feb507148fbf798a3e05236a4d93d36d216c260db0a6a339db5919c630e758",
+      "schemaDigest": "sha256:bc6a3665b68619b40bd5d89f983054388e2006a043d2cc586b2a27407b9e07e0",
+      "descriptorDigest": "sha256:e814bd997ce08b35543f460e88a61de754a7881506974886e7988bbde0c3a597",
       "conformanceDigest": "sha256:78ce0d6b9c5226aad67d96de4a4a4f9c9723a144ce58c5dcad63590b88d5d682"
     },
     "inference": {

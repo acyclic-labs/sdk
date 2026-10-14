@@ -43,6 +43,8 @@ const registrations = [["harness", "a", [["rust", "test_a"]]], ["harness", "b", 
 test("locked Harness inventory owns exactly the executed requirements for every case", () => {
   const locked = JSON.parse(readFileSync(new URL("../conformance/vectors/core.json", import.meta.url), "utf8"));
   const cases = locked.cases.filter(item => item.family === "harness");
+  const mirror = JSON.parse(readFileSync(new URL("../rust/crates/conformance/vectors/harness.json", import.meta.url), "utf8"));
+  assert.deepEqual(mirror.cases, locked.cases);
   assert.deepEqual(harnessCaseMarkers.map(([, name]) => name), cases.map(item => item.name));
   const registered = registerCases(locked, "harness", harnessCaseMarkers);
   assert.deepEqual(registered.cases, cases);
@@ -57,6 +59,71 @@ test("locked Harness inventory owns exactly the executed requirements for every 
       executed[runtime].delete(missing);
       assert.throws(() => requireExecutedCase(name, required, executed), /missing/);
       executed[runtime].add(missing);
+    }
+  }
+});
+
+function rustTestNames(source, module) {
+  const tokens = source.match(/\/\/[^\n]*|\/\*[\s\S]*?\*\/|(?:br|r)(#*)"[\s\S]*?"\1|b?"(?:\\[\s\S]|[^"\\])*"|'(?:\\.|[^'\\])'|[A-Za-z_]\w*|[^\s]/g) ?? [];
+  const scopes = [];
+  const names = new Set();
+  let testAttribute = false;
+  for (let index = 0; index < tokens.length; index++) {
+    const token = tokens[index];
+    if (token.startsWith("//") || token.startsWith("/*")) continue;
+    if (token === "#" && tokens[index + 1] === "[") {
+      const start = index++;
+      let depth = 1;
+      while (depth && ++index < tokens.length) {
+        if (tokens[index] === "[") depth++;
+        if (tokens[index] === "]") depth--;
+      }
+      const attribute = tokens.slice(start, index + 1).join(" ");
+      testAttribute ||= /^#\s*\[\s*(?:tokio\s*:\s*:\s*)?test\s*(?:\([\s\S]*\))?\s*\]$/.test(attribute);
+      continue;
+    }
+    if (token === "{") scopes.push(tokens[index - 2] === "mod" ? tokens[index - 1] : null);
+    if (token === "}") scopes.pop();
+    if (token === "fn" && testAttribute && scopes.every(scope => scope !== null)) {
+      names.add([module, ...scopes, tokens[index + 1]].join("::"));
+    }
+    if (token !== "async" && token !== "pub") testAttribute = false;
+  }
+  return names;
+}
+
+test("Rust test inventory requires the attribute and every module segment", () => {
+  const source = `mod tests {
+    #[tokio::test(flavor = "current_thread")]
+    #[allow(dead_code, reason = "nested [brackets] in an attribute")]
+    async fn required() {}
+    #[test]
+    fn synchronous() {}
+    fn helper() {}
+    mod nested { #[test] fn required() {} }
+  }
+  mod other { #[test] fn required() {} }
+  // #[test] fn comment() {}
+  const TEXT: &str = r#"mod tests { #[test] fn string() {} }"#;`;
+  assert.deepEqual([...rustTestNames(source, "executor")], [
+    "executor::tests::required", "executor::tests::synchronous",
+    "executor::tests::nested::required", "executor::other::required",
+  ]);
+  assert.equal(rustTestNames(source.replace('#[tokio::test(flavor = "current_thread")]', ""), "executor").has("executor::tests::required"), false);
+  assert.equal(rustTestNames(source.replace("mod tests", "mod renamed"), "executor").has("executor::tests::required"), false);
+});
+
+test("Rust evidence requirements refer to current Harness runnable tests", () => {
+  const root = new URL("../rust/crates/harness/src/", import.meta.url);
+  const modules = new Map();
+  for (const [, , requirements] of harnessCaseMarkers) {
+    for (const [runtime, name] of requirements) {
+      if (runtime !== "rust") continue;
+      const module = name.split("::")[0];
+      if (!modules.has(module)) {
+        modules.set(module, rustTestNames(readFileSync(new URL(`${module}.rs`, root), "utf8"), module));
+      }
+      assert.ok(modules.get(module).has(name), name);
     }
   }
 });
@@ -148,9 +215,63 @@ test("a qualified aggregate from another report, source or artifact is rejected"
 
 // Exercise the actual CLI preflight with real Git and files, before any build.
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, copyFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, mkdirSync, renameSync, writeFileSync, rmSync, existsSync, copyFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
+
+test("checksum publication keeps concurrent readers on a complete inventory", () => {
+  const source = readFileSync(new URL("./run-harness-conformance.mjs", import.meta.url), "utf8");
+  const start = source.indexOf("const checksumPath =");
+  const end = source.indexOf("console.log(`qualified", start);
+  assert.ok(start > 0 && end > start);
+  const publication = source.slice(start, end);
+  mkdirSync(".tools", { recursive: true });
+  const root = mkdtempSync(".tools/harness-checksums-");
+  assert.match(root, /^\.tools[\\/]harness-checksums-[A-Za-z0-9]+$/);
+  try {
+    for (const failure of ["none", "write", "rename"]) {
+      const directory = join(root, failure);
+      mkdirSync(directory);
+      const checksumPath = join(directory, "SHA256SUMS");
+      const reportPath = join(directory, "runner-report.json");
+      const receiptPath = join(directory, "qualification-receipt.json");
+      const old = "a".repeat(64) + "  acyclic-harness.tgz\n";
+      writeFileSync(checksumPath, old);
+      writeFileSync(reportPath, "report");
+      writeFileSync(receiptPath, "receipt");
+      const digest = bytes => createHash("sha256").update(bytes).digest("hex");
+      const expected = `${old}${digest("report")}  runner-report.json\n${digest("receipt")}  qualification-receipt.json\n`;
+      let reads = 0;
+      const execute = () => runInNewContext(publication, {
+        artifactDirectory: directory, reportPath, receiptPath, packageChecksums: old,
+        createHash, basename: path => path.split(/[\\/]/).pop(),
+        resolve: (...paths) => join(process.cwd(), ...paths), process: { pid: process.pid }, readFileSync,
+        writeFileSync: (path, bytes, options) => {
+          writeFileSync(path, bytes.slice(0, Math.floor(bytes.length / 2)), options);
+          assert.equal(readFileSync(checksumPath, "utf8"), old);
+          reads++;
+          if (failure === "write") throw new Error("injected write failure");
+          appendFileSync(path, bytes.slice(Math.floor(bytes.length / 2)));
+          assert.equal(readFileSync(checksumPath, "utf8"), old);
+          reads++;
+        },
+        renameSync: (from, to) => {
+          if (failure === "rename") throw new Error("injected rename failure");
+          renameSync(from, to);
+          assert.equal(readFileSync(checksumPath, "utf8"), expected);
+          reads++;
+        },
+      });
+      if (failure === "none") { execute(); assert.equal(reads, 3); }
+      else { assert.throws(execute, new RegExp(`injected ${failure} failure`)); assert.equal(readFileSync(checksumPath, "utf8"), old); }
+    }
+  } finally {
+    const absolute = join(process.cwd(), root);
+    assert.ok(absolute.startsWith(join(process.cwd(), ".tools") + (process.platform === "win32" ? "\\" : "/")));
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("runner rejects stale source and substituted package inputs before qualification", () => {
   const root = mkdtempSync(join(tmpdir(), "sdk-conformance-provenance-"));

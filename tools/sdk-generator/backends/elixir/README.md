@@ -1,5 +1,7 @@
 # Elixir transport generator
 
+Current transport qualification covers Actors and Stream. The separate Workers service has been retired; Cloud Workers use the SDK Objects/Actors deployment clients. Installed qualification records below describe earlier source cuts and do not qualify this updated source.
+
 `src/generate.mjs` consumes checksum-admitted Rust descriptor sets through protoc
 28.3 and the unchanged protobuf 0.17.1 Elixir plugin. Generated bindings include
 the maintained gRPC service/stub code and message, enum and service descriptors.

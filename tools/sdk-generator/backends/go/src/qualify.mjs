@@ -6,7 +6,7 @@ import { parseArgs } from "node:util";
 import { readBoundedGzip, sha256, tarEntries } from "../../../../../scripts/archive-utils.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
-const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v1/stream.proto"];
+const targets = ["actors/v1/actors.proto", "stream/v1/stream.proto"];
 const within = (root, path) => {
   const child = relative(root, path);
   return child === "" || (!isAbsolute(child) && child !== ".." && !child.startsWith(`..${sep}`));
@@ -124,7 +124,7 @@ export function qualify(args, command = spawnSync) {
     "-require=github.com/acyclic-labs/sdk/go@v0.2.0", "-replace=github.com/acyclic-labs/sdk/go=../installed"]);
   run("positive", ["test", "-mod=readonly", "-p=1", "-parallel=1", "-count=1", "-v", "./..."]);
   const negative = run("negative", ["test", "-mod=readonly", "-p=1", "-parallel=1", "-count=1", "-tags=negative", "./..."], true);
-  if ((negative.match(/cannot use/g) ?? []).length !== 3 || !negative.includes("as []byte") || !negative.includes("as *uint64")) {
+  if ((negative.match(/cannot use/g) ?? []).length !== 2 || !negative.includes("as []byte") || !negative.includes("as *uint64")) {
     throw new Error("negative controls failed for an unrelated reason");
   }
   const result = {
@@ -136,7 +136,7 @@ export function qualify(args, command = spawnSync) {
     control_sha256: Object.fromEntries(controlNames.map(name => [name, sha256(readFileSync(join(controls, name)))])),
     log_sha256: Object.fromEntries(["module", "positive", "negative"].map(name => [`${name}.log`, sha256(readFileSync(join(work, `${name}.log`)))])),
     descriptor_equality: "all API fields; source comments and Buf image tag 8042 excluded",
-    positive_controls_passed: true, negative_type_controls_rejected: 3,
+    positive_controls_passed: true, negative_type_controls_rejected: 2,
     rust_backed_rpc_qualified: false, embedded_runtime_qualified: false,
   };
   writeFileSync(join(work, "qualification.json"), JSON.stringify(result, null, 2) + "\n");

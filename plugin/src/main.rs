@@ -18,6 +18,7 @@ mod control_protocol;
 mod control_transport;
 mod git;
 mod guidance;
+mod identity;
 mod install;
 mod native_root_source;
 mod obs;
@@ -196,6 +197,16 @@ fn main() -> std::process::ExitCode {
 fn main_result() -> Result<(), CliFailure> {
     let mut arguments = env::args().skip(1);
     match arguments.next().as_deref() {
+        Some(command) if identity::is_command(command) => {
+            let arguments = std::iter::once(command.to_owned())
+                .chain(arguments)
+                .collect::<Vec<_>>();
+            return tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?
+                .block_on(identity::run(&arguments))
+                .map_err(Into::into);
+        }
         Some("__hook") => {
             return run_native_hook(&arguments.collect::<Vec<_>>()).map_err(CliFailure::Ordinary);
         }
@@ -584,7 +595,7 @@ async fn run() -> Result<(), CliFailure> {
     let mut cwd = invocation_cwd.clone();
     if arguments.first().is_some_and(|argument| argument == "-C") {
         if arguments.len() < 2 {
-            return Err(io::Error::other("acyclic -C requires a path").into());
+            return Err(io::Error::other("acyclic-plugin -C requires a path").into());
         }
         cwd = PathBuf::from(arguments.remove(1)).canonicalize()?;
         arguments.remove(0);
@@ -594,7 +605,7 @@ async fn run() -> Result<(), CliFailure> {
         .is_some_and(|argument| matches!(argument.as_str(), "--help" | "-h"))
     {
         println!(
-            "Acyclic {}\n\nUsage: acyclic [COMMAND]\n\nCommands:\n  install HOST       Install host integration\n  uninstall HOST [--purge]\n                       Remove integration; preserve durable state unless purged\n  doctor [--json]    Diagnose the release installation\n  git ARGS...        Run Git compatibility commands\n  agents [--json]    List recursive agent workspace status\n  discard WORKSPACE  Discard a child workspace\n  pi approvals --session SESSION --operation TOOL_ID [--json]\n                       Inspect an original Root operator approval\n  pi approve --session SESSION --operation TOOL_ID --digest DIGEST\n             --decision approve|decline\n                       Resolve and publish the exact Root-approved selection\n  mcp                 Serve MCP over standard input/output",
+            "Acyclic {}\n\nUsage: acyclic-plugin [COMMAND]\n\nCommands:\n  login [--json]     Sign in with device approval\n  signup --agent [--json] Create an agent identity\n  whoami [--json]    Show the signed-in identity\n  orgs [--json]      List organizations\n  refresh [--json]   Rotate the session token\n  logout [--json]    Revoke the session; retain agent keys\n  bearer --org ID --output NEW_FILE [--json]\n                       Save an organization bearer privately\n  identity-mcp       Serve customer identity MCP tools\n  install HOST       Install host integration\n  uninstall HOST [--purge]\n                       Remove integration; preserve durable state unless purged\n  doctor [--json]    Diagnose the release installation\n  git ARGS...        Run Git compatibility commands\n  agents [--json]    List recursive agent workspace status\n  discard WORKSPACE  Discard a child workspace\n  pi approvals --session SESSION --operation TOOL_ID [--json]\n                       Inspect an original Root operator approval\n  pi approve --session SESSION --operation TOOL_ID --digest DIGEST\n             --decision approve|decline\n                       Resolve and publish the exact Root-approved selection\n  mcp                 Serve MCP over standard input/output",
             env!("CARGO_PKG_VERSION")
         );
         return Ok(());
@@ -729,9 +740,10 @@ async fn run() -> Result<(), CliFailure> {
         .is_some_and(|argument| argument == "__service-drain")
     {
         if arguments.len() > 2 {
-            return Err(
-                io::Error::other("usage: acyclic __service-drain [EXPECTED_IDENTITY]").into(),
-            );
+            return Err(io::Error::other(
+                "usage: acyclic-plugin __service-drain [EXPECTED_IDENTITY]",
+            )
+            .into());
         }
         let fence = drain_service(
             &default_data_directory(),

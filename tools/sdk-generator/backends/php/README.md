@@ -1,5 +1,7 @@
 # PHP transport generator
 
+Current transport qualification covers Actors and Stream. The separate Workers service has been retired; Cloud Workers use the SDK Objects/Actors deployment clients. Installed qualification records below describe earlier source cuts and do not qualify this updated source.
+
 The producer consumes verified Rust descriptor snapshots through protoc 28.3
 and the maintained gRPC 1.82.0 PHP generator. Its source belongs in `src/`,
 offline controls in `tests/`, installed consumers in `tests/fixtures/consumer/`,

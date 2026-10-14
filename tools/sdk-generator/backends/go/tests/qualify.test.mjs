@@ -60,7 +60,7 @@ function fixture(t) {
   const authority = join(root, "authority");
   mkdirSync(authority);
   writeFileSync(join(authority, "shared.bin"), "shared descriptor fixture");
-  const sources = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v1/stream.proto"];
+  const sources = ["actors/v1/actors.proto", "stream/v1/stream.proto"];
   const families = sources.map((source, index) => {
     const name = `source-${index}.proto`;
     // Source paths mirror the canonical names; descriptors deliberately do not.
@@ -92,7 +92,7 @@ function commands(calls, failure = "") {
     calls.push({ go, args, options });
     if (args[0] === "version") return { status: 0, stdout: "go version go1.27.2 test/test\n", stderr: "" };
     if (args.includes("-tags=negative")) return { status: 1, stdout: failure === "negative" ? "missing dependency"
-      : "cannot use string as []byte\ncannot use uint64 as *uint64\ncannot use string as []byte\n", stderr: "" };
+      : "cannot use string as []byte\ncannot use uint64 as *uint64\n", stderr: "" };
     if (failure === "positive" && args.includes("test")) return { status: 1, stdout: "positive control failed", stderr: "" };
     return { status: 0, stdout: "", stderr: "" };
   };
@@ -112,7 +112,7 @@ test("successful workflow uses verified shared descriptor paths and isolated wor
   assert.equal(new Set(Object.values(descriptors)).size, 1);
   for (const path of Object.values(descriptors)) assert.equal(readFileSync(path, "utf8"), "shared descriptor fixture");
   assert.equal(readFileSync(join(args.output, "authority/validation/v1/options.proto"), "utf8"), "attested import only");
-  assert.equal(result.negative_type_controls_rejected, 3);
+  assert.equal(result.negative_type_controls_rejected, 2);
   assert.equal(result.rust_backed_rpc_qualified, false);
   assert.equal(result.embedded_runtime_qualified, false);
   assert.deepEqual(JSON.parse(readFileSync(join(args.output, "qualification.json"), "utf8")), result);

@@ -19,9 +19,6 @@ let bytes = Data([0, 255])
 var actor = Acyclic_Actors_V1_CreateActorRequest()
 actor.codeSha256 = bytes; actor.homeRegion = "test"; actor.idempotencyKey = "probe"
 try require(actor.codeSha256 == bytes, "Actor bytes changed"); try roundtrip(actor)
-var worker = Acyclic_Workers_V1_PublishVersionRequest()
-worker.javascriptModule = bytes; worker.expectedSha256 = bytes; worker.idempotencyKey = "probe"
-try require(worker.javascriptModule == bytes && worker.expectedSha256 == bytes, "Worker bytes changed"); try roundtrip(worker)
 var append = Acyclic_Stream_V1_AppendRequest()
 append.path = "test/path"; append.records = [bytes, Data()]; append.ifTail = UInt64.max; append.idempotencyKey = bytes
 try require(append.records == [bytes, Data()] && append.ifTail == UInt64.max && append.hasIfTail, "Stream bytes or unsigned bounds changed"); try roundtrip(append)
@@ -39,6 +36,5 @@ mutation.fork.source = "source"; mutation.fork.destination = "destination"; muta
 try require(mutation.append.path.isEmpty && mutation.fork.source == "source", "fork oneof switch differs"); try roundtrip(mutation)
 mutation.mutation = nil; try require(mutation.mutation == nil, "fork oneof clear differs")
 try require(Acyclic_Actors_V1_ActorsService.Method.CreateActor.descriptor.fullyQualifiedMethod == "acyclic.actors.v1.ActorsService/CreateActor" && Acyclic_Actors_V1_ActorsService.Method.CreateActor.descriptor.type == .unary, "Actor RPC metadata differs")
-try require(Acyclic_Workers_V1_WorkersService.Method.PublishVersion.descriptor.fullyQualifiedMethod == "acyclic.workers.v1.WorkersService/PublishVersion", "Worker RPC metadata differs")
 try require(Acyclic_Stream_V1_StreamService.Method.Read.descriptor.fullyQualifiedMethod == "acyclic.stream.v1.StreamService/Read" && Acyclic_Stream_V1_StreamService.Method.Read.descriptor.type == .serverStreaming, "Stream RPC metadata differs")
 print("PASS Swift bytes, unsigned bounds, optional zero, populated oneofs, gRPC codecs and bounded RPC metadata")

@@ -1397,6 +1397,147 @@ export declare type UsageReceipt = Message<"acyclic.machines.v1.UsageReceipt"> &
 export declare const UsageReceiptSchema: GenMessage<UsageReceipt>;
 
 /**
+ * Executes once in the current admitted guest. A lost reply, cancellation or
+ * timeout does not prove the command did not run; clients must not redispatch.
+ *
+ * @generated from message acyclic.machines.v1.ExecRequest
+ */
+export declare type ExecRequest = Message<"acyclic.machines.v1.ExecRequest"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
+   */
+  protocol?: ProtocolVersion | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.MachineId machine = 2;
+   */
+  machine?: MachineId | undefined;
+
+  /**
+   * 1..64 entries, no NUL, at most 4096 UTF-8 bytes each and 32768 total.
+   * argv[0] is nonempty. Shell evaluation requires an explicit shell program.
+   *
+   * @generated from field: repeated string argv = 3;
+   */
+  argv: string[];
+
+  /**
+   * Command deadline in milliseconds, 1..60000.
+   *
+   * @generated from field: uint32 timeout_ms = 4;
+   */
+  timeoutMs: number;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.ExecRequest.
+ * Use `create(ExecRequestSchema)` to create a new message.
+ */
+export declare const ExecRequestSchema: GenMessage<ExecRequest>;
+
+/**
+ * @generated from message acyclic.machines.v1.ExecOutput
+ */
+export declare type ExecOutput = Message<"acyclic.machines.v1.ExecOutput"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.MachineId machine = 1;
+   */
+  machine?: MachineId | undefined;
+
+  /**
+   * Data is merged stdout/stderr in observed console order, 1..65536 bytes.
+   * Exactly one exit-code frame terminates the stream; no frame follows it.
+   *
+   * @generated from oneof acyclic.machines.v1.ExecOutput.output
+   */
+  output: {
+    /**
+     * @generated from field: bytes data = 2;
+     */
+    value: Uint8Array;
+    case: "data";
+  } | {
+    /**
+     * @generated from field: int32 exit_code = 3;
+     */
+    value: number;
+    case: "exitCode";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message acyclic.machines.v1.ExecOutput.
+ * Use `create(ExecOutputSchema)` to create a new message.
+ */
+export declare const ExecOutputSchema: GenMessage<ExecOutput>;
+
+/**
+ * Reads the live retained guest console, without a lifecycle operation identity.
+ *
+ * @generated from message acyclic.machines.v1.ReadOutputRequest
+ */
+export declare type ReadOutputRequest = Message<"acyclic.machines.v1.ReadOutputRequest"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
+   */
+  protocol?: ProtocolVersion | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.MachineId machine = 2;
+   */
+  machine?: MachineId | undefined;
+
+  /**
+   * @generated from field: uint64 offset = 3;
+   */
+  offset: bigint;
+
+  /**
+   * Maximum returned bytes, 1..65536.
+   *
+   * @generated from field: uint32 limit = 4;
+   */
+  limit: number;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.ReadOutputRequest.
+ * Use `create(ReadOutputRequestSchema)` to create a new message.
+ */
+export declare const ReadOutputRequestSchema: GenMessage<ReadOutputRequest>;
+
+/**
+ * @generated from message acyclic.machines.v1.MachineOutput
+ */
+export declare type MachineOutput = Message<"acyclic.machines.v1.MachineOutput"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.MachineId machine = 1;
+   */
+  machine?: MachineId | undefined;
+
+  /**
+   * At or after the requested offset; a later offset exposes discarded bytes.
+   * The next read starts at offset + data length, with overflow rejected.
+   *
+   * @generated from field: uint64 offset = 2;
+   */
+  offset: bigint;
+
+  /**
+   * Empty data means no newer bytes now, not permanent EOF.
+   *
+   * @generated from field: bytes data = 3;
+   */
+  data: Uint8Array;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.MachineOutput.
+ * Use `create(MachineOutputSchema)` to create a new message.
+ */
+export declare const MachineOutputSchema: GenMessage<MachineOutput>;
+
+/**
  * @generated from enum acyclic.machines.v1.ImageKind
  */
 export enum ImageKind {
@@ -1735,6 +1876,22 @@ export declare const EventKindSchema: GenEnum<EventKind>;
  * @generated from service acyclic.machines.v1.MachinesService
  */
 export declare const MachinesService: GenService<{
+  /**
+   * @generated from rpc acyclic.machines.v1.MachinesService.Exec
+   */
+  exec: {
+    methodKind: "server_streaming";
+    input: typeof ExecRequestSchema;
+    output: typeof ExecOutputSchema;
+  },
+  /**
+   * @generated from rpc acyclic.machines.v1.MachinesService.ReadOutput
+   */
+  readOutput: {
+    methodKind: "unary";
+    input: typeof ReadOutputRequestSchema;
+    output: typeof MachineOutputSchema;
+  },
   /**
    * @generated from rpc acyclic.machines.v1.MachinesService.QualifyImage
    */

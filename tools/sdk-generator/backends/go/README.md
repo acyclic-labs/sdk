@@ -1,5 +1,7 @@
 # Go producer tooling
 
+Current transport qualification covers Actors and Stream. The separate Workers service has been retired; Cloud Workers use the SDK Objects/Actors deployment clients. Installed qualification records below describe earlier source cuts and do not qualify this updated source.
+
 This isolated standard-library tool repairs the staging boundary of the
 historical Go producer. It is not an SDK package and is not connected to the
 pending foundation generation entrypoint. Do not use historical generated

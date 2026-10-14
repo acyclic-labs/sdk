@@ -1,0 +1,155 @@
+# Acyclic SDK
+
+Public SDK service examples and navigation for language-model consumers.
+
+- [TypeScript guide](typescript/packages/sdk/README.md): installation, environment and execution instructions.
+- [Rust guide](rust/README.md): the same six services with compiled Rust doctests.
+
+The following complete TypeScript ES modules match the TypeScript guide and are compiled by `bun run check:docs`. Install the packages listed in that guide, set `ACYCLIC_API_KEY`, each HTTPS service `*_ENDPOINT`, and any named existing resource before running. Save a snippet as `example.mts`, compile with `npx tsc example.mts --module nodenext --target es2022 --types node`, and run `node example.mjs` on Node 22+.
+
+## Objects
+
+Logical buckets and objects, with conditional writes and multipart uploads. This example reads an existing bucket over Node HTTP/2 gRPC using the exported canonical service descriptor.
+
+```ts
+import { createClient } from "@connectrpc/connect";
+import { createGrpcTransport, Http2SessionManager } from "@connectrpc/connect-node";
+import { BucketsService } from "@acyclic-labs/objects/proto";
+
+const endpoint = process.env.OBJECTS_ENDPOINT!;
+const session = new Http2SessionManager(endpoint);
+const buckets = createClient(BucketsService, createGrpcTransport({
+  baseUrl: endpoint, sessionManager: session, defaultTimeoutMs: 30_000,
+}));
+try {
+  console.log(await buckets.headBucket({ bucket: { name: process.env.OBJECTS_BUCKET! } }, {
+    headers: { authorization: `Bearer ${process.env.ACYCLIC_API_KEY!}` },
+  }));
+} finally {
+  session.abort();
+}
+```
+
+## Streams
+
+Append-only record streams with forks and atomic commits. This example reads the tail position of an existing stream through the hosted HTTP provider.
+
+```ts
+import { HttpStreamProvider } from "@acyclic-labs/stream";
+
+const streams = new HttpStreamProvider({
+  endpoint: process.env.STREAM_ENDPOINT!, token: process.env.ACYCLIC_API_KEY!,
+});
+console.log(await streams.tail(process.env.STREAM_PATH!));
+```
+
+## Actors
+
+Durable actor identities, invocation and subscriptions. This example inspects an existing actor using the Rust-backed client.
+
+```ts
+import { ActorsClient, ActorId } from "@acyclic-labs/actors";
+
+const actors = new ActorsClient({
+  endpoint: process.env.ACTORS_ENDPOINT!, token: process.env.ACYCLIC_API_KEY!,
+});
+console.log(await actors.inspectActor({
+  actorId: await ActorId(process.env.ACTOR_ID!),
+}));
+```
+
+## Workers
+
+Cloud Workers are stateless Actors. This example publishes `worker.mjs` (a module exporting `default.fetch`, without an actor export), creates a deployment, invokes it and deletes it. The account must already own the `actors-code` Objects bucket.
+
+```ts
+import { readFile } from "node:fs/promises";
+import { CodeSha256, PositiveU64 } from "@acyclic-labs/actors";
+import { HttpObjectsV1 } from "@acyclic-labs/objects";
+import { WorkersDeploymentClient } from "@acyclic-labs/workers";
+
+const options = { endpoint: process.env.EDGE_ENDPOINT!, token: process.env.ACYCLIC_API_KEY! };
+const workers = new WorkersDeploymentClient(options, new HttpObjectsV1(options));
+const digest = await workers.publish(await readFile("worker.mjs"), "publish-worker");
+const { actor } = await workers.create({
+  codeSha256: await CodeSha256(digest), homeRegion: "la", bindings: [], subscriptions: [],
+  limits: { handlerTimeoutMillis: await PositiveU64(30000n), memoryBytes: await PositiveU64(268435456n), checkpointBytes: await PositiveU64(1048576n) },
+  idempotencyKey: "create-worker",
+});
+if (!actor) throw new Error("create returned no deployment");
+console.log(await workers.invoke({ actorId: actor.actorId, method: "GET", url: "/", headers: [], body: new Uint8Array() }));
+await workers.delete({ actorId: actor.actorId, idempotencyKey: "delete-worker" });
+```
+
+## fs
+
+Versioned filesystem workspaces and generations. This example opens an existing workspace through Node HTTP/2 gRPC.
+
+```ts
+import { createFilesystemGrpcClient } from "@acyclic-labs/fs/grpc";
+
+const client = createFilesystemGrpcClient({
+  endpoint: process.env.FS_ENDPOINT!, token: process.env.ACYCLIC_API_KEY!,
+});
+try {
+  console.log(await client.filesystem.openWorkspace({
+    selector: { case: "name", value: process.env.FS_WORKSPACE! },
+  }));
+} finally {
+  client.close();
+}
+```
+
+## Swarm
+
+Agent orchestration, spend and progress over the public Swarm HTTP/SSE API. This example lists swarms visible to the caller. Swarm is a standalone package; the umbrella SDK does not export it.
+
+```ts
+import { SwarmClient } from "@acyclic-labs/swarm";
+
+const swarms = new SwarmClient({
+  endpoint: process.env.SWARM_ENDPOINT!, token: process.env.ACYCLIC_API_KEY!,
+});
+console.log(await swarms.list());
+```
+
+## Customer CLI
+
+- [CLI installation and commands](plugin/README.md): Install the native executable as the `acyclic-plugin` command with `npm install -g @acyclic-labs/plugin`, or as `acyclic` with `cargo install --locked acyclic-plugin`; Cargo users link it as `acyclic-plugin` before using the commands below.
+- [Identity API contract](plugin/identity-api.md): Public Edge identity requests and session refresh behavior.
+
+Configure `ACYCLIC_API_URL` with the public Edge origin. Identity commands accept
+`--endpoint ORIGIN`, `--credentials PATH`, and `--json`. The default credential
+file is `~/.acyclic/identity.json`; `ACYCLIC_IDENTITY_FILE` overrides it.
+
+`acyclic-plugin login --json` starts device approval. Relay the URL and code from stderr
+to the user. Stdout contains one final JSON success or error. The user must
+approve in their browser; the CLI then saves the session.
+
+`acyclic-plugin whoami --json` returns the signed-in identity. `acyclic-plugin orgs --json`
+lists organizations. These commands refresh expiring access tokens automatically.
+`acyclic-plugin refresh --json` explicitly rotates the stored refresh token.
+`acyclic-plugin logout --json` revokes the OAuth session and clears its local tokens,
+preserving agent keys. Failed revocation retains credentials for retry.
+`acyclic-plugin bearer --org ID --output NEW_FILE --json` writes a short-lived organization bearer to a new private file. Its JSON result contains only account, expiry and filename. Never read the token file into a model.
+Commands exit nonzero on errors. Never read or expose the credential file to a
+model. If refresh fails, sign in again instead of replaying the old refresh token.
+
+`acyclic-plugin signup --agent --json` creates an Ed25519 key and solves the server's
+hashcash challenge for a tiny-tier registration. Use new or pending credentials.
+The private key stays local. `acyclic-plugin refresh --json` renews an agent-only
+certificate with a key signature. `acyclic-plugin login --json` upgrades that agent
+through device approval and retains its key. Identity and org reads require
+the resulting OAuth session. Preserve a pending signup file after a failed
+registration; rerun signup with that file to recover the same receipt using its key.
+
+## Identity MCP server
+
+Run `acyclic-plugin identity-mcp --endpoint ORIGIN` as a stdio MCP server. It uses the
+same credential file as the CLI. `identity_login` returns approval instructions;
+relay them to the user, then call `identity_login_complete` to save the approved
+session. `identity_whoami`, `identity_orgs`, `identity_refresh`, and `identity_logout` expose the
+corresponding CLI operations. Token secrets stay inside the server.
+
+`identity_signup` creates the same agent registration; `identity_refresh`
+renews an agent-only certificate or rotates an OAuth session.

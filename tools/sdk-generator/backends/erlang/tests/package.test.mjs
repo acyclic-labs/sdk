@@ -7,7 +7,7 @@ import { fixture } from "./fixtures/package.mjs";
 
 test("admit complete Erlang archive including original Rust descriptors and application metadata", t => {
   const f = fixture(t), admitted = readPackage(f.args);
-  assert.equal(admitted.payload.size, 21);
+  assert.equal(admitted.payload.size, f.payload.size);
   for (const [name, bytes] of admitted.payload) assert.deepEqual(bytes, f.payload.get(name));
 });
 

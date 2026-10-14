@@ -28,6 +28,8 @@ fs2.workspace = true
 hex.workspace = true
 libc = "0.2.177"
 notify.workspace = true
+reqwest.workspace = true
+ring = "0.17.14"
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -55,6 +57,7 @@ rustix = { workspace = true, features = ["fs", "process"] }
 
 [dev-dependencies]
 async-trait.workspace = true
+axum.workspace = true
 bytes.workspace = true
 futures.workspace = true
 tempfile = "3"

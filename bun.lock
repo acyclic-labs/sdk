@@ -6,7 +6,10 @@
       "name": "@acyclic-labs/sdk-workspace",
       "devDependencies": {
         "@bufbuild/buf": "1.73.0",
+        "@bufbuild/protobuf": "2.16.0",
         "@bufbuild/protoc-gen-es": "2.16.0",
+        "@connectrpc/connect": "2.2.0",
+        "@connectrpc/connect-node": "2.2.0",
         "@napi-rs/cli": "3.10.8",
         "@noble/hashes": "2.4.0",
         "@types/bun": "1.4.2",
@@ -41,6 +44,7 @@
         "@acyclic-labs/actors": "0.2.0",
         "@bufbuild/protobuf": "2.16.0",
         "@connectrpc/connect": "2.2.0",
+        "@connectrpc/connect-node": "2.2.0",
         "@connectrpc/connect-web": "2.2.0",
       },
       "devDependencies": {
@@ -95,6 +99,8 @@
       "dependencies": {
         "@acyclic-labs/actors": "0.2.0",
         "@bufbuild/protobuf": "2.16.0",
+        "@connectrpc/connect": "2.2.0",
+        "@connectrpc/connect-node": "2.2.0",
       },
       "devDependencies": {
         "@types/node": "26.6.4",
@@ -159,11 +165,19 @@
         "typescript": "7.0.2",
       },
     },
+    "typescript/packages/swarm": {
+      "name": "@acyclic-labs/swarm",
+      "version": "0.2.0",
+      "devDependencies": {
+        "typescript": "7.0.2",
+      },
+    },
     "typescript/packages/workers": {
       "name": "@acyclic-labs/workers",
       "version": "0.2.0",
       "dependencies": {
         "@acyclic-labs/actors": "0.2.0",
+        "@acyclic-labs/objects": "0.2.0",
         "@bufbuild/protobuf": "2.16.0",
       },
       "devDependencies": {
@@ -193,6 +207,8 @@
     "@acyclic-labs/sdk": ["@acyclic-labs/sdk@workspace:typescript/packages/sdk"],
 
     "@acyclic-labs/stream": ["@acyclic-labs/stream@workspace:typescript/packages/stream"],
+
+    "@acyclic-labs/swarm": ["@acyclic-labs/swarm@workspace:typescript/packages/swarm"],
 
     "@acyclic-labs/workers": ["@acyclic-labs/workers@workspace:typescript/packages/workers"],
 

@@ -12,7 +12,7 @@ use bytes::Bytes;
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
-/// Exact canonical bytes to retain in the provider's existing native journal.
+/// Exact canonical preparation bytes; their SHA256 establishes neither custody nor acceptance.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GenerationPublicationEvidence {
     /// Original immutable native preparation bytes.
@@ -53,7 +53,7 @@ pub enum PublicationEvidenceError {
     TooLarge,
 }
 
-/// Encodes the original request, root, complete manifest, logical-byte proof, exact proposed commit and permit using Rust-owned canonical encoders.
+/// Encodes original preparation using the admitted volume configuration, excluding runtime counters.
 pub fn encode_generation_publication_evidence(
     request: &PublishGenerationRequest,
     proof: &GenerationProof,
@@ -174,7 +174,7 @@ fn encode_original_fields(
     Ok(GenerationPublicationEvidence { bytes, sha256 })
 }
 
-/// Projects bounded original evidence against its retained SHA256.
+/// Projects bounded original evidence against a SHA256 from protected original custody.
 pub fn decode_generation_publication_evidence(
     bytes: &[u8],
     expected_sha256: &[u8; 32],

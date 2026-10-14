@@ -19,3 +19,10 @@ regexes = [
   '''^8bdb3aba7d7ad7cf20552c7db20cf796759ae8e02218e96d327e0e96aaa067ba$''',
   '''^d7c9872e9c74c9a342a154401e0218d22a40a08fc9d0179c1bcf02d5b9703b83$''',
 ]
+
+[[rules.allowlists]]
+description = "Recorded public Machines fixture SHA256 in the boundary guard"
+condition = "AND"
+paths = ['''^scripts/check-boundaries\.mjs$''']
+regexTarget = "secret"
+regexes = ['''^048bbcff062c2c0ccb0ed19df146e59b9cc937f86210be0158076123f24b2340$''']

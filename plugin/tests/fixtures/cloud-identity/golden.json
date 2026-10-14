@@ -1,0 +1,203 @@
+{
+  "source": {
+    "repository": "acyclic-labs/cloud",
+    "commit": "43c40c8deaad205650947aa6096aa9cb3973e7f7",
+    "files": [
+      {
+        "path": "svc/control/identity-device.test.mjs",
+        "blob": "e9c01dca751b45e6e16553ca01f4fd21bae27b97"
+      },
+      {
+        "path": "svc/control/identity-device-routes.test.mjs",
+        "blob": "ad0acf0fe708fbc7d50f343670d3a51194f97dfe"
+      },
+      {
+        "path": "svc/control/identity-sessions.test.mjs",
+        "blob": "ccb6291f14bafdfd3859728262682260bba946df"
+      },
+      {
+        "path": "svc/control/identity-orgs.test.mjs",
+        "blob": "6a9b9ca110926611e2a7041a91e6f75e23bb0ccd"
+      },
+      {
+        "path": "svc/control/identity-org-routes.test.mjs",
+        "blob": "3c399b2d9be3481a038158b4d45313f508d47e87"
+      },
+      {
+        "path": "svc/control/identity-agent.test.mjs",
+        "blob": "5f167b7d7dcaeb84a30da16cd122d4f1641dabd7"
+      },
+      {
+        "path": "svc/control/identity-mint.test.mjs",
+        "blob": "c0880d992239374913ef29e2489f60e07109b373"
+      },
+      {
+        "path": "svc/control/identity.mjs",
+        "blob": "de13928bb0cf79f313f3b761e656b4f21cc802d1"
+      },
+      {
+        "path": "svc/control/identity-device.mjs",
+        "blob": "a853f41877938129fc4d9ae138f6f5bb80aa2489"
+      },
+      {
+        "path": "svc/control/identity-sessions.mjs",
+        "blob": "9f80983fcdcb28e3c11ed769b37bbf3e71fdc1cc"
+      },
+      {
+        "path": "svc/control/identity-orgs.mjs",
+        "blob": "0b860dbe279217d98d7dab37bfbbea4850dfe4b0"
+      },
+      {
+        "path": "svc/control/identity-agent.mjs",
+        "blob": "a45fba114ccfc06f7ed75fe5518fef9454a208b2"
+      },
+      {
+        "path": "svc/control/identity-mint.mjs",
+        "blob": "15cffa67afbd6a5eeb39110855354628dcaa7c0f"
+      },
+      {
+        "path": "svc/control/model.mjs",
+        "blob": "be5ee35c9028d873e6038a543a92df748e4440b5"
+      }
+    ],
+    "normalization": "JSON outputs of the named Cloud handler tests, captured from their pinned handlers using test transactions. Random identifiers, tokens and signatures are captured once. Test time is 1800000000 (identity-sessions.test.mjs); null display_name follows the test database default. Request placeholders denote client-generated proof values. No schema is defined."
+  },
+  "cases": {
+    "device": {
+      "test_source": "svc/control/identity-device.test.mjs",
+      "handler_source": "svc/control/identity-device.mjs",
+      "method": "POST",
+      "path": "/v1/identity/device/code",
+      "request": {
+        "code_challenge": "<code_challenge>",
+        "client_kind": "cli"
+      },
+      "response": {
+        "device_code": "4_8PZrLDSMU-BdQUol1YNJg2Zz0ShumPjKEu-13b6j4",
+        "user_code": "3949163F13",
+        "verification_uri": "https://website.example/device",
+        "verification_uri_complete": "https://website.example/device?user_code=3949163F13",
+        "expires_in": 600,
+        "interval": 5
+      },
+      "status": 200
+    },
+    "token": {
+      "test_source": "svc/control/identity-device-routes.test.mjs",
+      "handler_source": "svc/control/identity-sessions.mjs",
+      "method": "POST",
+      "path": "/v1/identity/token",
+      "request": {
+        "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+        "device_code": "4_8PZrLDSMU-BdQUol1YNJg2Zz0ShumPjKEu-13b6j4",
+        "code_verifier": "<code_verifier>"
+      },
+      "response": {
+        "access_token": "eyJhbGciOiJFZERTQSIsInR5cCI6ImFjeWNsaWMtc2Vzc2lvbitqd3QiLCJraWQiOiJzZXNzaW9uLWEzOGRjYjQxMDViZmM2YjEifQ.eyJpc3MiOiJzdGFnaW5nIiwic3ViIjoib2F1dGgtdXNlciIsInNpZCI6IjRiZjI4YzVkLTFiMDQtNDMzZi04M2QxLWQxYTI1NDFkNWFlZiIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDAwOTAwfQ.TyR7Pdg0dAuEFShFJLcl8lHTLeMZ2pTEGb3M04-Uk0NzK3rAHf5LSw2VgmHXZwAanjYnmFCE-ygCWYK_sj_uDA",
+        "refresh_token": "xqNPVmP3UNy5dJ4Pu31wdi0MXeO5X-nWq7LQmunOpy8",
+        "token_type": "Bearer",
+        "expires_in": 900,
+        "user": {
+          "id": "oauth-user",
+          "email": "verified@example.com",
+          "name": null,
+          "email_verified": true
+        }
+      },
+      "status": 200
+    },
+    "whoami": {
+      "test_source": "svc/control/identity-device-routes.test.mjs",
+      "handler_source": "svc/control/identity.mjs",
+      "method": "GET",
+      "path": "/v1/identity/session",
+      "response": {
+        "user": {
+          "id": "oauth-user",
+          "email": "verified@example.com",
+          "name": null,
+          "email_verified": true
+        },
+        "session": {
+          "id": "00000000-0000-4000-8000-000000000002",
+          "expires_at": "2027-02-14T08:00:00.000Z"
+        }
+      },
+      "status": 200
+    },
+    "orgs": {
+      "test_source": "svc/control/identity-orgs.test.mjs",
+      "handler_source": "svc/control/identity-orgs.mjs",
+      "method": "GET",
+      "path": "/v1/identity/orgs",
+      "response": {
+        "orgs": [
+          {
+            "id": "00000000-0000-4000-8000-000000000001",
+            "account_id": "acct-1",
+            "slug": "team",
+            "kind": "team",
+            "tier": "oauth",
+            "role": "owner"
+          }
+        ]
+      },
+      "status": 200
+    },
+    "challenge": {
+      "test_source": "svc/control/identity-agent.test.mjs",
+      "handler_source": "svc/control/identity-agent.mjs",
+      "method": "GET",
+      "path": "/v1/identity/signup/challenge",
+      "response": {
+        "challenge": "tEqHgN5nxFYyodWkqiC81N4-dU8MxnviaKI0sO9ji3M",
+        "difficulty": 22,
+        "expires_at": 1800000600
+      },
+      "status": 200
+    },
+    "signup": {
+      "test_source": "svc/control/identity-agent.test.mjs",
+      "handler_source": "svc/control/identity-agent.mjs",
+      "method": "POST",
+      "path": "/v1/identity/signup",
+      "request": {
+        "challenge": "tEqHgN5nxFYyodWkqiC81N4-dU8MxnviaKI0sO9ji3M",
+        "public_key": "<public_key>",
+        "nonce": "<nonce>"
+      },
+      "response": {
+        "user_id": "fc46cb4c-c6e5-4691-8367-034e42c78406",
+        "org_id": "4ae83c35-5a2b-4208-94fe-5467ec705029",
+        "key_id": "529cf4b4-7845-43da-b98f-2b977a67b47c",
+        "account_id": "acct-1",
+        "birth": "eyJ2ZXJzaW9uIjoxLCJlbnZpcm9ubWVudCI6InN0YWdpbmciLCJhY2NvdW50X2lkIjoiYWNjdC0xIiwibmFtZSI6ImV4YW1wbGUiLCJob21lX3JlZ2lvbiI6InVzLWVhc3QiLCJnZW5lc2lzX2tleSI6ImdUbDNEcWg5RjE5V28xUm13MHgtek11TmlwRzA3amVpWGZZUFc0X0pzNVEiLCJpc3N1ZWRfYXQiOjE3OTk5OTkwMDB9.QTKyxZ4PPjRZlo2Bpb8f36J9YIlUFW2eMrP0tlqjQl6hZgldC-dTSJz616g17e_LSkgB5GG8XERKMX2_E71zAw",
+        "certificate": "eyJ2ZXJzaW9uIjoxLCJhY2NvdW50X2lkIjoiYWNjdC0xIiwia2V5X2lkIjoiNTI5Y2Y0YjQtNzg0NS00M2RhLWI5OGYtMmI5NzdhNjdiNDdjIiwicHVibGljX2tleSI6IjdVa294aWpSd3NicTZRTTRrRm1WWVNsWkp6cGNZX2syTnNGR0ZLeUhOOUUiLCJrZXlfZXBvY2giOjEsIm5vdF9iZWZvcmUiOjE4MDAwMDAwMDAsIm5vdF9hZnRlciI6MTgwMjU5MjAwMCwicGVybWlzc2lvbnMiOnsic3RyZWFtcyI6W3sib3BlcmF0aW9uIjoicmVhZCIsInJlc291cmNlIjp7InJlc291cmNlIjoicGF0aCIsInBhdGgiOiIuYWN5Y2xpYy9pZGVudGl0eSIsImRlc2NlbmRhbnRzIjpmYWxzZX19XX19.2ETA50G2w2Pb1HvrRK5xwwLb5T-sG-Q_0hKc_l1NRE_lr9F81wyWc0dPDXHiUcydfXIeSelSAS2yZUMd44BPCw",
+        "tier": "agent",
+        "expires_at": 1802592000
+      },
+      "status": 201
+    },
+    "errors": {
+      "test_source": "svc/control/identity-device.test.mjs",
+      "handler_source": "svc/control/identity-device.mjs",
+      "responses": [
+        {
+          "error": "invalid_grant"
+        },
+        {
+          "error": "authorization_pending"
+        },
+        {
+          "error": "slow_down"
+        },
+        {
+          "error": "access_denied"
+        },
+        {
+          "error": "expired_token"
+        }
+      ]
+    }
+  }
+}

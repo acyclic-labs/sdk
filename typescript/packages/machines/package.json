@@ -4,21 +4,51 @@
   "private": false,
   "license": "Apache-2.0",
   "description": "Machine lifecycle contracts, authenticated provider, and simulator",
-  "keywords": ["machines", "compute", "checkpoints"],
-  "repository": { "type": "git", "url": "git+https://github.com/acyclic-labs/sdk.git", "directory": "typescript/packages/machines" },
+  "keywords": [
+    "machines",
+    "compute",
+    "checkpoints"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/acyclic-labs/sdk.git",
+    "directory": "typescript/packages/machines"
+  },
   "type": "module",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-    "./proto": { "types": "./generated/proto/machines/v1/machines_pb.d.ts", "default": "./generated/proto/machines/v1/machines_pb.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./proto": {
+      "types": "./generated/proto/machines/v1/machines_pb.d.ts",
+      "default": "./generated/proto/machines/v1/machines_pb.js"
+    },
+    "./grpc": {
+      "types": "./dist/grpc.d.ts",
+      "default": "./dist/grpc.js"
+    }
   },
   "types": "./dist/index.d.ts",
-  "files": ["dist", "generated", "CHANGELOG.md"],
+  "files": [
+    "dist",
+    "generated",
+    "CHANGELOG.md"
+  ],
   "scripts": {
     "build": "bun run build:wasm && tsc -b",
     "build:wasm": "bun ../../../scripts/build-wasm.mjs machines",
     "test": "bun run build && bun test test",
     "pack:dry": "bun pm pack --dry-run"
   },
-  "dependencies": { "@acyclic-labs/actors": "0.2.0", "@bufbuild/protobuf": "2.16.0" },
-  "devDependencies": { "typescript": "7.0.2", "@types/node": "26.6.4" }
+  "dependencies": {
+    "@acyclic-labs/actors": "0.2.0",
+    "@bufbuild/protobuf": "2.16.0",
+    "@connectrpc/connect": "2.2.0",
+    "@connectrpc/connect-node": "2.2.0"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2",
+    "@types/node": "26.6.4"
+  }
 }

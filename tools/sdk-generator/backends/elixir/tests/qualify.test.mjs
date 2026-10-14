@@ -3,11 +3,13 @@ import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } fr
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { qualify } from "../src/qualify.mjs";
+import { targets } from "../src/package.mjs";
+import { compatibilityArtifacts } from "../../../../../scripts/generated-bindings.mjs";
 import { sha256 } from "../../../shared/authority.mjs";
 import { fixture as packageFixture } from "./fixtures/package.mjs";
 import { dependencyFixture } from "./fixtures/dependencies.mjs";
 
-const messageMarker = "PASS Elixir Rust message/enum/service descriptors, 25 populated RPC message pairs, bytes, unsigned bounds, optional presence, oneofs and 3 runtime type rejections";
+const messageMarker = "PASS Elixir Rust message/enum/service descriptors, 19 populated RPC message pairs, bytes, unsigned bounds, optional presence, oneofs and 2 runtime type rejections";
 const sourceMarker = "PASS Elixir exact compiled SDK module inventory, source paths and loaded BEAM paths";
 function fixture(t) {
   const pkg = packageFixture(t), deps = dependencyFixture(t), root = dirname(pkg.args.package);
@@ -42,7 +44,7 @@ function fixture(t) {
 
 test("qualifier stages only admitted archives, pins offline tools and writes success after controls", t => {
   const f = fixture(t), receipt = qualify(f.args, f.options);
-  assert.equal(receipt.populated_rpc_message_pairs, 25); assert.equal(receipt.runtime_type_rejections, 3);
+  assert.equal(receipt.populated_rpc_message_pairs, 19); assert.equal(receipt.runtime_type_rejections, 2);
   assert.equal(receipt.native_rpc_calls_executed, false); assert.equal(receipt.compiled_sdk_provenance, true);
   assert.equal(Object.keys(receipt.installed_dependencies).length, 6);
   assert.equal(f.calls.length, 6);
@@ -84,4 +86,37 @@ test("existing and overlapping outputs preserve inputs without native execution"
   assert.throws(() => qualify(existing.args, existing.options), /must be absent/); assert.equal(readFileSync(join(existing.args.output, "keep"), "utf8"), "keep");
   const overlap = fixture(t); overlap.args.output = join(overlap.runtime, "new");
   assert.throws(() => qualify(overlap.args, overlap.options), /overlaps/); assert.equal(overlap.calls.length, 0);
+});
+
+
+test("consumer inventory and printed evidence match the supplied canonical contracts", t => {
+  const consumer = readFileSync(new URL("./fixtures/consumer/Consumer.exs", import.meta.url), "utf8");
+  const names = consumer.match(/expected_names = (\[[^\n]+\])/);
+  assert.ok(names);
+  assert.deepEqual(JSON.parse(names[1]), targets);
+  assert.ok(consumer.includes(`check(length(paths) == ${targets.length},`));
+  const methods = ["actors", "stream"].reduce((count, family) => {
+    const contract = readFileSync(new URL("../../../../../" + compatibilityArtifacts[family].schemaDigest, import.meta.url), "utf8");
+    const services = [...contract.matchAll(/^service \w+\s*\{([\s\S]*?)^\}/gm)];
+    assert.equal(services.length, 1, "each maintained contract must name one service");
+    return count + [...services[0][1].matchAll(/^\s*rpc\s+\w+\s*\(/gm)].length;
+  }, 0);
+  assert.ok(consumer.includes(`check(length(methods) == ${methods},`));
+  const rejections = [...consumer.matchAll(/^\s+reject\(/gm)].length;
+  const printed = consumer.match(/IO.puts\(("PASS Elixir Rust[^"\n]+")\)/);
+  assert.ok(printed);
+  const marker = JSON.parse(printed[1]);
+  const f = fixture(t);
+  f.hooks.consumer = result => { result.stdout = marker + "\n"; };
+  const receipt = qualify(f.args, f.options);
+  const call = f.calls.find(call => call.argv.includes("Consumer.exs"));
+  assert.equal(call.argv.length - call.argv.indexOf("Consumer.exs") - 1, targets.length);
+  assert.equal(receipt.populated_rpc_message_pairs, methods);
+  assert.equal(receipt.runtime_type_rejections, rejections);
+});
+
+test("retired consumer completion evidence cannot produce a receipt", t => {
+  const f = fixture(t);
+  f.hooks.consumer = result => { result.stdout = result.stdout.replace("19 populated", "25 populated").replace("2 runtime", "3 runtime"); };
+  assert.throws(() => qualify(f.args, f.options), /completion marker missing/);
 });

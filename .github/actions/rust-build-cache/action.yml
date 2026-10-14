@@ -4,17 +4,38 @@ inputs:
   scope:
     description: Target and profile boundary for compiler output
     required: true
+  cache_size:
+    description: Compiler cache limit from the measured working set plus headroom
+    required: true
+outputs:
+  downloads-key:
+    description: Primary Cargo download cache key for the post-build save.
+    value: ${{ steps.downloads.outputs.cache-primary-key }}
+  downloads-hit:
+    description: Whether the Cargo download restore matched the primary key.
+    value: ${{ steps.downloads.outputs.cache-hit }}
+  compiler-key:
+    description: Primary compiler cache key for the post-build save.
+    value: ${{ steps.compiler.outputs.cache-primary-key }}
+  compiler-matched-key:
+    description: Compiler cache entry returned by the restore.
+    value: ${{ steps.compiler.outputs.cache-matched-key }}
 runs:
   using: composite
   steps:
     - name: Configure compiler cache
+      id: cache-day
       shell: bash
+      env:
+        CACHE_SIZE: ${{ inputs.cache_size }}
       run: |
+        echo "day=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
         echo "SCCACHE_DIR=${RUNNER_TEMP}/sccache" >> "$GITHUB_ENV"
-        echo "SCCACHE_CACHE_SIZE=2G" >> "$GITHUB_ENV"
+        echo "SCCACHE_CACHE_SIZE=$CACHE_SIZE" >> "$GITHUB_ENV"
         echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
     - name: Restore Cargo downloads
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      id: downloads
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         # Cargo unpacks sources from the compressed archives faster than a
         # cache restores thousands of extracted files.
@@ -25,17 +46,28 @@ runs:
         key: rust-deps-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
         restore-keys: |
           rust-deps-v2-${{ runner.os }}-${{ runner.arch }}-
-    # Exact hits are reliable where prefix fallbacks are not, and a fresh cache
-    # per commit evicts everything else: key compiler output by what shapes
-    # compiler invocations so runs share warm dependency objects; workspace
-    # crates recompile from source anyway.
+    # Bound snapshots to one per input scope and UTC day. Older working sets
+    # seed today's snapshot even when the restored compilation has no misses.
     - name: Restore compiler output
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      id: compiler
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}/sccache
-        key: rust-objects-v2-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', '**/Cargo.toml') }}
+        key: rust-objects-v2-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', '**/Cargo.toml') }}-${{ steps.cache-day.outputs.day }}
         restore-keys: |
+          rust-objects-v2-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', '**/Cargo.toml') }}-
           rust-objects-v2-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-
+    - name: Summarize cache restores
+      shell: bash
+      env:
+        DOWNLOAD_REQUESTED: ${{ steps.downloads.outputs.cache-primary-key }}
+        DOWNLOAD_MATCHED: ${{ steps.downloads.outputs.cache-matched-key }}
+        COMPILER_REQUESTED: ${{ steps.compiler.outputs.cache-primary-key }}
+        COMPILER_MATCHED: ${{ steps.compiler.outputs.cache-matched-key }}
+      run: |
+        printf '### Rust build cache restores\n\n| Cache | Requested key | Matched key |\n| --- | --- | --- |\n| Cargo downloads | %s | %s |\n| Compiler output | %s | %s |\n\n' \
+          "$DOWNLOAD_REQUESTED" "${DOWNLOAD_MATCHED:-none}" \
+          "$COMPILER_REQUESTED" "${COMPILER_MATCHED:-none}" | tee -a "$GITHUB_STEP_SUMMARY"
     - name: Enable compiler cache
       uses: mozilla-actions/sccache-action@d651010b8da762cde178750d8eda7b5febfe147a # v0.0.9
       with:

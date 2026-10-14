@@ -35,7 +35,6 @@ const narrowMachinesDecoder = output => {
 };
 
 const packages = {
-  workers: { family: true },
   actors: { family: true },
   filesystem: { cargo: ["-p", "acyclic-fs-wasm"], artifact: "acyclic_fs_wasm" },
   stream: { family: true },

@@ -3,7 +3,11 @@
   "version": "0.2.0",
   "license": "Apache-2.0",
   "description": "Versioned workspaces for browser, memory, hosted, and native providers",
-  "keywords": ["filesystem", "storage", "workspaces"],
+  "keywords": [
+    "filesystem",
+    "storage",
+    "workspaces"
+  ],
   "private": false,
   "repository": {
     "type": "git",
@@ -12,7 +16,12 @@
   },
   "type": "module",
   "sideEffects": false,
-  "files": ["dist", "generated", "examples", "CHANGELOG.md"],
+  "files": [
+    "dist",
+    "generated",
+    "examples",
+    "CHANGELOG.md"
+  ],
   "exports": {
     ".": {
       "types": "./dist/browser.d.ts",
@@ -38,6 +47,10 @@
     "./proto": {
       "types": "./generated/proto/filesystem/v2/filesystem_pb.d.ts",
       "default": "./generated/proto/filesystem/v2/filesystem_pb.js"
+    },
+    "./grpc": {
+      "types": "./dist/grpc.d.ts",
+      "default": "./dist/grpc.js"
     }
   },
   "scripts": {
@@ -53,13 +66,15 @@
     "test:native:installed": "node test/native-public-installed.mjs",
     "test:s3": "bun test test/hosted-s3.test.mjs",
     "test:browser": "bun test/browser-qualify.mjs",
-    "pack:dry": "bun run build:clean && bun pm pack --dry-run"
+    "pack:dry": "bun run build:clean && bun pm pack --dry-run",
+    "test:cloud": "node --test test/cloud-contract.test.mjs"
   },
   "dependencies": {
     "@acyclic-labs/actors": "0.2.0",
     "@bufbuild/protobuf": "2.16.0",
     "@connectrpc/connect": "2.2.0",
-    "@connectrpc/connect-web": "2.2.0"
+    "@connectrpc/connect-web": "2.2.0",
+    "@connectrpc/connect-node": "2.2.0"
   },
   "devDependencies": {
     "@types/node": "26.6.4",

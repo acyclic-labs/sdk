@@ -27,10 +27,10 @@ function fixture(t, fault) {
       for (const source of argv.filter(name => name.endsWith(".erl"))) writeFileSync(join(output, basename(source, ".erl") + ".beam"), "compiled " + basename(source));
       return { status: 0, stdout: "compiled offline fixture\n" };
     }
-    for (const name of ["actors", "workers", "stream"]) writeFileSync(join(consumer, name + "_pb_route_fixture.erl"), "dynamic fixture " + name);
+    for (const name of ["actors", "stream"]) writeFileSync(join(consumer, name + "_pb_route_fixture.erl"), "dynamic fixture " + name);
     fault?.({ ...f, root, sdk, consumer, libs });
-    return { status: 0, stdout: ["PASS installed SDK and loaded-module provenance", "PASS archive-installed Erlang clients: 26 populated native TCP RPC pairs",
-      ...["actors", "workers", "stream"].map(name => name + "_pb differing modeled file descriptor fields: []"), "PASS installed SDK and loaded-module provenance"].join("\n") };
+    return { status: 0, stdout: ["PASS installed SDK and loaded-module provenance", "PASS archive-installed Erlang clients: 19 populated native TCP RPC pairs",
+      ...["actors", "stream"].map(name => name + "_pb differing modeled file descriptor fields: []"), "PASS installed SDK and loaded-module provenance"].join("\n") };
   };
   const options = { command, runtimePin: { ...pins.runtime["linux-x64"], inventory_sha256: sha256(runtimeBytes), otp_archive_sha256: rt.otp_archive_sha256, files: 1, links: 0 },
     toolchain: { ...pins, generator_inventory_sha256: sha256(toolIndexBytes), generator_files: 1 }, toolIndexBytes, dependencyIndexBytes,

@@ -54,4 +54,3 @@ export function fixture(t) {
   saveReceipt(); saveArchive();
   return { args, receipt, payload, saveReceipt, saveArchive, entries };
 }
-

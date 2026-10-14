@@ -2770,6 +2770,27 @@ export interface InitOutput {
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __externref_table_dealloc: (a: number) => void;
     readonly __wbindgen_start: () => void;
+    readonly __wbg_wasmtaskregistry_free: (a: number, b: number) => void;
+    readonly __wbg_wasmtaskruntime_free: (a: number, b: number) => void;
+    readonly nativeProcessApprovalDigest: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
+    readonly wasmtaskregistry_new: () => number;
+    readonly wasmtaskregistry_registerMachine: (a: number, b: any, c: any, d: any) => [number, number];
+    readonly wasmtaskregistry_registerStockTurn: (a: number) => [number, number];
+    readonly wasmtaskregistry_registerTool: (a: number, b: any, c: any, d: any, e: any) => [number, number];
+    readonly wasmtaskruntime_admit: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: any, i: number, j: number) => any;
+    readonly wasmtaskruntime_cancel: (a: number, b: number, c: number) => any;
+    readonly wasmtaskruntime_configureModel: (a: number, b: any, c: any, d: any, e: number, f: number, g: any) => [number, number];
+    readonly wasmtaskruntime_inbox: (a: number, b: number, c: number, d: bigint, e: number) => any;
+    readonly wasmtaskruntime_initializeVolume: (a: number) => any;
+    readonly wasmtaskruntime_open: (a: any, b: number, c: number, d: any) => any;
+    readonly wasmtaskruntime_outcome: (a: number, b: number, c: number) => any;
+    readonly wasmtaskruntime_reconcileAdmission: (a: number, b: number, c: number) => any;
+    readonly wasmtaskruntime_recoverWork: (a: number, b: number, c: number) => any;
+    readonly wasmtaskruntime_resume: (a: number, b: any, c: number) => any;
+    readonly wasmtaskruntime_runOperation: (a: number, b: any, c: number, d: number, e: number) => any;
+    readonly wasmtaskruntime_send: (a: number, b: any, c: number, d: number, e: number, f: number, g: any) => any;
+    readonly wasmtaskruntime_stage: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
+    readonly wasmtaskruntime_workerTick: (a: number, b: any, c: any, d: number, e: number) => any;
 }
 
 export type SyncInitInput = BufferSource | WebAssembly.Module;
@@ -2793,3 +2814,230 @@ export function initSync(module: { module: SyncInitInput } | SyncInitInput): Ini
  * @returns {Promise<InitOutput>}
  */
 export default function __wbg_init (module_or_path?: { module_or_path: InitInput | Promise<InitInput> } | InitInput | Promise<InitInput>): Promise<InitOutput>;
+
+/**
+ * Available logical resources advertised to admission policy.
+ */
+export type ResourceSnapshot = Record<string, bigint>;
+
+/**
+ * Immutable authorization scope captured at admission.
+ */
+export interface Scope {
+    /**
+     * Stable scope identity.
+     */
+    id: string;
+    /**
+     * Effective capabilities after policy intersection.
+     */
+    capabilities: Capabilities;
+    /**
+     * Host-attested agent on whose behalf this operation runs, if any.
+     */
+    agent: string | null;
+    /**
+     * Trusted issuer identity.
+     */
+    issuer: string;
+    /**
+     * Parent proof, present for attenuated scopes.
+     */
+    parent_proof: number[] | null;
+    /**
+     * Keyed proof over the complete grant.
+     */
+    proof: number[];
+}
+
+export interface WasmBrowserSessionLimits {
+    active_tasks: bigint;
+    total_tasks: bigint;
+    depth: number;
+    model_steps: bigint;
+}
+
+export interface WasmBrowserStreamLimits {
+    commands: bigint;
+    journal_bytes: bigint;
+    paths: number;
+    path_bytes: number;
+    records: number;
+    payload_bytes: number;
+    commits: number;
+    idempotency_results: number;
+}
+
+export interface WasmBrowserTaskOptions {
+    filesystem_database: string;
+    stream_database: string;
+    maximum_object_bytes: bigint;
+    stream_limits: WasmBrowserStreamLimits;
+    filesystem_provider: WasmProviderRefWire;
+    volume: WasmVolumeRefWire;
+    limits: WasmLimitsInput;
+    run_limits: WasmTaskRunLimitsInput;
+    session_limits: WasmBrowserSessionLimits;
+    concurrency: number;
+    maximum_payload_bytes: bigint;
+}
+
+export interface WasmBrowserTick {
+    wake: WasmBrowserWake;
+    work: WasmBrowserWork | null;
+}
+
+export interface WasmBrowserWake {
+    cursor: TaskWakeCursor | null;
+    through_revision: bigint;
+    events_read: number;
+    tasks_polled: number;
+    woken: string[];
+}
+
+export type WasmBrowserWork = { kind: "unresolved"; lease: WorkLease; error: WasmBrowserWorkError } | { kind: "suspended"; task_id: string; revision: bigint } | { kind: "completed"; task_id: string } | { kind: "yielded"; lease: WorkLease } | { kind: "reconciling"; lease: WorkLease };
+
+export interface WasmBrowserWorkError {
+    code: number;
+    message: string;
+}
+
+export interface WasmMachineDefinition {
+    name: string;
+    version: string;
+    digest: number[];
+    state_schema: WasmModelJsonSchema;
+    input_schema: WasmModelJsonSchema;
+    output_schema: WasmModelJsonSchema;
+    requirements: string[];
+}
+
+export type WasmBrowserAdmission = { kind: "accepted"; task_id: string } | { kind: "rejected"; reason: string } | { kind: "indeterminate"; operation_id: string };
+
+export type WasmBrowserRecoveredWork = { kind: "idle" } | { kind: "claimed"; lease: WorkLease } | { kind: "unresolved"; lease: WorkLease; error: WasmBrowserWorkError };
+
+/**
+ * The existing typed registries, sealed into each opened runtime. Host callbacks
+ * are trusted pure machine implementations, with the same contract as Rust.
+ */
+export class WasmTaskRegistry {
+    free(): void;
+    [Symbol.dispose](): void;
+    constructor();
+    registerMachine(definition: WasmMachineDefinition, initialize: Function, transition: Function): void;
+    /**
+     * Registers the Rust stock-turn adapter over the ordinary model outbox.
+     * Registration starts no worker and grants no model or task authority.
+     */
+    registerStockTurn(): void;
+    /**
+     * Callbacks share one immutable definition revision and are trusted host
+     * implementations. They receive runtime-owned invocation identities.
+     */
+    registerTool(definition: WasmModelToolDefinitionWire, execute: Function, reconcile: Function, project: Function): void;
+}
+
+export interface WasmModelToolDefinitionWire {
+    name: string;
+    revision: string;
+    description: string;
+    input_schema: WasmModelJsonSchema;
+    output_schema: WasmModelJsonSchema;
+    projection_schema: WasmModelJsonSchema;
+}
+
+/**
+ * Thin event-loop handle; scheduling, ownership, effects and recovery stay in
+ * `FilesystemTaskRuntime`. No worker starts when this handle is opened.
+ */
+export class WasmTaskRuntime {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    admit(operation: string, name: string, version: string, input: WasmModelJsonValue, parent?: string | null): Promise<WasmBrowserAdmission>;
+    /**
+     * Publishes durable cancellation without claiming terminal completion.
+     */
+    cancel(task: string): Promise<void>;
+    /**
+     * Composes an explicit provider with the stock model command executor.
+     * Generate receives canonical request bytes, separate dispatch identity and
+     * an `AbortSignal`, and returns an async iterator;
+     * reconcile receives the exact retained attempt and never redispatches it.
+     * Optional capacity/counting callbacks are synchronous, effect-free provider
+     * operations. Counting receives exact canonical bytes and their Rust digest;
+     * Rust validates the response binding and ordered message dimensions.
+     */
+    configureModel(model: WasmModelWire, generate: (request: Uint8Array, dispatch: Pick<WasmModelAttemptWire, 'operation_id' | 'step' | 'request_digest'>, signal: AbortSignal) => AsyncIterator<WasmModelEvent>, reconcile: (attempt: WasmModelAttemptWire) => WasmModelEvent[] | null | Promise<WasmModelEvent[] | null>, capacity: ((model: WasmModelWire) => ModelContextCapacity) | undefined, count_tokens: ((request: Uint8Array, request_digest: number[]) => ModelTokenCount) | undefined, compaction: CompactionPolicy): void;
+    /**
+     * A page observation is not a retained model-consumption acknowledgment.
+     */
+    inbox(task: string, after: bigint, maximum: number): Promise<InboxItem[]>;
+    /**
+     * Creates only the explicitly authorized private journal volume.
+     */
+    initializeVolume(): Promise<void>;
+    /**
+     * Opens existing providers with caller-supplied limits and signed authority.
+     * Volume creation and task admission remain separate explicit operations.
+     */
+    static open(options: WasmBrowserTaskOptions, owner: WasmReducer, registry: WasmTaskRegistry, signed_scope: Scope): Promise<WasmTaskRuntime>;
+    /**
+     * Observes only; absence does not dispatch or replay an uncertain effect.
+     */
+    outcome(task: string): Promise<Outcome<WasmModelJsonValue> | null>;
+    reconcileAdmission(operation: string): Promise<[string, ComponentIdentity] | null>;
+    /**
+     * Reads the original reservation without claiming or releasing work.
+     */
+    recoverWork(task: string): Promise<WasmBrowserRecoveredWork>;
+    /**
+     * Resumes only the exact retained lease; another tick never substitutes it.
+     */
+    resume(lease: WorkLease, maximum_transitions: number): Promise<WasmBrowserWork>;
+    /**
+     * Runs only this original task through the ordinary fenced worker path.
+     */
+    runOperation(worker: Worker, task: string, maximum_transitions: number): Promise<WasmBrowserWork | null>;
+    /**
+     * Returns only after receiver-owned durable bytes are verified. A lost
+     * acknowledgment permits exact redelivery; it grants no effect retry.
+     */
+    send(lease: WorkLease, recipient: string, message: string, payload: WasmFileRefWire): Promise<void>;
+    /**
+     * Stages an exact immutable command/input artifact through the ordinary store.
+     */
+    stage(operation: string, key: string, bytes: Uint8Array): Promise<WasmFileRefWire>;
+    /**
+     * Executes one caller-bounded tick using the production command resolver.
+     * Missing tool/model routes stay unavailable; no fabricated default swarm.
+     */
+    workerTick(worker: Worker, cursor: TaskWakeCursor | null, maximum_events: number, maximum_transitions: number): Promise<WasmBrowserTick>;
+}
+
+/**
+ * Tsify declarations for the provider-neutral model values.  These wrappers
+ * deliberately mirror the serde model DTOs instead of maintaining a second
+ * TypeScript-owned wire union.
+ */
+export interface WasmModelWire {
+    provider: string;
+    name: string;
+    revision: string;
+    options: WasmModelJsonValue;
+}
+
+export interface WasmModelAttemptWire {
+    operation_id: string;
+    step: number;
+    request_digest: readonly number[];
+    observed: WasmModelEvent[];
+}
+
+export type WasmModelEvent = { kind: "content"; delta: string } | { kind: "reasoning"; delta: string } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "completed"; metadata: WasmModelJsonValue };
+
+/**
+ * Binds the exact native request without rounding its filesystem work counters
+ * through JavaScript numbers. This performs no native dispatch or path lookup.
+ */
+export function nativeProcessApprovalDigest(task: string, command: string, request_json: string): Uint8Array;

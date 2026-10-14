@@ -8,6 +8,19 @@ the predecessor protocol revision rather than reinterpret its requests.
 
 Typed Machines contract for immutable image qualification, machine lifecycle, checkpoints, forks, operation recovery, events, and usage receipts.
 
+`MachinesProvider::exec(machine, ExecCommand::new(argv, timeout_ms)?)` dispatches one bounded guest
+command and returns a disposable stream of merged output bytes followed by one
+exit code. Dropping the stream cancels its RPC. A lost reply or interrupted stream
+returns `ProviderError::CommandIndeterminate(machine)`: the command may have run,
+so never redispatch it automatically. Argument validation does not evaluate a
+shell; shell execution requires an explicit shell program in `argv`.
+
+`MachinesProvider::read_output(machine, offset, limit)` reads the retained live console with exact
+`u64` offsets. A later response offset exposes discarded bytes; continue from
+`output.offset + output.data.len()`. Empty data means no newer bytes now, not EOF.
+Providers without guest I/O return `Unsupported`; they never fabricate output
+or a command result. The generated gRPC client exposes `Exec` and `ReadOutput`.
+
 ```sh
 cargo add acyclic-machines
 ```

@@ -12,7 +12,7 @@ function fixture(t, failure = "") {
   t.after(() => rmSync(root, { recursive: true }));
   const put = (path, bytes) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, bytes); };
   const authority = join(root, "authority");
-  const families = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v1/stream.proto"].map(source => {
+  const families = ["actors/v1/actors.proto", "stream/v1/stream.proto"].map(source => {
     put(join(authority, source), source);
     return { source, source_sha256: sha256(source), descriptor: "shared.bin", descriptor_sha256: sha256("descriptors") };
   });
@@ -69,23 +69,23 @@ function fixture(t, failure = "") {
 
 test("offline qualifier installs its deterministic package in a fresh cache and checks independent negatives", t => {
   const f = fixture(t); const result = qualify(f.args, f);
-  assert.equal(result.negative_type_controls_rejected, 3);
+  assert.equal(result.negative_type_controls_rejected, 2);
   assert.equal(result.rust_backed_rpc_qualified, false);
   const pack = f.calls.find(call => call.exe === f.args.nuget);
   assert.ok(pack.argv.includes("-Deterministic"));
   assert.equal(pack.argv[pack.argv.indexOf("-DeterministicTimestamp") + 1], "2026-01-01T00:00:00Z");
   const restore = f.calls.filter(call => call.argv[0] === "restore");
-  assert.equal(restore.length, 5);
+  assert.equal(restore.length, 4);
   assert.ok(restore[0].argv.includes("--locked-mode"));
   for (const call of restore) {
     assert.ok(call.argv.includes("--disable-parallel"));
     assert.equal(call.options.env.NUGET_PACKAGES, join(f.args.output, "cache"));
     assert.match(readFileSync(call.argv[call.argv.indexOf("--configfile") + 1], "utf8"), /<clear\/>/);
   }
-  assert.equal(f.calls.filter(call => call.argv[0] === "build" && call.options.cwd.includes("Invalid")).length, 3);
+  assert.equal(f.calls.filter(call => call.argv[0] === "build" && call.options.cwd.includes("Invalid")).length, 2);
   const positive = f.calls.find(call => call.argv[0].endsWith("Consumer.dll"));
   assert.equal(positive.argv.at(-1), sha256("new assembly"));
-  for (const path of positive.argv.slice(1, 4)) assert.equal(readFileSync(path, "utf8"), "descriptors");
+  for (const path of positive.argv.slice(1, 3)) assert.equal(readFileSync(path, "utf8"), "descriptors");
   assert.deepEqual(JSON.parse(readFileSync(join(f.args.output, "qualification.json"))), result);
 });
 

@@ -19,20 +19,17 @@ rm -rf -- "$work"
 (umask 077 && mkdir -- "$work")
 trap 'status=$?; rm -rf -- "$work"; exit "$status"' EXIT
 archive="$work/acyclic-harness.tgz"
-# TypeScript resolves the Rust-generated declarations from the package tree.
-# Build there once, then stage those exact bytes into the archive below.
+# The qualification caller already built and tested these WASM and JavaScript
+# files. Stage those exact bytes for the isolated package consumers below.
 wasm_output="$root/typescript/packages/harness/generated/wasm"
 bun_archive="$archive"
 bun_archive_url="$archive"
-bun_wasm_output="$wasm_output"
 if [[ "$bun_platform" == "win32" ]] && command -v cygpath >/dev/null 2>&1; then
   bun_archive="$(cygpath -w "$archive")"
   bun_archive_url="$(cygpath -m "$archive")"
-  bun_wasm_output="$(cygpath -w "$wasm_output")"
 elif [[ "$bun_platform" == "win32" ]] && command -v wslpath >/dev/null 2>&1; then
   bun_archive="$(wslpath -w "$archive")"
   bun_archive_url="$(wslpath -m "$archive")"
-  bun_wasm_output="$(wslpath -w "$wasm_output")"
 fi
 
 cd "$root"
@@ -45,14 +42,6 @@ cargo_bin="cargo"
 if [[ "$bun_platform" == "win32" ]] && command -v wslpath >/dev/null 2>&1 && command -v cargo.exe >/dev/null 2>&1; then
   cargo_bin="cargo.exe"
 fi
-bun_wasm_bindgen_bin="$(bash "$root/scripts/ensure-wasm-bindgen.sh")"
-bun scripts/check-metadata.mjs
-mkdir -p "$wasm_output"
-bun scripts/build-wasm.mjs harness "$bun_wasm_output" "$cargo_bin" "$bun_wasm_bindgen_bin"
-# Harness's optional Objects adapter is typechecked through its existing project
-# reference, whose public transports also require their generated WASM types.
-bun scripts/build-wasm.mjs objects "" "$cargo_bin" "$bun_wasm_bindgen_bin"
-bun x tsc -b typescript/packages/harness/tsconfig.json
 for generated in acyclic_harness_wasm.js acyclic_harness_wasm.d.ts \
   acyclic_harness_wasm_bg.wasm acyclic_harness_wasm_bg.wasm.d.ts; do
   [[ -s "$wasm_output/$generated" ]] || { echo "missing generated Harness artifact: $generated" >&2; exit 1; }
@@ -156,10 +145,11 @@ for name in "${dependency_names[@]}"; do
 done
 cd "$work/crates"
 # libtest uses small per-case thread stacks; the normal nextest gate runs
-# each case on a process main thread. Keep large live-future fixtures in the
-# extracted-crate check within the same stack capacity.
-RUST_MIN_STACK="${RUST_MIN_STACK:-8388608}" "$cargo_bin" test --manifest-path "acyclic-harness-$harness_version/Cargo.toml" --all-features --offline \
-  -- --test-threads=1 2>&1 | tee "$work/rust-package-test.log"
+# each case on a process main thread. Keep large live-future fixtures and the
+# Tokio worker running the native consumer within the same stack capacity.
+export RUST_MIN_STACK="${RUST_MIN_STACK:-8388608}"
+"$cargo_bin" test --manifest-path "acyclic-harness-$harness_version/Cargo.toml" --all-features --offline \
+  -- --test-threads="${RUST_TEST_THREADS:-1}" 2>&1 | tee "$work/rust-package-test.log"
 "$cargo_bin" run --manifest-path "acyclic-harness-$harness_version/Cargo.toml" --all-features --offline \
   --example approved-native-process 2>&1 | tee "$work/rust-native-consumer.log"
 

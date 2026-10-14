@@ -239,24 +239,23 @@ chmod +x "$gate/bin/cargo-nextest"
     bash scripts/qualify-ci.sh gate
 )
 mapfile -t cargo_calls <"$gate/cargo.log"
-[[ "${#cargo_calls[@]}" -eq 3 ]]
-[[ "${cargo_calls[0]}" == 'test --manifest-path rust/crates/sdk-docs/Cargo.toml --locked' ]]
-[[ "${cargo_calls[1]}" == 'test --manifest-path rust/crates/sdk-generation/Cargo.toml --locked' ]]
-[[ "${cargo_calls[2]}" == 'nextest run --profile ci --workspace --all-features --locked' ]]
+[[ "${#cargo_calls[@]}" -eq 1 ]]
+[[ "${cargo_calls[0]}" == 'nextest run --profile ci --workspace --all-features --locked' ]]
 
-full="$work/full"
-mkdir -p "$full/temp" "$full/artifacts" "$full/tools" "$full/bin"
-: >"$full/cargo.log"
-cp "$gate/bin/cargo-nextest" "$full/bin/cargo-nextest"
-(
-  cd "$root"
-  SDK_TEMP_DIR="$full/temp" SDK_ARTIFACT_DIR="$full/artifacts" TOOLS_DIR="$full/tools" \
-    FORCE=true FAKE_CARGO_LOG="$full/cargo.log" PATH="$full/bin:$work/bin:$PATH" \
-    bash scripts/qualify-ci.sh gate
-)
-mapfile -t full_cargo_calls <"$full/cargo.log"
-[[ "${#full_cargo_calls[@]}" -eq 3 ]]
-[[ "${full_cargo_calls[0]}" == 'test --manifest-path rust/crates/sdk-docs/Cargo.toml --locked' ]]
-[[ "${full_cargo_calls[1]}" == 'test --manifest-path rust/crates/sdk-generation/Cargo.toml --locked' ]]
-[[ "${full_cargo_calls[2]}" == 'nextest run --profile ci --workspace --all-features --locked' ]]
+for lane in docs generation; do
+  : >"$gate/cargo.log"
+  (
+    cd "$root"
+    SDK_TEMP_DIR="$gate/temp" SDK_ARTIFACT_DIR="$gate/artifacts" TOOLS_DIR="$gate/tools" \
+      FORCE=false GITHUB_EVENT_NAME=pull_request \
+      FAKE_CARGO_LOG="$gate/cargo.log" PATH="$gate/bin:$work/bin:$PATH" \
+      bash scripts/qualify-ci.sh "$lane"
+  )
+  mapfile -t cargo_calls <"$gate/cargo.log"
+  [[ "${#cargo_calls[@]}" -eq 1 ]]
+  case "$lane" in
+    docs) [[ "${cargo_calls[0]}" == 'test --manifest-path rust/crates/sdk-docs/Cargo.toml --locked' ]] ;;
+    generation) [[ "${cargo_calls[0]}" == 'test --manifest-path rust/crates/sdk-generation/Cargo.toml --locked' ]] ;;
+  esac
+done
 echo 'qualification preflight tests passed'

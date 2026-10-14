@@ -1,7 +1,6 @@
 name: Agent Host Qualification
 
 on:
-  workflow_dispatch:
   workflow_call:
     inputs:
       source_ref:
@@ -26,15 +25,21 @@ jobs:
         platform:
           - name: linux-fuse
             runner: blacksmith-4vcpu-ubuntu-2404
+            cache_size: 448M
           - name: macos-nfs
             runner: blacksmith-6vcpu-macos-15
+            cache_size: 384M
           - name: windows-projfs
             runner: blacksmith-4vcpu-windows-2025
+            cache_size: 576M
     name: ${{ matrix.platform.name }}
     runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 20
     env:
       CARGO_INCREMENTAL: 0
+      SCCACHE_IDLE_TIMEOUT: '0'
+      SCCACHE_CACHE_SIZE: ${{ matrix.platform.cache_size }}
+      RUSTC_WRAPPER: sccache
       CARGO_PROFILE_TEST_DEBUG: 0
       TOOLS_DIR: ${{ runner.temp }}/tools
     steps:
@@ -49,13 +54,31 @@ jobs:
       - name: Install exact Rust toolchain
         uses: ./.github/actions/rust-toolchain
 
-      - name: Restore Rust build cache
-        uses: ./.github/actions/rust-build-cache
+      # Hosts reuse output within the job. Persisted compiler snapshots did
+      # not shorten the release critical path and displaced native caches.
+      - name: Configure local compiler cache
+        shell: bash
+        run: echo "SCCACHE_DIR=${RUNNER_TEMP}/sccache" >> "$GITHUB_ENV"
+      - name: Enable compiler cache
+        uses: mozilla-actions/sccache-action@d651010b8da762cde178750d8eda7b5febfe147a # v0.0.9
         with:
-          scope: host-${{ matrix.platform.name }}
+          version: v0.18.0
+
+      - name: Restore Cargo downloads
+        id: downloads
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: rust-deps-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: |
+            rust-deps-v2-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Restore host npm downloads
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: npm-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/npm-cache
           key: host-npm-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('plugin/tests/hosts/package-lock.json') }}
@@ -139,7 +162,8 @@ jobs:
 
       - name: Build host scenario
         shell: bash
-        run: cargo test -p acyclic-plugin --test e2e --no-run --locked
+        run: |
+          cargo test -p acyclic-plugin --test e2e --no-run --locked
 
       - name: Run Pi installed diagnostics and native context qualification
         shell: bash
@@ -207,7 +231,23 @@ jobs:
           name: agent-host-${{ matrix.platform.name }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/agent-host-receipts
           if-no-files-found: error
-          retention-days: 14
+          retention-days: ${{ contains(github.workflow, 'Release') && 30 || 3 }}
+
+      - name: Save Cargo downloads
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && steps.downloads.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ steps.downloads.outputs.cache-primary-key }}
+      - name: Save host npm downloads
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && steps.npm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/npm-cache
+          key: ${{ steps.npm-cache.outputs.cache-primary-key }}
 
   gate:
     if: always()

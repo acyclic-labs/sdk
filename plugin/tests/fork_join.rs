@@ -1,7 +1,7 @@
 //! Black-box fork/join conformance on live native mounts.
 //!
 //! Every assertion goes through the public surface only: host hook events,
-//! `acyclic git merge`, `acyclic discard`, `acyclic agents --json`, and host file
+//! `acyclic-plugin git merge`, `acyclic-plugin discard`, `acyclic-plugin agents --json`, and host file
 //! operations on the mounts the engine hands out. Nothing here knows how the
 //! filesystem layer is built, so these hold for whatever implements it.
 //!
@@ -538,7 +538,7 @@ fn a_deletion_survives_a_conflict_resolved_with_continue() {
     );
     fs::write(session.repo.join("pkg/shared.rs"), "VALUE = 3\n").expect("resolve");
     let (added, text) = session.run(&["git", "add", "pkg/shared.rs"], &session.repo, b"");
-    assert!(added, "acyclic git add failed: {text}");
+    assert!(added, "acyclic-plugin git add failed: {text}");
     let continued = session.cli_json(&["git", "merge", "--continue"], &session.repo);
     assert_eq!(
         continued.get("status").and_then(Value::as_str),

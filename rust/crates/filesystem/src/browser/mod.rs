@@ -19,6 +19,7 @@
 #[cfg(any(test, target_arch = "wasm32"))]
 mod authority_codec;
 #[cfg(target_arch = "wasm32")]
+#[path = "indexed_db/mod.rs"]
 mod indexed_db;
 #[cfg(target_arch = "wasm32")]
 pub use indexed_db::{IndexedDbAuthorityStore, IndexedDbObjectStore, IndexedDbOpenError};

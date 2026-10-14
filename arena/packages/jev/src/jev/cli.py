@@ -2,7 +2,7 @@
 
   jev decide --state-file pr.txt --backend space -q "Risk?" -o low,medium,high --log run.jsonl
   jev eval cases.jsonl --backend space --log run.jsonl
-  jev gate --backend http://gpu:8788 --log .jev/gate.jsonl   (stdin: PreToolUse JSON)
+  jev gate --backend http://localhost:8788 --log .jev/gate.jsonl   (stdin: PreToolUse JSON)
   jev serve --backend local --port 8788
   jev log verify run.jsonl
   jev log show run.jsonl [--agent NAME]

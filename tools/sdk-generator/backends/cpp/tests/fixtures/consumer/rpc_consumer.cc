@@ -8,7 +8,6 @@
 #include <map>
 #include <mutex>
 #include "actors/v1/actors.grpc.pb.h"
-#include "workers/v1/workers.grpc.pb.h"
 #include "stream/v1/stream.grpc.pb.h"
 using RpcType = grpc::experimental::ServerRpcInfo::Type;
 std::mutex audit_mutex;
@@ -89,40 +88,7 @@ class ActorsServiceProbe final : public acyclic::actors::v1::ActorsService::Serv
   sample(*response, 2);
   return grpc::Status::OK;
  }
-};
-class WorkersServiceProbe final : public acyclic::workers::v1::WorkersService::Service {
- public:
- grpc::Status PublishVersion(grpc::ServerContext*, const acyclic::workers::v1::PublishVersionRequest* request, acyclic::workers::v1::PublishVersionResponse* response) override {
-  if (!request_matches(*request)) return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "populated request differs");
-  sample(*response, 2);
-  return grpc::Status::OK;
- }
- grpc::Status SelectDeployment(grpc::ServerContext*, const acyclic::workers::v1::SelectDeploymentRequest* request, acyclic::workers::v1::SelectDeploymentResponse* response) override {
-  if (!request_matches(*request)) return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "populated request differs");
-  sample(*response, 2);
-  return grpc::Status::OK;
- }
- grpc::Status SubmitJob(grpc::ServerContext*, const acyclic::workers::v1::SubmitJobRequest* request, acyclic::workers::v1::SubmitJobResponse* response) override {
-  if (!request_matches(*request)) return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "populated request differs");
-  sample(*response, 2);
-  return grpc::Status::OK;
- }
- grpc::Status InspectJob(grpc::ServerContext*, const acyclic::workers::v1::InspectJobRequest* request, acyclic::workers::v1::InspectJobResponse* response) override {
-  if (!request_matches(*request)) return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "populated request differs");
-  sample(*response, 2);
-  return grpc::Status::OK;
- }
- grpc::Status CancelJob(grpc::ServerContext*, const acyclic::workers::v1::CancelJobRequest* request, acyclic::workers::v1::CancelJobResponse* response) override {
-  if (!request_matches(*request)) return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "populated request differs");
-  sample(*response, 2);
-  return grpc::Status::OK;
- }
- grpc::Status InvokeVersion(grpc::ServerContext*, const acyclic::workers::v1::InvokeVersionRequest* request, acyclic::workers::v1::InvokeResponse* response) override {
-  if (!request_matches(*request)) return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "populated request differs");
-  sample(*response, 2);
-  return grpc::Status::OK;
- }
- grpc::Status InvokeDeployment(grpc::ServerContext*, const acyclic::workers::v1::InvokeDeploymentRequest* request, acyclic::workers::v1::InvokeResponse* response) override {
+ grpc::Status DeleteActor(grpc::ServerContext*, const acyclic::actors::v1::DeleteActorRequest* request, acyclic::actors::v1::DeleteActorResponse* response) override {
   if (!request_matches(*request)) return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "populated request differs");
   sample(*response, 2);
   return grpc::Status::OK;
@@ -186,7 +152,6 @@ int main(int argc, char** argv) { try {
  grpc::ServerBuilder builder; int port = 0;
  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
  ActorsServiceProbe ActorsService_server; builder.RegisterService(&ActorsService_server);
- WorkersServiceProbe WorkersService_server; builder.RegisterService(&WorkersService_server);
  StreamServiceProbe StreamService_server; builder.RegisterService(&StreamService_server);
  std::vector<std::unique_ptr<grpc::experimental::ServerInterceptorFactoryInterface>> interceptors;
  interceptors.emplace_back(new AuditFactory()); builder.experimental().SetInterceptorCreators(std::move(interceptors));
@@ -194,7 +159,6 @@ int main(int argc, char** argv) { try {
  auto channel = grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials());
  check(channel->WaitForConnected(std::chrono::system_clock::now() + std::chrono::seconds(15)), "loopback connection timed out");
  auto ActorsService_client = acyclic::actors::v1::ActorsService::NewStub(channel);
- auto WorkersService_client = acyclic::workers::v1::WorkersService::NewStub(channel);
  auto StreamService_client = acyclic::stream::v1::StreamService::NewStub(channel);
  int calls = 0;
  {
@@ -277,74 +241,15 @@ int main(int argc, char** argv) { try {
   check(google::protobuf::util::MessageDifferencer::Equals(expected, response), "/acyclic.actors.v1.ActorsService/InvokeActor response payload differs");
   ++calls;
  }
+
  {
-  acyclic::workers::v1::PublishVersionRequest request; sample(request, 1);
-  acyclic::workers::v1::PublishVersionResponse expected; sample(expected, 2);
+  acyclic::actors::v1::DeleteActorRequest request; sample(request, 1);
+  acyclic::actors::v1::DeleteActorResponse expected; sample(expected, 2);
   grpc::ClientContext context; context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(15));
-  acyclic::workers::v1::PublishVersionResponse response;
-  auto status = WorkersService_client->PublishVersion(&context, request, &response);
-  check(status.ok(), "/acyclic.workers.v1.WorkersService/PublishVersion failed: " + status.error_message());
-  check(google::protobuf::util::MessageDifferencer::Equals(expected, response), "/acyclic.workers.v1.WorkersService/PublishVersion response payload differs");
-  ++calls;
- }
- {
-  acyclic::workers::v1::SelectDeploymentRequest request; sample(request, 1);
-  acyclic::workers::v1::SelectDeploymentResponse expected; sample(expected, 2);
-  grpc::ClientContext context; context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(15));
-  acyclic::workers::v1::SelectDeploymentResponse response;
-  auto status = WorkersService_client->SelectDeployment(&context, request, &response);
-  check(status.ok(), "/acyclic.workers.v1.WorkersService/SelectDeployment failed: " + status.error_message());
-  check(google::protobuf::util::MessageDifferencer::Equals(expected, response), "/acyclic.workers.v1.WorkersService/SelectDeployment response payload differs");
-  ++calls;
- }
- {
-  acyclic::workers::v1::SubmitJobRequest request; sample(request, 1);
-  acyclic::workers::v1::SubmitJobResponse expected; sample(expected, 2);
-  grpc::ClientContext context; context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(15));
-  acyclic::workers::v1::SubmitJobResponse response;
-  auto status = WorkersService_client->SubmitJob(&context, request, &response);
-  check(status.ok(), "/acyclic.workers.v1.WorkersService/SubmitJob failed: " + status.error_message());
-  check(google::protobuf::util::MessageDifferencer::Equals(expected, response), "/acyclic.workers.v1.WorkersService/SubmitJob response payload differs");
-  ++calls;
- }
- {
-  acyclic::workers::v1::InspectJobRequest request; sample(request, 1);
-  acyclic::workers::v1::InspectJobResponse expected; sample(expected, 2);
-  grpc::ClientContext context; context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(15));
-  acyclic::workers::v1::InspectJobResponse response;
-  auto status = WorkersService_client->InspectJob(&context, request, &response);
-  check(status.ok(), "/acyclic.workers.v1.WorkersService/InspectJob failed: " + status.error_message());
-  check(google::protobuf::util::MessageDifferencer::Equals(expected, response), "/acyclic.workers.v1.WorkersService/InspectJob response payload differs");
-  ++calls;
- }
- {
-  acyclic::workers::v1::CancelJobRequest request; sample(request, 1);
-  acyclic::workers::v1::CancelJobResponse expected; sample(expected, 2);
-  grpc::ClientContext context; context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(15));
-  acyclic::workers::v1::CancelJobResponse response;
-  auto status = WorkersService_client->CancelJob(&context, request, &response);
-  check(status.ok(), "/acyclic.workers.v1.WorkersService/CancelJob failed: " + status.error_message());
-  check(google::protobuf::util::MessageDifferencer::Equals(expected, response), "/acyclic.workers.v1.WorkersService/CancelJob response payload differs");
-  ++calls;
- }
- {
-  acyclic::workers::v1::InvokeVersionRequest request; sample(request, 1);
-  acyclic::workers::v1::InvokeResponse expected; sample(expected, 2);
-  grpc::ClientContext context; context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(15));
-  acyclic::workers::v1::InvokeResponse response;
-  auto status = WorkersService_client->InvokeVersion(&context, request, &response);
-  check(status.ok(), "/acyclic.workers.v1.WorkersService/InvokeVersion failed: " + status.error_message());
-  check(google::protobuf::util::MessageDifferencer::Equals(expected, response), "/acyclic.workers.v1.WorkersService/InvokeVersion response payload differs");
-  ++calls;
- }
- {
-  acyclic::workers::v1::InvokeDeploymentRequest request; sample(request, 1);
-  acyclic::workers::v1::InvokeResponse expected; sample(expected, 2);
-  grpc::ClientContext context; context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(15));
-  acyclic::workers::v1::InvokeResponse response;
-  auto status = WorkersService_client->InvokeDeployment(&context, request, &response);
-  check(status.ok(), "/acyclic.workers.v1.WorkersService/InvokeDeployment failed: " + status.error_message());
-  check(google::protobuf::util::MessageDifferencer::Equals(expected, response), "/acyclic.workers.v1.WorkersService/InvokeDeployment response payload differs");
+  acyclic::actors::v1::DeleteActorResponse response;
+  auto status = ActorsService_client->DeleteActor(&context, request, &response);
+  check(status.ok(), "DeleteActor failed: " + status.error_message());
+  check(google::protobuf::util::MessageDifferencer::Equals(expected, response), "DeleteActor response payload differs");
   ++calls;
  }
  {
@@ -448,9 +353,9 @@ int main(int argc, char** argv) { try {
   ++calls;
  }
  server->Shutdown(); server->Wait();
- check(calls == 25, "incomplete client call inventory");
+ check(calls == 19, "incomplete client call inventory");
  std::lock_guard<std::mutex> lock(audit_mutex);
- check(observed.size()==25, "actual server method path inventory differs");
+ check(observed.size()==19, "actual server method path inventory differs");
  check(observed.count("/acyclic.actors.v1.ActorsService/CreateActor")==1 && observed.at("/acyclic.actors.v1.ActorsService/CreateActor")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/CreateActor");
  check(observed.count("/acyclic.actors.v1.ActorsService/UpdateActor")==1 && observed.at("/acyclic.actors.v1.ActorsService/UpdateActor")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/UpdateActor");
  check(observed.count("/acyclic.actors.v1.ActorsService/InspectActor")==1 && observed.at("/acyclic.actors.v1.ActorsService/InspectActor")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/InspectActor");
@@ -459,13 +364,7 @@ int main(int argc, char** argv) { try {
  check(observed.count("/acyclic.actors.v1.ActorsService/ResumeSubscription")==1 && observed.at("/acyclic.actors.v1.ActorsService/ResumeSubscription")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/ResumeSubscription");
  check(observed.count("/acyclic.actors.v1.ActorsService/CheckpointActor")==1 && observed.at("/acyclic.actors.v1.ActorsService/CheckpointActor")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/CheckpointActor");
  check(observed.count("/acyclic.actors.v1.ActorsService/InvokeActor")==1 && observed.at("/acyclic.actors.v1.ActorsService/InvokeActor")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/InvokeActor");
- check(observed.count("/acyclic.workers.v1.WorkersService/PublishVersion")==1 && observed.at("/acyclic.workers.v1.WorkersService/PublishVersion")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.workers.v1.WorkersService/PublishVersion");
- check(observed.count("/acyclic.workers.v1.WorkersService/SelectDeployment")==1 && observed.at("/acyclic.workers.v1.WorkersService/SelectDeployment")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.workers.v1.WorkersService/SelectDeployment");
- check(observed.count("/acyclic.workers.v1.WorkersService/SubmitJob")==1 && observed.at("/acyclic.workers.v1.WorkersService/SubmitJob")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.workers.v1.WorkersService/SubmitJob");
- check(observed.count("/acyclic.workers.v1.WorkersService/InspectJob")==1 && observed.at("/acyclic.workers.v1.WorkersService/InspectJob")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.workers.v1.WorkersService/InspectJob");
- check(observed.count("/acyclic.workers.v1.WorkersService/CancelJob")==1 && observed.at("/acyclic.workers.v1.WorkersService/CancelJob")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.workers.v1.WorkersService/CancelJob");
- check(observed.count("/acyclic.workers.v1.WorkersService/InvokeVersion")==1 && observed.at("/acyclic.workers.v1.WorkersService/InvokeVersion")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.workers.v1.WorkersService/InvokeVersion");
- check(observed.count("/acyclic.workers.v1.WorkersService/InvokeDeployment")==1 && observed.at("/acyclic.workers.v1.WorkersService/InvokeDeployment")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.workers.v1.WorkersService/InvokeDeployment");
+ check(observed.at("/acyclic.actors.v1.ActorsService/DeleteActor")==std::make_pair(RpcType::UNARY, 1), "DeleteActor path/count differs");
  check(observed.count("/acyclic.stream.v1.StreamService/InspectIdempotency")==1 && observed.at("/acyclic.stream.v1.StreamService/InspectIdempotency")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.stream.v1.StreamService/InspectIdempotency");
  check(observed.count("/acyclic.stream.v1.StreamService/Append")==1 && observed.at("/acyclic.stream.v1.StreamService/Append")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.stream.v1.StreamService/Append");
  check(observed.count("/acyclic.stream.v1.StreamService/Tail")==1 && observed.at("/acyclic.stream.v1.StreamService/Tail")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.stream.v1.StreamService/Tail");
@@ -476,7 +375,7 @@ int main(int argc, char** argv) { try {
  check(observed.count("/acyclic.stream.v1.StreamService/ChildrenPage")==1 && observed.at("/acyclic.stream.v1.StreamService/ChildrenPage")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.stream.v1.StreamService/ChildrenPage");
  check(observed.count("/acyclic.stream.v1.StreamService/Commit")==1 && observed.at("/acyclic.stream.v1.StreamService/Commit")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.stream.v1.StreamService/Commit");
  check(observed.count("/acyclic.stream.v1.StreamService/ReadCommit")==1 && observed.at("/acyclic.stream.v1.StreamService/ReadCommit")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.stream.v1.StreamService/ReadCommit");
- std::cout << "PASS C++ 25 generated client/server loopback calls, Rust file descriptors, populated payloads and actual method paths/stream types\n";
+ std::cout << "PASS C++ 19 generated client/server loopback calls, Rust file descriptors, populated payloads and actual method paths/stream types\n";
  return 0;
  } catch (const std::exception& error) { std::cerr << error.what() << "\n"; return 1; }
 }

@@ -9,6 +9,7 @@
   "sideEffects": false,
   "files": ["dist", "generated", "CHANGELOG.md"],
   "exports": {
+    "./browser": { "types": "./dist/browser.d.ts", "default": "./dist/browser.js" },
     ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
     "./objects": { "types": "./dist/objects.d.ts", "default": "./dist/objects.js" },
     "./client": { "types": "./dist/client-views.d.ts", "default": "./dist/client-views.js" },
