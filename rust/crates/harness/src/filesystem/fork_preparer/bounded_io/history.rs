@@ -55,6 +55,10 @@ impl HistoryIo for &PreparationIo {
         PreparationIo::retain_owned(self, bytes).map_err(Into::into)
     }
     fn admit_owned(&self, bytes: u64) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = PreparationIo::original_native_work(self) {
+            return work.admit_retained(bytes).map_err(Error::from);
+        }
         self.check_cancellation()?;
         if bytes > self.remaining()?.peak_allocation_bytes {
             return Err(self.invalid("history exceeds live logical byte allowance"));
@@ -141,10 +145,9 @@ impl HistoryIo for &PreparationIo {
             crate::executor::json::JsonCodecCharge::Admission {
                 maximum_owned_bytes,
                 value_shape,
-            } => self
-                .retain_owned(maximum_owned_bytes.max(
-                    crate::executor::json::json_value_decode_owned_bytes(value_shape)?,
-                )),
+            } => self.retain_owned(maximum_owned_bytes.max(
+                crate::executor::json::json_value_decode_owned_bytes(value_shape)?,
+            )),
             charge => PreparationIo::codec_charge(self, charge, true),
         }
     }

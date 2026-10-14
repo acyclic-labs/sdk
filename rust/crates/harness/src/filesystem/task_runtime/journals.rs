@@ -16,7 +16,6 @@ where
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Arc<FilesystemExecutionJournal<P, A, O>>, OperationId)> {
         let io = super::super::PreparationIo::from_native_work(work)?;
-        let admission = self.admission_observed(task, Some(&io)).await?;
         let operation = execution_operation(task, turn, Some(&io))?;
         let owner = self
             .host
@@ -26,6 +25,11 @@ where
                 Some(&crate::executor::PreparationIo::from_native_work(work)?),
             )
             .await?;
+        let admission = owner.admission();
+        let maximum_payload_bytes = self.maximum_payload_bytes.min(admission.limits.file_bytes);
+        let interaction = admission
+            .grants
+            .contains(crate::contract::capability::INTERACTION_ROUTE);
         let journal = FilesystemExecutionJournal::for_task(
             owner,
             operation,
@@ -34,13 +38,10 @@ where
             &self.volume,
             &self.verifier,
             &self.signed,
-            self.maximum_payload_bytes.min(admission.limits.file_bytes),
+            maximum_payload_bytes,
             Some(&io),
         )?;
-        let journal = if admission
-            .grants
-            .contains(crate::contract::capability::INTERACTION_ROUTE)
-        {
+        let journal = if interaction {
             if let Some(owner) = &self.interaction_owner {
                 journal.with_interaction_owner(
                     &owner.verifier,
@@ -67,9 +68,11 @@ where
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Arc<FilesystemExecutionJournal<P, A, O>>, OperationId)> {
         let io = super::super::PreparationIo::from_native_work(work)?;
-        let admission = self.admission_observed(task, Some(&io)).await?;
         let operation = execution_operation(task, turn, Some(&io))?;
         let owner = self.host.readonly_journal_owner(task, work).await?;
+        let maximum_payload_bytes = self
+            .maximum_payload_bytes
+            .min(owner.input_limits().file_bytes);
         let journal = FilesystemExecutionJournal::for_task(
             owner,
             operation,
@@ -78,7 +81,7 @@ where
             &self.volume,
             &self.verifier,
             &self.signed,
-            self.maximum_payload_bytes.min(admission.limits.file_bytes),
+            maximum_payload_bytes,
             Some(&io),
         )?;
         Ok((journal.into_native_shared(work)?, operation))
@@ -162,6 +165,13 @@ where
         let maximum_payload_bytes = self
             .maximum_payload_bytes
             .min(owner.input_limits().file_bytes);
+        #[cfg(not(target_arch = "wasm32"))]
+        let owner = match io.and_then(super::super::PreparationIo::original_native_work) {
+            Some(work) => owner.into_native_shared(work)?,
+            None => Arc::new(owner),
+        };
+        #[cfg(target_arch = "wasm32")]
+        let owner = Arc::new(owner);
         FilesystemWorkflowJournal::for_task(
             owner,
             self.filesystem.clone(),
@@ -197,14 +207,17 @@ where
         task: TaskId,
         fence: LeaseFence,
     ) -> Result<Arc<FilesystemWorkflowJournal<P, A, O>>> {
-        let admission = self.host.observe_admission(task).await?;
+        let owner = self.host.journal_owner(task, &fence, None).await?;
+        let maximum = self
+            .maximum_payload_bytes
+            .min(owner.input_limits().file_bytes);
         FilesystemWorkflowJournal::for_task(
-            self.host.journal_owner(task, &(fence), None).await?,
+            Arc::new(owner),
             self.filesystem.clone(),
             &self.volume,
             &self.verifier,
             &self.signed,
-            self.maximum_payload_bytes.min(admission.limits.file_bytes),
+            maximum,
             None,
         )
     }
@@ -218,7 +231,6 @@ where
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Arc<FilesystemWorkflowJournal<P, A, O>>> {
         let io = super::super::PreparationIo::from_native_work(work)?;
-        let admission = self.admission_observed(task, Some(&io)).await?;
         let owner = self
             .host
             .journal_owner(
@@ -227,13 +239,16 @@ where
                 Some(&crate::executor::PreparationIo::from_native_work(work)?),
             )
             .await?;
+        let maximum = self
+            .maximum_payload_bytes
+            .min(owner.input_limits().file_bytes);
         FilesystemWorkflowJournal::for_task(
-            owner,
+            owner.into_native_shared(work)?,
             Arc::clone(&self.filesystem),
             &self.volume,
             &self.verifier,
             &self.signed,
-            self.maximum_payload_bytes.min(admission.limits.file_bytes),
+            maximum,
             Some(&io),
         )
     }
@@ -245,27 +260,17 @@ where
         task: TaskId,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Arc<FilesystemWorkflowJournal<P, A, O>>> {
-        let io = super::super::PreparationIo::from_native_work(work)?;
-        let admission = self.admission_observed(task, Some(&io)).await?;
-        self.readonly_workflow_journal_observed(task, &admission, work)
-            .await
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(super) async fn readonly_workflow_journal_observed(
-        &self,
-        task: TaskId,
-        admission: &TaskAdmissionRecord,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Arc<FilesystemWorkflowJournal<P, A, O>>> {
         let owner = self.host.readonly_journal_owner(task, work).await?;
+        let maximum = self
+            .maximum_payload_bytes
+            .min(owner.input_limits().file_bytes);
         FilesystemWorkflowJournal::for_task(
-            owner,
+            owner.into_native_shared(work)?,
             Arc::clone(&self.filesystem),
             &self.volume,
             &self.verifier,
             &self.signed,
-            self.maximum_payload_bytes.min(admission.limits.file_bytes),
+            maximum,
             Some(&super::super::PreparationIo::from_native_work(work)?),
         )
     }

@@ -56,15 +56,10 @@ impl RootProjectSourceProvider for PiProjectSourcePolicy<'_> {
                 });
             }
             let maximum = coordinator.owner.policy().maximum_payload_bytes;
-            let bytes =
-                crate::pi_root_provider::canonical_pi_value(&context.source.input, maximum, work)?;
-            let original = crate::pi_root_provider::guarded_pi_decode::<PiTaskInput>(
-                &bytes.0,
-                maximum,
-                maximum,
-                acyclic_harness::wire::ErrorCode::Invalid,
+            let original = crate::pi_recovery::decode_recovery_value::<PiTaskInput>(
+                std::borrow::Cow::Borrowed(&context.source.input),
                 acyclic_harness::JsonValueSchema::None,
-                crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES,
+                maximum,
                 work,
             )?;
             if !original

@@ -8,7 +8,7 @@ where
 {
     pub(super) async fn effect_command(
         &self,
-        task: TaskId,
+        context: &TaskContext,
         fence: &LeaseFence,
         command: OperationId,
         payload: Value,
@@ -30,12 +30,29 @@ where
         });
         #[cfg(target_arch = "wasm32")]
         let work = None;
-        let owner = self
-            .runtime
-            .task_host()
-            .journal_owner(task, fence, io)
+        let observed;
+        #[cfg(not(target_arch = "wasm32"))]
+        let original = work
+            .map(|work| context.journal_owner::<P>(fence, work))
+            .transpose()?;
+        #[cfg(target_arch = "wasm32")]
+        let original: Option<Arc<crate::durable_host::TaskJournalOwner<P>>> = None;
+        let owner = if let Some(owner) = &original {
+            owner.as_ref()
+        } else {
+            let task = context.durable_task_id().ok_or(Error::Unauthorized(
+                "effect context has no original task".into(),
+            ))?;
+            observed = self
+                .runtime
+                .task_host()
+                .journal_owner(task, fence, io)
+                .await?;
+            &observed
+        };
+        let (status, custody) = effects
+            .run_task_effect(owner, command, &plan, work, reconciliation_only)
             .await?;
-        let (status, custody) = effects.run_task_effect(&owner, command, &plan, work, reconciliation_only).await?;
         #[cfg(not(target_arch = "wasm32"))]
         match io {
             Some(io) => io.absorb_native_custody(custody.ok_or(Error::NativeBoundary {
@@ -46,7 +63,6 @@ where
         }
         #[cfg(target_arch = "wasm32")]
         let _ = custody;
-        drop(owner);
         match status {
             crate::core::EffectStatus::Succeeded { result } => {
                 ready(Outcome::Succeeded(result), io)

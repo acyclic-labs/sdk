@@ -89,7 +89,7 @@ where
                     "native wake journal requires original observer",
                 )
             })?;
-            self.readonly_workflow_journal_observed(task, &admission, work)
+            self.readonly_workflow_journal_with_native_work(task, work)
                 .await?
         } else {
             FilesystemWorkflowJournal::new(

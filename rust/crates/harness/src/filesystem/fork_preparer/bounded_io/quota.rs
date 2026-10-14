@@ -5,25 +5,42 @@ use super::*;
 pub struct DecodeReservation<'a> {
     pub(super) io: &'a PreparationIo,
     pub(super) bytes: u64,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 impl DecodeReservation<'_> {
-    pub(crate) const fn bytes(&self) -> u64 {
+    pub(crate) fn bytes(&self) -> u64 {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(custody) = &self.custody {
+            return custody.bytes();
+        }
         self.bytes
     }
 
     pub(crate) fn substitute(&mut self, bytes: u64) -> Result<()> {
         self.io.check_cancellation()?;
-        let released = self.bytes.checked_sub(bytes).ok_or_else(|| {
+        let released = self.bytes().checked_sub(bytes).ok_or_else(|| {
             self.io
                 .invalid("audited decoded ownership exceeds reservation")
         })?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(custody) = &mut self.custody {
+            custody.release(released)?;
+            return Ok(());
+        }
         self.io.release(released)?;
         self.bytes = bytes;
         Ok(())
     }
 
     pub(crate) fn into_retained(mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(custody) = self.custody.take() {
+            self.io
+                .absorb_native_custody(custody)
+                .expect("reservation returns to its original ledger");
+        }
         self.bytes = 0;
     }
 }
@@ -36,8 +53,8 @@ impl Drop for DecodeReservation<'_> {
     }
 }
 
-pub(crate) fn retain_decoded<T>(mut decoded: (T, DecodeReservation<'_>)) -> T {
-    decoded.1.bytes = 0;
+pub(crate) fn retain_decoded<T>(decoded: (T, DecodeReservation<'_>)) -> T {
+    decoded.1.into_retained();
     decoded.0
 }
 
@@ -45,7 +62,10 @@ pub(crate) fn retain_decoded<T>(mut decoded: (T, DecodeReservation<'_>)) -> T {
 pub(crate) fn native_decoded<T>(
     mut decoded: (T, DecodeReservation<'_>),
 ) -> Result<(T, acyclic_fs::NativeAllocation)> {
-    let custody = decoded.1.io.take_native_custody(decoded.1.bytes)?;
+    let custody = match decoded.1.custody.take() {
+        Some(custody) => custody,
+        None => decoded.1.io.take_native_custody(decoded.1.bytes)?,
+    };
     decoded.1.bytes = 0;
     Ok((decoded.0, custody))
 }
