@@ -37,6 +37,7 @@ jobs:
     timeout-minutes: 20
     env:
       CARGO_INCREMENTAL: 0
+      SCCACHE_IDLE_TIMEOUT: '0'
       CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - name: Check out exact source
@@ -110,7 +111,9 @@ jobs:
 
       - name: Build host scenario
         shell: bash
-        run: cargo test -p acyclic-plugin --test e2e --no-run --locked
+        run: |
+          trap 'sccache --show-stats --stats-format=json > "$RUNNER_TEMP/host-cache-build.json" || true' EXIT
+          cargo test -p acyclic-plugin --test e2e --no-run --locked
 
       - name: Run Pi installed diagnostics and native context qualification
         shell: bash
@@ -135,6 +138,7 @@ jobs:
           ACYCLIC_E2E_HOST_PLATFORM_INTEGRITY: ${{ steps.codex.outputs.platform_integrity }}
           ACYCLIC_E2E_HOST_LOCK_SHA256: ${{ steps.codex.outputs.lock_sha256 }}
         run: |
+          trap 'sccache --show-stats --stats-format=json > "$RUNNER_TEMP/host-cache-codex.json" || true' EXIT
           cargo test -p acyclic-plugin --test e2e \
             actual_codex_binary_executes_the_scripted_scenario -- --ignored --exact --nocapture
 
@@ -146,6 +150,7 @@ jobs:
         env:
           ACYCLIC_CODEX_BIN: ${{ steps.codex.outputs.binary }}
         run: |
+          trap 'sccache --show-stats --stats-format=json > "$RUNNER_TEMP/host-cache-executor.json" || true' EXIT
           cargo test -p acyclic-harness-codex --test e2e -- --ignored --nocapture
 
       - name: Run claude scenario
@@ -161,6 +166,7 @@ jobs:
           ACYCLIC_E2E_HOST_PLATFORM_INTEGRITY: ${{ steps.claude.outputs.platform_integrity }}
           ACYCLIC_E2E_HOST_LOCK_SHA256: ${{ steps.claude.outputs.lock_sha256 }}
         run: |
+          trap 'sccache --show-stats --stats-format=json > "$RUNNER_TEMP/host-cache-claude.json" || true' EXIT
           cargo test -p acyclic-plugin --test e2e \
             actual_claude_binary_executes_the_scripted_scenario -- --ignored --exact --nocapture
 
@@ -173,8 +179,14 @@ jobs:
           if-no-files-found: error
           retention-days: ${{ contains(github.workflow, 'Release') && 30 || 3 }}
 
+      - name: Decide native compiler cache save
+        id: compiler-cache
+        shell: bash
+        env:
+          MATCHED_CACHE_KEY: ${{ steps.rust-cache.outputs.compiler-matched-key }}
+        run: node scripts/cache-save-decision.mjs "$MATCHED_CACHE_KEY" "$RUNNER_TEMP"/host-cache-*.json
       - name: Save native compiler output
-        if: steps.rust-cache.outputs.compiler-key != '' && steps.rust-cache.outputs.compiler-hit != 'true'
+        if: steps.rust-cache.outputs.compiler-key != '' && steps.compiler-cache.outputs.save == 'true'
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ${{ runner.temp }}/sccache

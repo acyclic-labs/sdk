@@ -36,7 +36,8 @@ test("native restore summaries use matched-key outputs and post-build saves pres
     assert.equal(summary.env[label + "_REQUESTED"], `\${{ steps.${id}.outputs.cache-primary-key }}`);
     assert.equal(summary.env[label + "_MATCHED"], `\${{ steps.${id}.outputs.cache-matched-key }}`);
     assert.equal(action.outputs[id + "-key"].value, `\${{ steps.${id}.outputs.cache-primary-key }}`);
-    assert.equal(action.outputs[id + "-hit"].value, `\${{ steps.${id}.outputs.cache-hit }}`);
+    if (id === "compiler") assert.equal(action.outputs["compiler-matched-key"].value, "${{ steps.compiler.outputs.cache-matched-key }}");
+    else assert.equal(action.outputs["downloads-hit"].value, "${{ steps.downloads.outputs.cache-hit }}");
   }
   assert.ok(summary.run.includes('tee -a "$GITHUB_STEP_SUMMARY"'));
   assert.ok(summary.run.includes('${DOWNLOAD_MATCHED:-none}'));
@@ -51,7 +52,9 @@ test("native restore summaries use matched-key outputs and post-build saves pres
       assert.equal(save.uses, "actions/cache/save@caa296126883cff596d87d8935842f9db880ef25");
       assert.equal(save.with.path, cached.with.path);
       assert.equal(save.with.key, `\${{ steps.rust-cache.outputs.${id}-key }}`);
-      assert.equal(save.if, `steps.rust-cache.outputs.${id}-key != '' && steps.rust-cache.outputs.${id}-hit != 'true'`);
+      assert.equal(save.if, id === "compiler"
+        ? "steps.rust-cache.outputs.compiler-key != '' && steps.compiler-cache.outputs.save == 'true'"
+        : "steps.rust-cache.outputs.downloads-key != '' && steps.rust-cache.outputs.downloads-hit != 'true'");
       assert.ok(steps.indexOf(save) > steps.findLastIndex(step => step.run));
       assert.ok(steps.indexOf(save) > steps.findLastIndex(step => step.uses?.startsWith("actions/upload-artifact@")));
     }
@@ -146,4 +149,8 @@ test("every native target retains its live cache evidence from the current run a
   assert.equal(step.with["retention-days"], "${{ contains(github.workflow, 'Release') && 30 || 3 }}");
   assert.equal(step.with["if-no-files-found"], "ignore");
   assert.equal(workflow.jobs.build.env.SCCACHE_IDLE_TIMEOUT, "0");
+  const qualification = YAML.parse(readFileSync(".github/workflows/qualification.yml", "utf8"));
+  const hosts = YAML.parse(readFileSync(".github/workflows/agent-host-qualification.yml", "utf8"));
+  assert.equal(qualification.jobs.qualification.env.SCCACHE_IDLE_TIMEOUT, "0");
+  assert.equal(hosts.jobs.qualify.env.SCCACHE_IDLE_TIMEOUT, "0");
 });

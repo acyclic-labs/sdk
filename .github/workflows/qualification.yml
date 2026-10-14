@@ -95,6 +95,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       RUSTC_WRAPPER: ${{ matrix.lane != 'windows-rust' && 'sccache' || '' }}
+      SCCACHE_IDLE_TIMEOUT: '0'
       CARGO_BUILD_JOBS: ${{ matrix.workers }}
       CMAKE_BUILD_PARALLEL_LEVEL: ${{ matrix.workers }}
       MAKEFLAGS: -j${{ matrix.workers }}
