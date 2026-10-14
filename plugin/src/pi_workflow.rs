@@ -18,13 +18,21 @@ impl PiControlHost<'_> {
         let PluginTaskBinding::Pi(binding) = &self.retained.task_binding else {
             return Err(boundary("Pi driver requires its original admitted root"));
         };
+        let admission = self
+            .runtime
+            .runtime
+            .task_host()
+            .observe_admission_with_native_work(binding.task_id, &self.work)?
+            .await?;
+        let definition = pi_task::PiTaskMachine::new(&self.work)?.definition(&self.work)?;
         pi_recovery::authenticate_pi_task(
-            &self.runtime.runtime,
+            &admission.0,
             binding,
             pi_recovery::PiTaskOrigin::RootState(self.retained),
             &self.work,
-        )
-        .await?;
+            definition.identity(),
+        )?;
+        drop(admission);
         let (recovered, custody) =
             pi_native_host::recover_task(&self.runtime, binding.task_id, &self.work).await?;
         match recovered {
