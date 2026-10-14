@@ -120,44 +120,14 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
     )
     .await?;
     for binding in diff.bindings {
-        let name_bytes = binding.name.retained_bytes() as u64;
-        let history_bytes = binding
-            .before
-            .as_ref()
-            .map_or(0, |entry| entry.name.retained_bytes() as u64)
-            + binding
-                .after
-                .as_ref()
-                .map_or(0, |entry| entry.name.retained_bytes() as u64);
-        drop(binding.before);
-        drop(binding.after);
-        inputs.release(history_bytes)?;
-        let directory = inputs
-            .find_charged(directories.iter(), |(file_id, _)| {
-                *file_id == binding.directory_id
-            })?
-            .map(|(_, path)| path);
-        match (directory, scope) {
-            (Some(directory), _) => installed.names.push((
-                inputs.clone_namespace(directory.components(), base.volume_config().limits)?,
-                binding.name,
-            )),
-            (None, InstallScope::Subtree(root)) => {
-                drop(binding.name);
-                inputs.release(name_bytes)?;
-                if installed.subtrees.is_empty() {
-                    installed.subtrees = inputs.vec(1)?;
-                    installed.subtrees.push(
-                        inputs.clone_namespace(root.components(), base.volume_config().limits)?,
-                    );
-                }
-            }
-            (None, _) => {
-                drop(binding.name);
-                inputs.release(name_bytes)?;
-                installed.everything = true;
-            }
-        }
+        install_binding_change(
+            binding,
+            &directories,
+            scope,
+            base.volume_config().limits,
+            &mut installed,
+            &mut inputs,
+        )?;
     }
     inputs.release(binding_buffer_bytes)?;
     let bytes = (directories.capacity() * std::mem::size_of::<(FileId, NamespacePath)>()) as u64
@@ -226,4 +196,53 @@ async fn installed_directories<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         }
     }
     Ok(directories)
+}
+
+fn install_binding_change(
+    binding: crate::DirectoryBindingChange,
+    directories: &[(FileId, NamespacePath)],
+    scope: InstallScope<'_>,
+    limits: VolumeLimits,
+    installed: &mut ViewEffect,
+    inputs: &mut InputBuffers<'_, '_>,
+) -> Result<(), MountSourceError> {
+    let name_bytes = binding.name.retained_bytes() as u64;
+    let history_bytes = binding
+        .before
+        .as_ref()
+        .map_or(0, |entry| entry.name.retained_bytes() as u64)
+        + binding
+            .after
+            .as_ref()
+            .map_or(0, |entry| entry.name.retained_bytes() as u64);
+    drop(binding.before);
+    drop(binding.after);
+    inputs.release(history_bytes)?;
+    let directory = inputs
+        .find_charged(directories.iter(), |(file_id, _)| {
+            *file_id == binding.directory_id
+        })?
+        .map(|(_, path)| path);
+    match (directory, scope) {
+        (Some(directory), _) => installed.names.push((
+            inputs.clone_namespace(directory.components(), limits)?,
+            binding.name,
+        )),
+        (None, InstallScope::Subtree(root)) => {
+            drop(binding.name);
+            inputs.release(name_bytes)?;
+            if installed.subtrees.is_empty() {
+                installed.subtrees = inputs.vec(1)?;
+                installed
+                    .subtrees
+                    .push(inputs.clone_namespace(root.components(), limits)?);
+            }
+        }
+        (None, _) => {
+            drop(binding.name);
+            inputs.release(name_bytes)?;
+            installed.everything = true;
+        }
+    }
+    Ok(())
 }
