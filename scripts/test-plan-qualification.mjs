@@ -494,12 +494,20 @@ bun() {
   return "$fail_harness"
 }
 bash() {
+  if [[ "$1" == scripts/check-typescript-packages.sh ]]; then
+    [[ "$#" == 6 && -f "$fixture/filesystem.done" && -f "$fixture/harness.done" ]]
+    return 0
+  fi
   [[ "$#" == 2 && "$1" == scripts/check-filesystem-package.sh ]]
   [[ "$2" == "$SDK_ARTIFACT_DIR/packages/filesystem" ]]
   touch "$fixture/filesystem-started"
   while [[ ! -f "$fixture/harness-started" ]]; do sleep 0.01; done
   touch "$fixture/filesystem.done"
   return "$fail_fs"
+}
+node() {
+  [[ "$#" == 4 && "$1" == scripts/typescript-qualification.mjs && "$2" == consumer ]]
+  [[ -f "$fixture/filesystem.done" && -f "$fixture/harness.done" ]]
 }
 ${controlledHelpers}
 background filesystem-package bash scripts/check-filesystem-package.sh "$SDK_ARTIFACT_DIR/packages/filesystem"

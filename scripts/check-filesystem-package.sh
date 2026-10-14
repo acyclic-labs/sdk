@@ -5,8 +5,6 @@ set -euo pipefail
 output="$1"
 [[ ! -e "$output" && ! -L "$output" ]] || { echo 'package output must be absent' >&2; exit 2; }
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-inference_evidence="$(dirname "$output")/inference/acyclic-inference.tgz"
-[[ -f "$inference_evidence" ]] || { echo 'filesystem qualification requires the preceding inference package artifact' >&2; exit 2; }
 # sccache keys Rust compilations by working directory and source paths, so a
 # fresh mktemp path would miss on every run. A stable per-checkout directory,
 # emptied before and after each run, keeps the package isolated and cached.
@@ -86,12 +84,3 @@ done <<< "$archives"
 cd "$output"
 sha256sum acyclic-fs.tgz acyclic-*.crate > SHA256SUMS
 git -C "$root" rev-parse --verify HEAD > SOURCE_COMMIT
-
-package_root="$(dirname "$output")"
-node "$root/scripts/typescript-qualification.mjs" consumer "$(command -v bun)" "$package_root/BUILD.json"
-bash "$root/scripts/check-typescript-packages.sh" \
-  "$package_root/typescript" \
-  "$inference_evidence" \
-  "$output/acyclic-fs.tgz" \
-  "$package_root/harness/acyclic-harness.tgz" \
-  "$package_root/BUILD.json"

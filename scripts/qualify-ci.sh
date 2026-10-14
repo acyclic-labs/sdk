@@ -325,6 +325,13 @@ case "$lane" in
     finish filesystem-package || filesystem_status=$?
     finish harness-conformance
     if ((filesystem_status != 0)); then exit "$filesystem_status"; fi
+    node scripts/typescript-qualification.mjs consumer "$(command -v bun)" "$SDK_ARTIFACT_DIR/packages/BUILD.json"
+    bash scripts/check-typescript-packages.sh \
+      "$SDK_ARTIFACT_DIR/packages/typescript" \
+      "$SDK_ARTIFACT_DIR/packages/inference/acyclic-inference.tgz" \
+      "$SDK_ARTIFACT_DIR/packages/filesystem/acyclic-fs.tgz" \
+      "$SDK_ARTIFACT_DIR/packages/harness/acyclic-harness.tgz" \
+      "$SDK_ARTIFACT_DIR/packages/BUILD.json"
     bun run licenses
     bun x buf format -d --exit-code
     bun x buf lint
