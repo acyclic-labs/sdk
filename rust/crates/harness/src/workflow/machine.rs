@@ -18,7 +18,8 @@ impl MachineIdentity {
         for label in [&self.name, &self.version] {
             if let Some(observer) = work.as_deref_mut() {
                 observer.check_cancellation()?;
-                observer.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
+                observer
+                    .codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
             }
             if !crate::contract::is_valid_component_label(label) {
                 return Err(crate::scheduler::diagnostic(
@@ -276,10 +277,8 @@ impl MachineRegistry {
                 work,
             )
         })?;
-        #[allow(unused_mut)]
-        let mut transition_retained = 0;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let transition = if let Some(io) = io {
+        let (transition, transition_retained) = if let Some(io) = io {
             let work = io
                 .original_native_work()
                 .ok_or_else(|| unsupported("native state requires the original ledger"))?;
@@ -288,14 +287,14 @@ impl MachineRegistry {
             };
             let (transition, custody) =
                 machine.transition_with_native_work(&checkpoint.state, input, work)?;
-            transition_retained = custody.bytes();
+            let retained = custody.bytes();
             io.absorb_native_custody(custody)?;
-            transition
+            (transition, retained)
         } else {
-            machine.transition(&checkpoint.state, &input)?
+            (machine.transition(&checkpoint.state, &input)?, 0)
         };
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let transition = machine.transition(&checkpoint.state, &input)?;
+        let (transition, transition_retained) = (machine.transition(&checkpoint.state, &input)?, 0);
         with_history_io(io, |work| {
             crate::executor::validate_json_schema_value(
                 machine.state_schema(),

@@ -226,7 +226,7 @@ async fn seeded_archive_transitions_preserve_old_cuts_across_read_faults() -> Re
                     client: &client,
                     authority: &authority(),
                 }
-                .update(effect, head, observed, &mut None)
+                .update(effect, head, observed.0, observed.1, &mut None)
                 .await?,
             );
             heads.insert(effect, head);

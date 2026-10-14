@@ -213,16 +213,12 @@ impl<P: StreamProvider> Tree<'_, P> {
         &self,
         effect: EffectId,
         head: (u64, u64),
-        observed: (
-            Vec<(Digest, u8, Digest)>,
-            Option<(Digest, EffectId, (u64, u64))>,
-        ),
+        mut stream: Vec<(Digest, u8, Digest)>,
+        leaf: Option<(Digest, EffectId, (u64, u64))>,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Digest> {
-        let held =
-            observed.0.capacity() as u64 * std::mem::size_of::<(Digest, u8, Digest)>() as u64;
+        let held = stream.capacity() as u64 * std::mem::size_of::<(Digest, u8, Digest)>() as u64;
         let mut quota = CodecQuota::from_retained(work, held);
-        let (mut stream, leaf) = observed;
         let mut replacement = self
             .stage_node(Node::Leaf(effect, head), quota.work())
             .await?;
@@ -312,8 +308,14 @@ pub(super) async fn publication<P: StreamProvider>(
         quota.transfer();
         quota.adopt(retained)?;
         root = Some(
-            tree.update(effect, (event.revision, position), observed, quota.work())
-                .await?,
+            tree.update(
+                effect,
+                (event.revision, position),
+                observed.0,
+                observed.1,
+                quota.work(),
+            )
+            .await?,
         );
         Some((effect, position))
     } else {
