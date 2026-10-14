@@ -85,9 +85,7 @@ pub async fn open_aggregate(
     )?;
     Ok(StreamAggregate::open(
         stream,
-        binding.authority.clone(),
-        verifier,
-        SchemaRegistry::new(),
+        (binding.authority.clone(), verifier, SchemaRegistry::new()),
         None,
         acyclic_harness::store::default_projection_read_limits(),
         acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,

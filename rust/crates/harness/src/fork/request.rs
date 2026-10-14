@@ -100,26 +100,7 @@ impl ForkRequest {
         let parent_path = work.stream_path(&self.parent)?;
         let _child_path = work.stream_path(&self.child)?;
         self.preparation.validate(self.child_agent, work.work())?;
-        if let Some(source) = &self.authorized_source {
-            source.validate(work.work())?;
-            if source.operation_id != self.operation_id
-                || !self.selections.iter().any(|selection| {
-                    matches!(
-                    &selection.revision,
-                    ResourceRevision::Project { volume, generation }
-                        if volume == &source.project && generation == &source.generation)
-                })
-                || (source.source_task != source.caller_task
-                    && (self.preparation.inherited_through_sequence != 0
-                        || self.preparation.summary.is_some()))
-            {
-                return Err(boundary_error(
-                    work.work(),
-                    crate::wire::ErrorCode::Unauthorized,
-                    "authorized source must select its exact project and history-free cross-task fork",
-                ));
-            }
-        }
+        self.validate_authorized_source(&mut work)?;
         work.slots::<AgentId>(self.attached_agents.len())?;
         let attached: BTreeSet<_> = self.attached_agents.iter().copied().collect();
         if attached.len() != self.attached_agents.len() || attached.contains(&self.child_agent) {
@@ -127,11 +108,8 @@ impl ForkRequest {
         }
         work.slots::<Vec<u8>>(self.selections.len())?;
         let mut selected = BTreeSet::new();
-        let mut histories = 0_usize;
-        let mut projects = 0_usize;
-        let mut private = 0_usize;
-        let mut contexts = 0_usize;
-        let mut processes = 0_usize;
+        let (mut histories, mut projects, mut private, mut contexts, mut processes) =
+            (0, 0, 0, 0, 0);
         for selection in &self.selections {
             work.checkpoint()?;
             selection.revision.validate(work.work())?;
@@ -194,5 +172,29 @@ impl ForkRequest {
                 crate::core::owned_bytes(source)
             })
         })
+    }
+
+    fn validate_authorized_source(&self, work: &mut CodecQuota<'_, '_>) -> Result<()> {
+        if let Some(source) = &self.authorized_source {
+            source.validate(work.work())?;
+            if source.operation_id != self.operation_id
+                || !self.selections.iter().any(|selection| {
+                    matches!(
+                    &selection.revision,
+                    ResourceRevision::Project { volume, generation }
+                        if volume == &source.project && generation == &source.generation)
+                })
+                || (source.source_task != source.caller_task
+                    && (self.preparation.inherited_through_sequence != 0
+                        || self.preparation.summary.is_some()))
+            {
+                return Err(boundary_error(
+                    work.work(),
+                    crate::wire::ErrorCode::Unauthorized,
+                    "authorized source must select its exact project and history-free cross-task fork",
+                ));
+            }
+        }
+        Ok(())
     }
 }

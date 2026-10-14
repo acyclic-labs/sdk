@@ -263,20 +263,9 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 "child binding has no published parent fork or matching scope",
             ));
         }
-        let revision = crate::contract::next_revision(seed.parent_revision)?;
-        let (publication, owned) = parent.read_event_at(revision, quota.work()).await?;
-        quota.adopt(owned)?;
-        if publication.revision != revision
-            || publication.operation_id != seed.operation_id
-            || parent_agent.is_some_and(|agent| publication.scope.agent() != Some(agent))
-            || !matches!(&publication.payload, EventPayload::ForkPublished { seed: published } if published.as_ref() == seed)
-        {
-            return Err(guarded_boundary(
-                quota.work(),
-                crate::wire::ErrorCode::Conflict,
-                "parent fork event does not match the child seed",
-            ));
-        }
+        parent
+            .verify_parent_fork(seed, parent_agent, &mut quota)
+            .await?;
         let (operation, causal) = fork_child_binding_with_work(seed, quota.work())?;
         quota.adopt(causal.authority.id.capacity() as u64)?;
         let conversation = self.reducer.conversation().ok_or_else(|| {
@@ -355,5 +344,28 @@ impl<P: StreamProvider> StreamAggregate<P> {
             .release_private_fence(seed, &mut None)
             .await
             .map_err(|_| Error::Indeterminate(seed.operation_id))
+    }
+
+    async fn verify_parent_fork(
+        &self,
+        seed: &ForkSeed,
+        parent_agent: Option<crate::AgentId>,
+        quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    ) -> Result<()> {
+        let revision = crate::contract::next_revision(seed.parent_revision)?;
+        let (publication, owned) = self.read_event_at(revision, quota.work()).await?;
+        quota.adopt(owned)?;
+        if publication.revision != revision
+            || publication.operation_id != seed.operation_id
+            || parent_agent.is_some_and(|agent| publication.scope.agent() != Some(agent))
+            || !matches!(&publication.payload, EventPayload::ForkPublished { seed: published } if published.as_ref() == seed)
+        {
+            return Err(guarded_boundary(
+                quota.work(),
+                crate::wire::ErrorCode::Conflict,
+                "parent fork event does not match the child seed",
+            ));
+        }
+        Ok(())
     }
 }

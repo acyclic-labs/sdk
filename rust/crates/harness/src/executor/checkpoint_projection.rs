@@ -2,22 +2,24 @@ use super::*;
 use crate::wire::ErrorCode::{Conflict, Invalid, Storage, Unauthorized, Unsupported};
 
 /// Imports a checkpoint and its complete canonical delta through a logical cut.
-#[allow(clippy::too_many_arguments)]
 pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider>(
     journal: &dyn ExecutionJournal,
     reference: &FileRef,
-    limits: Limits,
-    scope: &RuntimeScope,
-    history: &crate::store::HistoryReader<P>,
-    cursor: &crate::store::HistoryCursor,
-    through_sequence: u64,
-    history_limits: crate::store::HistoryReadLimits,
+    context: (Limits, &RuntimeScope),
+    history: (
+        &crate::store::HistoryReader<P>,
+        &crate::store::HistoryCursor,
+    ),
+    bounds: (u64, crate::store::HistoryReadLimits),
     resolver: &dyn crate::conversation::ContentResidencyVerifier,
     io: Option<&PreparationIo>,
 ) -> Result<(
     crate::context::CanonicalContextCheckpoint,
     crate::context::Context,
 )> {
+    let (limits, scope) = context;
+    let (history, cursor) = history;
+    let (through_sequence, history_limits) = bounds;
     let limits = crate::context::restrict_context_limits(limits, scope.limits(), io)?;
     if history_limits.maximum_events == 0 || history_limits.maximum_bytes == 0 {
         return Err(stock_boundary(
@@ -31,8 +33,7 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
         reference,
         limits,
         scope,
-        history,
-        cursor,
+        (history, cursor),
         history_limits.maximum_bytes,
         io,
     )
@@ -94,76 +95,17 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
             .map(|io| io.guard_owned(io.owned_bytes()? - before))
             .transpose()?;
     }
-    let mut message_ids = Vec::new();
-    for message in view.messages() {
-        #[cfg(feature = "filesystem")]
-        if let Some(io) = io {
-            io.charge(acyclic_fs::WorkCounters {
-                items_examined: 1,
-                ..Default::default()
-            })?;
-        }
-        if matches!(
-            message.kind,
-            crate::conversation::MessageKind::System
-                | crate::conversation::MessageKind::User
-                | crate::conversation::MessageKind::Assistant
-                | crate::conversation::MessageKind::ToolCall
-                | crate::conversation::MessageKind::ToolResult
-        ) {
-            stock_vec_push(&mut message_ids, message.id, io)?;
-        }
-    }
-    #[cfg(feature = "filesystem")]
-    let message_ids_bytes = (message_ids.capacity() * std::mem::size_of::<uuid::Uuid>()) as u64;
-    let resolver = CheckpointDeltaResolver {
-        inner: resolver,
-        scope,
-        limits,
-    };
-    for message in view.messages() {
-        resolver.authorize(&message.content, io)?;
-        match &message.attachments {
-            crate::conversation::ReferencedAttachments::Inline { items } => {
-                for attachment in items {
-                    resolver.authorize(&attachment.file, io)?;
-                }
-            }
-            crate::conversation::ReferencedAttachments::Manifest { manifest, .. } => {
-                resolver.authorize(manifest, io)?;
-            }
-        }
-    }
-    let selected = crate::projection::select_model_context(
+    let messages = project_checkpoint_delta(
+        journal,
         &view,
         through_sequence,
-        crate::conversation::ModelContextSelection {
-            conversation_revision: through_sequence,
-            message_ids,
-            checkpoint: None,
-        },
-        &resolver,
-        limits,
-        limits.attachments,
+        (limits, scope, resolver),
         io,
     )
     .await?;
-    verify_model_contents_scoped(
-        journal,
-        selected.messages.iter().map(|message| &message.content),
-        limits,
-        Some(scope),
-        io,
-    )
-    .await?;
-    drop(selected.selection);
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        io.release(message_ids_bytes)?;
-    }
     let retained = crate::context::apply_context_projection(
         retained,
-        selected.messages,
+        messages,
         crate::context::ContextRenderMode::Prompt,
         crate::context::ContextPlacement::Append,
         limits,
@@ -350,4 +292,86 @@ pub async fn load_canonical_checkpoint(
         ));
     }
     Ok((retain_preparation(envelope), retain_preparation(retained)))
+}
+
+async fn project_checkpoint_delta(
+    journal: &dyn ExecutionJournal,
+    view: &crate::conversation::ConversationState,
+    through_sequence: u64,
+    authorization: (
+        Limits,
+        &RuntimeScope,
+        &dyn crate::conversation::ContentResidencyVerifier,
+    ),
+    io: Option<&PreparationIo>,
+) -> Result<Vec<ModelMessage>> {
+    let (limits, scope, resolver) = authorization;
+    let mut message_ids = Vec::new();
+    for message in view.messages() {
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            io.charge(acyclic_fs::WorkCounters {
+                items_examined: 1,
+                ..Default::default()
+            })?;
+        }
+        if matches!(
+            message.kind,
+            crate::conversation::MessageKind::System
+                | crate::conversation::MessageKind::User
+                | crate::conversation::MessageKind::Assistant
+                | crate::conversation::MessageKind::ToolCall
+                | crate::conversation::MessageKind::ToolResult
+        ) {
+            stock_vec_push(&mut message_ids, message.id, io)?;
+        }
+    }
+    #[cfg(feature = "filesystem")]
+    let message_ids_bytes = (message_ids.capacity() * std::mem::size_of::<uuid::Uuid>()) as u64;
+    let resolver = CheckpointDeltaResolver {
+        inner: resolver,
+        scope,
+        limits,
+    };
+    for message in view.messages() {
+        resolver.authorize(&message.content, io)?;
+        match &message.attachments {
+            crate::conversation::ReferencedAttachments::Inline { items } => {
+                for attachment in items {
+                    resolver.authorize(&attachment.file, io)?;
+                }
+            }
+            crate::conversation::ReferencedAttachments::Manifest { manifest, .. } => {
+                resolver.authorize(manifest, io)?;
+            }
+        }
+    }
+    let selected = crate::projection::select_model_context(
+        view,
+        through_sequence,
+        crate::conversation::ModelContextSelection {
+            conversation_revision: through_sequence,
+            message_ids,
+            checkpoint: None,
+        },
+        &resolver,
+        limits,
+        limits.attachments,
+        io,
+    )
+    .await?;
+    verify_model_contents_scoped(
+        journal,
+        selected.messages.iter().map(|message| &message.content),
+        limits,
+        Some(scope),
+        io,
+    )
+    .await?;
+    drop(selected.selection);
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        io.release(message_ids_bytes)?;
+    }
+    Ok(selected.messages)
 }

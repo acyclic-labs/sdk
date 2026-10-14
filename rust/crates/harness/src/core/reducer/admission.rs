@@ -40,8 +40,8 @@ impl Reducer {
     }
 
     /// Applies one deterministic command.
-    pub fn apply(&mut self, command: Command) -> Result<ApplyResult> {
-        crate::obs::outcome(match self.plan(&command) {
+    pub fn apply(&mut self, command: &Command) -> Result<ApplyResult> {
+        crate::obs::outcome(match self.plan(command) {
             Ok(ApplyResult::Applied { event }) => self.apply_committed(event, &mut None),
             planned => planned,
         })

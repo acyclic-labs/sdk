@@ -22,6 +22,7 @@ impl Delivery {
         })
     }
 
+    #[cfg(any(windows, target_os = "linux"))]
     pub(super) fn prepare_startup_failure<W: SourceDemandReadWork>(
         &self,
         work: &mut W,
@@ -66,6 +67,7 @@ impl Delivery {
         }
     }
 
+    #[cfg(any(windows, target_os = "linux"))]
     pub(super) fn birth_matches<W: SourceDemandReadWork>(&self, work: &W) -> bool {
         let Some(birth) = &self.original else {
             return false;
@@ -189,6 +191,7 @@ impl Delivery {
     }
 
     /// The host stopped reporting changes exactly: report everything once, after which the watch is inexact for good.
+    #[cfg(any(windows, target_os = "linux"))]
     pub(super) fn abandon(&self) {
         if self.exact.swap(false, Ordering::AcqRel) {
             let mut work = self.callback_work();

@@ -9,7 +9,7 @@ use super::{
     confirm_name, name_is_bound, run_fuse_session,
 };
 use crate::FileId;
-use crate::kernel::{FileMetadata, MetadataField};
+use crate::kernel::FileMetadata;
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::path::Path;

@@ -118,7 +118,7 @@ async fn operation_index_is_atomic_and_recovers_without_duplicate_publication() 
 async fn operation_location_must_share_the_canonical_events_atomic_commit() -> Result<()> {
     let client = Arc::new(MemoryStream::default());
     let mut reducer = Reducer::new(authority(), issuer().verifier(&mut None)?, schemas());
-    let ApplyResult::Applied { event } = reducer.apply(command(1)?)? else {
+    let ApplyResult::Applied { event } = reducer.apply(&command(1)?)? else {
         panic!("fresh event");
     };
     acyclic_stream::Stream::new(client.clone(), authority().stream_path(&mut None)?)?

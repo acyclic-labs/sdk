@@ -9,11 +9,11 @@ fn committed_events_attest_admission_without_persisting_bearer_scopes() -> Resul
     owner.attenuate(
         &command.scope,
         "child",
-        Capabilities::new(["conversation:bind"]),
+        &Capabilities::new(["conversation:bind"]),
     )?;
     assert!(
         owner
-            .attenuate(&command.scope, "child", Capabilities::new(["admin"]))
+            .attenuate(&command.scope, "child", &Capabilities::new(["admin"]))
             .is_err()
     );
     let ApplyResult::Applied { event } = reducer.plan(&command)? else {

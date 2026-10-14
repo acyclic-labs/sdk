@@ -13,8 +13,6 @@ impl StockExecution<'_> {
         let mut prior_messages = Vec::new();
         let mut text = String::new();
         for step in 0..input.max_steps {
-            let mut calls = Vec::new();
-            let mut completed = None;
             let model_events = self
                 .run_model_step(
                     journal,
@@ -24,41 +22,8 @@ impl StockExecution<'_> {
                     ModelPurpose::Response,
                 )?
                 .await?;
-            for event in model_events {
-                match event {
-                    ModelEvent::Content { delta } => {
-                        if text
-                            .len()
-                            .checked_add(delta.len())
-                            .is_none_or(|size| size as u64 > self.stock.limits.file_bytes)
-                        {
-                            return Err(stock_boundary(
-                                self.io,
-                                crate::wire::ErrorCode::Invalid,
-                                "assistant output exceeds file limit",
-                            ));
-                        }
-                        stock_string_push(&mut text, &delta, self.io)?;
-                    }
-                    ModelEvent::ToolCall {
-                        call_id,
-                        name,
-                        arguments,
-                    } => {
-                        let invocation = ToolInvocation::for_model_call(
-                            input.operation_id,
-                            step,
-                            call_id,
-                            name,
-                            arguments,
-                            self.native_work(),
-                        )?;
-                        stock_vec_push(&mut calls, invocation, self.io)?;
-                    }
-                    ModelEvent::Completed { metadata } => completed = Some(metadata),
-                    ModelEvent::Reasoning { .. } => {}
-                }
-            }
+            let (calls, completed) =
+                self.collect_turn_events(input, step, model_events, &mut text)?;
             let Some(metadata) = completed else {
                 return Err(Error::Indeterminate(input.operation_id));
             };
@@ -108,5 +73,52 @@ impl StockExecution<'_> {
             crate::wire::ErrorCode::Conflict,
             "executor step limit reached",
         ))
+    }
+
+    fn collect_turn_events(
+        &self,
+        input: &TurnInput,
+        step: u32,
+        model_events: Vec<ModelEvent>,
+        text: &mut String,
+    ) -> Result<(Vec<ToolInvocation>, Option<Value>)> {
+        let mut calls = Vec::new();
+        let mut completed = None;
+        for event in model_events {
+            match event {
+                ModelEvent::Content { delta } => {
+                    if text
+                        .len()
+                        .checked_add(delta.len())
+                        .is_none_or(|size| size as u64 > self.stock.limits.file_bytes)
+                    {
+                        return Err(stock_boundary(
+                            self.io,
+                            crate::wire::ErrorCode::Invalid,
+                            "assistant output exceeds file limit",
+                        ));
+                    }
+                    stock_string_push(text, &delta, self.io)?;
+                }
+                ModelEvent::ToolCall {
+                    call_id,
+                    name,
+                    arguments,
+                } => {
+                    let invocation = ToolInvocation::for_model_call(
+                        input.operation_id,
+                        step,
+                        call_id,
+                        name,
+                        arguments,
+                        self.native_work(),
+                    )?;
+                    stock_vec_push(&mut calls, invocation, self.io)?;
+                }
+                ModelEvent::Completed { metadata } => completed = Some(metadata),
+                ModelEvent::Reasoning { .. } => {}
+            }
+        }
+        Ok((calls, completed))
     }
 }

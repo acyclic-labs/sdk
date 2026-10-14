@@ -232,9 +232,9 @@ async fn cold_canonical_source_checks_complete_mixed_delta_without_reducer_resto
     )?;
     let mut aggregate = StreamAggregate::open(
         &client,
-        authority.clone(),
+        (authority.clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
+        SchemaRegistry::new()),
         None,
         crate::store::default_projection_read_limits(),
         crate::store::DEFAULT_TERMINAL_EFFECTS,

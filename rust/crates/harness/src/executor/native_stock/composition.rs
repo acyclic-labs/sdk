@@ -10,20 +10,23 @@ pub(crate) struct NativeStockExecutor {
 impl NativeStockExecutor {
     /// Copies main's stock configuration after validating its issued task binding.
     pub(crate) fn new(
-        model: &Model,
-        provider: Arc<dyn ModelProvider>,
+        model: (&Model, Arc<dyn ModelProvider>),
         pipeline: &ContextPipeline,
         tools: &ToolRegistry,
-        context: Arc<crate::runtime::TaskContext>,
-        operation: OperationId,
-        host: Arc<dyn DurableTaskHost>,
-        task: TaskId,
-        fence: &crate::scheduler::LeaseFence,
+        binding: (
+            Arc<crate::runtime::TaskContext>,
+            OperationId,
+            Arc<dyn DurableTaskHost>,
+            TaskId,
+            &crate::scheduler::LeaseFence,
+        ),
         policy: Option<Arc<dyn ToolPolicy>>,
         interactions: Option<Arc<dyn crate::runtime::InteractionRouter>>,
-        compaction: &crate::context::CompactionPolicy,
-        max_output_tokens: Option<u32>,
+        output: (&crate::context::CompactionPolicy, Option<u32>),
     ) -> Result<Self> {
+        let (model, provider) = model;
+        let (context, operation, host, task, fence) = binding;
+        let (compaction, max_output_tokens) = output;
         let work = context.native_work()?;
         let invalid = |code, reason| Error::NativeBoundary { code, reason };
         if max_output_tokens == Some(0) {

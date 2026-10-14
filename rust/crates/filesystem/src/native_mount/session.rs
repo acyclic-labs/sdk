@@ -209,6 +209,8 @@ impl NativeMountSession {
         &self,
         work: &NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
+        #[cfg(not(windows))]
+        let _ = work;
         match self.driver.as_ref() {
             #[cfg(target_os = "windows")]
             Some(session) => session.flush_callbacks(work),

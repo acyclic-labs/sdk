@@ -66,6 +66,7 @@ impl EventStream {
         self.stream.is_null() && self.queue.is_null()
     }
 
+    #[cfg(test)]
     pub(crate) fn logical_owned_bytes(&self) -> u64 {
         self.owned_bytes
     }

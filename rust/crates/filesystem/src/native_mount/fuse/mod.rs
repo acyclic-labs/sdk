@@ -23,14 +23,14 @@ use fuser::{
 };
 use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 #[cfg(test)]
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{
-    Arc, Condvar, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak,
+    Arc, Condvar, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
 };
 use std::time::{Duration, SystemTime};
 
@@ -112,14 +112,13 @@ mod lookup;
 use lookup::*;
 mod session;
 pub(super) use session::FuseSession;
-use session::*;
+#[cfg(test)]
+use session::{FuseSessionState, run_fuse_session};
 mod lifecycle;
 pub(super) use lifecycle::FuseRecoveryControl;
 use lifecycle::*;
 mod write;
-use write::*;
 mod xattr;
-use xattr::*;
 
 impl From<i32> for NativeMountError {
     fn from(error: i32) -> Self {

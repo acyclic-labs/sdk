@@ -40,9 +40,11 @@ pub(super) fn clone_directory<W: NativeHostWork>(
 pub(super) fn open_unix<W: NativeHostWork>(
     directory: i32,
     name: &std::ffi::CStr,
-    mut flags: i32,
+    flags: i32,
     work: &mut W,
 ) -> Result<File, W::Error> {
+    #[cfg(target_os = "linux")]
+    let mut flags = flags;
     let delta = if flags & (libc::O_WRONLY | libc::O_RDWR | libc::O_CREAT) != 0 {
         WRITE
     } else {

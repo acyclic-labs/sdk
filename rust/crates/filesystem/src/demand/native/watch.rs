@@ -95,7 +95,7 @@ impl NativeDemandSource {
                         as u64
                     - before;
                 context.reconcile_allocation(&mut allocation, actual)?;
-                self.inner.ownership.retain(allocation, context)?;
+                self.inner._ownership.retain(allocation, context)?;
                 reserve?;
             }
             watches.push(Arc::downgrade(&watch));

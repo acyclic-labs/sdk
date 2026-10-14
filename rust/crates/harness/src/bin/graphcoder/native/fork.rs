@@ -18,9 +18,11 @@ impl NativeSession {
         let binding = self.caller_binding(caller).await?;
         let reducer = StreamAggregate::open(
             &self.stream,
-            binding.authority.clone(),
-            binding.verifier()?,
-            SchemaRegistry::default(),
+            (
+                binding.authority.clone(),
+                binding.verifier()?,
+                SchemaRegistry::default(),
+            ),
             None,
             HISTORY_LIMITS,
             acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,

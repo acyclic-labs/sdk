@@ -24,7 +24,7 @@ struct NativeDemandInner {
     /// Live change watches: on Linux, inotify admits directories to them
     #[cfg(any(target_os = "linux", windows))]
     watches: std::sync::RwLock<Vec<std::sync::Weak<crate::source_watch::NativeSourceWatch>>>,
-    ownership: SourcePayloadOwnership,
+    _ownership: SourcePayloadOwnership,
 }
 
 struct CancelWorkerOnDrop(CancellationToken);
@@ -119,7 +119,7 @@ impl NativeDemandSource {
                                     observer,
                                     #[cfg(any(target_os = "linux", windows))]
                                     watches: std::sync::RwLock::new(Vec::new()),
-                                    ownership,
+                                    _ownership: ownership,
                                 }),
                                 #[cfg(test)]
                                 watchable: true,

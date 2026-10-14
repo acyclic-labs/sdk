@@ -40,9 +40,11 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     };
     let mut aggregate = StreamAggregate::open(
         &fixture.stream,
-        audience.clone(),
-        issuer.verifier(&mut None)?,
-        SchemaRegistry::new(),
+        (
+            audience.clone(),
+            issuer.verifier(&mut None)?,
+            SchemaRegistry::new(),
+        ),
         None,
         default_projection_read_limits(),
         DEFAULT_TERMINAL_EFFECTS,

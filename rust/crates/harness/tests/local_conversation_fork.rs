@@ -135,9 +135,11 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
         )?;
         let mut aggregate = StreamAggregate::open(
             &stream,
-            parent.clone(),
-            issuer.verifier(&mut None).expect("verifier copy"),
-            SchemaRegistry::new(),
+            (
+                parent.clone(),
+                issuer.verifier(&mut None).expect("verifier copy"),
+                SchemaRegistry::new(),
+            ),
             None,
             acyclic_harness::store::default_projection_read_limits(),
             acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
@@ -281,10 +283,13 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                     revision: ResourceRevision::PrivateVolume {
                         volume: private.clone(),
                         generation: host
-                            .resolve(&workspace_ref(
-                                provider.clone(),
-                                &private.storage_name(&mut None)?,
-                            )?, None)
+                            .resolve(
+                                &workspace_ref(
+                                    provider.clone(),
+                                    &private.storage_name(&mut None)?,
+                                )?,
+                                None,
+                            )
                             .await?
                             .generation,
                         paths: Vec::new(),
@@ -330,10 +335,10 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             )
             .await?;
         let child_head = host
-            .resolve(&workspace_ref(
-                provider.clone(),
-                &child_project.storage_name(&mut None)?,
-            )?, None)
+            .resolve(
+                &workspace_ref(provider.clone(), &child_project.storage_name(&mut None)?)?,
+                None,
+            )
             .await?;
         host.apply(
             &child_head.workspace,
@@ -376,10 +381,13 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                 &child,
                 &child_project,
                 &host
-                    .resolve(&workspace_ref(
-                        provider.clone(),
-                        &(child_project).storage_name(&mut None)?,
-                    )?, None)
+                    .resolve(
+                        &workspace_ref(
+                            provider.clone(),
+                            &(child_project).storage_name(&mut None)?,
+                        )?,
+                        None,
+                    )
                     .await?
                     .generation,
             )
@@ -438,9 +446,11 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
     );
     let restored = StreamAggregate::open(
         &stream,
-        parent.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
+        (
+            parent.clone(),
+            issuer.verifier(&mut None).expect("verifier copy"),
+            SchemaRegistry::new(),
+        ),
         None,
         acyclic_harness::store::default_projection_read_limits(),
         acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
@@ -640,9 +650,12 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
         .is_err()
     );
     assert_eq!(
-        host.resolve(&workspace_ref(provider, &project.storage_name(&mut None)?)?, None)
-            .await?
-            .generation,
+        host.resolve(
+            &workspace_ref(provider, &project.storage_name(&mut None)?)?,
+            None
+        )
+        .await?
+        .generation,
         merged_generation
     );
     assert!(

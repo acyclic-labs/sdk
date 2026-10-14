@@ -17,20 +17,17 @@ impl TaskStateProvider for ResumedScope {
     fn policy_identity(&self) -> Option<acyclic_harness::registry::ComponentIdentity> {
         None
     }
-    async fn observe_admission(
-        &self,
-        _: TaskId,
-    ) -> Result<TaskAdmissionRecord> { Err(Error::Unsupported("scope boundary fixture".into()))
+    async fn observe_admission(&self, _: TaskId) -> Result<TaskAdmissionRecord> {
+        Err(Error::Unsupported("scope boundary fixture".into()))
     }
-    async fn resume_scope(
-        &self,
-        _: TaskId,
-        _: OperationId,
-    ) -> Result<RuntimeScope> { Ok(self.0.clone())
+    async fn resume_scope(&self, _: TaskId, _: OperationId) -> Result<RuntimeScope> {
+        Ok(self.0.clone())
     }
-    async fn outcome(&self, _: TaskId) -> Result<Option<Outcome<Value>>> { Err(Error::Unsupported("scope boundary fixture".into()))
+    async fn outcome(&self, _: TaskId) -> Result<Option<Outcome<Value>>> {
+        Err(Error::Unsupported("scope boundary fixture".into()))
     }
-    async fn cancel(&self, _: TaskId) -> Result<()> { Err(Error::Unsupported("scope boundary fixture".into()))
+    async fn cancel(&self, _: TaskId) -> Result<()> {
+        Err(Error::Unsupported("scope boundary fixture".into()))
     }
 }
 
@@ -40,12 +37,24 @@ fn selected_scope(id: &str) -> Result<RuntimeScope> {
         id: id.into(),
     };
     let issuer = AuthorityIssuer::new("extension-resume", [93; 32], authority.clone());
-    let mut agent = Reducer::new(authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new());
-    agent.apply(Command {
+    let mut agent = Reducer::new(
+        authority,
+        issuer.verifier(&mut None).expect("verifier copy"),
+        SchemaRegistry::new(),
+    );
+    agent.apply(&Command {
         operation_id: OperationId::new(),
         idempotency_key: IdempotencyKey::new(format!("selection:{id}"))?,
         expected_revision: 0,
-        scope: issuer.issue("owner", &Capabilities::new(["extension:activate"]), None, None, &mut None).expect("scope proof"),
+        scope: issuer
+            .issue(
+                "owner",
+                &Capabilities::new(["extension:activate"]),
+                None,
+                None,
+                &mut None,
+            )
+            .expect("scope proof"),
         causal_parent: None,
         action: Action::SelectExtensions { roots: Vec::new() },
     })?;

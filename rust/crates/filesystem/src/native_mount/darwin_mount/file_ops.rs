@@ -73,7 +73,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_release(
     _path: *const c_char,
     handle: u64,
 ) -> c_int {
-    ffi(address, false, |context, work| {
+    ffi(address, false, |context, _work| {
         if handle != 0 {
             let mut files = context.files.write().map_err(|_| driver_errno(libc::EIO))?;
 

@@ -85,7 +85,7 @@ impl MountProbe {
         // SAFETY: closes the descriptor opened here on every result path.
         let closed = unsafe { libc::close(fd) };
         match normalized {
-            Ok(value) if closed != 0 => Err(std::io::Error::last_os_error().into()),
+            Ok(_value) if closed != 0 => Err(std::io::Error::last_os_error().into()),
             result => result,
         }
     }

@@ -132,7 +132,10 @@ impl NativeMountRecoveryOwner {
             1,
             crate::WorkCounters::UNCHARGED,
         )?;
+        #[cfg(windows)]
         let mut control = NativeRecoveryControl::default();
+        #[cfg(not(windows))]
+        let control = NativeRecoveryControl::default();
         #[cfg(windows)]
         control.prepare_retirement(original)?;
         let final_close = original.reserve_work(crate::WorkCounters {

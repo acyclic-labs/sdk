@@ -147,7 +147,7 @@ impl DriverSessionResources {
         &self,
         wait: Option<&crate::CancellationToken>,
     ) -> Result<(), NativeMountError> {
-        let mut native = self.native();
+        let native = self.native();
         if native.value == 0 || self.sdk_credit.remaining_work().backend_write_operations < 2 {
             return Ok(());
         }

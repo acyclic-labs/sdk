@@ -73,6 +73,7 @@ impl crate::native_host::NativeHostWork for NativeFenceReleaseWork<'_> {
     fn claim(&mut self, _bytes: u64) -> Result<Self::Allocation, Self::Error> {
         Err(Self::Error::InvalidLayout)
     }
+    #[cfg(windows)]
     fn reserve_opaque_decode(&mut self, _bytes: u64) -> Result<Self::Allocation, Self::Error> {
         Err(Self::Error::InvalidLayout)
     }
@@ -86,12 +87,15 @@ impl crate::native_host::NativeHostWork for NativeFenceReleaseWork<'_> {
     fn release(&mut self, allocation: Self::Allocation) -> Result<(), Self::Error> {
         match allocation {}
     }
+    #[cfg(any(windows, target_os = "linux", test))]
     fn reserve_cleanup_write(&mut self) -> Result<Self::CleanupWrite, Self::Error> {
         Err(Self::Error::InvalidLayout)
     }
+    #[cfg(any(windows, target_os = "linux", test))]
     fn cancel_cleanup_write(&mut self, reservation: Self::CleanupWrite) {
         match reservation {}
     }
+    #[cfg(any(windows, target_os = "linux", test))]
     fn attempt_cleanup_write<T>(
         &mut self,
         reservation: Self::CleanupWrite,

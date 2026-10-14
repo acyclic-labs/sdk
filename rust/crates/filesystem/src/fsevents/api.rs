@@ -220,11 +220,12 @@ impl Api {
                 payload += owned;
                 if let Some(copy) = copy {
                     {
-                        let mut copy = copy;
-                        copy.record_completed(crate::WorkCounters {
+                        let recorded = copy.record_completed(crate::WorkCounters {
                             bytes_copied: owned,
                             ..crate::WorkCounters::UNCHARGED
-                        })
+                        });
+                        drop(copy);
+                        recorded
                     }
                     .map_err(crate::native_name::original_name_error)?;
                 } else {
@@ -270,11 +271,12 @@ impl Api {
             }
             if let Some(copy) = copy {
                 {
-                    let mut copy = copy;
-                    copy.record_completed(crate::WorkCounters {
+                    let recorded = copy.record_completed(crate::WorkCounters {
                         bytes_copied: slots,
                         ..crate::WorkCounters::UNCHARGED
-                    })
+                    });
+                    drop(copy);
+                    recorded
                 }
                 .map_err(crate::native_name::original_name_error)?;
             } else {

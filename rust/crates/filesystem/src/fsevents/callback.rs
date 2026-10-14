@@ -7,10 +7,6 @@ pub(crate) struct EventBatch<'a> {
 }
 
 impl<'a> EventBatch<'a> {
-    pub(crate) fn len(&self) -> usize {
-        self.paths.len()
-    }
-
     pub(crate) fn iter(self) -> impl ExactSizeIterator<Item = (&'a Path, u32)> {
         self.paths.iter().zip(self.flags).map(|(&path, &flags)| {
             // SAFETY: the callback guarantees a live NUL-terminated string for

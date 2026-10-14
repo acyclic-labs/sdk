@@ -282,9 +282,9 @@ where
     async fn aggregate(&self) -> Result<StreamAggregate<P>> {
         StreamAggregate::open(
             &self.owner.stream(),
-            self.authority.verifier.audience().clone(),
+            (self.authority.verifier.audience().clone(),
             self.authority.verifier.clone(),
-            self.authority.schemas.clone(),
+            self.authority.schemas.clone()),
             None,
             crate::store::default_projection_read_limits(),
             crate::store::DEFAULT_TERMINAL_EFFECTS,

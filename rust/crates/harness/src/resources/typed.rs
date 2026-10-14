@@ -21,24 +21,6 @@ macro_rules! typed_reference {
         impl $name {
             $($constructor)*
 
-            pub(crate) fn from_resource(
-                resource: ResourceRef,
-                work: &mut Option<&mut dyn HistoryIo>,
-            ) -> Result<Self> {
-                if let Some(io) = work.as_deref_mut() {
-                    io.check_cancellation()?;
-                }
-                // ResourceRef already owns validated immutable fields.
-                if resource.kind() != ResourceKind::$kind {
-                    return Err(invalid("typed resource kind mismatch"));
-                }
-                Ok(Self(resource))
-            }
-
-            pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-                self.0.logical_owned_bytes()
-            }
-
             /// Borrows the shared provider-neutral representation.
             #[must_use]
             pub const fn as_resource(&self) -> &ResourceRef {
@@ -155,5 +137,46 @@ impl WorkspaceRef {
 impl CheckpointRef {
     pub(crate) fn clone_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
         self.0.copy(work).map(Self)
+    }
+}
+
+macro_rules! resource_conversion {
+    ($name:ident, $kind:ident) => {
+        impl $name {
+            pub(crate) fn from_resource(
+                resource: ResourceRef,
+                work: &mut Option<&mut dyn HistoryIo>,
+            ) -> Result<Self> {
+                if let Some(io) = work.as_deref_mut() {
+                    io.check_cancellation()?;
+                }
+                // ResourceRef already owns validated immutable fields.
+                if resource.kind() != ResourceKind::$kind {
+                    return Err(invalid("typed resource kind mismatch"));
+                }
+                Ok(Self(resource))
+            }
+        }
+    };
+}
+resource_conversion!(WorkspaceRef, Workspace);
+resource_conversion!(GenerationRef, Generation);
+resource_conversion!(StreamRef, Stream);
+
+impl WorkspaceRef {
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        self.0.logical_owned_bytes()
+    }
+}
+
+impl GenerationRef {
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        self.0.logical_owned_bytes()
+    }
+}
+
+impl CheckpointRef {
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        self.0.logical_owned_bytes()
     }
 }

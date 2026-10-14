@@ -19,7 +19,7 @@ impl EventStream {
         let mut scheduled = false;
         let mut cleanup_reserved = false;
         let mut retained = false;
-        let mut result = (|| {
+        let result = (|| {
             // Birth funds both ordinary drain and the same-queue self-drop
             // suffix. Whichever path does not run refunds its exact credit.
             work.check()?;

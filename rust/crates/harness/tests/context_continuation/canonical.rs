@@ -167,7 +167,13 @@ pub(super) async fn assert_checkpoint_history_cut(
     let scope = RuntimeScope::new(storage.owner_scope().capabilities().clone(), limits)?;
     let bytes = MAX_RECORD_BYTES as u64 * 2;
     let (checkpoint, retained, _) = load_canonical_checkpoint_at(
-        journal, reference, limits, &scope, &history, &cursor, bytes, None,
+        journal,
+        reference,
+        limits,
+        &scope,
+        (&history, &cursor),
+        bytes,
+        None,
     )
     .await?;
     assert_eq!(&retained, expected);
@@ -178,8 +184,7 @@ pub(super) async fn assert_checkpoint_history_cut(
             reference,
             limits,
             &scope,
-            &history,
-            &cursor,
+            (&history, &cursor),
             bytes,
             None
         )
@@ -194,7 +199,13 @@ pub(super) async fn assert_checkpoint_history_cut(
     };
     assert!(matches!(
         load_canonical_checkpoint_at(
-            &unbound, reference, limits, &scope, &history, &cursor, bytes, None
+            &unbound,
+            reference,
+            limits,
+            &scope,
+            (&history, &cursor),
+            bytes,
+            None
         )
         .await,
         Err(Error::Unsupported(_))
@@ -207,7 +218,13 @@ pub(super) async fn assert_checkpoint_history_cut(
     cut.through_revision = selection.revision - 1;
     assert!(matches!(
         load_canonical_checkpoint_at(
-            journal, reference, limits, &scope, &history, &cut, bytes, None
+            journal,
+            reference,
+            limits,
+            &scope,
+            (&history, &cut),
+            bytes,
+            None
         )
         .await,
         Err(Error::Conflict(_))
@@ -216,7 +233,13 @@ pub(super) async fn assert_checkpoint_history_cut(
     cut.after_revision = selection.revision;
     assert!(matches!(
         load_canonical_checkpoint_at(
-            journal, reference, limits, &scope, &history, &cut, bytes, None
+            journal,
+            reference,
+            limits,
+            &scope,
+            (&history, &cut),
+            bytes,
+            None
         )
         .await,
         Err(Error::Conflict(_))
@@ -225,7 +248,13 @@ pub(super) async fn assert_checkpoint_history_cut(
     cut.authority.id = "foreign-checkpoint-owner".into();
     assert!(matches!(
         load_canonical_checkpoint_at(
-            journal, reference, limits, &scope, &history, &cut, bytes, None
+            journal,
+            reference,
+            limits,
+            &scope,
+            (&history, &cut),
+            bytes,
+            None
         )
         .await,
         Err(Error::Unauthorized(_))
@@ -234,21 +263,39 @@ pub(super) async fn assert_checkpoint_history_cut(
     cut.through_revision += 1;
     assert!(matches!(
         load_canonical_checkpoint_at(
-            journal, reference, limits, &scope, &history, &cut, bytes, None
+            journal,
+            reference,
+            limits,
+            &scope,
+            (&history, &cut),
+            bytes,
+            None
         )
         .await,
         Err(Error::Invalid(_))
     ));
     assert!(matches!(
         load_canonical_checkpoint_at(
-            journal, reference, limits, &scope, &history, &cursor, 0, None
+            journal,
+            reference,
+            limits,
+            &scope,
+            (&history, &cursor),
+            0,
+            None
         )
         .await,
         Err(Error::Invalid(_))
     ));
     assert!(matches!(
         load_canonical_checkpoint_at(
-            journal, reference, limits, &scope, &history, &cursor, 1, None
+            journal,
+            reference,
+            limits,
+            &scope,
+            (&history, &cursor),
+            1,
+            None
         )
         .await,
         Err(Error::Invalid(_))
@@ -317,8 +364,13 @@ impl<P: StreamProvider> TailCheckpointRead<'_, P> {
         ] {
             assert!(matches!(
                 load_canonical_checkpoint_through(
-                    journal, reference, limits, original, history, cursor, through, allowance,
-                    content, None
+                    journal,
+                    reference,
+                    (limits, original),
+                    (history, cursor),
+                    (through, allowance),
+                    content,
+                    None
                 )
                 .await,
                 Err(Error::Invalid(_))
@@ -334,7 +386,13 @@ impl<P: StreamProvider> TailCheckpointRead<'_, P> {
         let denied = RuntimeScope::new(Capabilities::new(grants.clone()), limits)?;
         assert!(matches!(
             load_canonical_checkpoint_through(
-                journal, reference, limits, &denied, history, cursor, 20, budget, content, None
+                journal,
+                reference,
+                (limits, &denied),
+                (history, cursor),
+                (20, budget),
+                content,
+                None
             )
             .await,
             Err(Error::Unauthorized(_))
@@ -351,12 +409,9 @@ impl<P: StreamProvider> TailCheckpointRead<'_, P> {
             load_canonical_checkpoint_through(
                 journal,
                 reference,
-                Limits::default(),
-                &exact,
-                history,
-                cursor,
-                20,
-                budget,
+                (Limits::default(), &exact),
+                (history, cursor),
+                (20, budget),
                 content,
                 None
             )
@@ -388,7 +443,13 @@ impl<P: StreamProvider> TailCheckpointRead<'_, P> {
         } = *self;
         assert_eq!(
             load_canonical_checkpoint_through(
-                journal, reference, limits, exact, history, cursor, 20, budget, content, None
+                journal,
+                reference,
+                (limits, exact),
+                (history, cursor),
+                (20, budget),
+                content,
+                None
             )
             .await?
             .1,
@@ -398,15 +459,15 @@ impl<P: StreamProvider> TailCheckpointRead<'_, P> {
             load_canonical_checkpoint_through(
                 journal,
                 reference,
-                limits,
-                original,
-                history,
-                cursor,
-                21,
-                HistoryReadLimits {
-                    maximum_events: 3,
-                    ..budget
-                },
+                (limits, original),
+                (history, cursor),
+                (
+                    21,
+                    HistoryReadLimits {
+                        maximum_events: 3,
+                        ..budget
+                    }
+                ),
                 content,
                 None
             )
@@ -433,15 +494,15 @@ impl<P: StreamProvider> TailCheckpointRead<'_, P> {
             load_canonical_checkpoint_through(
                 journal,
                 reference,
-                limits,
-                exact,
-                history,
-                &later,
-                21,
-                HistoryReadLimits {
-                    maximum_events: 3,
-                    ..budget
-                },
+                (limits, exact),
+                (history, &later),
+                (
+                    21,
+                    HistoryReadLimits {
+                        maximum_events: 3,
+                        ..budget
+                    }
+                ),
                 content,
                 None
             )
@@ -452,7 +513,13 @@ impl<P: StreamProvider> TailCheckpointRead<'_, P> {
         );
         assert!(matches!(
             load_canonical_checkpoint_through(
-                journal, reference, limits, exact, history, &later, 21, budget, content, None
+                journal,
+                reference,
+                (limits, exact),
+                (history, &later),
+                (21, budget),
+                content,
+                None
             )
             .await,
             Err(Error::Invalid(_))
@@ -492,7 +559,13 @@ pub(super) async fn assert_checkpoint_tail_source(
     };
     let original = RuntimeScope::new(storage.owner_scope().capabilities().clone(), limits)?;
     let (checkpoint, imported) = load_canonical_checkpoint_through(
-        journal, reference, limits, &original, &history, &cursor, 20, budget, &content, None,
+        journal,
+        reference,
+        (limits, &original),
+        (&history, &cursor),
+        (20, budget),
+        &content,
+        None,
     )
     .await?;
     assert_eq!(checkpoint.selection.conversation_revision, 19);
@@ -584,9 +657,11 @@ pub(super) async fn assert_checkpoint_tail_source(
     }
     let mut aggregate = acyclic_harness::store::StreamAggregate::open(
         storage.stream(),
-        storage.conversation().clone(),
-        storage.verifier(),
-        acyclic_harness::core::SchemaRegistry::new(),
+        (
+            storage.conversation().clone(),
+            storage.verifier(),
+            acyclic_harness::core::SchemaRegistry::new(),
+        ),
         None,
         acyclic_harness::store::default_projection_read_limits(),
         acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,

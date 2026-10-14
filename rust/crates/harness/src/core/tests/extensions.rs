@@ -55,12 +55,12 @@ fn extension_activation_requires_validated_configuration_and_pins_revision() -> 
     let apply = |state: &mut Reducer, id, action| {
         let mut command = command(operation(id), state.revision(), action);
         command.scope = scope.clone();
-        state.apply(command)
+        state.apply(&command)
     };
     let roots = vec![extension.clone()];
     let mut select = command(operation(73), 0, Action::SelectExtensions { roots });
     select.scope = scope.clone();
-    assert!(reducer.apply(select.clone()).is_err());
+    assert!(reducer.apply(&select).is_err());
     for (bytes, valid) in [
         (br#"{"enabled":true}"#.as_slice(), true),
         (br#"{"enabled":false,"extra":1}"#.as_slice(), false),
@@ -81,7 +81,7 @@ fn extension_activation_requires_validated_configuration_and_pins_revision() -> 
     };
     apply(&mut reducer, 72, configure)?;
     select.expected_revision = 1;
-    reducer.apply(select.clone())?;
+    reducer.apply(&select)?;
     let admitted = reducer.extension_admission()?.unwrap();
     assert_eq!(admitted.configurations()[0].content, first);
     let configure = Action::ConfigureExtension {
@@ -92,12 +92,12 @@ fn extension_activation_requires_validated_configuration_and_pins_revision() -> 
     let mut restored = restore(&reducer, &owner)?;
     assert_eq!(restored.extension_admission()?, Some(admitted.clone()));
     assert!(matches!(
-        restored.apply(select.clone())?,
+        restored.apply(&select.clone())?,
         ApplyResult::Replayed { .. }
     ));
     let clear = Action::SelectExtensions { roots: Vec::new() };
     apply(&mut restored, 75, clear.clone())?;
-    restored.apply(select)?;
+    restored.apply(&select)?;
     assert!(restored.active_extensions().is_empty());
     let active = Action::TransitionLifecycle {
         to: LifecycleState::Active,
@@ -135,7 +135,9 @@ fn extension_activation_requires_exact_acyclic_dependencies() -> Result<()> {
     );
     install(&mut registry, &beta, vec![])?;
     assert_eq!(
-        registry.activation_order(std::slice::from_ref(&alpha), &mut None)?.0,
+        registry
+            .activation_order(std::slice::from_ref(&alpha), &mut None)?
+            .0,
         vec![beta.clone(), alpha.clone()]
     );
     let other = dependency(&beta.name, 3);
@@ -204,7 +206,7 @@ fn extension_state_version_change_requires_exact_migration_event() -> Result<()>
             .plan_with_migration_boundary_with_work(&stale, true, false, None, &mut None)
             .is_err()
     );
-    assert!(reducer.apply(migrate.clone()).is_err());
+    assert!(reducer.apply(&migrate.clone()).is_err());
     let (ApplyResult::Applied { event }, _) =
         reducer.plan_with_migration_boundary_with_work(&migrate, true, false, None, &mut None)?
     else {
@@ -212,7 +214,7 @@ fn extension_state_version_change_requires_exact_migration_event() -> Result<()>
     };
     reducer.apply_committed(event, &mut None)?;
     assert!(matches!(
-        reducer.apply(migrate)?,
+        reducer.apply(&migrate)?,
         ApplyResult::Replayed { .. }
     ));
     let state = reducer.extension_state("example.message").unwrap();

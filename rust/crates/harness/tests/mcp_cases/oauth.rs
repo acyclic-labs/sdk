@@ -387,8 +387,7 @@ async fn oauth_discovery_pkce_host_interaction_refresh_and_private_restart() -> 
             interrupt: mode == "before-token",
         };
         let first = oauth::authorize(
-            &context,
-            operation,
+            (&context, operation),
             &endpoint,
             Arc::new(
                 default_oauth_http_client().map_err(|error| Error::Storage(error.to_string()))?,
@@ -461,8 +460,7 @@ async fn oauth_discovery_pkce_host_interaction_refresh_and_private_restart() -> 
             let states = states.clone();
             async move {
                 oauth::recover(
-                    context,
-                    operation,
+                    (context, operation),
                     endpoint,
                     Arc::new(
                         default_oauth_http_client()
@@ -472,8 +470,7 @@ async fn oauth_discovery_pkce_host_interaction_refresh_and_private_restart() -> 
                     states,
                     OAuthClientConfig::new("fixed-client", "http://127.0.0.1/callback")
                         .with_scopes(vec!["mcp".into()]),
-                    &callback,
-                    authorization_url,
+                    (&callback, authorization_url),
                 )
                 .await
             }

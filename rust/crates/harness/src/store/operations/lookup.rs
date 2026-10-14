@@ -180,33 +180,10 @@ pub(crate) async fn find_message_with_work<P: StreamProvider>(
             "message lookup bounds are invalid",
         ));
     }
-    let (prefix, suffix): (_, Option<&dyn std::fmt::Display>) = match &key {
-        MessageKey::Id(id) => ("harness/v2/conversation-messages/", Some(id)),
-        MessageKey::Sequence(sequence) => ("harness/v2/conversation-sequences/", Some(sequence)),
-        MessageKey::Head => ("harness/v2/conversation-heads/", None),
-    };
-    let (path, held) = publication_path(authority, prefix, suffix, quota.work())?;
-    quota.adopt(held)?;
-    let sequence = if matches!(key, MessageKey::Head) {
-        match tail_optional_with_work(client, &path, quota.work()).await? {
-            Some(0) => return Err(boundary(quota.work(), Storage, "message head is empty")),
-            Some(tail) => tail - 1,
-            None => {
-                let (canonical, held) =
-                    publication_path(authority, "harness/v2/", None, quota.work())?;
-                quota.adopt(held)?;
-                return match tail_optional_with_work(client, &canonical, quota.work()).await? {
-                    None | Some(0) => Ok((None, 0)),
-                    Some(_) => Err(boundary(
-                        quota.work(),
-                        Storage,
-                        "message head is absent for a nonempty aggregate",
-                    )),
-                };
-            }
-        }
-    } else {
-        0
+    let Some((path, held, sequence)) =
+        message_index_path(client, authority, &key, &mut quota).await?
+    else {
+        return Ok((None, 0));
     };
     let at = matches!(key, MessageKey::Head).then_some(sequence);
     let Some(index) = index_record(client, &path, at, maximum_bytes, &mut quota).await? else {
@@ -217,18 +194,7 @@ pub(crate) async fn find_message_with_work<P: StreamProvider>(
     quota.relinquish(held)?;
     let location = decode_message_location_with_work(&index.value, quota.work())?;
     quota.adopt(location.location.authority.id.capacity() as u64)?;
-    let identity = match key {
-        MessageKey::Id(id) => location.message_id == id && location.sequence > 0,
-        MessageKey::Sequence(sequence) => location.sequence == sequence,
-        MessageKey::Head => location.sequence == sequence,
-    };
-    if &location.location.authority != authority || !identity || location.location.revision == 0 {
-        return Err(boundary(
-            quota.work(),
-            Storage,
-            "message location identity is invalid",
-        ));
-    }
+    validate_message_location(authority, &key, sequence, &location, &mut quota)?;
     let ((event, owned), bytes) = verify_operation_locator(
         client,
         authority,
@@ -320,4 +286,63 @@ async fn index_record<P: StreamProvider>(
         return Err(boundary(quota.work(), Storage, "index is not immutable"));
     }
     Ok(Some(index))
+}
+
+fn validate_message_location(
+    authority: &Authority,
+    key: &MessageKey,
+    sequence: u64,
+    location: &MessageLocation,
+    quota: &mut CodecQuota<'_, '_>,
+) -> Result<()> {
+    let identity = match key {
+        MessageKey::Id(id) => location.message_id == *id && location.sequence > 0,
+        MessageKey::Sequence(sequence) => location.sequence == *sequence,
+        MessageKey::Head => location.sequence == sequence,
+    };
+    if &location.location.authority != authority || !identity || location.location.revision == 0 {
+        return Err(boundary(
+            quota.work(),
+            Storage,
+            "message location identity is invalid",
+        ));
+    }
+    Ok(())
+}
+
+async fn message_index_path<P: StreamProvider>(
+    client: &Arc<P>,
+    authority: &Authority,
+    key: &MessageKey,
+    quota: &mut CodecQuota<'_, '_>,
+) -> Result<Option<(StreamPath, u64, u64)>> {
+    let (prefix, suffix): (_, Option<&dyn std::fmt::Display>) = match key {
+        MessageKey::Id(id) => ("harness/v2/conversation-messages/", Some(id)),
+        MessageKey::Sequence(sequence) => ("harness/v2/conversation-sequences/", Some(sequence)),
+        MessageKey::Head => ("harness/v2/conversation-heads/", None),
+    };
+    let (path, held) = publication_path(authority, prefix, suffix, quota.work())?;
+    quota.adopt(held)?;
+    let sequence = if matches!(key, MessageKey::Head) {
+        match tail_optional_with_work(client, &path, quota.work()).await? {
+            Some(0) => return Err(boundary(quota.work(), Storage, "message head is empty")),
+            Some(tail) => tail - 1,
+            None => {
+                let (canonical, held) =
+                    publication_path(authority, "harness/v2/", None, quota.work())?;
+                quota.adopt(held)?;
+                return match tail_optional_with_work(client, &canonical, quota.work()).await? {
+                    None | Some(0) => Ok(None),
+                    Some(_) => Err(boundary(
+                        quota.work(),
+                        Storage,
+                        "message head is absent for a nonempty aggregate",
+                    )),
+                };
+            }
+        }
+    } else {
+        0
+    };
+    Ok(Some((path, held, sequence)))
 }

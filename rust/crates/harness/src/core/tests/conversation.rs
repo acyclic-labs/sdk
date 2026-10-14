@@ -59,8 +59,8 @@ fn interactions_are_ref_only_versioned_and_responder_bound() -> Result<()> {
     unknown.outcome = InteractionOutcome::Indeterminate {
         operation_id: operation(24),
     };
-    reducer.apply(resolve(24, 2, unknown)?)?;
-    reducer.apply(resolve(21, 3, resolution.clone())?)?;
+    reducer.apply(&resolve(24, 2, unknown)?)?;
+    reducer.apply(&resolve(21, 3, resolution.clone())?)?;
     assert_eq!(
         reducer.interaction(&ticket.id).unwrap().1.as_ref(),
         Some(&resolution)
@@ -104,7 +104,7 @@ fn conversation_binding_and_messages_replay_through_snapshot() -> Result<()> {
             },
         )
     };
-    reducer.apply(select(3, 2))?;
+    reducer.apply(&select(3, 2))?;
     let stale = ModelContextSelection {
         conversation_revision: 0,
         ..selection.clone()
@@ -123,7 +123,7 @@ fn conversation_binding_and_messages_replay_through_snapshot() -> Result<()> {
     for id in 5..=68 {
         let next = select(id, reducer.revision());
         assert!(reducer.plan(&next).is_err());
-        let ApplyResult::Applied { event } = canonical.apply(next)? else {
+        let ApplyResult::Applied { event } = canonical.apply(&next)? else {
             panic!("fresh selection replayed")
         };
         reducer.apply_committed(event, &mut None)?;
