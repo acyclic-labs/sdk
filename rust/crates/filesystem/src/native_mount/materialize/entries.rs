@@ -1,5 +1,10 @@
 use super::*;
 
+type KnownFileLinks = Vec<(FileId, HeldHostPath)>;
+type PendingDirectoryMetadata = Vec<(HeldNamespacePath, HeldHostPath)>;
+#[cfg(any(target_os = "macos", windows))]
+type KnownPayload = ((u64, ObjectId, ObjectId), HeldHostPath);
+
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,
@@ -14,12 +19,9 @@ pub(super) async fn materialize_entry<A, O, E, F, Fut>(
     record: &crate::kernel::FileRecord,
     options: &MaterializeOptions,
     cancellation: &CancellationToken,
-    known_files: &mut Vec<(FileId, HeldHostPath)>,
-    #[cfg(any(target_os = "macos", windows))] known_payloads: &mut Vec<(
-        (u64, ObjectId, ObjectId),
-        HeldHostPath,
-    )>,
-    pending: &mut Vec<(HeldNamespacePath, HeldHostPath)>,
+    known_files: &mut KnownFileLinks,
+    #[cfg(any(target_os = "macos", windows))] known_payloads: &mut Vec<KnownPayload>,
+    pending: &mut PendingDirectoryMetadata,
     receipt: &mut GenerationReceipt,
     mode: MaterializeMode,
     before_effect: &mut Option<&mut F>,
@@ -62,73 +64,23 @@ where
             .map_err(MaterializeError::from)?;
         if *identity == file_id {
             generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
-            {
-                #[cfg(unix)]
-                {
-                    (|| {
-                        use crate::native_host::NativeHostWork as _;
-                        use crate::NativeTreeMaterializationError as Error;
-                        use std::os::fd::AsRawFd as _;
-                        let source = super::work::host_path(&existing.0);
-                        let destination = super::work::host_path(&host_path.0);
-                        let mut work = &work;
-                        let source_parent = host_root.0.open_dir_held(
-                            source.parent().ok_or(Error::InvalidLayout)?,
-                            &mut work,
-                        )?;
-                        let destination_parent = host_root.0.open_dir_held(
-                            destination.parent().ok_or(Error::InvalidLayout)?,
-                            &mut work,
-                        )?;
-                        crate::native_host::unix_name(
-                            source.file_name().ok_or(Error::InvalidLayout)?,
-                            &mut work,
-                            |source, work| {
-                                crate::native_host::unix_name(
-                                    destination.file_name().ok_or(Error::InvalidLayout)?,
-                                    work,
-                                    |destination, work| loop {
-                                        let linked = work.attempt_io(
-                                            crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
-                                            || {
-                                                #[allow(
-                                                    unsafe_code,
-                                                    reason = "held parents and funded names outlive linkat"
-                                                )]
-                                                // SAFETY: both parents and terminated names remain live.
-                                                let status = unsafe {
-                                                    libc::linkat(
-                                                        source_parent.as_raw_fd(),
-                                                        source.as_ptr(),
-                                                        destination_parent.as_raw_fd(),
-                                                        destination.as_ptr(),
-                                                        0,
-                                                    )
-                                                };
-                                                if status == 0 {
-                                                    Ok(())
-                                                } else {
-                                                    Err(std::io::Error::last_os_error())
-                                                }
-                                            },
-                                        );
-                                        match linked {
-                                            Err(Error::Io(error))
-                                                if error.kind() == std::io::ErrorKind::Interrupted => {}
-                                            result => return result,
-                                        }
-                                    },
-                                )
-                            },
-                        )
-                    })()
-                }
-                #[cfg(windows)]
-                {
-                    host_root.0.hard_link(&existing.0, &host_path.0, &mut work)
-                }
-            }
-            .map_err(MaterializeError::from)?;
+            host_root
+                .0
+                .hard_link(
+                    #[cfg(unix)]
+                    super::work::host_path(&existing.0),
+                    #[cfg(windows)]
+                    &existing.0,
+                    #[cfg(unix)]
+                    super::work::host_path(&host_path.0),
+                    #[cfg(windows)]
+                    &host_path.0,
+                    #[cfg(unix)]
+                    &mut &work,
+                    #[cfg(windows)]
+                    &mut work,
+                )
+                .map_err(MaterializeError::from)?;
             generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
             receipt.value.files = receipt
                 .value
@@ -376,7 +328,7 @@ async fn clone_known_payload<E, F, Fut>(
     host_root: &HostRoot,
     host_path: &[HostPathUnit],
     payload: (u64, ObjectId, ObjectId),
-    known_payloads: &[((u64, ObjectId, ObjectId), HeldHostPath)],
+    known_payloads: &[KnownPayload],
     receipt: &mut GenerationReceipt,
     before_effect: &mut Option<&mut F>,
 ) -> Result<(bool, bool), E>

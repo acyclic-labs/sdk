@@ -73,9 +73,11 @@ pub(super) async fn setup() -> Result<RecursiveState> {
     let mut grant_scope = scope(&issuer, &private, &shared, &project)?;
     let mut aggregate = StreamAggregate::open(
         &stream,
-        authority.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
+        (
+            authority.clone(),
+            issuer.verifier(&mut None).expect("verifier copy"),
+            SchemaRegistry::new(),
+        ),
         None,
         acyclic_harness::store::default_projection_read_limits(),
         acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,

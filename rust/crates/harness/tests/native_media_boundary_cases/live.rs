@@ -93,7 +93,7 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
             },
         ),
     ] {
-        agent.apply(Command {
+        agent.apply(&Command {
             operation_id: OperationId::new(),
             idempotency_key: IdempotencyKey::new(format!("native:{revision}"))?,
             expected_revision: revision,
@@ -668,7 +668,7 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
             },
         ),
     ] {
-        agent.apply(Command {
+        agent.apply(&Command {
             operation_id: OperationId::new(),
             idempotency_key: IdempotencyKey::new(format!("native:{revision}"))?,
             expected_revision: revision,

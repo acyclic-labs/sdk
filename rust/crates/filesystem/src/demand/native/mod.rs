@@ -5,10 +5,6 @@ use crate::native_host::HostListedEntry;
 use crate::native_host::NativeHostWork;
 use crate::native_host::{HostRoot, HostStat, HostStatReader};
 use crate::source_watch::CallbackWork;
-#[cfg(unix)]
-use cap_std::fs::FileTypeExt as _;
-#[cfg(unix)]
-use cap_std::fs::MetadataExt;
 use std::collections::BTreeMap;
 #[cfg(windows)]
 use std::os::windows::ffi::OsStringExt;

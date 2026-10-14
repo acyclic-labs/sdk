@@ -158,74 +158,24 @@ pub(super) async fn load_with_work<P: StreamProvider>(
         limits.maximum_bytes,
         quota.work(),
     )?;
-    let location: ProjectionLocation = operations::decode_index(
-        &index.value,
-        acyclic_stream::MAX_RECORD_BYTES as u64,
-        "ProjectionLocation Vec u8 u64 bytes chunks",
-        |shape, _| {
-            shape
-                .lexical_items()
-                .checked_mul(64)
-                .and_then(|bytes| {
-                    bytes.checked_add(128 + std::mem::size_of::<ProjectionLocation>() as u64)
-                })
-                .ok_or_else(|| Error::Invalid("projection locator reservation overflows".into()))
-        },
-        |location: &ProjectionLocation| {
-            (
-                location.chunks.capacity() as u64 * 32
-                    + std::mem::size_of::<ProjectionLocation>() as u64,
-                0,
-            )
-        },
-        quota.work(),
+    let location = decode_projection_location(&index.value, &mut quota)?;
+    let revision = validate_projection_bounds(
+        &location,
+        through_revision,
+        limits,
+        consumed_bytes,
+        &mut quota,
     )?;
-    quota.adopt(
-        location.chunks.capacity() as u64 * 32 + std::mem::size_of::<ProjectionLocation>() as u64,
-    )?;
-    let revision = through_revision - through_revision % u64::from(DEFAULT_PROJECTION_EVENTS);
-    if location.bytes == 0
-        || location.bytes > MAX_PROJECTION_BYTES
-        || through_revision - revision >= u64::from(limits.maximum_events)
-        || location.bytes > limits.maximum_bytes - consumed_bytes
-    {
-        return Err(super::guarded_boundary(
-            quota.work(),
-            crate::wire::ErrorCode::Invalid,
-            "projection checkpoint boundary exceeds read allowance",
-        ));
-    }
-    let path = operations::publication_path(authority, "harness/v2/", None, quota.work())?;
-    let canonical = operations::publication_record(client, path, revision - 1, &mut quota)
-        .await?
-        .ok_or_else(|| {
-            super::guarded_boundary(
-                quota.work(),
-                crate::wire::ErrorCode::Storage,
-                "projection canonical anchor is missing",
-            )
-        })?;
-    charge(
-        &mut consumed_bytes,
-        canonical.value.len() as u64,
-        limits.maximum_bytes,
-        quota.work(),
-    )?;
-    if canonical.commit_id != index.commit_id {
-        return Err(super::guarded_boundary(
-            quota.work(),
-            crate::wire::ErrorCode::Storage,
-            "projection head is outside its canonical atomic commit",
-        ));
-    }
-    let (event, held) = super::history::verify_history_record_with_retained_quota(
-        verifier,
+    let event = verify_projection_anchor(
+        client,
         authority,
-        revision - 1,
-        &canonical,
-        quota.work(),
-    )?;
-    quota.adopt(held)?;
+        verifier,
+        revision,
+        &index,
+        (&mut consumed_bytes, limits.maximum_bytes),
+        &mut quota,
+    )
+    .await?;
     if let Some(io) = quota.work().as_deref_mut() {
         io.stage_output(location.bytes, 1)?;
     }
@@ -344,3 +294,101 @@ pub(super) use staging::*;
 mod native_malformed_receipt_tests;
 #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
 pub(in crate::store) mod native_staging_custody_tests;
+
+fn decode_projection_location(
+    index: &[u8],
+    quota: &mut CodecQuota<'_, '_>,
+) -> Result<ProjectionLocation> {
+    let location: ProjectionLocation = operations::decode_index(
+        index,
+        acyclic_stream::MAX_RECORD_BYTES as u64,
+        "ProjectionLocation Vec u8 u64 bytes chunks",
+        |shape, _| {
+            shape
+                .lexical_items()
+                .checked_mul(64)
+                .and_then(|bytes| {
+                    bytes.checked_add(128 + std::mem::size_of::<ProjectionLocation>() as u64)
+                })
+                .ok_or_else(|| Error::Invalid("projection locator reservation overflows".into()))
+        },
+        |location: &ProjectionLocation| {
+            (
+                location.chunks.capacity() as u64 * 32
+                    + std::mem::size_of::<ProjectionLocation>() as u64,
+                0,
+            )
+        },
+        quota.work(),
+    )?;
+    quota.adopt(
+        location.chunks.capacity() as u64 * 32 + std::mem::size_of::<ProjectionLocation>() as u64,
+    )?;
+    Ok(location)
+}
+
+fn validate_projection_bounds(
+    location: &ProjectionLocation,
+    through_revision: u64,
+    limits: HistoryReadLimits,
+    consumed_bytes: u64,
+    quota: &mut CodecQuota<'_, '_>,
+) -> Result<u64> {
+    let revision = through_revision - through_revision % u64::from(DEFAULT_PROJECTION_EVENTS);
+    if location.bytes == 0
+        || location.bytes > MAX_PROJECTION_BYTES
+        || through_revision - revision >= u64::from(limits.maximum_events)
+        || location.bytes > limits.maximum_bytes - consumed_bytes
+    {
+        return Err(super::guarded_boundary(
+            quota.work(),
+            crate::wire::ErrorCode::Invalid,
+            "projection checkpoint boundary exceeds read allowance",
+        ));
+    }
+    Ok(revision)
+}
+
+async fn verify_projection_anchor<P: StreamProvider>(
+    client: &std::sync::Arc<P>,
+    authority: &Authority,
+    verifier: &AuthorityVerifier,
+    revision: u64,
+    index: &operations::ObservedRecord,
+    bounds: (&mut u64, u64),
+    quota: &mut CodecQuota<'_, '_>,
+) -> Result<Event> {
+    let (consumed_bytes, maximum_bytes) = bounds;
+    let path = operations::publication_path(authority, "harness/v2/", None, quota.work())?;
+    let canonical = operations::publication_record(client, path, revision - 1, quota)
+        .await?
+        .ok_or_else(|| {
+            super::guarded_boundary(
+                quota.work(),
+                crate::wire::ErrorCode::Storage,
+                "projection canonical anchor is missing",
+            )
+        })?;
+    charge(
+        consumed_bytes,
+        canonical.value.len() as u64,
+        maximum_bytes,
+        quota.work(),
+    )?;
+    if canonical.commit_id != index.commit_id {
+        return Err(super::guarded_boundary(
+            quota.work(),
+            crate::wire::ErrorCode::Storage,
+            "projection head is outside its canonical atomic commit",
+        ));
+    }
+    let (event, held) = super::history::verify_history_record_with_retained_quota(
+        verifier,
+        authority,
+        revision - 1,
+        &canonical,
+        quota.work(),
+    )?;
+    quota.adopt(held)?;
+    Ok(event)
+}

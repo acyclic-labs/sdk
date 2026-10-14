@@ -86,7 +86,8 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
     assert_eq!(work.receipt(), before_binding);
     assert_eq!(head(lazy.workspace(), &fixture_work).await?, pinned);
     assert_eq!(std::fs::read_dir(rejected_root.path())?.count(), 0);
-    let ordinary_job = job.with_source_io_lease(ordinary_source.native_source_io_lease(ordinary_source.clone())?)?;
+    let ordinary_job =
+        job.with_source_io_lease(ordinary_source.native_source_io_lease(ordinary_source.clone())?)?;
     assert!(ordinary_job.shares_ledger(&job));
     assert!(ordinary_job.shares_resource_allowance(&job));
     assert!(!ordinary_job.shares_ledger(&work));
@@ -104,7 +105,8 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
         Err(crate::NativeTreeMaterializationError::InvalidLayout)
     ));
     assert_eq!(job.receipt(), before_foreign_job);
-    let native_job = work.with_source_io_lease(native_source.native_source_io_lease(native_source.clone())?)?;
+    let native_job =
+        work.with_source_io_lease(native_source.native_source_io_lease(native_source.clone())?)?;
     assert!(native_job.shares_ledger(&work));
     assert!(native_job.shares_resource_allowance(&work));
     drop(native_job);
@@ -325,7 +327,7 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
         ))
     ));
     assert_eq!(head(lazy.workspace(), &fixture_work).await?, before_invalid);
-    let mut working_set = lazy
+    let working_set = lazy
         .prepare_native_working_set(
             "/hot",
             &crate::MaterializeOptions::native(native_view.path()),
@@ -439,10 +441,7 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
         .await?;
     assert!(published.operation().is_some());
     assert!(!published.is_lazy());
-    assert_eq!(
-        published.workspace_id(),
-        working_set.workspace.id()
-    );
+    assert_eq!(published.workspace_id(), working_set.workspace.id());
     assert_eq!(
         published.volume_config(),
         working_set.workspace.volume_config()

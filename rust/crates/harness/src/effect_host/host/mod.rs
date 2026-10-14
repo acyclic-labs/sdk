@@ -12,21 +12,16 @@ pub struct ConversationEffectHost<P> {
 }
 impl<P: StreamProvider> ConversationEffectHost<P> {
     /// Binds the signed conversation and catalog in one shared host.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "host construction binds independent providers and owners"
-    )]
     pub fn new(
         stream: Arc<P>,
-        authority: Authority,
-        issuer: AuthorityIssuer,
-        scope: Scope,
+        binding: (Authority, AuthorityIssuer, Scope),
         schemas: SchemaRegistry,
         content: Arc<dyn ContentResidencyVerifier>,
         providers: EffectRegistry,
         custody: NativeCustody,
         work: NativeWork<'_>,
     ) -> Result<Arc<Self>> {
+        let (authority, issuer, scope) = binding;
         let host = Self {
             stream,
             authority,

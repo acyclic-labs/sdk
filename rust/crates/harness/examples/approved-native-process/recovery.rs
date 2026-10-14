@@ -176,13 +176,15 @@ where
     registry.register(recovered, None)?;
     let effects = ConversationEffectHost::new(
         stream,
-        issuer
-            .verifier(&mut None)
-            .expect("verifier copy")
-            .audience()
-            .clone(),
-        issuer.clone(),
-        seed.scope.clone(),
+        (
+            issuer
+                .verifier(&mut None)
+                .expect("verifier copy")
+                .audience()
+                .clone(),
+            issuer.clone(),
+            seed.scope.clone(),
+        ),
         SchemaRegistry::new(),
         content.clone(),
         registry,

@@ -91,7 +91,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         issuer.verifier(&mut None).expect("verifier copy"),
         SchemaRegistry::new(),
     );
-    parent.apply(Command {
+    parent.apply(&Command {
         operation_id: OperationId::from_bytes([143; 16]),
         idempotency_key: IdempotencyKey::new("bind")?,
         expected_revision: 0,

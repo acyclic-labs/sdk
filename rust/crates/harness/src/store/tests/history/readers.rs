@@ -107,7 +107,7 @@ async fn history_reader_rejects_unattested_events_and_wrong_authority() -> Resul
     for wrong_authority in [false, true] {
         let client = Arc::new(MemoryStream::default());
         let mut reducer = Reducer::new(authority(), issuer().verifier(&mut None)?, schemas());
-        let ApplyResult::Applied { mut event } = reducer.apply(command(1)?)? else {
+        let ApplyResult::Applied { mut event } = reducer.apply(&command(1)?)? else {
             panic!("fresh event");
         };
         let mut wire_authority = authority();
@@ -197,9 +197,7 @@ async fn verifier_must_match_the_exact_aggregate_audience() -> Result<()> {
     assert!(matches!(
         StreamAggregate::open(
             &client,
-            authority(),
-            foreign.verifier(&mut None)?,
-            schemas(),
+            (authority(), foreign.verifier(&mut None)?, schemas()),
             None,
             default_projection_read_limits(),
             DEFAULT_TERMINAL_EFFECTS,

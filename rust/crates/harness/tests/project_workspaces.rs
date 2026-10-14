@@ -20,8 +20,18 @@ use std::sync::Arc;
     reason = "one ordered scenario keeps each step next to the state it checks"
 )]
 async fn project_workspace_binding_uses_parent_forks_published_after_construction() -> Result<()> {
-    let provider = ProviderRef::new("project-workspaces".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let stream_provider = ProviderRef::new("project-workspaces".into(), "stream".into(), "2".into(), &mut None)?;
+    let provider = ProviderRef::new(
+        "project-workspaces".into(),
+        "filesystem".into(),
+        "2".into(),
+        &mut None,
+    )?;
+    let stream_provider = ProviderRef::new(
+        "project-workspaces".into(),
+        "stream".into(),
+        "2".into(),
+        &mut None,
+    )?;
     let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let parent = Authority {
         kind: AggregateKind::Conversation,
@@ -66,19 +76,35 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
         &mut None,
     )?;
     let issuer = AuthorityIssuer::new("project-workspaces", [7; 32], parent.clone());
-    let scope = issuer.issue("parent", &Capabilities::new([
-            "conversation:bind".to_owned(),
-            "fork:publish".to_owned(),
-            "project:merge".to_owned(),
-            project.capability(VolumeOperation::Read, &mut None)?,
-            project.capability(VolumeOperation::Write, &mut None)?,
-            child_project.capability(VolumeOperation::Read, &mut None)?,
-            parent_private.capability(VolumeOperation::Read, &mut None)?,
-        ]), Some(parent_agent), None, &mut None).expect("scope proof");
+    let scope = issuer
+        .issue(
+            "parent",
+            &Capabilities::new([
+                "conversation:bind".to_owned(),
+                "fork:publish".to_owned(),
+                "project:merge".to_owned(),
+                project.capability(VolumeOperation::Read, &mut None)?,
+                project.capability(VolumeOperation::Write, &mut None)?,
+                child_project.capability(VolumeOperation::Read, &mut None)?,
+                parent_private.capability(VolumeOperation::Read, &mut None)?,
+            ]),
+            Some(parent_agent),
+            None,
+            &mut None,
+        )
+        .expect("scope proof");
 
     let parent_head = host.create_volume(&project).await?;
     let parent_private_head = host.create_volume(&parent_private).await?;
-    let child_scope = issuer.issue("child", &Capabilities::new([child_private.capability(VolumeOperation::Write, &mut None)?]), Some(child_agent), None, &mut None).expect("scope proof");
+    let child_scope = issuer
+        .issue(
+            "child",
+            &Capabilities::new([child_private.capability(VolumeOperation::Write, &mut None)?]),
+            Some(child_agent),
+            None,
+            &mut None,
+        )
+        .expect("scope proof");
     let child_private_head = host
         .fork_volume(
             &parent_private,
@@ -87,7 +113,8 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
                 &scope,
                 &parent_private,
                 VolumeOperation::Read,
-                u64::MAX, &mut None,
+                u64::MAX,
+                &mut None,
             )?,
             &parent_private_head.generation,
             &child_private,
@@ -96,14 +123,19 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
                 &child_scope,
                 &child_private,
                 VolumeOperation::Write,
-                u64::MAX, &mut None,
+                u64::MAX,
+                &mut None,
             )?,
             Some(Vec::new()),
             &IdempotencyKey::new("fork-private")?,
         )
         .await?;
-    let mut reducer = Reducer::new(parent.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new());
-    reducer.apply(Command {
+    let mut reducer = Reducer::new(
+        parent.clone(),
+        issuer.verifier(&mut None).expect("verifier copy"),
+        SchemaRegistry::new(),
+    );
+    reducer.apply(&Command {
         operation_id: OperationId::from_bytes([1; 16]),
         idempotency_key: IdempotencyKey::new("bind-parent")?,
         expected_revision: 0,
@@ -135,55 +167,58 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
         parent.stream_path(&mut None)?.into_bytes(),
         Some(reducer.revision().to_string()),
     )?;
-    let seed = ForkSeed { history_witness: None, summary: None,
-    authorized_source: None,
-    child_result_volume: None,
-    child_result_generation: None,
-    operation_id: OperationId::from_bytes([2; 16]),
-    parent: parent.clone(),
-    parent_revision: reducer.revision(),
-    child: child.clone(),
-    child_agent,
-    attached_agents: Vec::new(),
-    resources: vec![
-        CapturedResource {
-            source: ResourceRevision::PrivateVolume {
-                volume: parent_private,
-                generation: parent_private_head.generation,
-                paths: Vec::new(),
+    let seed = ForkSeed {
+        history_witness: None,
+        summary: None,
+        authorized_source: None,
+        child_result_volume: None,
+        child_result_generation: None,
+        operation_id: OperationId::from_bytes([2; 16]),
+        parent: parent.clone(),
+        parent_revision: reducer.revision(),
+        child: child.clone(),
+        child_agent,
+        attached_agents: Vec::new(),
+        resources: vec![
+            CapturedResource {
+                source: ResourceRevision::PrivateVolume {
+                    volume: parent_private,
+                    generation: parent_private_head.generation,
+                    paths: Vec::new(),
+                },
+                revision: ResourceRevision::PrivateVolume {
+                    volume: child_private.clone(),
+                    generation: child_private_head.generation.clone(),
+                    paths: Vec::new(),
+                },
             },
-            revision: ResourceRevision::PrivateVolume {
-                volume: child_private.clone(),
-                generation: child_private_head.generation.clone(),
-                paths: Vec::new(),
+            CapturedResource {
+                source: ResourceRevision::History(history.clone()),
+                revision: ResourceRevision::History(history),
             },
-        },
-        CapturedResource {
-            source: ResourceRevision::History(history.clone()),
-            revision: ResourceRevision::History(history),
-        },
-        CapturedResource {
-            source: ResourceRevision::Project {
-                volume: project.clone(),
-                generation: parent_head.generation.clone(),
+            CapturedResource {
+                source: ResourceRevision::Project {
+                    volume: project.clone(),
+                    generation: parent_head.generation.clone(),
+                },
+                revision: ResourceRevision::Project {
+                    volume: child_project.clone(),
+                    generation: child_head.clone(),
+                },
             },
-            revision: ResourceRevision::Project {
-                volume: child_project.clone(),
-                generation: child_head.clone(),
-            },
-        },
-    ],
-    omissions: Vec::new(),
-    child_private_volume: child_private,
-    child_private_generation: child_private_head.generation,
-    inherited_context: Vec::new(),
-    inherited_through_sequence: 0,
-    shared_grants: Vec::new(),
-    reference_grants: Vec::new(),
-    attachment_manifests: Vec::new(),
-    boundary: None, };
+        ],
+        omissions: Vec::new(),
+        child_private_volume: child_private,
+        child_private_generation: child_private_head.generation,
+        inherited_context: Vec::new(),
+        inherited_through_sequence: 0,
+        shared_grants: Vec::new(),
+        reference_grants: Vec::new(),
+        attachment_manifests: Vec::new(),
+        boundary: None,
+    };
     seed.validate(&mut None)?;
-    reducer.apply(Command {
+    reducer.apply(&Command {
         operation_id: seed.operation_id,
         idempotency_key: IdempotencyKey::new("publish-fork")?,
         expected_revision: seed.parent_revision,

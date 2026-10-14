@@ -54,7 +54,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         parent_issuer.verifier(&mut None).expect("verifier copy"),
         SchemaRegistry::new(),
     );
-    parent_reducer.apply(command(
+    parent_reducer.apply(&command(
         100,
         0,
         &parent_scope,

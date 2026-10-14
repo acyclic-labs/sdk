@@ -85,6 +85,58 @@ impl PreparedModelRequest {
         io: Option<&PreparationIo>,
     ) -> Result<Self> {
         with_history_io(io, |work| limits.validate(work))?;
+        let segments =
+            Self::read_prefix_segments(prefix, verifier, limits, local.messages.len(), io).await?;
+        let mut messages = Vec::new();
+        let mut hasher = blake3::Hasher::new();
+        update_hasher(&mut hasher, b"harness:model-prefix:ordered:v1", io)?;
+        for (segment, digest) in segments.into_iter().rev() {
+            for message in &segment {
+                update_hasher(
+                    &mut hasher,
+                    &crate::executor::preparation_digest(message, io)?,
+                    io,
+                )?;
+            }
+            for message in segment {
+                crate::executor::stock_vec_push(&mut messages, message, io)?;
+            }
+            if hasher.finalize().as_bytes() != &digest {
+                return Err(Error::Invalid(
+                    "model prefix ordered messages differ".into(),
+                ));
+            }
+        }
+        let local_messages = std::mem::replace(&mut local.messages, messages);
+        local.validate(limits, io)?;
+        for message in local_messages {
+            crate::executor::stock_vec_push(&mut local.messages, message, io)?;
+        }
+        for message in &local.messages {
+            for file in message.content.file_refs() {
+                charge_items(io, 1)?;
+                if !verifier.supports_read(file.volume(), io)? {
+                    return Err(crate::executor::stock_boundary(
+                        io,
+                        Unsupported,
+                        "context verifier has no bounded capability",
+                    ));
+                }
+                verifier
+                    .verify(file, file.descriptor().byte_length(), io)?
+                    .await?;
+            }
+        }
+        Self::encode_admitted(local, limits, io)
+    }
+
+    async fn read_prefix_segments(
+        prefix: &FileRef,
+        verifier: &dyn crate::conversation::ContentResidencyVerifier,
+        limits: Limits,
+        local_messages: usize,
+        io: Option<&PreparationIo>,
+    ) -> Result<Vec<(Vec<ModelMessage>, [u8; 32])>> {
         let mut next = Some(clone_file(prefix, io)?);
         let mut segments = Vec::new();
         let mut expected_count = None;
@@ -151,7 +203,7 @@ impl PreparedModelRequest {
             }
             let total = segment
                 .total_messages
-                .checked_add(local.messages.len())
+                .checked_add(local_messages)
                 .ok_or_else(|| Error::Invalid("model prefix message count overflow".into()))?;
             if total > limits.context_messages {
                 return Err(Error::Invalid(
@@ -167,47 +219,7 @@ impl PreparedModelRequest {
                 io,
             )?;
         }
-        let mut messages = Vec::new();
-        let mut hasher = blake3::Hasher::new();
-        update_hasher(&mut hasher, b"harness:model-prefix:ordered:v1", io)?;
-        for (segment, digest) in segments.into_iter().rev() {
-            for message in &segment {
-                update_hasher(
-                    &mut hasher,
-                    &crate::executor::preparation_digest(message, io)?,
-                    io,
-                )?;
-            }
-            for message in segment {
-                crate::executor::stock_vec_push(&mut messages, message, io)?;
-            }
-            if hasher.finalize().as_bytes() != &digest {
-                return Err(Error::Invalid(
-                    "model prefix ordered messages differ".into(),
-                ));
-            }
-        }
-        let local_messages = std::mem::replace(&mut local.messages, messages);
-        local.validate(limits, io)?;
-        for message in local_messages {
-            crate::executor::stock_vec_push(&mut local.messages, message, io)?;
-        }
-        for message in &local.messages {
-            for file in message.content.file_refs() {
-                charge_items(io, 1)?;
-                if !verifier.supports_read(file.volume(), io)? {
-                    return Err(crate::executor::stock_boundary(
-                        io,
-                        Unsupported,
-                        "context verifier has no bounded capability",
-                    ));
-                }
-                verifier
-                    .verify(file, file.descriptor().byte_length(), io)?
-                    .await?;
-            }
-        }
-        Self::encode_admitted(local, limits, io)
+        Ok(segments)
     }
 }
 fn update_hasher(

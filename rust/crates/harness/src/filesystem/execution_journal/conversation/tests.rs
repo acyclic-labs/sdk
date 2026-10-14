@@ -134,9 +134,9 @@ async fn open(
     if initialize {
         let mut aggregate = StreamAggregate::open(
             &stream,
-            authority,
+            (authority,
             issuer.verifier(&mut None).expect("verifier copy"),
-            SchemaRegistry::new(),
+            SchemaRegistry::new()),
             None,
             crate::store::default_projection_read_limits(),
             crate::store::DEFAULT_TERMINAL_EFFECTS,

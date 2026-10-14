@@ -268,15 +268,17 @@ pub(super) async fn worker_restart_with_options(
                 Box::pin(async {
                     let mut aggregate = acyclic_harness::store::StreamAggregate::open(
                         &stream,
-                        conversation_issuer
-                            .verifier(&mut None)
-                            .expect("verifier copy")
-                            .audience()
-                            .clone(),
-                        conversation_issuer
-                            .verifier(&mut None)
-                            .expect("verifier copy"),
-                        SchemaRegistry::new(),
+                        (
+                            conversation_issuer
+                                .verifier(&mut None)
+                                .expect("verifier copy")
+                                .audience()
+                                .clone(),
+                            conversation_issuer
+                                .verifier(&mut None)
+                                .expect("verifier copy"),
+                            SchemaRegistry::new(),
+                        ),
                         None,
                         acyclic_harness::store::default_projection_read_limits(),
                         acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,

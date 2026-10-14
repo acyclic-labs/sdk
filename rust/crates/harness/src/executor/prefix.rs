@@ -12,25 +12,7 @@ impl StockExecution<'_> {
         let records = self
             .prefix_records(journal, input.operation_id, step)
             .await?;
-        let Some(ExecutionRecord {
-            sequence: 1,
-            event: ExecutionEvent::Started { request_digest },
-            ..
-        }) = records.first()
-        else {
-            return Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Conflict,
-                "tool prefix has another execution identity",
-            ));
-        };
-        if *request_digest != self.request_digest(input)? {
-            return Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Conflict,
-                "tool prefix has another execution identity",
-            ));
-        }
+        self.verify_prefix_identity(&records, input)?;
         let retained = crate::executor::retain_preparation(
             retained_model_step(
                 journal,
@@ -115,5 +97,28 @@ impl StockExecution<'_> {
         self.verify_model_request_content(journal, &prepared)
             .await?;
         Ok(prepared)
+    }
+
+    fn verify_prefix_identity(&self, records: &[ExecutionRecord], input: &TurnInput) -> Result<()> {
+        let Some(ExecutionRecord {
+            sequence: 1,
+            event: ExecutionEvent::Started { request_digest },
+            ..
+        }) = records.first()
+        else {
+            return Err(stock_boundary(
+                self.io,
+                crate::wire::ErrorCode::Conflict,
+                "tool prefix has another execution identity",
+            ));
+        };
+        if *request_digest != self.request_digest(input)? {
+            return Err(stock_boundary(
+                self.io,
+                crate::wire::ErrorCode::Conflict,
+                "tool prefix has another execution identity",
+            ));
+        }
+        Ok(())
     }
 }

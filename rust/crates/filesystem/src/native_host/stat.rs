@@ -38,7 +38,7 @@ impl HostStat {
         use crate::demand::SourceNodeKind as Kind;
         #[cfg(unix)]
         {
-            match self.raw.st_mode as u32 & 0o170000 {
+            match self.raw.st_mode & 0o170000 {
                 0o040000 => Kind::Directory,
                 0o100000 => Kind::RegularFile,
                 0o120000 => Kind::SymbolicLink,
@@ -71,7 +71,7 @@ impl HostStat {
     pub fn len(&self) -> u64 {
         #[cfg(unix)]
         {
-            self.raw.st_size as u64
+            self.raw.st_size.cast_unsigned()
         }
         #[cfg(windows)]
         {
@@ -79,9 +79,13 @@ impl HostStat {
         }
     }
     pub fn nlink(&self) -> u64 {
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         {
-            self.raw.st_nlink as u64
+            self.raw.st_nlink
+        }
+        #[cfg(target_os = "macos")]
+        {
+            u64::from(self.raw.st_nlink)
         }
         #[cfg(windows)]
         {
@@ -92,8 +96,8 @@ impl HostStat {
         #[cfg(unix)]
         {
             NativeRootIdentity {
-                device: self.raw.st_dev as u64,
-                object: self.raw.st_ino as u64,
+                device: device_id(self.raw.st_dev),
+                object: self.raw.st_ino,
             }
         }
         #[cfg(windows)]
@@ -118,7 +122,7 @@ impl HostStat {
     pub fn modified(&self) -> io::Result<cap_std::time::SystemTime> {
         #[cfg(unix)]
         {
-            unix_time(self.raw.st_mtime as i64, self.raw.st_mtime_nsec as i64)
+            unix_time(self.raw.st_mtime, self.raw.st_mtime_nsec)
         }
         #[cfg(windows)]
         {
@@ -128,7 +132,7 @@ impl HostStat {
     pub fn accessed(&self) -> io::Result<cap_std::time::SystemTime> {
         #[cfg(unix)]
         {
-            unix_time(self.raw.st_atime as i64, self.raw.st_atime_nsec as i64)
+            unix_time(self.raw.st_atime, self.raw.st_atime_nsec)
         }
         #[cfg(windows)]
         {
@@ -148,22 +152,22 @@ impl HostStat {
     pub(super) fn from_statx(stat: rustix::fs::Statx) -> Self {
         // SAFETY: native stat consists only of integers and integer arrays.
         let mut raw: libc::stat = unsafe { std::mem::zeroed() };
-        raw.st_mode = stat.stx_mode as _;
-        raw.st_size = stat.stx_size as _;
-        raw.st_dev = rustix::fs::makedev(stat.stx_dev_major, stat.stx_dev_minor) as _;
-        raw.st_ino = stat.stx_ino as _;
-        raw.st_nlink = stat.stx_nlink as _;
-        raw.st_uid = stat.stx_uid as _;
-        raw.st_gid = stat.stx_gid as _;
-        raw.st_rdev = rustix::fs::makedev(stat.stx_rdev_major, stat.stx_rdev_minor) as _;
-        raw.st_atime = stat.stx_atime.tv_sec as _;
-        raw.st_atime_nsec = stat.stx_atime.tv_nsec as _;
-        raw.st_mtime = stat.stx_mtime.tv_sec as _;
-        raw.st_mtime_nsec = stat.stx_mtime.tv_nsec as _;
-        raw.st_ctime = stat.stx_ctime.tv_sec as _;
-        raw.st_ctime_nsec = stat.stx_ctime.tv_nsec as _;
+        raw.st_mode = u32::from(stat.stx_mode);
+        raw.st_size = stat.stx_size.cast_signed();
+        raw.st_dev = rustix::fs::makedev(stat.stx_dev_major, stat.stx_dev_minor);
+        raw.st_ino = stat.stx_ino;
+        raw.st_nlink = u64::from(stat.stx_nlink);
+        raw.st_uid = stat.stx_uid;
+        raw.st_gid = stat.stx_gid;
+        raw.st_rdev = rustix::fs::makedev(stat.stx_rdev_major, stat.stx_rdev_minor);
+        raw.st_atime = stat.stx_atime.tv_sec;
+        raw.st_atime_nsec = i64::from(stat.stx_atime.tv_nsec);
+        raw.st_mtime = stat.stx_mtime.tv_sec;
+        raw.st_mtime_nsec = i64::from(stat.stx_mtime.tv_nsec);
+        raw.st_ctime = stat.stx_ctime.tv_sec;
+        raw.st_ctime_nsec = i64::from(stat.stx_ctime.tv_nsec);
         let created = if stat.stx_mask & rustix::fs::StatxFlags::BTIME.bits() != 0 {
-            unix_time(stat.stx_btime.tv_sec, stat.stx_btime.tv_nsec as i64).ok()
+            unix_time(stat.stx_btime.tv_sec, i64::from(stat.stx_btime.tv_nsec)).ok()
         } else {
             None
         };
@@ -193,8 +197,10 @@ pub(super) fn unix_time(seconds: i64, nanos: i64) -> io::Result<cap_std::time::S
     let nanos = i128::from(seconds) * 1_000_000_000 + i128::from(nanos);
     let magnitude = nanos.unsigned_abs();
     let duration = std::time::Duration::new(
-        (magnitude / 1_000_000_000) as u64,
-        (magnitude % 1_000_000_000) as u32,
+        u64::try_from(magnitude / 1_000_000_000)
+            .map_err(|_| io::Error::other("timestamp overflow"))?,
+        u32::try_from(magnitude % 1_000_000_000)
+            .map_err(|_| io::Error::other("timestamp overflow"))?,
     );
     let value = if nanos < 0 {
         std::time::UNIX_EPOCH.checked_sub(duration)

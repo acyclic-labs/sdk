@@ -33,10 +33,10 @@ fn fixed_lifecycle_rejects_terminal_reopening() -> Result<()> {
             .expect("scope proof");
         command
     };
-    reducer.apply(transition(40, 0, LifecycleState::Active))?;
-    reducer.apply(transition(41, 1, LifecycleState::Completed))?;
+    reducer.apply(&transition(40, 0, LifecycleState::Active))?;
+    reducer.apply(&transition(41, 1, LifecycleState::Completed))?;
     assert!(matches!(
-        reducer.apply(transition(42, 2, LifecycleState::Active)),
+        reducer.apply(&transition(42, 2, LifecycleState::Active)),
         Err(Error::Conflict(_))
     ));
     Ok(())
@@ -53,26 +53,26 @@ fn malformed_admission_metadata_is_rejected() -> Result<()> {
     let before = reducer.copy(&mut None)?;
     let mut empty_key = command(operation(30), 0, action.clone());
     empty_key.idempotency_key = IdempotencyKey(String::new());
-    assert!(matches!(reducer.apply(empty_key), Err(Error::Invalid(_))));
+    assert!(matches!(reducer.apply(&empty_key), Err(Error::Invalid(_))));
     let mut future_cause = command(operation(31), 0, action.clone());
     future_cause.causal_parent = Some(EventReference {
         authority: reducer.authority().clone(),
         revision: 1,
     });
     assert!(matches!(
-        reducer.apply(future_cause),
+        reducer.apply(&future_cause),
         Err(Error::Invalid(_))
     ));
     assert_eq!(reducer, before);
     let accepted = command(operation(32), 0, action);
-    reducer.apply(accepted.clone())?;
+    reducer.apply(&accepted)?;
     assert!(matches!(
-        reducer.apply(accepted.clone())?,
+        reducer.apply(&accepted)?,
         ApplyResult::Replayed { .. }
     ));
     let mut conflict = accepted;
     conflict.idempotency_key = IdempotencyKey("another intent".into());
-    assert!(matches!(reducer.apply(conflict), Err(Error::Conflict(_))));
+    assert!(matches!(reducer.apply(&conflict), Err(Error::Conflict(_))));
     assert_eq!(restore(&reducer, &issuer())?, reducer);
     Ok(())
 }
@@ -117,9 +117,11 @@ async fn native_component_model_transition_work_grows_linearly_with_bounded_resi
     let client = Arc::new(acyclic_stream::MemoryStream::default());
     let mut reference = StreamAggregate::open(
         &client,
-        owner.audience.clone(),
-        owner.verifier(&mut None)?,
-        schemas(),
+        (
+            owner.audience.clone(),
+            owner.verifier(&mut None)?,
+            schemas(),
+        ),
         None,
         crate::store::default_projection_read_limits(),
         2,

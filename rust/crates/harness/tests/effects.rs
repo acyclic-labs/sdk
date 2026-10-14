@@ -170,9 +170,11 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
     let stream = provider.clone();
     let mut aggregate = StreamAggregate::open(
         &stream,
-        authority.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
+        (
+            authority.clone(),
+            issuer.verifier(&mut None).expect("verifier copy"),
+            SchemaRegistry::new(),
+        ),
         None,
         acyclic_harness::store::default_projection_read_limits(),
         acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
@@ -233,9 +235,11 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
     registry.register(Arc::new(ResultProvider(result)), None)?;
     let effects = acyclic_harness::effect_host::ConversationEffectHost::new(
         stream.clone(),
-        authority.clone(),
-        issuer.copy(&mut None)?,
-        scope.copy(&mut None)?,
+        (
+            authority.clone(),
+            issuer.copy(&mut None)?,
+            scope.copy(&mut None)?,
+        ),
         SchemaRegistry::new(),
         verifier.clone(),
         registry,
@@ -259,9 +263,11 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         .await?;
     aggregate = StreamAggregate::open(
         &stream,
-        authority.clone(),
-        issuer.verifier(&mut None)?,
-        SchemaRegistry::new(),
+        (
+            authority.clone(),
+            issuer.verifier(&mut None)?,
+            SchemaRegistry::new(),
+        ),
         None,
         acyclic_harness::store::default_projection_read_limits(),
         acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,

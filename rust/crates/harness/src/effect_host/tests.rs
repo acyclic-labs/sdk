@@ -55,9 +55,7 @@ fn host(
     let scope = scope.copy(&mut Some(&mut io))?;
     ConversationEffectHost::new(
         Arc::new(MemoryStream::default()),
-        authority,
-        issuer,
-        scope,
+        (authority, issuer, scope),
         SchemaRegistry::new(),
         content,
         EffectRegistry::new(Some(metadata), None)?,

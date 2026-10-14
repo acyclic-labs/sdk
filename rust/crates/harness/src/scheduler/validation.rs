@@ -37,6 +37,82 @@ impl Scheduler {
         }
         match event {
             SchedulerEvent::Declared { spec } => self.validate_declaration(spec, work)?,
+            SchedulerEvent::SessionConfigured { .. } => self.validate_session_event(event, work)?,
+
+            SchedulerEvent::ModelDispatchClaimed { .. } => {
+                self.validate_model_claim_event(event, work)?;
+            }
+
+            SchedulerEvent::WaitingForCapacity { .. } => {
+                self.require_dependencies_ready(id, work)?;
+                require_phase(
+                    self.validated_operation(id, work)?,
+                    OperationPhase::WaitingForDependencies,
+                    work,
+                )?;
+            }
+            SchedulerEvent::Admitted { .. } | SchedulerEvent::PartiallyAdmitted { .. } => {
+                self.validate_admission_event(event, work)?;
+            }
+
+            SchedulerEvent::Rejected { .. } => self.validate_rejection(event, work)?,
+
+            SchedulerEvent::Started { .. }
+            | SchedulerEvent::Checkpointed { .. }
+            | SchedulerEvent::WaitingForChildren { .. }
+            | SchedulerEvent::ReconciliationResumed { .. } => {
+                self.validate_worker_phase_event(event, work)?;
+            }
+
+            SchedulerEvent::WorkflowSuspended { .. } => {
+                self.validate_workflow_event(event, work)?;
+            }
+
+            SchedulerEvent::WorkflowResumed { .. } => self.validate_workflow_event(event, work)?,
+
+            SchedulerEvent::LeaseReleased { fence, .. } => {
+                let state = self.validated_operation(id, work)?;
+                if !matches!(
+                    state.phase,
+                    OperationPhase::WaitingForCapacity
+                        | OperationPhase::Admitted
+                        | OperationPhase::Running
+                ) {
+                    return Err(diagnostic(
+                        work,
+                        Conflict,
+                        "only an active lease can be released",
+                    ));
+                }
+                require_fence(state, fence, work)?;
+            }
+            SchedulerEvent::CancellationRequested { recursive, .. } => {
+                self.validated_operation(id, work)?;
+                for (candidate, state) in &self.operations {
+                    observe(work)?;
+                    if *candidate == id
+                        || (*recursive && self.cancellation_descendant(*candidate, id, work)?)
+                    {
+                        revision(state.revision, work)?;
+                    }
+                }
+            }
+            SchedulerEvent::Completed { .. } => self.validate_completion_event(event, work)?,
+
+            SchedulerEvent::Orchestrated { .. } => {
+                self.validate_orchestration_event(event, work)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_session_event(
+        &self,
+        event: &SchedulerEvent,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        let id = event.operation_id();
+        match event {
             SchedulerEvent::SessionConfigured { limits, .. } => {
                 limits.validate(work)?;
                 let state = self.validated_operation(id, work)?;
@@ -57,6 +133,24 @@ impl Scheduler {
                 }
                 self.require_session_policy(id, limits, work)?;
             }
+            _ => {
+                return Err(diagnostic(
+                    work,
+                    Invalid,
+                    "invalid scheduler validation phase",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_model_claim_event(
+        &self,
+        event: &SchedulerEvent,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        let id = event.operation_id();
+        match event {
             SchedulerEvent::ModelDispatchClaimed {
                 attempt_id,
                 step,
@@ -115,14 +209,24 @@ impl Scheduler {
                     }
                 }
             }
-            SchedulerEvent::WaitingForCapacity { .. } => {
-                self.require_dependencies_ready(id, work)?;
-                require_phase(
-                    self.validated_operation(id, work)?,
-                    OperationPhase::WaitingForDependencies,
+            _ => {
+                return Err(diagnostic(
                     work,
-                )?;
+                    Invalid,
+                    "invalid scheduler validation phase",
+                ));
             }
+        }
+        Ok(())
+    }
+
+    fn validate_admission_event(
+        &self,
+        event: &SchedulerEvent,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        let id = event.operation_id();
+        match event {
             SchedulerEvent::Admitted { reservation, .. }
             | SchedulerEvent::PartiallyAdmitted { reservation, .. } => {
                 self.require_dependencies_ready(id, work)?;
@@ -180,26 +284,24 @@ impl Scheduler {
                     }
                 }
             }
-            SchedulerEvent::Rejected { reason, .. } => {
-                observe(work)?;
-                if reason.trim().is_empty() {
-                    return Err(diagnostic(work, Invalid, "rejection reason is empty"));
-                }
-                let state = self.validated_operation(id, work)?;
-                if !matches!(
-                    state.phase,
-                    OperationPhase::WaitingForDependencies
-                        | OperationPhase::WaitingForCapacity
-                        | OperationPhase::Admitted
-                ) || state.reservation.is_some()
-                {
-                    return Err(diagnostic(
-                        work,
-                        Conflict,
-                        "owned operation requires a fenced release",
-                    ));
-                }
+            _ => {
+                return Err(diagnostic(
+                    work,
+                    Invalid,
+                    "invalid scheduler validation phase",
+                ));
             }
+        }
+        Ok(())
+    }
+
+    fn validate_worker_phase_event(
+        &self,
+        event: &SchedulerEvent,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        let id = event.operation_id();
+        match event {
             SchedulerEvent::Started { fence, .. }
             | SchedulerEvent::Checkpointed { fence, .. }
             | SchedulerEvent::WaitingForChildren { fence, .. }
@@ -224,6 +326,24 @@ impl Scheduler {
                     ));
                 }
             }
+            _ => {
+                return Err(diagnostic(
+                    work,
+                    Invalid,
+                    "invalid scheduler validation phase",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_workflow_event(
+        &self,
+        event: &SchedulerEvent,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        let id = event.operation_id();
+        match event {
             SchedulerEvent::WorkflowSuspended {
                 fence,
                 workflow_revision,
@@ -264,33 +384,24 @@ impl Scheduler {
                     ));
                 }
             }
-            SchedulerEvent::LeaseReleased { fence, .. } => {
-                let state = self.validated_operation(id, work)?;
-                if !matches!(
-                    state.phase,
-                    OperationPhase::WaitingForCapacity
-                        | OperationPhase::Admitted
-                        | OperationPhase::Running
-                ) {
-                    return Err(diagnostic(
-                        work,
-                        Conflict,
-                        "only an active lease can be released",
-                    ));
-                }
-                require_fence(state, fence, work)?;
+            _ => {
+                return Err(diagnostic(
+                    work,
+                    Invalid,
+                    "invalid scheduler validation phase",
+                ));
             }
-            SchedulerEvent::CancellationRequested { recursive, .. } => {
-                self.validated_operation(id, work)?;
-                for (candidate, state) in &self.operations {
-                    observe(work)?;
-                    if *candidate == id
-                        || (*recursive && self.cancellation_descendant(*candidate, id, work)?)
-                    {
-                        revision(state.revision, work)?;
-                    }
-                }
-            }
+        }
+        Ok(())
+    }
+
+    fn validate_completion_event(
+        &self,
+        event: &SchedulerEvent,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        let id = event.operation_id();
+        match event {
             SchedulerEvent::Completed {
                 outcome,
                 fence,
@@ -359,6 +470,24 @@ impl Scheduler {
                     return Err(diagnostic(work, Conflict, "completion fence is not active"));
                 }
             }
+            _ => {
+                return Err(diagnostic(
+                    work,
+                    Invalid,
+                    "invalid scheduler validation phase",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_orchestration_event(
+        &self,
+        event: &SchedulerEvent,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        let id = event.operation_id();
+        match event {
             SchedulerEvent::Orchestrated {
                 expected_revision,
                 outcome,
@@ -392,6 +521,44 @@ impl Scheduler {
                     ));
                 }
             }
+            _ => {
+                return Err(diagnostic(
+                    work,
+                    Invalid,
+                    "invalid scheduler validation phase",
+                ));
+            }
+        }
+        Ok(())
+    }
+    fn validate_rejection(
+        &self,
+        event: &SchedulerEvent,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        let id = event.operation_id();
+        match event {
+            SchedulerEvent::Rejected { reason, .. } => {
+                observe(work)?;
+                if reason.trim().is_empty() {
+                    return Err(diagnostic(work, Invalid, "rejection reason is empty"));
+                }
+                let state = self.validated_operation(id, work)?;
+                if !matches!(
+                    state.phase,
+                    OperationPhase::WaitingForDependencies
+                        | OperationPhase::WaitingForCapacity
+                        | OperationPhase::Admitted
+                ) || state.reservation.is_some()
+                {
+                    return Err(diagnostic(
+                        work,
+                        Conflict,
+                        "owned operation requires a fenced release",
+                    ));
+                }
+            }
+            _ => return Err(diagnostic(work, Invalid, "invalid scheduler event phase")),
         }
         Ok(())
     }

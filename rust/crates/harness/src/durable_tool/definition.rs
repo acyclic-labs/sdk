@@ -79,6 +79,7 @@ impl ResumableTool {
                 "tool invocation context mismatch",
             ));
         }
+
         let scope = context.effective_scope();
         #[cfg(feature = "filesystem")]
         let _grant_hold;
@@ -102,6 +103,42 @@ impl ResumableTool {
                 work,
             )
         })?;
+        let (identity, initial) = self.initialize_checkpoint(invocation, io)?;
+        with_history_io(io, |work| {
+            validate_json_schema_value(
+                self.machine.state_schema(),
+                &initial.state,
+                "tool state",
+                work,
+            )
+        })?;
+        let admission = WorkflowAdmission {
+            operation_id: invocation.operation_id,
+            request_digest: preparation_digest(
+                &(
+                    context.task().durable_task_id(),
+                    scope.grants(),
+                    scope.limits(),
+                    scope.run_limits(),
+                    scope.extensions(),
+                    &self.definition,
+                    invocation,
+                    identity,
+                ),
+                io,
+            )?,
+            initial,
+        };
+        admission.validate(io)?;
+        Ok(admission)
+    }
+
+    fn initialize_checkpoint<'a>(
+        &'a self,
+        invocation: &ToolInvocation,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<(&'a crate::workflow::MachineIdentity, MachineCheckpoint)> {
+        let native = native_work(io);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let (identity, state) = if let Some(io) = io
             && let Some(work) = native
@@ -135,32 +172,6 @@ impl ResumableTool {
             revision: 0,
             state,
         };
-        with_history_io(io, |work| {
-            validate_json_schema_value(
-                self.machine.state_schema(),
-                &initial.state,
-                "tool state",
-                work,
-            )
-        })?;
-        let admission = WorkflowAdmission {
-            operation_id: invocation.operation_id,
-            request_digest: preparation_digest(
-                &(
-                    context.task().durable_task_id(),
-                    scope.grants(),
-                    scope.limits(),
-                    scope.run_limits(),
-                    scope.extensions(),
-                    &self.definition,
-                    invocation,
-                    identity,
-                ),
-                io,
-            )?,
-            initial,
-        };
-        admission.validate(io)?;
-        Ok(admission)
+        Ok((identity, initial))
     }
 }

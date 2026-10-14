@@ -92,65 +92,7 @@ impl Scheduler {
                 return Err(diagnostic(work, Conflict, "operation dependency cycle"));
             }
         }
-        if let Some(parent) = &spec.parent {
-            observe(work)?;
-            if parent.slot.trim().is_empty()
-                || parent.slot.len() as u64 > COMPONENT_LABEL_MAX_BYTES as u64
-                || parent.slot.chars().any(char::is_control)
-            {
-                return Err(diagnostic(
-                    work,
-                    Invalid,
-                    "structured child slot is invalid",
-                ));
-            }
-            let state = self.operation(parent.operation_id).ok_or_else(|| {
-                diagnostic(
-                    work,
-                    Invalid,
-                    "structured child requires an existing parent and slot",
-                )
-            })?;
-            for ((id, slot), _) in self
-                .child_slots
-                .range((parent.operation_id, String::new())..)
-            {
-                observe(work)?;
-                if *id != parent.operation_id || slot > &parent.slot {
-                    break;
-                }
-                if slot == &parent.slot {
-                    return Err(diagnostic(
-                        work,
-                        Conflict,
-                        "parent child slot is already bound",
-                    ));
-                }
-            }
-            if state.phase == OperationPhase::Terminal || state.cancellation_requested {
-                return Err(diagnostic(
-                    work,
-                    Conflict,
-                    "terminal parent cannot accept children",
-                ));
-            }
-            let (root, depth) = self.session_root(parent.operation_id, work)?;
-            if let Some(limits) = self.sessions.get(&root) {
-                let mut count = 0u64;
-                for id in self.operations.keys() {
-                    if self.session_root(*id, work)?.0 == root {
-                        count += 1;
-                    }
-                }
-                if depth >= limits.depth || count >= limits.total_tasks {
-                    return Err(diagnostic(
-                        work,
-                        Invalid,
-                        "session task or depth limit exhausted",
-                    ));
-                }
-            }
-        }
+        self.validate_parent(spec, work)?;
         Ok(())
     }
 
@@ -418,5 +360,72 @@ impl Scheduler {
             }
         }
         Ok(false)
+    }
+
+    fn validate_parent(
+        &self,
+        spec: &OperationSpec,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        if let Some(parent) = &spec.parent {
+            observe(work)?;
+            if parent.slot.trim().is_empty()
+                || parent.slot.len() > COMPONENT_LABEL_MAX_BYTES
+                || parent.slot.chars().any(char::is_control)
+            {
+                return Err(diagnostic(
+                    work,
+                    Invalid,
+                    "structured child slot is invalid",
+                ));
+            }
+            let state = self.operation(parent.operation_id).ok_or_else(|| {
+                diagnostic(
+                    work,
+                    Invalid,
+                    "structured child requires an existing parent and slot",
+                )
+            })?;
+            for ((id, slot), _) in self
+                .child_slots
+                .range((parent.operation_id, String::new())..)
+            {
+                observe(work)?;
+                if *id != parent.operation_id || slot > &parent.slot {
+                    break;
+                }
+                if slot == &parent.slot {
+                    return Err(diagnostic(
+                        work,
+                        Conflict,
+                        "parent child slot is already bound",
+                    ));
+                }
+            }
+            if state.phase == OperationPhase::Terminal || state.cancellation_requested {
+                return Err(diagnostic(
+                    work,
+                    Conflict,
+                    "terminal parent cannot accept children",
+                ));
+            }
+            let (root, depth) = self.session_root(parent.operation_id, work)?;
+            if let Some(limits) = self.sessions.get(&root) {
+                let mut count = 0u64;
+                for id in self.operations.keys() {
+                    if self.session_root(*id, work)?.0 == root {
+                        count += 1;
+                    }
+                }
+                if depth >= limits.depth || count >= limits.total_tasks {
+                    return Err(diagnostic(
+                        work,
+                        Invalid,
+                        "session task or depth limit exhausted",
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 }

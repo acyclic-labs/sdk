@@ -84,9 +84,9 @@ impl<'a> PiForkCoordinator<'a> {
             let verifier = authority.0.1.verifier(&mut Some(&mut io))?;
             let mut parent = StreamAggregate::open(
                 &self.stream,
-                io.clone_authority(&authority.0.0)?,
+                (io.clone_authority(&authority.0.0)?,
                 verifier.copy(&mut Some(&mut io))?,
-                SchemaRegistry::new(),
+                SchemaRegistry::new()),
                 None,
                 acyclic_harness::store::default_projection_read_limits(),
                 acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,

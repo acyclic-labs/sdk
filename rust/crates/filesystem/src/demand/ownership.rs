@@ -68,6 +68,7 @@ impl SourcePayloadOwnership {
     pub(crate) fn has_native_custody(&self) -> bool {
         !matches!(self, Self::Borrowed)
     }
+    #[cfg(any(windows, target_os = "macos"))]
     pub(crate) fn split_owned_payload(
         &mut self,
         bytes: u64,

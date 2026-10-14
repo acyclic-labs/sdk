@@ -123,7 +123,7 @@ pub(in crate::core) fn command(
 }
 
 fn apply(reducer: &mut Reducer, id: u8, action: Action) -> Result<ApplyResult> {
-    reducer.apply(command(operation(id), reducer.revision(), action))
+    reducer.apply(&command(operation(id), reducer.revision(), action))
 }
 
 pub(in crate::core) fn restore(reducer: &Reducer, owner: &AuthorityIssuer) -> Result<Reducer> {

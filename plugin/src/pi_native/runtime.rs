@@ -190,13 +190,9 @@ impl PiNativeHostRuntime {
         caller_environment: &BTreeMap<String, String>,
         work: &NativeMaterializationWork,
     ) -> Result<(PiNativeInvocation, acyclic_fs::NativeAllocation)> {
-        self.validate(work)?;
-        intent.validate(work)?;
         require_caller_environment(caller_environment)?;
         let input = &intent.invocation;
-        if input.runtime_digest
-            != *digest_pi_value(self, crate::MAXIMUM_ADAPTER_STATE_BYTES, work)?.as_bytes()
-            || !input.environment.is_empty()
+        if !input.environment.is_empty()
             || !input
                 .builtin_tools
                 .iter()
@@ -207,6 +203,15 @@ impl PiNativeHostRuntime {
                 "Pi immutable child seed changed its original protected native host settings",
             ));
         }
+        self.validate(work)?;
+        if input.runtime_digest
+            != *digest_pi_value(self, crate::MAXIMUM_ADAPTER_STATE_BYTES, work)?.as_bytes()
+        {
+            return Err(invalid(
+                "Pi immutable child seed changed its original protected native host settings",
+            ));
+        }
+        intent.validate(work)?;
         PiBoundInvocation {
             runtime_digest: input.runtime_digest,
             session_file: &input.session_file,

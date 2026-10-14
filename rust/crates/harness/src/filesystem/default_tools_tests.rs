@@ -108,9 +108,9 @@ async fn fixture() -> Result<Fixture> {
     let stream = Arc::new(MemoryStream::default());
     let mut parent = StreamAggregate::open(
         &stream,
-        authority,
+        (authority,
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
+        SchemaRegistry::new()),
         None,
         crate::store::default_projection_read_limits(),
         crate::store::DEFAULT_TERMINAL_EFFECTS,
@@ -261,7 +261,7 @@ async fn merge_rejects_foreign_receipts_and_success_shaped_nonoutcomes() -> Resu
 fn fork_initialization_retains_raw_child_message_and_independent_source_choice() -> Result<()> {
     let arguments = ForkToolArguments {
         id: AgentId::from_bytes([40; 16]),
-        msg: "exact é\0🦀\r\nchild task".into(),
+        msg: "exact Ã©\0ðŸ¦€\r\nchild task".into(),
         source: Some(TaskId::from_bytes([41; 16])),
     };
     let value = encode(&arguments, None)?;

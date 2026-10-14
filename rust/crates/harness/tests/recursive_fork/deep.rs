@@ -100,10 +100,10 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             &mut None,
         )?;
         let source_private_generation = host
-            .resolve(&workspace_ref(
-                provider.clone(),
-                &private.storage_name(&mut None)?,
-            )?, None)
+            .resolve(
+                &workspace_ref(provider.clone(), &private.storage_name(&mut None)?)?,
+                None,
+            )
             .await?
             .generation;
         let parent_read = ContentGrant::verify(
@@ -377,7 +377,8 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                     &forked.workspace,
                     Some(&forked.generation),
                     "/marker.txt",
-                    1_024, None
+                    1_024,
+                    None
                 )
                 .await?,
                 acyclic_stream::OwnedBytes::from(format!("level {}", level - 1).into_bytes()),
@@ -510,9 +511,11 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         assert_eq!(report.clone().into_seed(&mut None)?, seed);
         let mut child_aggregate = StreamAggregate::open(
             &stream,
-            child_authority.clone(),
-            child_issuer.verifier(&mut None).expect("verifier copy"),
-            SchemaRegistry::new(),
+            (
+                child_authority.clone(),
+                child_issuer.verifier(&mut None).expect("verifier copy"),
+                SchemaRegistry::new(),
+            ),
             None,
             acyclic_harness::store::default_projection_read_limits(),
             acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
@@ -538,9 +541,11 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             let prebound_stream = Arc::new(MemoryStream::default());
             let mut prebound_child = StreamAggregate::open(
                 &prebound_stream,
-                child_authority.clone(),
-                child_issuer.verifier(&mut None).expect("verifier copy"),
-                SchemaRegistry::new(),
+                (
+                    child_authority.clone(),
+                    child_issuer.verifier(&mut None).expect("verifier copy"),
+                    SchemaRegistry::new(),
+                ),
                 None,
                 acyclic_harness::store::default_projection_read_limits(),
                 acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
@@ -611,9 +616,11 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         if level == DEEP_RETRY {
             aggregate = StreamAggregate::open(
                 &stream,
-                authority.clone(),
-                issuer.verifier(&mut None).expect("verifier copy"),
-                SchemaRegistry::new(),
+                (
+                    authority.clone(),
+                    issuer.verifier(&mut None).expect("verifier copy"),
+                    SchemaRegistry::new(),
+                ),
                 None,
                 acyclic_harness::store::default_projection_read_limits(),
                 acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
@@ -637,9 +644,11 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             )?);
             child_aggregate = StreamAggregate::open(
                 &stream,
-                child_authority.clone(),
-                child_issuer.verifier(&mut None).expect("verifier copy"),
-                SchemaRegistry::new(),
+                (
+                    child_authority.clone(),
+                    child_issuer.verifier(&mut None).expect("verifier copy"),
+                    SchemaRegistry::new(),
+                ),
                 None,
                 acyclic_harness::store::default_projection_read_limits(),
                 acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
@@ -955,10 +964,10 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             &authority,
             &project,
             &host
-                .resolve(&workspace_ref(
-                    provider.clone(),
-                    &(project).storage_name(&mut None)?,
-                )?, None)
+                .resolve(
+                    &workspace_ref(provider.clone(), &(project).storage_name(&mut None)?)?,
+                    None,
+                )
                 .await?
                 .generation,
         )
@@ -1004,7 +1013,8 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             &parent_project_workspace,
             None,
             "/messages/current.txt",
-            1_024, None
+            1_024,
+            None
         )
         .await
         .is_err()

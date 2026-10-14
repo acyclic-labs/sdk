@@ -34,7 +34,8 @@ impl SummaryForkSelection {
     }
 
     pub(crate) fn validate_with_work(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         self.limits.validate(work)?;
         self.limits.validate_file(&self.checkpoint, work)?;
@@ -43,8 +44,11 @@ impl SummaryForkSelection {
             || self.history_limits.maximum_events == 0
             || self.history_limits.maximum_bytes == 0
         {
-            return Err(super::boundary_error(work, crate::wire::ErrorCode::Invalid,
-                "summary fork selection is invalid"));
+            return Err(super::boundary_error(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "summary fork selection is invalid",
+            ));
         }
         Ok(())
     }
@@ -92,7 +96,9 @@ impl SummaryForkCapture {
                 "summary fork capture exceeds protocol counts".into(),
             ));
         }
-        self.selection.limits.validate_file(&self.context, &mut None)?;
+        self.selection
+            .limits
+            .validate_file(&self.context, &mut None)?;
         if self.context.volume() != child_private
             || self.context.path() != ".system/inherited-conversation/summary-context.json"
             || self.context.descriptor().media_type() != "application/json"
@@ -123,7 +129,11 @@ impl SummaryForkCapture {
         for file in &self.references {
             work.checkpoint()?;
             self.selection.limits.validate_file(file, &mut None)?;
-            if !refs.insert(crate::executor::json::canonical_json_digest(file, crate::store::default_projection_read_limits().maximum_bytes, work.work())?) {
+            if !refs.insert(crate::executor::json::canonical_json_digest(
+                file,
+                crate::store::default_projection_read_limits().maximum_bytes,
+                work.work(),
+            )?) {
                 return Err(Error::Invalid(
                     "summary fork reference appears twice".into(),
                 ));
@@ -203,7 +213,16 @@ pub async fn prepare_summary_fork_context<P: StreamProvider>(
     cursor: &HistoryCursor,
     resolver: &dyn ContentResidencyVerifier,
 ) -> Result<PreparedSummaryFork> {
-    prepare_summary_fork_context_with_io(parent, selection, journal, scope, history, cursor, resolver, None).await
+    prepare_summary_fork_context_with_io(
+        parent,
+        selection,
+        journal,
+        scope,
+        (history, cursor),
+        resolver,
+        None,
+    )
+    .await
 }
 
 pub(crate) async fn prepare_summary_fork_context_with_io<P: StreamProvider>(
@@ -211,23 +230,28 @@ pub(crate) async fn prepare_summary_fork_context_with_io<P: StreamProvider>(
     selection: SummaryForkSelection,
     journal: &dyn ExecutionJournal,
     scope: &RuntimeScope,
-    history: &HistoryReader<P>,
-    cursor: &HistoryCursor,
+    history: (&HistoryReader<P>, &HistoryCursor),
     resolver: &dyn ContentResidencyVerifier,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<PreparedSummaryFork> {
+    let (history, cursor) = history;
     #[cfg(feature = "filesystem")]
     {
         let mut observer = io.map(crate::executor::PreparationIo::history_io);
         selection.validate_with_work(
-            &mut observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo),
+            &mut observer
+                .as_mut()
+                .map(|observer| observer as &mut dyn crate::store::history::HistoryIo),
         )?;
     }
     #[cfg(not(feature = "filesystem"))]
     selection.validate()?;
     if parent.authority() != &cursor.authority || parent.revision() != cursor.through_revision {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if io.and_then(crate::executor::PreparationIo::original_native_work).is_some() {
+        if io
+            .and_then(crate::executor::PreparationIo::original_native_work)
+            .is_some()
+        {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Conflict,
                 reason: "summary fork requires the exact pinned parent revision",
@@ -251,21 +275,19 @@ pub(crate) async fn prepare_summary_fork_context_with_io<P: StreamProvider>(
     let (checkpoint, context) = crate::executor::load_canonical_checkpoint_through(
         journal,
         &selection.checkpoint,
-        selection.limits,
-        scope,
-        history,
-        cursor,
-        through_sequence,
-        selection.history_limits,
+        (selection.limits, scope),
+        (history, cursor),
+        (through_sequence, selection.history_limits),
         resolver,
         io,
     )
     .await?;
     #[cfg(feature = "filesystem")]
     let authority = match io {
-        Some(io) => {
-            crate::store::history::HistoryIo::clone_authority(&mut io.history_io(), parent.authority())?
-        }
+        Some(io) => crate::store::history::HistoryIo::clone_authority(
+            &mut io.history_io(),
+            parent.authority(),
+        )?,
         None => parent.authority().clone(),
     };
     #[cfg(not(feature = "filesystem"))]

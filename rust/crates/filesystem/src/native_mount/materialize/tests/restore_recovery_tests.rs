@@ -157,7 +157,7 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
     assert!(matches!(failed.error, MaterializeError::MissingPath));
     assert_eq!(std::fs::read(output.path().join("a-present"))?, b"first");
     assert!(failed.work.backend_read_operations > completed.work.backend_read_operations);
-    let mut original = GenerationReceipt::from_work(
+    let original = GenerationReceipt::from_work(
         &crate::NativeMaterializationWork::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)
             .map_err(|failure| MaterializeError::from(failure.0))?,
     )?;
@@ -242,7 +242,7 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
         }
     }
 
-    let mut no_write = GenerationReceipt::from_work(
+    let no_write = GenerationReceipt::from_work(
         &crate::NativeMaterializationWork::new(
             WorkBudget {
                 backend_write_operations: 0,
@@ -443,8 +443,8 @@ fn restore_preparation_rejects_a_swapped_root_before_any_write()
         restoration_work(),
     )));
     let native_work = crate::NativeMaterializationWork::from_meter(Arc::clone(&original));
-    let allocation_work = (&native_work).clone();
-    let mut work = crate::NativeMaterializationWork::from_meter((&original).clone());
+    let allocation_work = native_work.clone();
+    let mut work = crate::NativeMaterializationWork::from_meter(original.clone());
     let failure = prepare_restore(
         allocation_work
             .path(&destination, None)

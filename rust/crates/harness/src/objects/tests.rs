@@ -54,8 +54,10 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
         bucket.clone(),
         provider.clone(),
         volume.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        owner_scope.clone(),
+        (
+            issuer.verifier(&mut None).expect("verifier copy"),
+            owner_scope.clone(),
+        ),
         owner_scope.clone(),
         4_096,
     )
@@ -202,8 +204,10 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
         bucket.clone(),
         provider.clone(),
         volume.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        owner_scope.clone(),
+        (
+            issuer.verifier(&mut None).expect("verifier copy"),
+            owner_scope.clone(),
+        ),
         delegated,
         4_096,
     )
@@ -289,8 +293,10 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
             bucket.clone(),
             provider.clone(),
             volume.clone(),
-            impostor.verifier(&mut None).expect("verifier copy"),
-            owner_scope.clone(),
+            (
+                impostor.verifier(&mut None).expect("verifier copy"),
+                owner_scope.clone()
+            ),
             impostor_scope,
             4_096
         )
@@ -303,8 +309,10 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
             bucket.clone(),
             ProviderRef::new("impostor".into(), "objects".into(), "1".into(), &mut None)?,
             volume.clone(),
-            issuer.verifier(&mut None).expect("verifier copy"),
-            owner_scope.clone(),
+            (
+                issuer.verifier(&mut None).expect("verifier copy"),
+                owner_scope.clone()
+            ),
             owner_scope,
             4_096
         )
@@ -458,8 +466,10 @@ async fn lazy_mount_routes_registered_buckets_and_requires_exact_grant() -> Resu
         bucket_a.clone(),
         provider.clone(),
         volume_a.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        owner_scope_a.clone(),
+        (
+            issuer.verifier(&mut None).expect("verifier copy"),
+            owner_scope_a.clone(),
+        ),
         owner_scope_a.clone(),
         4_096,
     )
@@ -469,8 +479,10 @@ async fn lazy_mount_routes_registered_buckets_and_requires_exact_grant() -> Resu
         bucket_b.clone(),
         provider.clone(),
         volume_b.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        owner_scope_b.clone(),
+        (
+            issuer.verifier(&mut None).expect("verifier copy"),
+            owner_scope_b.clone(),
+        ),
         owner_scope_b.clone(),
         4_096,
     )
@@ -506,8 +518,10 @@ async fn lazy_mount_routes_registered_buckets_and_requires_exact_grant() -> Resu
         bucket_a.clone(),
         provider.clone(),
         volume_a.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        owner_scope_a.clone(),
+        (
+            issuer.verifier(&mut None).expect("verifier copy"),
+            owner_scope_a.clone(),
+        ),
         attached_a_scope,
         4_096,
     )
@@ -517,8 +531,10 @@ async fn lazy_mount_routes_registered_buckets_and_requires_exact_grant() -> Resu
         bucket_b.clone(),
         provider.clone(),
         volume_b.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        owner_scope_b.clone(),
+        (
+            issuer.verifier(&mut None).expect("verifier copy"),
+            owner_scope_b.clone(),
+        ),
         attached_b_scope,
         4_096,
     )
@@ -555,8 +571,10 @@ async fn lazy_mount_routes_registered_buckets_and_requires_exact_grant() -> Resu
         bucket_a,
         provider,
         volume_a,
-        issuer.verifier(&mut None).expect("verifier copy"),
-        owner_scope_a,
+        (
+            issuer.verifier(&mut None).expect("verifier copy"),
+            owner_scope_a,
+        ),
         no_grant,
         4_096,
     )

@@ -80,8 +80,11 @@ impl WasmReducer {
         schemas: JsValue,
     ) -> Result<Self, JsValue> {
         let snapshot: Snapshot = from_js(snapshot)?;
-        let issuer =
-            AuthorityIssuer::new(issuer_id, key_bytes(issuer_key)?, snapshot.authority.clone());
+        let issuer = AuthorityIssuer::new(
+            issuer_id,
+            key_bytes(issuer_key)?,
+            snapshot.authority.clone(),
+        );
         let reducer = Reducer::restore(
             snapshot,
             issuer.verifier(&mut None).map_err(js_error)?,
@@ -94,7 +97,7 @@ impl WasmReducer {
 
     pub fn apply(&mut self, command: JsValue) -> Result<JsValue, JsValue> {
         let command: Command = from_js(command)?;
-        let result: ApplyResult = self.reducer.apply(command).map_err(js_error)?;
+        let result: ApplyResult = self.reducer.apply(&command).map_err(js_error)?;
         to_js(&result)
     }
 
@@ -103,9 +106,11 @@ impl WasmReducer {
     pub fn apply_wire(&mut self, command: Vec<u8>) -> Result<Vec<u8>, JsValue> {
         let (authority, command) = decode_command(&command).map_err(js_error)?;
         if &authority != self.reducer.authority() {
-            return Err(JsValue::from_str("command authority does not match reducer"));
+            return Err(JsValue::from_str(
+                "command authority does not match reducer",
+            ));
         }
-        let result = self.reducer.apply(command).map_err(js_error)?;
+        let result = self.reducer.apply(&command).map_err(js_error)?;
         encode_apply_result(&authority, &result).map_err(js_error)
     }
 
@@ -123,7 +128,13 @@ impl WasmReducer {
     }
 
     pub fn snapshot(&self) -> Result<JsValue, JsValue> {
-        to_js(&self.reducer.snapshot(usize::MAX, &mut None).map_err(js_error)?.0)
+        to_js(
+            &self
+                .reducer
+                .snapshot(usize::MAX, &mut None)
+                .map_err(js_error)?
+                .0,
+        )
     }
 
     /// Issues a host grant, optionally bound to an acting agent.
@@ -168,7 +179,12 @@ impl WasmReducer {
     ) -> Result<JsValue, JsValue> {
         let parent: Scope = from_js(parent)?;
         let capabilities = Capabilities::new(from_js::<Vec<String>>(capabilities)?);
-        to_js(&self.issuer.attenuate(&parent, id, capabilities).map_err(js_error)?)
+        to_js(
+            &self
+                .issuer
+                .attenuate(&parent, id, &capabilities)
+                .map_err(js_error)?,
+        )
     }
 
     #[wasm_bindgen(js_name = delegatePrivateFileRead)]
@@ -221,7 +237,11 @@ impl WasmReducer {
         let operation = match operation.as_str() {
             "read" => VolumeOperation::Read,
             "write" => VolumeOperation::Write,
-            _ => return Err(js_error(crate::Error::Invalid("volume operation is invalid".into()))),
+            _ => {
+                return Err(js_error(crate::Error::Invalid(
+                    "volume operation is invalid".into(),
+                )));
+            }
         };
         volume.capability(operation, &mut None).map_err(js_error)
     }
@@ -239,7 +259,9 @@ impl WasmReducer {
         prefix: String,
     ) -> Result<String, JsValue> {
         let volume: VolumeRef = from_js(volume)?;
-        volume.directory_read_capability(&prefix, &mut None).map_err(js_error)
+        volume
+            .directory_read_capability(&prefix, &mut None)
+            .map_err(js_error)
     }
 
     /// Authenticates an owner-issued read grant for this exact immutable file.
@@ -298,7 +320,11 @@ impl WasmReducer {
     }
 
     #[wasm_bindgen(js_name = validateFileUnderLimits)]
-    pub fn validate_file_under_limits(&self, file: JsValue, limits: JsValue) -> Result<(), JsValue> {
+    pub fn validate_file_under_limits(
+        &self,
+        file: JsValue,
+        limits: JsValue,
+    ) -> Result<(), JsValue> {
         let file: FileRef = from_js(file)?;
         let limits: Limits = from_js(limits)?;
         limits.validate_file(&file, &mut None).map_err(js_error)
@@ -337,7 +363,9 @@ impl WasmReducer {
         let messages = conversation
             .page(after_sequence, total_messages, limit as usize)
             .map_err(js_error)?;
-        let end = messages.last().map_or(after_sequence, |message| message.sequence);
+        let end = messages
+            .last()
+            .map_or(after_sequence, |message| message.sequence);
         to_js_admitted(&ConversationPage {
             agent: conversation.agent,
             event_revision: self.reducer.revision(),
@@ -381,13 +409,21 @@ impl WasmReducer {
             verifier: self.verifier()?,
             scope: from_js(scope)?,
         };
-        reader.verifier.verify(&reader.scope, &mut None).map_err(js_error)?;
+        reader
+            .verifier
+            .verify(&reader.scope, &mut None)
+            .map_err(js_error)?;
         let prefix: FileRef = from_js(prefix)?;
         let input: WasmModelRequestInput = from_js(request)?;
-        let prepared =
-            crate::model::PreparedModelRequest::inherit(input.into(), &prefix, &reader, limits, None)
-                .await
-                .map_err(js_error)?;
+        let prepared = crate::model::PreparedModelRequest::inherit(
+            input.into(),
+            &prefix,
+            &reader,
+            limits,
+            None,
+        )
+        .await
+        .map_err(js_error)?;
         Ok(prepared.bytes().to_vec())
     }
 }

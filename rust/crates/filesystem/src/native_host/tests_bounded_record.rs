@@ -57,12 +57,10 @@ fn held_child_uses_held_parent_after_lexical_replacement() -> Result<(), Box<dyn
     std::fs::create_dir(&original)?;
     std::fs::create_dir(original.join("child"))?;
     let mut work = ordinary_work();
-    assert_eq!(
-        parent
-            .open_child(&test_path("child"), &mut work)?
-            .identity(),
-        expected
-    );
+    let child = test_path("child");
+    #[cfg(windows)]
+    let child = &child;
+    assert_eq!(parent.open_child(child, &mut work)?.identity(), expected);
     assert_eq!(work.live_allocation_bytes(), 0);
     Ok(())
 }
@@ -157,7 +155,10 @@ fn a_record_survives_metadata_admission_failure_without_another_refill()
     std::fs::write(temporary.path().join("kept"), b"data")?;
     let root = test_root(temporary.path())?;
     let mut first = ordinary_work();
-    let (mut reader, _) = root.read_dir_stats(&test_path(""), &mut first)?;
+    let path = test_path("");
+    #[cfg(windows)]
+    let path = &path;
+    let (mut reader, _) = root.read_dir_stats(path, &mut first)?;
     first.budget.backend_read_operations = first.work.backend_read_operations + 1;
     assert!(matches!(
         reader.next(&mut first),

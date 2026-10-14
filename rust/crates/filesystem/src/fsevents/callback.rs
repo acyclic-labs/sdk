@@ -7,10 +7,6 @@ pub(crate) struct EventBatch<'a> {
 }
 
 impl<'a> EventBatch<'a> {
-    pub(crate) fn len(&self) -> usize {
-        self.paths.len()
-    }
-
     pub(crate) fn iter(self) -> impl ExactSizeIterator<Item = (&'a Path, u32)> {
         self.paths.iter().zip(self.flags).map(|(&path, &flags)| {
             // SAFETY: the callback guarantees a live NUL-terminated string for
@@ -45,6 +41,7 @@ pub(super) struct StreamContext {
 // SAFETY: handlers are Send+Sync; the terminal slot has a single queue-local
 // writer/consumer and every raw reference has a real Arc strong owner.
 unsafe impl Send for StreamContext {}
+// SAFETY: shared callbacks never access the queue-local terminal slot concurrently.
 unsafe impl Sync for StreamContext {}
 
 pub(super) extern "C" fn release_context(info: *const c_void) {
@@ -59,9 +56,10 @@ pub(super) extern "C" fn terminal_suffix(info: *mut c_void) {
     // SAFETY: defer_terminal gave this original serial queue exactly one raw
     // Arc reference. No callback can still be accessing its queue-local slot.
     let context = unsafe { Arc::from_raw(info.cast::<StreamContext>()) };
-    let owner = unsafe { &mut *context.terminal.get() }
-        .take()
-        .expect("the original stream's sole terminal owner is present");
+    // SAFETY: this terminal suffix is the serial queue's sole remaining slot consumer.
+    let Some(owner) = unsafe { &mut *context.terminal.get() }.take() else {
+        std::process::abort();
+    };
     if let Some(birth) = owner.birth.clone() {
         let mut work = crate::NativeMaterializationWork::clone(&birth);
         owner.finish_deferred(context, &mut work);

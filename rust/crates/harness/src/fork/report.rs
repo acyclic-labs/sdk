@@ -86,31 +86,7 @@ impl ForkReport {
         if inherited_bytes > self.request.preparation.maximum_inherited_bytes {
             return Err(work.invalid("fork inherited context exceeds requested byte limit"));
         }
-        if self.captures.len() != self.request.selections.len() {
-            return Err(work.invalid("fork capture count does not match selections"));
-        }
-        for (selection, capture) in self.request.selections.iter().zip(&self.captures) {
-            work.checkpoint()?;
-            match capture {
-                Capture::Captured(resource) if resource.source == selection.revision => {
-                    resource.validate(work.work())?;
-                    if let ResourceRevision::Project { volume, .. } = &resource.revision
-                        && volume != &self.request.preparation.child_project_volume
-                    {
-                        return Err(
-                            work.invalid("fork report changed the requested project volume")
-                        );
-                    }
-                }
-                Capture::Captured(_) => {
-                    return Err(work.invalid("fork capture source does not match selection"));
-                }
-                Capture::Unsupported(reason) if reason.is_empty() => {
-                    return Err(work.invalid("fork capture reason is invalid"));
-                }
-                _ => {}
-            }
-        }
+        self.validate_captures(&mut work)?;
         self.child_private_volume.validate(work.work())?;
         self.child_private_generation
             .as_resource()
@@ -211,5 +187,34 @@ impl ForkReport {
                 crate::core::owned_bytes(source)
             })
         })
+    }
+
+    fn validate_captures(&self, work: &mut CodecQuota<'_, '_>) -> Result<()> {
+        if self.captures.len() != self.request.selections.len() {
+            return Err(work.invalid("fork capture count does not match selections"));
+        }
+        for (selection, capture) in self.request.selections.iter().zip(&self.captures) {
+            work.checkpoint()?;
+            match capture {
+                Capture::Captured(resource) if resource.source == selection.revision => {
+                    resource.validate(work.work())?;
+                    if let ResourceRevision::Project { volume, .. } = &resource.revision
+                        && volume != &self.request.preparation.child_project_volume
+                    {
+                        return Err(
+                            work.invalid("fork report changed the requested project volume")
+                        );
+                    }
+                }
+                Capture::Captured(_) => {
+                    return Err(work.invalid("fork capture source does not match selection"));
+                }
+                Capture::Unsupported(reason) if reason.is_empty() => {
+                    return Err(work.invalid("fork capture reason is invalid"));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 }

@@ -498,13 +498,15 @@ where
 {
     let aggregate = acyclic_harness::store::StreamAggregate::open(
         stream,
-        issuer
-            .verifier(&mut None)
-            .expect("verifier copy")
-            .audience()
-            .clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
+        (
+            issuer
+                .verifier(&mut None)
+                .expect("verifier copy")
+                .audience()
+                .clone(),
+            issuer.verifier(&mut None).expect("verifier copy"),
+            SchemaRegistry::new(),
+        ),
         None,
         acyclic_harness::store::default_projection_read_limits(),
         acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,

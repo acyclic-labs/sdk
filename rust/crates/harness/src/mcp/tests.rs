@@ -31,7 +31,7 @@ impl McpToolTransport for Transport {
         self.0.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move {
             if let Some(context) = context {
-                return Ok(context_result(&context, arguments));
+                return Ok(context_result(&context, &arguments));
             }
             Ok(
                 json!({"content":[{"type":"text","text":"ok"}], "structuredContent":{"value":1}, "isError":false}),
@@ -44,7 +44,7 @@ impl McpToolTransport for Transport {
         context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<Option<Value>>> {
         Box::pin(
-            async move { Ok(context.map(|context| context_result(&context, json!({"value":1})))) },
+            async move { Ok(context.map(|context| context_result(&context, &json!({"value":1})))) },
         )
     }
 }
@@ -163,15 +163,10 @@ async fn scoped_catalog_installation_and_replacement_require_exact_approval() ->
             .install_scoped(
                 &mut registry,
                 None,
-                &bound,
-                &projection,
-                operation,
-                interaction,
-                selected_scope,
-                &verifier,
-                &approval,
-                maximum_tools,
-                maximum_bytes,
+                (&bound, &projection),
+                (operation, interaction),
+                (selected_scope, &verifier, &approval),
+                (maximum_tools, maximum_bytes),
             )
             .await;
         if control == 13 {
@@ -222,15 +217,10 @@ async fn scoped_catalog_installation_and_replacement_require_exact_approval() ->
             .install_scoped(
                 &mut registry,
                 previous,
-                &bound,
-                &projection,
-                approval.operation,
-                approval.interaction,
-                &scope,
-                &verifier,
-                &approval,
-                8,
-                8192,
+                (&bound, &projection),
+                (approval.operation, approval.interaction),
+                (&scope, &verifier, &approval),
+                (8, 8192),
             )
             .await;
         if previous == Some(&original) {
@@ -251,7 +241,7 @@ async fn scoped_catalog_installation_and_replacement_require_exact_approval() ->
     Ok(())
 }
 
-fn context_result(context: &ToolContext, structured_content: Value) -> Value {
+fn context_result(context: &ToolContext, structured_content: &Value) -> Value {
     json!({"content":[], "structuredContent":structured_content, "isError":false,
         "_meta":{"task":context.task().id(), "operation":context.operation_id(),
             "call":context.call_id(), "serverGrant":context.task().scope().grants().contains("mcp:call:fixture"),

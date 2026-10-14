@@ -163,9 +163,7 @@ impl ContentResidencyVerifier for TestContent {
 async fn with_content<P: StreamProvider>(client: &Arc<P>) -> Result<StreamAggregate<P>> {
     Ok(StreamAggregate::open(
         client,
-        authority(),
-        issuer().verifier(&mut None)?,
-        schemas(),
+        (authority(), issuer().verifier(&mut None)?, schemas()),
         None,
         default_projection_read_limits(),
         DEFAULT_TERMINAL_EFFECTS,

@@ -79,7 +79,7 @@ pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider>
     drop(reader_custody);
     let mut aggregate_io = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
     let mut aggregate = (crate::store::StreamAggregate::open(
-        stream, audience, verifier.0, crate::core::SchemaRegistry::new(), None,
+        stream, (audience, verifier.0, crate::core::SchemaRegistry::new()), None,
         crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS,
         None, &mut Some(&mut aggregate_io),
     ).await?, aggregate_io.into_custody()?);

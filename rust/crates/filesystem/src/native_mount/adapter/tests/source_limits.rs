@@ -408,12 +408,12 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
         Err(MountSourceError::Stale)
     ));
     let retained = source.runtime.wait(|| async {
-        Ok(source
+        source
             .checkout
             .lock()
             .await
             .publication_operation
-            .ok_or(MountSourceError::Stale)?)
+            .ok_or(MountSourceError::Stale)
     })?;
     drop(job);
     drop(incoming);
@@ -437,7 +437,9 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
             },
             None,
         )?
-        .expect("retry retained publication");
+        .map_err(|(primary, cleanup)| {
+            format!("publication retry failed: {primary}; cleanup: {cleanup:?}")
+        })?;
     let published = acknowledged.ok_or("missing publication ACK")?;
     assert_eq!(published.operation(), Some(retained));
     assert_eq!(published.workspace_id(), workspace_id);
