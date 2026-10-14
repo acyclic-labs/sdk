@@ -5,11 +5,13 @@ async fn overlapped_sparse_control_finishes_before_native_writes()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let cancellation = CancellationToken::new();
-    let mut receipt = GenerationReceipt::new(
-        super::restore_recovery_tests::FINITE_MATERIALIZATION_BUDGET,
-        &cancellation,
-    )
-    .map_err(|failure| failure.0)?;
+    let mut receipt = GenerationReceipt::from_work(
+        &crate::NativeMaterializationWork::new(
+            super::restore_recovery_tests::FINITE_MATERIALIZATION_BUDGET,
+            &cancellation,
+        )
+        .map_err(|failure| MaterializeError::from(failure.0))?,
+    )?;
     let root = HostRoot::open(directory.path(), &mut receipt.custody.work().clone())?;
     let root = receipt.owned_arc(root, 0)?;
     let limits = crate::model::VolumeLimits::default();
@@ -67,11 +69,13 @@ fn posix_profile_names_materialize_through_utf8_on_windows()
         255,
     )?;
     let limits = crate::model::VolumeLimits::default();
-    let mut receipt = GenerationReceipt::new(
-        super::restore_recovery_tests::FINITE_MATERIALIZATION_BUDGET,
-        &CancellationToken::new(),
-    )
-    .map_err(|failure| failure.0)?;
+    let mut receipt = GenerationReceipt::from_work(
+        &crate::NativeMaterializationWork::new(
+            super::restore_recovery_tests::FINITE_MATERIALIZATION_BUDGET,
+            &CancellationToken::new(),
+        )
+        .map_err(|failure| MaterializeError::from(failure.0))?,
+    )?;
     let namespace = NamespacePath::new(vec![valid], limits)?;
     let path = materialize_host_path(None, namespace.components(), &mut receipt)?;
     assert_eq!(path.0, "uni-é中.txt".encode_utf16().collect::<Vec<_>>());

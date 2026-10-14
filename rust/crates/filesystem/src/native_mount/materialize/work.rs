@@ -28,15 +28,6 @@ pub(super) struct GenerationReceipt {
 }
 
 impl GenerationReceipt {
-    pub(super) fn new(
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<Self, (MaterializeError, WorkCounters)> {
-        let original = crate::NativeMaterializationWork::new(budget, cancellation)
-            .map_err(|(error, work)| (MaterializeError::from(error), work))?;
-        Self::from_work(&original).map_err(|error| (error, original.receipt()))
-    }
-
     pub(super) fn from_work(
         work: &crate::NativeMaterializationWork,
     ) -> Result<Self, MaterializeError> {
