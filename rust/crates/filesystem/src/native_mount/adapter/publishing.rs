@@ -44,8 +44,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             .await
             .map_err(|error| (E::from(error), None))?;
         let force = state.has_retained_operation();
-        let operation = state.retained_operation_id();
         let early = |error: MountSourceError| (E::from(error), None);
+        let bytes = (std::mem::size_of::<(AtomicBool, crate::NativeAllocation)>()
+            + 2 * std::mem::size_of::<usize>()) as u64;
+        let allocation = work
+            .claim(bytes, 1, crate::WorkCounters::UNCHARGED)
+            .map_err(MountSourceError::NativeWork)
+            .map_err(early)?;
+        let submitted = Arc::new((AtomicBool::new(force), allocation));
+        let operation = state.retained_operation_id();
         let projection = state
             .checkout
             .private_candidate(
@@ -106,6 +113,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 };
             let producer = original.checkout.private_control_custody();
             let source_lifetime = lifetime.cloned();
+            let guard_submitted = Arc::clone(&submitted);
             let mut guarded = move |work: &crate::NativeMaterializationWork| {
                 if source_lifetime
                     .as_ref()
@@ -117,6 +125,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 }
                 let future = before_publication(work);
                 let lifetime = source_lifetime.clone();
+                let submitted = Arc::clone(&guard_submitted);
                 futures::future::Either::Right(async move {
                     if lifetime
                         .as_ref()
@@ -131,6 +140,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                     {
                         return Err(E::from(MountSourceError::Stale));
                     }
+                    submitted.0.store(true, Ordering::Release);
                     Ok(())
                 })
             };
@@ -171,6 +181,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             Ok(())
         }
         .await;
+        // Retain cancelled or possibly submitted operations for reconciliation.
+        if result.is_err()
+            && !submitted.0.load(Ordering::Acquire)
+            && carrier.check(cancellation, lifetime).is_ok()
+            && let Some(original) = publication.original.as_mut()
+        {
+            original.clear_retained_operation(operation);
+        }
         drop(publication);
         drop(self.lock().await);
         match (result, carrier.check(cancellation, lifetime)) {

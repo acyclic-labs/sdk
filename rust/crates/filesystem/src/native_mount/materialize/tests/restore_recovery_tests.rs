@@ -20,8 +20,10 @@ fn replaced_root_is_rejected_before_destination_enumeration()
         .identity();
     assert_ne!(original, actual);
     let cancellation = CancellationToken::new();
-    let mut receipt = GenerationReceipt::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)
-        .map_err(|failure| failure.error)?;
+    let mut receipt = GenerationReceipt::from_work(
+        &crate::NativeMaterializationWork::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)
+            .map_err(|failure| MaterializeError::from(failure.0))?,
+    )?;
     let failure = validate_options(
         &MaterializeOptions {
             expected_root_identity: Some(original),
@@ -155,9 +157,17 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
     assert!(matches!(failed.error, MaterializeError::MissingPath));
     assert_eq!(std::fs::read(output.path().join("a-present"))?, b"first");
     assert!(failed.work.backend_read_operations > completed.work.backend_read_operations);
-    let mut original = GenerationReceipt::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)
-        .map_err(|failure| failure.error)?;
-    let candidate = checkout.private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(original.custody.work(), &cancellation), &cancellation);
+    let mut original = GenerationReceipt::from_work(
+        &crate::NativeMaterializationWork::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)
+            .map_err(|failure| MaterializeError::from(failure.0))?,
+    )?;
+    let candidate = checkout.private_candidate(
+        &mut crate::kernel::allocation::KernelAccounting::native(
+            original.custody.work(),
+            &cancellation,
+        ),
+        &cancellation,
+    );
     let candidate = candidate?;
     let reader =
         candidate.into_pinned_reader_with_native_work(original.custody.work(), &cancellation);
@@ -232,15 +242,23 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
         }
     }
 
-    let mut no_write = GenerationReceipt::new(
-        WorkBudget {
-            backend_write_operations: 0,
-            ..FINITE_MATERIALIZATION_BUDGET
-        },
+    let mut no_write = GenerationReceipt::from_work(
+        &crate::NativeMaterializationWork::new(
+            WorkBudget {
+                backend_write_operations: 0,
+                ..FINITE_MATERIALIZATION_BUDGET
+            },
+            &cancellation,
+        )
+        .map_err(|failure| MaterializeError::from(failure.0))?,
+    )?;
+    let candidate = checkout.private_candidate(
+        &mut crate::kernel::allocation::KernelAccounting::native(
+            no_write.custody.work(),
+            &cancellation,
+        ),
         &cancellation,
-    )
-    .map_err(|failure| failure.error)?;
-    let candidate = checkout.private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(no_write.custody.work(), &cancellation), &cancellation);
+    );
     let candidate = candidate?;
     let reader =
         candidate.into_pinned_reader_with_native_work(no_write.custody.work(), &cancellation);
@@ -342,8 +360,10 @@ async fn native_materialization_rejects_unrepresentable_metadata()
     let temporary = tempfile::tempdir()?;
     std::fs::write(temporary.path().join("file"), b"data")?;
     let cancellation = CancellationToken::new();
-    let mut receipt = GenerationReceipt::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)
-        .map_err(|failure| failure.error)?;
+    let mut receipt = GenerationReceipt::from_work(
+        &crate::NativeMaterializationWork::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)
+            .map_err(|failure| MaterializeError::from(failure.0))?,
+    )?;
     let root = HostRoot::open(temporary.path(), &mut receipt.custody.work().clone())?;
     let root = receipt.owned_arc(root, 0)?;
     let limits = crate::model::VolumeLimits::default();

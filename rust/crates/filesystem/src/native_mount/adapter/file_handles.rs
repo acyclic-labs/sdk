@@ -32,7 +32,7 @@ where
             let observation = self
                 .checkout
                 .observe(
-                    ViewGate::callback_owner(),
+                    ViewGate::callback_owner()?,
                     inputs.carrier,
                     work.cancellation(),
                     Some(&self.cancellation),
@@ -77,7 +77,7 @@ where
             let observation = self
                 .checkout
                 .observe(
-                    ViewGate::callback_owner(),
+                    ViewGate::callback_owner()?,
                     &mut carrier,
                     work.cancellation(),
                     Some(&self.cancellation),
@@ -144,7 +144,7 @@ where
             let observation = self
                 .checkout
                 .observe(
-                    ViewGate::callback_owner(),
+                    ViewGate::callback_owner()?,
                     inputs.carrier,
                     work.cancellation(),
                     Some(&self.cancellation),

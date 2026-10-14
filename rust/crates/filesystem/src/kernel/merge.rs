@@ -1170,5 +1170,5 @@ fn project_merge_error(error: FsError) -> MergeGenerationError {
 }
 
 #[cfg(test)]
-#[path = "tests/merge.rs"]
+#[path = "tests/merge/mod.rs"]
 mod tests;
