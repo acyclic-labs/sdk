@@ -18,7 +18,7 @@ foreach ($Lane in 'windows-napi', 'windows-clippy') {
     & ([scriptblock]::Create($clangSetup.Extent.Text))
 }
 if ($script:Probes) { throw 'native-only audit probed the ARM64 compiler' }
-foreach ($Lane in 'windows', 'windows-rust', 'windows-rust-scenarios', 'windows-fork-join') {
+foreach ($Lane in 'windows', 'windows-rust', 'windows-fork-join') {
     & ([scriptblock]::Create($clangSetup.Extent.Text))
 }
 $Lane = 'windows-arm64'
@@ -57,36 +57,19 @@ function Record-Command([string] $Name, [object[]] $Arguments) {
     $script:Calls.Add("$Name $($Arguments -join ' ')")
     if ($script:Calls.Count -eq $script:FailCall) { throw 'simulated command failure' }
 }
-function cargo {
-    Record-Command cargo $args
-    if ($args[0] -eq 'metadata') { return '{}' }
-}
+function cargo { Record-Command cargo $args }
 function node {
     if ($args[0] -eq 'scripts/clippy-feature-sets.mjs' -and $env:CARGO_BUILD_JOBS -ne '4') {
         throw 'clippy worker allocation changed'
     }
     Record-Command node $args
-    if ($args[0] -eq 'scripts/windows-rust-targets.mjs') {
-        $flags = if ($args[1] -eq 'units') { @('--workspace', '--all-features', '--lib') }
-            else { @('--workspace', '--all-features', '--bin', 'fixture-cli', '--test', 'fixture-test', '--example', 'fixture-example') }
-        $examples = @(if ($args[1] -eq 'scenarios') { '--workspace'; '--all-features'; '--examples' })
-        return (@{ cargoArgs = $flags; exampleBuildArgs = $examples; targets = @('fixture') } | ConvertTo-Json -Compress)
-    }
 }
 function rustup { Record-Command rustup $args }
 
 $expected = @{
     'windows-rust' = @(
-        'cargo metadata --locked --no-deps --format-version 1',
-        'node scripts/windows-rust-targets.mjs units',
-        'cargo nextest run --workspace --all-features --lib --locked --profile ci --test-threads 16 --target-dir fixture-target',
-        'cargo test --workspace --all-features --locked --doc --target-dir fixture-target'
-    )
-    'windows-rust-scenarios' = @(
-        'cargo metadata --locked --no-deps --format-version 1',
-        'node scripts/windows-rust-targets.mjs scenarios',
-        'cargo build --workspace --all-features --examples --locked --profile test --target-dir fixture-target',
-        'cargo nextest run --workspace --all-features --bin fixture-cli --test fixture-test --example fixture-example --locked --profile ci --test-threads 16 --target-dir fixture-target'
+        'cargo nextest run --workspace --all-features --locked --profile ci --test-threads 32',
+        'cargo test --workspace --all-features --locked --doc'
     )
     'windows-fork-join' = @(
         'cargo test -p acyclic-plugin --all-features --locked --test fork_join --ignored --test-threads=1 --skip support::'
@@ -104,12 +87,7 @@ $expected = @{
 $priorTarget = $env:CARGO_TARGET_DIR
 $priorTestThreads = $env:RUST_TEST_THREADS
 $priorBuildJobs = $env:CARGO_BUILD_JOBS
-$env:RUST_TEST_THREADS = '16'
-$rustTests = $ast.Find({ param($node)
-    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-WindowsRustTests'
-}, $true)
-if ($null -eq $rustTests) { throw 'missing shared Windows Rust dispatch' }
-. ([scriptblock]::Create($rustTests.Extent.Text))
+$env:RUST_TEST_THREADS = '32'
 try {
     foreach ($clause in $dispatch.Clauses) {
         $name = $clause.Item1.Value

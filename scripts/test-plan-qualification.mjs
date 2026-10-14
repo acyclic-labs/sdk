@@ -149,7 +149,7 @@ test("ARM native binding production runs independently and all original ARM chec
  assert.equal(matrix.find(lane=>lane.lane==="linux-arm64").artifact,"");
  const workflow=readFileSync(".github/workflows/qualification.yml","utf8");
  assert.match(workflow,/needs: \[ plan, qualification \]/);assert.match(workflow,/test "\$RESULT" = success/);
- assert.ok(matrix.length<=19,"all ARM work fits in the simultaneous matrix");
+ assert.ok(matrix.length<=18,"all ARM work fits in the simultaneous matrix");
 });
 
 test("the workspace gate, docs and generation run as independent required matrix lanes",()=>{
@@ -163,8 +163,8 @@ test("the workspace gate, docs and generation run as independent required matrix
  const matrix=lanes;
  for(const name of ["gate","docs","generation"])assert.equal(matrix.filter(lane=>lane.lane===name).length,1);
  const workflow=readFileSync(".github/workflows/qualification.yml","utf8");
- assert.match(workflow,/max-parallel: 19/);
- assert.ok(matrix.length<=19,"all full lanes can start together");
+ assert.match(workflow,/max-parallel: 18/);
+ assert.ok(matrix.length<=18,"all full lanes can start together");
  assert.match(workflow,/needs: \[ plan, qualification \]/);
  assert.match(workflow,/test "\$RESULT" = success/);
 });
@@ -189,8 +189,8 @@ test("Windows native audits are independent required lanes without moving public
   assert.doesNotMatch(packages, /--parallel/);
   assert.match(script, /test-qualify-ci-windows\.ps1/);
   const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");
-  assert.match(workflow, /max-parallel: 19/);
-  assert.ok(matrix.length <= 19);
+  assert.match(workflow, /max-parallel: 18/);
+  assert.ok(matrix.length <= 18);
   assert.match(workflow, /test "\$RESULT" = success/);
   const action = readFileSync(".github/actions/qualification-lane/action.yml", "utf8");
   assert.ok(action.includes('qualify-ci.ps1 -Lane "${{ inputs.lane }}"'));
@@ -305,8 +305,8 @@ test("Linux mount and fork/join qualification overlap packages on an independent
   const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");
   assert.ok(workflow.includes("include: ${{ fromJSON(needs.plan.outputs.matrix) }}"));
   assert.ok(workflow.includes("lane: ${{ matrix.lane }}"));
-  assert.ok(matrix.length <= 19);
-  assert.ok(workflow.includes("max-parallel: 19"));
+  assert.ok(matrix.length <= 18);
+  assert.ok(workflow.includes("max-parallel: 18"));
   assert.ok(workflow.includes('test "$RESULT" = success'));
 });
 

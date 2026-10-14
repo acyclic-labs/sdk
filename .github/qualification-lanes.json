@@ -89,16 +89,8 @@
   },
   {
     "lane": "windows-rust",
-    "runner": "blacksmith-16vcpu-windows-2025",
-    "workers": 16,
-    "artifact": "",
-    "artifact_path": "",
-    "cache_size": "3072M"
-  },
-  {
-    "lane": "windows-rust-scenarios",
-    "runner": "blacksmith-16vcpu-windows-2025",
-    "workers": 16,
+    "runner": "blacksmith-32vcpu-windows-2025",
+    "workers": 32,
     "artifact": "",
     "artifact_path": "",
     "cache_size": "3072M"
