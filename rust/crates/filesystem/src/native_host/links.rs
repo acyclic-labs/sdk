@@ -32,7 +32,7 @@ fn read_link_buffer<W: NativeHostWork>(
         };
         work.admit(reading)?;
         let (mut bytes, allocation) = buffer(size, work)?;
-        let result = (|| {
+        let result = (|| -> Result<Option<std::ops::Range<usize>>, W::Error> {
             work.started_io(copy_work(bytes.capacity() as u64))?;
             bytes.resize(bytes.capacity(), 0);
             let count = loop {
