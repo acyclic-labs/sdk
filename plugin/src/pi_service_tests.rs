@@ -206,7 +206,8 @@ async fn cold_reopen_observes_pending_and_reserved_without_native_access() {
 #[tokio::test]
 async fn deactivation_cancels_before_persisting_inactive_state() {
     let directory = tempfile::tempdir().unwrap();
-    let (_lock, resources, state, runtime) = prepare(directory.path()).await;
+    let data = directory.path().join("service");
+    let (_lock, resources, state, runtime) = prepare(&data).await;
     let PluginTaskBinding::Pi(binding) = &state.task_binding else {
         unreachable!()
     };
@@ -247,15 +248,11 @@ async fn deactivation_cancels_before_persisting_inactive_state() {
     service.begin_drain();
     let _ = service.shutdown().await.unwrap();
     assert!(!load_saved_state(&session).unwrap().active);
-    let configured = ServiceResources::configure(directory.path()).await.unwrap();
-    let (resources, sessions) = ServiceResources::open(
-        directory.path().into(),
-        configured,
-        directory.path().into(),
-        &work(),
-    )
-    .await
-    .unwrap();
+    let configured = ServiceResources::configure(&data).await.unwrap();
+    let (resources, sessions) =
+        ServiceResources::open(data.clone(), configured, data.clone(), &work())
+            .await
+            .unwrap();
     assert!(sessions.is_empty());
     let mut controller = SessionController::open(session, &resources, &work())
         .await
@@ -277,7 +274,7 @@ async fn deactivation_cancels_before_persisting_inactive_state() {
 async fn recovery_preserves_missing_storage_and_rejects_a_foreign_valid_owner() {
     for missing in ["pi-owner.v1", "stream"] {
         let directory = tempfile::tempdir().unwrap();
-        let (_lock, resources, state, runtime) = prepare(directory.path()).await;
+        let (_lock, resources, state, runtime) = prepare(&directory.path().join("service")).await;
         drop(runtime);
         let session = resources.session_directory(&state.root_session_id);
         let path = session.join(missing);
@@ -296,7 +293,8 @@ async fn recovery_preserves_missing_storage_and_rejects_a_foreign_valid_owner() 
         resources.shared_roots.collection.stop().await;
     }
     let directory = tempfile::tempdir().unwrap();
-    let (_lock, resources, state, runtime) = prepare(&directory.path().join("original")).await;
+    let (_lock, resources, state, runtime) =
+        prepare(&directory.path().join("original").join("service")).await;
     let PluginTaskBinding::Pi(binding) = &state.task_binding else {
         unreachable!()
     };
@@ -324,7 +322,8 @@ async fn recovery_preserves_missing_storage_and_rejects_a_foreign_valid_owner() 
         .await
         .unwrap();
     drop(runtime);
-    let (_foreign_lock, foreign, other, runtime) = prepare(&directory.path().join("foreign")).await;
+    let (_foreign_lock, foreign, other, runtime) =
+        prepare(&directory.path().join("foreign").join("service")).await;
     drop(runtime);
     assert_eq!(
         serde_json::to_value(&state.task_binding).unwrap(),

@@ -220,6 +220,17 @@ fn validate_request(
     work: &NativeMaterializationWork,
 ) -> Result<()> {
     owner.validate_root(&request.binding, work)?;
+    let mut io = acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
+    let read = owner
+        .policy()
+        .journal
+        .directory_read_capability(ROOT_INPUT_DIRECTORY, &mut Some(&mut io))?;
+    if !owner.policy().grants.contains(&read) {
+        return Err(Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Unauthorized,
+            reason: "Pi root lacks its original input-directory read grant",
+        });
+    }
     request.root.validate(&request.binding, work)?;
     if !matches!(
         request.binding.scratch.allocation,

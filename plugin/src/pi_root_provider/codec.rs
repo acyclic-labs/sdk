@@ -6,7 +6,7 @@ pub(crate) fn guarded_pi_bytes<T: Serialize>(
     maximum_bytes: u64,
     work: &NativeMaterializationWork,
 ) -> Result<(Vec<u8>, NativeAllocation)> {
-    encode_pi(Some(maximum_bytes), None, work, |bounds, charge| {
+    encode_pi(Some(maximum_bytes), work, |bounds, charge| {
         json_bytes_bounded(value, bounds, Some(ErrorCode::Invalid), &mut |event| {
             charge(event)
         })
@@ -15,7 +15,6 @@ pub(crate) fn guarded_pi_bytes<T: Serialize>(
 
 fn encode_pi<T>(
     maximum_bytes: Option<u64>,
-    maximum_owned_bytes: Option<u64>,
     work: &NativeMaterializationWork,
     encode: impl FnOnce(JsonBounds, &mut dyn FnMut(JsonCodecCharge) -> Result<()>) -> Result<T>,
 ) -> Result<(T, NativeAllocation)> {
@@ -63,16 +62,6 @@ fn encode_pi<T>(
                         WorkError::Overflow,
                     ))
                 })?;
-                if let Some(maximum) = maximum_owned_bytes
-                    && observed > maximum {
-                        return Err(acyclic_harness::Error::from(
-                            NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
-                                counter: "pi_value_owned_bytes",
-                                observed,
-                                maximum,
-                            }),
-                        ));
-                    }
                 if let Some(mut quota) = parser_quota.take() {
                     custody.absorb(&mut quota)?;
                 }
@@ -208,7 +197,7 @@ pub(crate) fn canonical_pi_value<T: Serialize + ?Sized>(
     maximum_bytes: u64,
     work: &NativeMaterializationWork,
 ) -> Result<(Vec<u8>, NativeAllocation)> {
-    encode_pi(Some(maximum_bytes), None, work, |bounds, charge| {
+    encode_pi(Some(maximum_bytes), work, |bounds, charge| {
         canonical_json_bytes_bounded(value, bounds, Some(ErrorCode::Invalid), &mut |event| {
             charge(event)
         })
@@ -320,9 +309,20 @@ pub(crate) fn guarded_pi_value<T: Serialize>(
     maximum_owned_bytes: u64,
     work: &NativeMaterializationWork,
 ) -> Result<(serde_json::Value, NativeAllocation)> {
-    encode_pi(None, Some(maximum_owned_bytes), work, |bounds, charge| {
+    let encoded = encode_pi(None, work, |bounds, charge| {
         json_value_bounded(value, bounds, Some(ErrorCode::Invalid), &mut |event| {
             charge(event)
         })
-    })
+    })?;
+    let observed = encoded.1.bytes();
+    if observed > maximum_owned_bytes {
+        return Err(acyclic_harness::Error::from(
+            NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
+                counter: "pi_value_owned_bytes",
+                observed,
+                maximum: maximum_owned_bytes,
+            }),
+        ));
+    }
+    Ok(encoded)
 }
