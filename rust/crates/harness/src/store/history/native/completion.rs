@@ -48,6 +48,7 @@ impl AcceptedCompletionIo {
     }
 
     /// Seeds virtual ownership of a request already covered by the real pool.
+    #[cfg(test)]
     pub(crate) fn adopt_preheld(&mut self, bytes: u64) -> Result<()> {
         self.retain(bytes)
     }

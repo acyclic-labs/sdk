@@ -14,7 +14,7 @@ macro_rules! schema {
         };
         $(impl JsonValueSchema {
             #[doc = concat!("Value fields for ", stringify!($public), ".")]
-            #[allow(non_upper_case_globals)]
+            #[allow(non_upper_case_globals, reason = "Schema constants mirror SDK record type names.")]
             pub const $public: &'static Self = &$name;
         })?
     };
@@ -98,6 +98,7 @@ pub(super) static MODEL_CONTENT: JsonValueSchema = JsonValueSchema {
     elements: &[&MODEL_CONTENT_PART],
 };
 impl JsonValueSchema {
+    /// Selects the schema for one object field or array element.
     pub fn child(&'static self, key: &[u8], index: Option<usize>) -> (&'static Self, u8) {
         if std::ptr::eq(self, &ROOT) || std::ptr::eq(self, &UNKNOWN) {
             return (self, 0);
@@ -116,6 +117,7 @@ impl JsonValueSchema {
             .find(|(name, _, _)| name.as_bytes() == key || *name == "*")
             .map_or((&NONE, 0), |(_, child, gate)| (*child, *gate))
     }
+    /// Returns the field mask selected by a record discriminant.
     pub fn mask(&self, tag: &[u8]) -> u8 {
         self.tags
             .iter()
@@ -126,7 +128,10 @@ impl JsonValueSchema {
 
 impl JsonValueSchema {
     /// Value fields for a model content envelope.
-    #[allow(non_upper_case_globals)]
+    #[allow(
+        non_upper_case_globals,
+        reason = "Schema constants mirror SDK record type names."
+    )]
     pub const ModelContent: &'static Self = &MODEL_CONTENT;
 }
 impl PartialEq for JsonValueSchema {

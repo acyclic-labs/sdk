@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 mod builder;
 pub use builder::HarnessBuilder;
-mod bundle;
-pub use bundle::HarnessBundle;
+mod composition;
+pub use composition::HarnessBundle;
 #[cfg(test)]
 mod tests;

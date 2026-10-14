@@ -99,9 +99,6 @@ impl ModelContent {
             ),
         }
     }
-    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        add(size_of::<Self>() as u64, self.payload_bytes()?)
-    }
 }
 impl ModelRequest {
     pub(super) fn payload_bytes(&self) -> Result<u64> {
