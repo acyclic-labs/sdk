@@ -36,7 +36,7 @@ impl NativeMaterializationWork {
     pub fn new(
         budget: WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> Result<Self, (NativeTreeMaterializationError, WorkCounters)> {
+    ) -> Result<Self, (NativeTreeMaterializationError, Box<WorkCounters>)> {
         let mut state = crate::demand::DemandWork::new(budget, cancellation);
         state
             .claim_allocation(
@@ -44,7 +44,7 @@ impl NativeMaterializationWork {
                 1,
                 crate::WorkCounters::UNCHARGED,
             )
-            .map_err(|error| (native_materialization_work_error(error), state.work))?;
+            .map_err(|error| (native_materialization_work_error(error), Box::new(state.work)))?;
         Ok(Self {
             cancellation: cancellation.clone(),
             state: Arc::new(crate::demand::NativeDemandReadMeter(std::sync::Mutex::new(

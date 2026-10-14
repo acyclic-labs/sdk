@@ -61,8 +61,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             source.id,
             source.workspace.volume.config,
             maximum_generations,
-            &target_ancestors.value,
-            target_truncated,
+            (&target_ancestors.value, target_truncated),
             accounting,
             cancellation,
         )
@@ -376,11 +375,11 @@ pub(super) async fn find_first_generation_ancestor<O: AsyncObjectStore>(
     start: GenerationId,
     config: VolumeConfig,
     maximum_generations: u32,
-    candidates: &[(GenerationId, Option<VolumeId>)],
-    candidates_truncated: bool,
+    candidates: (&[(GenerationId, Option<VolumeId>)], bool),
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<WorkspaceCommonAncestor, crate::workspace::WorkspaceError> {
+    let (candidates, candidates_truncated) = candidates;
     let maximum = usize::try_from(maximum_generations).unwrap_or(usize::MAX);
     let mut visited = crate::kernel::Owned::<Vec<GenerationId>>::allocate(0, accounting)?;
     let mut pending =
@@ -399,7 +398,8 @@ pub(super) async fn find_first_generation_ancestor<O: AsyncObjectStore>(
                 |candidate| candidate.0.cmp(&generation),
             )?
             .ok()
-            .map(|index| candidates[index].1);
+            .and_then(|index| candidates.get(index))
+            .map(|candidate| candidate.1);
             if let Some(Some(volume_id)) = candidate {
                 return Ok(baseline.unwrap_or(WorkspaceCommonAncestor {
                     id: generation,

@@ -276,7 +276,7 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<Option<(MountLookup, Option<MountContentPin>)>, MountSourceError> {
         let (text, _allocation) = self.path(path, work)?;
-        let owner = ViewGate::callback_owner();
+        let owner = ViewGate::callback_owner()?;
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
         with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
             self.runtime.wait_prepared(prepared, || async {
@@ -361,7 +361,7 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
         let (text, _allocation) = self.path(path, work)?;
-        let owner = ViewGate::callback_owner();
+        let owner = ViewGate::callback_owner()?;
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
         with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
             self.runtime.wait_prepared(prepared, || async {
@@ -414,8 +414,10 @@ where
         self.read_content(
             path,
             None,
-            offset,
-            u64::from(length),
+            crate::ByteRange {
+                offset,
+                length: u64::from(length),
+            },
             length,
             &mut |_, packet| {
                 read = Some(packet);
@@ -445,8 +447,7 @@ where
             self.read_content(
                 path,
                 Some(pin),
-                offset,
-                length,
+                crate::ByteRange { offset, length },
                 piece,
                 &mut |offset, packet| sink(offset, packet.bytes),
                 work,
@@ -458,13 +459,12 @@ where
         &self,
         path: &MountPath,
         pin: MountContentPin,
-        offset: u64,
-        length: u64,
+        range: crate::ByteRange,
         piece: u32,
         sink: &mut crate::native_mount::NativeMountContentSink<'_>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        self.read_content(path, Some(pin), offset, length, piece, sink, work)
+        self.read_content(path, Some(pin), range, piece, sink, work)
     }
 
     fn seek(

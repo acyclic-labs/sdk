@@ -12,23 +12,17 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     pub async fn cancellation_requested(
         &self,
         task: TaskId,
-        io: Option<&crate::executor::PreparationIo>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<bool> {
-        #[cfg(feature = "filesystem")]
-        let mut history = io.map(|io| io.history_io());
-        #[cfg(feature = "filesystem")]
-        let mut work = history.as_mut().map(|io| io as &mut dyn HistoryIo);
-        #[cfg(not(feature = "filesystem"))]
-        let mut work: Option<&mut dyn crate::store::HistoryIo> = None;
         let mut coordinator = self.coordinator.lock().await;
-        coordinator.refresh(&mut work).await?;
+        coordinator.refresh(work).await?;
         Ok(coordinator
             .observe_operation(
                 &self.owner,
                 &self.owner_scope,
                 &self.verifier,
                 OperationId::from_bytes(task.into_bytes()),
-                &mut work,
+                work,
             )?
             .cancellation_requested)
     }
@@ -41,21 +35,11 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         let operation = OperationId::from_bytes(task.into_bytes());
-        let io = operation_io(work)?;
-        #[cfg(feature = "filesystem")]
-        let mut admission_history = io.as_ref().map(|io| io.history_io());
-        #[cfg(feature = "filesystem")]
-        let mut admission_work = admission_history
-            .as_mut()
-            .map(|io| io as &mut dyn crate::store::HistoryIo);
-        #[cfg(not(feature = "filesystem"))]
-        let mut admission_work = None;
-        let admission = self.admission(operation, &mut admission_work).await?;
-        let deadline = admission
-            .run_limits
+        let deadline = self
+            .admission_run_limits(operation, work)
+            .await?
             .deadline_epoch_ms
             .ok_or_else(|| Error::Invalid("task has no admitted deadline".into()))?;
-        drop(admission);
         if self.now_unix_millis() < deadline {
             return Err(Error::Conflict("task deadline has not elapsed".into()));
         }

@@ -175,21 +175,21 @@ impl ViewGateReadAdmissions {
             }
         }
         if let Some(index) = found {
-            return Ok(if index == 0 {
-                self.first.as_mut().expect("first gate admission")
+            return if index == 0 {
+                self.first.as_mut()
             } else {
-                &mut self.more[index - 1]
-            });
+                self.more.get_mut(index - 1)
+            }
+            .ok_or(MountSourceError::Work(crate::WorkError::Overflow));
         }
         if self.first.is_none() {
-            self.first = Some(ReadAdmission {
+            return Ok(self.first.insert(ReadAdmission {
                 gate: Arc::clone(gate),
                 slot: None,
                 registry: None,
                 finished: 0,
                 payload_finished: 0,
-            });
-            return Ok(self.first.as_mut().expect("new first admission"));
+            }));
         }
         if self.more.len() == self.more.capacity() {
             let count = self
@@ -235,14 +235,16 @@ impl ViewGateReadAdmissions {
             finished: 0,
             payload_finished: 0,
         });
-        Ok(self.more.last_mut().expect("new gate admission"))
+        self.more
+            .last_mut()
+            .ok_or(MountSourceError::Work(crate::WorkError::Overflow))
     }
 }
 
 pub(super) fn gate_allocation_error(
     error: crate::kernel::allocation::AllocationError,
 ) -> MountSourceError {
-    super::super::lazy::mount_engine_error(crate::collection::handle_allocation_error(error))
+    super::super::lazy::mount_engine_error(error.into_work_or(crate::FsError::HandleAllocationFailed))
 }
 
 pub(super) fn reconcile_reader_registry(
@@ -268,10 +270,13 @@ pub(super) fn insert_reader_slot(
     first_free: &mut Option<usize>,
     second_free: &mut Option<usize>,
     slot: ReadSlot,
-) -> usize {
+) -> Result<usize, MountSourceError> {
     let index = if let Some(index) = first_free.take() {
         *first_free = second_free.take();
-        state.reader_slots[index] = Some(slot);
+        *state
+            .reader_slots
+            .get_mut(index)
+            .ok_or(MountSourceError::Work(crate::WorkError::Overflow))? = Some(slot);
         index
     } else {
         let index = state.reader_slots.len();
@@ -279,5 +284,5 @@ pub(super) fn insert_reader_slot(
         index
     };
     state.occupied_slots += 1;
-    index
+    Ok(index)
 }

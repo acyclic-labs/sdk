@@ -1,5 +1,5 @@
 use super::*;
-use std::{collections::BTreeSet, mem::size_of};
+use std::mem::size_of;
 pub(super) fn charge(work: &mut Option<&mut dyn HistoryIo>, items: u64) -> Result<()> {
     if let Some(io) = work.as_deref_mut() {
         io.check_cancellation()?;
@@ -41,58 +41,6 @@ pub(super) fn vector_bytes<T>(
         .try_fold(slots(values.capacity(), size_of::<T>())?, |n, value| {
             add(n, bytes(value)?)
         })
-}
-pub(super) fn release(work: &mut Option<&mut dyn HistoryIo>, bytes: u64) -> Result<()> {
-    if let Some(io) = work.as_deref_mut() {
-        io.release_owned(bytes)?;
-    }
-    Ok(())
-}
-pub(super) fn reserve<T>(
-    values: &mut Vec<T>,
-    count: usize,
-    work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<()> {
-    if count <= values.capacity() {
-        return Ok(());
-    }
-    let old = values.capacity();
-    if let Some(io) = work.as_deref_mut() {
-        io.admit_allocation(slots(count - old, size_of::<T>())?)?;
-    }
-    values
-        .try_reserve_exact(count - values.len())
-        .map_err(|error| match work.as_deref() {
-            Some(io) => io.allocation_failure(error),
-            None => Error::Storage(error.to_string()),
-        })?;
-    if let Some(io) = work.as_deref_mut() {
-        io.retain_owned(slots(values.capacity() - old, size_of::<T>())?)?;
-    }
-    Ok(())
-}
-pub(super) fn insert_label(
-    labels: &mut BTreeSet<String>,
-    label: String,
-    work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<()> {
-    if labels.contains(&label) {
-        let bytes = label.capacity() as u64;
-        drop(label);
-        return release(work, bytes);
-    }
-    if let Some(io) = work.as_deref_mut() {
-        io.retain_owned(size_of::<String>() as u64)?;
-    }
-    labels.insert(label);
-    Ok(())
-}
-pub(super) fn proof_bytes(proof: &ResourceCreationProofRef) -> Result<u64> {
-    sum([
-        proof.provider.logical_owned_bytes()?,
-        proof.resource.logical_owned_bytes()?,
-        proof.evidence.logical_owned_bytes()?,
-    ])
 }
 /// Derives a capability for one exact resource and operation.
 pub fn created_resource_capability(

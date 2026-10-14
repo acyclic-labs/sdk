@@ -209,9 +209,9 @@ where
         result.map_err(
             |(cause, accounting_failure)| NativeMountPublicationFailure {
                 cause,
-                accounting_failure,
+                accounting_failure: accounting_failure.map(Box::new),
                 source_acknowledged: acknowledged.is_some(),
-                publication: acknowledged,
+                publication: acknowledged.map(Box::new),
             },
         )
     }

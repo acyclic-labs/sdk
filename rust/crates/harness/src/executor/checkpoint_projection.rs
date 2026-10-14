@@ -90,7 +90,6 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
     )?;
     #[cfg(feature = "filesystem")]
     {
-        drop(work);
         _view_hold = io
             .map(|io| io.guard_owned(io.owned_bytes()? - before))
             .transpose()?;

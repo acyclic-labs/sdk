@@ -97,7 +97,10 @@ fn insert<K, V>(
                 ..WorkCounters::UNCHARGED
             };
             ctx.admit(copied)?;
-            table.ensure_for_push(usize::MAX, ctx)?;
+            let count = table.value.capacity().saturating_mul(2).max(1);
+            let mut replacement = Owned::allocate(count, ctx)?;
+            replacement.value.append(&mut table.value);
+            std::mem::replace(table, replacement).retire(ctx)?;
             ctx.record_completed(copied)?;
         }
         let moved = WorkCounters {
@@ -108,12 +111,14 @@ fn insert<K, V>(
         ctx.admit(moved)?;
         table
             .value
-            .insert(index, input.take().expect("admitted entry"));
+            .insert(index, input.take().ok_or(LazyWorkspaceError::Concurrent)?);
         ctx.record_completed(moved)?;
         Ok(())
     })();
     if let Some(before) = before {
-        let (ledger, _, _, _) = ctx.standalone_parts().expect("standalone ledger");
+        let (ledger, _, _, _) = ctx
+            .standalone_parts()
+            .ok_or(LazyWorkspaceError::Concurrent)?;
         ledger
             .release(ledger.live_bytes() - before)
             .map_err(|e| e.into_work_or(crate::FsError::PendingMutationAllocationFailed))?;
@@ -129,14 +134,19 @@ fn put_node<K: Ord, T: MemoryLazyNode>(
 ) -> Result<(), LazyWorkspaceError> {
     let mut input = Some((id, value));
     let result = (|| {
-        let (id, value) = input.as_ref().expect("untransferred node");
+        let (id, value) = input.as_ref().ok_or(LazyWorkspaceError::Concurrent)?;
         if hash_lazy_value(&value.0, ctx)? != digest {
             return Err(LazyWorkspaceError::Concurrent);
         }
         ctx.charge(lazy_store_write_work())?;
         match position(table, id, ctx)? {
-            Ok(i) if table.value[i].1.0 != value.0 => Err(LazyWorkspaceError::Concurrent),
-            Ok(_) => Ok(()),
+            Ok(i) => {
+                let (_, (stored, _)) = table.value.get(i).ok_or(LazyWorkspaceError::Concurrent)?;
+                if *stored != value.0 {
+                    return Err(LazyWorkspaceError::Concurrent);
+                }
+                Ok(())
+            }
             Err(i) => {
                 let bytes = value.0.owned_bytes();
                 insert(table, i, &mut input, ctx)?;
@@ -168,10 +178,17 @@ impl LazyWorkspaceStore for MemoryLazyWorkspaceStore {
         ctx.charge(lazy_store_write_work())?;
         let mut stored = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         match position(&stored.workspaces, &id, ctx)? {
-            Ok(i) if stored.workspaces.value[i].1.revision == revision => {
-                stored.workspaces.value[i].1 = state;
+            Ok(i) => {
+                let (_, workspace) = stored
+                    .workspaces
+                    .value
+                    .get_mut(i)
+                    .ok_or(LazyWorkspaceError::Concurrent)?;
+                if workspace.revision != revision {
+                    return Ok(false);
+                }
+                *workspace = state;
             }
-            Ok(_) => return Ok(false),
             Err(i) if revision == 0 => {
                 insert(&mut stored.workspaces, i, &mut Some((id, state)), ctx)?;
             }
@@ -188,7 +205,8 @@ impl LazyWorkspaceStore for MemoryLazyWorkspaceStore {
         let stored = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         Ok(position(&stored.workspaces, &id, ctx)?
             .ok()
-            .map(|i| stored.workspaces.value[i].1.clone()))
+            .and_then(|i| stored.workspaces.value.get(i))
+            .map(|(_, workspace)| workspace.clone()))
     }
     async fn load_lazy_overlay(
         &self,
@@ -199,7 +217,8 @@ impl LazyWorkspaceStore for MemoryLazyWorkspaceStore {
         let stored = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         position(&stored.overlays, &id, ctx)?
             .ok()
-            .map(|i| stored.overlays.value[i].1.0.copy(ctx))
+            .and_then(|i| stored.overlays.value.get(i))
+            .map(|(_, (value, _))| value.copy(ctx))
             .transpose()
     }
     async fn put_lazy_overlay(
@@ -220,7 +239,8 @@ impl LazyWorkspaceStore for MemoryLazyWorkspaceStore {
         let stored = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         position(&stored.shadows, &id, ctx)?
             .ok()
-            .map(|i| stored.shadows.value[i].1.0.copy(ctx))
+            .and_then(|i| stored.shadows.value.get(i))
+            .map(|(_, (value, _))| value.copy(ctx))
             .transpose()
     }
     async fn put_lazy_shadow(

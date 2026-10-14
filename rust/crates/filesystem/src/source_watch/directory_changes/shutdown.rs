@@ -49,11 +49,19 @@ impl NativeSourceWatch {
         let mut thread = lock(&self.shared.thread, wait)?;
         check_wait(wait)?;
         if native && self.shared.stopping.load(Ordering::Acquire) {
-            return Err(if self.shared.attempted.load(Ordering::Acquire) {
-                DemandError::NativeWorkUnavailable
-            } else {
-                DemandError::WorkerUnavailable
-            });
+            return Err(
+                if self
+                    .shared
+                    .cleanup
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)[0]
+                    .is_none()
+                {
+                    DemandError::NativeWorkUnavailable
+                } else {
+                    DemandError::WorkerUnavailable
+                },
+            );
         }
         let running = thread.is_some();
         let wake = running && is_open(&self.shared.completed);
@@ -124,7 +132,13 @@ impl NativeSourceWatch {
                 self.shared.finish_native_reader();
                 reads = self.shared.lock_reads();
             }
-            while !self.shared.attempted.load(Ordering::Acquire) {
+            while !self
+                .shared
+                .cleanup
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)[0]
+                .is_none()
+            {
                 reads = self
                     .shared
                     .reading_changed
@@ -206,8 +220,10 @@ impl Shared {
             return work.record(delta);
         }
         let mut cleanup = self.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
-        let credit = cleanup[usize::from(self.attempted.load(Ordering::Acquire))]
-            .as_mut()
+        let credit = cleanup
+            .iter_mut()
+            .flatten()
+            .next()
             .ok_or(DemandError::NativeWorkUnavailable)?;
         // Each serialized cleanup attempt fits the suffix reserved before birth.
         credit.started_drop_io(delta);
@@ -305,7 +321,7 @@ impl Shared {
         }
         result
     }
-    fn retired(&self, reads: &Reads) -> bool {
+    pub(super) fn retired(&self, reads: &Reads) -> bool {
         !reads.pending
             && reads.buffer.is_none()
             && !is_open(&self.directory)
@@ -322,21 +338,25 @@ impl Shared {
         let mut work = self.delivery.callback_work();
         loop {
             let mut reads = self.lock_reads();
-            let terminal = self.attempted.load(Ordering::Acquire);
+            let terminal = self.cleanup.lock().unwrap_or_else(PoisonError::into_inner)[0].is_none();
             if let Err(error) = self.retire(&mut reads, &mut work) {
                 self.note_failure(error);
             }
-            if self.retired(&reads) {
-                let cleanup = std::mem::replace(
-                    &mut *self.cleanup.lock().unwrap_or_else(PoisonError::into_inner),
-                    [None, None],
-                );
-                drop(cleanup);
+            let retired = self.retired(&reads);
+            let credit = {
+                let mut cleanup = self.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
+                if retired {
+                    std::mem::take(&mut *cleanup)
+                } else {
+                    [cleanup[0].take(), None]
+                }
+            };
+            drop(credit);
+            if retired {
                 self.stop_completed.store(true, Ordering::Release);
             }
-            self.attempted.store(true, Ordering::Release);
             self.reading_changed.notify_all();
-            if self.stop_completed.load(Ordering::Acquire) {
+            if retired {
                 return;
             }
             while terminal || !self.dropped.load(Ordering::Acquire) {

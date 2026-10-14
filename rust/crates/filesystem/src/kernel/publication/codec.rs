@@ -242,15 +242,6 @@ pub(super) const fn fingerprint_input_length(operation_context: Option<Digest>) 
         + if operation_context.is_some() { 32 } else { 0 }
 }
 
-pub(crate) fn encode_publication_payload(
-    volume_id: VolumeId,
-    generation_root: ObjectId,
-) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(publication_payload_length());
-    write_publication_payload(&mut bytes, volume_id, generation_root, None);
-    bytes
-}
-
 pub(super) fn write_publication_payload(
     bytes: &mut Vec<u8>,
     volume_id: VolumeId,

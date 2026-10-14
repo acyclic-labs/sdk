@@ -6,10 +6,9 @@ pub(super) fn context_contract<T: Serialize>(
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Value> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-        let work = io
-            .original_native_work()
-            .expect("native contract retains original work");
+    if let Some(io) = io
+        && let Some(work) = io.original_native_work()
+    {
         use crate::store::history::HistoryIo as _;
         let remaining = work.remaining()?;
         let bounds = crate::executor::json::JsonBounds {

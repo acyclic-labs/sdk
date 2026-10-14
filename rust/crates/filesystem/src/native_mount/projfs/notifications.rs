@@ -295,13 +295,12 @@ pub(super) unsafe fn notification(
             let _tree = lock_recover(&projector.tree);
             let current = projector.current_beneath(source.as_ref(), &path);
             let result = handle_rename_source(
-                source.as_ref(),
+                runtime,
                 &path,
                 source_is_external,
                 destination_is_external,
                 is_directory,
                 destination.clone(),
-                operation_failures.as_ref(),
                 &work,
             );
             if result.is_ok()
@@ -378,15 +377,16 @@ pub(super) fn keep_file_notifications(
 }
 
 pub(super) fn handle_rename_source(
-    source_fs: &dyn MountFilesystem,
+    runtime: &Runtime,
     source: &MountPath,
     source_is_external: bool,
     destination_is_external: bool,
     is_directory: bool,
     destination: Option<MountPath>,
-    post_operation_failures: &Mutex<PostOperationFailures>,
     work: &crate::NativeMaterializationWork,
 ) -> Result<(), MountSourceError> {
+    let source_fs = runtime.source.as_ref();
+    let post_operation_failures = runtime.post_operation_failure.as_ref();
     if source_is_external {
         let destination = destination
             .ok_or_else(|| MountSourceError::Invalid("rename destination is invalid".into()))?;

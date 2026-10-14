@@ -22,7 +22,7 @@ pub async fn materialize_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 pub(super) async fn materialize_heap_future_on_receipt<F, E>(
     create: impl FnOnce(GenerationReceipt) -> F,
     mut receipt: GenerationReceipt,
-) -> Result<OperationReceipt<MaterializationReceipt>, (E, WorkCounters)>
+) -> Result<OperationReceipt<MaterializationReceipt>, E>
 where
     F: Future<Output = Result<OperationReceipt<MaterializationReceipt>, E>>,
     E: From<MaterializeError>,
@@ -32,25 +32,22 @@ where
         .custody
         .grow((std::mem::size_of::<F>()) as u64)
         .map_err(MaterializeError::from)
-        .map_err(|error| (E::from(error), receipt.custody.work().receipt()))?;
+        .map_err(E::from)?;
     let custody = receipt
         .custody
         .split_off((std::mem::size_of::<F>()) as u64)
         .map_err(MaterializeError::from)
-        .map_err(|error| (E::from(error), receipt.custody.work().receipt()))?;
+        .map_err(E::from)?;
     let meter = receipt.custody.work().clone();
     let mut future = in_heap(move || create(receipt));
     let result = future.as_mut().await;
     drop(future);
     drop(custody);
     let work = meter.receipt();
-    match result {
-        Ok(mut receipt) => {
-            receipt.work = work;
-            Ok(receipt)
-        }
-        Err(error) => Err((error, work)),
-    }
+    result.map(|mut receipt| {
+        receipt.work = work;
+        receipt
+    })
 }
 
 /// Materializes multiple non-overlapping authenticated paths in one traversal.
@@ -67,8 +64,15 @@ pub async fn materialize_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectSt
             MaterializeError::InvalidOptions,
         ));
     }
-    let receipt = GenerationReceipt::new(budget, cancellation)
-        .map_err(|(error, work)| OperationFailure::new(error, work))?;
+    let original =
+        crate::NativeMaterializationWork::new(budget, cancellation).map_err(|(error, work)| {
+            OperationFailure {
+                error: MaterializeError::from(error),
+                work,
+            }
+        })?;
+    let receipt = GenerationReceipt::from_work(&original)
+        .map_err(|error| OperationFailure::new(error, original.receipt()))?;
     materialize_heap_future_on_receipt(
         move |receipt| {
             materialize_source(
@@ -83,7 +87,7 @@ pub async fn materialize_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectSt
         receipt,
     )
     .await
-    .map_err(|(error, work)| OperationFailure::new(error, work))
+    .map_err(|error| OperationFailure::new(error, original.receipt()))
 }
 
 pub(super) enum GenerationSource<'a, A, O> {
@@ -118,7 +122,6 @@ pub async fn materialize_checkout_with_work<A: AsyncAuthorityStore, O: AsyncObje
         receipt,
     )
     .await
-    .map_err(|failure| failure.0)
 }
 
 pub(crate) async fn materialize_reader_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -146,6 +149,51 @@ pub(crate) async fn materialize_reader_paths<A: AsyncAuthorityStore, O: AsyncObj
         None::<&mut fn(_) -> std::future::Ready<Result<(), MaterializeError>>>,
     )
     .await
+}
+
+fn select_materialization_paths<'a>(
+    paths: &'a [NamespacePath],
+    receipt: &mut GenerationReceipt,
+) -> Result<Vec<&'a NamespacePath>, MaterializeError> {
+    let mut selected_paths = Vec::<&NamespacePath>::new();
+    receipt.reserve(&mut selected_paths, paths.len())?;
+    for path in paths {
+        let mut insertion = selected_paths.len();
+        while insertion != 0 {
+            let previous = *selected_paths
+                .get(insertion - 1)
+                .ok_or(MaterializeError::InvalidOptions)?;
+            receipt
+                .custody
+                .work()
+                .charge(crate::materializer::NativeResourceCredit::Items.delta(1))
+                .map_err(MaterializeError::from)?;
+            if previous <= path {
+                break;
+            }
+            insertion -= 1;
+        }
+        receipt
+            .custody
+            .work()
+            .charge(crate::materializer::NativeResourceCredit::Copy.delta(
+                ((selected_paths.len() - insertion + 1) * std::mem::size_of::<&NamespacePath>())
+                    as u64,
+            ))
+            .map_err(MaterializeError::from)?;
+        selected_paths.insert(insertion, path);
+    }
+    for pair in selected_paths.windows(2) {
+        receipt
+            .custody
+            .work()
+            .charge(crate::materializer::NativeResourceCredit::Items.delta(1))
+            .map_err(MaterializeError::from)?;
+        if matches!(pair, [ancestor, path] if path.is_within(ancestor)) {
+            return Err(MaterializeError::OverlappingPaths);
+        }
+    }
+    Ok(selected_paths)
 }
 
 #[allow(
@@ -188,42 +236,7 @@ where
             (*reader).clone()
         }
     };
-    let mut selected_paths = Vec::<&NamespacePath>::new();
-    receipt.reserve(&mut selected_paths, paths.len())?;
-    for path in paths {
-        let mut insertion = selected_paths.len();
-        while insertion != 0 {
-            let previous = selected_paths[insertion - 1];
-            receipt
-                .custody
-                .work()
-                .charge(crate::materializer::NativeResourceCredit::Items.delta(1))
-                .map_err(MaterializeError::from)?;
-            if previous <= path {
-                break;
-            }
-            insertion -= 1;
-        }
-        receipt
-            .custody
-            .work()
-            .charge(crate::materializer::NativeResourceCredit::Copy.delta(
-                ((selected_paths.len() - insertion + 1) * std::mem::size_of::<&NamespacePath>())
-                    as u64,
-            ))
-            .map_err(MaterializeError::from)?;
-        selected_paths.insert(insertion, path);
-    }
-    for pair in selected_paths.windows(2) {
-        receipt
-            .custody
-            .work()
-            .charge(crate::materializer::NativeResourceCredit::Items.delta(1))
-            .map_err(MaterializeError::from)?;
-        if matches!(pair, [ancestor, path] if path.is_within(ancestor)) {
-            return Err(MaterializeError::OverlappingPaths.into());
-        }
-    }
+    let selected_paths = select_materialization_paths(paths, &mut receipt)?;
     let selection_bytes = vec_bytes(&selected_paths);
     let destination = validate_options(options, &mut receipt)?;
     let host_root = receipt.owned_arc(destination, 0)?;
@@ -288,7 +301,13 @@ where
         {
             host_root
                 .0
-                .create_dir_all_held(&host_path.0[..separator], &mut work)
+                .create_dir_all_held(
+                    host_path
+                        .0
+                        .get(..separator)
+                        .ok_or(MaterializeError::InvalidOptions)?,
+                    &mut work,
+                )
                 .map_err(MaterializeError::from)?;
         }
         generation_action(
@@ -469,7 +488,6 @@ where
             &directory.0,
             &host_directory,
             None,
-            cancellation,
             &mut receipt,
             &mut before_effect,
         )
@@ -538,7 +556,6 @@ where
         receipt,
     )
     .await
-    .map_err(|failure| failure.0)
 }
 
 pub(super) fn generation_namespace_from_host(
@@ -615,7 +632,7 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
         ));
     }
     let native_work = crate::NativeMaterializationWork::new(budget, cancellation)
-        .map_err(|(error, work)| OperationFailure::new(MaterializeError::from(error), work))?;
+        .map_err(|(error, work)| OperationFailure::new(MaterializeError::from(error), *work))?;
     let result = async {
         validate_bounds(options)?;
         let mut receipt = GenerationReceipt::from_work(&native_work)?;
@@ -655,21 +672,10 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
                 error,
             ))
         })??;
-        let PreparedRestore {
-            root,
-            destination_parent,
-            stage_owner,
-            stage_root,
-            stage_name,
-            stage_path,
-            destination_root,
-            relative,
-            lock,
-        } = prepared;
-        let (stage_path, stage_allocation) = stage_path;
+        let (stage_path, stage_allocation) = prepared.stage_path;
         let materialize_options = MaterializeOptions {
             destination: stage_path,
-            expected_root_identity: Some(stage_root.identity()),
+            expected_root_identity: Some(prepared.stage_root.identity()),
             maximum_directory_entries: options.maximum_directory_entries,
             maximum_extent_spans: options.maximum_extent_spans,
             transfer_bytes: options.transfer_bytes,
@@ -685,70 +691,18 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
         .await
         .map(|_| ());
         drop(path);
-        let stage_path = (materialize_options.destination, stage_allocation);
-        host_io(Some(lock), native_work.clone(), move |work| {
-            let mut cleanup_slot = cleanup_slot;
-            let relative = relative;
-            let stage_name = stage_name;
-            // Every destination operation retains the originally bound
-            // root and parent; publication never reopens an ambient path.
-            let _root = root;
-            let _destination_root = destination_root;
-            let _stage_path = stage_path;
-            let name = relative
-                .0
-                .file_name()
-                .ok_or(MaterializeError::InvalidPath)?;
-            let result = match materialized {
-                Ok(_) => publish_restore(
-                    &destination_parent,
-                    &stage_root,
-                    &relative.0,
-                    replacement,
-                    work,
-                )
-                .map(|()| HostPathRestore::Restored),
-                Err(MaterializeError::MissingPath) => {
-                    remove_restored_path(&destination_parent, Path::new(name), &relative.0, work)
-                        .map(|()| HostPathRestore::Removed)
-                }
-                Err(error) => Err(error),
-            };
-            let stage_identity = stage_root.identity();
-            drop(stage_root);
-            let cleanup = {
-                #[cfg(unix)]
-                {
-                    stage_owner.remove(&stage_name.0, Some(stage_identity), work)
-                }
-                #[cfg(windows)]
-                {
-                    crate::native_host::with_wide_path(&stage_name.0, work, |path, work| {
-                        stage_owner.remove(path, Some(stage_identity), work)
-                    })
-                }
-            }
-            .and_then(|()| crate::native_host::sync_directory_held(&stage_owner.directory, work));
-            match (result, cleanup) {
-                (Ok(value), Ok(())) => Ok(value),
-                (Ok(_), Err(error)) => Err(MaterializeError::from(error)),
-                (Err(error), Ok(())) => Err(error),
-                (Err(primary), Err(cleanup)) => {
-                    *cleanup_slot.0 = primary;
-                    Err(MaterializeError::RestoreCleanup {
-                        primary: cleanup_slot.0,
-                        cleanup,
-                        allocation: cleanup_slot.1,
-                    })
-                }
-            }
-        })
+        let prepared = PreparedRestore {
+            stage_path: (materialize_options.destination, stage_allocation),
+            ..prepared
+        };
+        finish_restore(
+            prepared,
+            replacement,
+            materialized,
+            cleanup_slot,
+            native_work.clone(),
+        )
         .await
-        .map_err(|error| {
-            MaterializeError::from(crate::NativeTreeMaterializationError::from_runtime_error(
-                error,
-            ))
-        })?
     }
     .await;
     let spent = native_work.receipt();

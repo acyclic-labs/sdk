@@ -126,7 +126,7 @@ impl<'a> ResolutionView<'a> {
             }
             Self::Slice(slice) => {
                 let index = super::search::binary_search_with_accounting(slice, accounting, |(key, _)| compare(key))?;
-                Ok(index.ok().map(|index| &slice[index].1))
+                Ok(index.ok().and_then(|index| slice.get(index)).map(|(_, value)| value))
             }
         }
     }
@@ -311,9 +311,9 @@ pub(crate) async fn merge_generation_with_borrowed_resolutions_with_accounting<S
     resolutions: &[(MergeConflict, MergeConflictResolution)], limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
 ) -> Result<(MergeGenerationOutcome, KernelOwnedAllocation), FsError> {
-    for pair in resolutions.windows(2) {
+    for [left, right] in resolutions.array_windows::<2>() {
         accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-        if pair[0].0 >= pair[1].0 { return Err(FsError::InvalidDiff); }
+        if left.0 >= right.0 { return Err(FsError::InvalidDiff); }
     }
     merge_generation_core(store, request, ResolutionView::Slice(resolutions), limits, accounting, cancellation).await
 }
@@ -350,7 +350,7 @@ fn merge_generation_core<'a, 'accounting, S: AsyncObjectStore>(
                     }
                     state.consume(frontier)?;
                     let mut indices = [0, 0];
-                    while let Some((left, right)) = next_changes(&ours.value.changes, &theirs.value.changes, &mut indices) {
+                    while let Some([left, right]) = next_changes(&ours.value.changes, &theirs.value.changes, &mut indices) {
                         accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
                         let file = left.or(right).ok_or(FsError::InvalidDiff)?.key;
                         let base = left.or(right).and_then(|change| change.before);
@@ -479,19 +479,21 @@ fn merge_generation_core<'a, 'accounting, S: AsyncObjectStore>(
 fn next_changes<'a, K: Ord, V>(
     left: &'a [super::persistent_diff::ValueChange<K, V>],
     right: &'a [super::persistent_diff::ValueChange<K, V>], indices: &mut [usize; 2],
-) -> Option<(Option<&'a super::persistent_diff::ValueChange<K, V>>, Option<&'a super::persistent_diff::ValueChange<K, V>>)> {
-    let (a, b) = (left.get(indices[0]), right.get(indices[1]));
+) -> Option<[Option<&'a super::persistent_diff::ValueChange<K, V>>; 2]> {
+    let [left_index, right_index] = indices;
+    let (a, b) = (left.get(*left_index), right.get(*right_index));
     let result = match (a, b) {
         (Some(a), Some(b)) => match a.key.cmp(&b.key) {
-            std::cmp::Ordering::Less => (Some(a), None),
-            std::cmp::Ordering::Greater => (None, Some(b)),
-            std::cmp::Ordering::Equal => (Some(a), Some(b)),
+            std::cmp::Ordering::Less => [Some(a), None],
+            std::cmp::Ordering::Greater => [None, Some(b)],
+            std::cmp::Ordering::Equal => [Some(a), Some(b)],
         },
-        (Some(a), None) => (Some(a), None), (None, Some(b)) => (None, Some(b)),
+        (Some(a), None) => [Some(a), None], (None, Some(b)) => [None, Some(b)],
         (None, None) => return None,
     };
-    indices[0] += usize::from(result.0.is_some());
-    indices[1] += usize::from(result.1.is_some());
+    let [left_change, right_change] = result;
+    *left_index += usize::from(left_change.is_some());
+    *right_index += usize::from(right_change.is_some());
     Some(result)
 }
 
@@ -561,10 +563,10 @@ fn merge_regular_record_async<'a, 'accounting, S: AsyncObjectStore>(
                                     }
                                 }
                                 let root = if mutations.value.is_empty() { ours_root } else {
-                                    apply_extent_mutations_with_accounting(store, ours_root, ours_bytes, &mutations.value,
+                                    apply_extent_mutations_with_accounting(store, (ours_root, ours_bytes), &mutations.value,
                                         maximum_changes, limits, accounting, cancellation).await?.root
                                 };
-                                Ok(Some((root, mutations.value.len() as u32)))
+                                Ok(Some((root, u32::try_from(mutations.value.len()).map_err(|_| FsError::MergeChangeLimit)?)))
                             }
                         }.await;
                         mutations.retire(accounting)?;
@@ -663,7 +665,7 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
             if ours_diff.value.truncated || theirs_diff.value.truncated { return Err(FsError::MergeChangeLimit); }
             let mut indices = [0, 0];
             let mut conflicted = false;
-            while let Some((left, right)) = next_changes(&ours_diff.value.changes, &theirs_diff.value.changes, &mut indices) {
+            while let Some([left, right]) = next_changes(&ours_diff.value.changes, &theirs_diff.value.changes, &mut indices) {
                 accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
                 state.consume(1)?;
                 let name = &left.or(right).ok_or(FsError::InvalidDiff)?.key;
@@ -841,7 +843,7 @@ async fn adjust_link_counts<S: AsyncObjectStore>(
                         let count = diff.value.changes.len();
                         diff.retire(accounting)?;
                         if let Err(error) = result { contribution.retire(accounting)?; return Err(error); }
-                        state.remaining_changes = state.remaining_changes.checked_sub(count as u32).ok_or(FsError::MergeChangeLimit)?;
+                        state.remaining_changes = state.remaining_changes.checked_sub(u32::try_from(count).map_err(|_| FsError::MergeChangeLimit)?).ok_or(FsError::MergeChangeLimit)?;
                         let entry = DirectoryTransition { directory: *directory, before, after, contribution };
                         match cached {
                             Ok(index) => {
@@ -1154,8 +1156,7 @@ fn project_merge_error(error: FsError) -> MergeGenerationError {
         FsError::InvalidDiff => MergeGenerationError::InvalidDiff,
         FsError::MergeChangeLimit => MergeGenerationError::ChangeLimit,
         FsError::DiffAllocationFailed => MergeGenerationError::AllocationFailed,
-        FsError::Object(error) => MergeGenerationError::Object(error),
-        FsError::BlobRead(super::BlobReadError::Storage(error)) => MergeGenerationError::Object(error),
+        FsError::Object(error) | FsError::BlobRead(super::BlobReadError::Storage(error)) => MergeGenerationError::Object(error),
         FsError::Decode(error) => MergeGenerationError::Decode(error),
         FsError::MergeFileTable(error) => MergeGenerationError::FileTable(error),
         FsError::MergeTree(error) => MergeGenerationError::Tree(error),
@@ -1169,5 +1170,5 @@ fn project_merge_error(error: FsError) -> MergeGenerationError {
 }
 
 #[cfg(test)]
-#[path = "tests/merge.rs"]
+#[path = "tests/merge/mod.rs"]
 mod tests;

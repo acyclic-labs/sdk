@@ -124,16 +124,16 @@ impl ViewGate {
             .any(|slot| matches!(slot, Some(ReadSlot::Owner { owner: current, readers }) if *current == ViewReaderId::Callback(owner) && *readers != 0))
     }
 
-    pub(super) fn callback_owner() -> CallbackOwner {
+    pub(super) fn callback_owner() -> Result<CallbackOwner, MountSourceError> {
         CALLBACK_OWNER.with(|owner| {
             let mut id = owner.get();
             if id == 0 {
                 id = NEXT_CALLBACK_OWNER
                     .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-                    .expect("callback identity addressability exhausted");
+                    .map_err(|_| MountSourceError::Work(crate::WorkError::Overflow))?;
                 owner.set(id);
             }
-            CallbackOwner(id)
+            Ok(CallbackOwner(id))
         })
     }
 
@@ -298,7 +298,9 @@ impl ViewGate {
             .readers
             .checked_add(1)
             .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
-        let owner_readers = match owner_slot.and_then(|index| state.reader_slots[index].as_ref()) {
+        let owner_readers = match owner_slot
+            .and_then(|index| state.reader_slots.get(index).and_then(Option::as_ref))
+        {
             Some(ReadSlot::Owner { readers, .. }) => readers.checked_add(1),
             _ => Some(1),
         }
@@ -382,14 +384,16 @@ impl ViewGate {
                 .release(old_bytes)
                 .map_err(gate_allocation_error)?;
         }
-        let owner_slot = owner_slot.unwrap_or_else(|| {
+        let owner_slot = if let Some(index) = owner_slot {
+            index
+        } else {
             insert_reader_slot(
                 &mut state,
                 &mut first_free,
                 &mut second_free,
                 ReadSlot::Owner { owner, readers: 0 },
-            )
-        });
+            )?
+        };
         let cleanup_slot = if let Some(index) = entry.slot {
             index
         } else {
@@ -404,16 +408,26 @@ impl ViewGate {
                     payload_active: 0,
                     payload_finished: 0,
                 },
-            );
+            )?;
             entry.slot = Some(index);
             index
         };
-        if let Some(ReadSlot::Owner { readers, .. }) = &mut state.reader_slots[owner_slot] {
-            *readers = owner_readers;
-        }
-        if let Some(ReadSlot::Meter { readers, .. }) = &mut state.reader_slots[cleanup_slot] {
-            *readers = meter_readers;
-        }
+        let Some(ReadSlot::Owner { readers, .. }) = state
+            .reader_slots
+            .get_mut(owner_slot)
+            .and_then(Option::as_mut)
+        else {
+            return Err(MountSourceError::Work(crate::WorkError::Overflow));
+        };
+        *readers = owner_readers;
+        let Some(ReadSlot::Meter { readers, .. }) = state
+            .reader_slots
+            .get_mut(cleanup_slot)
+            .and_then(Option::as_mut)
+        else {
+            return Err(MountSourceError::Work(crate::WorkError::Overflow));
+        };
+        *readers = meter_readers;
         state.readers = next_readers;
         *budget = grant_budget;
         Ok(Some(ViewReadLease {

@@ -117,7 +117,7 @@ fn document<'a>(bytes: &'a [u8], generation: GenerationId, observe: &mut impl Fn
 fn invalid() -> FsError { CanonicalDecodeError::WrongDomain.into() }
 
 pub(crate) fn decode(bytes: &[u8], generation: GenerationId, ids: &[FileId], limits: VolumeLimits,
-    accounting: &mut KernelAccounting<'_>) -> Result<(Option<Vec<(FileId, NamespacePath)>>, KernelOwnedAllocation), FsError>
+    accounting: &mut KernelAccounting<'_>) -> Result<Owned<Option<Vec<(FileId, NamespacePath)>>>, FsError>
 {
     accounting.check()?;
     let before = snapshot(accounting);
@@ -173,9 +173,9 @@ pub(crate) fn decode(bytes: &[u8], generation: GenerationId, ids: &[FileId], lim
         + paths.iter().map(|(_, path)| path.retained_bytes()).sum::<u64>());
     restore(accounting, before, keep)?;
     match result {
-        Ok((paths, allocation)) => Ok((Some(paths), allocation)),
+        Ok((paths, allocation)) => Ok(Owned::new(Some(paths), allocation, keep)),
         Err(FsError::Decode(CanonicalDecodeError::AllocationFailed)) => Err(CanonicalDecodeError::AllocationFailed.into()),
-        Err(FsError::Decode(_)) => Ok((None, accounting.claim_owned(0, 0)?)),
+        Err(FsError::Decode(_)) => Ok(Owned::new(None, accounting.claim_owned(0, 0)?, 0)),
         Err(error) => Err(error),
     }
 }

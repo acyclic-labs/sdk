@@ -213,14 +213,9 @@ pub(crate) async fn capture_subtrees_with_native_work<
         let task = acyclic_native_runtime::run_blocking_io(
             move || {
                 let result = (|| {
-                    let source_root = HostRoot::open(&source_path, &mut worker.clone())
-                        .map_err(capture_demand_error)?;
-                    if source_root.identity() != expected_identity {
-                        return Err(CaptureError::RootChanged);
-                    }
                     let mut observed = Vec::new();
-                    collect_host_subtree_roots(
-                        &source_root,
+                    let source_root = scan_host_subtree_roots(
+                        (&source_path, expected_identity),
                         (profile, limits),
                         maximum,
                         &canonical,
@@ -230,14 +225,8 @@ pub(crate) async fn capture_subtrees_with_native_work<
                     )?;
                     Ok((canonical, source_root, observed))
                 })();
-                let cleanup = (|| {
-                    release_capture_paths(host_policy.excluded_prefixes, &worker)?;
-                    drop(source_path);
-                    worker
-                        .clone()
-                        .release(source_path_bytes)
-                        .map_err(capture_demand_error)
-                })();
+                let cleanup =
+                    release_host_scan_inputs(host_policy, source_path, source_path_bytes, &worker);
                 let result = result.and_then(|value| cleanup.map(|()| value));
                 // Completion storage drops the payload before its accounting token.
                 (result, capture)
@@ -250,34 +239,11 @@ pub(crate) async fn capture_subtrees_with_native_work<
         };
         let (result, _capture) = result.map_err(capture_demand_error)?;
         let (canonical, source_root, observed) = result?;
-        let lookup_cancellation = meter.with_original_leaf(|work| work.cancellation().clone());
-        let current = checkout
-            .lookup_batch_no_follow(&canonical, meter, &lookup_cancellation)
-            .await?;
-
-        let canonical_bytes =
-            canonical.capacity() as u64 * std::mem::size_of::<NamespacePath>() as u64;
-        for (root, entry) in canonical.into_iter().zip(current.0.entries) {
-            if entry
-                .record
-                .is_some_and(|record| record.kind == FileKind::Directory)
-            {
-                collect_checkout_subtree_paths(
-                    checkout, limits, root, policy, maximum, &mut paths, meter,
-                )
-                .await?;
-            } else {
-                capture_drop_path(root, meter)?;
-            }
-        }
-        drop(current.1);
-        let ordered = {
-            meter
-                .clone()
-                .release(canonical_bytes)
-                .map_err(capture_demand_error)?;
-            order_host_checkout_union(observed, paths, maximum, meter)?
-        };
+        collect_captured_checkout_roots(
+            checkout, canonical, limits, policy, maximum, &mut paths, meter,
+        )
+        .await?;
+        let ordered = order_host_checkout_union(observed, paths, maximum, meter)?;
         capture_observed_paths_from_root(
             checkout,
             ordered,
@@ -291,6 +257,80 @@ pub(crate) async fn capture_subtrees_with_native_work<
     }
     .await;
     capture_scope_result(scope, result)
+}
+
+fn scan_host_subtree_roots(
+    source: (&Path, NativeRootIdentity),
+    volume: (FilesystemProfile, crate::model::VolumeLimits),
+    maximum: usize,
+    canonical: &[NamespacePath],
+    policy: &CapturePolicy,
+    observed: &mut Vec<(NamespacePath, Option<HostStat>)>,
+    meter: &NativeMaterializationWork,
+) -> Result<HostRoot, CaptureError> {
+    let source_root = HostRoot::open(source.0, &mut meter.clone()).map_err(capture_demand_error)?;
+    if source_root.identity() != source.1 {
+        return Err(CaptureError::RootChanged);
+    }
+    collect_host_subtree_roots(
+        &source_root,
+        volume,
+        maximum,
+        canonical,
+        policy,
+        observed,
+        meter,
+    )
+    .inspect_err(|_| drop(std::mem::take(observed)))?;
+    Ok(source_root)
+}
+
+fn release_host_scan_inputs(
+    policy: CapturePolicy,
+    source_path: PathBuf,
+    source_path_bytes: u64,
+    meter: &NativeMaterializationWork,
+) -> Result<(), CaptureError> {
+    release_capture_paths(policy.excluded_prefixes, meter)?;
+    drop(source_path);
+    meter
+        .clone()
+        .release(source_path_bytes)
+        .map_err(capture_demand_error)
+}
+
+async fn collect_captured_checkout_roots<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    canonical: Vec<NamespacePath>,
+    limits: crate::model::VolumeLimits,
+    policy: &CapturePolicy,
+    maximum: usize,
+    paths: &mut Vec<(NamespacePath, ())>,
+    meter: &NativeMaterializationWork,
+) -> Result<(), CaptureError> {
+    let lookup_cancellation = meter.with_original_leaf(|work| work.cancellation().clone());
+    let current = checkout
+        .lookup_batch_no_follow(&canonical, meter, &lookup_cancellation)
+        .await?;
+
+    let canonical_bytes = canonical.capacity() as u64 * std::mem::size_of::<NamespacePath>() as u64;
+    for (root, entry) in canonical.into_iter().zip(current.0.entries) {
+        if entry
+            .record
+            .is_some_and(|record| record.kind == FileKind::Directory)
+        {
+            collect_checkout_subtree_paths(checkout, limits, root, policy, maximum, paths, meter)
+                .await?;
+        } else {
+            capture_drop_path(root, meter)?;
+        }
+    }
+    drop(current.1);
+    meter
+        .clone()
+        .release(canonical_bytes)
+        .map_err(capture_demand_error)?;
+    Ok(())
 }
 
 /// Captures a complete eligible baseline into one atomic candidate.

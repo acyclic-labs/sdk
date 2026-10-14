@@ -9,7 +9,6 @@ use crate::store::{HistoryIo, operations};
 use acyclic_stream::{CommitCondition, CommitOutcome};
 #[cfg(not(feature = "filesystem"))]
 use serde::de::DeserializeOwned as MailRecord;
-use std::mem::size_of;
 
 mod inbox;
 
@@ -106,43 +105,21 @@ fn reserve<T>(items: &mut Vec<T>, maximum: usize, io: Option<&PreparationIo>) ->
     if items.len() < items.capacity() {
         return Ok(());
     }
-    let previous = items.capacity();
-    let target = previous.saturating_mul(2).max(4).min(maximum);
-    let requested = target
-        .checked_sub(previous)
-        .and_then(|slots| slots.checked_mul(size_of::<T>()))
-        .ok_or_else(|| {
-            boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "mail page capacity overflows",
-            )
-        })? as u64;
-    if target <= previous {
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        return crate::store::history::ensure_slot(items, maximum, &mut io.history_io());
+    }
+    let target = items.capacity().saturating_mul(2).max(4).min(maximum);
+    if target <= items.capacity() {
         return Err(boundary(
             io,
             crate::wire::ErrorCode::Storage,
             "mail page exceeds requested limit",
         ));
     }
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        io.retain_owned(requested)?;
-        io.allocation_attempt((target * size_of::<T>()) as u64)?;
-    }
     items
         .try_reserve_exact(target - items.len())
-        .map_err(Error::Allocation)?;
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let actual = ((items.capacity() - previous) * size_of::<T>()) as u64;
-        if actual >= requested {
-            io.retain_owned(actual - requested)?;
-        } else {
-            io.release(requested - actual)?;
-        }
-    }
-    Ok(())
+        .map_err(Error::Allocation)
 }
 
 fn recipient_path(task: TaskId, text: &mut [u8; 80]) -> Result<&str> {
@@ -324,7 +301,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         message: OperationId,
         bytes: OwnedBytes,
         #[cfg(feature = "filesystem")] owner: Option<&TaskJournalOwner<P>>,
-        #[cfg(not(feature = "filesystem"))] owner: Option<&std::convert::Infallible>,
+        #[cfg(not(feature = "filesystem"))] _owner: Option<&std::convert::Infallible>,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         require_original(io)?;

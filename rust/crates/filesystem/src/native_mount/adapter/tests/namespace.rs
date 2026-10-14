@@ -159,7 +159,7 @@ fn callback_reads_overlap_a_held_observation() -> Result<(), Box<dyn std::error:
     let path = native_test_path("shared.bin");
     source.create_file(&path, metadata(), None, &work)?;
     source.write_range(&path, 0, Bytes::from_static(b"shared"))?;
-    let owner = ViewGate::callback_owner();
+    let owner = ViewGate::callback_owner()?;
     let held = source.runtime.wait(|| async {
         source
             .checkout
@@ -210,7 +210,7 @@ fn concurrent_observations_never_see_a_mutation_half_applied()
             let pair = pair.clone();
             let done = Arc::clone(&done);
             std::thread::spawn(move || -> Result<(), MountSourceError> {
-                let owner = ViewGate::callback_owner();
+                let owner = ViewGate::callback_owner()?;
                 loop {
                     let finished = done.load(Ordering::Acquire);
                     let [first, second] = source.runtime.wait(|| async {
@@ -260,7 +260,7 @@ fn concurrent_observations_never_see_a_mutation_half_applied()
     for round in 1..=ROUNDS {
         source.runtime.wait(|| {
             Box::pin(async {
-                let (mut candidate, epoch, stamp) = source
+                let mut candidate = source
                     .checkout
                     .candidate(
                         None,
@@ -290,8 +290,6 @@ fn concurrent_observations_never_see_a_mutation_half_applied()
                     .checkout
                     .install_change(
                         candidate,
-                        epoch,
-                        stamp,
                         ViewChange::Everything,
                         &work,
                         &source.cancellation,

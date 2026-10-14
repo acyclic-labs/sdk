@@ -1,5 +1,4 @@
 use super::*;
-use crate::WorkCounters;
 use acyclic_native_runtime::{Durability, NativeFile, OwnedWrite};
 use proptest::prelude::*;
 proptest! {
@@ -126,7 +125,7 @@ fn held_windows_metadata_applies_and_verifies_file_and_directory_fields()
         (Path::new("directory"), DIRECTORY | HIDDEN),
     ] {
         apply_metadata(
-            with_wide_path(path, &mut work, |path, work| {
+            &with_wide_path(path, &mut work, |path, work| {
                 root.open_windows_metadata_target(path, work)
             })?,
             FileMetadata {
@@ -149,12 +148,12 @@ fn held_windows_metadata_applies_and_verifies_file_and_directory_fields()
     permissions.set_readonly(true);
     std::fs::set_permissions(&file, permissions.clone())?;
     apply_metadata(
-        root.open_windows_metadata_target(&test_path("file"), &mut work)?,
+        &root.open_windows_metadata_target(&test_path("file"), &mut work)?,
         FileMetadata::default(),
         &mut work,
     )?;
     apply_metadata(
-        root.open_windows_metadata_target(&test_path("file"), &mut work)?,
+        &root.open_windows_metadata_target(&test_path("file"), &mut work)?,
         FileMetadata {
             windows_attributes: MetadataField::Value(ARCHIVE),
             ..FileMetadata::default()
@@ -176,7 +175,7 @@ fn held_windows_metadata_rejects_unrepresentable_fields_and_path_escape() -> std
     let root = test_root(&root_path)?;
     assert!(matches!(
         apply_metadata(
-            root.open_windows_metadata_target(&test_path("file"), &mut work)
+            &root.open_windows_metadata_target(&test_path("file"), &mut work)
                 .map_err(std::io::Error::other)?,
             FileMetadata {
                 windows_attributes: MetadataField::Value(REPARSE_POINT),
@@ -188,7 +187,7 @@ fn held_windows_metadata_rejects_unrepresentable_fields_and_path_escape() -> std
     ));
     assert!(matches!(
         apply_metadata(
-            root.open_windows_metadata_target(&test_path("file"), &mut work)
+            &root.open_windows_metadata_target(&test_path("file"), &mut work)
                 .map_err(std::io::Error::other)?,
             FileMetadata {
                 named_attributes: MetadataField::Value(crate::ObjectId {
@@ -259,7 +258,7 @@ fn held_windows_metadata_updates_final_reparse_point_without_touching_target()
     let link_attributes = std::fs::symlink_metadata(&link)?.file_attributes();
     let root = test_root(&root_path)?;
     apply_metadata(
-        root.open_windows_metadata_target(&test_path("link"), &mut work)?,
+        &root.open_windows_metadata_target(&test_path("link"), &mut work)?,
         FileMetadata {
             windows_attributes: MetadataField::Value(link_attributes | HIDDEN),
             created_ns: MetadataField::Value(FIXED_NS),
@@ -302,7 +301,7 @@ fn held_windows_metadata_targets_leaf_across_rename_and_replacement()
     let replacement_modified = replacement_metadata.last_write_time();
     let moved_attributes = std::fs::metadata(&moved)?.file_attributes();
     apply_metadata(
-        target,
+        &target,
         FileMetadata {
             windows_attributes: MetadataField::Value(moved_attributes | HIDDEN),
             modified_ns: MetadataField::Value(MODIFIED_NS),
@@ -310,6 +309,7 @@ fn held_windows_metadata_targets_leaf_across_rename_and_replacement()
         },
         &mut work,
     )?;
+    drop(target);
     assert_eq!(
         std::fs::metadata(&moved)?.file_attributes(),
         moved_attributes | HIDDEN

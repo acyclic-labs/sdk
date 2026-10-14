@@ -117,7 +117,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             source,
             store,
             #[cfg(not(target_arch = "wasm32"))]
-            allocation: None,
+            _allocation: None,
         };
         lazy.recover_pending_remove(ctx).await?;
         lazy.state(ctx).await?;
@@ -153,6 +153,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         accept_receipt(result, ctx)
     }
 
+    #[cfg(feature = "native-mount")]
     pub(crate) fn source_reference(&self) -> SourceReference {
         self.source.reference()
     }

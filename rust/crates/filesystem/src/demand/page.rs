@@ -56,7 +56,9 @@ pub struct SourceDirectoryEntries {
 impl std::ops::Deref for SourceDirectoryEntries {
     type Target = [SourceDirectoryEntry];
     fn deref(&self) -> &Self::Target {
-        &self.backing.value[self.range.clone()]
+        let (through_end, _) = self.backing.value.split_at(self.range.end);
+        let (_, entries) = through_end.split_at(self.range.start);
+        entries
     }
 }
 impl<'a> IntoIterator for &'a SourceDirectoryEntries {
@@ -68,7 +70,7 @@ impl<'a> IntoIterator for &'a SourceDirectoryEntries {
 }
 impl std::fmt::Debug for SourceDirectoryEntries {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.backing.value[self.range.clone()].fmt(f)
+        std::fmt::Debug::fmt(&**self, f)
     }
 }
 

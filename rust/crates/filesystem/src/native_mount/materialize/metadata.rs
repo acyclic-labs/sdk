@@ -6,7 +6,6 @@ pub(super) async fn apply_metadata<A, O, E, F, Fut>(
     path: &NamespacePath,
     host_path: &Arc<(Vec<HostPathUnit>, crate::NativeAllocation)>,
     metadata: Option<FileMetadata>,
-    cancellation: &CancellationToken,
     receipt: &mut GenerationReceipt,
     before_effect: &mut Option<&mut F>,
 ) -> Result<(), E>
@@ -17,6 +16,12 @@ where
     F: FnMut(NativeMaterializationActionPhase) -> Fut,
     Fut: Future<Output = Result<(), E>>,
 {
+    let cancellation = receipt
+        .custody
+        .work()
+        .state
+        .with_original_leaf(|original| original.cancellation().clone());
+    let cancellation = &cancellation;
     let metadata = match metadata {
         Some(metadata) => metadata,
         None => read_source!(reader, receipt, remaining, value,
@@ -114,11 +119,12 @@ pub(super) async fn apply_host_attributes_offloaded(
                     crate::native_host::set_extended_attributes(file, &attributes.0, work)
                 }
                 crate::native_host::MacMetadataTarget::Noop { .. } => {
-                    crate::native_host::NativeHostWork::check(work)
-                        .and(Err(crate::native_host::NativeMetadataError(
+                    crate::native_host::NativeHostWork::check(work).and(Err(
+                        crate::native_host::NativeMetadataError(
                             "named_attributes on a non-ordinary file kind",
                         )
-                        .into()))
+                        .into(),
+                    ))
                 }
             };
             #[cfg(target_os = "macos")]
@@ -180,7 +186,9 @@ pub(super) async fn apply_host_metadata_offloaded(
         }
         #[cfg(windows)]
         {
-            crate::native_host::apply_metadata(target, metadata, work)
+            let result = crate::native_host::apply_metadata(&target, metadata, work);
+            drop(target);
+            result
         }
     })
     .await
@@ -256,7 +264,7 @@ pub(super) fn validate_bounds(options: &MaterializeOptions) -> Result<(), Materi
 
 pub(super) fn create_file(
     host_root: &HostRoot,
-    path: &Vec<HostPathUnit>,
+    path: &[HostPathUnit],
     receipt: &mut GenerationReceipt,
 ) -> Result<acyclic_native_runtime::NativeFile, MaterializeError> {
     let mut work = receipt.custody.work().clone();
@@ -345,7 +353,7 @@ pub(super) fn account_file(
 pub(super) fn create_symlink(
     host_root: &HostRoot,
     target: &acyclic_stream::OwnedBytes,
-    destination: &Vec<HostPathUnit>,
+    destination: &[HostPathUnit],
     receipt: &mut GenerationReceipt,
 ) -> Result<(), MaterializeError> {
     let mut work = receipt.custody.work().clone();
@@ -390,7 +398,7 @@ pub(super) fn create_symlink(
 )]
 pub(super) fn create_special(
     host_root: &HostRoot,
-    destination: &Vec<HostPathUnit>,
+    destination: &[HostPathUnit],
     kind: FileKind,
     device: Option<(u32, u32)>,
     _receipt: &mut GenerationReceipt,

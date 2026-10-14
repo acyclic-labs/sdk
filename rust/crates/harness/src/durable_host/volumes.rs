@@ -1,7 +1,7 @@
 //! Selected immutable task volume metadata.
 use super::*;
-use crate::conversation::VolumeClass;
-use crate::resources::GenerationRef;
+#[cfg(feature = "filesystem")]
+use crate::{conversation::VolumeClass, resources::GenerationRef};
 
 /// Exact volume and generation selected by authenticated allocation metadata.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

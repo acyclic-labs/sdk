@@ -13,6 +13,7 @@ pub(super) async fn exercise_retained_native_boundary<A, O>(
     reader: Arc<ReaderSpy>,
     selected: Vec<(FileRef, NativeMediaPolicy)>,
     writer: &FilesystemContentPublisher<A, O>,
+    live_context: &acyclic_harness::runtime::TaskContext,
 ) -> Result<()>
 where
     A: acyclic_fs::AsyncAuthorityStore + 'static,
@@ -393,7 +394,7 @@ where
                 &expected,
                 invocation,
                 projection,
-                conversion.clone(),
+                live_context,
             )
             .await?;
         }

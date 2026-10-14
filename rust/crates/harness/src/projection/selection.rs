@@ -165,7 +165,10 @@ pub fn validate_model_context_selection(
     let mut previous = 0;
     for (index, id) in selection.message_ids.iter().enumerate() {
         if let Some(observer) = work.as_deref_mut() {
-            observer.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+            observer.codec_charge(crate::executor::json::JsonCodecCharge::Work {
+                bytes: 0,
+                items: 1,
+            })?;
         }
         let message = conversation
             .message(*id)
@@ -189,7 +192,6 @@ pub fn validate_model_context_selection(
                     "tool artifact type or rendering limit is invalid",
                 ));
             }
-            MessageKind::ToolCall => {}
             MessageKind::ToolResult => {
                 if message.content.descriptor().media_type() != "application/json" {
                     return Err(diagnostic(
@@ -206,10 +208,9 @@ pub fn validate_model_context_selection(
                 if let Some(reply) = message.reply_to {
                     for id in selection.message_ids[..index].iter().rev() {
                         if let Some(observer) = work.as_deref_mut() {
-                            observer.codec_charge(crate::executor::json::JsonCodecCharge::Work {
-                                bytes: 0,
-                                items: 1,
-                            })?;
+                            observer.codec_charge(
+                                crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 },
+                            )?;
                         }
                         if *id == reply {
                             linked = conversation
@@ -228,7 +229,10 @@ pub fn validate_model_context_selection(
                     ));
                 }
             }
-            MessageKind::System | MessageKind::User | MessageKind::Assistant => {}
+            MessageKind::ToolCall
+            | MessageKind::System
+            | MessageKind::User
+            | MessageKind::Assistant => {}
             _ => {
                 return Err(diagnostic(
                     work,

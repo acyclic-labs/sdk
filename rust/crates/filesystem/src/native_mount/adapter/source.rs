@@ -133,7 +133,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         let mut carrier = NativeDemandCarrier::Native(work);
         let mut inputs = InputBuffers::new(&mut carrier)?;
         let name = inputs.attribute_name(name, self.profile, self.limits)?;
-        let (mut candidate, epoch, stamp) = self
+        let mut candidate = self
             .checkout
             .candidate(None, inputs.carrier, cancellation, Some(&self.cancellation))
             .await?;
@@ -148,8 +148,6 @@ impl<A, O> CheckoutMountSource<A, O> {
         self.checkout
             .install_change(
                 candidate,
-                epoch,
-                stamp,
                 ViewChange::Node(lookup.node.file_id),
                 work,
                 &self.cancellation,
@@ -360,7 +358,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 crate::WorkCounters::UNCHARGED,
             )
             .map_err(MountSourceError::NativeWork)?;
-        let file = checkout.detached_from_record(record, work, work.cancellation())?;
+        let file = checkout.detached_from_record(record, &work, work.cancellation())?;
         NativeDemandCarrier::Native(work).check(work.cancellation(), Some(&self.cancellation))?;
         Ok(Arc::new(CheckoutDetachedFile {
             _native_allocation: allocation,
@@ -429,7 +427,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         A: Send + Sync,
         O: Send + Sync,
     {
-        let owner = ViewGate::callback_owner();
+        let owner = ViewGate::callback_owner()?;
         self.runtime.wait(|| async {
             Ok(self
                 .checkout
@@ -594,7 +592,7 @@ where
     ) -> Result<(), MountSourceError> {
         invoke(&self.runtime, work, || async {
             let mut carrier = NativeDemandCarrier::Native(work);
-            let (mut candidate, epoch, stamp) = self
+            let mut candidate = self
                 .checkout
                 .candidate(
                     None,
@@ -635,8 +633,6 @@ where
             self.checkout
                 .install_change(
                     candidate,
-                    epoch,
-                    stamp,
                     ViewChange::Node(node),
                     work,
                     &self.cancellation,

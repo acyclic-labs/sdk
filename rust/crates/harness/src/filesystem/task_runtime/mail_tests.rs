@@ -31,7 +31,7 @@ async fn native_stock_mail_command_uses_original_atomic_v3_send_and_custody() ->
     )
     .map_err(|(cause, work)| Error::NativeConstruction {
         cause,
-        work: Box::new(work),
+        work: work,
     })?;
     let io = PreparationIo::from_native_work(&work)?;
     let runtime = fixture.runtime(Some(&io)).await?;

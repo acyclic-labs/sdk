@@ -64,7 +64,13 @@ where
                     } else {
                         let bytes = std::mem::size_of_val(&value) as u64;
                         carrier
-                            .with_work(|work| work.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED))
+                            .with_work(|work| {
+                                work.claim_allocation(
+                                    bytes,
+                                    u64::from(bytes != 0),
+                                    crate::WorkCounters::UNCHARGED,
+                                )
+                            })
                             .map_err(NativeMountError::Demand)?;
                         retained += bytes;
                     }
@@ -99,44 +105,57 @@ where
                 bytes: 0,
             };
             if let Some(custody) = &owner.custody {
-                carrier.with_work(|work| work.check().and_then(|()| custody.retain(sink_bytes, work).map_err(crate::DemandError::from)))?;
+                carrier.with_work(|work| {
+                    work.check().and_then(|()| {
+                        custody
+                            .retain(sink_bytes, work)
+                            .map_err(crate::DemandError::from)
+                    })
+                })?;
                 owner.bytes = sink_bytes;
                 retained -= sink_bytes;
             }
             let (budget, prior_live) = if original.is_none() {
-                carrier.with_work(|work| work.remaining().map(|budget| (budget, work.live_allocation_bytes())))
+                carrier
+                    .with_work(|work| {
+                        work.remaining()
+                            .map(|budget| (budget, work.live_allocation_bytes()))
+                    })
                     .map_err(NativeMountError::Demand)?
-            } else { (WorkBudget::UNBOUNDED, 0) };
+            } else {
+                (WorkBudget::UNBOUNDED, 0)
+            };
             let mut accounting = match &original {
                 Some(work) => crate::kernel::KernelAccounting::native(work, &cancellation),
                 None => crate::kernel::KernelAccounting::standalone(budget, &cancellation),
             };
-            let watched = lazy.watch_source(
-                Arc::clone(owner.sink.as_ref().expect("preallocated source sink")),
-                &mut accounting,
-            );
+            let watched = lazy.watch_source(sink.clone(), &mut accounting);
             let watched_result = if original.is_none() {
                 match crate::facade::measured(watched, &accounting) {
                     Ok(receipt) => {
                         owner.watch = receipt.value;
-                        let merged = carrier
-                            .with_work(|work| work.merge(receipt.work, prior_live));
+                        let merged = carrier.with_work(|work| work.merge(receipt.work, prior_live));
                         if let Some(watch) = owner.watch.as_ref() {
                             let bytes = watch.logical_owned_bytes();
-                            let adopted =
-                                carrier.with_work(|work| work.record_native_owned_completed(bytes, &None).1);
+                            let adopted = carrier.with_work(|work| {
+                                work.record_native_owned_completed(bytes, &None).1
+                            });
+                            let mut retained_bytes = owner.bytes;
                             let retained_watch = carrier
                                 .with_work(|work| {
+                                    retained_bytes = owner
+                                        .bytes
+                                        .checked_add(bytes)
+                                        .ok_or(crate::WorkError::Overflow)?;
                                     owner
                                         .custody
                                         .as_ref()
-                                        .expect("ordinary receipt custody")
+                                        .ok_or(crate::WorkError::Overflow)?
                                         .retain(bytes, work)
                                 })
                                 .map_err(DemandError::from);
                             if retained_watch.is_ok() {
-                                owner.bytes = owner.bytes.checked_add(bytes)
-                                    .expect("admitted watch custody has a representable physical byte total");
+                                owner.bytes = retained_bytes;
                             }
                             let completed = merged
                                 .and(adopted)
@@ -149,16 +168,12 @@ where
                                 });
                             }
                         } else {
-
                             merged.map_err(NativeMountError::Demand)?;
                         }
                         Ok(())
                     }
                     Err(failure) => {
-
-                        let _ = carrier.with_work(|work| {
-                            work.merge(*failure.work, prior_live)
-                        });
+                        let _ = carrier.with_work(|work| work.merge(*failure.work, prior_live));
                         Err(failure.error)
                     }
                 }
@@ -193,7 +208,9 @@ where
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .take()
-                .expect("constructor retains its exact owned inputs");
+                .ok_or(MountSourceError::NativeWork(
+                    crate::NativeTreeMaterializationError::InvalidLayout,
+                ))?;
             drop(retained_lazy);
             let source_watch = if owner.watch.is_some() {
                 Some(owner)
@@ -222,9 +239,11 @@ where
                     source
                         .native_allocation
                         .as_mut()
-                        .expect("owned constructor root guard")
+                        .ok_or(MountSourceError::NativeWork(
+                            crate::NativeTreeMaterializationError::InvalidLayout,
+                        ))?
                         .absorb(source_allocation)
-                        .expect("prechecked exact same-ledger storage transfer");
+                        .map_err(MountSourceError::NativeWork)?;
                 }
                 Ok(source)
             }
@@ -304,10 +323,7 @@ where
         self.source_view.begin_transition();
         let result = async {
             self.authored.advance_to_head_async().await?;
-            self.lazy
-                .state(&mut accounting)
-                .await
-                .map_err(lazy_error)?;
+            self.lazy.state(&mut accounting).await.map_err(lazy_error)?;
             // Every unauthored node may read differently from the new epoch.
             self.authored.record_projection_change(
                 &ViewChange::Everything,

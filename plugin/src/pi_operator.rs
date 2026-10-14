@@ -557,7 +557,7 @@ pub(crate) async fn run_cli(
         .map_err(|(cause, work)| {
             ControlRequestError::NativeWork(Error::NativeConstruction {
                 cause,
-                work: Box::new(work),
+                work,
             })
         })?;
     let cli = parse_cli(args).map_err(ControlRequestError::Response)?;

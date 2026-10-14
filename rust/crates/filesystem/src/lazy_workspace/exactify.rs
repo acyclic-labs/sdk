@@ -75,6 +75,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                         crate::kernel::retire_allocation(guard, 0, ctx)?;
                     }
                 }
+                if !transaction.checkout.has_pending_mutations() {
+                    continue;
+                }
                 generation = match self.commit(&mut transaction, permit, ctx).await? {
                     TransactionCommit::Committed(generation)
                     | TransactionCommit::AlreadyCommitted(generation) => generation.id(),
@@ -126,7 +129,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             let (lookup, source, guard) = self
                 .inspect_unauthored(
                     &mut checkout.value,
-                    &paths.value[0],
+                    paths.value.first().ok_or(LazyWorkspaceError::Concurrent)?,
                     Some(cut),
                     InspectBasis {
                         state: Some(state),
@@ -146,11 +149,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 crate::kernel::retire_allocation(guard, 0, ctx)?;
             }
             let mut next = 0;
-            while next < directories.value.len() {
+            while let Some(&index) = directories.value.get(next) {
                 ctx.check()?;
-                let index = directories.value[next];
                 next += 1;
-                let directory = self.namespace_path(&paths.value[index], ctx)?;
+                let directory = self.namespace_path(
+                    paths
+                        .value
+                        .get(index)
+                        .ok_or(LazyWorkspaceError::Concurrent)?,
+                    ctx,
+                )?;
                 let mut cursor = None;
                 let listed = async {
                     loop {
@@ -158,7 +166,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                             .list_directory_at(
                                 state,
                                 &mut checkout.value,
-                                &paths.value[index],
+                                paths
+                                    .value
+                                    .get(index)
+                                    .ok_or(LazyWorkspaceError::Concurrent)?,
                                 cursor.take(),
                                 self.workspace
                                     .limits()

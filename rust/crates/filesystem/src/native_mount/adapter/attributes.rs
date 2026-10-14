@@ -13,7 +13,7 @@ where
         invoke(&self.runtime, work, || async {
             let cancellation = work.cancellation();
             let mut carrier = NativeDemandCarrier::Native(work);
-            let (mut candidate, epoch, stamp) = self
+            let mut candidate = self
                 .checkout
                 .candidate(None, &mut carrier, cancellation, Some(&self.cancellation))
                 .await?;
@@ -34,8 +34,6 @@ where
             self.checkout
                 .install_change(
                     candidate,
-                    epoch,
-                    stamp,
                     ViewChange::Node(lookup.node.file_id),
                     work,
                     &self.cancellation,
@@ -52,7 +50,7 @@ where
         name: &[u8],
         work: &crate::NativeMaterializationWork,
     ) -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError> {
-        let owner = ViewGate::callback_owner();
+        let owner = ViewGate::callback_owner()?;
         invoke(&self.runtime, work, || async {
             let cancellation = work.cancellation();
             let mut carrier = NativeDemandCarrier::Native(work);
@@ -100,7 +98,7 @@ where
             let observation = self
                 .checkout
                 .observe(
-                    ViewGate::callback_owner(),
+                    ViewGate::callback_owner()?,
                     inputs.carrier,
                     cancellation,
                     Some(&self.cancellation),

@@ -163,6 +163,45 @@ pub(super) fn owned_component(
     ))
 }
 
+fn insert_projected_entry(
+    entries: &mut Vec<ProjectedEntry>,
+    projected: ProjectedEntry,
+    work: &crate::NativeMaterializationWork,
+) -> Result<(), MountSourceError> {
+    let mut low = 0;
+    let mut high = entries.len();
+    let mut collision = false;
+    while low < high {
+        work.charge(crate::materializer::NativeResourceCredit::Items.delta(1))?;
+        let middle = low + (high - low) / 2;
+        let candidate = entries.get(middle).ok_or(MountSourceError::Stale)?;
+        // SAFETY: both names include NUL and retain their allocations.
+        let order = unsafe {
+            PrjFileNameCompare(
+                PCWSTR::from_raw(candidate.name.as_ptr()),
+                PCWSTR::from_raw(projected.name.as_ptr()),
+            )
+        };
+        if order == 0 {
+            collision = true;
+            break;
+        }
+        if order < 0 {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    if !collision {
+        work.charge(
+            crate::materializer::NativeResourceCredit::Copy
+                .delta(((entries.len() - low) * size_of::<ProjectedEntry>()) as u64),
+        )?;
+        entries.insert(low, projected);
+    }
+    Ok(())
+}
+
 pub(super) fn source_listing(
     projection: Projection<'_>,
     path: &MountPath,
@@ -218,39 +257,7 @@ pub(super) fn source_listing(
                 lookup,
                 entry.pin,
             )? {
-                let mut low = 0;
-                let mut high = entries.0.len();
-                let mut collision = false;
-                while low < high {
-                    projection
-                        .work
-                        .charge(crate::materializer::NativeResourceCredit::Items.delta(1))?;
-                    let middle = low + (high - low) / 2;
-                    // SAFETY: both names include NUL and retain their allocations.
-                    let order = unsafe {
-                        PrjFileNameCompare(
-                            PCWSTR::from_raw(entries.0[middle].name.as_ptr()),
-                            PCWSTR::from_raw(projected.name.as_ptr()),
-                        )
-                    };
-                    if order == 0 {
-                        collision = true;
-                        break;
-                    }
-                    if order < 0 {
-                        low = middle + 1;
-                    } else {
-                        high = middle;
-                    }
-                }
-                if !collision {
-                    projection
-                        .work
-                        .charge(crate::materializer::NativeResourceCredit::Copy.delta(
-                            ((entries.0.len() - low) * size_of::<ProjectedEntry>()) as u64,
-                        ))?;
-                    entries.0.insert(low, projected);
-                }
+                insert_projected_entry(&mut entries.0, projected, projection.work)?;
             }
         }
         let Some(next) = next_cursor else {

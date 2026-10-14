@@ -43,7 +43,7 @@ where
         let mut carrier = crate::native_mount::adapter::NativeDemandCarrier::Native(work);
         with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
             self.runtime.wait_prepared(prepared, || async {
-                let owner = ViewGate::callback_owner();
+                let owner = ViewGate::callback_owner()?;
                 let caller = carrier.cancellation();
                 let _lease = self
                     .source_view
@@ -89,7 +89,7 @@ where
         let mut carrier = crate::native_mount::adapter::NativeDemandCarrier::Native(work);
         with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
             self.runtime.wait_prepared(prepared, || async {
-                let owner = ViewGate::callback_owner();
+                let owner = ViewGate::callback_owner()?;
                 let caller = carrier.cancellation();
                 let _lease = self
                     .source_view
@@ -160,7 +160,7 @@ where
                 return file.lookup_with_meter(work);
             }
             Ok(mount_lookup(
-                LazyLookup::Source {
+                &LazyLookup::Source {
                     node,
                     source: self.lazy.source_reference(),
                 },
@@ -218,13 +218,10 @@ where
                 return file.seek_with_meter(offset, target, work);
             }
             carrier.with_work(|work| mount_items(work, 1))?;
-            let length = match node.logical_bytes {
-                Some(length) => length,
-                None => {
-                    return Err(MountSourceError::Invalid(
-                        "seek requires a regular file".into(),
-                    ));
-                }
+            let Some(length) = node.logical_bytes else {
+                return Err(MountSourceError::Invalid(
+                    "seek requires a regular file".into(),
+                ));
             };
             Ok((offset < length).then_some(match target {
                 MountSeekTarget::Data => offset,
@@ -352,13 +349,10 @@ where
                     "sparse range overflows the file address space".into(),
                 ));
             }
-            let source_length = match node.logical_bytes {
-                Some(length) => length,
-                None => {
-                    return Err(MountSourceError::Invalid(
-                        "seek requires a regular file".into(),
-                    ));
-                }
+            let Some(source_length) = node.logical_bytes else {
+                return Err(MountSourceError::Invalid(
+                    "seek requires a regular file".into(),
+                ));
             };
             let data_length = source_length.saturating_sub(offset).min(logical_bytes);
             if data_length == 0 {

@@ -63,6 +63,11 @@ impl HostStat {
     pub fn is_dir(&self) -> bool {
         self.file_type() == crate::demand::SourceNodeKind::Directory
     }
+    /// Whether the host object has zero bytes.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn len(&self) -> u64 {
         #[cfg(unix)]
         {
@@ -70,7 +75,7 @@ impl HostStat {
         }
         #[cfg(windows)]
         {
-            self.raw.EndOfFile as u64
+            self.raw.EndOfFile.cast_unsigned()
         }
     }
     pub fn nlink(&self) -> u64 {
@@ -80,7 +85,7 @@ impl HostStat {
         }
         #[cfg(windows)]
         {
-            self.raw.NumberOfLinks as u64
+            u64::from(self.raw.NumberOfLinks)
         }
     }
     pub(crate) fn identity(&self) -> NativeRootIdentity {
@@ -94,8 +99,8 @@ impl HostStat {
         #[cfg(windows)]
         {
             NativeRootIdentity {
-                device: self.volume_serial_number as u64,
-                object: self.raw.FileId as u64,
+                device: u64::from(self.volume_serial_number),
+                object: self.raw.FileId.cast_unsigned(),
             }
         }
     }
@@ -107,7 +112,7 @@ impl HostStat {
         }
         #[cfg(windows)]
         {
-            Ok(windows_time(self.raw.CreationTime as u64))
+            Ok(windows_time(self.raw.CreationTime.cast_unsigned()))
         }
     }
     pub fn modified(&self) -> io::Result<cap_std::time::SystemTime> {
@@ -117,7 +122,7 @@ impl HostStat {
         }
         #[cfg(windows)]
         {
-            Ok(windows_time(self.raw.LastWriteTime as u64))
+            Ok(windows_time(self.raw.LastWriteTime.cast_unsigned()))
         }
     }
     pub fn accessed(&self) -> io::Result<cap_std::time::SystemTime> {
@@ -127,7 +132,7 @@ impl HostStat {
         }
         #[cfg(windows)]
         {
-            Ok(windows_time(self.raw.LastAccessTime as u64))
+            Ok(windows_time(self.raw.LastAccessTime.cast_unsigned()))
         }
     }
     #[cfg(unix)]
@@ -219,7 +224,8 @@ pub(crate) fn unix_nanoseconds_to_filetime(nanoseconds: i64) -> i64 {
 pub(super) fn windows_time(ticks: u64) -> cap_std::time::SystemTime {
     const UNIX_EPOCH_TICKS: u64 = UNIX_EPOCH_FILETIME.unsigned_abs();
     let since = |ticks: u64| {
-        std::time::Duration::new(ticks / 10_000_000, ((ticks % 10_000_000) * 100) as u32)
+        std::time::Duration::from_secs(ticks / 10_000_000)
+            + std::time::Duration::from_nanos((ticks % 10_000_000) * 100)
     };
     cap_std::time::SystemTime::from_std(if ticks >= UNIX_EPOCH_TICKS {
         std::time::UNIX_EPOCH + since(ticks - UNIX_EPOCH_TICKS)
@@ -262,7 +268,7 @@ pub(crate) fn stat_file<W: NativeHostWork>(
     #[cfg(windows)]
     {
         let (identity, _) = file_identity_and_length(file, work)?;
-        let volume = identity.device as u32;
+        let volume = u32::try_from(identity.device).map_err(|_| W::invalid_request())?;
         stat_windows_file(file, volume, work)
     }
 }

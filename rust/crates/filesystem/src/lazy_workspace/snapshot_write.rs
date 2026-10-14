@@ -8,13 +8,14 @@ where
     E: From<crate::FsError>,
 {
     let native = ctx.native_work().is_some();
-    let mut work = match ctx.native_work() {
-        Some(original) => crate::AuthorityWork::native(original, cancellation(ctx)),
-        None => crate::AuthorityWork::new(ctx.remaining()?, cancellation(ctx)),
+    let (result, spent) = {
+        let mut work = match ctx.native_work() {
+            Some(original) => crate::AuthorityWork::native(original, cancellation(ctx)),
+            None => crate::AuthorityWork::new(ctx.remaining()?, cancellation(ctx)),
+        };
+        let result = guard.seal(&mut work).await;
+        (result, work.spent())
     };
-    let result = guard.seal(&mut work).await;
-    let spent = work.spent();
-    drop(work);
     if !native {
         ctx.record_completed(spent)?;
     }
@@ -184,10 +185,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                         let cancel = cancel.clone();
                         async move {
                             let mut ctx = KernelAccounting::standalone(budget, &cancel);
-                            let result = if source.reference() != basis.source {
-                                Err(E::from(LazyWorkspaceError::StaleSource))
-                            } else {
+                            let result = if source.reference() == basis.source {
                                 seal::<_, E>(&mut before, &mut ctx).await
+                            } else {
+                                Err(E::from(LazyWorkspaceError::StaleSource))
                             };
                             result
                                 .map(|()| OperationReceipt {

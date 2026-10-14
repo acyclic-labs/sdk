@@ -88,7 +88,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             OperationFailure::new(map_transfer_error(failure.error), *failure.work)
         })?;
         let mut work = proof.work;
-        drop(proof);
         let mut allocations = AllocationLedger::default();
         let mut accounting = KernelAccounting::borrowed_standalone(
             &mut allocations,
@@ -183,11 +182,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         accounting.check()?;
         let operation_id = if let Some(id) = operation_id { id } else {
             accounting.charge(identity_hash_work(CREATION_OPERATION_DOMAIN))?;
-            OperationId::from_bytes(
-                derived_digest(CREATION_OPERATION_DOMAIN, volume_id).as_bytes()[..16]
-                    .try_into()
-                    .expect("sixteen digest bytes"),
-            )
+            let mut identity = [0; 16];
+            identity.copy_from_slice(&derived_digest(CREATION_OPERATION_DOMAIN, volume_id).as_bytes()[..16]);
+            OperationId::from_bytes(identity)
         };
         let encoded =
             crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
@@ -305,11 +302,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .put_encoded_with_accounting(ObjectKind::TreePage, encoded, accounting, cancellation)
             .await?;
         accounting.charge(identity_hash_work(ROOT_FILE_DOMAIN))?;
-        let root_file_id = FileId::from_bytes(
-            derived_digest(ROOT_FILE_DOMAIN, volume_id).as_bytes()[..16]
-                .try_into()
-                .expect("sixteen digest bytes"),
-        );
+        let mut identity = [0; 16];
+        identity.copy_from_slice(&derived_digest(ROOT_FILE_DOMAIN, volume_id).as_bytes()[..16]);
+        let root_file_id = FileId::from_bytes(identity);
         let record = FileRecord {
             file_id: root_file_id,
             kind: FileKind::Directory,

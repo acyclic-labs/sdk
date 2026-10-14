@@ -42,7 +42,7 @@ impl Shared {
                     changes.push(change(relative, flags));
                 }
             }
-            self.delivery.deliver_with_work(&changes, work)
+            self.delivery.deliver(&changes, work)
         })();
         let mut remaining = count;
         let mut cleaned = Ok(());

@@ -27,6 +27,89 @@ pub(super) struct PreparedRestore {
     pub(super) lock: File,
 }
 
+pub(super) async fn finish_restore(
+    prepared: PreparedRestore,
+    replacement: HostPathReplacement,
+    materialized: Result<(), MaterializeError>,
+    cleanup_slot: (Box<MaterializeError>, crate::NativeAllocation),
+    work: crate::NativeMaterializationWork,
+) -> Result<HostPathRestore, MaterializeError> {
+    let PreparedRestore {
+        root,
+        destination_parent,
+        stage_owner,
+        stage_root,
+        stage_name,
+        stage_path,
+        destination_root,
+        relative,
+        lock,
+    } = prepared;
+    host_io(Some(lock), work, move |work| {
+        let mut cleanup_slot = cleanup_slot;
+        let relative = relative;
+        let stage_name = stage_name;
+        // Every destination operation retains the originally bound
+        // root and parent; publication never reopens an ambient path.
+        let _root = root;
+        let _destination_root = destination_root;
+        let _stage_path = stage_path;
+        let name = relative
+            .0
+            .file_name()
+            .ok_or(MaterializeError::InvalidPath)?;
+        let result = match materialized {
+            Ok(_) => publish_restore(
+                &destination_parent,
+                &stage_root,
+                &relative.0,
+                replacement,
+                work,
+            )
+            .map(|()| HostPathRestore::Restored),
+            Err(MaterializeError::MissingPath) => {
+                remove_restored_path(&destination_parent, Path::new(name), &relative.0, work)
+                    .map(|()| HostPathRestore::Removed)
+            }
+            Err(error) => Err(error),
+        };
+        let stage_identity = stage_root.identity();
+        drop(stage_root);
+        let cleanup = {
+            #[cfg(unix)]
+            {
+                stage_owner.remove(&stage_name.0, Some(stage_identity), work)
+            }
+            #[cfg(windows)]
+            {
+                crate::native_host::with_wide_path(&stage_name.0, work, |path, work| {
+                    stage_owner.remove(path, Some(stage_identity), work)
+                })
+            }
+        }
+        .and_then(|()| crate::native_host::sync_directory_held(&stage_owner.directory, work));
+        match (result, cleanup) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Ok(_), Err(error)) => Err(MaterializeError::from(error)),
+            (Err(error), Ok(())) => Err(error),
+            (Err(primary), Err(cleanup)) => {
+                *cleanup_slot.0 = primary;
+                Err(MaterializeError::RestoreCleanup {
+                    primary: cleanup_slot.0,
+                    cleanup,
+                    allocation: cleanup_slot.1,
+                })
+            }
+        }
+    })
+    .await
+    .map_err(|error| {
+        MaterializeError::from(crate::NativeTreeMaterializationError::from_runtime_error(
+            error,
+        ))
+    })?
+}
+
 pub(super) fn prepare_restore(
     destination_root: (PathBuf, crate::NativeAllocation),
     relative: (PathBuf, crate::NativeAllocation),
@@ -145,8 +228,9 @@ pub(super) fn publish_restore(
     let destination_name = relative.file_name().ok_or(MaterializeError::InvalidPath)?;
     let stage_parent = held_parent(stage_root, relative, work)?;
     let name = Path::new(destination_name);
-    if let Some(_) = crate::native_host::entry_identity(&destination_parent.directory, name, work)
+    if crate::native_host::entry_identity(&destination_parent.directory, name, work)
         .map_err(MaterializeError::from)?
+        .is_some()
     {
         match replacement {
             HostPathReplacement::Atomic => crate::native_exchange::exchange_native_entries(
@@ -258,31 +342,21 @@ pub(super) fn create_restore_stage(
             .map_err(|_| MaterializeError::InvalidOptions)?;
         work.record(delta).map_err(MaterializeError::from)?;
         let name = (PathBuf::from(name), allocation);
-        match {
-            #[cfg(unix)]
-            {
-                parent.create_dir(&name.0, work)
-            }
-            #[cfg(windows)]
-            {
-                crate::native_host::with_wide_path(&name.0, work, |path, work| {
-                    parent.create_dir(path, work)
-                })
-            }
-        } {
+        #[cfg(unix)]
+        let created = parent.create_dir(&name.0, work);
+        #[cfg(windows)]
+        let created = crate::native_host::with_wide_path(&name.0, work, |path, work| {
+            parent.create_dir(path, work)
+        });
+        match created {
             Ok(()) => {
-                let root = match {
-                    #[cfg(unix)]
-                    {
-                        parent.open_child(&name.0, work)
-                    }
-                    #[cfg(windows)]
-                    {
-                        crate::native_host::with_wide_path(&name.0, work, |path, work| {
-                            parent.open_child(path, work)
-                        })
-                    }
-                } {
+                #[cfg(unix)]
+                let opened = parent.open_child(&name.0, work);
+                #[cfg(windows)]
+                let opened = crate::native_host::with_wide_path(&name.0, work, |path, work| {
+                    parent.open_child(path, work)
+                });
+                let root = match opened {
                     Ok(root) => root,
                     // Without the stage capability no identity authorizes
                     // deleting this name, which may already have been swapped.

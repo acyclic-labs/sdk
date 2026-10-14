@@ -3,7 +3,13 @@ use crate::demand::DemandWork;
 
 macro_rules! demand_meter {
     ($owner:ty $(, $allocation_owner:expr)?) => {
+        demand_meter!(@impl $owner, |_: &$owner, kind| DemandWork::byte_credit(kind) $(, $allocation_owner)?);
+    };
+    (@impl $owner:ty, $byte_credit:expr $(, $allocation_owner:expr)?) => {
         impl $owner {
+            fn byte_credit(&self, kind: acyclic_native_runtime::NativeOperationKind) -> std::io::Result<NativeResourceCredit> {
+                ($byte_credit)(self, kind)
+            }
             fn io<T>(&self, operation: impl FnOnce(&mut DemandWork) -> Result<T, crate::DemandError>) -> std::io::Result<T> {
                 self.with_original_leaf(|state| operation(state).map_err(|error| state.record_native_io_failure(error)))
             }
@@ -24,13 +30,13 @@ macro_rules! demand_meter {
                 self.io(|state| state.complete(crate::demand::DemandWork::operation_credit(kind).delta(1), crate::demand::DemandWork::operation_credit(kind).delta(1)))
             }
             fn reserve_bytes(&self, kind: acyclic_native_runtime::NativeOperationKind, bytes: u64) -> std::io::Result<()> {
-                self.io(|state| state.reserve(crate::demand::DemandWork::byte_credit(kind)?.delta(bytes)))
+                self.io(|state| state.reserve(self.byte_credit(kind)?.delta(bytes)))
             }
             fn cancel_reserved_bytes(&self, kind: acyclic_native_runtime::NativeOperationKind, bytes: u64) {
-                self.cancel(|state| state.refund(crate::demand::DemandWork::byte_credit(kind)?.delta(bytes)));
+                self.cancel(|state| state.refund(self.byte_credit(kind)?.delta(bytes)));
             }
             fn record_reserved_bytes(&self, kind: acyclic_native_runtime::NativeOperationKind, maximum: u64, actual: u64) -> std::io::Result<()> {
-                self.io(|state| state.complete(crate::demand::DemandWork::byte_credit(kind)?.delta(maximum), crate::demand::DemandWork::byte_credit(kind)?.delta(actual)))
+                self.io(|state| state.complete(self.byte_credit(kind)?.delta(maximum), self.byte_credit(kind)?.delta(actual)))
             }
             fn allocate(&self, bytes: u64) -> std::io::Result<()> {
                 self.io(|state| state.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED))
@@ -58,16 +64,16 @@ macro_rules! demand_meter {
                 self.io(|state| state.admit(NativeResourceCredit::WriteBytes.delta(bytes as u64)))
             }
             fn admit_bytes(&self, bytes: usize) -> std::io::Result<()> {
-                self.io(|state| state.admit(NativeResourceCredit::ReadBytes.delta(bytes as u64)))
+                self.io(|state| state.admit(self.byte_credit(acyclic_native_runtime::NativeOperationKind::Read)?.delta(bytes as u64)))
             }
             fn record_read(&self, bytes: usize) -> std::io::Result<()> {
-                self.io(|state| state.record(NativeResourceCredit::ReadBytes.delta(bytes as u64)))
+                self.io(|state| state.record(self.byte_credit(acyclic_native_runtime::NativeOperationKind::Read)?.delta(bytes as u64)))
             }
             fn record_write(&self, bytes: usize) -> std::io::Result<()> {
                 self.io(|state| state.record(NativeResourceCredit::WriteBytes.delta(bytes as u64)))
             }
             fn admit_read(&self, bytes: usize) -> std::io::Result<()> {
-                self.io(|state| { state.admit(NativeResourceCredit::ReadBytes.delta(bytes as u64))?; state.charge(NativeResourceCredit::ReadOperations.delta(1)) })
+                self.io(|state| { state.admit(self.byte_credit(acyclic_native_runtime::NativeOperationKind::Read)?.delta(bytes as u64))?; state.charge(NativeResourceCredit::ReadOperations.delta(1)) })
             }
             fn admit_write(&self, bytes: usize) -> std::io::Result<()> {
                 self.io(|state| { state.admit(NativeResourceCredit::WriteBytes.delta(bytes as u64))?; state.charge(NativeResourceCredit::WriteOperations.delta(1)) })
@@ -96,7 +102,16 @@ macro_rules! demand_meter {
 
 demand_meter!(crate::demand::NativeDemandReadMeter);
 demand_meter!(NativeResourceAllowance);
-demand_meter!(NativeInvocationView);
+demand_meter!(@impl NativeInvocationView,
+    |view: &NativeInvocationView, kind| match kind {
+        acyclic_native_runtime::NativeOperationKind::Read => Ok(view.read_credit),
+        _ => DemandWork::byte_credit(kind),
+    },
+    |view: &NativeInvocationView| match view.read_credit {
+        NativeResourceCredit::AuthorityReadBytes => Some(view.metadata.work().runtime_meter()),
+        _ => None,
+    }
+);
 #[cfg(feature = "native-mount")]
 demand_meter!(
     NativeSourceExecutionView,

@@ -149,8 +149,6 @@ use accounting::*;
 mod codec;
 pub(crate) use codec::decode_publication_evidence_with_accounting;
 pub use codec::decode_published_generation;
-#[cfg(test)]
-pub(crate) use codec::encode_publication_payload;
 use codec::*;
 mod construction;
 pub(crate) use construction::contextual_publication_fingerprint;
@@ -164,5 +162,5 @@ pub(crate) use api::publish_generation_async_guarded;
 pub(crate) use api::publish_generation_async_guarded_with_native_work;
 
 #[cfg(all(test, feature = "memory"))]
-#[path = "../tests/publication.rs"]
+#[path = "../tests/publication/mod.rs"]
 mod tests;

@@ -3,7 +3,7 @@ use crate::foundation::Digest;
 use crate::memory::{MemoryAuthorityStore, MemoryObjectStore};
 use crate::simulation::{Simulation, SimulationFault, SimulationOperation, SimulationOptions};
 use crate::storage::{
-    ObjectKind, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectStoreError, object_digest,
+    ObjectKind, ObjectReadRequest, ObjectReadRetention, ObjectStoreError, object_digest,
 };
 use crate::{AsyncObjectStore, CancellationToken, WorkCounters};
 use acyclic_stream::OwnedBytes;

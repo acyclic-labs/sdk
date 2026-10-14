@@ -78,7 +78,7 @@ fn reverse_insert(
         ))?;
         records.insert(index, (record.file_id, Vec::new()));
     }
-    let entries = &mut records[index].1;
+    let (_, entries) = records.get_mut(index).ok_or(FsError::InvalidDiff)?;
     reverse_grow(entries, allocation, accounting)?;
     let mut path = path;
     allocation.absorb(&mut path.1)?;
@@ -95,7 +95,9 @@ fn reverse_sort(
             let mut current = index;
             while current != 0 {
                 accounting.charge(item_work(1))?;
-                if entries[current - 1].0 <= entries[current].0 {
+                let left = entries.get(current - 1).ok_or(FsError::InvalidDiff)?;
+                let right = entries.get(current).ok_or(FsError::InvalidDiff)?;
+                if left.0 <= right.0 {
                     break;
                 }
                 accounting.charge(copy_work(
@@ -145,11 +147,9 @@ pub(super) async fn namespace_records_to_file_root_with_accounting<
     let (bytes, allocation) = volume.fs.path_index().load(cache_key, accounting)?;
     let bytes = (bytes, allocation);
     if let Some(payload) = bytes.0.as_ref() {
-        let (cached, allocation) =
-            crate::path_index::decode(payload, generation, ids, limits, accounting)?;
-        let mut cached = (cached, allocation);
+        let mut cached = crate::path_index::decode(payload, generation, ids, limits, accounting)?;
         if let Some(paths) = cached
-            .0
+            .value
             .as_ref()
             .filter(|paths| paths.len() <= maximum_entries as usize)
         {
@@ -194,11 +194,11 @@ pub(super) async fn namespace_records_to_file_root_with_accounting<
             reverse_drop(copied, copied_bytes, accounting)?;
             let lookup_bytes = lookup.0.retained_allocation_bytes;
             if valid {
-                let paths = cached.0.take().expect("verified cache payload");
+                let paths = cached.value.take().ok_or(FsError::InvalidDiff)?;
                 let vector_bytes = workspace_vec_bytes(&paths);
                 for ((_, path), entry) in paths.into_iter().zip(&lookup.0.entries) {
                     let allocation =
-                        crate::kernel::split_allocation(&mut cached.1, path.retained_bytes())?;
+                        crate::kernel::split_allocation(&mut cached.allocation, path.retained_bytes())?;
                     let path = (path, allocation);
                     let record = entry.record.ok_or(FsError::NotFound)?;
                     reverse_insert(
@@ -209,7 +209,7 @@ pub(super) async fn namespace_records_to_file_root_with_accounting<
                         accounting,
                     )?;
                 }
-                accounting.release_owned(&mut cached.1, vector_bytes)?;
+                accounting.release_owned(&mut cached.allocation, vector_bytes)?;
                 reverse_drop(lookup, lookup_bytes, accounting)?;
                 matches.0.complete = true;
                 let bytes_count = bytes.0.as_ref().map_or(0, workspace_vec_bytes);
@@ -218,14 +218,7 @@ pub(super) async fn namespace_records_to_file_root_with_accounting<
             }
             reverse_drop(lookup, lookup_bytes, accounting)?;
         }
-        let cached_bytes = cached.0.as_ref().map_or(0, |paths| {
-            workspace_vec_bytes(paths)
-                + paths
-                    .iter()
-                    .map(|(_, path)| path.retained_bytes())
-                    .sum::<u64>()
-        });
-        reverse_drop(cached, cached_bytes, accounting)?;
+        cached.retire(accounting)?;
     }
     let bytes_count = bytes.0.as_ref().map_or(0, workspace_vec_bytes);
     reverse_drop(bytes, bytes_count, accounting)?;

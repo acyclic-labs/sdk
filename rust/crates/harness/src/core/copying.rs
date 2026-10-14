@@ -70,7 +70,7 @@ pub(crate) fn reserve_copy_vector<T>(
     }
     let bytes = owned_buffer::<T>(count)?;
     if bytes != 0 {
-        let io = quota.work().as_deref_mut().expect("vector observer");
+        let io = quota.observer()?;
         if is_native(io) {
             io.admit_allocation(bytes)?;
         }
@@ -78,13 +78,9 @@ pub(crate) fn reserve_copy_vector<T>(
     }
     let mut values = Vec::new();
     if bytes != 0 {
-        values.try_reserve_exact(count).map_err(|cause| {
-            quota
-                .work()
-                .as_deref()
-                .expect("vector observer")
-                .allocation_failure(cause)
-        })?;
+        if let Err(cause) = values.try_reserve_exact(count) {
+            return Err(quota.observer()?.allocation_failure(cause));
+        }
         let actual = owned_buffer::<T>(values.capacity())?;
         quota.replace(owned_sum([quota.retained(), actual - bytes])?)?;
     }
@@ -98,17 +94,9 @@ pub(crate) fn copy_copy_vector<T: Copy>(
         return Ok(source.to_vec());
     }
     let bytes = owned_buffer::<T>(source.len())?;
-    quota
-        .work()
-        .as_deref()
-        .expect("copy observer")
-        .admit_copy(bytes)?;
+    quota.observer()?.admit_copy(bytes)?;
     let mut values = reserve_copy_vector(source.len(), quota)?;
-    quota
-        .work()
-        .as_deref_mut()
-        .expect("copy observer")
-        .copy_bytes(bytes)?;
+    quota.observer()?.copy_bytes(bytes)?;
     values.extend_from_slice(source);
     Ok(values)
 }
@@ -122,17 +110,9 @@ pub(crate) fn copy<T: Clone + Serialize>(
     }
     inspect_metadata(source, quota.work())?;
     let bytes = owned(source, quota.work())?;
-    quota
-        .work()
-        .as_deref()
-        .expect("copy observer")
-        .admit_copy(bytes)?;
+    quota.observer()?.admit_copy(bytes)?;
     quota.replace(owned_sum([quota.retained(), bytes])?)?;
-    quota
-        .work()
-        .as_deref_mut()
-        .expect("copy observer")
-        .copy_bytes(bytes)?;
+    quota.observer()?.copy_bytes(bytes)?;
     Ok(source.clone())
 }
 

@@ -41,7 +41,7 @@ fn rewritten_context_retains_only_the_replacement_file() -> Result<()> {
         acyclic_fs::performance::work_budget(10_000, 1_000_000),
         &cancellation,
     )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) })?;
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work: work })?;
     let io = PreparationIo::from_native_work(&work)?;
     let rewritten = rewritten_context(&context, &replacements, Some(&io))?;
     assert_eq!(rewritten.metadata["payload"], replacements[&key]);

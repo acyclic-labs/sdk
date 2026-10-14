@@ -30,25 +30,21 @@ pub(super) fn reserve_conversation_buffer<T>(
         })?;
         io.admit_allocation(bytes)?;
         io.retain_owned(bytes)?;
-        let incoming = io.take_native_custody(bytes)?;
-        let retired = owner.replace(incoming);
+        let mut incoming = io.take_native_custody(bytes)?;
         if let Err(cause) = values.try_reserve_exact(target - values.len()) {
-            let rejected = std::mem::replace(owner, retired);
-            drop(rejected);
+            drop(incoming);
             return Err(io.allocation_failure(cause));
         }
         let actual = conversation_buffer_bytes::<T>(values.capacity()).map_err(|reason| {
             conversation_error(&Some(&mut *io), crate::wire::ErrorCode::Invalid, reason)
         })?;
-        let result = owner
-            .as_mut()
-            .expect("installed conversation buffer custody")
+        let result = incoming
             .reconcile_capacity(actual)
             .map_err(|cause| Error::NativeWork {
                 cause,
                 custody: None,
             });
-        drop(retired);
+        *owner = Some(incoming);
         result?;
         return Ok(0);
     }

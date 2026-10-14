@@ -288,11 +288,11 @@ impl DemandWork {
             .checked_sub(self.live_allocation_bytes())
             .and_then(|bytes| bytes.checked_sub(self.allocations.reserved_bytes()))
             .ok_or(crate::WorkError::Overflow)?;
-        Ok(self.resource().map_or(Ok(remaining), |resource| {
+        self.resource().map_or(Ok(remaining), |resource| {
             resource
                 .remaining()
                 .map(|local| remaining.intersect_budget(local))
-        })?)
+        })
     }
     pub(crate) fn merge(&mut self, delta: WorkCounters, live: u64) -> Result<(), DemandError> {
         self.work = self.work.with_backend(delta, live)?;

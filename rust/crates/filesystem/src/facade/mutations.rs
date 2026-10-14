@@ -33,7 +33,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                         false,
                     )
                     .await?;
-                    records[index] = observed.0.lookup.record;
+                    *records.get_mut(index).ok_or(FsError::InvalidDiff)? = observed.0.lookup.record;
                     let bytes =
                         Self::mutation_dependency_bytes(&observed.0.dependencies, accounting)?;
                     Self::append_mutation_dependencies(
@@ -56,17 +56,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     if index == 1 && id == ids[0] {
                         records[1] = records[0];
                     } else if let Some(id) = id {
-                        records[index] = lookup_file_record_async_with_accounting(
-                            &self.volume.fs.inner.objects,
-                            self.base_root.file_table,
-                            id,
-                            DecodeLimits::for_volume(self.volume.config),
-                            accounting,
-                            cancellation,
-                            None,
-                        )
-                        .await?
-                        .0;
+                        *records.get_mut(index).ok_or(FsError::InvalidDiff)? =
+                            lookup_file_record_async_with_accounting(
+                                &self.volume.fs.inner.objects,
+                                self.base_root.file_table,
+                                id,
+                                DecodeLimits::for_volume(self.volume.config),
+                                accounting,
+                                cancellation,
+                                None,
+                            )
+                            .await?
+                            .0;
                     }
                 }
             }
@@ -198,12 +199,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             }
         }
         let mut index = 0;
-        while index < regions.len() {
+        while let Some((_, region)) = regions.get(index) {
             accounting.charge(WorkCounters {
                 items_examined: 1,
                 ..WorkCounters::UNCHARGED
             })?;
-            let file_id = match &regions[index].1 {
+            let file_id = match region {
                 DependencyRegion::ContentRange { file_id, .. }
                 | DependencyRegion::FileLength(file_id)
                 | DependencyRegion::SparseSeek { file_id, .. } => Some(file_id),
@@ -391,14 +392,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { .. } => self
                 .root
-                .prepare_held_root(&working.0, accounting, Some(producer))?,
+                .hold.as_ref()
+                .map(|_| crate::collection::clone_generation_root(&working.0, accounting, Some(producer)))
+                .transpose()?,
             _ => {
                 let (allocations, work, budget, token) = accounting
                     .standalone_parts()
                     .ok_or(FsError::PendingMutationAllocationFailed)?;
                 token.check()?;
                 self.root
-                    .prepare_held_root(&working.0, &mut KernelAccounting::borrowed_standalone(allocations, work, budget, token), None)?
+                    .hold.as_ref()
+                    .map(|_| crate::collection::clone_generation_root(&working.0, &mut KernelAccounting::borrowed_standalone(allocations, work, budget, token), None))
+                    .transpose()?
                     .map(|(root, _)| {
                         let control = Self::root_control_claim(&root, Some(producer))?;
                         Ok::<_, FsError>((root, control))
@@ -457,7 +462,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             }
         };
         // No fallible work follows the transfer into the actual root producer.
-        self.root.set_prepared_working(working.0, control, held);
+        self.root.set(self.root.base, working.0, control, held);
         self.dependencies.proof().dependencies = prepared_dependencies;
         Ok(())
     }
@@ -513,7 +518,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             let captured = probe
                 .0
                 .capture_many_with_accounting(
-                    GenerationId::new(self.root.base().digest),
+                    GenerationId::new(self.root.base.digest),
                     input,
                     self.volume.config.limits.maximum_checkout_dependencies,
                     accounting,

@@ -59,7 +59,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         cancellation: &CancellationToken,
     ) -> W::Output<bool, WorkspaceError> {
         let mut accounting = funding.accounting(cancellation);
-        let baseline = readonly_standalone_live(&mut accounting);
+        let baseline = readonly_standalone_live(&accounting);
         let result = async {
             let input_bytes = paths
                 .as_ref()
@@ -167,7 +167,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         .value
                         .get(index)
                         .map_or(&[][..], |path| path.value.components());
-                    let prefix = &components[..depth];
+                    let prefix = components.get(..depth).ok_or(WorkspaceError::JoinLimit)?;
                     if depth != 0 {
                         let mut skip = false;
                         for (prior_index, prior) in selected.value.iter().enumerate() {
@@ -190,7 +190,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                             accounting.claim_owned(0, 0)?,
                         )
                     } else {
-                        selected.value[index].value.prefix_with_accounting(
+                        selected.value.get(index).ok_or(WorkspaceError::JoinLimit)?.value.prefix_with_accounting(
                             depth,
                             config.limits,
                             accounting,
@@ -215,7 +215,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         {
                             continue;
                         }
-                        let name = &path.value.components()[depth];
+                        let name = path.value.components().get(depth).ok_or(WorkspaceError::JoinLimit)?;
                         let mut duplicate = false;
                         for mutation in &mutations.value {
                             accounting.charge(WorkCounters {
@@ -277,7 +277,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                             &self.inner.objects,
                             empty,
                             &mutations.value,
-                            maximum as u32,
+                            u32::try_from(maximum).map_err(|_| WorkspaceError::JoinLimit)?,
                             DecodeLimits::for_volume(config),
                             accounting,
                             cancellation,
@@ -331,14 +331,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 accounting,
                 |entry| entry.file_id.cmp(&id),
             )?;
-            if let Ok(position) = position {
-                records.value[position].link_count = records.value[position]
-                    .link_count
-                    .checked_add(1)
-                    .ok_or(WorkspaceError::JoinLimit)?;
-                continue;
-            }
-            let position = position.unwrap_err();
+            let position = match position {
+                Ok(position) => {
+                    let record = records.value.get_mut(position).ok_or(WorkspaceError::JoinLimit)?;
+                    record.link_count = record.link_count.checked_add(1).ok_or(WorkspaceError::JoinLimit)?;
+                    continue;
+                }
+                Err(position) => position,
+            };
             let mut record = None;
             for entry in &overrides.value {
                 accounting.charge(WorkCounters {
@@ -370,20 +370,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 bytes_copied: ((records.value.len() - position) * size_of::<FileRecord>()) as u64,
                 ..WorkCounters::UNCHARGED
             })?;
-            records.value[position..].rotate_right(1);
+            records.value.get_mut(position..).ok_or(WorkspaceError::JoinLimit)?.rotate_right(1);
             if let FilePayload::Directory { entries } = record.payload {
                 let mut cursor: Option<Owned<LogicalName>> = None;
                 loop {
-                    let (page, allocation) = list_tree_entries_async_with_accounting(
-                        &self.inner.objects,
-                        entries,
-                        cursor.as_ref().map(|cursor| &cursor.value),
-                        limits.maximum_page_items,
-                        limits,
-                        accounting,
-                        cancellation.clone(),
-                        None,
-                    )
+                    let (page, allocation) = list_tree_entries_async_with_accounting(&self.inner.objects, entries, ((cursor.as_ref().map(|cursor| &cursor.value)).map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded), limits.maximum_page_items), limits, accounting, cancellation, None,)
                     .await?;
                     let mut page = Owned::new(page, allocation, 0);
                     page.bytes = page.value.entries.iter().try_fold(
@@ -456,7 +447,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             &self.inner.objects,
             empty,
             &mutations.value,
-            maximum as u32,
+            u32::try_from(maximum).map_err(|_| WorkspaceError::JoinLimit)?,
             limits,
             accounting,
             cancellation,
