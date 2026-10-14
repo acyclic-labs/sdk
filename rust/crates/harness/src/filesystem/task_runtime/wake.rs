@@ -96,11 +96,13 @@ where
                 self.host.workflow_stream(),
                 Arc::clone(&self.filesystem),
                 &admission.operation_id.to_string(),
-                &self.volume,
-                &self.verifier,
-                &self.signed,
-                self.maximum_payload_bytes.min(admission.limits.file_bytes),
-                None,
+                crate::filesystem::FilesystemJournalBinding {
+                    volume: &self.volume,
+                    verifier: &self.verifier,
+                    scope: &self.signed,
+                    maximum_bytes: self.maximum_payload_bytes.min(admission.limits.file_bytes),
+                    io: None,
+                },
             )?
         };
         #[cfg(target_arch = "wasm32")]
@@ -108,11 +110,13 @@ where
             self.host.workflow_stream(),
             Arc::clone(&self.filesystem),
             &admission.operation_id.to_string(),
-            &self.volume,
-            &self.verifier,
-            &self.signed,
-            self.maximum_payload_bytes.min(admission.limits.file_bytes),
-            None,
+            crate::filesystem::FilesystemJournalBinding {
+                volume: &self.volume,
+                verifier: &self.verifier,
+                scope: &self.signed,
+                maximum_bytes: self.maximum_payload_bytes.min(admission.limits.file_bytes),
+                io: None,
+            },
         )?;
         #[cfg(not(target_arch = "wasm32"))]
         let retained = if let Some(io) = io {
@@ -241,7 +245,7 @@ where
                 std::marker::PhantomData::<Value>,
                 &body,
                 crate::wire::ErrorCode::Storage,
-            )?)
+            )?)?
         } else {
             crate::contract::json_from_slice(
                 &context.context().read_file(&command.payload, None).await?,

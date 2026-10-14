@@ -1,5 +1,20 @@
 use super::*;
 
+/// Authenticated private-volume binding and limits for a filesystem journal.
+#[derive(Clone, Copy)]
+pub struct FilesystemJournalBinding<'a> {
+    /// Journal's private content volume.
+    pub volume: &'a VolumeRef,
+    /// Verifier for the original journal owner.
+    pub verifier: &'a AuthorityVerifier,
+    /// Original content authority.
+    pub scope: &'a Scope,
+    /// Maximum journal payload size.
+    pub maximum_bytes: u64,
+    /// Original preparation accounting, when present.
+    pub io: Option<&'a PreparationIo>,
+}
+
 /// Resolved mutable workspace head and immutable generation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspaceObservation {
@@ -43,6 +58,34 @@ pub(crate) enum InternalContentClass {
 }
 
 impl InternalContentClass {
+    pub(in crate::filesystem) fn require_path(
+        class: Option<Self>,
+        path: &str,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        let permitted = match class {
+            Some(class) => path.starts_with(class.prefix()),
+            None => {
+                !crate::conversation::is_internal_path(path)
+                    && path != "turns/.canonical"
+                    && !path.starts_with("turns/.canonical/")
+            }
+        };
+        if permitted {
+            Ok(())
+        } else {
+            Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                if class.is_some() {
+                    "content path is outside its authorized storage class"
+                } else {
+                    "internal storage paths are reserved"
+                },
+            ))
+        }
+    }
+
     pub(in crate::filesystem) fn prefix(self) -> &'static str {
         match self {
             Self::Interaction => ".system/interactions/",

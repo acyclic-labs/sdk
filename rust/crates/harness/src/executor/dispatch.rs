@@ -34,7 +34,7 @@ impl StockExecution<'_> {
             events: replayed,
         } = retain_preparation(
             retained_model_step(journal, &records, step, purpose, self.stock.limits, io).await?,
-        );
+        )?;
         let started = retained_request.is_some();
         if self.stock.reconciliation_only && !started && purpose != ModelPurpose::Response {
             return Err(Error::Indeterminate(input.operation_id));

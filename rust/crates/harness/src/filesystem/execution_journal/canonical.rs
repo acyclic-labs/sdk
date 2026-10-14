@@ -25,13 +25,7 @@ where
         else {
             return Ok(());
         };
-        let mut history = io.map(PreparationIo::history_io);
-        limits.validate_file(
-            projection,
-            &mut history
-                .as_mut()
-                .map(|history| history as &mut dyn crate::store::history::HistoryIo),
-        )?;
+        crate::executor::with_history_io(io, |work| limits.validate_file(projection, work))?;
         let projection =
             crate::executor::load_json::<crate::executor::ResponseProjection>(self, projection, io)
                 .await?;
@@ -46,13 +40,7 @@ where
             }
             return Ok(());
         };
-        let mut history = io.map(PreparationIo::history_io);
-        limits.validate_file(
-            reference,
-            &mut history
-                .as_mut()
-                .map(|history| history as &mut dyn crate::store::history::HistoryIo),
-        )?;
+        crate::executor::with_history_io(io, |work| limits.validate_file(reference, work))?;
         let envelope = crate::executor::load_json::<crate::context::CanonicalContextCheckpoint>(
             self, reference, io,
         )
@@ -103,31 +91,20 @@ where
     ) -> Result<()> {
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let result = async {
-            let mut history = io.map(PreparationIo::history_io);
-            limits.validate(
-                &mut history
-                    .as_mut()
-                    .map(|history| history as &mut dyn crate::store::history::HistoryIo),
-            )?;
+            crate::executor::with_history_io(io, |work| limits.validate(work))?;
             self.require_operation(envelope.operation_id, io)?;
             if self.execution.is_some() {
-                let association_hold;
-                let association_before =
-                    io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-                let records = self
-                    .replay_page(envelope.operation_id, 0, 1, true, io)
-                    .await?;
-                association_hold = io
-                    .map(|io| {
-                        io.guard_owned(
-                            io.owned_bytes()?
-                                .checked_sub(association_before)
-                                .ok_or_else(|| {
-                                    io.invalid("checkpoint association custody underflows")
-                                })?,
-                        )
-                    })
-                    .transpose()?;
+                let (association_hold, records) = {
+                    let association_before =
+                        io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+                    let records = self
+                        .replay_page(envelope.operation_id, 0, 1, true, io)
+                        .await?;
+                    let association_hold = io
+                        .map(|io| io.guard_owned(io.owned_since(association_before)?))
+                        .transpose()?;
+                    (association_hold, records)
+                };
                 drop(records);
                 drop(association_hold);
             }
@@ -288,9 +265,7 @@ where
             Ok(())
         }
         .await;
-        if let Some(io) = io {
-            io.release(io.owned_bytes()? - before)?;
-        }
+        PreparationIo::release_since(io, Some(before))?;
         result
     }
 
@@ -340,7 +315,7 @@ where
                 io,
             )
             .await?;
-            let records = crate::executor::retain_preparation((records, hold));
+            let records = crate::executor::retain_preparation((records, hold))?;
             let mut prepared = None;
             let mut request = None;
             let mut output = String::new();
@@ -412,13 +387,9 @@ where
                 )
             })?;
             verify_summary_prefix_with_io(&request, source, summary.source_messages, limits, io)?;
-            let mut history = io.map(PreparationIo::history_io);
-            limits.validate_file(
-                &summary.output,
-                &mut history
-                    .as_mut()
-                    .map(|history| history as &mut dyn crate::store::history::HistoryIo),
-            )?;
+            crate::executor::with_history_io(io, |work| {
+                limits.validate_file(&summary.output, work)
+            })?;
             let bytes = self.load(&summary.output, io)?.await?;
             if let Some(io) = io {
                 io.check_cancellation()?;
@@ -434,9 +405,7 @@ where
             Ok(())
         }
         .await;
-        if let Some(io) = io {
-            io.release(io.owned_bytes()? - before)?;
-        }
+        PreparationIo::release_since(io, Some(before))?;
         result
     }
 }
@@ -545,6 +514,13 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    let uncovered = || {
+        canonical_boundary(
+            io,
+            crate::wire::ErrorCode::Conflict,
+            "checkpoint skips uncovered canonical history",
+        )
+    };
     let mut selected_ids = selection.message_ids.iter();
     for message in &loaded {
         crate::model::charge_items(io, 1)?;
@@ -555,21 +531,13 @@ where
                 | crate::conversation::MessageKind::Assistant
                 | crate::conversation::MessageKind::ToolCall
                 | crate::conversation::MessageKind::ToolResult
-        )
-            && selected_ids.next() != Some(&message.id) {
-                return Err(canonical_boundary(
-                    io,
-                    crate::wire::ErrorCode::Conflict,
-                    "checkpoint skips uncovered canonical history",
-                ));
-            }
+        ) && selected_ids.next() != Some(&message.id)
+        {
+            return Err(uncovered());
+        }
     }
     if selected_ids.next().is_some() {
-        return Err(canonical_boundary(
-            io,
-            crate::wire::ErrorCode::Conflict,
-            "checkpoint skips uncovered canonical history",
-        ));
+        return Err(uncovered());
     }
     if io.is_some() {
         for message in &loaded {
@@ -590,18 +558,17 @@ where
             }
         }
     }
-    let mut borrowed = io.map(PreparationIo::history_io);
-    let (history, _) = crate::conversation::ConversationState::from_wire(
-        crate::conversation::ConversationStateWire {
-            agent: None,
-            messages: loaded,
-            archived_prefix: None,
-        },
-        acyclic_stream::MAX_RECORD_BYTES as u64,
-        &mut borrowed
-            .as_mut()
-            .map(|work| work as &mut dyn crate::store::history::HistoryIo),
-    )?;
+    let (history, _) = crate::executor::with_history_io(io, |work| {
+        crate::conversation::ConversationState::from_wire(
+            crate::conversation::ConversationStateWire {
+                agent: None,
+                messages: loaded,
+                archived_prefix: None,
+            },
+            acyclic_stream::MAX_RECORD_BYTES as u64,
+            work,
+        )
+    })?;
     let mut message_ids = Vec::new();
     for id in &selection.message_ids {
         crate::executor::stock_vec_push(&mut message_ids, *id, io)?;
@@ -630,23 +597,19 @@ where
         io,
     )
     .await?;
-    let input = crate::executor::with_history_io(io, |work| {
-        crate::model::clone_content(
-            &selected
-                .messages
-                .last()
-                .ok_or_else(|| {
-                    canonical_boundary(
-                        io,
-                        crate::wire::ErrorCode::Invalid,
-                        "canonical input is missing",
-                    )
-                })?
-                .content,
-            work,
-        )
-        .map(|(copy, _)| copy)
-    })?;
+    let content = &selected
+        .messages
+        .last()
+        .ok_or_else(|| {
+            canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "canonical input is missing",
+            )
+        })?
+        .content;
+    let input =
+        crate::executor::with_history_io(io, |work| crate::model::clone_content(content, work))?.0;
     let mut selected_delta = selected;
     selected_delta.selection.checkpoint = None;
     crate::context::ContextPipeline::base_context(

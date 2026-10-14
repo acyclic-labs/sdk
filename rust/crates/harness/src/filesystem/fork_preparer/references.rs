@@ -22,7 +22,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         io: Option<&PreparationIo>,
     ) -> Result<Vec<ReferenceGrant>> {
         let attempt;
-        let io = if let Some(io) = io { Some(io) } else {
+        let io = if let Some(io) = io {
+            Some(io)
+        } else {
             attempt = self.preparation_io(self.task_preparation.as_ref())?;
             attempt.as_ref()
         };
@@ -32,7 +34,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             let summary = &self
                 .summary
                 .as_ref()
-                .expect("request checked its Summary context")
+                .ok_or_else(|| {
+                    stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Invalid,
+                        "summary fork has no prepared Summary context",
+                    )
+                })?
                 .prepared;
             let (_, references) = crate::filesystem::summary_fork::split_references(summary, io)?;
             add_summary_readers(request, &mut grants, &references, io)?;
@@ -91,8 +99,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             .await?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(custody) = custody {
-            io.expect("native projection IO")
-                .absorb_native_custody(custody)?;
+            io.ok_or_else(|| {
+                crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "native projection IO",
+                )
+            })?
+            .absorb_native_custody(custody)?;
         }
         #[cfg(target_arch = "wasm32")]
         let _ = custody;

@@ -135,12 +135,14 @@ impl Fixture {
         Ok(TestJournal::new(
             stream,
             self.host.clone(),
-            &private,
-            &self.issuer.verifier(&mut None).expect("verifier copy"),
             &acyclic_harness::core::SchemaRegistry::new(),
-            &scope,
-            32_768,
-            None,
+            acyclic_harness::filesystem::FilesystemJournalBinding {
+                volume: &private,
+                verifier: &self.issuer.verifier(&mut None).expect("verifier copy"),
+                scope: &scope,
+                maximum_bytes: 32_768,
+                io: None,
+            },
         )?
         .with_input_verifier(self.reader.clone()))
     }

@@ -1,5 +1,14 @@
 use super::*;
 
+#[derive(Serialize)]
+struct BorrowedObservation<'a> {
+    version: u32,
+    operation_id: OperationId,
+    turn_operation: OperationId,
+    retry_digest: &'a str,
+    event: &'a ExecutionEvent,
+}
+
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where
     P: StreamProvider,
@@ -24,56 +33,50 @@ where
             .map_or_else(Limits::default, |(owner, _)| owner.input_limits());
         loop {
             let before = io.map(PreparationIo::owned_bytes).transpose()?;
-            let page_hold;
-            let page = match io {
-                #[cfg(not(target_arch = "wasm32"))]
-                Some(io) if io.original_native_work().is_some() => {
-                    let work = io
-                        .original_native_work()
-                        .expect("matched original native work");
-                    crate::NativeFutureBundle::new(work, || {
-                        self.replay_page(
+            let (page_hold, page) = {
+                let page = match io {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    Some(io) if io.original_native_work().is_some() => {
+                        let work = io.original_native_work().ok_or_else(|| {
+                            io.invalid("execution replay requires original native work")
+                        })?;
+                        crate::NativeFutureBundle::new(work, || {
+                            self.replay_page(
+                                operation,
+                                summary.tail,
+                                EXECUTION_REPLAY_PAGE_RECORDS,
+                                true,
+                                Some(io),
+                            )
+                        })?
+                        .await?
+                    }
+                    Some(io) => {
+                        Box::pin(self.replay_page(
                             operation,
                             summary.tail,
                             EXECUTION_REPLAY_PAGE_RECORDS,
                             true,
                             Some(io),
+                        ))
+                        .await?
+                    }
+                    None => {
+                        self.replay_page(
+                            operation,
+                            summary.tail,
+                            EXECUTION_REPLAY_PAGE_RECORDS,
+                            true,
+                            None,
                         )
-                    })?
-                    .await?
-                }
-                Some(io) => {
-                    Box::pin(self.replay_page(
-                        operation,
-                        summary.tail,
-                        EXECUTION_REPLAY_PAGE_RECORDS,
-                        true,
-                        Some(io),
-                    ))
-                    .await?
-                }
-                None => {
-                    self.replay_page(
-                        operation,
-                        summary.tail,
-                        EXECUTION_REPLAY_PAGE_RECORDS,
-                        true,
-                        None,
-                    )
-                    .await?
-                }
-            };
-            page_hold = match (io, before) {
-                (Some(io), Some(before)) => Some(io.guard_owned(
-                    io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                        stock_boundary(
-                            Some(io),
-                            crate::wire::ErrorCode::Invalid,
-                            "execution page custody underflow",
-                        )
-                    })?,
-                )?),
-                _ => None,
+                        .await?
+                    }
+                };
+                let page_hold = match (io, before) {
+                    (Some(io), Some(before)) => Some(io.guard_owned(io.owned_since(before)?)?),
+                    _ => None,
+                };
+                (page_hold, page)
             };
             if page.is_empty() {
                 return Ok(());
@@ -106,24 +109,17 @@ where
             } else {
                 None
             };
-            let summary_hold;
             let mut transient = ExecutionSummary::default();
             let summary = shared.as_deref_mut().unwrap_or(&mut transient);
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             self.refresh_summary(*operation, summary, io).await?;
-            summary_hold = io
-                .map(|io| {
-                    io.guard_owned(
-                        io.owned_bytes()?
-                            .checked_sub(before)
-                            .ok_or_else(|| io.invalid("execution summary custody underflow"))?,
-                    )
-                })
+            let summary_hold = io
+                .map(|io| io.guard_owned(io.owned_since(before)?))
                 .transpose()?;
-            let quiescent = summary.quiescent(io)?;
+            let quiescent = summary.quiescent(io);
             drop(transient);
             drop(summary_hold);
-            quiescent
+            quiescent?
         };
         owner.verify(true, &mut work).await?;
         Ok(quiescent)
@@ -146,20 +142,17 @@ where
             owner.verify(true, &mut Some(&mut borrowed)).await?;
             let tail = {
                 let before = io.owned_bytes()?;
-                let summary_hold;
                 let mut summary = ExecutionSummary::default();
                 self.refresh_summary(*operation, &mut summary, Some(&io))
                     .await?;
-                summary_hold =
-                    io.guard_owned(io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                        Error::Invalid("execution summary custody underflow".into())
-                    })?)?;
-                if !summary.quiescent(Some(&io))? {
-                    return Ok(None);
-                }
+                let summary_hold = io.guard_owned(io.owned_since(before)?)?;
+                let quiescent = summary.quiescent(Some(&io));
                 let tail = summary.tail;
                 drop(summary);
                 drop(summary_hold);
+                if !quiescent? {
+                    return Ok(None);
+                }
                 tail
             };
             Ok(workflow
@@ -172,7 +165,12 @@ where
             return Ok(false);
         };
         owner
-            .release_quiescent_execution(*operation, tail, &pending, &mut Some(&mut io.history_io()))
+            .release_quiescent_execution(
+                *operation,
+                tail,
+                &pending,
+                &mut Some(&mut io.history_io()),
+            )
             .await
     }
 
@@ -223,13 +221,7 @@ where
             }
             .await;
             let summary_hold = io
-                .map(|io| {
-                    io.guard_owned(
-                        io.owned_bytes()?
-                            .checked_sub(before)
-                            .ok_or_else(|| io.invalid("execution summary custody underflow"))?,
-                    )
-                })
+                .map(|io| io.guard_owned(io.owned_since(before)?))
                 .transpose()?;
             drop(transient);
             drop(summary_hold);
@@ -259,53 +251,7 @@ where
         let limits = owner.map_or_else(Limits::default, TaskJournalOwner::input_limits);
         self.verify_canonical_publication_with_io(operation_id, event, limits, io)
             .await?;
-        #[derive(Serialize)]
-        struct BorrowedObservation<'a> {
-            version: u32,
-            operation_id: OperationId,
-            turn_operation: OperationId,
-            retry_digest: &'a str,
-            event: &'a ExecutionEvent,
-        }
-        let hash_input_bytes = 37_u64.checked_add(claim_id.len() as u64).ok_or_else(|| {
-            stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "execution retry identity length overflows",
-            )
-        })?;
-        let hash_input_hold = io
-            .map(|io| io.reserve_decode(hash_input_bytes))
-            .transpose()?;
-        if let Some(io) = io {
-            io.allocation_attempt(hash_input_bytes)?;
-            let copying = acyclic_fs::WorkCounters {
-                bytes_copied: hash_input_bytes,
-                ..Default::default()
-            };
-            io.preflight(copying)?;
-            io.charge(copying)?;
-        }
-        let mut hash_input = String::with_capacity(hash_input_bytes as usize);
-        use std::fmt::Write as _;
-        write!(&mut hash_input, "{operation_id}:{claim_id}").map_err(|_| {
-            stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "execution retry identity formatting failed",
-            )
-        })?;
-        let hashing = acyclic_fs::WorkCounters {
-            bytes_hashed: hash_input.len() as u64,
-            ..Default::default()
-        };
-        if let Some(io) = io {
-            io.preflight(hashing)?;
-            io.charge(hashing)?;
-        }
-        let digest = blake3::hash(hash_input.as_bytes());
-        drop(hash_input);
-        drop(hash_input_hold);
+        let digest = super::content::operation_digest(operation_id, claim_id, io)?;
         let retry_hold = io.map(|io| io.reserve_decode(64)).transpose()?;
         if let Some(io) = io {
             io.allocation_attempt(64)?;
@@ -371,9 +317,17 @@ where
             io.charge(retry_hashing)?;
         }
         let retry_key = *blake3::hash(retry_digest.as_bytes()).as_bytes();
-        let event_digest = crate::executor::with_history_io(io, |work|
-            crate::executor::json::canonical_json_digest(event,
-                if io.is_some() { acyclic_stream::MAX_RECORD_BYTES as u64 } else { u64::MAX }, work))?;
+        let event_digest = crate::executor::with_history_io(io, |work| {
+            crate::executor::json::canonical_json_digest(
+                event,
+                if io.is_some() {
+                    acyclic_stream::MAX_RECORD_BYTES as u64
+                } else {
+                    u64::MAX
+                },
+                work,
+            )
+        })?;
         let mut shared = if io.is_none() {
             Some(self.verified.lock().await)
         } else {
@@ -430,12 +384,10 @@ where
                     .await?
             } else {
                 self.append_local_with_io(
-                    operation_id,
+                    &observation,
                     summary.tail,
                     key.clone(),
                     bytes.clone(),
-                    &retry_digest,
-                    event,
                     io,
                 )
                 .await?
@@ -452,16 +404,20 @@ where
         }
     }
 
-    pub(super) async fn append_local_with_io(
+    async fn append_local_with_io(
         &self,
-        operation_id: OperationId,
+        observation: &BorrowedObservation<'_>,
         tail: u64,
         key: StreamKey,
         bytes: acyclic_stream::OwnedBytes,
-        retry_digest: &str,
-        event: &ExecutionEvent,
         io: Option<&PreparationIo>,
     ) -> Result<bool> {
+        let BorrowedObservation {
+            operation_id,
+            retry_digest,
+            event,
+            ..
+        } = *observation;
         let path_hold = io
             .map(|io| io.reserve_decode(2 * ("harness/v2/execution/".len() + 36) as u64))
             .transpose()?;
@@ -515,39 +471,21 @@ where
                 ))
             }
             Ok(AppendOutcome::TailConflict { .. }) => Ok(false),
-            Err(Error::Indeterminate(_)) => {
-                let records = self.replay_page(operation_id, tail, 1, true, io).await?;
-                if records.iter().any(|(record, _)| {
-                    record.idempotency_key == retry_digest && &record.event == event
-                }) {
-                    Ok(true)
-                } else {
-                    Err(Error::Indeterminate(operation_id))
-                }
-            }
-            Err(error @ Error::Conflict(_)) => {
-                let records = self.replay_page(operation_id, tail, 1, true, io).await?;
-                if records.iter().any(|(record, _)| {
-                    record.idempotency_key == retry_digest && &record.event == event
-                }) {
-                    Ok(true)
-                } else {
-                    Err(error)
-                }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            Err(
-                error @ Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Conflict,
-                    ..
-                },
-            )
-            | Err(
-                error @ Error::NativeStream {
-                    source: StreamError::IdempotencyMismatch,
-                    ..
-                },
-            ) => {
+            Err(error) => {
+                let error = match error {
+                    Error::Indeterminate(_) => Error::Indeterminate(operation_id),
+                    error @ Error::Conflict(_) => error,
+                    #[cfg(not(target_arch = "wasm32"))]
+                    error @ (Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Conflict,
+                        ..
+                    }
+                    | Error::NativeStream {
+                        source: StreamError::IdempotencyMismatch,
+                        ..
+                    }) => error,
+                    error => return Err(error),
+                };
                 let records = self.replay_page(operation_id, tail, 1, true, io).await?;
                 if records.iter().any(|(record, _)| {
                     record.idempotency_key == retry_digest && &record.event == event
@@ -557,9 +495,8 @@ where
                     Err(error)
                 }
             }
-            Err(error) => Err(error),
         }
     }
 }
 
-use crate::executor::{stock_boundary};
+use crate::executor::stock_boundary;

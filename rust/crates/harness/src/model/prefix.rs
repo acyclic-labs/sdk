@@ -116,7 +116,7 @@ impl PreparedModelRequest {
                     std::marker::PhantomData::<ModelPrefix>,
                     &bytes,
                     Storage,
-                )?),
+                )?)?,
                 _ => crate::contract::json_from_slice(&bytes)
                     .map_err(|error| Error::Invalid(format!("invalid model prefix: {error}")))?,
             };

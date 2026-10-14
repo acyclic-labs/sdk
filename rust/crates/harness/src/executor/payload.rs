@@ -56,12 +56,12 @@ pub(crate) async fn load_model_request(
 
 pub(crate) fn retain_preparation<T>(
     decoded: (T, Option<crate::conversation::ContentHold<'_>>),
-) -> T {
+) -> Result<T> {
     #[cfg(feature = "filesystem")]
     if let Some(hold) = decoded.1 {
-        hold.into_retained();
+        hold.into_retained()?;
     }
-    decoded.0
+    Ok(decoded.0)
 }
 
 pub(crate) fn preparation_digest<T: Serialize>(

@@ -1,5 +1,22 @@
 use super::*;
 
+pub(super) fn operation_digest(
+    operation: OperationId,
+    key: &str,
+    io: Option<&PreparationIo>,
+) -> Result<blake3::Hash> {
+    let (_hold, input) = {
+        let input = crate::executor::with_history_io(io, |work| {
+            crate::executor::preparation_format(format_args!("{operation}:{key}"), work)
+        })?;
+        let hold = io
+            .map(|io| io.guard_owned(input.capacity() as u64))
+            .transpose()?;
+        (hold, input)
+    };
+    crate::model::hash_bytes(input.as_bytes(), io).map(blake3::Hash::from)
+}
+
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where
     P: StreamProvider,
@@ -12,24 +29,16 @@ where
         idempotency_key: &str,
         io: Option<&PreparationIo>,
     ) -> Result<(IdempotencyKey, String)> {
-        let digest = {
-            let _input_hold;
-            let input = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("{operation_id}:{idempotency_key}"), work))?;
-            _input_hold = io
-                .map(|io| io.guard_owned(input.capacity() as u64))
-                .transpose()?;
-            if let Some(io) = io {
-                let hashing = acyclic_fs::WorkCounters {
-                    bytes_hashed: input.len() as u64,
-                    ..Default::default()
-                };
-                io.preflight(hashing)?;
-                io.charge(hashing)?;
-            }
-            blake3::hash(input.as_bytes())
-        };
-        let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("journal-{}", digest.to_hex()), work))?)?;
-        let path = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!(".system/execution/{operation_id}/{}.json", digest.to_hex()), work))?;
+        let digest = operation_digest(operation_id, idempotency_key, io)?;
+        let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
+            crate::executor::preparation_format(format_args!("journal-{}", digest.to_hex()), work)
+        })?)?;
+        let path = crate::executor::with_history_io(io, |work| {
+            crate::executor::preparation_format(
+                format_args!(".system/execution/{operation_id}/{}.json", digest.to_hex()),
+                work,
+            )
+        })?;
         Ok((key, path))
     }
 
@@ -48,21 +57,17 @@ where
                 "execution journal payload exceeds limit",
             ));
         }
-        let _identity_hold;
-        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let (key, path) = self.stage_identity_with_io(operation_id, idempotency_key, io)?;
-        _identity_hold = io
-            .map(|io| {
-                let retained = io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                    stock_boundary(
-                        Some(io),
-                        crate::wire::ErrorCode::Invalid,
-                        "staging identity ownership underflow",
-                    )
-                })?;
-                io.guard_owned(retained)
-            })
-            .transpose()?;
+        let (_identity_hold, key, path) = {
+            let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+            let (key, path) = self.stage_identity_with_io(operation_id, idempotency_key, io)?;
+            let _identity_hold = io
+                .map(|io| {
+                    let retained = io.owned_since(before)?;
+                    io.guard_owned(retained)
+                })
+                .transpose()?;
+            (_identity_hold, key, path)
+        };
         let grant = crate::executor::with_history_io(io, |work| {
             ContentGrant::verify(
                 &self.verifier,
@@ -166,13 +171,6 @@ where
         };
         let mut model = None;
         for reference in refs.into_iter().flatten() {
-            if reference.volume() != &self.volume {
-                return Err(canonical_boundary(
-                    io,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "journal event refers to another private volume",
-                ));
-            }
             let _bytes_hold;
             crate::model::charge_items(io, 1)?;
             let owned_bytes = self.load_content(reference, io).await?;
@@ -188,22 +186,9 @@ where
                     .map_or_else(Limits::default, |(owner, _)| owner.input_limits());
                 let before = io.map(PreparationIo::owned_bytes).transpose()?;
                 let _prepared_hold;
-                let prepared = match io {
-                    Some(io) => {
-                        crate::model::PreparedModelRequest::decode(bytes, limits, Some(io))?
-                    }
-                    None => crate::model::PreparedModelRequest::decode(bytes, limits, None)?,
-                };
+                let prepared = crate::model::PreparedModelRequest::decode(bytes, limits, io)?;
                 _prepared_hold = match (io, before) {
-                    (Some(io), Some(before)) => Some(io.guard_owned(
-                        io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                            stock_boundary(
-                                Some(io),
-                                crate::wire::ErrorCode::Invalid,
-                                "prepared model request custody underflow",
-                            )
-                        })?,
-                    )?),
+                    (Some(io), Some(before)) => Some(io.guard_owned(io.owned_since(before)?)?),
                     _ => None,
                 };
                 if &prepared.request_digest() != request_digest {
@@ -239,7 +224,7 @@ where
                                 "execution journal JSON is not canonical",
                             ));
                         }
-                        crate::filesystem::retain_decoded(parsed)
+                        crate::filesystem::retain_decoded(parsed)?
                     }
                     None => decode_json::<ModelEvent>(bytes, None)?.0,
                 });
@@ -279,7 +264,9 @@ where
         }
         if let Some(io) = io {
             crate::model::charge_items(Some(io), 1)?;
-if let Some(io) = Some(io) { io.retain_owned(reference.logical_owned_bytes()?)?; }
+            if let Some(io) = Some(io) {
+                io.retain_owned(reference.logical_owned_bytes()?)?;
+            }
             reference.validate(&mut None)?;
             if reference.volume().class() == VolumeClass::AgentPrivate
                 && reference.volume().owner() != self.volume.owner()
@@ -320,14 +307,7 @@ if let Some(io) = Some(io) { io.retain_owned(reference.logical_owned_bytes()?)?;
                 .host
                 .read_pinned_io(reference, self.maximum_payload_bytes, Some(io))
                 .await?;
-            _bytes_hold =
-                io.guard_owned(io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                    stock_boundary(
-                        Some(io),
-                        crate::wire::ErrorCode::Invalid,
-                        "input file custody underflow",
-                    )
-                })?)?;
+            _bytes_hold = io.guard_owned(io.owned_since(before)?)?;
             drop(bytes);
         } else {
             let grant = if reference.volume().class() == VolumeClass::AgentPrivate
@@ -467,8 +447,7 @@ if let Some(io) = Some(io) { io.retain_owned(reference.logical_owned_bytes()?)?;
             owner.require_interaction_grant(&mut work)?;
             owner.verify(true, &mut work).await?;
         }
-        host.verify_approval(id, operation, digest, io)
-            .await?;
+        host.verify_approval(id, operation, digest, io).await?;
         if let Some((owner, _)) = &self.owner {
             owner.verify(true, &mut work).await?;
         }
@@ -476,4 +455,4 @@ if let Some(io) = Some(io) { io.retain_owned(reference.logical_owned_bytes()?)?;
     }
 }
 
-use crate::executor::{stock_boundary};
+use crate::executor::stock_boundary;

@@ -529,12 +529,14 @@ where
             .expect("verifier copy")
             .audience()
             .clone(),
-        &issuer.verifier(&mut None).expect("verifier copy"),
         &SchemaRegistry::new(),
-        &owner_scope.clone(),
-        &volume.clone(),
-        65_536,
-        None,
+        acyclic_harness::filesystem::FilesystemJournalBinding {
+            volume: &volume.clone(),
+            verifier: &issuer.verifier(&mut None).expect("verifier copy"),
+            scope: &owner_scope.clone(),
+            maximum_bytes: 65_536,
+            io: None,
+        },
     )?;
     assert!(matches!(
         interactions

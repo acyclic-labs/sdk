@@ -51,7 +51,13 @@ pub(in crate::filesystem) fn project_join_key(
             ..Default::default()
         })?;
     }
-    let digest = blake3::hash(&buffer[..length]);
+    let digest = blake3::hash(buffer.get(..length).ok_or_else(|| {
+        stock_boundary(
+            io,
+            crate::wire::ErrorCode::Invalid,
+            "project join retry key exceeds its fixed encoding",
+        )
+    })?);
     let mut bytes = [0_u8; 16];
     bytes.copy_from_slice(&digest.as_bytes()[..16]);
     if bytes == [0; 16] {

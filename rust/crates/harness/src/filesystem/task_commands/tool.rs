@@ -36,20 +36,30 @@ where
 
     pub(super) async fn tool_command(
         &self,
-        task: TaskId,
-        context: Arc<TaskContext>,
-        fence: &LeaseFence,
-        turn: OperationId,
+        CommandInvocation {
+            context,
+            admission,
+            fence,
+            command,
+            reconciliation_only,
+            io,
+        }: CommandInvocation<'_>,
         payload: Value,
-        reconciliation_only: bool,
-        io: Option<&PreparationIo>,
     ) -> Result<TaskCommandProgress> {
+        let task = admission.task_id();
+        let context = Arc::clone(context);
+        let turn = command.operation_id;
         let input: ToolTaskCommand = mail::decode_command(payload, io)?;
         let definition = self
             .runtime
             .tool_definition(&input.name, &input.revision, io)?;
         #[cfg(not(target_arch = "wasm32"))]
-        let work = io.map(|io| io.original_native_work().expect("native dispatch observer"));
+        let work = io
+            .map(|io| {
+                io.original_native_work()
+                    .ok_or_else(|| io.invalid("dispatch requires original native work"))
+            })
+            .transpose()?;
         #[cfg(target_arch = "wasm32")]
         let work = None;
         let (journal, operation) = self.command_journal(task, fence, turn, io).await?;
@@ -85,15 +95,7 @@ where
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             let records = journal.replay_page(operation, 0, 1, false, io).await?;
             let hold = io
-                .map(|io| {
-                    io.guard_owned(io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                        boundary(
-                            Some(io),
-                            ErrorCode::Invalid,
-                            "tool replay custody underflows",
-                        )
-                    })?)
-                })
+                .map(|io| io.guard_owned(io.owned_since(before)?))
                 .transpose()?;
             let empty = records.is_empty();
             drop((records, hold));

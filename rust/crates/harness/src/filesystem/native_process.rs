@@ -553,12 +553,12 @@ async fn capture<P: StreamProvider + 'static>(
             Some((exchange, first, hold)) => (Some(exchange), first, hold),
             None => (None, Vec::new(), None),
         };
-        let input = exchange
-            .as_ref()
-            .map(|_| acyclic_native_runtime::CaptureInput::Exchange {
+        let input = invocation.mcp_stdio.as_ref().map(|request| {
+            acyclic_native_runtime::CaptureInput::Exchange {
                 initial: &first,
-                maximum: invocation.mcp_stdio.as_ref().unwrap().maximum_bytes as usize,
-            });
+                maximum: request.maximum_bytes as usize,
+            }
+        });
         let output = process.wait_with_output(
             timeout,
             maximum_output,

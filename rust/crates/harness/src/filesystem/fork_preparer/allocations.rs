@@ -310,12 +310,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let source_project = seed
             .resources
             .iter()
-            .find_map(|resource| {
-                if let ResourceRevision::Project { volume, .. } = &resource.source {
-                    Some(volume)
-                } else {
-                    None
-                }
+            .find_map(|resource| match &resource.source {
+                ResourceRevision::Project { volume, .. } => Some(volume),
+                _ => None,
             })
             .ok_or_else(|| Error::Invalid("fork has no source project".into()))?;
         let controller =
@@ -458,10 +455,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     ));
                 }
                 let before = io.owned_bytes()?;
-                let resource_hold;
-                let actual = bounded_io::content_workspace(&self.provider, selected, Some(&io))?
-                    .into_resource();
-                resource_hold = io.guard_owned(io.owned_bytes()? - before)?;
+                let (resource_hold, actual) = {
+                    let actual =
+                        bounded_io::content_workspace(&self.provider, selected, Some(&io))?
+                            .into_resource();
+                    let resource_hold = io.guard_owned(io.owned_bytes()? - before)?;
+                    (resource_hold, actual)
+                };
                 if resource != &actual {
                     return Err(reject(
                         "fork claim resources differ from their original exact identities",
@@ -476,10 +476,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 Some(&io),
             )?;
 
-            let journal_hold;
-            let before = io.owned_bytes()?;
-            let journal = allocation_ref(&self.provider, volume, Some(&io))?;
-            journal_hold = io.guard_owned(io.owned_bytes()? - before)?;
+            let (journal_hold, journal) = {
+                let before = io.owned_bytes()?;
+                let journal = allocation_ref(&self.provider, volume, Some(&io))?;
+                let journal_hold = io.guard_owned(io.owned_bytes()? - before)?;
+                (journal_hold, journal)
+            };
             witness.verify_query_with_native_work(query, work).await?;
             let claim = read_allocation_claim(
                 self,
@@ -522,17 +524,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         maximum: u64,
         io: Option<&'a PreparationIo>,
     ) -> Result<(AllocationClaim, Option<bounded_io::DecodeReservation<'a>>)> {
-        let journal_hold;
-        let journal = allocation_ref(&self.provider, volume, io)?;
-        journal_hold = io
-            .map(|io| io.guard_owned(journal.logical_owned_bytes()?))
-            .transpose()?;
-        let claim_hold;
-        let claim = read_allocation_claim(self, &journal, maximum, io)
-            .await?
-            .ok_or_else(|| Error::Unauthorized("fork child volume was not allocated".into()))?;
-        let owned = bounded_io::UploadRecord::logical_owned_bytes(&claim)?;
-        claim_hold = io.map(|io| io.guard_owned(owned)).transpose()?;
+        let (journal_hold, journal) = {
+            let journal = allocation_ref(&self.provider, volume, io)?;
+            let journal_hold = io
+                .map(|io| io.guard_owned(journal.logical_owned_bytes()?))
+                .transpose()?;
+            (journal_hold, journal)
+        };
+        let (claim_hold, claim) = {
+            let claim = read_allocation_claim(self, &journal, maximum, io)
+                .await?
+                .ok_or_else(|| Error::Unauthorized("fork child volume was not allocated".into()))?;
+            let owned = bounded_io::UploadRecord::logical_owned_bytes(&claim)?;
+            let claim_hold = io.map(|io| io.guard_owned(owned)).transpose()?;
+            (claim_hold, claim)
+        };
         if claim.operation_id != seed.operation_id
             || claim.parent != seed.parent
             || claim.child != seed.child

@@ -46,12 +46,14 @@ pub(super) fn conversation_journal(
     let journal = Journal::new(
         stream.clone(),
         Arc::clone(filesystem),
-        descriptor.private_volume,
-        &verifier,
         &SchemaRegistry::new(),
-        &authority.0.2,
-        protected.policy().maximum_payload_bytes,
-        Some(&io),
+        acyclic_harness::filesystem::FilesystemJournalBinding {
+            volume: descriptor.private_volume,
+            verifier: &verifier,
+            scope: &authority.0.2,
+            maximum_bytes: protected.policy().maximum_payload_bytes,
+            io: Some(&io),
+        },
     )?;
     let id = acyclic_harness::durable_host::task_interaction_id(
         protected.policy().root_task,
@@ -107,11 +109,13 @@ pub(crate) fn open_prepared_approval<'a>(
             descriptor.operation,
             context.id(),
             Arc::clone(filesystem),
-            &protected.policy().journal,
-            &storage.verifier,
-            &storage.signed,
-            protected.policy().maximum_payload_bytes,
-            Some(&io),
+            acyclic_harness::filesystem::FilesystemJournalBinding {
+                volume: &protected.policy().journal,
+                verifier: &storage.verifier,
+                scope: &storage.signed,
+                maximum_bytes: protected.policy().maximum_payload_bytes,
+                io: Some(&io),
+            },
         )?
         .with_interaction_owner(
             &verifier,

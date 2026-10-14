@@ -358,12 +358,14 @@ async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, Author
     let journal = Arc::new(FilesystemExecutionJournal::new(
         stream,
         host,
-        &private,
-        &issuer.verifier(&mut None).expect("verifier copy"),
         &acyclic_harness::core::SchemaRegistry::new(),
-        &signed,
-        8192,
-        None,
+        acyclic_harness::filesystem::FilesystemJournalBinding {
+            volume: &private,
+            verifier: &issuer.verifier(&mut None).expect("verifier copy"),
+            scope: &signed,
+            maximum_bytes: 8192,
+            io: None,
+        },
     )?);
     if create {
         let operation = OperationId::from_bytes([46; 16]);

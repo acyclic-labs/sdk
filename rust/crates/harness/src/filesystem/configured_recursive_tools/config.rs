@@ -8,6 +8,41 @@ pub struct ConfiguredRecursiveAuthorityBinding {
     /// Signed actor scope.
     pub scope: Scope,
 }
+
+impl ConfiguredRecursiveAuthorityBinding {
+    pub(super) fn validate_volumes(
+        &self,
+        provider: &ProviderRef,
+        project: &VolumeRef,
+        private: &VolumeRef,
+        result: Option<&VolumeRef>,
+    ) -> Result<()> {
+        let denied = |reason: &str| Error::Unauthorized(reason.into());
+        verifier(self)?;
+        let agent = self
+            .scope
+            .agent()
+            .ok_or_else(|| denied("configured binding has no signed agent"))?;
+        for volume in [project, private].into_iter().chain(result) {
+            volume.validate(&mut None)?;
+            if volume.provider() != provider {
+                return Err(denied("configured volume belongs to another provider"));
+            }
+        }
+        if private.owner() != &VolumeOwner::Agent(agent)
+            || result.is_some_and(|result| {
+                result == private
+                    || result.owner() != &VolumeOwner::Agent(agent)
+                    || result.class() != crate::conversation::VolumeClass::AgentPrivate
+            })
+        {
+            return Err(denied(
+                "configured private/result volume differs from its signed owner",
+            ));
+        }
+        Ok(())
+    }
+}
 impl<'de> Deserialize<'de> for ConfiguredRecursiveAuthorityBinding {
     fn deserialize<D: serde::Deserializer<'de>>(
         deserializer: D,

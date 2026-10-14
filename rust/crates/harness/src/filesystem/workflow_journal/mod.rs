@@ -19,7 +19,6 @@ use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::{
     AppendOutcome, IdempotencyKey as StreamKey, OwnedBytes, StreamError, StreamProvider,
 };
-use futures::TryStreamExt;
 use std::{collections::BTreeSet, sync::Arc};
 
 mod admission;
@@ -48,25 +47,21 @@ fn external_read_hold<'a>(
 }
 
 struct WorkflowIdentities<'a> {
-    io: Option<&'a PreparationIo>,
-    owned: u64,
     reserved: BTreeSet<crate::OperationId>,
     keys: BTreeSet<IdempotencyKey>,
+    hold: Option<super::DecodeReservation<'a>>,
 }
 
 impl WorkflowIdentities<'_> {
     fn advance(&mut self, record: &WorkflowRecord) -> Result<()> {
-        let Some(io) = self.io else {
+        let Some(hold) = &mut self.hold else {
             self.reserved.extend(record.operation_ids());
             self.keys.insert(record.idempotency_key.clone());
             return Ok(());
         };
+        let io = hold.io();
         for identity in record.operation_ids() {
             let bytes = std::mem::size_of::<crate::OperationId>() as u64;
-            let owned = self
-                .owned
-                .checked_add(bytes)
-                .ok_or_else(|| Error::Invalid("workflow identity ownership overflow".into()))?;
             let work = acyclic_fs::WorkCounters {
                 bytes_copied: bytes,
                 items_examined: 1,
@@ -75,7 +70,7 @@ impl WorkflowIdentities<'_> {
             io.check_cancellation()?;
             io.preflight(work)?;
             io.retain_owned(bytes)?;
-            self.owned = owned;
+            hold.adopt(bytes)?;
             io.allocation_attempt(bytes)?;
             io.charge(work)?;
             self.reserved.insert(identity);
@@ -89,28 +84,13 @@ impl WorkflowIdentities<'_> {
             items_examined: copied + 1,
             ..Default::default()
         };
-        let owned = self
-            .owned
-            .checked_add(bytes)
-            .ok_or_else(|| Error::Invalid("workflow identity ownership overflow".into()))?;
         io.preflight(work)?;
         io.retain_owned(bytes)?;
-        self.owned = owned;
+        hold.adopt(bytes)?;
         io.allocation_attempt(bytes)?;
         io.charge(work)?;
         self.keys.insert(record.idempotency_key.clone());
         Ok(())
-    }
-}
-
-impl Drop for WorkflowIdentities<'_> {
-    fn drop(&mut self) {
-        self.reserved.clear();
-        self.keys.clear();
-        if let Some(io) = self.io {
-            io.release(self.owned)
-                .expect("workflow identities retain their original ledger");
-        }
     }
 }
 
@@ -174,37 +154,32 @@ where
     pub fn for_task(
         owner: Arc<TaskJournalOwner<P>>,
         host: Arc<FilesystemHost<A, O>>,
-        volume: &VolumeRef,
-        verifier: &AuthorityVerifier,
-        scope: &Scope,
-        maximum_payload_bytes: u64,
-        io: Option<&PreparationIo>,
+        binding: super::FilesystemJournalBinding<'_>,
     ) -> Result<Arc<Self>> {
+        let super::FilesystemJournalBinding {
+            verifier,
+            maximum_bytes,
+            io,
+            ..
+        } = binding;
         let mut history = io.map(PreparationIo::history_io);
         let mut work = history
             .as_mut()
             .map(|history| history as &mut dyn crate::store::history::HistoryIo);
-        owner.validate_storage(verifier, maximum_payload_bytes, &mut work)?;
-        let _identity;
-        let identity = crate::executor::with_history_io(io, |work| {
-            crate::executor::preparation_format(
-                format_args!("{}", owner.workflow_admission().operation_id),
-                work,
-            )
-        })?;
-        _identity = io
-            .map(|io| io.guard_owned(identity.capacity() as u64))
-            .transpose()?;
-        let mut journal = Self::new(
-            owner.stream(),
-            host,
-            &identity,
-            volume,
-            verifier,
-            scope,
-            maximum_payload_bytes,
-            io,
-        )?;
+        owner.validate_storage(verifier, maximum_bytes, &mut work)?;
+        let (_identity, identity) = {
+            let identity = crate::executor::with_history_io(io, |work| {
+                crate::executor::preparation_format(
+                    format_args!("{}", owner.workflow_admission().operation_id),
+                    work,
+                )
+            })?;
+            let _identity = io
+                .map(|io| io.guard_owned(identity.capacity() as u64))
+                .transpose()?;
+            (_identity, identity)
+        };
+        let mut journal = Self::new(owner.stream(), host, &identity, binding)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work)
             && !owner.native_shared_work_matches(work)
@@ -216,7 +191,13 @@ where
             ));
         }
         Arc::get_mut(&mut journal)
-            .expect("new journal is uniquely owned")
+            .ok_or_else(|| {
+                observation_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "new workflow journal has aliases",
+                )
+            })?
             .owner = Some(owner);
         Ok(journal)
     }
@@ -226,12 +207,15 @@ where
         stream: Arc<P>,
         host: Arc<FilesystemHost<A, O>>,
         workflow_id: &str,
-        volume: &VolumeRef,
-        verifier: &AuthorityVerifier,
-        scope: &Scope,
-        maximum_payload_bytes: u64,
-        io: Option<&PreparationIo>,
+        binding: super::FilesystemJournalBinding<'_>,
     ) -> Result<Arc<Self>> {
+        let super::FilesystemJournalBinding {
+            volume,
+            verifier,
+            scope,
+            maximum_bytes: maximum_payload_bytes,
+            io,
+        } = binding;
         #[cfg(not(target_arch = "wasm32"))]
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         if workflow_id.is_empty()
@@ -260,19 +244,19 @@ where
         let volume = volume.copy(&mut work)?;
         let verifier = verifier.copy(&mut work)?;
         let scope = scope.copy(&mut work)?;
-        let path_hold;
-        let path = crate::executor::with_history_io(io, |work| {
-            crate::executor::preparation_format(
-                format_args!("harness/v2/workflows/{workflow_id}"),
-                work,
-            )
-        })?;
-        path_hold = io
-            .map(|io| io.guard_owned(path.capacity() as u64))
-            .transpose()?;
-        let stream_hold;
-        let (validated, held) = Self::observation_stream(&stream, &path, io)?;
-        stream_hold = held;
+        let (path_hold, path) = {
+            let path = crate::executor::with_history_io(io, |work| {
+                crate::executor::preparation_format(
+                    format_args!("harness/v2/workflows/{workflow_id}"),
+                    work,
+                )
+            })?;
+            let path_hold = io
+                .map(|io| io.guard_owned(path.capacity() as u64))
+                .transpose()?;
+            (path_hold, path)
+        };
+        let (stream_hold, validated) = Self::observation_stream(&stream, &path, io)?;
         drop(validated);
         drop(stream_hold);
         #[cfg(not(target_arch = "wasm32"))]
@@ -280,18 +264,12 @@ where
         {
             io.retain_owned(std::mem::size_of::<Self>() as u64)?;
             io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
-            Some(
-                io.take_native_custody(
-                    io.owned_bytes()?
-                        .checked_sub(before)
-                        .ok_or_else(|| io.invalid("workflow metadata custody underflows"))?,
-                )?,
-            )
+            Some(io.take_native_custody(io.owned_since(before)?)?)
         } else {
             None
         };
         if let Some(held) = path_hold {
-            held.into_retained();
+            held.into_retained()?;
         }
         Ok(Arc::new(Self {
             stream,
@@ -308,7 +286,7 @@ where
     }
 
     fn id(&self) -> &str {
-        &self.path["harness/v2/workflows/".len()..]
+        self.path.rsplit('/').next().unwrap_or(&self.path)
     }
 }
 
@@ -355,11 +333,11 @@ where
             return crate::NativeFutureBundle::new(work, || async move {
                 let io = PreparationIo::from_native_work(work)?;
                 if let Some(owner) = &self.owner {
-                    self.verify_observation_owner(owner, Some(&io)).await?;
+                    self.verify_observation_owner(owner, true, Some(&io)).await?;
                 }
                 let admission = self.read_admission(Some(&io)).await?;
                 if let Some(owner) = &self.owner {
-                    self.verify_observation_owner(owner, Some(&io)).await?;
+                    self.verify_observation_owner(owner, true, Some(&io)).await?;
                 }
                 let retained = io.owned_bytes()?;
                 Ok((admission, Some(io.into_native_custody(retained)?)))
@@ -400,13 +378,13 @@ where
             return crate::NativeFutureBundle::new(work, || async move {
                 let io = PreparationIo::from_native_work(work)?;
                 if let Some(owner) = &self.owner {
-                    self.verify_observation_owner(owner, Some(&io)).await?;
+                    self.verify_observation_owner(owner, true, Some(&io)).await?;
                 }
                 let records = self
                     .replay_records(after, maximum, true, true, Some(&io))
                     .await?;
                 if let Some(owner) = &self.owner {
-                    self.verify_observation_owner(owner, Some(&io)).await?;
+                    self.verify_observation_owner(owner, true, Some(&io)).await?;
                 }
                 let retained = io.owned_bytes()?;
                 Ok((records, Some(io.into_native_custody(retained)?)))

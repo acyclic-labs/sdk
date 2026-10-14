@@ -17,12 +17,7 @@ where
     ) -> Result<&'a ConfiguredRecursiveCaller> {
         check_cancellation(cancellation, io)?;
         let denied = |reason| failure(io, ErrorCode::Unauthorized, reason);
-        #[cfg(not(target_arch = "wasm32"))]
-        let scratch = io
-            .and_then(PreparationIo::original_native_work)
-            .map(PreparationIo::from_native_work)
-            .transpose()?;
-        #[cfg(not(target_arch = "wasm32"))]
+        let scratch = PreparationIo::temporary(io)?;
         let io = scratch.as_ref().or(io);
         let task = context
             .durable_task_id()
@@ -31,7 +26,9 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         if io.and_then(PreparationIo::original_native_work).is_some() {
             let retained;
-            let owner = if let Some(owner) = owner { owner } else {
+            let owner = if let Some(owner) = owner {
+                owner
+            } else {
                 retained = self.source_owner(context.task(), cancellation, io).await?;
                 &retained
             };
@@ -122,12 +119,7 @@ where
         caller: &ConfiguredRecursiveCaller,
         io: Option<&PreparationIo>,
     ) -> Result<bool> {
-        #[cfg(not(target_arch = "wasm32"))]
-        let scratch = io
-            .and_then(PreparationIo::original_native_work)
-            .map(PreparationIo::from_native_work)
-            .transpose()?;
-        #[cfg(not(target_arch = "wasm32"))]
+        let scratch = PreparationIo::temporary(io)?;
         let io = scratch.as_ref().or(io);
         if self
             .runtime(io)?
@@ -180,13 +172,26 @@ where
             Some(content) => content,
             None => FilesystemContentVerifier::new(
                 Arc::clone(&self.filesystem),
-                verifier.as_ref().expect("content verifier"),
+                verifier.as_ref().ok_or_else(|| {
+                    failure(
+                        io,
+                        ErrorCode::Invalid,
+                        "configured content verifier is missing",
+                    )
+                })?,
                 scope,
                 self.limits.file_bytes,
                 io,
             )?,
         };
-        let original = io.map(|io| (verifier.as_ref().expect("native verifier"), scope, io));
+        let original = io
+            .map(|io| {
+                verifier
+                    .as_ref()
+                    .map(|verifier| (verifier, scope, io))
+                    .ok_or_else(|| io.invalid("configured native verifier is missing"))
+            })
+            .transpose()?;
         let filesystem: Arc<dyn crate::fork::ForkSeedVerifier> = FilesystemForkVerifier::new(
             Arc::clone(&self.filesystem),
             self.limits.file_bytes,

@@ -72,11 +72,13 @@ impl NativeSession {
             binding.operation_id,
             binding.operation_id,
             self.files.clone(),
-            &self.config.private_volume,
-            &self.config.owner.verifier()?,
-            &self.config.owner.scope,
-            maximum,
-            None,
+            acyclic_harness::filesystem::FilesystemJournalBinding {
+                volume: &self.config.private_volume,
+                verifier: &self.config.owner.verifier()?,
+                scope: &self.config.owner.scope,
+                maximum_bytes: maximum,
+                io: None,
+            },
         )?
         .with_interaction_owner(
             &verifier,
@@ -89,12 +91,14 @@ impl NativeSession {
             self.stream.clone(),
             self.files.clone(),
             &binding.owner.authority,
-            &verifier,
             &SchemaRegistry::default(),
-            &binding.owner.scope,
-            &binding.private_volume,
-            maximum,
-            None,
+            acyclic_harness::filesystem::FilesystemJournalBinding {
+                volume: &binding.private_volume,
+                verifier: &verifier,
+                scope: &binding.owner.scope,
+                maximum_bytes: maximum,
+                io: None,
+            },
         )?;
         Ok((journal, interactions))
     }

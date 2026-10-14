@@ -39,7 +39,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
     ) -> Result<()> {
         let work = io
             .original_native_work()
-            .expect("native fork file verification");
+            .ok_or_else(|| io.invalid("fork file verification requires original native work"))?;
         let binding = self.native_binding.as_ref().ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized,
             reason: "Filesystem verifier has no native authority",
@@ -111,8 +111,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             fork_preparer_io::content_workspace(&self.host.provider, volume, Some(io))?;
         let hold = io.guard_owned(workspace_ref.logical_owned_bytes()?)?;
         let workspace = self.host.open(&workspace_ref, Some(io)).await?;
-        let generation =
-            self.host.generation(&workspace, reference, Some(io)).await?;
+        let generation = self
+            .host
+            .generation(&workspace, reference, Some(io))
+            .await?;
         drop(workspace_ref);
         drop(hold);
         Ok(generation)
@@ -349,9 +351,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             Some(io),
         )?;
         let _private = io.guard_owned(private.logical_owned_bytes()?)?;
-        let head = self.host.resolve(&private, Some(io))
-            .await?
-            .generation;
+        let head = self.host.resolve(&private, Some(io)).await?.generation;
         let _head = io.guard_owned(head.logical_owned_bytes()?)?;
         if head != seed.child_private_generation {
             return Err(crate::executor::stock_boundary(
@@ -440,7 +440,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         let _version = io.guard_owned(version.capacity() as u64)?;
         for (index, file) in seed.inherited_context.iter().enumerate() {
             crate::model::charge_items(Some(io), 1)?;
-            for prior in &seed.inherited_context[..index] {
+            for prior in seed.inherited_context.iter().take(index) {
                 crate::model::charge_items(Some(io), 1)?;
                 if prior.path() == file.path() {
                     return Err(io.invalid("inherited context has duplicate paths"));
@@ -467,11 +467,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                         work,
                     )
                 })?;
-                let _selected = io.guard_owned(
-                    io.owned_bytes()?
-                        .checked_sub(before)
-                        .ok_or_else(|| io.invalid("selected file ownership underflows"))?,
-                )?;
+                let _selected = io.guard_owned(io.owned_since(before)?)?;
                 let original = self
                     .host
                     .read_pinned_io(file, self.maximum_inherited_bytes, Some(io))
@@ -506,7 +502,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             crate::model::charge_items(Some(io), 1)?;
             let kind = change
                 .after
-                .expect("validated change has a new record")
+                .ok_or_else(|| io.invalid("validated fork change has no new record"))?
                 .kind;
             let mut admitted = kind == FileKind::Directory && change.path.components().is_empty();
             for file in &seed.inherited_context {
@@ -522,11 +518,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 return Err(io.invalid("child scratch changed outside inherited context staging"));
             }
         }
-        if self.host.resolve(&private, Some(io))
-            .await?
-            .generation
-            != head
-        {
+        if self.host.resolve(&private, Some(io)).await?.generation != head {
             return Err(crate::executor::stock_boundary(
                 Some(io),
                 crate::wire::ErrorCode::Conflict,

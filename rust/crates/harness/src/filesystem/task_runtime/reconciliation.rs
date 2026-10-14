@@ -17,6 +17,7 @@ where
     O: AsyncObjectStore + 'static,
 {
     #[cfg(not(target_arch = "wasm32"))]
+    /// Reconciles the retained task lease on its original native ledger.
     pub async fn reconcile_task_with_native_work(
         &self,
         lease: crate::distributed::WorkLease,
@@ -218,7 +219,7 @@ where
                         std::marker::PhantomData::<serde_json::Value>,
                         &body,
                         crate::wire::ErrorCode::Storage,
-                    )?);
+                    )?)?;
                     drop(body);
                     commands
                         .reconcile_with_native_work(

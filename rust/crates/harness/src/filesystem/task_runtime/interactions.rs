@@ -48,12 +48,14 @@ where
             self.stream.clone(),
             Arc::clone(&self.filesystem),
             owner.verifier.audience(),
-            &owner.verifier,
             &owner.schemas,
-            &owner.scope,
-            &owner.volume,
-            self.maximum_payload_bytes,
-            io,
+            crate::filesystem::FilesystemJournalBinding {
+                volume: &owner.volume,
+                verifier: &owner.verifier,
+                scope: &owner.scope,
+                maximum_bytes: self.maximum_payload_bytes,
+                io,
+            },
         )
     }
 
@@ -142,15 +144,7 @@ where
             .unwrap_or(0);
         let read = host.read(id, io).await?;
         let read_hold = io
-            .map(|io| {
-                io.guard_owned(io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                    observed::boundary(
-                        Some(io),
-                        crate::wire::ErrorCode::Invalid,
-                        "approval inspection custody underflows",
-                    )
-                })?)
-            })
+            .map(|io| io.guard_owned(io.owned_since(before)?))
             .transpose()?;
         let ready = read
             .as_ref()
@@ -215,12 +209,14 @@ where
                 let journal = FilesystemExecutionJournal::new(
                     self.stream.clone(),
                     Arc::clone(&self.filesystem),
-                    &self.volume,
-                    &self.verifier,
                     &crate::core::SchemaRegistry::new(),
-                    &self.signed,
-                    self.maximum_payload_bytes.min(limits.file_bytes),
-                    None,
+                    crate::filesystem::FilesystemJournalBinding {
+                        volume: &self.volume,
+                        verifier: &self.verifier,
+                        scope: &self.signed,
+                        maximum_bytes: self.maximum_payload_bytes.min(limits.file_bytes),
+                        io: None,
+                    },
                 )?
                 .with_turn(operation, turn);
                 (Arc::new(journal), operation)
@@ -274,7 +270,7 @@ where
             io,
         )
         .await?;
-        let records = crate::executor::retain_preparation((records, hold));
+        let records = crate::executor::retain_preparation((records, hold))?;
         let retained = crate::executor::retain_preparation(
             crate::executor::retained_model_step(
                 journal.as_ref(),
@@ -285,7 +281,7 @@ where
                 io,
             )
             .await?,
-        );
+        )?;
         drop(records);
         if !retained.admission.completed {
             return Err(Error::Indeterminate(operation));
@@ -324,7 +320,7 @@ where
                 let (_, records, hold) =
                     crate::executor::replay_execution(journal.as_ref(), operation, 3, select, io)
                         .await?;
-                let records = crate::executor::retain_preparation((records, hold));
+                let records = crate::executor::retain_preparation((records, hold))?;
                 if records
                     .iter()
                     .any(|record| matches!(record.event, ExecutionEvent::ToolFailed { .. }))

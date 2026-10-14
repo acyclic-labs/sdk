@@ -41,7 +41,7 @@ impl StockExecution<'_> {
                 self.io,
             )
             .await?,
-        );
+        )?;
         let prepared = retained
             .request
             .ok_or(Error::Indeterminate(input.operation_id))?;

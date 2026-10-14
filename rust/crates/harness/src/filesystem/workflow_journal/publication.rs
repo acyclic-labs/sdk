@@ -143,15 +143,7 @@ where
                     .transpose()?;
                 (held, input)
             };
-            if let Some(io) = io {
-                let hashing = acyclic_fs::WorkCounters {
-                    bytes_hashed: input.len() as u64,
-                    ..Default::default()
-                };
-                io.preflight(hashing)?;
-                io.charge(hashing)?;
-            }
-            blake3::hash(input.as_bytes())
+            blake3::Hash::from(crate::model::hash_bytes(input.as_bytes(), io)?)
         };
         let _key;
         let key_bytes = super::super::fork_preparer_io::clone_bytes(digest.as_bytes(), io)?;
@@ -179,9 +171,7 @@ where
                 .append_workflow(admission, revision, &key, bytes, &mut work)
                 .await;
         }
-        let _path;
-        let (stream, held) = Self::observation_stream(&self.stream, path, io)?;
-        _path = held;
+        let (_path, stream) = Self::observation_stream(&self.stream, path, io)?;
         let identity = if admission {
             "workflow admission identity"
         } else {
@@ -292,11 +282,7 @@ where
             io.check_cancellation()?;
         }
         if let Some(owner) = &self.owner {
-            let mut borrowed = io.map(PreparationIo::history_io);
-            let mut work = borrowed
-                .as_mut()
-                .map(|work| work as &mut dyn crate::store::history::HistoryIo);
-            owner.verify(false, &mut work).await?;
+            self.verify_observation_owner(owner, false, io).await?;
         }
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let (_admission, admission) = {
@@ -304,11 +290,7 @@ where
                 Error::Conflict("workflow transition has no retained admission".into())
             })?;
             let held = io
-                .map(|io| {
-                    io.guard_owned(io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                        Error::Invalid("workflow admission custody underflow".into())
-                    })?)
-                })
+                .map(|io| io.guard_owned(io.owned_since(before)?))
                 .transpose()?;
             (held, admission)
         };
@@ -327,11 +309,7 @@ where
                 let (revision, existing) =
                     self.verified_history(&admission, &record, true, io).await?;
                 let history_hold = io
-                    .map(|io| {
-                        io.guard_owned(io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                            Error::Invalid("workflow preflight custody underflow".into())
-                        })?)
-                    })
+                    .map(|io| io.guard_owned(io.owned_since(before)?))
                     .transpose()?;
                 (history_hold, (revision, existing))
             };
@@ -343,7 +321,7 @@ where
                 }
                 self.verify_command_payloads(&existing, io).await?;
                 if let Some(held) = history_hold {
-                    held.into_retained();
+                    held.into_retained()?;
                 }
                 return Ok(existing);
             }
@@ -364,11 +342,7 @@ where
                 )
                 .await?;
             let held = io
-                .map(|io| {
-                    io.guard_owned(io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                        Error::Invalid("workflow staging custody underflow".into())
-                    })?)
-                })
+                .map(|io| io.guard_owned(io.owned_since(before)?))
                 .transpose()?;
             (held, reference)
         };
@@ -377,11 +351,7 @@ where
             let (_staged, staged) = {
                 let staged = self.read_record(&reference, false, false, io).await?;
                 let held = io
-                    .map(|io| {
-                        io.guard_owned(io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                            Error::Invalid("workflow staged-record custody underflow".into())
-                        })?)
-                    })
+                    .map(|io| io.guard_owned(io.owned_since(before)?))
                     .transpose()?;
                 (held, staged)
             };

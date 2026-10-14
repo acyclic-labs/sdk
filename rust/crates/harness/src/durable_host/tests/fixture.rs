@@ -63,11 +63,13 @@ where
             operation,
             operation,
             self.files.clone(),
-            &self.storage,
-            &self.issuer.verifier(&mut None)?,
-            &self.host.owner_scope,
-            65_536,
-            None,
+            crate::filesystem::FilesystemJournalBinding {
+                volume: &self.storage,
+                verifier: &self.issuer.verifier(&mut None)?,
+                scope: &self.host.owner_scope,
+                maximum_bytes: 65_536,
+                io: None,
+            },
         )
     }
 
@@ -75,11 +77,13 @@ where
         Workflow::for_task(
             Arc::new(owner),
             self.files.clone(),
-            &self.storage,
-            &self.issuer.verifier(&mut None)?,
-            &self.host.owner_scope,
-            65_536,
-            None,
+            crate::filesystem::FilesystemJournalBinding {
+                volume: &self.storage,
+                verifier: &self.issuer.verifier(&mut None)?,
+                scope: &self.host.owner_scope,
+                maximum_bytes: 65_536,
+                io: None,
+            },
         )
     }
 
@@ -499,7 +503,7 @@ impl FixtureMachine {
             .map(|value| match io {
                 Some(io) => Ok(crate::filesystem::retain_decoded(
                     io.value_decode_preparation(value, crate::wire::ErrorCode::Invalid)?,
-                )),
+                )?),
                 None => serde_json::from_value(value.clone())
                     .map_err(|error| Error::Invalid(error.to_string())),
             })

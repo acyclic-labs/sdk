@@ -11,6 +11,7 @@ mod records;
 mod sdk;
 #[cfg(test)]
 mod tests;
+pub(in crate::filesystem) use codec::decode_record;
 use quota::finish_decode;
 use quota::finish_encoding;
 #[cfg(not(target_arch = "wasm32"))]
@@ -29,7 +30,12 @@ pub enum PreparationIo {
         /// Limits for this attempt.
         budget: WorkBudget,
         /// Spent work and live owned bytes.
-        work: Mutex<(WorkCounters, AllocationLedger)>,
+        work: Box<
+            Mutex<(
+                WorkCounters,
+                std::result::Result<AllocationLedger, acyclic_fs::WorkError>,
+            )>,
+        >,
         /// Cancellation for this attempt.
         cancellation: CancellationToken,
     },
@@ -44,6 +50,39 @@ pub enum PreparationIo {
 }
 
 impl PreparationIo {
+    pub(in crate::filesystem) fn owned_since(&self, before: u64) -> Result<u64> {
+        self.owned_bytes()?
+            .checked_sub(before)
+            .ok_or_else(|| self.invalid("preparation custody underflows"))
+    }
+
+    pub(in crate::filesystem) fn release_since(
+        io: Option<&Self>,
+        before: Option<u64>,
+    ) -> Result<()> {
+        if let (Some(io), Some(before)) = (io, before) {
+            io.release(
+                io.owned_bytes()?
+                    .checked_sub(before)
+                    .ok_or_else(|| io.invalid("temporary preparation custody underflows"))?,
+            )?;
+        }
+        Ok(())
+    }
+
+    pub(in crate::filesystem) fn temporary(io: Option<&Self>) -> Result<Option<Self>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        return io
+            .and_then(Self::original_native_work)
+            .map(Self::from_native_work)
+            .transpose();
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = io;
+            Ok(None)
+        }
+    }
+
     pub(crate) fn new(
         request: &crate::resource_preparation::ResourcePreparationRequest,
         cancellation: &CancellationToken,
@@ -66,7 +105,10 @@ impl PreparationIo {
             .map_err(|cause| Error::Storage(cause.to_string()))?;
         Ok(Self::Owned {
             budget,
-            work: Mutex::new((WorkCounters::default(), AllocationLedger::default())),
+            work: Box::new(Mutex::new((
+                WorkCounters::default(),
+                Ok(AllocationLedger::default()),
+            ))),
             cancellation: cancellation.clone(),
         })
     }
@@ -76,7 +118,10 @@ impl PreparationIo {
             .map_err(|cause| Error::Storage(cause.to_string()))?;
         Ok(Self::Owned {
             budget: WorkBudget::UNBOUNDED,
-            work: Mutex::new((WorkCounters::default(), AllocationLedger::default())),
+            work: Box::new(Mutex::new((
+                WorkCounters::default(),
+                Ok(AllocationLedger::default()),
+            ))),
             cancellation: cancellation.clone(),
         })
     }
@@ -189,8 +234,11 @@ impl PreparationIo {
         match self {
             Self::Owned { work, .. } => work
                 .lock()
-                .map(|state| state.1.live_bytes())
-                .map_err(|_| self.invalid("preparation accounting is poisoned")),
+                .map_err(|_| self.invalid("preparation accounting is poisoned"))?
+                .1
+                .as_ref()
+                .map(|ledger| ledger.live_bytes())
+                .map_err(|error| acyclic_fs::FsError::from(*error).into()),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native { custody, .. } => Ok(custody
                 .lock()
@@ -212,6 +260,9 @@ impl PreparationIo {
                     .lock()
                     .map_err(|_| acyclic_fs::FsError::PendingMutationAllocationFailed)?;
                 let (spent, allocations) = &mut *state;
+                let allocations = allocations
+                    .as_mut()
+                    .map_err(|error| acyclic_fs::FsError::from(*error))?;
                 operation(&mut KernelAccounting::borrowed_standalone(
                     allocations,
                     spent,
@@ -305,6 +356,9 @@ impl PreparationIo {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let (spent, allocations) = &mut *state;
+                let allocations = allocations
+                    .as_mut()
+                    .map_err(|error| acyclic_fs::FsError::from(*error))?;
                 KernelAccounting::borrowed_standalone(allocations, spent, *budget, cancellation)
                     .release_owned(&mut KernelOwnedAllocation::Standalone, bytes)
             }

@@ -12,7 +12,12 @@ fn search<T>(
     while low < high {
         let middle = low + (high - low) / 2;
         crate::model::charge_items(Some(io), 1)?;
-        match compare(&values[middle], value) {
+        match compare(
+            values
+                .get(middle)
+                .ok_or_else(|| io.invalid("fork verification index is invalid"))?,
+            value,
+        ) {
             std::cmp::Ordering::Less => low = middle + 1,
             std::cmp::Ordering::Greater => high = middle,
             std::cmp::Ordering::Equal => return Ok(Ok(middle)),
@@ -29,7 +34,9 @@ pub(in crate::filesystem) fn fork_verify_insert<T>(
 ) -> Result<bool> {
     let index = match search(values, &value, compare, io)? {
         Ok(index) => {
-            values[index] = value;
+            *values
+                .get_mut(index)
+                .ok_or_else(|| io.invalid("fork verification index is invalid"))? = value;
             return Ok(false);
         }
         Err(index) => index,

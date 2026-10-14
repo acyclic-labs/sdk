@@ -201,12 +201,14 @@ where
     let journal = FilesystemExecutionJournal::new(
         stream.clone(),
         host.clone(),
-        &private,
-        &issuer.verifier(&mut None).expect("verifier copy"),
         &acyclic_harness::core::SchemaRegistry::new(),
-        &read_scope,
-        64 * 1024,
-        None,
+        acyclic_harness::filesystem::FilesystemJournalBinding {
+            volume: &private,
+            verifier: &issuer.verifier(&mut None).expect("verifier copy"),
+            scope: &read_scope,
+            maximum_bytes: 64 * 1024,
+            io: None,
+        },
     )?
     .with_input_verifier(reader.clone());
     let children = if level == 0 {
@@ -327,12 +329,14 @@ where
     let cold_journal = FilesystemExecutionJournal::new(
         stream.clone(),
         host.clone(),
-        &private,
-        &issuer.verifier(&mut None).expect("verifier copy"),
         &SchemaRegistry::new(),
-        &read_scope,
-        64 * 1024,
-        None,
+        acyclic_harness::filesystem::FilesystemJournalBinding {
+            volume: &private,
+            verifier: &issuer.verifier(&mut None).expect("verifier copy"),
+            scope: &read_scope,
+            maximum_bytes: 64 * 1024,
+            io: None,
+        },
     )?
     .with_input_verifier(reader);
     executor.execute(input.clone(), &cold_journal).await?;

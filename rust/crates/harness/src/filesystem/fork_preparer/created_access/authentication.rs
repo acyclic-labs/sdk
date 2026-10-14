@@ -19,7 +19,9 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     io: Option<&PreparationIo>,
 ) -> Result<AuthenticatedAllocation> {
     let owned;
-    let io = if let Some(io) = io { io } else {
+    let io = if let Some(io) = io {
+        io
+    } else {
         owned = PreparationIo::new(request, &CancellationToken::new())?;
         &owned
     };
@@ -42,7 +44,7 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         bounded_io::retain_decoded(io.value_decode_preparation::<ForkRequest>(
             &request.payload,
             crate::wire::ErrorCode::Storage,
-        )?)
+        )?)?
     } else {
         decode_fork(&request.payload, maximum, io)?
     };
@@ -225,7 +227,7 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 origin: claim
                     .task_origin
                     .take()
-                    .expect("original task origin was authenticated"),
+                    .ok_or_else(|| io.invalid("authenticated allocation has no task origin"))?,
                 volume: claim.volume,
                 generation,
                 prepared_generation: bounded_io::generation_ref(
@@ -242,7 +244,7 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             original_origin = claim.task_origin.take();
         }
         if let Some(held) = held {
-            held.into_retained();
+            held.into_retained()?;
         }
     }
     let mut selected = selected
@@ -312,7 +314,7 @@ fn decode_fork(
         std::marker::PhantomData::<ForkRequest>,
         &bytes,
         crate::wire::ErrorCode::Storage,
-    )?);
+    )?)?;
     drop(bytes);
     drop(hold);
     Ok(request)

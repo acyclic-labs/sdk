@@ -151,8 +151,14 @@ where
             with_history_io(io, |work| ticket.validate_request_bytes(&bytes, work))?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(custody) = custody {
-            io.expect("native request observer")
-                .absorb_native_custody(custody)?;
+            io.ok_or_else(|| {
+                crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "native request observer",
+                )
+            })?
+            .absorb_native_custody(custody)?;
         }
         #[cfg(target_arch = "wasm32")]
         let _ = custody;
@@ -252,13 +258,7 @@ where
             crate::executor::preparation_format(format_args!("interaction:{id}:{kind}"), work)
         })?)?;
         let names_hold = io
-            .map(|io| {
-                io.guard_owned(
-                    io.owned_bytes()?
-                        .checked_sub(before)
-                        .ok_or_else(|| io.invalid("interaction name custody underflows"))?,
-                )
-            })
+            .map(|io| io.guard_owned(io.owned_since(before)?))
             .transpose()?;
         let grant = with_history_io(io, |work| {
             ContentGrant::verify(

@@ -61,13 +61,7 @@ impl<A, O> FilesystemContentPublisher<A, O> {
         #[cfg(not(target_arch = "wasm32"))]
         let _native_metadata = io
             .filter(|io| io.original_native_work().is_some())
-            .map(|io| {
-                io.take_native_custody(
-                    io.owned_bytes()?
-                        .checked_sub(before)
-                        .ok_or_else(|| io.invalid("content publisher custody underflows"))?,
-                )
-            })
+            .map(|io| io.take_native_custody(io.owned_since(before)?))
             .transpose()?;
         Ok(Arc::new(Self {
             host,
@@ -114,26 +108,30 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             if let Some(io) = io {
                 io.charge(hashing)?;
             }
-            let path_hold;
-            let path = crate::executor::with_history_io(io, |work| {
-                crate::executor::preparation_format(
-                    format_args!("scheduler/results/{operation}/{key}.json"),
-                    work,
-                )
-            })?;
-            path_hold = io
-                .map(|io| io.guard_owned(path.capacity() as u64))
-                .transpose()?;
-            let retry_hold;
-            let retry = crate::executor::with_history_io(io, |work| {
-                crate::executor::preparation_format(
-                    format_args!("scheduler-result:{operation}:{key}"),
-                    work,
-                )
-            })?;
-            retry_hold = io
-                .map(|io| io.guard_owned(retry.capacity() as u64))
-                .transpose()?;
+            let (path_hold, path) = {
+                let path = crate::executor::with_history_io(io, |work| {
+                    crate::executor::preparation_format(
+                        format_args!("scheduler/results/{operation}/{key}.json"),
+                        work,
+                    )
+                })?;
+                let path_hold = io
+                    .map(|io| io.guard_owned(path.capacity() as u64))
+                    .transpose()?;
+                (path_hold, path)
+            };
+            let (retry_hold, retry) = {
+                let retry = crate::executor::with_history_io(io, |work| {
+                    crate::executor::preparation_format(
+                        format_args!("scheduler-result:{operation}:{key}"),
+                        work,
+                    )
+                })?;
+                let retry_hold = io
+                    .map(|io| io.guard_owned(retry.capacity() as u64))
+                    .transpose()?;
+                (retry_hold, retry)
+            };
             let retry = IdempotencyKey::new(retry)?;
             let result = self
                 .host
@@ -297,12 +295,16 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
 {
     async fn verify_creation(&self, io: Option<&PreparationIo>) -> Result<()> {
         if let Some(creation) = &self.creation {
-            #[cfg(not(target_arch = "wasm32"))]
-            let scratch = io.and_then(PreparationIo::original_native_work)
-                .map(PreparationIo::from_native_work).transpose()?;
-            #[cfg(target_arch = "wasm32")]
-            let scratch = None::<PreparationIo>;
-            creation.verify(&self.host, creation.owner(), &self.volume, None, scratch.as_ref().or(io))?.await?;
+            let scratch = PreparationIo::temporary(io)?;
+            creation
+                .verify(
+                    &self.host,
+                    creation.owner(),
+                    &self.volume,
+                    None,
+                    scratch.as_ref().or(io),
+                )?
+                .await?;
         }
         Ok(())
     }

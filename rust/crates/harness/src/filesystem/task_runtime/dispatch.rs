@@ -68,7 +68,7 @@ where
                         std::marker::PhantomData::<Value>,
                         &body,
                         crate::wire::ErrorCode::Storage,
-                    )?);
+                    )?)?;
                     drop(body);
                     commands
                         .execute_with_native_work(

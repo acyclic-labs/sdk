@@ -23,6 +23,7 @@ use crate::{
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use std::{collections::BTreeMap, sync::Arc};
 
+type ReferenceIndex<'a> = BTreeMap<[u8; 32], &'a FileRef>;
 type References = BTreeMap<[u8; 32], FileRef>;
 const CONTEXT_PATH: &str = ".system/inherited-conversation/summary-context.json";
 const ZERO_VERSION: &str = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -46,10 +47,7 @@ pub(super) fn summary_keys(
 pub(super) fn split_references<'a>(
     prepared: &'a PreparedSummaryFork,
     io: Option<&PreparationIo>,
-) -> Result<(
-    BTreeMap<[u8; 32], &'a FileRef>,
-    BTreeMap<[u8; 32], &'a FileRef>,
-)> {
+) -> Result<(ReferenceIndex<'a>, ReferenceIndex<'a>)> {
     let mut payloads = BTreeMap::new();
     let mut references = BTreeMap::new();
     for file in prepared
@@ -260,7 +258,7 @@ async fn publish<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             mutations,
             IdempotencyKey(crate::executor::stock_string_copy(key.as_str(), io)?),
             io,
-            preparation.map(Arc::as_ref),
+            preparation,
         )
         .await?;
     fsio::retain(&generation, io).await?;
@@ -309,18 +307,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         let denied = |reason| stock_boundary(io, ErrorCode::Unauthorized, reason);
         let conflict = |reason| stock_boundary(io, ErrorCode::Conflict, reason);
         {
-            #[cfg(not(target_arch = "wasm32"))]
-            let temporary = io
-                .and_then(PreparationIo::original_native_work)
-                .map(PreparationIo::from_native_work)
-                .transpose()?;
+            let temporary = PreparationIo::temporary(io)?;
             #[cfg(not(target_arch = "wasm32"))]
             if temporary.is_some() && preparation.is_none() {
                 return Err(denied(
                     "native summary publication requires its original issued creation guard",
                 ));
             }
-            #[cfg(not(target_arch = "wasm32"))]
             let io = temporary.as_ref().or(io);
             if let Some(preparation) = preparation {
                 preparation.verify(false, io)?.await?;
@@ -393,12 +386,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                 .ok_or_else(|| invalid("summary fork copies exceed aggregate byte allowance"))?;
         }
         let planned_extent = {
-            #[cfg(not(target_arch = "wasm32"))]
-            let temporary = io
-                .and_then(PreparationIo::original_native_work)
-                .map(PreparationIo::from_native_work)
-                .transpose()?;
-            #[cfg(not(target_arch = "wasm32"))]
+            let temporary = PreparationIo::temporary(io)?;
             let io = temporary.as_ref().or(io);
             let planned = copy_references(&payloads, child_private, ZERO_VERSION, io)?;
             let context = rewritten_context(prepared.context(), &planned, io)?;

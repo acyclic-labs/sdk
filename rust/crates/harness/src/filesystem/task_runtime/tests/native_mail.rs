@@ -14,12 +14,8 @@ type MailRuntime = FilesystemTaskRuntime<
 pub(super) const BUDGET: WorkBudget =
     acyclic_fs::performance::work_budget(65_536, 64 * 1_024 * 1_024);
 fn work(budget: WorkBudget, cancellation: &CancellationToken) -> Result<NativeMaterializationWork> {
-    NativeMaterializationWork::new(budget, cancellation).map_err(|(cause, work)| {
-        Error::NativeConstruction {
-            cause,
-            work: work,
-        }
-    })
+    NativeMaterializationWork::new(budget, cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
 }
 
 struct MailFixture {
@@ -40,7 +36,7 @@ impl MailFixture {
             Arc::clone(&sdk),
             fixture.filesystem.clone(),
             &fixture.volume,
-            &fixture.issuer.verifier(&mut None).expect("verifier copy"),
+            &fixture.issuer.verifier(&mut None)?,
             &fixture.signed,
             &fixture.scope,
             &fixture.tasks,
@@ -64,7 +60,7 @@ impl MailFixture {
         let payloads = FilesystemContentPublisher::new(
             fixture.filesystem.clone(),
             &(fixture.volume),
-            &fixture.issuer.verifier(&mut None).expect("verifier copy"),
+            &fixture.issuer.verifier(&mut None)?,
             &fixture.signed,
             65_536,
             None,
@@ -105,7 +101,7 @@ impl MailFixture {
                     .await?,
                 Admission::Accepted(_)
             ));
-            let lease = match runtime
+            let WorkPull::Claimed(lease) = runtime
                 .task_host()
                 .pull_work(
                     &Worker {
@@ -117,9 +113,8 @@ impl MailFixture {
                     &mut None,
                 )
                 .await?
-            {
-                WorkPull::Claimed(lease) => lease,
-                _ => return Err(Error::NotFound("native mail original lease".into())),
+            else {
+                return Err(Error::NotFound("native mail original lease".into()));
             };
             runtime.task_host().start_task(&lease, &mut None).await?;
             tasks.push((
@@ -320,7 +315,9 @@ async fn native_mail_sdk_cursor_rejects_actual_hostile_version_and_recipient_rec
     .into_iter()
     .enumerate()
     {
-        let message = OperationId::from_bytes([197 + index as u8; 16]);
+        let message = OperationId::from_bytes(
+            [197 + u8::try_from(index).map_err(|error| Error::Invalid(error.to_string()))?; 16],
+        );
         let host = fixture.runtime.task_host();
         let mut event = json!({ "sender": sender, "recipient": recipient, "message_id": message,
             "schema_revision": 1, "route_revision": 1, "payload": fixture.payload });

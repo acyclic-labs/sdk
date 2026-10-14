@@ -585,7 +585,7 @@ fn decode_context_json<T: crate::executor::PreparationRecord + serde::Serialize>
             std::marker::PhantomData::<T>,
             bytes,
             ErrorCode::Storage,
-        )?),
+        )?)?,
         _ => crate::contract::json_from_slice(bytes)
             .map_err(|error| crate::Error::Storage(error.to_string()))?,
     };

@@ -187,7 +187,7 @@ impl StockExecution<'_> {
         };
         let proof = retain_preparation(
             load_json::<crate::context::CompactionReference>(journal, compaction, self.io).await?,
-        );
+        )?;
         envelope.validate_projection(context, compacted, &proof, self.stock.limits, self.io)?;
         Ok(Some(
             stage_json(

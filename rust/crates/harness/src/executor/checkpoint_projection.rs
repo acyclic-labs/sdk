@@ -349,5 +349,5 @@ pub async fn load_canonical_checkpoint(
             "canonical checkpoint summary belongs to another step",
         ));
     }
-    Ok((retain_preparation(envelope), retain_preparation(retained)))
+    Ok((retain_preparation(envelope)?, retain_preparation(retained)?))
 }

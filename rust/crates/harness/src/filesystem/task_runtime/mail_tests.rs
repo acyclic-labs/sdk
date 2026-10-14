@@ -29,10 +29,7 @@ async fn native_stock_mail_command_uses_original_atomic_v3_send_and_custody() ->
         acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024),
         &cancellation,
     )
-    .map_err(|(cause, work)| Error::NativeConstruction {
-        cause,
-        work: work,
-    })?;
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&work)?;
     let runtime = fixture.runtime(Some(&io)).await?;
     let (lease, custody) = fixture
@@ -76,9 +73,8 @@ async fn native_stock_mail_command_uses_original_atomic_v3_send_and_custody() ->
     assert_eq!(inbox.0[0].task_id, task);
     let inbox_before = inbox.0[0].message_id.clone();
     drop(inbox);
-    let lease = match attempt {
-        TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease }) => lease,
-        _ => unreachable!(),
+    let TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease }) = attempt else {
+        unreachable!();
     };
     assert_eq!(lease.reservation, reservation);
     let (attempt, custody) = runtime

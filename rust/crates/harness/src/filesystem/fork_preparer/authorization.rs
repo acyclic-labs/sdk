@@ -149,10 +149,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                     }
                 }
                 ResourceRevision::PrivateVolume { volume, .. } => {
-                    let agent = self
-                        .scope
-                        .agent()
-                        .expect("fork scope is bound to its parent agent");
+                    let agent = self.scope.agent().ok_or_else(|| {
+                        Error::Unauthorized("fork scope has no parent agent".into())
+                    })?;
                     if volume.owner() != &crate::conversation::VolumeOwner::Agent(agent)
                         || !read_granted(volume)?
                     {

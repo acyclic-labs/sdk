@@ -229,11 +229,13 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
             ),
             host.clone(),
             "custom-merge",
-            &private,
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            &signed,
-            65_536,
-            None,
+            acyclic_harness::filesystem::FilesystemJournalBinding {
+                volume: &private,
+                verifier: &issuer.verifier(&mut None).expect("verifier copy"),
+                scope: &signed,
+                maximum_bytes: 65_536,
+                io: None,
+            },
         )?;
         assert_eq!(journal.admit(admission.clone()).await?, admission);
         let mut registry = MergeDriverRegistry::new();
@@ -292,11 +294,13 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
             ),
             host.clone(),
             "custom-merge",
-            &private,
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            &signed,
-            65_536,
-            None,
+            acyclic_harness::filesystem::FilesystemJournalBinding {
+                volume: &private,
+                verifier: &issuer.verifier(&mut None).expect("verifier copy"),
+                scope: &signed,
+                maximum_bytes: 65_536,
+                io: None,
+            },
         )?;
         let retained = journal
             .admission(None)?

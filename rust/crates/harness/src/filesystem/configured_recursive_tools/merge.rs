@@ -112,7 +112,7 @@ where
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(io) = io {
                     io.original_native_work()
-                        .expect("native merge work")
+                        .ok_or_else(|| io.invalid("merge requires original native work"))?
                         .remaining()?;
                     return Err(failure(
                         Some(io),
@@ -157,7 +157,9 @@ where
             )?;
         }
         let ordinary;
-        let reader = if let Some(io) = io { io } else {
+        let reader = if let Some(io) = io {
+            io
+        } else {
             ordinary = PreparationIo::from_budget(self.config.content_budget, cancellation)?;
             &ordinary
         };

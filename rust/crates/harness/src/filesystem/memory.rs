@@ -51,6 +51,11 @@ async fn new_memory_content(
     VolumeRef,
     Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
 )> {
+    if maximum_file_bytes == 0 {
+        return Err(Error::Invalid(
+            "memory Harness file limit must be positive".into(),
+        ));
+    }
     let provider = ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host: Arc<MemoryHost> = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let volume = VolumeRef::new(
@@ -175,11 +180,6 @@ impl MemoryHarnessStorage {
 
     /// Creates an agent-owned private volume and a bound conversation before any turn or interaction can publish a reference.
     pub async fn new(agent: AgentId, maximum_file_bytes: u64) -> Result<Self> {
-        if maximum_file_bytes == 0 {
-            return Err(Error::Invalid(
-                "memory Harness file limit must be positive".into(),
-            ));
-        }
         let (host, volume, memory_store) = new_memory_content(agent, maximum_file_bytes).await?;
         let conversation = Authority {
             kind: AggregateKind::Conversation,
@@ -216,12 +216,14 @@ impl MemoryHarnessStorage {
             FilesystemExecutionJournal::new(
                 stream.clone(),
                 Arc::clone(&host),
-                &volume,
-                &verifier,
                 &SchemaRegistry::new(),
-                &scope,
-                maximum_file_bytes,
-                None,
+                crate::filesystem::FilesystemJournalBinding {
+                    volume: &volume,
+                    verifier: &verifier,
+                    scope: &scope,
+                    maximum_bytes: maximum_file_bytes,
+                    io: None,
+                },
             )?
             .with_input_verifier(input.clone()),
         );
@@ -246,7 +248,6 @@ impl MemoryHarnessStorage {
                 causal_parent: None,
                 action: Action::BindConversation { agent },
             },
-            #[cfg(feature = "filesystem")]
             None,
             &mut None,
         )

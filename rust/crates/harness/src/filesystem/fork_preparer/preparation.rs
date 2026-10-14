@@ -189,8 +189,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                         .as_ref()
                         .map(PreparedForkHistory::conversation),
                     io,
-                    task.map(Arc::as_ref),
-                    #[cfg(not(target_arch = "wasm32"))]
                     task,
                 )
                 .await?;
@@ -214,7 +212,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             let bound = preparer
                 .summary
                 .as_ref()
-                .expect("request checked its Summary context");
+                .ok_or_else(|| invalid("summary fork has no prepared Summary context"))?;
             let prefix = inherited_context
                 .first()
                 .ok_or_else(|| invalid("summary fork omitted its logical prefix"))?;
@@ -233,7 +231,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                     policy.maximum_inherited_references as usize,
                     context_key
                         .as_ref()
-                        .expect("Summary requires an inherited prefix"),
+                        .ok_or_else(|| invalid("summary fork has no inherited prefix key"))?,
                     preparer.resolver.as_ref(),
                     io,
                     task,

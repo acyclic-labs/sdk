@@ -117,9 +117,8 @@ impl<A, O> FilesystemForkPreparer<A, O> {
             .native
             .as_ref()
             .map(|custody| {
-                if !custody
-                    .work()
-                    .shares_allocation_context(original.expect("native input"))
+                if original
+                    .is_none_or(|original| !custody.work().shares_allocation_context(original))
                     || this.history.is_none()
                 {
                     return Err(Error::NativeBoundary {
@@ -201,7 +200,10 @@ impl<A, O> FilesystemForkPreparer<A, O> {
             .map_err(Error::from)?;
         self.native
             .as_mut()
-            .expect("native custody was checked")
+            .ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "native preparer custody is missing",
+            })?
             .absorb(&mut header)
             .map_err(|cause| Error::NativeWork {
                 cause,

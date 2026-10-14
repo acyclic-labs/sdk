@@ -140,8 +140,13 @@ impl LocalListFilesTool {
     ) -> Result<Option<(ToolResult, acyclic_fs::NativeAllocation)>> {
         let digest = {
             let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-            crate::executor::with_history_io(Some(&io), |observer|
-                crate::executor::json::canonical_json_digest(invocation, io.remaining()?.bytes_encoded, observer))?
+            crate::executor::with_history_io(Some(&io), |observer| {
+                crate::executor::json::canonical_json_digest(
+                    invocation,
+                    io.remaining()?.bytes_encoded,
+                    observer,
+                )
+            })?
         };
         let observed = self.observed.lock().await;
         match observed.get(&invocation.operation_id) {
@@ -168,8 +173,13 @@ impl LocalListFilesTool {
     ) -> Result<(ToolResult, acyclic_fs::NativeAllocation)> {
         let digest = {
             let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-            crate::executor::with_history_io(Some(&io), |observer|
-                crate::executor::json::canonical_json_digest(invocation, io.remaining()?.bytes_encoded, observer))?
+            crate::executor::with_history_io(Some(&io), |observer| {
+                crate::executor::json::canonical_json_digest(
+                    invocation,
+                    io.remaining()?.bytes_encoded,
+                    observer,
+                )
+            })?
         };
         let limits = context.effective_scope().limits();
         let maximum_bytes = self.maximum_bytes.min(limits.render_bytes);
@@ -213,7 +223,13 @@ impl LocalListFilesTool {
         _page_custody = custody;
         let wire = list_files_page_wire(&generation, &page)?;
         let (value, custody) = crate::tool::value(&wire, maximum_bytes, Some(work))?;
-        let output = (ToolResult { value }, custody.expect("native list result"));
+        let output = (
+            ToolResult { value },
+            custody.ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "native list result has no allocation custody",
+            })?,
+        );
         let mut cached = Self::native_result_copy(&output.0, maximum_bytes, work)?;
         let slot_bytes = (std::mem::size_of::<(OperationId, ListFilesObservation)>()
             - std::mem::size_of::<Value>()) as u64;
@@ -258,59 +274,72 @@ fn require_volume_grant(
 }
 
 impl ToolExecutor for LocalListFilesTool {
-    fn authorize(&self, scope: Option<&crate::runtime::RuntimeScope>, context: Option<&crate::runtime::ToolContext>, invocation: &crate::tool::ToolInvocation, work: crate::NativeWork<'_>) -> crate::Result<()> {
-let _ = (scope, context, invocation, work);
-let scope = context.map(|context| context.task().scope()).or(scope);
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-if let Some(work) = work {
- let context = context.ok_or(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "tool requires its original native context" })?;
- return {
-        self.supports_native_execution(work)?;
-        if context.operation_id() != invocation.operation_id
-            || context.call_id() != invocation.call_id
-        {
-            return Err(Error::NativeBoundary {
+    fn authorize(
+        &self,
+        scope: Option<&crate::runtime::RuntimeScope>,
+        context: Option<&crate::runtime::ToolContext>,
+        invocation: &crate::tool::ToolInvocation,
+        work: crate::NativeWork<'_>,
+    ) -> crate::Result<()> {
+        let _ = (scope, context, invocation, work);
+        let scope = context.map(|context| context.task().scope()).or(scope);
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = work {
+            let context = context.ok_or(crate::Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
-                reason: "list_files tool context identity mismatch",
-            });
+                reason: "tool requires its original native context",
+            })?;
+            return {
+                self.supports_native_execution(work)?;
+                if context.operation_id() != invocation.operation_id
+                    || context.call_id() != invocation.call_id
+                {
+                    return Err(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Unauthorized,
+                        reason: "list_files tool context identity mismatch",
+                    });
+                }
+                let maximum_path_bytes = context.effective_scope().limits().path_bytes;
+                for key in ["path", "after"] {
+                    if invocation
+                        .arguments
+                        .get(key)
+                        .and_then(Value::as_str)
+                        .is_some_and(|path| path.len() > maximum_path_bytes)
+                    {
+                        return Err(Error::NativeBoundary {
+                            code: crate::wire::ErrorCode::Unauthorized,
+                            reason: "list_files path exceeds the effective scope path allowance",
+                        });
+                    }
+                }
+                let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+                if !io.contains_capability(
+                    context.effective_scope().grants(),
+                    &self.volume,
+                    "volume:read:",
+                )? {
+                    return Err(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Unauthorized,
+                        reason: "scope lacks the original volume read capability",
+                    });
+                }
+                Ok(())
+            };
         }
-        let maximum_path_bytes = context.effective_scope().limits().path_bytes;
-        for key in ["path", "after"] {
-            if invocation
-                .arguments
-                .get(key)
-                .and_then(Value::as_str)
-                .is_some_and(|path| path.len() > maximum_path_bytes)
-            {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "list_files path exceeds the effective scope path allowance",
-                });
-            }
-        }
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        if !io.contains_capability(
-            context.effective_scope().grants(),
-            &self.volume,
-            "volume:read:",
-        )? {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "scope lacks the original volume read capability",
-            });
-        }
-        Ok(())
-    };
-}
 
         require_volume_grant(scope, &self.volume, VolumeOperation::Read)
+    }
 
-}
-
-    fn execute<'a>(&'a self, invocation: ToolInvocation, _context: Option<crate::runtime::ToolContext>) -> BoxFuture<'a, Result<ToolResult>> {
+    fn execute<'a>(
+        &'a self,
+        invocation: ToolInvocation,
+        _context: Option<crate::runtime::ToolContext>,
+    ) -> BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             let mut observed = self.observed.lock().await;
-            let admission_digest = crate::executor::json::canonical_json_digest(&invocation, u64::MAX, &mut None)?;
+            let admission_digest =
+                crate::executor::json::canonical_json_digest(&invocation, u64::MAX, &mut None)?;
             if let Some(original) = observed.get(&invocation.operation_id) {
                 return if original.admission_digest == admission_digest {
                     Ok(original.result.clone())
@@ -373,10 +402,13 @@ if let Some(work) = work {
 
     fn reconcile<'a>(
         &'a self,
-        invocation: ToolInvocation, _context: Option<crate::runtime::ToolContext>) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+        invocation: ToolInvocation,
+        _context: Option<crate::runtime::ToolContext>,
+    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
         Box::pin(async move {
             let observed = self.observed.lock().await;
-            let admission_digest = crate::executor::json::canonical_json_digest(&invocation, u64::MAX, &mut None)?;
+            let admission_digest =
+                crate::executor::json::canonical_json_digest(&invocation, u64::MAX, &mut None)?;
             match observed.get(&invocation.operation_id) {
                 Some(original) if original.admission_digest == admission_digest => {
                     Ok(Some(original.result.clone()))
@@ -397,8 +429,6 @@ if let Some(work) = work {
         self.verifier
             .supports_native_directory_list(&self.volume, work)
     }
-
-
 
     #[cfg(not(target_arch = "wasm32"))]
     fn execute_with_native_context<'a>(

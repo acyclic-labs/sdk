@@ -93,20 +93,14 @@ where
         self.require_operation(operation_id, io)?;
         let turn_operation = self.turn_operation(operation_id);
         {
-            let association_hold;
-            let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-            let records = self.replay_page(operation_id, 0, 1, true, io).await?;
-            association_hold = io
-                .map(|io| {
-                    io.guard_owned(io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                        crate::filesystem::interaction_host::interaction_boundary(
-                            Some(io),
-                            crate::wire::ErrorCode::Invalid,
-                            "selected association custody underflows",
-                        )
-                    })?)
-                })
-                .transpose()?;
+            let (association_hold, records) = {
+                let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+                let records = self.replay_page(operation_id, 0, 1, true, io).await?;
+                let association_hold = io
+                    .map(|io| io.guard_owned(io.owned_since(before)?))
+                    .transpose()?;
+                (association_hold, records)
+            };
             drop(records);
             drop(association_hold);
         }
@@ -282,15 +276,7 @@ where
         )
         .await?;
         _query_hold = io
-            .map(|io| {
-                io.guard_owned(io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                    crate::filesystem::interaction_host::interaction_boundary(
-                        Some(io),
-                        crate::wire::ErrorCode::Invalid,
-                        "selected query custody underflows",
-                    )
-                })?)
-            })
+            .map(|io| io.guard_owned(io.owned_since(before)?))
             .transpose()?;
         if &projected != selected {
             return Err(crate::filesystem::interaction_host::interaction_boundary(

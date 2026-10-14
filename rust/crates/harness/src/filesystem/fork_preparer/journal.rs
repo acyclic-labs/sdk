@@ -90,7 +90,7 @@ pub(super) async fn write_record<A: AsyncAuthorityStore, O: AsyncObjectStore, T:
             }],
             IdempotencyKey(stock_string_copy(key.as_str(), io)?),
             io,
-            preparation.map(Arc::as_ref),
+            preparation,
         )
         .await;
     drop(hold);
@@ -248,7 +248,7 @@ pub(super) async fn read_record<
                 std::marker::PhantomData::<T>,
                 bytes,
                 crate::wire::ErrorCode::Storage,
-            )?)),
+            )?)?),
             None => crate::contract::json_from_slice(bytes).map_err(|error| {
                 Error::Invalid(format!("fork journal record is invalid: {error}"))
             }),

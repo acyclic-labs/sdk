@@ -29,13 +29,7 @@ where
             crate::executor::with_history_io(io, |work| caller.owner.issuer.verifier(work))?;
         let request = crate::executor::with_history_io(io, |work| request.copy(work))?.0;
         let resolver = self.resolver(context, owner, io)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let input = io
-            .and_then(PreparationIo::original_native_work)
-            .map(PreparationIo::from_native_work)
-            .transpose()?;
-        #[cfg(target_arch = "wasm32")]
-        let input = None;
+        let input = PreparationIo::temporary(io)?;
         restore_recursive_fork_source(
             Arc::clone(&self.filesystem),
             &self.stream,
@@ -89,11 +83,13 @@ where
         volume: &VolumeRef,
         io: Option<&PreparationIo>,
     ) -> Result<crate::resources::GenerationRef> {
-        let reference_hold;
-        let reference = fsio::content_workspace(volume.provider(), volume, io)?;
-        reference_hold = io
-            .map(|io| io.guard_owned(reference.logical_owned_bytes()?))
-            .transpose()?;
+        let (reference_hold, reference) = {
+            let reference = fsio::content_workspace(volume.provider(), volume, io)?;
+            let reference_hold = io
+                .map(|io| io.guard_owned(reference.logical_owned_bytes()?))
+                .transpose()?;
+            (reference_hold, reference)
+        };
         let observed = self.filesystem.resolve(&reference, io).await?;
         let workspace_hold = io
             .map(|io| io.guard_owned(observed.workspace.logical_owned_bytes()?))

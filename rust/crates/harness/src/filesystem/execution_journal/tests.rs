@@ -1,12 +1,7 @@
 use super::*;
 
 use crate::filesystem::*;
-use crate::{
-    AgentId,
-    conversation::VolumeOwner,
-    executor::ModelPurpose,
-    resources::ProviderRef,
-};
+use crate::{AgentId, conversation::VolumeOwner, executor::ModelPurpose, resources::ProviderRef};
 
 #[tokio::test]
 #[expect(
@@ -56,12 +51,14 @@ async fn observation_reopen_preserves_original_turn_and_rejects_header_substitut
         FilesystemExecutionJournal::new(
             stream.clone(),
             host.clone(),
-            &volume,
-            &issuer.verifier(&mut None).expect("verifier copy"),
             &crate::core::SchemaRegistry::new(),
-            &scope,
-            4096,
-            None,
+            crate::filesystem::FilesystemJournalBinding {
+                volume: &volume,
+                verifier: &issuer.verifier(&mut None).expect("verifier copy"),
+                scope: &scope,
+                maximum_bytes: 4096,
+                io: None,
+            },
         )
         .map(|journal| journal.with_turn(operation, turn))
     };
@@ -79,9 +76,7 @@ async fn observation_reopen_preserves_original_turn_and_rejects_header_substitut
     let records = reopened.replay(operation, 0, 1, None)?.await?;
     assert_eq!(records.len(), 1);
     assert_eq!(records.first().map(|record| &record.event), Some(&event));
-    reopened
-        .append(operation, "start", &event, None)?
-        .await?;
+    reopened.append(operation, "start", &event, None)?.await?;
     assert_eq!(reopened.replay(operation, 0, 2, None)?.await?.len(), 1);
     assert!(matches!(
         open(operation, OperationId::new())?
@@ -170,9 +165,7 @@ async fn observation_reopen_preserves_original_turn_and_rejects_header_substitut
     reason = "one real four-record canonical source barrier timeline uses its fixed fixture identities"
 )]
 async fn cold_canonical_source_checks_complete_mixed_delta_without_reducer_restore() -> Result<()> {
-    use crate::conversation::{
-        ConversationMessage, MessageKind, ModelContextSelection,
-    };
+    use crate::conversation::{ConversationMessage, MessageKind, ModelContextSelection};
     use crate::core::{Action, AggregateKind, Authority, AuthorityIssuer, Command};
     use std::sync::atomic::Ordering;
     let provider = Arc::new(crate::test_stream::LostSessionAck::<
@@ -271,16 +264,17 @@ async fn cold_canonical_source_checks_complete_mixed_delta_without_reducer_resto
     .enumerate()
     {
         let sequence = position as u64 + 1;
-        let file = crate::conversation::ContentPublisher::stage(publisher.as_ref(),
-                OperationId::new(),
-                &format!("messages/{sequence}.txt"),
-                format!("canonical-{sequence}").as_bytes(),
-                "text/plain",
-                "message.txt",
-                None,
-            )?
-            .await?
-            .0;
+        let file = crate::conversation::ContentPublisher::stage(
+            publisher.as_ref(),
+            OperationId::new(),
+            &format!("messages/{sequence}.txt"),
+            format!("canonical-{sequence}").as_bytes(),
+            "text/plain",
+            "message.txt",
+            None,
+        )?
+        .await?
+        .0;
         let id = uuid::Uuid::new_v4();
         let reply_to = if kind == MessageKind::Assistant {
             ids.first().copied()
@@ -424,12 +418,14 @@ async fn cold_canonical_source_checks_complete_mixed_delta_without_reducer_resto
         FilesystemExecutionJournal::new(
             client.clone(),
             host.clone(),
-            &volume,
-            &issuer.verifier(&mut None).expect("verifier copy"),
             &SchemaRegistry::new(),
-            &scope,
-            4096,
-            None,
+            crate::filesystem::FilesystemJournalBinding {
+                volume: &volume,
+                verifier: &issuer.verifier(&mut None).expect("verifier copy"),
+                scope: &scope,
+                maximum_bytes: 4096,
+                io: None,
+            },
         )
         .map(|journal| journal.with_input_verifier(content.clone()))
     };

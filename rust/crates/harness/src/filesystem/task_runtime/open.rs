@@ -303,7 +303,7 @@ where
             });
         }
         #[cfg(not(target_arch = "wasm32"))]
-        let native_configuration_custody = io
+        let _native_configuration_custody = io
             .map(|io| io.take_native_custody(io.owned_bytes()?))
             .transpose()?;
         Ok(Self {
@@ -320,7 +320,7 @@ where
             interaction_owner: None,
             recursive_source: None,
             #[cfg(not(target_arch = "wasm32"))]
-            native_configuration_custody,
+            _native_configuration_custody,
         })
     }
 }

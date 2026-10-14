@@ -31,7 +31,7 @@ pub(super) fn intent(journal: &MaterializationJournal, io: &PreparationIo) -> Re
         original,
         crate::wire::ErrorCode::Storage,
     )?;
-    let intent = super::super::retain_decoded(decoded);
+    let intent = super::super::retain_decoded(decoded)?;
     intent.manifest.validate(Some(io))?;
     Ok(intent)
 }

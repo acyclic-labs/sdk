@@ -13,10 +13,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
         &self,
         context: &ToolContext,
         invocation: &ToolInvocation,
-        owner: &(
-            Arc<FilesystemTaskRuntime<P, A, O>>,
-            Arc<TaskJournalOwner<P>>,
-        ),
+        owner: &RecursiveOwner<P, A, O>,
         cancellation: &CancellationToken,
         io: Option<&PreparationIo>,
     ) -> Result<Plan> {
@@ -38,7 +35,9 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             .min(context.effective_scope().limits().file_bytes);
         {
             let ordinary;
-            let observer = if let Some(io) = io { io } else {
+            let observer = if let Some(io) = io {
+                io
+            } else {
                 ordinary = PreparationIo::from_budget(
                     acyclic_fs::performance::work_budget(
                         self.maximum_request_bytes,
@@ -68,7 +67,9 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                 .await?;
         }
         let ordinary;
-        let observer = if let Some(io) = io { io } else {
+        let observer = if let Some(io) = io {
+            io
+        } else {
             ordinary = PreparationIo::from_budget(
                 acyclic_fs::performance::work_budget(
                     self.maximum_request_bytes,
@@ -92,7 +93,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                 std::marker::PhantomData::<Plan>,
                 &bytes,
                 crate::wire::ErrorCode::Storage,
-            )?)
+            )?)?
         } else {
             let intent = if self.definition.name == "acyclic.fork" {
                 Some(
@@ -106,7 +107,6 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                 .plan(
                     context,
                     owner,
-                    context.durable_task_id().expect("authorized caller"),
                     &invocation.arguments,
                     intent.as_ref(),
                     cancellation,
@@ -164,7 +164,9 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             io,
         )?;
         let ordinary;
-        let observer = if let Some(io) = io { io } else {
+        let observer = if let Some(io) = io {
+            io
+        } else {
             ordinary = PreparationIo::from_budget(
                 acyclic_fs::performance::work_budget(
                     self.maximum_request_bytes,
@@ -190,13 +192,19 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                 std::marker::PhantomData::<RecursiveForkSourceIntent>,
                 &bytes,
                 crate::wire::ErrorCode::Storage,
-            )?)
+            )?)?
         } else {
             let arguments: ForkToolArguments = decode(&invocation.arguments, io)?;
             let intent = self
                 .source
                 .as_ref()
-                .expect("authorized source")
+                .ok_or_else(|| {
+                    recursive_reject(
+                        io,
+                        crate::wire::ErrorCode::Unauthorized,
+                        "authorized source",
+                    )
+                })?
                 .select(context, &arguments, cancellation, io)
                 .await?;
             let bytes = observer.encode(
@@ -243,18 +251,23 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
     pub(super) async fn plan(
         &self,
         context: &ToolContext,
-        owner: &(
-            Arc<FilesystemTaskRuntime<P, A, O>>,
-            Arc<TaskJournalOwner<P>>,
-        ),
-        caller: TaskId,
+        owner: &RecursiveOwner<P, A, O>,
         arguments: &Value,
         intent: Option<&RecursiveForkSourceIntent>,
         cancellation: &CancellationToken,
         io: Option<&PreparationIo>,
     ) -> Result<Plan> {
+        let caller = context
+            .durable_task_id()
+            .ok_or_else(|| recursive_reject(io, Unauthorized, "authorized caller"))?;
         let (runtime, journal_owner) = owner;
-        let source = self.source.as_ref().expect("authorized source");
+        let source = self.source.as_ref().ok_or_else(|| {
+            recursive_reject(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "authorized source",
+            )
+        })?;
         let plan = if self.definition.name == "acyclic.fork" {
             let original: ForkToolArguments = decode(arguments, io)?;
             with_history_io(io, |work| {
@@ -274,7 +287,9 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             let operation = derived(context.operation_id(), "preparation-task", io)?;
             let payload = {
                 let ordinary;
-                let observer = if let Some(io) = io { io } else {
+                let observer = if let Some(io) = io {
+                    io
+                } else {
                     ordinary = PreparationIo::from_budget(
                         acyclic_fs::performance::work_budget(
                             self.maximum_request_bytes,
@@ -331,13 +346,36 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                     let input_io = PreparationIo::from_native_work(work)?;
                     let input = encode(&request, Some(&input_io))?;
                     let (admission, retained) = runtime.harness().registered_admission(
-                        operation, "acyclic.fork_preparation", "1", input,
-                        Some((caller, context.scope())), None, Some(&input_io),
+                        operation,
+                        "acyclic.fork_preparation",
+                        "1",
+                        input,
+                        Some((caller, context.scope())),
+                        None,
+                        Some(&input_io),
                     )?;
-                    io.expect("native admission").absorb_native_custody(input_io.take_native_custody(retained)?)?;
+                    io.ok_or_else(|| {
+                        crate::executor::stock_boundary(
+                            io,
+                            crate::wire::ErrorCode::Invalid,
+                            "native admission",
+                        )
+                    })?
+                    .absorb_native_custody(input_io.take_native_custody(retained)?)?;
                     break 'admission admission;
                 }
-                runtime.harness().registered_admission(operation, "acyclic.fork_preparation", "1", encode(&request, io)?, Some((caller, context.scope())), None, None)?.0
+                runtime
+                    .harness()
+                    .registered_admission(
+                        operation,
+                        "acyclic.fork_preparation",
+                        "1",
+                        encode(&request, io)?,
+                        Some((caller, context.scope())),
+                        None,
+                        None,
+                    )?
+                    .0
             };
             Plan::Fork(recursive_box(
                 RecursiveForkToolPlan {
@@ -404,10 +442,8 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                 .source_read
                 .as_ref()
                 .map(|source| {
-                    with_history_io(io, |work| {
-                        source.authorization().copy(work)
-                    })
-                    .map(|copied| copied.0)
+                    with_history_io(io, |work| source.authorization().copy(work))
+                        .map(|copied| copied.0)
                 })
                 .transpose()?;
             drop(controller);

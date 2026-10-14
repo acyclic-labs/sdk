@@ -42,7 +42,9 @@ where
         }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            reader.owned_task_binding(Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
+            reader.owned_task_binding(Some(&crate::executor::PreparationIo::from_native_work(
+                work,
+            )?))?;
             if !reconciliation_only {
                 reader.require_original_native_dispatch(work)?;
             }
@@ -65,8 +67,9 @@ where
         let request: ForkRequest = match io {
             Some(io) => crate::filesystem::retain_decoded(
                 io.value_decode_preparation(&preparation.payload, ErrorCode::Storage)?,
-            ),
-            None => serde_json::from_value(preparation.payload.clone()).map_err(invalid_json)?,
+            )?,
+            None => serde_json::from_value(preparation.payload.clone())
+                .map_err(|error| Error::Invalid(error.to_string()))?,
         };
         if request.authorized_source.as_ref()
             != token
@@ -80,7 +83,9 @@ where
             ));
         }
         let ordinary;
-        let observer = if let Some(io) = io { io } else {
+        let observer = if let Some(io) = io {
+            io
+        } else {
             ordinary = PreparationIo::from_budget(self.config.content_budget, cancellation)?;
             &ordinary
         };
@@ -92,8 +97,9 @@ where
                     std::marker::PhantomData,
                     &bytes,
                     ErrorCode::Storage,
-                )?),
-                _ => serde_json::from_slice(&bytes).map_err(invalid_json)?,
+                )?)?,
+                _ => serde_json::from_slice(&bytes)
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
             };
             if record.request != request
                 || record.caller != caller_task
@@ -114,13 +120,7 @@ where
         let resolver = crate::runtime::content_residency_verifier(Arc::clone(context), owner, io)?;
         let verifier =
             crate::executor::with_history_io(io, |work| caller.owner.issuer.verifier(work))?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let input = io
-            .and_then(PreparationIo::original_native_work)
-            .map(PreparationIo::from_native_work)
-            .transpose()?;
-        #[cfg(target_arch = "wasm32")]
-        let input = None;
+        let input = PreparationIo::temporary(io)?;
         let source = restore_recursive_fork_source(
             Arc::clone(&self.filesystem),
             &self.stream,

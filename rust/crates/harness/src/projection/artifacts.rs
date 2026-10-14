@@ -60,13 +60,13 @@ pub(super) async fn read_invocation(
         strings_hold = io.guard_owned(strings)?;
         let arguments_hold = io.guard_owned(argument_bytes)?;
         let discarded_hold = io.guard_owned(discarded)?;
-        source.into_retained();
+        source.into_retained()?;
         drop(value);
         drop(discarded_hold);
         // The invocation envelope consumes one level of the 128-level bound.
         let (arguments, hold) = convert::<Value>((arguments, arguments_hold), maximum, 127, io)?;
-        hold.into_retained();
-        strings_hold.into_retained();
+        hold.into_retained()?;
+        strings_hold.into_retained()?;
         return Ok((call_id, name, arguments));
     }
     let _ = source_hold;
@@ -101,7 +101,7 @@ pub(super) async fn read_result(
             io,
         )?;
         let (result, hold) = convert(normalized, maximum, 128, io)?;
-        hold.into_retained();
+        hold.into_retained()?;
         return Ok(result);
     }
     let _ = hold;
@@ -304,8 +304,8 @@ fn convert<'a, T: crate::filesystem::UploadRecord>(
         })?;
     #[cfg(not(target_arch = "wasm32"))]
     if io.original_native_work().is_some() {
-        source_hold.take().ok_or_else(missing_hold)?.into_retained();
-        additional.take().ok_or_else(missing_hold)?.into_retained();
+        source_hold.take().ok_or_else(missing_hold)?.into_retained()?;
+        additional.take().ok_or_else(missing_hold)?.into_retained()?;
         native = Some(io.take_native_custody(total)?);
     }
     let value: T = match serde_json::from_value(input) {
@@ -320,7 +320,7 @@ fn convert<'a, T: crate::filesystem::UploadRecord>(
                 });
             }
             let message = error.to_string();
-            additional.take().ok_or_else(missing_hold)?.into_retained();
+            additional.take().ok_or_else(missing_hold)?.into_retained()?;
             return Err(Error::Invalid(message));
         }
     };
@@ -347,8 +347,8 @@ fn convert<'a, T: crate::filesystem::UploadRecord>(
     let released = total.checked_sub(retained).ok_or_else(|| {
         stock_boundary(Some(io), Invalid, "owned tool conversion exceeds admission")
     })?;
-    source_hold.take().ok_or_else(missing_hold)?.into_retained();
-    additional.take().ok_or_else(missing_hold)?.into_retained();
+    source_hold.take().ok_or_else(missing_hold)?.into_retained()?;
+    additional.take().ok_or_else(missing_hold)?.into_retained()?;
     io.release(released)?;
     Ok((value, io.guard_owned(retained)?))
 }

@@ -61,12 +61,14 @@ where
     let journal = FilesystemExecutionJournal::new(
         stream.clone(),
         host.clone(),
-        &volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
         &SchemaRegistry::new(),
-        &scope,
-        65_536,
-        None,
+        acyclic_harness::filesystem::FilesystemJournalBinding {
+            volume: &volume,
+            verifier: &issuer.verifier(&mut None).expect("verifier copy"),
+            scope: &scope,
+            maximum_bytes: 65_536,
+            io: None,
+        },
     )?
     .with_input_verifier(reader.clone());
     let adapter = Arc::new(MockAdapter::new(reader.clone()));
@@ -439,12 +441,14 @@ where
         FilesystemExecutionJournal::new(
             stream.clone(),
             host.clone(),
-            &child_private,
-            &child_issuer.verifier(&mut None).expect("verifier copy"),
             &SchemaRegistry::new(),
-            &child_scope,
-            65_536,
-            None,
+            acyclic_harness::filesystem::FilesystemJournalBinding {
+                volume: &child_private,
+                verifier: &child_issuer.verifier(&mut None).expect("verifier copy"),
+                scope: &child_scope,
+                maximum_bytes: 65_536,
+                io: None,
+            },
         )
         .map(|journal| journal.with_input_verifier(child_reader.clone()))
     };

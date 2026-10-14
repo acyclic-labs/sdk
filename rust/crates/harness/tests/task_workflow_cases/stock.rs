@@ -455,11 +455,13 @@ pub(super) async fn stock_restart_with_publication_fault(
                     execution.operation_id(),
                     OperationId::from_bytes([8; 16]),
                     filesystem.clone(),
-                    &volume,
-                    &issuer.verifier(&mut None).expect("verifier copy"),
-                    &signed,
-                    65_536,
-                    None,
+                    acyclic_harness::filesystem::FilesystemJournalBinding {
+                        volume: &volume,
+                        verifier: &issuer.verifier(&mut None).expect("verifier copy"),
+                        scope: &signed,
+                        maximum_bytes: 65_536,
+                        io: None,
+                    },
                 )?;
                 previous.execute(turn, &journal).await
             } else {

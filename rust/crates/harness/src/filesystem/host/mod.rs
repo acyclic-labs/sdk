@@ -36,13 +36,7 @@ impl<A, O> FilesystemHost<A, O> {
         #[cfg(not(target_arch = "wasm32"))]
         let _native_custody = io
             .filter(|io| io.original_native_work().is_some())
-            .map(|io| {
-                io.take_native_custody(
-                    io.owned_bytes()?
-                        .checked_sub(before)
-                        .ok_or_else(|| io.invalid("Filesystem host custody underflows"))?,
-                )
-            })
+            .map(|io| io.take_native_custody(io.owned_since(before)?))
             .transpose()?;
         Ok(Arc::new(Self {
             filesystem,

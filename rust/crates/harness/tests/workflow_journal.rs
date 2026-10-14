@@ -102,10 +102,13 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         stream.clone(),
         host.clone(),
         "counter",
-        &volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        65_536, None,
+        acyclic_harness::filesystem::FilesystemJournalBinding {
+            volume: &volume,
+            verifier: &issuer.verifier(&mut None).expect("verifier copy"),
+            scope: &scope,
+            maximum_bytes: 65_536,
+            io: None,
+        },
     )?;
     let machine = Arc::new(Counter {
         identity: MachineIdentity {
@@ -141,10 +144,13 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         stream.clone(),
         host.clone(),
         "orphan",
-        &volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        65_536, None,
+        acyclic_harness::filesystem::FilesystemJournalBinding {
+            volume: &volume,
+            verifier: &issuer.verifier(&mut None).expect("verifier copy"),
+            scope: &scope,
+            maximum_bytes: 65_536,
+            io: None,
+        },
     )?;
     assert!(matches!(
         orphan.admit(admission.clone()).await,
@@ -237,10 +243,13 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         stream.clone(),
         host.clone(),
         "paged-counter",
-        &volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        65_536, None,
+        acyclic_harness::filesystem::FilesystemJournalBinding {
+            volume: &volume,
+            verifier: &issuer.verifier(&mut None).expect("verifier copy"),
+            scope: &scope,
+            maximum_bytes: 65_536,
+            io: None,
+        },
     )?;
     paged.admit(admission.clone()).await?;
     let mut paged_host =
@@ -266,10 +275,13 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         stream.clone(),
         host.clone(),
         "paged-counter",
-        &volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        65_536, None,
+        acyclic_harness::filesystem::FilesystemJournalBinding {
+            volume: &volume,
+            verifier: &issuer.verifier(&mut None).expect("verifier copy"),
+            scope: &scope,
+            maximum_bytes: 65_536,
+            io: None,
+        },
     )?;
     let mut fresh_host = DurableWorkflowHost::open(registry, initial, fresh_paged.clone()).await?;
     assert_eq!(fresh_host.checkpoint().revision, 65);
@@ -293,10 +305,13 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         stream,
         host,
         "counter",
-        &volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        65_536, None,
+        acyclic_harness::filesystem::FilesystemJournalBinding {
+            volume: &volume,
+            verifier: &issuer.verifier(&mut None).expect("verifier copy"),
+            scope: &scope,
+            maximum_bytes: 65_536,
+            io: None,
+        },
     )?;
     let candidate = |operation, key: &str, command| -> Result<_> {
         let mut record = committed[1].clone();

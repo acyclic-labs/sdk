@@ -81,9 +81,9 @@ pub(in crate::filesystem) fn decode<T: crate::filesystem::PreparationRecord>(
 ) -> Result<T> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(io) = io {
-        return Ok(crate::filesystem::retain_decoded(
+        return crate::filesystem::retain_decoded(
             io.value_decode_preparation::<T>(value, crate::wire::ErrorCode::Invalid)?,
-        ));
+        );
     }
     let _ = io;
     T::deserialize(value).map_err(|error| Error::Invalid(error.to_string()))
@@ -100,35 +100,6 @@ pub(super) fn recursive_decoded<T: crate::filesystem::PreparationRecord, R>(
     }
     let _ = io;
     operation(&decode::<T>(value, None)?)
-}
-pub(super) fn recursive_temporary_io(
-    io: Option<&crate::filesystem::PreparationIo>,
-) -> Result<Option<crate::filesystem::PreparationIo>> {
-    #[cfg(not(target_arch = "wasm32"))]
-    return io
-        .and_then(crate::filesystem::PreparationIo::original_native_work)
-        .map(crate::filesystem::PreparationIo::from_native_work)
-        .transpose();
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = io;
-        Ok(None)
-    }
-}
-pub(super) fn recursive_release_since(
-    io: Option<&crate::filesystem::PreparationIo>,
-    before: Option<u64>,
-) -> Result<()> {
-    if let (Some(io), Some(before)) = (io, before) {
-        io.release(io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-            recursive_reject(
-                Some(io),
-                crate::wire::ErrorCode::Invalid,
-                "recursive temporary custody underflow",
-            )
-        })?)?;
-    }
-    Ok(())
 }
 pub(in crate::filesystem) fn encode<T: Serialize>(
     value: &T,
@@ -150,7 +121,7 @@ pub(super) fn recursive_encoded_equal<T: Serialize>(
     let encoded = encode(expected, io)?;
     let equal = encoded == *actual;
     drop(encoded);
-    recursive_release_since(io, before)?;
+    crate::filesystem::PreparationIo::release_since(io, before)?;
     Ok(equal)
 }
 pub(in crate::filesystem) fn recursive_box<T>(
@@ -284,11 +255,11 @@ pub(super) fn recursive_decode_bytes<T: crate::filesystem::PreparationRecord>(
     io: Option<&crate::filesystem::PreparationIo>,
 ) -> Result<T> {
     if let Some(io) = io {
-        return Ok(crate::filesystem::retain_decoded(io.decode(
+        return crate::filesystem::retain_decoded(io.decode(
             std::marker::PhantomData::<T>,
             bytes,
             crate::wire::ErrorCode::Storage,
-        )?));
+        )?);
     }
     crate::contract::json_from_slice(bytes).map_err(|error| Error::Invalid(error.to_string()))
 }

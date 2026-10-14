@@ -75,7 +75,7 @@ impl HistoryIo for &PreparationIo {
             crate::wire::ErrorCode::Storage,
         )?;
         let retained = decoded.1.bytes();
-        Ok((retain_decoded(decoded), retained))
+        Ok((retain_decoded(decoded)?, retained))
     }
     fn clone_authority(
         &mut self,

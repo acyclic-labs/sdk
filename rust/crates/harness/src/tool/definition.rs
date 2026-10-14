@@ -64,17 +64,17 @@ impl ToolDefinition {
                 std::marker::PhantomData::<Value>,
                 input_schema_json.as_bytes(),
                 crate::wire::ErrorCode::Invalid,
-            )?),
+            )?)?,
             output_schema: crate::filesystem::retain_decoded(io.decode(
                 std::marker::PhantomData::<Value>,
                 output_schema_json.as_bytes(),
                 crate::wire::ErrorCode::Invalid,
-            )?),
+            )?)?,
             projection_schema: crate::filesystem::retain_decoded(io.decode(
                 std::marker::PhantomData::<Value>,
                 projection_schema_json.as_bytes(),
                 crate::wire::ErrorCode::Invalid,
-            )?),
+            )?)?,
         };
         crate::executor::with_history_io(Some(&io), |work| definition.validate_schemas(work))?;
         use crate::filesystem::UploadRecord as _;

@@ -86,12 +86,14 @@ where
     let conversion_journal = Arc::new(FilesystemExecutionJournal::new(
         stream.clone(),
         host.clone(),
-        &volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
         &acyclic_harness::core::SchemaRegistry::new(),
-        &signed,
-        65_536,
-        None,
+        acyclic_harness::filesystem::FilesystemJournalBinding {
+            volume: &volume,
+            verifier: &issuer.verifier(&mut None).expect("verifier copy"),
+            scope: &signed,
+            maximum_bytes: 65_536,
+            io: None,
+        },
     )?);
     let converter = DurableToolRunner::new(&conversion_tools, conversion_journal, None)?;
     let conversion_operation = OperationId::from_bytes([117; 16]);

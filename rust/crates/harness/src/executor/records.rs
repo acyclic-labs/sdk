@@ -39,7 +39,7 @@ impl StockExecution<'_> {
             self.io,
         )
         .await?;
-        Ok(retain_preparation((records, hold)))
+        retain_preparation((records, hold))
     }
 
     pub(super) async fn model_records(
@@ -65,7 +65,7 @@ impl StockExecution<'_> {
             self.io,
         )
         .await
-        .map(|(tail, records, hold)| (tail, retain_preparation((records, hold))))
+        .and_then(|(tail, records, hold)| Ok((tail, retain_preparation((records, hold))?)))
     }
 
     pub(super) async fn tool_records(
@@ -89,6 +89,6 @@ impl StockExecution<'_> {
             self.io,
         )
         .await
-        .map(|(tail, records, hold)| (tail, retain_preparation((records, hold))))
+        .and_then(|(tail, records, hold)| Ok((tail, retain_preparation((records, hold))?)))
     }
 }

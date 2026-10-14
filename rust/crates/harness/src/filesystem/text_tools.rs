@@ -20,7 +20,6 @@ pub struct ExactTextReplacement {
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FilesystemHost<A, O> {
     /// Edits one immutable source under separate verified read/write grants.
-    #[allow(clippy::too_many_arguments)]
     pub async fn edit_text(
         &self,
         source: &FileRef,

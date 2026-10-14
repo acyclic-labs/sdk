@@ -58,8 +58,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )
             .await?;
         if path.is_empty() {
-            page.entries
-                .retain(|entry| entry.name.unicode_text(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).ok().map(|receipt| receipt.value).as_deref() != Some(".system"));
+            page.entries.retain(|entry| {
+                entry
+                    .name
+                    .unicode_text(
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
+                    .ok()
+                    .map(|receipt| receipt.value)
+                    .as_deref()
+                    != Some(".system")
+            });
             if page.entries.len() > maximum_entries as usize {
                 page.entries.truncate(maximum_entries as usize);
                 page.has_more = true;
@@ -126,13 +136,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let workspace = (self).open(&workspace_ref, Some(&scratch)).await?;
         guard().await?;
         let generation = if let Some(expected) = expected_generation {
-            (self).generation(&workspace, expected, Some(&scratch)).await?
+            (self)
+                .generation(&workspace, expected, Some(&scratch))
+                .await?
         } else {
             workspace
                 .head(work, work.cancellation())
                 .await
                 .map_err(|error| (error, None))
-                .map_err(|(source, custody)| Error::NativeWorkspace { source: Box::new(source), custody })?
+                .map_err(|(source, custody)| Error::NativeWorkspace {
+                    source: Box::new(source),
+                    custody,
+                })?
         };
         guard().await?;
         fork_preparer_io::retain(&generation, Some(&scratch)).await?;
@@ -150,19 +165,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 maximum_entries
                     .checked_add(u32::from(path.is_empty()))
                     .ok_or_else(|| Error::NativeWorkspace {
-                        source: Box::new(acyclic_fs::WorkspaceError::Work(acyclic_fs::WorkError::Overflow)),
+                        source: Box::new(acyclic_fs::WorkspaceError::Work(
+                            acyclic_fs::WorkError::Overflow,
+                        )),
                         custody: None,
                     })?,
                 work,
                 work.cancellation(),
             )
             .await
-            .map(|(page, allocation)| (page, allocation.expect("native directory allocation")))
             .map_err(|source| Error::NativeWorkspace {
                 source: Box::new(source),
                 custody: None,
             })?;
-        output.absorb_native_custody(page_custody)?;
+        output
+            .absorb_native_custody(page_custody.ok_or_else(|| {
+                output.invalid("native directory page has no allocation custody")
+            })?)?;
         guard().await?;
         if path.is_empty() {
             work.charge(acyclic_fs::WorkCounters {
@@ -184,7 +203,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             });
             output.release(removed_bytes)?;
             while page.entries.len() > maximum_entries as usize {
-                let removed = page.entries.pop().expect("overscanned page is nonempty");
+                let removed = page
+                    .entries
+                    .pop()
+                    .ok_or_else(|| output.invalid("overscanned directory page is empty"))?;
                 let bytes = removed.name.logical_owned_bytes();
                 drop(removed);
                 output.release(bytes)?;
@@ -229,14 +251,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 &workspace,
                 Some(generation),
                 &format!("/{path}"),
-                maximum_bytes, None)
+                maximum_bytes,
+                None,
+            )
             .await?;
         let metadata = self
             .read(
                 &workspace,
                 Some(generation),
                 &content_metadata_path_io(path, true, None)?,
-                u64::MAX, None)
+                u64::MAX,
+                None,
+            )
             .await;
         let (descriptor, display_name) = match metadata {
             Ok(metadata) => {
@@ -296,7 +322,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             ));
         }
         let unmeasured;
-        let io = if let Some(io) = io { io } else {
+        let io = if let Some(io) = io {
+            io
+        } else {
             unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
             &unmeasured
         };
@@ -395,7 +423,9 @@ pub(in crate::filesystem) async fn read_generation<A: AsyncAuthorityStore, O: As
     io: Option<&PreparationIo>,
 ) -> Result<acyclic_stream::OwnedBytes> {
     let unmeasured;
-    let io = if let Some(io) = io { io } else {
+    let io = if let Some(io) = io {
+        io
+    } else {
         unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
         &unmeasured
     };

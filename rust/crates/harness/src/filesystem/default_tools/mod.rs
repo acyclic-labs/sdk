@@ -25,6 +25,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 
+type RecursiveOwner<P, A, O> = (
+    Arc<FilesystemTaskRuntime<P, A, O>>,
+    Arc<TaskJournalOwner<P>>,
+);
+
 const REVISION: &str = "portable-recursive-5";
 
 /// Selects an explicitly readable project and exact conflict sides.
@@ -148,14 +153,14 @@ pub fn recursive_default_tools<
     ] {
         tools.register((tool, None), &mut None, None)?;
     }
-    for name in ["acyclic.fork", "acyclic.merge"] {
+    for (name, source) in [("acyclic.fork", source.clone()), ("acyclic.merge", source)] {
         let definition = definition(name, maximum_request_bytes);
         tools.register(
             (
                 Tool {
                     definition: definition.clone(),
                     executor: Arc::new(RecursiveExecutor {
-                        source: source.clone(),
+                        source,
                         definition,
                         maximum_request_bytes,
                     }),
@@ -171,15 +176,14 @@ pub fn recursive_default_tools<
 }
 
 fn definition(name: &str, maximum: u64) -> ToolDefinition {
-    let mut input = match name {
+    let input = match name {
         "acyclic.fork" => json!({"type":"object","required":["id","msg"],"properties":{
-            "id":{"type":"string"},"msg":{"type":"string"},"source":{"type":"string"}},"additionalProperties":false}),
+            "id":{"type":"string"},"msg":{"type":"string"},"source":{"type":"string"}},"additionalProperties":false,"x-harness-recursive-request-bytes":maximum}),
         "acyclic.merge" => json!({"type":"object","required":["source"],"properties":{
             "source":{"type":"string"},"selections":{"type":"array","items":{"type":"object","required":["conflict","side"],"properties":{
-                "conflict":{"type":"array","minItems":1,"items":{"type":"integer","minimum":0,"maximum":255}},"side":{"enum":["base","target","source"]}},"additionalProperties":false}}},"additionalProperties":false}),
+                "conflict":{"type":"array","minItems":1,"items":{"type":"integer","minimum":0,"maximum":255}},"side":{"enum":["base","target","source"]}},"additionalProperties":false}}},"additionalProperties":false,"x-harness-recursive-request-bytes":maximum}),
         _ => unreachable!("registered recursive tool"),
     };
-    input["x-harness-recursive-request-bytes"] = json!(maximum);
     let output = json!({"type":"object"});
     ToolDefinition { name: name.into(), revision: REVISION.into(),
         description: match name { "acyclic.fork" => "Prepare, publish and durably admit a new child from the actual calling task; source selects only an explicitly authorized project",

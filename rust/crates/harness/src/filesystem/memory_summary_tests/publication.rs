@@ -693,12 +693,14 @@ async fn assert_summary_child_import(
     let journal = FilesystemExecutionJournal::new(
         storage.stream.clone(),
         storage.host.clone(),
-        &seed.child_private_volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
         &crate::core::SchemaRegistry::new(),
-        &scope,
-        262_144,
-        None,
+        crate::filesystem::FilesystemJournalBinding {
+            volume: &seed.child_private_volume,
+            verifier: &issuer.verifier(&mut None).expect("verifier copy"),
+            scope: &scope,
+            maximum_bytes: 262_144,
+            io: None,
+        },
     )?
     .with_input_verifier(reader);
     let input = TurnInput {

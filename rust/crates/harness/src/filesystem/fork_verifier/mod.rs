@@ -37,7 +37,8 @@ impl<A, O> FilesystemForkVerifier<A, O> {
         #[cfg(not(target_arch = "wasm32"))]
         let native_binding = original
             .map(|(verifier, scope, io)| -> Result<_> {
-                io.original_native_work()
+                let work = io
+                    .original_native_work()
                     .ok_or_else(|| io.invalid("fork verifier requires original native work"))?;
                 host.provider.validate(&mut Some(&mut io.history_io()))?;
                 let mut binding = FilesystemContentVerifier::new(
@@ -47,18 +48,18 @@ impl<A, O> FilesystemForkVerifier<A, O> {
                     maximum_inherited_bytes,
                     Some(io),
                 )?;
-                let mut header = io.original_native_work().unwrap().claim(
+                let mut header = work.claim(
                     std::mem::size_of::<Self>() as u64,
                     1,
                     WorkCounters::UNCHARGED,
                 )?;
                 let metadata = Arc::get_mut(&mut binding)
-                    .expect("new verifier has no aliases")
+                    .ok_or_else(|| io.invalid("new fork verifier has aliases"))?
                     ._native_metadata
                     .as_mut()
-                    .expect("native verifier owns its metadata");
+                    .ok_or_else(|| io.invalid("native fork verifier has no metadata"))?;
                 Arc::get_mut(metadata)
-                    .expect("new verifier metadata has no aliases")
+                    .ok_or_else(|| io.invalid("new fork verifier metadata has aliases"))?
                     .absorb(&mut header)
                     .map_err(|cause| Error::NativeWork {
                         cause,
@@ -164,7 +165,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ForkPublic
                     binding
                         ._native_metadata
                         .as_ref()
-                        .expect("authenticated native metadata")
+                        .ok_or_else(|| io.invalid("authenticated fork metadata is missing"))?
                         .work(),
                 )?
             } else {

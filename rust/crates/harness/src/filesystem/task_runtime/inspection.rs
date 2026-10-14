@@ -11,7 +11,7 @@ use project::ProjectSourceReader;
 
 enum SourceReader<P, A, O> {
     Caller(Arc<TaskContext>),
-    Project(ProjectSourceReader<P, A, O>),
+    Project(Box<ProjectSourceReader<P, A, O>>),
 }
 
 /// A retained source identity and a separately authorized reader.
@@ -186,9 +186,15 @@ where
         match &self.reader {
             SourceReader::Project(reader) => {
                 let selected = reader.authorization();
-                reader.require_native_project_selection_with_native_work(
-                    self.source.task_id(), &selected.project, &selected.generation, Some(frozen), work,
-                ).await
+                reader
+                    .require_native_project_selection_with_native_work(
+                        self.source.task_id(),
+                        &selected.project,
+                        &selected.generation,
+                        Some(frozen),
+                        work,
+                    )
+                    .await
             }
             SourceReader::Caller(_) => Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported,
@@ -243,7 +249,11 @@ where
             .harness
             .durable_context(caller, caller_admission.operation_id, None)
             .await?;
-        let volumes = self.host.observe_volume_snapshots(source.task_id(), &mut None).await?.0;
+        let volumes = self
+            .host
+            .observe_volume_snapshots(source.task_id(), &mut None)
+            .await?
+            .0;
         Ok(TaskSourceInspection {
             source,
             reader: SourceReader::Caller(reader),
@@ -295,7 +305,8 @@ where
         let volumes = self
             .host
             .observe_volume_snapshots(admission.task_id(), &mut None)
-            .await?.0;
+            .await?
+            .0;
         owner.verify(false, &mut None).await?;
         let io = PreparationIo::from_budget(
             budget,
@@ -330,7 +341,7 @@ where
         &self,
         context: &TaskContext,
         owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
-        handle: (
+        mut handle: (
             crate::source_authorization::ProjectSourceReadHandle,
             acyclic_fs::NativeAllocation,
         ),
@@ -374,15 +385,27 @@ where
         owner
             .verify(
                 false,
-                &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
+                &mut Some(
+                    &mut crate::filesystem::PreparationIo::from_native_work(work)
+                        .map(crate::store::HistoryWork::new)?,
+                ),
             )
             .await?;
-        let volumes = { let io = crate::executor::PreparationIo::from_native_work(work)?; let (snapshots, retained) = self
-            .host.observe_volume_snapshots(admission.0.task_id(), &mut Some(&mut io.history_io())).await?; (snapshots, io.take_native_custody(retained)?) };
+        let volumes = {
+            let io = crate::executor::PreparationIo::from_native_work(work)?;
+            let (snapshots, retained) = self
+                .host
+                .observe_volume_snapshots(admission.0.task_id(), &mut Some(&mut io.history_io()))
+                .await?;
+            (snapshots, io.take_native_custody(retained)?)
+        };
         owner
             .verify(
                 false,
-                &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
+                &mut Some(
+                    &mut crate::filesystem::PreparationIo::from_native_work(work)
+                        .map(crate::store::HistoryWork::new)?,
+                ),
             )
             .await?;
         let reader = ProjectSourceReader::open(
@@ -393,6 +416,16 @@ where
             io,
         )
         .await?;
+        let mut boxed_custody = reader
+            .io
+            .take_native_custody(std::mem::size_of_val(reader.as_ref()) as u64)?;
+        handle
+            .1
+            .absorb(&mut boxed_custody)
+            .map_err(|cause| Error::NativeWork {
+                cause,
+                custody: Some(boxed_custody),
+            })?;
         Ok(TaskSourceInspection {
             source: admission.0,
             volumes: volumes.0,
@@ -429,5 +462,4 @@ where
         )
         .await
     }
-
 }

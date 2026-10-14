@@ -48,18 +48,20 @@ where
     O: AsyncObjectStore + 'static,
 {
     /// Binds the conversation and its authenticated private content owner.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         stream: Arc<P>,
         host: Arc<FilesystemHost<A, O>>,
         authority: &Authority,
-        verifier: &AuthorityVerifier,
         schemas: &SchemaRegistry,
-        owner_scope: &Scope,
-        private_volume: &VolumeRef,
-        maximum_bytes: u64,
-        io: Option<&PreparationIo>,
+        binding: super::FilesystemJournalBinding<'_>,
     ) -> Result<Self> {
+        let super::FilesystemJournalBinding {
+            volume: private_volume,
+            verifier,
+            scope: owner_scope,
+            maximum_bytes,
+            io,
+        } = binding;
         #[cfg(not(target_arch = "wasm32"))]
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let mut result = with_history_io(io, |work| {
@@ -100,13 +102,7 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
             io.retain_owned(std::mem::size_of::<Self>() as u64)?;
-            result._native_metadata = Some(
-                io.take_native_custody(
-                    io.owned_bytes()?
-                        .checked_sub(before)
-                        .ok_or_else(|| io.invalid("interaction host custody underflows"))?,
-                )?,
-            );
+            result._native_metadata = Some(io.take_native_custody(io.owned_since(before)?)?);
         }
         Ok(result)
     }

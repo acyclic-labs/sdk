@@ -169,7 +169,7 @@ pub(super) fn append(
             )
         })?;
         _hold = Some(io.guard_owned(discarded)?);
-        source_hold.ok_or_else(missing_hold)?.into_retained();
+        source_hold.ok_or_else(missing_hold)?.into_retained()?;
         true
     } else {
         _hold = source_hold;

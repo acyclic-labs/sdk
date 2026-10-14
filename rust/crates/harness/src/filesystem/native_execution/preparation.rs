@@ -76,7 +76,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                     source_path_components: path.components().count() as u64,
                     ..Default::default()
                 })?;
-                for prior in &bindings[..index] {
+                for prior in bindings.iter().take(index) {
                     work.charge(WorkCounters {
                         items_examined: 1,
                         ..Default::default()
@@ -151,7 +151,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                     generation: generation.id(),
                 });
                 if let Some(mount) = binding.mounted {
-                    if mount.path() != mappings[index].path
+                    if mount.path() != mappings.last().ok_or_else(invalid)?.path
                         || !matches!(binding.namespace, NativeVolumeNamespace::LazyMount { snapshot } if snapshot.workspace_id == workspace.id() && snapshot.authored_generation == generation.id())
                     {
                         return Err(invalid());
@@ -319,7 +319,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                 bindings.iter().zip(generations).enumerate()
             {
                 verify().await?;
-                let callback = guards[index].volume_callback(
+                let callback = guards.get(index).ok_or_else(invalid)?.volume_callback(
                     owner,
                     binding.volume,
                     binding.writable,
@@ -350,20 +350,21 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                     }
                 } else {
                     let identity = materializer.backend().mapping_root_identity(binding.path)?;
-                    VolumeView::Directory(
+                    VolumeView::Directory(super::super::default_tools::recursive_box(
                         generation
                             .ok_or_else(invalid)?
                             .attach_native_working_set(
                                 &mount,
                                 &acyclic_fs::MaterializeOptions::native(
-                                    &intent.manifest.volumes[index].path,
+                                    &intent.manifest.volumes.get(index).ok_or_else(invalid)?.path,
                                 ),
                                 identity,
                                 options.work_per_volume,
                                 work.cancellation(),
                             )
                             .await?,
-                    )
+                        Some(&io),
+                    )?)
                 };
                 volumes.push(PreparedVolume {
                     view,
