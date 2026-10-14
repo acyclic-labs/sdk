@@ -149,14 +149,10 @@ impl bounded_io::UploadRecord for ForkReport {
         use crate::core::{owned_buffer, owned_sum, owned_vector};
         owned_sum([
             bounded_io::UploadRecord::logical_owned_bytes(&self.request)?,
-            owned_vector(&self.captures, |capture| match capture {
-                Capture::Captured(resource) => owned_sum([
-                    revision_owned_bytes(&resource.source)?,
-                    revision_owned_bytes(&resource.revision)?,
-                ]),
-                Capture::Unsupported(reason) => Ok(reason.capacity() as u64),
-                Capture::InFlight(_) | Capture::Indeterminate(_) => Ok(0),
-            })?,
+            owned_vector(
+                &self.captures,
+                bounded_io::UploadRecord::logical_owned_bytes,
+            )?,
             self.child_private_volume.logical_owned_bytes()?,
             self.child_private_generation.logical_owned_bytes()?,
             self.child_result_volume
@@ -207,13 +203,46 @@ impl bounded_io::UploadRecord for ForkReport {
     }
 }
 
-impl bounded_io::PreparationRecord for AllocationClaim {}
-impl bounded_io::PreparationRecord for [u8; 32] {}
-impl bounded_io::PreparationRecord for Uuid {}
-impl bounded_io::PreparationRecord for Capture {}
+impl bounded_io::UploadRecord for Uuid {
+    fn logical_owned_bytes(&self) -> Result<u64> {
+        Ok(0)
+    }
+}
+impl bounded_io::UploadRecord for Capture {
+    fn logical_owned_bytes(&self) -> Result<u64> {
+        match self {
+            Capture::Captured(resource) => crate::core::owned_sum([
+                revision_owned_bytes(&resource.source)?,
+                revision_owned_bytes(&resource.revision)?,
+            ]),
+            Capture::Unsupported(reason) => Ok(reason.capacity() as u64),
+            Capture::InFlight(_) | Capture::Indeterminate(_) => Ok(0),
+        }
+    }
+}
+fn fork_collection_slot_bytes() -> u64 {
+    use std::mem::size_of;
+    [
+        size_of::<ForkSelection>(),
+        size_of::<Capture>(),
+        size_of::<SharedGrant>(),
+        size_of::<ReferenceGrant>(),
+        size_of::<FileRef>(),
+        size_of::<String>(),
+        size_of::<(String, serde_json::Value)>(),
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or(0) as u64
+        + 2 * 5
+            * size_of::<(
+                serde::__private229::de::Content<'static>,
+                serde::__private229::de::Content<'static>,
+            )>() as u64
+}
 
 macro_rules! fork_preparation_records {
-    ($($record:ident),+ $(,)?) => {$(
+    ($($record:ty => $schema:ident => $slot:expr),+ $(,)?) => {$(
         impl bounded_io::PreparationRecord for $record {
             fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
                 crate::core::owned_sum([
@@ -221,21 +250,7 @@ macro_rules! fork_preparation_records {
                     bounded_io::UploadRecord::logical_owned_bytes(self)?,
                 ]).map(Some)
             }
-            fn maximum_slot_bytes() -> u64 {
-                use std::mem::size_of;
-                // Root records are inline; only nested collection elements need slots.
-                let typed = [
-                    size_of::<ForkSelection>(), size_of::<Capture>(),
-                    size_of::<SharedGrant>(), size_of::<ReferenceGrant>(),
-                    size_of::<FileRef>(), size_of::<String>(),
-                    size_of::<(String, serde_json::Value)>(),
-                ].into_iter().max().unwrap_or(0) as u64;
-                let content = size_of::<(
-                    serde::__private229::de::Content<'static>,
-                    serde::__private229::de::Content<'static>,
-                )>() as u64;
-                typed + 2 * 5 * content
-            }
+            fn maximum_slot_bytes() -> u64 { $slot }
             fn decode_owned_allowance(
                 shape: crate::executor::json::JsonValueShape, scratch: u64, input: u64,
                 code: Option<crate::wire::ErrorCode>,
@@ -257,11 +272,20 @@ macro_rules! fork_preparation_records {
                         Error::Invalid("fork decode storage overflows".into())
                     })
             }
-            fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema { crate::executor::json::JsonValueSchema::$record }
+            fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema { crate::executor::json::JsonValueSchema::$schema }
         }
     )+};
 }
-fork_preparation_records!(ForkRequest, ForkReport);
+fork_preparation_records!(
+    ForkRequest => ForkRequest => fork_collection_slot_bytes(),
+    ForkReport => ForkReport => fork_collection_slot_bytes(),
+    // Claim collections contain only strings; its one tagged owner needs Content scratch.
+    AllocationClaim => None => (std::mem::size_of::<String>()
+        + 2 * std::mem::size_of::<(serde::__private229::de::Content<'static>, serde::__private229::de::Content<'static>)>()) as u64,
+    Capture => None => fork_collection_slot_bytes(),
+    [u8; 32] => None => 0,
+    Uuid => None => 0,
+);
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// Claims exact child-volume identities for a custom parent-authorized preparation path.
@@ -739,9 +763,49 @@ mod tests {
             + std::mem::size_of::<ForkRequest>() as u64;
         assert_eq!(held.bytes(), owned);
         assert_eq!(io.owned_bytes()?, owned + bytes.len() as u64);
+        let claim = AllocationClaim {
+            operation_id: request.operation_id,
+            preparation_digest: [7; 32],
+            task_origin: Some(ResourceCreationOrigin {
+                owner: request.parent.clone(),
+                parent_task: crate::TaskId::from_bytes([1; 16]),
+                preparation_task: crate::TaskId::from_bytes([2; 16]),
+                intended_child: request.operation_id,
+                admission_digest: [3; 32],
+                source_grants: crate::Capabilities::new(["history:read", "fork:publish"]),
+                request_digest: [4; 32],
+                creation_fence: crate::scheduler::LeaseFence {
+                    reservation_id: "allocation-owner".into(),
+                    placement: "worker".into(),
+                },
+            }),
+            parent: request.parent.clone(),
+            child: request.child.clone(),
+            volume: request.preparation.child_private_volume.clone(),
+        };
         drop(request);
         drop(held);
         drop(input);
+        let bytes =
+            serde_json::to_vec(&claim).map_err(|error| Error::Invalid(error.to_string()))?;
+        let live = io.reserve_decode(14 * 1024 * 1024)?;
+        let input = io.reserve_decode(bytes.capacity() as u64)?;
+        let (decoded, held) = io.decode(
+            std::marker::PhantomData::<AllocationClaim>,
+            &bytes,
+            crate::wire::ErrorCode::Storage,
+        )?;
+        assert_eq!(decoded, claim);
+        assert_eq!(
+            held.bytes(),
+            bounded_io::UploadRecord::logical_owned_bytes(&decoded)?
+                + std::mem::size_of::<AllocationClaim>() as u64
+        );
+        drop(decoded);
+        drop(held);
+        drop(bytes);
+        drop(input);
+        drop(live);
         assert_eq!(io.owned_bytes()?, 0);
         Ok(())
     }
