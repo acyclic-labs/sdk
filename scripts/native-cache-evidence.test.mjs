@@ -7,6 +7,28 @@ import YAML from "./vendor/yaml.cjs";
 
 const workflow = YAML.parse(readFileSync(".github/workflows/release-acyclic.yml", "utf8"));
 
+test("native compiler caches refresh each run while restoring the previous working set", () => {
+  const action = YAML.parse(readFileSync(".github/actions/rust-build-cache/action.yml", "utf8"));
+  const compiler = action.runs.steps.find(step => step.name === "Restore compiler output");
+  assert.equal(compiler.uses, "actions/cache@caa296126883cff596d87d8935842f9db880ef25");
+  assert.equal(compiler.with.path, "${{ runner.temp }}/sccache");
+  const [matchingInputs, matchingTarget] = compiler.with["restore-keys"].trim().split("\n");
+  assert.equal(compiler.with.key, matchingInputs + "${{ github.run_id }}-${{ github.run_attempt }}");
+  assert.equal(matchingInputs, matchingTarget + "${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', '**/Cargo.toml') }}-");
+  assert.equal(matchingTarget, "rust-objects-v2-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-");
+  // Each successful run can save new source objects instead of returning an
+  // immutable exact hit before its updated working set is uploaded.
+  const key = (run, attempt) => compiler.with.key.replace("${{ github.run_id }}", run).replace("${{ github.run_attempt }}", attempt);
+  assert.notEqual(key("100", "1"), key("101", "1"));
+  assert.notEqual(key("100", "1"), key("100", "2"));
+  for (const value of [key("100", "1"), key("101", "1"), key("100", "2")]) {
+    assert.ok(value.startsWith(matchingInputs));
+  }
+  const downloads = action.runs.steps.find(step => step.name === "Restore Cargo downloads");
+  assert.equal(downloads.with.key, "rust-deps-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}");
+  assert.doesNotMatch(downloads.with.key, /run_id|run_attempt/);
+});
+
 test("native cache snapshot runs before leaving the build step and preserves its result", () => {
   const build = workflow.jobs.build.steps.find(step => step.name === "Build the unified executable");
   const start = build.run.indexOf("trap '\n");
