@@ -146,9 +146,7 @@ impl ProjectSourceAuthorization {
         }
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         quota
-            .work()
-            .as_deref_mut()
-            .expect("source authorization copy observer")
+            .observer()?
             .codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
         let owner = crate::core::copy_authority(&self.owner, &mut quota)?;
         let caller_fence = LeaseFence {

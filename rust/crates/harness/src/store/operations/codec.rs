@@ -136,7 +136,7 @@ pub(in crate::store) fn decode_index<T: serde::de::DeserializeOwned>(
         ));
     }
     quota.replace(owned)?;
-    let observer = quota.work().as_deref_mut().expect("index observer");
+    let observer = quota.observer()?;
     observer.copy_bytes(copied)?;
     quota.transfer();
     Ok(value)

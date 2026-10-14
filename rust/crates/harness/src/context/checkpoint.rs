@@ -47,7 +47,7 @@ impl CompactionRetention {
             io.check_cancellation()?;
         }
         for (position, role) in self.roles.iter().enumerate() {
-            if self.roles[..position].contains(role) {
+            if self.roles.iter().take(position).any(|prior| prior == role) {
                 return Err(stock_boundary(
                     io,
                     ErrorCode::Invalid,
