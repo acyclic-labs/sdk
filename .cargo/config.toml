@@ -3,3 +3,8 @@
 # the executables from the Visual C++ redistributable.
 [target.'cfg(all(windows, target_env = "msvc"))']
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# The bundled rust-lld uses lld-link on MSVC for faster edit-build links.
+# Cargo's target linker applies to dev, release and dist profiles.
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld"
