@@ -63,15 +63,15 @@ impl NativeHostWork for CallbackWork {
     fn release(&mut self, bytes: u64) -> Result<(), DemandError> {
         self.with_original_leaf(|work| work.release(bytes))
     }
-    #[cfg(any(windows, target_os = "linux", test))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
     fn reserve_cleanup_write(&mut self) -> Result<u64, DemandError> {
         self.with_original_leaf(NativeHostWork::reserve_cleanup_write)
     }
-    #[cfg(any(windows, target_os = "linux", test))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
     fn cancel_cleanup_write(&mut self, reservation: u64) {
         self.with_original_leaf(|work| work.cancel_cleanup_write(reservation));
     }
-    #[cfg(any(windows, target_os = "linux", test))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
     fn attempt_cleanup_write<T>(
         &mut self,
         reservation: u64,

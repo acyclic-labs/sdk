@@ -74,11 +74,11 @@ pub(crate) trait NativeHostWork {
         self.started_io(delta)?;
         operation().map_err(Into::into)
     }
-    #[cfg(any(windows, target_os = "linux", test))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
     fn reserve_cleanup_write(&mut self) -> Result<Self::CleanupWrite, Self::Error>;
-    #[cfg(any(windows, target_os = "linux", test))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
     fn cancel_cleanup_write(&mut self, reservation: Self::CleanupWrite);
-    #[cfg(any(windows, target_os = "linux", test))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
     fn attempt_cleanup_write<T>(
         &mut self,
         reservation: Self::CleanupWrite,
@@ -134,12 +134,12 @@ impl NativeHostWork for DemandWork {
     fn release(&mut self, bytes: u64) -> Result<(), Self::Error> {
         DemandWork::release(self, bytes)
     }
-    #[cfg(any(windows, target_os = "linux", test))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
     fn reserve_cleanup_write(&mut self) -> Result<u64, Self::Error> {
         self.reserve(crate::materializer::NativeResourceCredit::WriteOperations.delta(1))
             .map(|()| 1)
     }
-    #[cfg(any(windows, target_os = "linux", test))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
     fn cancel_cleanup_write(&mut self, reservation: u64) {
         if let Err(error) = self
             .refund(crate::materializer::NativeResourceCredit::WriteOperations.delta(reservation))
@@ -148,7 +148,7 @@ impl NativeHostWork for DemandWork {
             self.poison_native_original_work();
         }
     }
-    #[cfg(any(windows, target_os = "linux", test))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
     fn attempt_cleanup_write<T>(
         &mut self,
         reservation: u64,
@@ -213,15 +213,15 @@ impl NativeHostWork for &NativeMaterializationWork {
         drop(allocation);
         Ok(())
     }
-    #[cfg(any(windows, target_os = "linux", test))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
     fn reserve_cleanup_write(&mut self) -> Result<Self::CleanupWrite, Self::Error> {
         NativeMaterializationWork::reserve_cleanup_write(self)
     }
-    #[cfg(any(windows, target_os = "linux", test))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
     fn cancel_cleanup_write(&mut self, reservation: Self::CleanupWrite) {
         drop(reservation);
     }
-    #[cfg(any(windows, target_os = "linux", test))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
     fn attempt_cleanup_write<T>(
         &mut self,
         reservation: Self::CleanupWrite,

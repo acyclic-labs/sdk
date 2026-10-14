@@ -130,12 +130,12 @@ impl NativeReadMeter for NativeWorkReservation {
     fn admit_durability(&self) -> io::Result<()> {
         self.start_transfer(NativeOperationKind::Durability, 0)
     }
-    #[cfg(any(windows, target_os = "linux", test))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
     fn reserve_cleanup_write(&self) -> io::Result<u64> {
         self.reserve(NativeResourceCredit::WriteOperations.delta(1))?;
         Ok(1)
     }
-    #[cfg(any(windows, target_os = "linux", test))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
     fn cancel_cleanup_write(&self, reservation: u64) {
         self.cancel(NativeResourceCredit::WriteOperations.delta(reservation));
     }
@@ -227,7 +227,7 @@ impl crate::native_host::NativeHostWork for &Arc<NativeWorkReservation> {
     fn release(&mut self, _: Self::Allocation) -> Result<(), Self::Error> {
         Ok(())
     }
-    #[cfg(any(windows, target_os = "linux", test))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
     fn reserve_cleanup_write(&mut self) -> Result<Self::CleanupWrite, Self::Error> {
         let meter: Arc<dyn NativeReadMeter> = (*self).clone();
         acyclic_native_runtime::NativeOperationReservation::new(
@@ -237,11 +237,11 @@ impl crate::native_host::NativeHostWork for &Arc<NativeWorkReservation> {
         )
         .map_err(|error| self.work().runtime_error(error))
     }
-    #[cfg(any(windows, target_os = "linux", test))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
     fn cancel_cleanup_write(&mut self, reservation: Self::CleanupWrite) {
         drop(reservation);
     }
-    #[cfg(any(windows, target_os = "linux", test))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
     fn attempt_cleanup_write<T>(
         &mut self,
         mut reservation: Self::CleanupWrite,
