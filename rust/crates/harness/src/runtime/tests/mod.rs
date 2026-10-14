@@ -83,7 +83,10 @@ pub(super) fn file_fixture(path: &str, media_type: &str) -> Result<FileRef> {
         .map_err(|error| Error::Invalid(error.to_string()))?;
     value["path"] = path.into();
     value["descriptor"]["media_type"] = media_type.into();
-    FileRef::from_value(value, &mut None)
+    let file: FileRef = serde_json::from_value(value)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    file.validate(&mut None)?;
+    Ok(file)
 }
 
 pub(super) struct CompletedModel {

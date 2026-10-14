@@ -19,6 +19,7 @@ pub(crate) trait SourceDemandReadWork:
     fn is_native_original(&self) -> bool {
         self.native_source_work().is_some()
     }
+    #[cfg(all(feature = "native-watch", target_os = "macos"))]
     fn reserve_source_copy(
         &mut self,
         bytes: u64,

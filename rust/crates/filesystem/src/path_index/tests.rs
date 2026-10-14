@@ -24,14 +24,14 @@ fn finite_codec_preserves_opaque_names_absence_and_candidate_identity() -> Resul
     let (generation, ids, records) = fixture();
     let (bytes, guard) = encode_records(generation, &ids, &records, &mut accounting)?;
     let bytes = bytes.unwrap();
-    let decoded = decode(&bytes, generation, &ids, VolumeLimits::default(), &mut accounting)?.0.unwrap();
+    let decoded = decode(&bytes, generation, &ids, VolumeLimits::default(), &mut accounting)?.value.unwrap();
     assert_eq!(decoded, vec![(ids[0], records[0].1[0].0.clone())]);
     accounting.spent().verify(budget)?;
-    assert!(decode(b"corrupt", generation, &ids, VolumeLimits::default(), &mut accounting)?.0.is_none());
+    assert!(decode(b"corrupt", generation, &ids, VolumeLimits::default(), &mut accounting)?.value.is_none());
     assert!(decode(&bytes, GenerationId::new(Digest::from_bytes([8; 32])), &ids,
-        VolumeLimits::default(), &mut accounting)?.0.is_none());
+        VolumeLimits::default(), &mut accounting)?.value.is_none());
     assert!(decode(&bytes, generation, &ids, VolumeLimits { maximum_path_depth: 1,
-        ..VolumeLimits::default() }, &mut accounting)?.0.is_none());
+        ..VolumeLimits::default() }, &mut accounting)?.value.is_none());
     let table = ObjectId { kind: crate::storage::ObjectKind::FileTablePage, digest: Digest::from_bytes([1; 32]) };
     let first = cache_key(generation, ids[0], table, &ids, &mut accounting)?;
     assert_ne!(first, cache_key(generation, ids[1], table, &ids, &mut accounting)?);
@@ -114,7 +114,7 @@ fn native_cache_and_codec_retire_physical_buffers_with_their_original_guards() -
     let (bytes, guard) = encode_records(generation, &ids, &records, &mut accounting)?;
     let bytes = bytes.unwrap();
     let encoded = original.live_allocation_bytes();
-    let (paths, paths_guard) = decode(&bytes, generation, &ids, VolumeLimits::default(), &mut accounting)?;
+    let Owned { value: paths, allocation: paths_guard, .. } = decode(&bytes, generation, &ids, VolumeLimits::default(), &mut accounting)?;
     assert_eq!(paths.unwrap(), vec![(ids[0], records[0].1[0].0.clone())]);
     drop(paths_guard);
     assert_eq!(original.live_allocation_bytes(), encoded);

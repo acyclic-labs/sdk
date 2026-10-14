@@ -112,14 +112,14 @@ impl NativeMountRecoveryOwner {
             &crate::CancellationToken::new(),
         )
         .map_err(|(error, _)| NativeMountError::from(error))?;
-        Self::acquire_with_original(destination, original)
+        Self::acquire_with_original(destination, &original)
     }
 
     pub(super) fn acquire_with_original(
         destination: &Path,
-        original: crate::NativeMaterializationWork,
+        original: &crate::NativeMaterializationWork,
     ) -> Result<Self, NativeMountError> {
-        let mut destination = crate::native_host::clone_path(destination, &mut &original)?;
+        let mut destination = crate::native_host::clone_path(destination, &mut &*original)?;
         destination
             .1
             .grow(std::mem::size_of::<NativeRecoveryShared>() as u64)?;
@@ -134,7 +134,7 @@ impl NativeMountRecoveryOwner {
         )?;
         let mut control = NativeRecoveryControl::default();
         #[cfg(windows)]
-        control.prepare_retirement(&original)?;
+        control.prepare_retirement(original)?;
         let final_close = original.reserve_work(crate::WorkCounters {
             backend_write_operations: 1,
             ..Default::default()
@@ -171,10 +171,9 @@ impl NativeMountRecoveryOwner {
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state
-                .as_mut()
-                .expect("original recovery state")
-                .retire(shared._custody.work());
+            if let Some(state) = state.as_mut() {
+                state.retire(shared._custody.work());
+            }
             drop(state.take());
             shared.wake.notify_all();
             drop(state);
@@ -191,7 +190,7 @@ impl NativeMountRecoveryOwner {
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 state
                     .as_mut()
-                    .expect("original recovery state")
+                    .ok_or(NativeMountError::ControlPending)?
                     .acquire(&owner.shared.destination, owner.shared._custody.work())
             }))
             .unwrap_or_else(|panic| {
@@ -222,32 +221,19 @@ impl NativeMountRecoveryOwner {
     }
 
     /// Returns the original identity and actual recovery state.
-    #[must_use]
-    pub fn cleanup_state(&self) -> NativeMountRecoveryCleanupState {
+    pub fn cleanup_state(&self) -> Result<NativeMountRecoveryCleanupState, NativeMountError> {
         self.shared
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
-            .expect("an active recovery owner")
+            .ok_or(NativeMountError::ControlPending)?
             .snapshot()
     }
 
     /// Recovers through the same engine with an explicit unbounded allowance.
     pub fn recover(&mut self) -> Result<bool, NativeMountError> {
-        self.ordinary_action(true)
-    }
-
-    /// Detaches while preserving the destination and authored residue.
-    pub fn detach(&mut self) -> Result<bool, NativeMountError> {
-        self.ordinary_action(false)
-    }
-
-    pub(super) fn ordinary_action(
-        &mut self,
-        remove_destination: bool,
-    ) -> Result<bool, NativeMountError> {
-        if !self.cleanup_state().destination_fence_retained {
+        if !self.cleanup_state()?.destination_fence_retained {
             return Ok(false);
         }
         #[cfg(target_os = "macos")]
@@ -255,59 +241,46 @@ impl NativeMountRecoveryOwner {
             self.mark_failed();
             return Err(error.into());
         }
-        self.measured_action(
-            remove_destination,
+        let work = crate::NativeMaterializationWork::new(
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )
-        .map(|receipt| receipt.value)
-        .map_err(|(error, _)| error)
+        .map_err(|(error, _)| {
+            self.mark_failed();
+            NativeMountError::from(error)
+        })?;
+        self.finish(true, &work)
     }
 
-    /// Detaches on finite work without removing the destination.
-    pub fn detach_measured(
+    /// Detaches on the caller's original work while preserving authored residue.
+    pub fn detach(
         &mut self,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<bool>, (NativeMountError, crate::WorkCounters)> {
-        self.measured_action(false, budget, cancellation)
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<bool, NativeMountError> {
+        self.finish(false, work)
     }
 
-    pub(super) fn measured_action(
+    fn finish(
         &mut self,
         remove_destination: bool,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<bool>, (NativeMountError, crate::WorkCounters)> {
-        let work = match crate::NativeMaterializationWork::new(budget, cancellation) {
-            Ok(work) => work,
-            Err((error, work)) => {
-                self.mark_failed();
-                return Err((error.into(), work));
-            }
-        };
-        let result = {
-            let mut state = self
-                .shared
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let state = state.as_mut().expect("an active recovery owner");
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                state.finish_with_work(&self.shared.destination, remove_destination, &work)
-            }))
-            .unwrap_or_else(|panic| {
-                state.measured_cleanup_failed = true;
-                Err(NativeMountError::DriverPanicked {
-                    operation: "administrative action",
-                    panic: std::sync::Mutex::new(panic),
-                })
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<bool, NativeMountError> {
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = state.as_mut().ok_or(NativeMountError::ControlPending)?;
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            state.finish_with_work(&self.shared.destination, remove_destination, work)
+        }))
+        .unwrap_or_else(|panic| {
+            state.measured_cleanup_failed = true;
+            Err(NativeMountError::DriverPanicked {
+                operation: "administrative action",
+                panic: std::sync::Mutex::new(panic),
             })
-        };
-        let spent = work.receipt();
-        result
-            .map(|value| crate::OperationReceipt { value, work: spent })
-            .map_err(|error| (error, spent))
+        })
     }
 
     pub(super) fn mark_failed(&mut self) {
@@ -418,7 +391,7 @@ impl NativeRecoveryState {
             }
             self.guard
                 .as_mut()
-                .expect("original retained fence")
+                .ok_or(NativeMountError::ControlPending)?
                 .release(&mut &*work)?;
             self.guard.take();
             Ok(true)
@@ -427,15 +400,15 @@ impl NativeRecoveryState {
         result
     }
 
-    fn snapshot(&self) -> NativeMountRecoveryCleanupState {
-        NativeMountRecoveryCleanupState {
-            fence_identity: self.identity.expect("an acquired fence identity"),
+    fn snapshot(&self) -> Result<NativeMountRecoveryCleanupState, NativeMountError> {
+        Ok(NativeMountRecoveryCleanupState {
+            fence_identity: self.identity.ok_or(NativeMountError::ControlPending)?,
             destination_fence_retained: self.guard.is_some(),
             controls_pending: self.control.controls_pending(),
             namespace_detach_confirmed: self.control.namespace_detach_confirmed(),
             destination_removed: self.destination_removed,
             measured_cleanup_failed: self.measured_cleanup_failed,
-        }
+        })
     }
 }
 

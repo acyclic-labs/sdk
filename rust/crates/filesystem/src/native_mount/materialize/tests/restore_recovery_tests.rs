@@ -21,7 +21,7 @@ fn replaced_root_is_rejected_before_destination_enumeration()
     assert_ne!(original, actual);
     let cancellation = CancellationToken::new();
     let mut receipt = GenerationReceipt::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)
-        .map_err(|failure| failure.0)?;
+        .map_err(|failure| failure.error)?;
     let failure = validate_options(
         &MaterializeOptions {
             expected_root_identity: Some(original),
@@ -156,7 +156,7 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
     assert_eq!(std::fs::read(output.path().join("a-present"))?, b"first");
     assert!(failed.work.backend_read_operations > completed.work.backend_read_operations);
     let mut original = GenerationReceipt::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)
-        .map_err(|failure| failure.0)?;
+        .map_err(|failure| failure.error)?;
     let candidate = checkout.private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(original.custody.work(), &cancellation), &cancellation);
     let candidate = candidate?;
     let reader =
@@ -239,7 +239,7 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
         },
         &cancellation,
     )
-    .map_err(|failure| failure.0)?;
+    .map_err(|failure| failure.error)?;
     let candidate = checkout.private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(no_write.custody.work(), &cancellation), &cancellation);
     let candidate = candidate?;
     let reader =
@@ -343,7 +343,7 @@ async fn native_materialization_rejects_unrepresentable_metadata()
     std::fs::write(temporary.path().join("file"), b"data")?;
     let cancellation = CancellationToken::new();
     let mut receipt = GenerationReceipt::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)
-        .map_err(|failure| failure.0)?;
+        .map_err(|failure| failure.error)?;
     let root = HostRoot::open(temporary.path(), &mut receipt.custody.work().clone())?;
     let root = receipt.owned_arc(root, 0)?;
     let limits = crate::model::VolumeLimits::default();

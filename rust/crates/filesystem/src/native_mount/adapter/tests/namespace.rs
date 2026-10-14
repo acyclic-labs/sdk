@@ -260,7 +260,7 @@ fn concurrent_observations_never_see_a_mutation_half_applied()
     for round in 1..=ROUNDS {
         source.runtime.wait(|| {
             Box::pin(async {
-                let (mut candidate, epoch, stamp) = source
+                let mut candidate = source
                     .checkout
                     .candidate(
                         None,
@@ -290,8 +290,6 @@ fn concurrent_observations_never_see_a_mutation_half_applied()
                     .checkout
                     .install_change(
                         candidate,
-                        epoch,
-                        stamp,
                         ViewChange::Everything,
                         &work,
                         &source.cancellation,

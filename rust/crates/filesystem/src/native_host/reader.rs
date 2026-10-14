@@ -12,6 +12,7 @@ pub struct HostStatReader {
 
 impl HostStatReader {
     pub(super) const BUFFER_BYTES: usize = 64 * 1024;
+    #[cfg(test)]
     pub(crate) fn logical_owned_bytes(&self) -> u64 {
         (self.buffer.capacity() * 8) as u64
     }
@@ -106,7 +107,7 @@ impl HostStatReader {
                 HANDLE(self.directory.as_raw_handle()),
                 FileIdExtdDirectoryInfo,
                 self.buffer.as_mut_ptr().cast(),
-                Self::BUFFER_BYTES as u32,
+                u32::try_from(Self::BUFFER_BYTES).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?,
             )
         };
         match result {
@@ -295,7 +296,8 @@ pub(crate) fn read_dir_held<W: NativeHostWork>(
     work: &mut W,
 ) -> Result<(HostStatReader, W::Allocation), W::Error> {
     #[cfg(windows)]
-    let volume_serial_number = directory_identity(directory, work)?.device as u32;
+    let volume_serial_number = u32::try_from(directory_identity(directory, work)?.device)
+        .map_err(|_| W::invalid_request())?;
     #[cfg(unix)]
     let file = {
         let flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY;

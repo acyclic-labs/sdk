@@ -5,7 +5,6 @@
 use super::HostChange;
 use super::{Delivery, HostChangeWide};
 use crate::demand::{DemandError, DemandWork, SourceDemandReadWork, SourcePayloadOwnership};
-use crate::native_host::NativeHostWork;
 use crate::performance::WorkCounters;
 use std::io;
 use std::mem::size_of;
@@ -74,7 +73,6 @@ struct Shared {
     stop_completed: AtomicBool,
     ownership: SourcePayloadOwnership,
     cleanup: Mutex<[Option<crate::materializer::NativeWorkReservation>; 2]>,
-    attempted: AtomicBool,
     dropped: AtomicBool,
     #[cfg(test)]
     native_wait_cancellation: Mutex<Option<crate::CancellationToken>>,

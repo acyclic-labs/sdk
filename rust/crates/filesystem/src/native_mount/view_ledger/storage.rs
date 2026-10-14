@@ -163,6 +163,7 @@ pub(super) fn release_backing(
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub(in crate::native_mount) fn same_work(
     left: &crate::NativeMaterializationWork,
     right: &crate::NativeMaterializationWork,

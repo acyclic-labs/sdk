@@ -94,7 +94,7 @@ async fn written_zeros_in_a_sparse_file_capture_as_holes() -> std::io::Result<()
         async move {
             let reported = whole();
             let original = crate::NativeMaterializationWork::new(budget, &cancellation)
-                .map_err(|(error, work)| OperationFailure::new(CaptureError::from(error), work))?;
+                .map_err(|(error, work)| OperationFailure::new(CaptureError::from(error), *work))?;
             let mut scope = CaptureWorkScope::new(&original)?;
             {
                 let work = &scope;

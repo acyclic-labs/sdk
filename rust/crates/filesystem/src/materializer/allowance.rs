@@ -48,7 +48,6 @@ impl NativeResourceState {
 #[derive(Clone, Copy)]
 pub(crate) enum NativeResourceCredit {
     Items,
-    ReturnedItems,
     Copy,
     ReadOperations,
     WriteOperations,
@@ -62,7 +61,6 @@ impl NativeResourceCredit {
     pub(crate) fn counter(self, work: &mut WorkCounters) -> &mut u64 {
         match self {
             Self::Items => &mut work.items_examined,
-            Self::ReturnedItems => &mut work.items_returned,
             Self::Copy => &mut work.bytes_copied,
             Self::ReadOperations => &mut work.backend_read_operations,
             Self::WriteOperations => &mut work.backend_write_operations,
@@ -287,9 +285,8 @@ impl NativeResourceAllowance {
         excluded: Option<&Self>,
     ) -> Result<(), DemandError> {
         self.visit(excluded, &|_, state| {
-            state.pending = unused.remaining(state.pending).map_err(|error| {
+            state.pending = unused.remaining(state.pending).inspect_err(|_| {
                 state.poisoned = true;
-                error
             })?;
             Ok(Ok(()))
         })
@@ -303,9 +300,8 @@ impl NativeResourceAllowance {
         self.visit(excluded, &|scope, state| {
             let pending = maximum.remaining(state.pending);
             state.work.try_add_assign(&actual)?;
-            state.pending = pending.map_err(|error| {
+            state.pending = pending.inspect_err(|_| {
                 state.poisoned = true;
-                error
             })?;
             if actual.intersect_budget(maximum) != actual {
                 return Err(DemandError::InvalidRequest);

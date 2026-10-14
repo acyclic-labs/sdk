@@ -25,7 +25,7 @@ impl NativeSession {
         .await
         {
             Ok(receipt) => receipt,
-            Err((error, work)) => return Ok(publication_failure(binding, error.to_string(), work)),
+            Err((error, work)) => return Ok(publication_failure(binding, error.to_string(), *work)),
         };
         if let Some(original) = &receipt.value {
             publication_digest(binding, original)?;
@@ -160,7 +160,7 @@ impl NativeSession {
                 match acyclic_fs::NativeMaterializationWork::new(binding.budget, &cancellation) {
                     Ok(work) => work,
                     Err((error, work)) => {
-                        return Ok(publication_failure(binding, error.to_string(), work));
+                        return Ok(publication_failure(binding, error.to_string(), *work));
                     }
                 };
             let guard_work = work.clone();
@@ -229,7 +229,7 @@ impl NativeSession {
                 )
                 .await
             }
-            Err((error, work)) => Ok(publication_failure(binding, error.to_string(), work)),
+            Err((error, work)) => Ok(publication_failure(binding, error.to_string(), *work)),
         }
     }
 }

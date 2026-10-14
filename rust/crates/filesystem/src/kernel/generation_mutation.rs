@@ -355,9 +355,7 @@ impl Owned<TransactionState> {
                 };
                 Ok(entries)
             })?;
-            let (listing, allocation) = super::list::list_tree_entries_async_with_accounting(
-                store, entries, None, 1, DecodeLimits::for_volume(config), accounting, cancellation.clone(), None,
-            ).await.map_err(|error| {
+            let (listing, allocation) = super::list::list_tree_entries_async_with_accounting(store, entries, ((None).map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded), 1), DecodeLimits::for_volume(config), accounting, cancellation, None,).await.map_err(|error| {
                 if is_original(accounting) { error } else {
                     GenerationMutationError::Directory(super::persistent_pagination::project_failure(error)).into()
                 }

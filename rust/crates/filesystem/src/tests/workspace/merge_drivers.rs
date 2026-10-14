@@ -56,7 +56,7 @@ async fn merge_drivers_resolve_and_publish_real_workspace_joins() -> Result<(), 
         main.verify_join_commit(&value!(plan.commit_witness(
             &application,
             join_key,
-            WorkBudget::UNBOUNDED,
+            &WorkBudget::UNBOUNDED,
             &CancellationToken::new()
         ))?, WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?

@@ -139,13 +139,11 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
         aggregate
             .execute(command.clone(), Some(&owner), &mut Some(&mut denied_io))
             .await,
-        Err(Error::NativeWork {
-            cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
+        Err(Error::NativeFilesystem { source, .. }) if matches!(*source,
+            acyclic_fs::FsError::NativeKernel(NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
                 counter: "bytes_copied",
                 ..
-            }),
-            ..
-        })
+            })))
     ));
     let cancelled_token = CancellationToken::new();
     let cancelled = NativeMaterializationWork::new(guarded_publication_budget(), &cancelled_token)

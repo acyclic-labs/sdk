@@ -135,9 +135,7 @@ async fn rewrites_only_intersecting_leaf_and_shared_root() -> Result<(), Box<dyn
     let store = MemoryObjectStore::default();
     let (root, leaves) = three_leaf_tree(&store).await?;
     let receipt = apply_extent_mutations(
-        &store,
-        root,
-        300,
+        &store, (root, 300),
         &[ExtentMutation::Replace {
             offset: 120,
             length: 10,
@@ -167,9 +165,7 @@ async fn semantic_noop_preserves_root_without_writes() -> Result<(), Box<dyn std
     let store = MemoryObjectStore::default();
     let (root, _) = three_leaf_tree(&store).await?;
     let receipt = apply_extent_mutations(
-        &store,
-        root,
-        300,
+        &store, (root, 300),
         &[ExtentMutation::Replace {
             offset: 120,
             length: 10,
@@ -196,9 +192,7 @@ async fn pre_cancelled_extent_mutation_performs_zero_work() -> Result<(), Box<dy
     let cancellation = CancellationToken::new();
     cancellation.cancel();
     let failure = apply_extent_mutations(
-        &store,
-        root,
-        100,
+        &store, (root, 100),
         &[ExtentMutation::Resize { logical_bytes: 50 }],
         8,
         DecodeLimits::default(),
@@ -232,9 +226,7 @@ async fn decoded_extent_allocation_is_admitted_after_shape_read_before_decode()
         extend: false,
     }];
     let baseline = apply_extent_mutations(
-        &store,
-        root,
-        100,
+        &store, (root, 100),
         &mutation,
         1,
         DecodeLimits::default(),
@@ -243,9 +235,7 @@ async fn decoded_extent_allocation_is_admitted_after_shape_read_before_decode()
     ).await?;
     let maximum = baseline.work.peak_allocation_bytes - 1;
     let failure = apply_extent_mutations(
-        &store,
-        root,
-        100,
+        &store, (root, 100),
         &mutation,
         1,
         DecodeLimits::default(),
@@ -276,9 +266,7 @@ async fn truncate_drops_later_subtree_without_reading_it() -> Result<(), Box<dyn
     let store = MemoryObjectStore::default();
     let (root, leaves) = three_leaf_tree(&store).await?;
     let receipt = apply_extent_mutations(
-        &store,
-        root,
-        300,
+        &store, (root, 300),
         &[ExtentMutation::Resize { logical_bytes: 150 }],
         8,
         DecodeLimits::default(),
@@ -299,9 +287,7 @@ async fn extension_reads_only_last_frontier_and_appends_hole() -> Result<(), Box
     let store = MemoryObjectStore::default();
     let (root, leaves) = three_leaf_tree(&store).await?;
     let receipt = apply_extent_mutations(
-        &store,
-        root,
-        300,
+        &store, (root, 300),
         &[ExtentMutation::Resize { logical_bytes: 500 }],
         8,
         DecodeLimits::default(),
@@ -330,9 +316,7 @@ async fn content_offsets_advance_across_leaf_boundaries() -> Result<(), Box<dyn 
         digest: Digest::from_bytes([7; 32]),
     };
     let receipt = apply_extent_mutations(
-        &store,
-        root,
-        300,
+        &store, (root, 300),
         &[ExtentMutation::Replace {
             offset: 90,
             length: 30,
@@ -396,9 +380,7 @@ async fn shrink_then_growth_does_not_resurrect_discarded_extents()
         8,
     ).await?;
     let receipt = apply_extent_mutations(
-        &store,
-        root,
-        300,
+        &store, (root, 300),
         &[
             ExtentMutation::Resize { logical_bytes: 150 },
             ExtentMutation::Resize { logical_bytes: 300 },
@@ -423,9 +405,7 @@ async fn rejected_nonextending_range_performs_no_backend_work() -> Result<(), Bo
     let store = MemoryObjectStore::default();
     let (root, _) = three_leaf_tree(&store).await?;
     let failure = apply_extent_mutations(
-        &store,
-        root,
-        300,
+        &store, (root, 300),
         &[ExtentMutation::Replace {
             offset: 299,
             length: 2,
@@ -453,9 +433,7 @@ async fn invalid_tail_is_rejected_during_allocation_free_admission()
     let store = MemoryObjectStore::default();
     let (root, _) = three_leaf_tree(&store).await?;
     let failure = apply_extent_mutations(
-        &store,
-        root,
-        300,
+        &store, (root, 300),
         &[
             ExtentMutation::Replace {
                 offset: 10,
@@ -498,9 +476,7 @@ async fn admission_work_budget_stops_before_allocation_or_backend_access()
         ..WorkBudget::UNBOUNDED
     };
     let failure = apply_extent_mutations(
-        &store,
-        root,
-        300,
+        &store, (root, 300),
         &[
             ExtentMutation::Resize { logical_bytes: 250 },
             ExtentMutation::Resize { logical_bytes: 200 },
@@ -534,9 +510,7 @@ async fn radix_copy_budget_stops_before_unadmitted_copy_or_backend_access()
     let store = MemoryObjectStore::default();
     let (root, _) = three_leaf_tree(&store).await?;
     let failure = apply_extent_mutations(
-        &store,
-        root,
-        300,
+        &store, (root, 300),
         &[ExtentMutation::Replace {
             offset: 10,
             length: 5,
@@ -681,9 +655,7 @@ async fn extent_pages_split_on_byte_bound_before_item_bound()
         ..DecodeLimits::default()
     };
     let receipt = apply_extent_mutations(
-        &store,
-        root,
-        100,
+        &store, (root, 100),
         &[
             ExtentMutation::Replace {
                 offset: 0,
@@ -809,9 +781,7 @@ async fn truncate_to_zero_reads_no_old_pages_and_emits_canonical_empty_leaf()
     let store = MemoryObjectStore::default();
     let (root, _) = three_leaf_tree(&store).await?;
     let receipt = apply_extent_mutations(
-        &store,
-        root,
-        300,
+        &store, (root, 300),
         &[ExtentMutation::Resize { logical_bytes: 0 }],
         8,
         DecodeLimits::default(),
@@ -847,9 +817,7 @@ async fn truncate_to_zero_stops_at_first_child_independent_of_root_width()
     let narrow_store = MemoryObjectStore::default();
     let narrow = root_with_width(&narrow_store, 2).await?;
     let narrow_receipt = apply_extent_mutations(
-        &narrow_store,
-        narrow,
-        2,
+        &narrow_store, (narrow, 2),
         &[ExtentMutation::Resize { logical_bytes: 0 }],
         1,
         DecodeLimits::default(),
@@ -860,9 +828,7 @@ async fn truncate_to_zero_stops_at_first_child_independent_of_root_width()
     let wide_store = MemoryObjectStore::default();
     let wide = root_with_width(&wide_store, 1_024).await?;
     let wide_receipt = apply_extent_mutations(
-        &wide_store,
-        wide,
-        1_024,
+        &wide_store, (wide, 1_024),
         &[ExtentMutation::Resize { logical_bytes: 0 }],
         1,
         DecodeLimits::default(),
@@ -1102,9 +1068,7 @@ async fn generated_sparse_histories_match_independent_byte_model()
             ..DecodeLimits::default()
         };
         let receipt = apply_extent_mutations(
-            &store,
-            root,
-            old_size,
+            &store, (root, old_size),
             &mutations,
             8,
             limits,
@@ -1179,9 +1143,7 @@ async fn native_extent_compilation_denial_restores_original_scratch_before_backe
         offset: 4, length: 4, kind: ExtentKind::AllocatedZero, extend: false,
     };
     let denied = (apply_extent_mutations_with_accounting(
-        &store,
-        root,
-        16,
+        &store, (root, 16),
         std::slice::from_ref(&mutation),
         1,
         DecodeLimits::default(),
@@ -1204,9 +1166,7 @@ async fn native_extent_compilation_denial_restores_original_scratch_before_backe
         .map_err(|(error, _)| error)?;
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let receipt = (apply_extent_mutations_with_accounting(
-        &store,
-        root,
-        16,
+        &store, (root, 16),
         &[mutation],
         1,
         DecodeLimits::default(),

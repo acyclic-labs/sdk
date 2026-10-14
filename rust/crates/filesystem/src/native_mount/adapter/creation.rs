@@ -9,7 +9,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         let mut carrier = NativeDemandCarrier::Native(work);
         carrier.check(cancellation, Some(&self.cancellation))?;
         let (path, _path_allocation) = self.namespace_path(path, &mut carrier)?;
-        let (mut candidate, epoch, stamp) = self
+        let mut candidate = self
             .checkout
             .candidate(None, &mut carrier, cancellation, Some(&self.cancellation))
             .await?;
@@ -21,7 +21,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         drop(inputs);
         let mut inspector = candidate
             .checkout
-            .inspector(&mut crate::kernel::allocation::KernelAccounting::native(work, cancellation), cancellation)
+            .inspector(
+                &mut crate::kernel::allocation::KernelAccounting::native(work, cancellation),
+                cancellation,
+            )
             .map_err(MountSourceError::Filesystem)?;
         let created = inspector
             .lookup_no_follow_with_metadata(&path, work, cancellation)
@@ -33,8 +36,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             .checkout
             .install_candidate(
                 candidate,
-                epoch,
-                stamp,
                 &mut carrier,
                 cancellation,
                 Some(&self.cancellation),

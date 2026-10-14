@@ -423,6 +423,7 @@ async fn native_stock_model_configuration_retains_original_custody_and_rejects_f
 #[tokio::test]
 async fn genuine_stock_native_context_preserves_mcp_current_and_settlement_source() -> Result<()> {
     let fixture = Fixture::new().await?;
+    fixture.machine.native.store(true, Ordering::SeqCst);
     let cancellation = acyclic_fs::CancellationToken::new();
     let work =
         acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)

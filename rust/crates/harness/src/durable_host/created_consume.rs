@@ -92,9 +92,9 @@ pub(super) fn consume_receipts(
                 && (scratch.volume() != &binding.volume
                     || scratch.origin() != &receipt.origin
                     || binding.artifact_writer)
-                {
-                    return Err(Error::Unauthorized("scratch provenance differs".into()));
-                }
+            {
+                return Err(Error::Unauthorized("scratch provenance differs".into()));
+            }
             for operation in [
                 Some(VolumeOperation::Read),
                 binding
@@ -113,12 +113,7 @@ pub(super) fn consume_receipts(
             content.push(binding);
         }
     }
-    let mut proofs = crate::core::reserve_copy_vector(admission.resource_proofs.len(), &mut quota)?;
-    for proof in &admission.resource_proofs {
-        let (proof, held) = proof.copy(quota.work())?;
-        quota.adopt(held)?;
-        proofs.push(proof);
-    }
+    let proofs = RuntimeScope::copy_resource_proofs(&admission.resource_proofs, &mut quota)?;
     let access = CreatedResourceAccess {
         operation: admission.operation_id,
         admission_digest: digest,
@@ -127,8 +122,6 @@ pub(super) fn consume_receipts(
         references,
         proofs,
         publication_lease: None,
-        #[cfg(not(target_arch = "wasm32"))]
-        native_custody: None,
     };
     quota.transfer();
     Ok(access)

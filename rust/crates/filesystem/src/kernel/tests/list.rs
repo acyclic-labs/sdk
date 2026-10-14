@@ -395,7 +395,7 @@ async fn pagination_rejects_every_invalid_admission_and_authenticated_bound()
 async fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::async_storage::AsyncObjectStore;
-    use crate::storage::{ObjectRead, ObjectReadRequest, ObjectResult};
+    use crate::storage::ObjectReadRequest;
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct PanickingRead {
         inner: MemoryObjectStore,
@@ -519,16 +519,11 @@ async fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
     let cancellation = CancellationToken::new();
     let owner = crate::kernel::ProofDataCustody::default();
     let result = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(async {
-        (list_tree_entries_async_with_custody(
-            &store,
-            root,
-            None,
-            2,
-            DecodeLimits::default(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-            Some(&owner),
-        ))
+        let mut accounting = crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        persistent_pagination::paginate_with_accounting::<_, TreeFormat>(
+            &store, (root, Bound::Unbounded, 2), DecodeLimits::default(),
+            &mut accounting, &cancellation, Some(&owner),
+        )
         .await
     }))
     .await;

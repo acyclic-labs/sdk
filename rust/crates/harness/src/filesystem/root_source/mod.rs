@@ -4,7 +4,6 @@ use crate::{
     Error, Result, TaskId,
     conversation::VolumeClass,
     core::Authority,
-    executor::json::JsonBounds,
     executor::with_history_io,
     source_authorization::{
         ProjectSourceSnapshot, RootProjectSourceContext, RootProjectSourceProvider,

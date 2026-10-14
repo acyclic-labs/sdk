@@ -27,7 +27,7 @@ where
         accounting: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<(), DemandError> {
         if let Some(original) = accounting.native_work() {
-            return self.record(changes, original.clone()).map_err(demand_error);
+            return self.record(changes, original).map_err(demand_error);
         }
         let cancellation = match &*accounting {
             crate::kernel::KernelAccounting::Standalone { cancellation, .. }
@@ -37,16 +37,14 @@ where
             }
         };
         let budget = accounting.remaining().map_err(DemandError::from)?;
-        let work = crate::NativeMaterializationWork::new(budget, &cancellation).map_err(
-            |(error, completed)| {
-                let failure: crate::demand::DemandResult<()> = Err(crate::OperationFailure::new(
-                    demand_error(MountSourceError::NativeWork(error)),
-                    completed,
-                ));
-                crate::demand::accept_source_result(failure, accounting).unwrap_err()
-            },
-        )?;
-        let result = self.record(changes, work.clone()).map_err(demand_error);
+        let work = match crate::NativeMaterializationWork::new(budget, &cancellation) {
+            Ok(work) => work,
+            Err((error, completed)) => {
+                crate::demand::merge_source_work(*completed, accounting)?;
+                return Err(demand_error(MountSourceError::NativeWork(error)));
+            }
+        };
+        let result = self.record(changes, &work).map_err(demand_error);
         crate::demand::accept_source_result(
             result
                 .map(|value| crate::OperationReceipt {
@@ -69,10 +67,9 @@ where
     fn record(
         &self,
         changes: &[SourceChange],
-        source: crate::NativeMaterializationWork,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
-        let work = source.clone();
         work.admit(crate::WorkCounters::UNCHARGED)
             .map_err(MountSourceError::NativeWork)?;
         let (Some(lazy), Some(authored)) = (self.lazy.upgrade(), self.authored.upgrade()) else {
@@ -82,15 +79,14 @@ where
             .cancellation()
             .check()
             .map_err(|_| MountSourceError::Cancelled)?;
-        let mut scratch_carrier = adapter::NativeDemandCarrier::Native(&work);
+        let mut scratch_carrier = adapter::NativeDemandCarrier::Native(work);
         let mut scratch = adapter::InputBuffers::new(&mut scratch_carrier)?;
         let mut effect = ViewEffect::default();
         let (nodes, subtrees, listings) =
             changes
                 .iter()
                 .try_fold((0usize, 0usize, 0usize), |(n, s, l), change| {
-                    crate::native_host::NativeHostWork::check(&source)
-                        .map_err(mount_demand_error)?;
+                    crate::native_host::NativeHostWork::check(work).map_err(mount_demand_error)?;
                     work.charge(crate::materializer::NativeResourceCredit::Items.delta(1))
                         .map_err(MountSourceError::NativeWork)?;
                     let extra = match change {
@@ -118,9 +114,9 @@ where
         effect.subtrees = scratch.vec(subtrees)?;
         effect.listings = scratch.vec(listings)?;
         let mut unconfirmed = false;
-        let mut accounting = KernelAccounting::native(&work, work.cancellation());
+        let mut accounting = KernelAccounting::native(work, work.cancellation());
         for change in changes {
-            crate::native_host::NativeHostWork::check(&source).map_err(mount_demand_error)?;
+            crate::native_host::NativeHostWork::check(work).map_err(mount_demand_error)?;
             authored
                 .cancellation()
                 .check()
@@ -171,10 +167,9 @@ where
         {
             authored.record_projection_change(
                 &change,
-                &mut adapter::NativeDemandCarrier::Native(&work),
+                &mut adapter::NativeDemandCarrier::Native(work),
                 || {
-                    crate::native_host::NativeHostWork::check(&source)
-                        .map_err(mount_demand_error)?;
+                    crate::native_host::NativeHostWork::check(work).map_err(mount_demand_error)?;
                     work.admit(crate::WorkCounters::UNCHARGED)
                         .map_err(MountSourceError::NativeWork)?;
                     authored
@@ -184,6 +179,6 @@ where
                 },
             )?;
         }
-        crate::native_host::NativeHostWork::check(&source).map_err(mount_demand_error)
+        crate::native_host::NativeHostWork::check(work).map_err(mount_demand_error)
     }
 }

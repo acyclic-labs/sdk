@@ -103,7 +103,7 @@ impl NativeDemandSource {
                             Ok(Self {
                                 excluded: Arc::new(ExcludedPaths {
                                     paths: Vec::new(),
-                                    ownership: SourcePayloadOwnership::default(),
+                                    _ownership: SourcePayloadOwnership::default(),
                                 }),
                                 inner: Arc::new(NativeDemandInner {
                                     path,

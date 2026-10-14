@@ -197,7 +197,10 @@ where
             .await?;
         observation.ensure_publication_resolved()?;
         let mut checkout = observation
-            .observer(&mut crate::kernel::allocation::KernelAccounting::native(work, cancellation), cancellation)
+            .observer(
+                &mut crate::kernel::allocation::KernelAccounting::native(work, cancellation),
+                cancellation,
+            )
             .map_err(mount_engine_error)?;
         let (lookup, _, allocation) = self
             .lazy
@@ -259,7 +262,8 @@ where
                 .map_err(|_| MountSourceError::Stale)?
                 .insert(file_id);
         }
-        let projected = mount_lookup(lookup, file_id);
+        let projected = mount_lookup(&lookup, file_id);
+        drop(lookup);
         if self.detached_by_id(file_id)?.is_some() {
             return Ok((self.project_authored(projected, work).await?, None));
         }

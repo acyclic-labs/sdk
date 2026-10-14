@@ -11,7 +11,9 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
 use storage::ChangePositions;
-pub(super) use storage::{copy_work, same_work, scan_work};
+pub(super) use storage::{copy_work, scan_work};
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+pub(super) use storage::same_work;
 use unicode_normalization::UnicodeNormalization as _;
 mod notifications;
 mod storage;

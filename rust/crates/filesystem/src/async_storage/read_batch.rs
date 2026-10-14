@@ -88,23 +88,6 @@ fn authority_object_error(error: crate::AuthorityStoreError) -> crate::ObjectSto
     }
 }
 
-#[cfg(feature = "memory")]
-pub(crate) fn merge_completed_object_read(
-    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-    completed: crate::performance::WorkCounters,
-    retained: u64,
-) -> Result<(), crate::FsError> {
-    let (allocations, work, budget, _) = accounting
-        .standalone_parts()
-        .ok_or(crate::storage::ObjectStoreError::Corrupt)?;
-    *work = work.with_backend(completed, allocations.live_bytes())?;
-    allocations
-        .record_owned_bytes(retained, work)
-        .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-    work.verify(budget)?;
-    Ok(())
-}
-
 pub(crate) fn object_error(error: crate::FsError) -> crate::storage::ObjectStoreError {
     match error {
         crate::FsError::Object(error) => error,

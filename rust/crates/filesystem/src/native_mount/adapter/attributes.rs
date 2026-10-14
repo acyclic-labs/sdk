@@ -13,7 +13,7 @@ where
         invoke(&self.runtime, work, || async {
             let cancellation = work.cancellation();
             let mut carrier = NativeDemandCarrier::Native(work);
-            let (mut candidate, epoch, stamp) = self
+            let mut candidate = self
                 .checkout
                 .candidate(None, &mut carrier, cancellation, Some(&self.cancellation))
                 .await?;
@@ -34,8 +34,6 @@ where
             self.checkout
                 .install_change(
                     candidate,
-                    epoch,
-                    stamp,
                     ViewChange::Node(lookup.node.file_id),
                     work,
                     &self.cancellation,

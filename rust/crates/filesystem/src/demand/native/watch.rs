@@ -63,7 +63,7 @@ impl NativeDemandSource {
             + crate::source_watch::arc_control_bytes::<crate::source_watch::NativeSourceWatch>();
         let claim = context.claim(bytes)?;
         ownership.retain(claim, context)?;
-        let watch = Arc::new(crate::source_watch::NativeSourceWatch::start_with_work(
+        let watch = Arc::new(crate::source_watch::NativeSourceWatch::start(
             &self.inner.root,
             Arc::new(NativeChanges {
                 inner: Arc::downgrade(&self.inner),
@@ -140,17 +140,14 @@ impl NativeDemandInner {
                 } else {
                     0
                 };
-                let name = match crate::kernel::LogicalName::new(
+                let Ok(name) = crate::kernel::LogicalName::new(
                     encoding,
                     bytes,
                     self.limits.maximum_component_bytes,
-                ) {
-                    Ok(name) => name,
-                    Err(_) => {
-                        drop(guard);
-                        work.release(ordinary)?;
-                        break;
-                    }
+                ) else {
+                    drop(guard);
+                    work.release(ordinary)?;
+                    break;
                 };
                 if NamespacePath::validate_component_lengths(
                     names
@@ -269,7 +266,7 @@ impl NativeChanges {
             }
             for batch in reported
                 .chunk_by(|a, b| self.excluded.visible(a) == self.excluded.visible(b))
-                .filter(|batch| self.excluded.visible(&batch[0]))
+                .filter(|batch| batch.first().is_some_and(|change| self.excluded.visible(change)))
             {
                 account_source(work, |accounting, _| {
                     self.sink.source_changed(batch, accounting)

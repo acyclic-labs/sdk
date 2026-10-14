@@ -135,11 +135,12 @@ impl<A, O> SharedCheckout<A, O> {
                 .await?;
             let state = await_lock(self.state.read(), carrier, cancellation, lifetime).await?;
             // Nested reads finish against the projection pinned by their outer lease.
-            if nested || self
-                .returned
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .is_none()
+            if nested
+                || self
+                    .returned
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .is_none()
             {
                 return Ok(SharedCheckoutObservation { _view: view, state });
             }
@@ -159,7 +160,7 @@ impl<A, O> SharedCheckout<A, O> {
         carrier: &mut NativeDemandCarrier<'_>,
         cancellation: &CancellationToken,
         lifetime: Option<&CancellationToken>,
-    ) -> Result<(CheckoutCandidate<A, O>, u64, ViewStamp), MountSourceError>
+    ) -> Result<CheckoutCandidate<A, O>, MountSourceError>
     where
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
@@ -167,11 +168,35 @@ impl<A, O> SharedCheckout<A, O> {
         let state = await_lock(self.lock(), carrier, cancellation, lifetime).await?;
         let epoch = self.view_gate.generation();
         let stamp = self.ledger.stamp();
-        Ok((
-            state.candidate(operation, carrier, cancellation)?,
+        match operation {
+            Some(operation) if state.publication_operation == Some(operation) => {}
+            Some(_) => return Err(MountSourceError::Stale),
+            None => state.ensure_publication_resolved()?,
+        }
+        let work = carrier
+            .original_native_work()
+            .ok_or(MountSourceError::NativeWork(
+                crate::NativeTreeMaterializationError::InvalidLayout,
+            ))?;
+        Ok(CheckoutCandidate {
+            base: state
+                .checkout
+                .private_candidate(
+                    &mut crate::kernel::allocation::KernelAccounting::native(&work, cancellation),
+                    cancellation,
+                )
+                .map_err(MountSourceError::from)?,
+            checkout: state
+                .checkout
+                .private_candidate(
+                    &mut crate::kernel::allocation::KernelAccounting::native(&work, cancellation),
+                    cancellation,
+                )
+                .map_err(MountSourceError::from)?,
+            operation,
             epoch,
             stamp,
-        ))
+        })
     }
 }
 
