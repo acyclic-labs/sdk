@@ -394,6 +394,10 @@ impl FuseProjection {
         Ok((open_file, refreshed, stamp))
     }
 
+    #[allow(
+        clippy::mutable_key_type,
+        reason = "FuseOwned hashes and compares only its immutable path, never its accounting owner."
+    )]
     pub(super) fn create_file(
         &self,
         request: &Request,

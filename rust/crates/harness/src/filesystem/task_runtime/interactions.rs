@@ -65,21 +65,10 @@ where
         io: Option<&super::super::PreparationIo>,
     ) -> Result<bool> {
         #[cfg(not(target_arch = "wasm32"))]
-        let local_io = io
-            .map(|io| {
-                super::super::PreparationIo::from_native_work(
-                    io.original_native_work().ok_or_else(|| {
-                        observed::boundary(
-                            Some(io),
-                            crate::wire::ErrorCode::Unsupported,
-                            "approval requires original native work",
-                        )
-                    })?,
-                )
-            })
-            .transpose()?;
+        let local_io = approval_io(io)?;
         #[cfg(not(target_arch = "wasm32"))]
         let io = local_io.as_ref();
+        let work = io.and_then(super::super::PreparationIo::original_native_work);
         if !context
             .scope()
             .grants()
@@ -103,9 +92,8 @@ where
         })?;
         let admission = self.admission_observed(task, io).await?;
         #[cfg(not(target_arch = "wasm32"))]
-        let identity = match io {
-            Some(io) => {
-                let work = io.original_native_work().expect("native approval IO");
+        let identity = match io.zip(work) {
+            Some((io, work)) => {
                 let (identity, custody) = policy.identity_with_native_work(work)?;
                 io.absorb_native_custody(custody)?;
                 identity
@@ -121,22 +109,8 @@ where
                 "approval policy differs from admission",
             ));
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        let (operation, digest) = match io {
-            Some(io) => crate::runtime::tool_approval_binding(
-                task,
-                &identity,
-                definition,
-                invocation,
-                Some(io.original_native_work().expect("native approval IO")),
-            )?,
-            None => crate::runtime::tool_approval_binding(
-                task, &identity, definition, invocation, None,
-            )?,
-        };
-        #[cfg(target_arch = "wasm32")]
         let (operation, digest) =
-            crate::runtime::tool_approval_binding(task, &identity, definition, invocation, None)?;
+            crate::runtime::tool_approval_binding(task, &identity, definition, invocation, work)?;
         if let Some(io) = io {
             let hashed = acyclic_fs::WorkCounters {
                 bytes_hashed: b"harness/v2/task-interaction\0".len() as u64 + 32,
@@ -197,21 +171,10 @@ where
     ) -> Result<bool> {
         use crate::executor::{ExecutionEvent, ExecutionReplay, ModelPurpose};
         #[cfg(not(target_arch = "wasm32"))]
-        let local_io = io
-            .map(|io| {
-                super::super::PreparationIo::from_native_work(
-                    io.original_native_work().ok_or_else(|| {
-                        observed::boundary(
-                            Some(io),
-                            crate::wire::ErrorCode::Unsupported,
-                            "model approval requires original native work",
-                        )
-                    })?,
-                )
-            })
-            .transpose()?;
+        let local_io = approval_io(io)?;
         #[cfg(not(target_arch = "wasm32"))]
         let io = local_io.as_ref();
+        let work = io.and_then(super::super::PreparationIo::original_native_work);
         let scope = context.scope();
         if !scope.grants().contains("model:generate") {
             return Err(observed::boundary(
@@ -241,15 +204,11 @@ where
                 "model wait has no task",
             )
         })?;
-        let (journal, operation) = match io {
+        let (journal, operation) = match work {
             #[cfg(not(target_arch = "wasm32"))]
-            Some(io) => {
-                self.readonly_execution_journal_with_native_work(
-                    task,
-                    turn,
-                    io.original_native_work().expect("native approval IO"),
-                )
-                .await?
+            Some(work) => {
+                self.readonly_execution_journal_with_native_work(task, turn, work)
+                    .await?
             }
             _ => {
                 let operation = execution_operation(task, turn, None)?;
@@ -333,15 +292,10 @@ where
         }
         let request = retained.request.ok_or(Error::Indeterminate(operation))?;
         for message in &request.request().messages {
-            match io {
+            match work {
                 #[cfg(not(target_arch = "wasm32"))]
-                Some(io) => {
-                    verify_native_model_files(
-                        context,
-                        &message.content,
-                        io.original_native_work().expect("native approval IO"),
-                    )
-                    .await?
+                Some(work) => {
+                    verify_native_model_files(context, &message.content, work).await?;
                 }
                 _ => {
                     for file in message.content.file_refs() {
@@ -357,20 +311,9 @@ where
                 arguments,
             } = event
             {
-                let invocation = match io {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    Some(io) => crate::tool::ToolInvocation::for_model_call(
-                        operation,
-                        step,
-                        call_id,
-                        name,
-                        arguments,
-                        Some(io.original_native_work().expect("native approval IO")),
-                    )?,
-                    _ => crate::tool::ToolInvocation::for_model_call(
-                        operation, step, call_id, name, arguments, None,
-                    )?,
-                };
+                let invocation = crate::tool::ToolInvocation::for_model_call(
+                    operation, step, call_id, name, arguments, work,
+                )?;
                 let select = |event: &ExecutionEvent| {
                     matches!(event,
                     ExecutionEvent::ToolStarted { step: recorded, call_id, .. }
@@ -397,7 +340,6 @@ where
                     .any(|record| matches!(record.event, ExecutionEvent::ToolCompleted { .. }))
                 {
                     let native = io.is_some_and(|io| io.original_native_work().is_some());
-                    let projection_hold;
                     let projection = crate::executor::completed_tool_projection(
                         journal.as_ref(),
                         &records,
@@ -412,7 +354,7 @@ where
                         io,
                     )
                     .await?;
-                    projection_hold = io
+                    let projection_hold = io
                         .filter(|_| native)
                         .map(|io| io.guard_owned(projection.logical_owned_bytes()?))
                         .transpose()?;
@@ -489,6 +431,7 @@ where
         }
     }
 
+    /// Binds tool tickets to the original task, journal and native ledger.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn bind_native_tool_interactions(
         &self,
@@ -522,4 +465,21 @@ where
             Ok(context)
         }
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn approval_io(
+    io: Option<&super::super::PreparationIo>,
+) -> Result<Option<super::super::PreparationIo>> {
+    io.map(|io| {
+        let work = io.original_native_work().ok_or_else(|| {
+            observed::boundary(
+                Some(io),
+                crate::wire::ErrorCode::Unsupported,
+                "approval requires original native work",
+            )
+        })?;
+        super::super::PreparationIo::from_native_work(work)
+    })
+    .transpose()
 }

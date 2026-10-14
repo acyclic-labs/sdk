@@ -1,12 +1,8 @@
 use super::*;
-use crate::demand::NativeMountAllocationCustody;
 
 pub(super) struct FileHandle {
     file_id: FileId,
-    file: Option<(
-        Arc<dyn MountOpenFile>,
-        Option<Arc<NativeMountAllocationCustody>>,
-    )>,
+    file: Option<RetainedFile>,
     written: Arc<DarwinOwned<AtomicU64>>,
 }
 
@@ -381,21 +377,16 @@ impl DarwinMountContext {
         Ok(handle)
     }
 
+    #[allow(
+        clippy::type_complexity,
+        reason = "The result pairs an existing retained file with its optional write counter."
+    )]
     pub(super) fn file_target(
         &self,
         path: &MountPath,
         handle: u64,
         work: &Work,
-    ) -> Result<
-        (
-            (
-                Arc<dyn MountOpenFile>,
-                Option<Arc<NativeMountAllocationCustody>>,
-            ),
-            Option<Arc<DarwinOwned<AtomicU64>>>,
-        ),
-        NativeMountError,
-    > {
+    ) -> Result<(RetainedFile, Option<Arc<DarwinOwned<AtomicU64>>>), NativeMountError> {
         if handle == 0 {
             return Ok((
                 retained_file(work, self.source.open_file_with_meter(path, work)?)?,
@@ -550,6 +541,7 @@ fn start_stat(
         let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
         // SAFETY: path is terminated and metadata is writable.
         if unsafe { libc::stat(path.as_ptr(), metadata.as_mut_ptr()) } == 0 {
+            // SAFETY: successful stat initialized the complete output record.
             return Ok(unsafe { metadata.assume_init() });
         }
         let error = std::io::Error::last_os_error();

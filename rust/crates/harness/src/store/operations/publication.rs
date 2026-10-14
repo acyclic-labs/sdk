@@ -98,7 +98,7 @@ impl IndexedPublication {
                     let bytes = publication
                         .indexes
                         .last()
-                        .expect("message head index")
+                        .ok_or_else(|| boundary(work, Storage, "message head index is missing"))?
                         .2
                         .clone();
                     for (prefix, key) in [

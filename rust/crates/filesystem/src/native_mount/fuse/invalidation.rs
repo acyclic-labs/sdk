@@ -68,7 +68,7 @@ impl FuseSession {
                     .strip_prefix(b"/")
                     .unwrap_or(path)
                     .split(|byte| *byte == b'/');
-                let name = components.next_back().expect("split has a leaf");
+                let name = components.next_back().ok_or(libc::EINVAL)?;
                 for component in components.clone().chain(std::iter::once(name)) {
                     work.charge(Items.delta(1))?;
                     if component.is_empty()
@@ -107,7 +107,7 @@ impl FuseSession {
                 if let Some(parent) = parent_inode {
                     state.invalidation.deferred.push(KernelCacheItem::Entry {
                         parent,
-                        name: entry_name.expect("admitted parent entry"),
+                        name: entry_name.ok_or(libc::EIO)?,
                     });
                     state
                         .invalidation
@@ -221,10 +221,7 @@ impl ProjectionState {
         for item in items.iter() {
             match item {
                 KernelCacheItem::Inode(inode) => {
-                    self.by_inode
-                        .get_mut(inode)
-                        .expect("planned inode remains locked")
-                        .kernel = Some(through)
+                    self.by_inode.get_mut(inode).ok_or(libc::EIO)?.kernel = Some(through);
                 }
                 KernelCacheItem::Entry { parent, name } => {
                     if let Some(entry) = self.by_inode.get_mut(parent) {
@@ -236,8 +233,10 @@ impl ProjectionState {
         for (inode, index) in bindings.iter() {
             self.by_inode
                 .get_mut(inode)
-                .expect("planned binding remains locked")
-                .bindings[*index]
+                .ok_or(libc::EIO)?
+                .bindings
+                .get_mut(*index)
+                .ok_or(libc::EIO)?
                 .kernel = None;
         }
         Ok(items)

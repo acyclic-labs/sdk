@@ -164,7 +164,10 @@ async fn owned_pull_filters_foreign_operations_but_shares_worker_capacity() -> R
 }
 
 #[tokio::test]
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "One scenario checks exact-target pulls leave unrelated operations unchanged."
+)]
 async fn exact_target_pull_never_claims_or_rejects_an_unrelated_task() -> Result<()> {
     let client = Arc::new(MemoryStream::default());
     let mut coordinator = open(&client).await?;

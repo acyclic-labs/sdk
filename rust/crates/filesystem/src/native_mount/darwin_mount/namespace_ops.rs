@@ -14,7 +14,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_mkdir(
             || {
                 context.source.create_directory(
                     &path,
-                    create_metadata(mode, libc::S_IFDIR as u32, uid, gid),
+                    create_metadata(mode, u32::from(libc::S_IFDIR), uid, gid),
                     work,
                 )
             },
@@ -104,7 +104,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_symlink(
                 context.source.create_symbolic_link(
                     &destination,
                     target,
-                    create_metadata(0o777, libc::S_IFLNK as u32, uid, gid),
+                    create_metadata(0o777, u32::from(libc::S_IFLNK), uid, gid),
                     work,
                 )
             },
@@ -130,8 +130,8 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_readlink(
             if target.len() >= length {
                 return Err(driver_errno(libc::ENAMETOOLONG));
             }
-            // SAFETY: target and its terminator fit the bridge output buffer.
             work.charge(copy_work((target.len() + 1) as u64))?;
+            // SAFETY: target and its terminator fit the bridge output buffer.
             unsafe {
                 ptr::copy_nonoverlapping(target.as_ptr(), buffer.cast(), target.len());
                 buffer.add(target.len()).write(0);
@@ -151,7 +151,9 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_mknod(
     gid: u32,
 ) -> c_int {
     ffi(address, true, |context, work| {
-        let kind = match (mode & libc::S_IFMT as u32) as libc::mode_t {
+        let kind = match libc::mode_t::try_from(mode & u32::from(libc::S_IFMT))
+            .map_err(|_| driver_errno(libc::EINVAL))?
+        {
             libc::S_IFIFO => MountNodeKind::Fifo,
             libc::S_IFSOCK => MountNodeKind::Socket,
             libc::S_IFCHR => MountNodeKind::CharacterDevice,
@@ -170,7 +172,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_mknod(
                     &path,
                     kind,
                     device,
-                    create_metadata(mode, mode & libc::S_IFMT as u32, uid, gid),
+                    create_metadata(mode, mode & u32::from(libc::S_IFMT), uid, gid),
                     work,
                 )
             },
@@ -192,7 +194,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_chmod(
             &*mount_path(path, work)?,
             handle,
             |metadata| {
-                let kind = metadata_or(metadata.posix_mode, 0) & libc::S_IFMT as u32;
+                let kind = metadata_or(metadata.posix_mode, 0) & u32::from(libc::S_IFMT);
                 metadata.posix_mode = MetadataField::Value(kind | (mode & 0o7777));
                 Ok(())
             },

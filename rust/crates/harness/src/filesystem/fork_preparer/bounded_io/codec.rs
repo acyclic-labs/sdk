@@ -154,7 +154,7 @@ impl PreparationIo {
         let bounds = self.bounds(bytes.len() as u64, 128)?;
         let schema = T::json_value_schema();
         let code = self.original_native_work().is_some().then_some(code);
-        self.decode_guarded(
+        let mut decoded = self.decode_guarded(
             (schema != Schema::Root).then(T::diagnostic_label_bytes),
             code,
             |shape, scratch| T::decode_owned_allowance(shape, scratch, bytes.len() as u64, code),
@@ -169,7 +169,11 @@ impl PreparationIo {
                     &mut |charge| observe(charge),
                 )
             },
-        )
+        )?;
+        if let Some(bytes) = decoded.0.decoded_owned_bytes()? {
+            decoded.1.substitute(bytes)?;
+        }
+        Ok(decoded)
     }
 
     pub(crate) fn value_json<T: Serialize>(
@@ -265,13 +269,17 @@ impl PreparationIo {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            self.value_decode_with_schema::<T>(
+            let mut decoded = self.value_decode_with_schema::<T>(
                 value,
                 code,
                 T::json_value_schema(),
                 T::diagnostic_label_bytes(),
                 |shape| T::decode_owned_allowance(shape, 0, shape.input_bytes(), Some(code)),
-            )
+            )?;
+            if let Some(bytes) = decoded.0.decoded_owned_bytes()? {
+                decoded.1.substitute(bytes)?;
+            }
+            Ok(decoded)
         }
     }
 
