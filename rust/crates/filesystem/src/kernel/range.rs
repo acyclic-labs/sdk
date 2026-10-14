@@ -272,8 +272,8 @@ impl RangeMachine {
             spans: Vec::new(),
             spans_capacity: LogicalVecCapacity::default(),
             successor_page: None,
-            pending_custody: KernelOwnedAllocation::Standalone,
-            spans_custody: KernelOwnedAllocation::Standalone,
+            pending_custody: accounting.claim_owned(0, 0)?,
+            spans_custody: accounting.claim_owned(0, 0)?,
         };
         if request.range.length != 0 {
             machine.push_page(
