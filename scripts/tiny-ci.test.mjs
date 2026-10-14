@@ -9,7 +9,8 @@ const workflows=fs.readdirSync('.github/workflows').filter(p=>/\.ya?ml$/.test(p)
 const read=name=>fs.readFileSync('.github/workflows/'+name,'utf8');
 const triggers=text=>text.match(/^on:\n([\s\S]*?)(?=^[^ #\s])/m)?.[1]??'';
 test('Linux host qualification uses the smallest registered runner and retains every scenario',()=>{
- const job=YAML.parse(read('agent-host-qualification.yml')).jobs.qualify;
+ const workflow=YAML.parse(read('agent-host-qualification.yml'));
+ const job=workflow.jobs.qualify;
  assert.deepEqual(job.strategy.matrix.platform,[
   {name:'linux-fuse',runner:'blacksmith-2vcpu-ubuntu-2404',cache_size:'448M'},
   {name:'macos-nfs',runner:'blacksmith-6vcpu-macos-15',cache_size:'384M'},
@@ -18,10 +19,39 @@ test('Linux host qualification uses the smallest registered runner and retains e
  const registered=YAML.parse(fs.readFileSync('.github/actionlint.yaml','utf8'))['self-hosted-runner'].labels;
  for(const platform of job.strategy.matrix.platform)assert.ok(registered.includes(platform.runner));
  assert.equal(job['runs-on'],'${{ matrix.platform.runner }}');
- assert.equal(job.env.CARGO_BUILD_JOBS,undefined,'Cargo follows the runner CPU count');
- for(const name of ['Build host scenario','Run Pi installed diagnostics and native context qualification',
-  'Run codex scenario','Run codex executor scenario','Run claude scenario'])
-  assert.ok(job.steps.some(step=>step.name===name),name);
+ const scenarios=[
+  ['Build host scenario',undefined,'cargo test -p acyclic-plugin --test e2e --no-run --locked'],
+  ['Run Pi installed diagnostics and native context qualification',undefined,
+   'suffix="" if [[ "$RUNNER_OS" == Windows ]]; then suffix=".exe"; fi ACYCLIC_BINARY="$CARGO_TARGET_DIR/debug/acyclic$suffix" node --experimental-strip-types --test plugin/tests/hosts/pi-context.test.ts plugin/tests/hosts/pi-bootstrap.test.ts plugin/tests/hosts/pi-installation.test.ts'],
+  ['Run codex scenario',undefined,'cargo test -p acyclic-plugin --test e2e actual_codex_binary_executes_the_scripted_scenario -- --ignored --exact --nocapture'],
+  ['Run codex executor scenario',"(success() || failure()) && runner.os != 'Windows'",'cargo test -p acyclic-harness-codex --test e2e -- --ignored --nocapture'],
+  ['Run claude scenario','success() || failure()','cargo test -p acyclic-plugin --test e2e actual_claude_binary_executes_the_scripted_scenario -- --ignored --exact --nocapture'],
+ ];
+ /** @param {ReturnType<typeof YAML.parse>} document */
+ const verify=document=>{
+  const qualification=document.jobs.qualify;
+  assert.equal(qualification.if,undefined);
+  for(const environment of [document.env,qualification.env,...qualification.steps.map(step=>step.env)])
+   assert.equal(environment?.CARGO_BUILD_JOBS,undefined,'Cargo follows the runner CPU count');
+  for(const [name,condition,command] of scenarios){
+   const step=qualification.steps.find(candidate=>candidate.name===name)??assert.fail('missing '+name);
+   assert.equal(step.if,condition,name+': condition');
+   assert.equal(step.run.replace(/\\\r?\n/g,' ').replace(/\s+/g,' ').trim(),command,name+': command');
+  }
+ };
+ verify(workflow);
+ for(const scope of ['workflow','job','step']){
+  const altered=structuredClone(workflow);
+  const destination=scope==='workflow'?altered:scope==='job'?altered.jobs.qualify:altered.jobs.qualify.steps.find(step=>step.name==='Build host scenario');
+  destination.env={...destination.env,CARGO_BUILD_JOBS:'16'};
+  assert.throws(()=>verify(altered),/Cargo follows the runner CPU count/);
+ }
+ for(const [name] of scenarios)for(const change of ['condition','command']){
+  const altered=structuredClone(workflow);
+  const step=altered.jobs.qualify.steps.find(candidate=>candidate.name===name);
+  if(change==='condition')step.if=false;else step.run='true';
+  assert.throws(()=>verify(altered),new RegExp(name+': '+change));
+ }
 });
 test('PRs and main have one static job, and tags/releases cannot start heavy work',()=>{
  const automatic=workflows.filter(name=>/^  (?:push|pull_request):/m.test(triggers(read(name))));
