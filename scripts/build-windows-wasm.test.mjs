@@ -9,9 +9,10 @@ const build = readFileSync("scripts/build-wasm.mjs", "utf8");
 const inventory = build.slice(build.indexOf("const packages = {"), build.indexOf("const [packageArgument"));
 const names = [...inventory.matchAll(/^  ([a-z]+): \{/gm)].map(match => match[1]);
 
-for (const failure of [undefined, "stream", "spawn", "multiple"]) {
+for (const failure of [undefined, "stream", "spawn", "multiple", "root-multiple"]) {
   test(`Windows WASM groups join every child: ${failure ?? "success"}`, async () => {
     const calls = [];
+    const completed = [];
     const paths = new Set();
     let live = 0, budget = 0, maximum = 0;
     const state = { execPath: "fixture-node", env: { RUSTC_WRAPPER: "", CARGO_BUILD_JOBS: "16" }, exitCode: 0 };
@@ -36,8 +37,10 @@ for (const failure of [undefined, "stream", "spawn", "multiple"]) {
       const child = new EventEmitter();
       setImmediate(() => {
         paths.delete(directory); budget -= workers; live--;
+        completed.push(name);
         if (failure === "spawn" && name === "stream") child.emit("error", new Error("spawn failed"));
-        child.emit("close", name === failure || failure === "multiple" && ["stream", "harness"].includes(name) ? 7 : 0);
+        child.emit("close", name === failure || failure === "multiple" && ["stream", "harness"].includes(name)
+          || failure === "root-multiple" && ["actors", "stream"].includes(name) ? 7 : 0);
       });
       return child;
     };
@@ -46,12 +49,17 @@ for (const failure of [undefined, "stream", "spawn", "multiple"]) {
     });
     assert.equal(maximum, 3);
     assert.equal(live, 0);
-    assert.deepEqual(calls.slice().sort(), names.slice().sort());
+    const skipped = failure === "root-multiple" ? ["filesystem", "objects", "machines", "inference"] : [];
+    assert.deepEqual(calls.slice().sort(), names.filter(name => !skipped.includes(name)).sort());
     assert.equal(state.exitCode, failure ? 1 : 0);
-    assert.equal(errors.length, failure === "multiple" ? 2 : failure ? 1 : 0);
-    if (failure === "multiple") {
+    assert.equal(errors.length, ["multiple", "root-multiple"].includes(failure ?? "") ? 2 : failure ? 1 : 0);
+    if (failure === "multiple" || failure === "root-multiple") {
       assert.ok(errors.includes("Error: stream WASM build exited with 7"));
-      assert.ok(errors.includes("Error: harness WASM build exited with 7"));
+      assert.ok(errors.includes(`Error: ${failure === "multiple" ? "harness" : "actors"} WASM build exited with 7`));
+    }
+    if (failure === "root-multiple") {
+      assert.deepEqual(completed.slice().sort(), ["actors", "harness", "stream"]);
+      for (const name of skipped) assert.ok(!calls.includes(name), `${name} started after actors failed`);
     }
     assert.equal(state.env.CARGO_BUILD_JOBS, "16");
   });

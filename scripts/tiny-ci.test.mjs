@@ -134,7 +134,8 @@ test('native builds and mount checks overlap qualification and still gate public
  const matrix=build.strategy.matrix.include;
  assert.deepEqual(matrix.map(row=>row.target).sort(),['darwin-arm64','darwin-x64','linux-arm64-gnu','linux-arm64-musl','linux-x64-gnu','linux-x64-musl','win32-arm64','win32-x64']);
  const windowsArm=matrix.find(row=>row.target==='win32-arm64')??assert.fail('missing Windows ARM64 build');
- assert.equal(windowsArm.runner,'blacksmith-16vcpu-windows-2025');
+ assert.equal(windowsArm.runner,'blacksmith-4vcpu-windows-2025');
+ assert.equal(build.env.SCCACHE_IDLE_TIMEOUT,'0');
  assert.equal(windowsArm.rust_target,'aarch64-pc-windows-msvc');
  assert.equal(windowsArm.executable,'acyclic.exe');
  assert.ok(fs.readFileSync('.github/actionlint.yaml','utf8').includes(windowsArm.runner));
