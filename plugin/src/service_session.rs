@@ -452,10 +452,7 @@ impl PiSession {
             pi_root_provider::allocation_budget(),
             &CancellationToken::new(),
         )
-        .map_err(|(cause, work)| RootError::NativeConstruction {
-            cause,
-            work: Box::new(work),
-        })?;
+        .map_err(|(cause, work)| RootError::NativeConstruction { cause, work })?;
         *original_native_work = Some(work.clone());
         Ok(work)
     }
