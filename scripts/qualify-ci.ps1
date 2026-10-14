@@ -135,7 +135,10 @@ $env:PATH = "$(Split-Path -Parent $wasmBindgenBin);$env:PATH"
 $rustcWrapper = $env:RUSTC_WRAPPER
 Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
 try {
-    bun run check
+    node scripts/build-windows-wasm.mjs
+    bun x tsc -b --force --pretty false
+    bun x tsc -p scripts --pretty false
+    bun run check:docs
 } finally {
     if ($null -eq $rustcWrapper) {
         Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
