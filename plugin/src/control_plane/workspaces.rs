@@ -40,30 +40,6 @@ async fn recorded_paths(workspace: &LocalWorkspace) -> Result<Vec<NamespacePath>
 }
 
 impl ControlPlane {
-    pub(super) async fn workspace_by_id(
-        &self,
-        workspace_id: acyclic_fs::WorkspaceId,
-    ) -> Result<LocalWorkspace, String> {
-        let record = WorkspaceGraph::new(self.store.clone())
-            .resolve(workspace_id)
-            .await
-            .map_err(display)?;
-        let workspace = self
-            .fs
-            .open_workspace(
-                &record.workspace_name,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| display(failure.error))?;
-        if workspace.id() != workspace_id {
-            return Err("workspace-lineage state is incompatible".to_owned());
-        }
-        Ok(workspace)
-    }
-
     #[cfg(test)]
         pub(crate) async fn workspace(&self, route: &Route) -> Result<LocalWorkspace, String> {
             self.workspace_root(route, WorkspaceRootId::from_bytes(route.root_id))
@@ -88,7 +64,7 @@ impl ControlPlane {
                 .get(&root_id)
                 .ok_or_else(|| "workspace route root is absent from its core context".to_owned())?
                 .workspace_id;
-            self.workspace_by_id(workspace_id)
+            acyclic_fs::WorkspaceResolver::resolve(&(self.fs.clone(), WorkspaceGraph::new(self.store.clone())), workspace_id)
                 .await
                 .map_err(display)
         }

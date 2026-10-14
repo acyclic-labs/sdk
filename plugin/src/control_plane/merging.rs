@@ -63,10 +63,10 @@ impl ControlPlane {
                 if child_root.parent_workspace_id != Some(parent_root.workspace_id) {
                     return Err("child root is not forked from its direct parent root".to_owned());
                 }
-                let source = self.workspace_by_id(child_root.workspace_id)
+                let source = acyclic_fs::WorkspaceResolver::resolve(&(self.fs.clone(), WorkspaceGraph::new(self.store.clone())), child_root.workspace_id)
                     .await
                     .map_err(display)?;
-                let target = self.workspace_by_id(parent_root.workspace_id)
+                let target = acyclic_fs::WorkspaceResolver::resolve(&(self.fs.clone(), WorkspaceGraph::new(self.store.clone())), parent_root.workspace_id)
                     .await
                     .map_err(display)?;
                 let lazy_source = self.lazy_workspace_root(&route, root_id).await?;
@@ -209,7 +209,7 @@ impl ControlPlane {
             let mut generations = BTreeMap::new();
             let mut changed = false;
             for (root_id, parent_root) in parent_context.roots {
-                let target = self.workspace_by_id(parent_root.workspace_id)
+                let target = acyclic_fs::WorkspaceResolver::resolve(&(self.fs.clone(), WorkspaceGraph::new(self.store.clone())), parent_root.workspace_id)
                     .await
                     .map_err(display)?;
                 let generation = target.head(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(display)?.id();

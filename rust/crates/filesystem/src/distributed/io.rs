@@ -262,7 +262,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             return Ok(outcome);
         }
         meter.check()?;
-        seal(meter, guard.as_deref_mut()).await?;
+        seal(meter, guard).await?;
         meter.check()?;
         meter.admit(submitted)?;
         let result = match deadline {

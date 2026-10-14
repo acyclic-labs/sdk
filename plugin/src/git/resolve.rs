@@ -81,24 +81,9 @@ impl PluginGitExecutor<'_> {
         if workspace_id == self.current.id() {
             return Ok(self.current.clone());
         }
-        let record = WorkspaceGraph::new(self.store.clone())
-            .resolve(workspace_id)
+        acyclic_fs::WorkspaceResolver::resolve(&((*self.fs).clone(), WorkspaceGraph::new(self.store.clone())), workspace_id)
             .await
             .map_err(display)
-            .map_err(PluginGitError)?;
-        let workspace = self
-            .fs
-            .open_workspace(
-                &record.workspace_name,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| Self::error(display(failure.error)))?;
-        if workspace.id() != workspace_id {
-            return Err(Self::error("workspace-lineage state is incompatible"));
-        }
-        Ok(workspace)
+            .map_err(PluginGitError)
     }
 }

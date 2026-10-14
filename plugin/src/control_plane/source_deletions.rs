@@ -68,7 +68,7 @@ impl ControlPlane {
                 if tombstones.is_empty() {
                     continue;
                 }
-                let child_head = self.workspace_by_id(root.source_workspace_id)
+                let child_head = acyclic_fs::WorkspaceResolver::resolve(&(self.fs.clone(), WorkspaceGraph::new(self.store.clone())), root.source_workspace_id)
                     .await
                     .map_err(display)?.generation(root.source_generation, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                     .map_err(display)?;
@@ -119,7 +119,7 @@ impl ControlPlane {
             root: &MultiRootMergeRoot,
         ) -> Result<BTreeSet<String>, String> {
             let mut changed = BTreeSet::new();
-            let target = self.workspace_by_id(root.target_workspace_id)
+            let target = acyclic_fs::WorkspaceResolver::resolve(&(self.fs.clone(), WorkspaceGraph::new(self.store.clone())), root.target_workspace_id)
                 .await
                 .map_err(display)?;
             changed_paths_into(
@@ -146,10 +146,10 @@ impl ControlPlane {
                 else {
                     break;
                 };
-                let upper_source = self.workspace_by_id(upper_child.workspace_id)
+                let upper_source = acyclic_fs::WorkspaceResolver::resolve(&(self.fs.clone(), WorkspaceGraph::new(self.store.clone())), upper_child.workspace_id)
                     .await
                     .map_err(display)?;
-                let upper_target = self.workspace_by_id(upper_parent.workspace_id)
+                let upper_target = acyclic_fs::WorkspaceResolver::resolve(&(self.fs.clone(), WorkspaceGraph::new(self.store.clone())), upper_parent.workspace_id)
                     .await
                     .map_err(display)?;
                 let fork_point = upper_source

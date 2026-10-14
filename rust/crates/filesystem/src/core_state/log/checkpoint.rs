@@ -60,29 +60,26 @@ impl CoreLog {
                 })?;
             }
             let paths = key.paths(root)?;
-            let file = match work {
-                Some(work) => {
-                    crate::native_host::create_directories(paths.directory(), &mut &*work)?;
-                    let file = materialization_open_options(
-                        &paths.current,
-                        &crate::native_host::NativeOpenOptions::ReadWriteCreate,
-                        work,
-                    )?;
-                    work.charge(crate::WorkCounters {
-                        backend_write_operations: 1,
-                        ..Default::default()
-                    })?;
-                    file.set_len(0)?;
-                    file
-                }
-                None => {
-                    std::fs::create_dir_all(paths.directory())?;
-                    OpenOptions::new()
-                        .create(true)
-                        .truncate(true)
-                        .write(true)
-                        .open(&paths.current)?
-                }
+            let file = if let Some(work) = work {
+                crate::native_host::create_directories(paths.directory(), &mut &*work)?;
+                let file = materialization_open_options(
+                    &paths.current,
+                    &crate::native_host::NativeOpenOptions::ReadWriteCreate,
+                    work,
+                )?;
+                work.charge(crate::WorkCounters {
+                    backend_write_operations: 1,
+                    ..Default::default()
+                })?;
+                file.set_len(0)?;
+                file
+            } else {
+                std::fs::create_dir_all(paths.directory())?;
+                OpenOptions::new()
+                    .create(true)
+                    .truncate(true)
+                    .write(true)
+                    .open(&paths.current)?
             };
             let mut writer = MaterializationWriter {
                 file,

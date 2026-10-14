@@ -369,7 +369,7 @@ impl LocalCoreStateStore {
                 }) {
                     return Err(LocalCoreStateStoreError::MaterializationInProgress);
                 }
-                remove_record(&paths)
+                remove_record(paths)
             })
         })
         .await

@@ -33,7 +33,7 @@ impl ControlPlane {
                 .resolve(self.context_for_agent(&route.parent_agent_id)?)
                 .await
                 .map_err(|error| format!("cannot resolve the parent workspace context: {error}"))?;
-            let parent = self.workspace_by_id(parent_context
+            let parent = acyclic_fs::WorkspaceResolver::resolve(&(self.fs.clone(), WorkspaceGraph::new(self.store.clone())), parent_context
                         .roots
                         .get(&root_id)
                         .ok_or_else(|| "direct parent root is missing".to_owned())?

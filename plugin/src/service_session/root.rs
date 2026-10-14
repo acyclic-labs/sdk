@@ -47,27 +47,12 @@ impl PiSession {
         &mut self,
         work: &NativeMaterializationWork,
     ) -> acyclic_harness::Result<()> {
-        let owner =
-            pi_owner::PiOwnerConfig::load(&self.resources.data, &self.relative_directory, work)?;
-        let effect = acyclic_harness::effect_host::task_effect_id(
-            owner.policy().root_task,
-            pi_root_inputs::preparation_operation(owner.policy().root_task, work)?,
-            &mut Some(&mut &acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
-        )?;
-        let observed = if pi_root_provider::root_effect(&owner, &self.stream, effect, work)
-            .await?
-            .is_some()
-        {
-            let observer = self.root_observer(None, work).await?;
-            observer
-                .observe_allocation_with_native_work(
-                    EffectAttemptId::from_bytes(effect.into_bytes()),
-                    work,
-                )
-                .await?
-        } else {
-            None
-        };
+        let observer = self.root_observer(None, work).await?;
+        let attempt =
+            EffectAttemptId::from_bytes(observer.effect_id_with_native_work(work)?.into_bytes());
+        let observed = observer
+            .observe_allocation_with_native_work(attempt, work)
+            .await?;
         let (allocation, handles) = if let Some(allocation) = observed {
             (allocation, BTreeMap::new())
         } else {
@@ -286,16 +271,14 @@ impl PiSession {
                 .get(key)
                 .ok_or_else(|| invalid("Pi created root disappeared"))?;
             drop(
-                WorkspaceGraph::new(self.resources.store.clone())
+                WorkspaceGraph::new(self.resources.store.materialization(work.clone()))
                     .register_root(handle.workspace.workspace())
                     .await
                     .map_err(|source| match source {
-                        acyclic_fs::WorkspaceLineageError::Workspace(source) => {
-                            RootError::NativeWorkspace {
-                                source: Box::new(source),
-                                custody: None,
-                            }
-                        }
+                        acyclic_fs::WorkspaceLineageError::Workspace(source) => source.into(),
+                        acyclic_fs::WorkspaceLineageError::Store(
+                            acyclic_fs::LocalCoreStateStoreError::LazyWork(source),
+                        ) => source.into(),
                         source => RootError::Storage(display(source)),
                     })?,
             );
@@ -321,14 +304,20 @@ impl PiSession {
             });
         }
         drop(
-            WorkspaceContextRegistry::new(self.resources.store.clone())
+            WorkspaceContextRegistry::new(self.resources.store.materialization(work.clone()))
                 .register_root(
                     WorkspaceContextId::from_bytes(self.state.root_context_id),
                     context.0,
                 )
                 .await
-                .map_err(|source| RootError::Storage(display(source)))?,
+                .map_err(|source| match source {
+                    acyclic_fs::WorkspaceContextError::Store(
+                        acyclic_fs::LocalCoreStateStoreError::LazyWork(source),
+                    ) => source.into(),
+                    source => RootError::Storage(display(source)),
+                })?,
         );
+        drop(context.1);
         self.state.pending_root_registration = false;
         drop(allocation.0.0);
         drop(allocation.1);

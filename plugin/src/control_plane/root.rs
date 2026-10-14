@@ -112,7 +112,7 @@ impl ControlPlane {
                     .ok_or_else(|| "pending root adoption has no durable binding".to_owned())?;
                 let root_id = WorkspaceRootId::from_bytes(binding.root_id);
                 if !context.roots.contains_key(&root_id) {
-                    let workspace = self.workspace_by_id(acyclic_fs::WorkspaceId::from_bytes(
+                    let workspace = acyclic_fs::WorkspaceResolver::resolve(&(self.fs.clone(), WorkspaceGraph::new(self.store.clone())), acyclic_fs::WorkspaceId::from_bytes(
                             binding.created()?.repository_workspace_id,
                         ))
                         .await
@@ -169,7 +169,7 @@ impl ControlPlane {
                 if let Some(binding) = self.state.roots.get_mut(&key) {
                     binding.created_mut()?.source_epoch = refreshed.epoch;
                 }
-                let workspace = self.workspace_by_id(context
+                let workspace = acyclic_fs::WorkspaceResolver::resolve(&(self.fs.clone(), WorkspaceGraph::new(self.store.clone())), context
                             .roots
                             .get(&WorkspaceRootId::from_bytes(root.root_id))
                             .ok_or_else(|| "adapter root is absent from its core context".to_owned())?

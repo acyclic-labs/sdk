@@ -82,18 +82,9 @@ impl ControlPlane {
                         source_binding.created()?.native_root_identity,
                         &source_binding.path,
                     )?;
-                    let parent_record = WorkspaceGraph::new(store.clone())
-                        .resolve(parent_root.workspace_id)
+                    let parent_workspace = acyclic_fs::WorkspaceResolver::resolve(&(self.fs.clone(), WorkspaceGraph::new(store.clone())), parent_root.workspace_id)
                         .await
                         .map_err(display)?;
-                    let parent_workspace = self.fs
-                        .open_workspace(&parent_record.workspace_name, WorkBudget::UNBOUNDED, &CancellationToken::new())
-                        .await
-                        .map(|receipt| receipt.value)
-                        .map_err(|failure| display(failure.error))?;
-                    if parent_workspace.id() != parent_root.workspace_id {
-                        return Err("workspace-lineage state is incompatible".to_owned());
-                    }
                     let parent_lazy = LazyWorkspace::open(parent_workspace, source, store.clone(), &mut acyclic_fs::kernel::KernelAccounting::Standalone {
                         allocations: Default::default(),
                         work: acyclic_fs::WorkCounters::UNCHARGED,
@@ -174,7 +165,7 @@ impl ControlPlane {
                     binding.created()?.native_root_identity,
                     &binding.path,
                 )?;
-                let workspace = self.workspace_by_id(acyclic_fs::WorkspaceId::from_bytes(
+                let workspace = acyclic_fs::WorkspaceResolver::resolve(&(self.fs.clone(), WorkspaceGraph::new(self.store.clone())), acyclic_fs::WorkspaceId::from_bytes(
                         root.repository_workspace_id,
                     ))
                     .await

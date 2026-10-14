@@ -270,18 +270,6 @@ impl Residents {
         }
         Ok(None)
     }
-    pub(super) fn insert(&mut self, key: RecordKey, value: Option<RecordValue>) {
-        let record = Resident {
-            key,
-            value,
-            allocation: None,
-        };
-        if let Some(index) = self.position(key, None).expect("unmetered lookup") {
-            self.0[index] = record;
-        } else {
-            self.0.push(record);
-        }
-    }
     pub(super) fn clear(&mut self) {
         self.0.clear();
     }
