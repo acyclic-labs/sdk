@@ -144,7 +144,7 @@ jobs:
           pids=()
           names=()
           if [[ "$BUILD_QUALIFIER" == true ]]; then
-            cargo build --locked --release --target "$CARGO_BUILD_TARGET" -p acyclic-conformance \
+            cargo build --timings --locked --release --target "$CARGO_BUILD_TARGET" -p acyclic-conformance \
               --features local-runner --bin native-mount-qualify --target-dir "$RUNNER_TEMP/target-qualifier" \
               >"$RUNNER_TEMP/qualifier.log" 2>&1 &
             pids+=("$!")
@@ -153,7 +153,7 @@ jobs:
           if [[ "$VERIFY_CARGO_INSTALL" == true ]]; then
             (
               install_root=$(mktemp -d)
-              env -u CARGO_BUILD_TARGET cargo install --locked --path plugin --root "$install_root" \
+              env -u CARGO_BUILD_TARGET cargo install --timings --locked --path plugin --root "$install_root" \
                 --target-dir "$RUNNER_TEMP/cargo-install-target"
               expected=$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "acyclic-plugin") | "acyclic \(.version)"')
               test "$("$install_root/bin/acyclic" --version)" = "$expected"
@@ -175,6 +175,17 @@ jobs:
             echo "::endgroup::"
           done
           exit "$status"
+      - name: Summarize native Cargo unit timings
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        shell: bash
+        env:
+          SDK_SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          node scripts/cargo-timings-summary.mjs "$RUNNER_TEMP/native-build-timings" \
+            "product=$GITHUB_WORKSPACE/target" \
+            "qualifier=$RUNNER_TEMP/target-qualifier" \
+            "install=$RUNNER_TEMP/cargo-install-target"
       - name: Retain native compiler-cache evidence
         if: ${{ !cancelled() }}
         continue-on-error: true

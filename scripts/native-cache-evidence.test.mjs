@@ -26,6 +26,7 @@ test("the product Cargo invocation preserves the configured compiler wrapper", (
   assert.equal(invocation.command, "fixture-cargo");
   assert.equal(invocation.wrapper, "fixture-sccache");
   assert.deepEqual(invocation.args.slice(0, 6), ["build", "--locked", "--profile", "dist", "-p", "acyclic-plugin"]);
+  assert.ok(invocation.args.includes("--timings"));
 });
 
 test("native compiler caches keep one daily snapshot while restoring the previous working set", () => {
@@ -164,7 +165,16 @@ test("every native target retains its live cache evidence from the current run a
   const steps = workflow.jobs.build.steps;
   const index = steps.findIndex(step => step.name === "Retain native compiler-cache evidence");
   const step = steps[index];
-  assert.equal(index, steps.findIndex(step => step.name === "Build the unified executable") + 1);
+  assert.equal(index, steps.findIndex(step => step.name === "Build the unified executable") + 2);
+  const timings = steps[index - 1];
+  assert.equal(timings.name, "Summarize native Cargo unit timings");
+  assert.equal(timings.if, "${{ !cancelled() }}");
+  assert.ok(timings.run.includes('"product=$GITHUB_WORKSPACE/target"'));
+  assert.ok(timings.run.includes('"qualifier=$RUNNER_TEMP/target-qualifier"'));
+  assert.ok(timings.run.includes('"install=$RUNNER_TEMP/cargo-install-target"'));
+  const build = steps.find(step => step.name === "Build the unified executable");
+  assert.ok(build.run.includes("cargo build --timings --locked --release"));
+  assert.ok(build.run.includes("cargo install --timings --locked --path plugin"));
   assert.equal(step.if, "${{ !cancelled() }}");
   assert.equal(step["continue-on-error"], true);
   assert.equal(step.with.name, "native-build-timings-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}");
