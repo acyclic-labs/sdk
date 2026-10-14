@@ -30,10 +30,10 @@ impl ResumableMachine for PiTaskMachine {
         input: &Value,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(Value, acyclic_fs::NativeAllocation)> {
-        let mut decoded = native_metadata::<PiTaskInput>(
-            input,
+        let mut decoded = crate::pi_recovery::decode_recovery_value::<PiTaskInput>(
+            std::borrow::Cow::Borrowed(input),
             acyclic_harness::JsonValueSchema::None,
-            PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES,
+            crate::MAXIMUM_ADAPTER_STATE_BYTES,
             work,
         )?;
         let state = initial_state(decoded.0, work)?;

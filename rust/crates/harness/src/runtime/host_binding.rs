@@ -14,7 +14,8 @@ impl AgentHarness {
                 &observed.machine,
                 Some(&observed.input_schema),
                 &observed.output_schema,
-                Some(&observed.input),
+                // The record already validated input; the registry checks exact schema identity.
+                None,
                 work,
             )?;
             if observed.resource_proofs.is_empty() {

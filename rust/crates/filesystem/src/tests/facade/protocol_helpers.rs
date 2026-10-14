@@ -40,7 +40,8 @@ pub(super) async fn sparse_rebase_across_remote_ranges(native: bool) -> TestResu
         #[cfg(not(target_arch = "wasm32"))]
         if native {
             local = local.private_candidate(
-                &mut crate::kernel::KernelAccounting::native(&original, &cancel), &cancel,
+                &mut crate::kernel::KernelAccounting::native(&original, &cancel),
+                &cancel,
             )?;
         }
         let before = (
@@ -121,7 +122,7 @@ pub(super) fn original_authored_creates(
         input.allocation.absorb(&mut path.allocation)?;
         input.value.push(AuthoredMutation::CreateFile {
             path: path.value,
-            bytes: content.clone().into(),
+            bytes: content.clone(),
             metadata,
         });
         input.bytes = bytes;

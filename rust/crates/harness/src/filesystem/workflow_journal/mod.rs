@@ -172,7 +172,7 @@ where
 
     /// Binds one task workflow to its exact worker lease and original IO.
     pub fn for_task(
-        owner: TaskJournalOwner<P>,
+        owner: Arc<TaskJournalOwner<P>>,
         host: Arc<FilesystemHost<A, O>>,
         volume: &VolumeRef,
         verifier: &AuthorityVerifier,
@@ -215,7 +215,6 @@ where
                 "workflow owner belongs to another native ledger",
             ));
         }
-        let owner = Arc::new(owner);
         Arc::get_mut(&mut journal)
             .expect("new journal is uniquely owned")
             .owner = Some(owner);

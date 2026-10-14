@@ -171,7 +171,11 @@ impl PiTaskRuntime {
         let fork_machine = Arc::new(acyclic_harness::filesystem::ForkPreparationMachine::new());
         let mut tasks = TaskRegistry::default();
         tasks.register(machine.definition(work)?)?;
-        tasks.register(fork_machine.definition::<serde_json::Value, serde_json::Value>()?)?;
+        tasks.register(
+            fork_machine
+                .definition::<serde_json::Value, serde_json::Value>()?
+                .publish(work)?,
+        )?;
         let definition =
             tasks.get_version::<PiTaskInput, FileRef>("acyclic.pi", "1", Some(work))?;
         let mut machines = (MachineRegistry::default(), None, None);
@@ -212,29 +216,6 @@ impl PiTaskRuntime {
             definition,
             authority,
         })
-    }
-
-    pub(crate) fn verify_owner_with_native_work(
-        &self,
-        owner: &super::pi_owner::PiOwnerConfig,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness::Result<()> {
-        let candidate = owner.authority(work)?;
-        let current = &self.authority;
-        if candidate.signed != current.signed
-            || candidate.scope.grants() != current.scope.grants()
-            || candidate.scope.limits() != current.scope.limits()
-            || candidate.scope.run_limits() != current.scope.run_limits()
-            || candidate.session_limits != current.session_limits
-            || candidate.concurrency != current.concurrency
-            || candidate.maximum_payload_bytes != current.maximum_payload_bytes
-        {
-            return Err(acyclic_harness::Error::NativeBoundary {
-                code: acyclic_harness::wire::ErrorCode::Unauthorized,
-                reason: "Pi owner differs from the original runtime credentials or policy",
-            });
-        }
-        Ok(())
     }
 
     pub(crate) async fn admit_root(

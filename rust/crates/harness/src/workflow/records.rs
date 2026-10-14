@@ -155,34 +155,22 @@ pub(super) fn validate_commands(
     commands: &[WorkflowCommand],
     io: Option<&PreparationIo>,
 ) -> Result<()> {
-    #[cfg(feature = "filesystem")]
-    let _workspace = io
-        .map(|io| crate::executor::reserve_preparation_workspace(&commands, io))
-        .transpose()?;
     with_history_io(io, |work| {
-        let bytes = commands
-            .len()
-            .checked_mul(std::mem::size_of::<OperationId>())
-            .ok_or_else(|| {
-                crate::scheduler::diagnostic(
-                    work,
-                    Invalid,
-                    "workflow command set ownership overflow",
-                )
-            })? as u64;
-        let mut quota = crate::wire_codec::CodecQuota::new(work, bytes)?;
-        let mut identities = BTreeSet::new();
-        for command in commands {
-            command.validate(quota.work())?;
-            if let Some(observer) = quota.work().as_deref_mut() {
-                observer.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
-            }
-            if !identities.insert(command.operation_id) {
-                return Err(crate::scheduler::diagnostic(
-                    quota.work(),
-                    Conflict,
-                    "workflow command identity is duplicated",
-                ));
+        for (index, command) in commands.iter().enumerate() {
+            command.validate(work)?;
+            for previous in &commands[..index] {
+                if let Some(observer) = work.as_deref_mut() {
+                    observer.codec_charge(crate::executor::json::JsonCodecCharge::Inspect {
+                        items: 1,
+                    })?;
+                }
+                if previous.operation_id == command.operation_id {
+                    return Err(crate::scheduler::diagnostic(
+                        work,
+                        Conflict,
+                        "workflow command identity is duplicated",
+                    ));
+                }
             }
         }
         Ok(())
