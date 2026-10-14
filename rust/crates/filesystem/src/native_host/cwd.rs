@@ -35,10 +35,11 @@ pub(crate) fn canonical_directory_wide<W: NativeHostWork>(
             Ok(count)
         });
         if let Ok(count) = result.as_ref()
-            && *count < capacity {
-                output.truncate(*count);
-                return Ok((output, allocation));
-            }
+            && *count < capacity
+        {
+            output.truncate(*count);
+            return Ok((output, allocation));
+        }
         drop(output);
         work.release(allocation)?;
         capacity = result?.checked_add(1).ok_or(crate::WorkError::Overflow)?;
@@ -134,6 +135,34 @@ pub(crate) fn canonical_directory_path_held<W: NativeHostWork>(
     work: &mut W,
 ) -> Result<(std::path::PathBuf, W::Allocation), W::Error> {
     use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
+    #[cfg(target_os = "macos")]
+    {
+        let mut path = [0_u8; libc::PATH_MAX as usize];
+        let length = work.attempt_io(READ, || {
+            // SAFETY: the held descriptor and PATH_MAX-byte output remain live.
+            if unsafe { libc::fcntl(current.as_raw_fd(), libc::F_GETPATH, path.as_mut_ptr()) } < 0 {
+                let error = io::Error::last_os_error();
+                return if error.raw_os_error() == Some(libc::ENAMETOOLONG) {
+                    Ok(None)
+                } else {
+                    Err(error)
+                };
+            }
+            Ok(Some(path.iter().position(|byte| *byte == 0).ok_or_else(
+                || io::Error::from_raw_os_error(libc::ENAMETOOLONG),
+            )?))
+        })?;
+        if let Some(length) = length {
+            let (mut output, allocation) = buffer(length, work)?;
+            if let Err(error) = work.started_io(copy_work(length as u64)) {
+                drop(output);
+                work.release(allocation)?;
+                return Err(error);
+            }
+            output.extend_from_slice(&path[..length]);
+            return Ok((OsString::from_vec(output).into(), allocation));
+        }
+    }
     let root = Dir::from_std_file(open_unix(libc::AT_FDCWD, c"/", cwd_metadata_flags(), work)?);
     let root = directory_identity(&root, work)?;
     let (mut output, mut allocation) = buffer::<u8, _>(1, work)?;

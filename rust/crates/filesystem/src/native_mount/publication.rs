@@ -395,6 +395,10 @@ mod tests {
         };
         let original = crate::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(error, _)| error)?;
+        let mut budgeted = budgeted.private_candidate(
+            &mut crate::kernel::KernelAccounting::native(&original, &cancellation),
+            &cancellation,
+        )?;
         let result = seal_checkout_with_permit_guarded_with_native_work(
             &mut budgeted,
             OperationId::from_bytes([3; 16]),

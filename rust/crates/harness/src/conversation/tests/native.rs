@@ -10,7 +10,7 @@ fn original_work(
     NativeMaterializationWork::new(budget, cancellation).map_err(|(cause, work)| {
         Error::NativeConstruction {
             cause,
-            work: Box::new(work),
+            work: work,
         }
     })
 }

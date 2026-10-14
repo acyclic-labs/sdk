@@ -205,7 +205,7 @@ async fn native_component_model_10000_real_signed_transitions_stays_live_source_
         let query = NativeMaterializationWork::new(budget, &CancellationToken::new()).map_err(
             |(cause, work)| Error::NativeConstruction {
                 cause,
-                work: Box::new(work),
+                work: work,
             },
         )?;
         let io = crate::filesystem::PreparationIo::from_native_work(&query)?;
