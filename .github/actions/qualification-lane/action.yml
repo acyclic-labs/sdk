@@ -37,6 +37,7 @@ runs:
           scope=full
         fi
         echo "scope=$scope" >> "$GITHUB_OUTPUT"
+        echo "day=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
         # Ephemeral target directories cannot reuse incremental state, and
         # incremental Rust invocations bypass sccache.
         echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
@@ -91,7 +92,7 @@ runs:
       uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: ${{ runner.temp }}/sccache
-        key: sdk-sccache-v5-${{ inputs.lane }}-${{ steps.sccache.outputs.scope }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+        key: sdk-sccache-v5-${{ inputs.lane }}-${{ steps.sccache.outputs.scope }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.sccache.outputs.day }}
         restore-keys: |
           sdk-sccache-v5-${{ inputs.lane }}-${{ steps.sccache.outputs.scope }}-${{ runner.os }}-${{ runner.arch }}-
           ${{ inputs.lane == 'windows-fork-join' && format('sdk-sccache-v5-windows-rust-{0}-{1}-{2}-', steps.sccache.outputs.scope, runner.os, runner.arch) || '' }}
@@ -242,14 +243,15 @@ runs:
       if: ${{ !cancelled() && inputs.lane != 'windows-rust' }}
       shell: bash
       env:
+        PRIMARY_CACHE_KEY: ${{ steps.build-cache.outputs.cache-primary-key }}
         MATCHED_CACHE_KEY: ${{ steps.build-cache.outputs.cache-matched-key }}
-      run: node scripts/cache-save-decision.mjs "$MATCHED_CACHE_KEY" "$RUNNER_TEMP/sdk/observability/sccache.json"
+      run: node scripts/cache-save-decision.mjs "$PRIMARY_CACHE_KEY" "$MATCHED_CACHE_KEY" "$RUNNER_TEMP/sdk/observability/sccache.json"
     - name: Save lane build cache
       if: ${{ !cancelled() && inputs.lane != 'windows-rust' && steps.cache-save.outputs.save == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
       uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: ${{ runner.temp }}/sccache
-        key: sdk-sccache-v5-${{ inputs.lane }}-${{ steps.sccache.outputs.scope }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+        key: sdk-sccache-v5-${{ inputs.lane }}-${{ steps.sccache.outputs.scope }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.sccache.outputs.day }}
 
     - name: Retain qualified outputs
       if: inputs.artifact != ''

@@ -24,10 +24,12 @@ runs:
   using: composite
   steps:
     - name: Configure compiler cache
+      id: cache-day
       shell: bash
       env:
         CACHE_SIZE: ${{ inputs.cache_size }}
       run: |
+        echo "day=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
         echo "SCCACHE_DIR=${RUNNER_TEMP}/sccache" >> "$GITHUB_ENV"
         echo "SCCACHE_CACHE_SIZE=$CACHE_SIZE" >> "$GITHUB_ENV"
         echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
@@ -44,14 +46,14 @@ runs:
         key: rust-deps-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
         restore-keys: |
           rust-deps-v2-${{ runner.os }}-${{ runner.arch }}-
-    # Per-run keys preserve new source objects even when manifests have not
-    # changed. Callers skip the save when the restored working set is unchanged.
+    # Bound snapshots to one per input scope and UTC day. Older working sets
+    # remain useful until this day's first compilation needs new objects.
     - name: Restore compiler output
       id: compiler
       uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: ${{ runner.temp }}/sccache
-        key: rust-objects-v2-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', '**/Cargo.toml') }}-${{ github.run_id }}-${{ github.run_attempt }}
+        key: rust-objects-v2-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', '**/Cargo.toml') }}-${{ steps.cache-day.outputs.day }}
         restore-keys: |
           rust-objects-v2-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', '**/Cargo.toml') }}-
           rust-objects-v2-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-

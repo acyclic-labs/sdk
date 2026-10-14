@@ -1,8 +1,9 @@
 import { appendFileSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-/** @param {string} matchedKey @param {string[]} snapshots */
-export function cacheSaveDecision(matchedKey, snapshots) {
+/** @param {string} primaryKey @param {string} matchedKey @param {string[]} snapshots */
+export function cacheSaveDecision(primaryKey, matchedKey, snapshots) {
+  if (primaryKey && matchedKey === primaryKey) return { save: false, reason: "this day's snapshot already exists" };
   if (!matchedKey) return { save: true, reason: "no restored cache" };
   if (!snapshots.length) return { save: true, reason: "no compiler snapshot" };
   for (const path of snapshots) {
@@ -29,8 +30,8 @@ export function cacheSaveDecision(matchedKey, snapshots) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const [matchedKey = "", ...snapshots] = process.argv.slice(2);
-  const decision = cacheSaveDecision(matchedKey, snapshots);
+  const [primaryKey = "", matchedKey = "", ...snapshots] = process.argv.slice(2);
+  const decision = cacheSaveDecision(primaryKey, matchedKey, snapshots);
   console.log(`Compiler cache save=${decision.save}: ${decision.reason}`);
   if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `save=${decision.save}\n`);
 }
