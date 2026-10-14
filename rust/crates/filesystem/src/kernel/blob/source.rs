@@ -256,8 +256,10 @@ pub(super) async fn read_owned_blob_source<R: AsyncBlobSource>(
         };
         let completed_result = accounting.record_completed(completed);
         if let Err(error) = capacity_result.and(completed_result) {
-            drop(chunk);
-            drop(custody);
+            {
+                let _custody = custody;
+                drop(chunk);
+            }
             let _ = release_blob_bytes(retained, accounting);
             return Err(error);
         }

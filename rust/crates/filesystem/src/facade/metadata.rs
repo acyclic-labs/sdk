@@ -26,9 +26,10 @@ impl AuthoredMetadataCache {
                 ..WorkCounters::UNCHARGED
             })?;
             if let Some((cached, object)) = entry
-                && *cached == metadata {
-                    return Ok(Some(*object));
-                }
+                && *cached == metadata
+            {
+                return Ok(Some(*object));
+            }
         }
         Ok(None)
     }
@@ -209,10 +210,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let file_id = match file.address() {
             ContentAddress::File(id) => id,
             ContentAddress::Path(path) => {
-                let (lookup, allocation) = self
-                    .lookup_no_follow_with_accounting(path, accounting, cancellation, true)
-                    .await?;
-                drop(allocation);
+                let lookup = {
+                    let (lookup, _allocation) = self
+                        .lookup_no_follow_with_accounting(path, accounting, cancellation, true)
+                        .await?;
+                    lookup
+                };
                 lookup.record.ok_or(FsError::NotFound)?.file_id
             }
         };

@@ -18,10 +18,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> FsResult<DetachedFile<A, O>> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         let result = async {
-            let (lookup, allocation) = self
-                .lookup_no_follow_with_accounting(path, &mut accounting, cancellation, true)
-                .await?;
-            drop(allocation);
+            let lookup = {
+                let (lookup, _allocation) = self
+                    .lookup_no_follow_with_accounting(path, &mut accounting, cancellation, true)
+                    .await?;
+                lookup
+            };
             let record = lookup.record.ok_or(FsError::NotFound)?;
             if record.kind != FileKind::Regular {
                 return Err(FsError::FileRead(FileRangeReadError::NotRegular));
@@ -43,6 +45,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         measured(result, &accounting)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn detached_from_record<W: FsWork>(
         &self,
         record: FileRecord,

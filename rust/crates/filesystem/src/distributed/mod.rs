@@ -8,9 +8,11 @@ use crate::foundation::{
 };
 use crate::kernel::volume_authority_id;
 use crate::performance::{WorkBudget, WorkCounters};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::storage::ObjectId;
 use crate::storage::{
     AppendOutcome as FsAppendOutcome, AuthorityStoreError, CreateAuthorityOutcome, FenceOutcome,
-    ObjectId, PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome,
+    PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome,
 };
 use crate::streams_record::StreamsDurableRecord;
 use crate::{

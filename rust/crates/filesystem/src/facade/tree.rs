@@ -38,7 +38,18 @@ pub(super) async fn list_directory_to_file_root_with_accounting<
         if record.kind != FileKind::Directory {
             return Err(FsError::NotDirectory);
         }
-        crate::kernel::list_tree_entries_async_with_accounting(&volume.fs.inner.objects, entries, ((after).map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded), maximum_entries), DecodeLimits::for_volume(volume.config), accounting, cancellation, None,)
+        crate::kernel::list_tree_entries_async_with_accounting(
+            &volume.fs.inner.objects,
+            entries,
+            (
+                (after).map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
+                maximum_entries,
+            ),
+            DecodeLimits::for_volume(volume.config),
+            accounting,
+            cancellation,
+            None,
+        )
         .await
     }
     .await;
@@ -137,10 +148,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 Ok::<_, FsError>(())
             },
             |(this, path, after, accounting, cancellation)| async move {
-                let (lookup, lookup_allocation) = this
-                    .lookup_no_follow_with_accounting(path, accounting, cancellation, false)
-                    .await?;
-                drop(lookup_allocation);
+                let lookup = {
+                    let (lookup, _lookup_allocation) = this
+                        .lookup_no_follow_with_accounting(path, accounting, cancellation, false)
+                        .await?;
+                    lookup
+                };
                 let record = lookup.record.ok_or(FsError::NotFound)?;
                 let FilePayload::Directory { entries } = record.payload else {
                     return Err(FsError::NotDirectory);
@@ -156,7 +169,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     accounting,
                     cancellation,
                     Some(&this.dependencies.data_custody),
-                ).await?;
+                )
+                .await?;
                 let page = (page, allocation);
                 if this.tracks_observations() {
                     let (cursor, allocation) = match after {
@@ -200,9 +214,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                             cancellation,
                         )
                         .await?;
-                    let (probe, allocation) = probe;
-                    probe.retire_with_accounting(accounting)?;
-                    drop(allocation);
+                    {
+                        let (probe, _allocation) = probe;
+                        probe.retire_with_accounting(accounting)?;
+                    }
                     let mut staged =
                         crate::kernel::Owned::<Vec<Dependency>>::allocate(1, accounting)?;
                     staged.allocation.absorb(&mut region.1)?;

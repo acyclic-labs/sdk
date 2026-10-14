@@ -4,11 +4,12 @@ fn retained(body: &OwnedBytes, work: &KernelAccounting<'_>) -> ObjectReadRetenti
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = work.native_work() {
         if body.matches_meter(&original.runtime_meter())
-            && let Some(capacity) = body.retained_capacity() {
-                return ObjectReadRetention::Owned {
-                    logical_bytes: capacity as u64,
-                };
-            }
+            && let Some(capacity) = body.retained_capacity()
+        {
+            return ObjectReadRetention::Owned {
+                logical_bytes: capacity as u64,
+            };
+        }
         return ObjectReadRetention::Shared;
     }
     ObjectReadRetention::Owned {
@@ -195,10 +196,12 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
             drop(incoming);
             release(work, custody, request_bytes)?;
             for request in requests {
-                let (read, allocation) = self
-                    .fetch(request.object_id, request.maximum_bytes, work)
-                    .await?;
-                drop(allocation);
+                let read = {
+                    let (read, _allocation) = self
+                        .fetch(request.object_id, request.maximum_bytes, work)
+                        .await?;
+                    read
+                };
                 values.push(read);
             }
             return Ok((values, output));

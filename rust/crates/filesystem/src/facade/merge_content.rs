@@ -31,10 +31,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             None,
         )
         .await
-        .map(|(record, allocation)| {
-            drop(allocation);
-            record
-        })
+        .map(|(record, _allocation)| record)
         .map_err(WorkspaceError::engine);
         root.retire(&mut accounting)
             .map_err(WorkspaceError::engine)?;

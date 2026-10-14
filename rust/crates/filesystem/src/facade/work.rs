@@ -34,13 +34,7 @@ impl FsWork for WorkBudget {
         result: Result<(T, KernelOwnedAllocation), FsError>,
         accounting: &KernelAccounting<'_>,
     ) -> Self::OwnedOutput<T> {
-        measured(
-            result.map(|(value, allocation)| {
-                drop(allocation);
-                value
-            }),
-            accounting,
-        )
+        measured(result.map(|(value, _allocation)| value), accounting)
     }
     fn accounting<'a>(&'a self, cancellation: &'a CancellationToken) -> KernelAccounting<'a> {
         KernelAccounting::standalone(*self, cancellation)

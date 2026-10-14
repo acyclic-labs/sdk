@@ -106,6 +106,7 @@ pub(crate) struct MergeGenerationBorrowedRequest<'a> {
 #[derive(Clone, Copy)]
 enum ResolutionView<'a> {
     Map(&'a BTreeMap<MergeConflict, MergeConflictResolution>),
+    #[cfg(not(target_arch = "wasm32"))]
     Slice(&'a [(MergeConflict, MergeConflictResolution)]),
 }
 
@@ -130,6 +131,7 @@ impl<'a> ResolutionView<'a> {
                 }
                 Ok(None)
             }
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Slice(slice) => {
                 let index =
                     super::search::binary_search_with_accounting(slice, accounting, |(key, _)| {
@@ -399,6 +401,7 @@ pub(crate) async fn merge_generation_with_borrowed_map_resolutions_with_accounti
     .await
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) async fn merge_generation_with_borrowed_resolutions_with_accounting<
     S: AsyncObjectStore,
 >(

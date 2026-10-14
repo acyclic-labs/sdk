@@ -1,5 +1,6 @@
 use super::*;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn object_key(object_id: ObjectId) -> String {
     format!(
         "fs/v1/{}/{}",

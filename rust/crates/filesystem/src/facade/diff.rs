@@ -177,7 +177,7 @@ pub(super) async fn diff_generation_file_tables<O: AsyncObjectStore>(
     bindings.allocation.absorb(&mut files.allocation)?;
     let crate::kernel::Owned {
         value: files,
-        allocation: files_allocation,
+        allocation: _files_allocation,
         ..
     } = files;
     let crate::kernel::Owned {
@@ -185,7 +185,6 @@ pub(super) async fn diff_generation_file_tables<O: AsyncObjectStore>(
         allocation,
         ..
     } = bindings;
-    drop(files_allocation);
     Ok((
         GenerationDiff {
             files,

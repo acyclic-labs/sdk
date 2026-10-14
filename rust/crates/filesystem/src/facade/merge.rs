@@ -242,6 +242,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     )
                     .await?
                 }
+                #[cfg(not(target_arch = "wasm32"))]
                 WorkspaceJoinResolutions::Slice(slice) => {
                     merge_generation_with_borrowed_resolutions_with_accounting(
                         &self.inner.objects,
@@ -459,8 +460,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 root,
                 generation_id,
             } => {
-                let held = self.root.hold.as_ref().map(|_| (root.clone(), Default::default()));
-                self.root.set(self.root.base, root, Default::default(), held);
+                let held = self
+                    .root
+                    .hold
+                    .as_ref()
+                    .map(|_| (root.clone(), Default::default()));
+                self.root
+                    .set(self.root.base, root, Default::default(), held);
                 self.generation_root = generation_root;
                 self.prepared_merge_parent = Some(theirs_id);
                 self.authority_head = Some(current_head);

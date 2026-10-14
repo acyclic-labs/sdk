@@ -189,6 +189,7 @@ impl CancellationToken {
         Ok(child)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn same_state(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.state, &other.state)
     }
@@ -350,6 +351,7 @@ impl CancellationToken {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn prepare_cancelled_measured(
         &self,
         allocations: &mut crate::kernel::allocation::AllocationLedger,
@@ -383,8 +385,10 @@ impl CancellationToken {
 pub struct CancellationError;
 
 mod wait;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use wait::CancellationWaitError;
 pub use wait::Cancelled;
+#[cfg(not(target_arch = "wasm32"))]
 use wait::WaitMeter;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod native_tests;

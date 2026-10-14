@@ -74,6 +74,7 @@ impl DependencyLedger {
             base_root_control: ProofDataClaim::default(),
         }
     }
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn independent_with_custody(&self, data_custody: Arc<ProofDataCustody>) -> Self {
         Self::sharing_with_custody(self.proof().clone(), data_custody)
     }
