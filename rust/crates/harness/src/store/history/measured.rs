@@ -22,6 +22,7 @@ impl HistoryWork {
             staged_items: 0,
         }
     }
+    #[cfg(test)]
     pub(crate) fn receipt(&self) -> WorkCounters {
         self.io.receipt()
     }

@@ -5,9 +5,10 @@ impl<A, O> CheckoutMountSource<A, O> {
         work: &crate::NativeMaterializationWork,
     ) -> Result<Box<dyn Send>, MountSourceError> {
         let mut carrier = NativeDemandCarrier::Native(work);
+        let owner = ViewGate::callback_owner()?;
         let mut lease = invoke(&self.runtime, work, || {
             self.checkout.view_gate.read_for_callback_with_carrier(
-                ViewGate::callback_owner(),
+                owner,
                 expected_epoch,
                 &mut carrier,
                 work.cancellation(),

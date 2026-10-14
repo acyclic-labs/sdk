@@ -28,15 +28,6 @@ pub(super) struct GenerationReceipt {
 }
 
 impl GenerationReceipt {
-    pub(super) fn new(
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<Self, OperationFailure<MaterializeError>> {
-        let original = crate::NativeMaterializationWork::new(budget, cancellation)
-            .map_err(|(error, work)| OperationFailure { error: MaterializeError::from(error), work })?;
-        Self::from_work(&original).map_err(|error| OperationFailure::new(error, original.receipt()))
-    }
-
     pub(super) fn from_work(
         work: &crate::NativeMaterializationWork,
     ) -> Result<Self, MaterializeError> {
@@ -155,10 +146,15 @@ pub(super) fn clone_namespace(
         .work()
         .allocations(|ledger, work, budget, cancellation| {
             let mut accounting = crate::kernel::KernelAccounting::borrowed_standalone(
-                ledger, work, budget, cancellation,
+                ledger,
+                work,
+                budget,
+                cancellation,
             );
             let result = match extra {
-                Some(name) => path.child_with_accounting(name, limits, &mut accounting, cancellation),
+                Some(name) => {
+                    path.child_with_accounting(name, limits, &mut accounting, cancellation)
+                }
                 None => path.clone_with_accounting(&mut accounting, cancellation),
             };
             result.map(|(path, _)| path).map_err(|error| match error {

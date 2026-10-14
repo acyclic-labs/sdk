@@ -155,7 +155,7 @@ impl DarwinMountContext {
         let work = match active {
             Some(work) => work,
             None => Work::new(self.handler_budget, &self.handler_cancellation)
-                .map_err(|(cause, work)| self.record_failure(cause.into(), work))?,
+                .map_err(|(cause, work)| self.record_failure(cause.into(), *work))?,
         };
         let result = crate::native_mount::run_native_mount_handler_on_meter(&work, operation);
         let completed = work.receipt();

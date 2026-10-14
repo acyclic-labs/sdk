@@ -30,23 +30,21 @@ pub(crate) fn finish_native_io<T>(
         Ok(value) => Ok((value, io.into_native_custody(retained)?)),
         Err(Error::NativeWork { cause, custody }) => {
             // Do not observe cancellation, clocks or authority after failure.
-            let owned = match io.owned_bytes() {
-                Ok(bytes) => bytes,
-                Err(_) => return Err(Error::NativeWork { cause, custody }),
+            let Ok(owned) = io.owned_bytes() else {
+                return Err(Error::NativeWork { cause, custody });
             };
-            let mut held = match io.into_native_custody(owned) {
-                Ok(held) => held,
-                Err(_) => return Err(Error::NativeWork { cause, custody }),
+            let Ok(mut held) = io.into_native_custody(owned) else {
+                return Err(Error::NativeWork { cause, custody });
             };
             if let Some(mut incoming) = custody
                 && (!held.work().shares_ledger(incoming.work())
                     || held.absorb(&mut incoming).is_err())
-                {
-                    return Err(Error::NativeWork {
-                        cause,
-                        custody: Some(incoming),
-                    });
-                }
+            {
+                return Err(Error::NativeWork {
+                    cause,
+                    custody: Some(incoming),
+                });
+            }
             Err(Error::NativeWork {
                 cause,
                 custody: Some(held),

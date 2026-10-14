@@ -342,7 +342,7 @@ where
         invoke(&self.runtime, work, || async {
             self.lookup_async(
                 path,
-                ViewGate::callback_owner(),
+                ViewGate::callback_owner()?,
                 &mut NativeDemandCarrier::Native(work),
             )
             .await
@@ -392,7 +392,7 @@ where
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
-        let owner = ViewGate::callback_owner();
+        let owner = ViewGate::callback_owner()?;
         let mut carrier = NativeDemandCarrier::Native(work);
         invoke(&self.runtime, work, || {
             self.read_bytes(path, None, owner, &mut carrier)
@@ -418,7 +418,7 @@ where
         length: u32,
         work: &crate::NativeMaterializationWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
-        let owner = ViewGate::callback_owner();
+        let owner = ViewGate::callback_owner()?;
         let mut carrier = NativeDemandCarrier::Native(work);
         invoke(&self.runtime, work, || {
             self.read_bytes(

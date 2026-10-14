@@ -27,7 +27,10 @@ impl ExtensionRegistry {
                 return Err(Error::Conflict("extension depends on itself".into()));
             }
         }
-        if dependencies.windows(2).any(|pair| pair[0] == pair[1]) {
+        if dependencies
+            .windows(2)
+            .any(|pair| matches!(pair, [left, right] if left == right))
+        {
             return Err(Error::Conflict("duplicate extension dependency".into()));
         }
         let mut state = self.lock()?;

@@ -16,7 +16,7 @@ where
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
         with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
             self.runtime.wait_prepared(prepared, || async {
-                let owner = ViewGate::callback_owner();
+                let owner = ViewGate::callback_owner()?;
                 let record = self.authored.record_by_id(id, owner, carrier).await?;
                 let file = self
                     .authored
@@ -193,7 +193,7 @@ where
         dirty: &[DirtyDetachedRecord],
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        let owner = ViewGate::callback_owner();
+        let owner = ViewGate::callback_owner()?;
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
         for (record, metadata) in records {
             let exists = self

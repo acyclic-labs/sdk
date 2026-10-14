@@ -294,7 +294,7 @@ fn detached_construction_uses_the_callers_memory_limit() -> Result<(), Box<dyn s
     let source = source(FilesystemProfile::Portable)?;
     let root = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
     let created = source.create_file(&native_test_path("detached"), metadata(), None, &root)?;
-    let owner = ViewGate::callback_owner();
+    let owner = ViewGate::callback_owner()?;
     let record = source.runtime.wait(|| async {
         source
             .record_by_id(
