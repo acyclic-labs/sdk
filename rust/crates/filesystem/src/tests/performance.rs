@@ -212,7 +212,6 @@ fn in_place_charges_equal_a_verified_sum_for_every_counter() {
             let mut added = prior;
             assert_eq!(added.try_add_assign(&delta), Ok(()));
             assert_eq!(Ok(added), prior.checked_add(delta));
-            assert_eq!(added.verify_ref(&budget), added.verify(budget));
         }
 
         // Peak allocation is a maximum and never overflows; every other

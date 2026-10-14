@@ -50,10 +50,10 @@ fn version(metadata: &HostStat) -> SourceVersion {
     #[cfg(windows)]
     {
         hash.update(&metadata.raw.FileAttributes.to_le_bytes());
-        hash.update(&(metadata.raw.LastWriteTime as u64).to_le_bytes());
-        hash.update(&(metadata.raw.CreationTime as u64).to_le_bytes());
+        hash.update(&metadata.raw.LastWriteTime.to_le_bytes());
+        hash.update(&metadata.raw.CreationTime.to_le_bytes());
         hash.update(&metadata.volume_serial_number.to_le_bytes());
-        hash.update(&(metadata.raw.FileId as u64).to_le_bytes());
+        hash.update(&metadata.raw.FileId.to_le_bytes());
     }
     SourceVersion(*hash.finalize().as_bytes())
 }
@@ -79,7 +79,7 @@ fn file_identity(metadata: &HostStat) -> [u8; 32] {
 fn file_identity(metadata: &HostStat) -> [u8; 32] {
     windows_file_identity(
         u64::from(metadata.volume_serial_number),
-        metadata.raw.FileId as u64,
+        metadata.raw.FileId.cast_unsigned(),
     )
 }
 

@@ -118,9 +118,9 @@ where
             result.map_err(
                 |(cause, accounting_failure)| NativeMountPublicationFailure {
                     cause,
-                    accounting_failure,
+                    accounting_failure: accounting_failure.map(Box::new),
                     source_acknowledged: acknowledged.is_some(),
-                    publication: acknowledged,
+                    publication: acknowledged.map(Box::new),
                 },
             )?;
         with_live_session(&self.session, |session| session.revalidate(work)).map_err(|cause| {
@@ -128,7 +128,7 @@ where
                 cause: E::from(cause),
                 accounting_failure: None,
                 source_acknowledged: true,
-                publication: Some(publication),
+                publication: Some(Box::new(publication)),
             }
         })?;
         Ok(publication)

@@ -1,7 +1,5 @@
 //! Bounded profile-independent namespace paths.
 
-#[cfg(feature = "native-mount")]
-use super::allocation::AllocationLedger;
 use super::allocation::{KernelAccounting, KernelOwnedAllocation};
 use super::{LogicalName, NameEncoding, TreePageError};
 use crate::model::{FilesystemProfile, VolumeLimits};

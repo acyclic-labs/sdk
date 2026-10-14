@@ -22,7 +22,6 @@ pub(super) fn watch_ancestor_candidates<'a>(
     paths: impl Iterator<Item = &'a NamespacePath>,
     ordinary: &[(NamespacePath, (CurrentRecord, CaptureIntent))],
     rename_records: &[(NamespacePath, Option<FileRecord>)],
-    renamed_paths: usize,
     policy: &CapturePolicy,
     maximum_paths: usize,
     limits: crate::model::VolumeLimits,
@@ -44,11 +43,7 @@ pub(super) fn watch_ancestor_candidates<'a>(
                 && !capture_excludes(policy, &parent, meter)?
                 && capture_position(&ancestors, &parent, meter)?.is_err()
             {
-                if combined_path_count_exceeds(
-                    ancestors.len() + ordinary.len(),
-                    renamed_paths + 1,
-                    maximum_paths,
-                ) {
+                if combined_path_count_exceeds(ancestors.len() + ordinary.len(), 1, maximum_paths) {
                     return Err(CaptureError::InvalidOptions);
                 }
                 capture_replace(&mut ancestors, parent, (), meter)?;

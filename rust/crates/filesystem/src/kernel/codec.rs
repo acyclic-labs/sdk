@@ -161,20 +161,20 @@ impl<'a, 'root> EncodeAccounting<'a, 'root> {
         }
     }
 
-    pub(crate) fn observe(&mut self, step: EncodeWorkStep) -> Result<(), crate::FsError> {
+    pub(crate) fn observe(&mut self, step: &EncodeWorkStep) -> Result<(), crate::FsError> {
         match step {
             EncodeWorkStep::Check => self.accounting.check(),
-            EncodeWorkStep::Admit(delta) => self.accounting.admit(delta),
-            EncodeWorkStep::Completed(delta) => self.accounting.record_completed(delta),
+            EncodeWorkStep::Admit(delta) => self.accounting.admit(*delta),
+            EncodeWorkStep::Completed(delta) => self.accounting.record_completed(*delta),
             EncodeWorkStep::Allocation(EncodeAllocationStep::Reserve { capacity }) => {
-                let requested = usize_to_u64(capacity);
+                let requested = usize_to_u64(*capacity);
                 let next_owned = self
                     .owned_bytes
                     .checked_add(requested)
                     .ok_or(crate::WorkError::Overflow)?;
                 let mut allocation = self
                     .accounting
-                    .claim_owned(requested, u64::from(capacity != 0))?;
+                    .claim_owned(requested, u64::from(*capacity != 0))?;
                 self.owned_bytes = next_owned;
                 if let Some(owned) = self.allocation.as_mut() {
                     owned.absorb(&mut allocation)?;
@@ -189,22 +189,22 @@ impl<'a, 'root> EncodeAccounting<'a, 'root> {
             }) => {
                 self.owned_bytes = self
                     .owned_bytes
-                    .checked_sub(admitted_bytes)
-                    .and_then(|other| other.checked_add(actual_bytes))
+                    .checked_sub(*admitted_bytes)
+                    .and_then(|other| other.checked_add(*actual_bytes))
                     .ok_or(crate::WorkError::Overflow)?;
                 let allocation = self.allocation.as_mut().ok_or(crate::WorkError::Overflow)?;
                 self.accounting
-                    .reconcile_owned(allocation, admitted_bytes, actual_bytes)
+                    .reconcile_owned(allocation, *admitted_bytes, *actual_bytes)
             }
             EncodeWorkStep::Allocation(EncodeAllocationStep::BeforeHeader { bytes }) => {
                 self.accounting.admit(crate::WorkCounters {
-                    bytes_encoded: bytes,
+                    bytes_encoded: *bytes,
                     ..crate::WorkCounters::default()
                 })
             }
             EncodeWorkStep::Allocation(EncodeAllocationStep::HeaderWritten { bytes }) => {
                 self.accounting.record_completed(crate::WorkCounters {
-                    bytes_encoded: bytes,
+                    bytes_encoded: *bytes,
                     ..crate::WorkCounters::default()
                 })
             }
@@ -703,7 +703,7 @@ pub(crate) fn encode_owned(
     #[cfg(target_arch = "wasm32")]
     let original = false;
     let mut encoding = EncodeAccounting::new(accounting);
-    let result = operation(&mut |step| encoding.observe(step), &mut |error| {
+    let result = operation(&mut |step| encoding.observe(&step), &mut |error| {
         EncodeError::AllocationFailed(error).into_fs_error(original)
     });
     encoding.finish(result)

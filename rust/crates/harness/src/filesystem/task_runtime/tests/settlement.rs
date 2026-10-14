@@ -135,7 +135,7 @@ async fn native_stock_builtin_precancel_preserves_original_recovery_before_dispa
             acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction {
                 cause,
-                work: Box::new(work),
+                work: work,
             })?;
         let io = PreparationIo::from_native_work(&work)?;
         let runtime = fixture.runtime(Some(&io)).await?;
@@ -184,7 +184,7 @@ async fn native_stock_tool_lost_ack_reconciles_original_fence_without_redispatch
         acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction {
                 cause,
-                work: Box::new(work),
+                work: work,
             })?;
     let io = PreparationIo::from_native_work(&work)?;
     let runtime = fixture.runtime(Some(&io)).await?;

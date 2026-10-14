@@ -137,7 +137,8 @@ impl<'a> ResolutionView<'a> {
                     })?;
                 Ok(index
                     .ok()
-                    .and_then(|index| slice.get(index).map(|entry| &entry.1)))
+                    .and_then(|index| slice.get(index))
+                    .map(|(_, value)| value))
             }
         }
     }
@@ -503,7 +504,7 @@ fn merge_generation_core<'a, 'accounting, S: AsyncObjectStore>(
                     }
                     state.consume(frontier)?;
                     let mut indices = [0, 0];
-                    while let Some((left, right)) =
+                    while let Some([left, right]) =
                         next_changes(&ours.value.changes, &theirs.value.changes, &mut indices)
                     {
                         accounting.charge(WorkCounters {
@@ -806,23 +807,22 @@ fn next_changes<'a, K: Ord, V>(
     left: &'a [super::persistent_diff::ValueChange<K, V>],
     right: &'a [super::persistent_diff::ValueChange<K, V>],
     indices: &mut [usize; 2],
-) -> Option<(
-    Option<&'a super::persistent_diff::ValueChange<K, V>>,
-    Option<&'a super::persistent_diff::ValueChange<K, V>>,
-)> {
-    let (a, b) = (left.get(indices[0]), right.get(indices[1]));
+) -> Option<[Option<&'a super::persistent_diff::ValueChange<K, V>>; 2]> {
+    let [left_index, right_index] = indices;
+    let (a, b) = (left.get(*left_index), right.get(*right_index));
     let result = match (a, b) {
         (Some(a), Some(b)) => match a.key.cmp(&b.key) {
-            std::cmp::Ordering::Less => (Some(a), None),
-            std::cmp::Ordering::Greater => (None, Some(b)),
-            std::cmp::Ordering::Equal => (Some(a), Some(b)),
+            std::cmp::Ordering::Less => [Some(a), None],
+            std::cmp::Ordering::Greater => [None, Some(b)],
+            std::cmp::Ordering::Equal => [Some(a), Some(b)],
         },
-        (Some(a), None) => (Some(a), None),
-        (None, Some(b)) => (None, Some(b)),
+        (Some(a), None) => [Some(a), None],
+        (None, Some(b)) => [None, Some(b)],
         (None, None) => return None,
     };
-    indices[0] += usize::from(result.0.is_some());
-    indices[1] += usize::from(result.1.is_some());
+    let [left_change, right_change] = result;
+    *left_index += usize::from(left_change.is_some());
+    *right_index += usize::from(right_change.is_some());
     Some(result)
 }
 
@@ -1001,8 +1001,7 @@ fn merge_regular_record_async<'a, 'accounting, S: AsyncObjectStore>(
                                 } else {
                                     apply_extent_mutations_with_accounting(
                                         store,
-                                        ours_root,
-                                        ours_bytes,
+                                        (ours_root, ours_bytes),
                                         &mutations.value,
                                         maximum_changes,
                                         limits,
@@ -1227,7 +1226,7 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
             }
             let mut indices = [0, 0];
             let mut conflicted = false;
-            while let Some((left, right)) = next_changes(
+            while let Some([left, right]) = next_changes(
                 &ours_diff.value.changes,
                 &theirs_diff.value.changes,
                 &mut indices,

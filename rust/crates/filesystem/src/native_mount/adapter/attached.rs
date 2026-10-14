@@ -22,7 +22,7 @@ where
         let observation = self
             .checkout
             .observe(
-                ViewGate::callback_owner(),
+                ViewGate::callback_owner()?,
                 &mut carrier,
                 work.cancellation(),
                 Some(&self.cancellation),
@@ -272,7 +272,7 @@ where
             let record = checkout
                 .read_file_record_by_id(self.file_id, work, work.cancellation())
                 .await?;
-            let file = checkout.detached_from_record(record, work, work.cancellation())?;
+            let file = checkout.detached_from_record(record, &work, work.cancellation())?;
             sparse::read_sparse(&file, offset, length, work, &self.cancellation).await
         })
     }

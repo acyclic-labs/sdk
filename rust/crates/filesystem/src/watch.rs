@@ -1687,7 +1687,7 @@ impl NativeWatch {
         if let NativeWatchDriver::StartupFailure(cause) = &watch.watcher {
             return Err(NativeWatchError::SourceStartupFailed {
                 cause: Arc::clone(cause),
-                watch,
+                watch: Box::new(watch),
             });
         }
         let checked = if let Some(original) = original {
@@ -1698,7 +1698,10 @@ impl NativeWatch {
         };
         match checked {
             Ok(()) => Ok(watch),
-            Err(cause) => Err(NativeWatchError::StartupFailed { cause, watch }),
+            Err(cause) => Err(NativeWatchError::StartupFailed {
+                cause,
+                watch: Box::new(watch),
+            }),
         }
     }
 
@@ -1930,12 +1933,11 @@ impl NativeWatch {
                     .ok_or(DemandError::from(NativeWatchError::SourceUnavailable))?
                     .open_dir_held(&[], work)?;
                 let mut component_start = 0;
-                for index in 0..path.len() {
+                for (index, &unit) in path.iter().enumerate() {
                     work.started_io(WorkCounters {
                         items_examined: 1,
                         ..WorkCounters::default()
                     })?;
-                    let unit = *path.get(index).ok_or(DemandError::InvalidRequest)?;
                     if unit != u16::from(b'\\') && index + 1 != path.len() {
                         continue;
                     }
@@ -1998,8 +2000,18 @@ impl NativeWatch {
                             ..WorkCounters::default()
                         };
                         work.admit(copied)?;
-                        observed.watcher.stop_with_work(work)?;
-                        if !observed.watcher.is_stopped() {
+                        self.windows_directories
+                            .get_mut(at)
+                            .ok_or(DemandError::InvalidRequest)?
+                            .watcher
+                            .stop_with_work(work)?;
+                        if !self
+                            .windows_directories
+                            .get(at)
+                            .ok_or(DemandError::InvalidRequest)?
+                            .watcher
+                            .is_stopped()
+                        {
                             return Err(DemandError::WorkerUnavailable);
                         }
                         work.record(copied)?;
@@ -2245,7 +2257,7 @@ impl NativeWatch {
                                 let observed = self
                                     .windows_directories
                                     .get(at)
-                                    .ok_or(NativeWatchError::UnrepresentablePath)?;
+                                    .ok_or(NativeWatchError::WorkerUnavailable)?;
                                 let mut registered = observed.path.0.iter();
                                 let matches = relative
                                     .as_os_str()
@@ -2258,11 +2270,19 @@ impl NativeWatch {
                                     at += 1;
                                     continue;
                                 }
-                                observed
+                                self.windows_directories
+                                    .get_mut(at)
+                                    .ok_or(NativeWatchError::WorkerUnavailable)?
                                     .watcher
                                     .stop_with_work(work)
                                     .map_err(demand_watch_error)?;
-                                if !observed.watcher.is_stopped() {
+                                if !self
+                                    .windows_directories
+                                    .get(at)
+                                    .ok_or(NativeWatchError::WorkerUnavailable)?
+                                    .watcher
+                                    .is_stopped()
+                                {
                                     return Err(NativeWatchError::WorkerUnavailable);
                                 }
                                 work.started_io(WorkCounters {
@@ -3728,7 +3748,7 @@ pub enum NativeWatchError {
         #[source]
         cause: Arc<crate::source_watch::SourceWatchStartupFailure>,
         /// Same actual watcher, retained for explicitly bounded shutdown.
-        watch: NativeWatch,
+        watch: Box<NativeWatch>,
     },
     /// Original native preparation admission or allocation cause.
     #[error(transparent)]
@@ -3740,7 +3760,7 @@ pub enum NativeWatchError {
         #[source]
         cause: crate::NativeTreeMaterializationError,
         /// Same actual watcher, retained for explicitly bounded shutdown.
-        watch: NativeWatch,
+        watch: Box<NativeWatch>,
     },
     /// Original source reference is stale.
     #[error("source reference is stale")]

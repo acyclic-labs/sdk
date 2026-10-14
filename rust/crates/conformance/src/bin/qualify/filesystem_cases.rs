@@ -172,7 +172,7 @@ pub(super) async fn filesystem_demand(root: std::path::PathBuf) -> Result<(), St
         )
         .await
         .map_err(|error| error.to_string())?;
-    if range.value.bytes().as_ref() != b"3456"
+    if range.value.bytes.as_ref() != b"3456"
         || range.work.source_entries_visited != 0
         || range.work.source_bytes_read != 4
     {

@@ -95,7 +95,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             return work
                 .result(
                     self.provider
-                        .native_read(request, work.native_meter())
+                        .native_read(request, work.native_meter()?)
                         .await,
                 )
                 .map(AuthorityRead::Native);
@@ -123,7 +123,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         if work.is_native() {
             return work.result(
                 self.provider
-                    .native_inspect_idempotency(key, work.native_meter())
+                    .native_inspect_idempotency(key, work.native_meter()?)
                     .await,
             );
         }
@@ -182,7 +182,11 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         })?;
         let completed = WorkCounters {
             authority_records_read: 1,
-            authority_bytes_read: record.0.value.len() as u64,
+            authority_bytes_read: if work.is_native() {
+                0
+            } else {
+                record.0.value.len() as u64
+            },
             ..WorkCounters::UNCHARGED
         };
         work.charge(completed)?;
@@ -207,7 +211,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         if work.is_native() {
             work.check()?;
             return work
-                .result(self.provider.native_tail(path, work.native_meter()).await)
+                .result(self.provider.native_tail(path, work.native_meter()?).await)
                 .map(|value| value.0);
         }
         let read = WorkCounters {
@@ -243,7 +247,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 None => {
                     let result = self
                         .provider
-                        .native_commit(request, deadline, meter.native_meter())
+                        .native_commit(request, deadline, meter.native_meter()?)
                         .await;
                     result.map(|result| result.map_err(AuthorityError::from))
                 }

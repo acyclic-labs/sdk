@@ -364,12 +364,6 @@ impl WorkCounters {
         self.peak_allocation_bytes = self.peak_allocation_bytes.max(delta.peak_allocation_bytes);
     }
 
-    /// Verifies every counter against `budget` by reference: exactly [`Self::verify`], without copying either counter set.
-    #[inline]
-    pub(crate) fn verify_ref(&self, budget: &WorkBudget) -> Result<(), WorkError> {
-        self.verify_within(budget)
-    }
-
     /// Verifies every counter against an admitted hard budget.
     #[inline]
     pub fn verify(self, budget: WorkBudget) -> Result<(), WorkError> {

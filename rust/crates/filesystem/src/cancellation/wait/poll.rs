@@ -74,18 +74,17 @@ impl Cancelled<'_> {
                 * std::mem::size_of::<Option<Weak<CancellationWaiter>>>())
                 as u64;
             let count = if grows {
-                match waiters.capacity().max(1).checked_mul(2) {
-                    Some(count) => count,
-                    None => return Poll::Ready(Err(crate::WorkError::Overflow.into())),
-                }
+                waiters
+                    .capacity()
+                    .max(1)
+                    .checked_mul(2)
+                    .ok_or(crate::WorkError::Overflow)?
             } else {
                 0
             };
-            let new_bytes =
-                match count.checked_mul(std::mem::size_of::<Option<Weak<CancellationWaiter>>>()) {
-                    Some(bytes) => bytes as u64,
-                    None => return Poll::Ready(Err(crate::WorkError::Overflow.into())),
-                };
+            let new_bytes = count
+                .checked_mul(std::mem::size_of::<Option<Weak<CancellationWaiter>>>())
+                .ok_or(crate::WorkError::Overflow)? as u64;
             let waiter_bytes = std::mem::size_of::<CancellationWaiter>() as u64;
             #[cfg(not(target_arch = "wasm32"))]
             let mut growth_visits = None;
@@ -99,14 +98,11 @@ impl Cancelled<'_> {
                 let retained = waiter_bytes
                     .checked_add(new_bytes)
                     .and_then(|bytes| bytes.checked_add(registry_metadata));
-                let Some(retained) = retained else {
-                    return Poll::Ready(Err(crate::WorkError::Overflow.into()));
-                };
+                let retained = retained.ok_or(crate::WorkError::Overflow)?;
                 let cancellation_items = if grows {
-                    match (count as u64).checked_mul(2) {
-                        Some(items) => items,
-                        None => return Poll::Ready(Err(crate::WorkError::Overflow.into())),
-                    }
+                    (count as u64)
+                        .checked_mul(2)
+                        .ok_or(crate::WorkError::Overflow)?
                 } else {
                     0
                 };
@@ -131,33 +127,21 @@ impl Cancelled<'_> {
                 {
                     return Poll::Ready(Err(error.into()));
                 }
-                self.native_cleanup = match original.reserve_work(crate::WorkCounters {
+                self.native_cleanup = Some(original.reserve_work(crate::WorkCounters {
                     items_examined: 1,
                     ..crate::WorkCounters::UNCHARGED
-                }) {
-                    Ok(credit) => Some(credit),
-                    Err(error) => return Poll::Ready(Err(error.into())),
-                };
+                })?);
                 if grows {
-                    growth_visits = match original.reserve_work(crate::WorkCounters {
+                    growth_visits = Some(original.reserve_work(crate::WorkCounters {
                         items_examined: waiters.len() as u64,
                         ..crate::WorkCounters::UNCHARGED
-                    }) {
-                        Ok(credit) => Some(credit),
-                        Err(error) => return Poll::Ready(Err(error.into())),
-                    };
-                    cancellation_visits = match original.reserve_work(crate::WorkCounters {
+                    })?);
+                    cancellation_visits = Some(original.reserve_work(crate::WorkCounters {
                         items_examined: cancellation_items,
                         ..crate::WorkCounters::UNCHARGED
-                    }) {
-                        Ok(credit) => Some(credit),
-                        Err(error) => return Poll::Ready(Err(error.into())),
-                    };
+                    })?);
                 }
-                match original.claim(waiter_bytes, 1, crate::WorkCounters::UNCHARGED) {
-                    Ok(allocation) => Some(allocation),
-                    Err(error) => return Poll::Ready(Err(error.into())),
-                }
+                Some(original.claim(waiter_bytes, 1, crate::WorkCounters::UNCHARGED)?)
             } else {
                 None
             };
@@ -175,9 +159,7 @@ impl Cancelled<'_> {
                     .checked_add(waiter_bytes)
                     .and_then(|bytes| bytes.checked_add(adopted))
                     .and_then(|bytes| bytes.checked_add(new_bytes));
-                let Some(peak) = peak else {
-                    return Poll::Ready(Err(crate::WorkError::Overflow.into()));
-                };
+                let peak = peak.ok_or(crate::WorkError::Overflow)?;
                 let delta = crate::WorkCounters {
                     allocation_operations: 1 + u64::from(grows),
                     peak_allocation_bytes: peak,
@@ -230,9 +212,9 @@ impl Cancelled<'_> {
                     meter.pending_registry_bytes = new_bytes;
                 }
                 #[cfg(not(target_arch = "wasm32"))]
-                let mut native_registry_allocation = if let Some(original) = native_original {
+                let native_registry_allocation = if let Some(original) = native_original {
                     match original.claim(new_bytes, 1, crate::WorkCounters::UNCHARGED) {
-                        Ok(allocation) => Some(allocation),
+                        Ok(allocation) => Some((original, allocation)),
                         Err(error) => return Poll::Ready(Err(error.into())),
                     }
                 } else {
@@ -263,28 +245,23 @@ impl Cancelled<'_> {
                     return Poll::Ready(Err(error));
                 }
                 #[cfg(not(target_arch = "wasm32"))]
-                let new_lease = if let Some(original) = native_original {
+                let new_lease = if let Some((original, mut allocation)) = native_registry_allocation
+                {
                     let actual = (replacement.capacity()
                         * std::mem::size_of::<Option<Weak<CancellationWaiter>>>())
                         as u64;
-                    if let Err(error) = native_registry_allocation
-                        .as_mut()
-                        .expect("native registry allocation")
-                        .reconcile_capacity(actual)
-                    {
+                    if let Err(error) = allocation.reconcile_capacity(actual) {
                         drop(waiters);
                         drop(replacement);
                         return Poll::Ready(Err(error.into()));
                     }
-                    let generation = if let Some(generation) = self
+                    let Some(generation) = self
                         .token
                         .state
                         .registry_generation
                         .load(Ordering::Acquire)
                         .checked_add(1)
-                    {
-                        generation
-                    } else {
+                    else {
                         drop(waiters);
                         drop(replacement);
                         return Poll::Ready(Err(crate::WorkError::Overflow.into()));
@@ -301,11 +278,7 @@ impl Cancelled<'_> {
                             return Poll::Ready(Err(error.into()));
                         }
                     };
-                    if let Err(error) = metadata.absorb(
-                        native_registry_allocation
-                            .as_mut()
-                            .expect("native registry allocation"),
-                    ) {
+                    if let Err(error) = metadata.absorb(&mut allocation) {
                         drop(waiters);
                         drop(replacement);
                         return Poll::Ready(Err(error.into()));
@@ -365,7 +338,7 @@ impl Cancelled<'_> {
                     *waiter
                         .registry_lease
                         .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) = new_lease.clone();
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = new_lease;
                 }
                 let index = if let Some(index) = free {
                     waiters[index] = Some(Arc::downgrade(&waiter));
@@ -426,9 +399,7 @@ impl Cancelled<'_> {
             if self.registered.is_none() {
                 let weak = Some(Arc::downgrade(&waiter));
                 let index = if let Some(index) = free {
-                    *waiters
-                        .get_mut(index)
-                        .expect("free cancellation slot remains valid") = weak;
+                    *waiters.get_mut(index).ok_or(crate::WorkError::Overflow)? = weak;
                     index
                 } else {
                     waiters.push(weak);
@@ -447,10 +418,7 @@ impl Cancelled<'_> {
                 self.waiter = Some(waiter);
             }
         }
-        let waiter = self
-            .waiter
-            .as_ref()
-            .expect("registered cancellation waiter");
+        let waiter = self.waiter.as_ref().ok_or(crate::WorkError::Overflow)?;
         drop(waiters);
         let replace = {
             let waker = waiter

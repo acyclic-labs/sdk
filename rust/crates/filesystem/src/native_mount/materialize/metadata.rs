@@ -6,7 +6,6 @@ pub(super) async fn apply_metadata<A, O, E, F, Fut>(
     path: &NamespacePath,
     host_path: &Arc<(Vec<HostPathUnit>, crate::NativeAllocation)>,
     metadata: Option<FileMetadata>,
-    cancellation: &CancellationToken,
     receipt: &mut GenerationReceipt,
     before_effect: &mut Option<&mut F>,
 ) -> Result<(), E>
@@ -17,6 +16,12 @@ where
     F: FnMut(NativeMaterializationActionPhase) -> Fut,
     Fut: Future<Output = Result<(), E>>,
 {
+    let cancellation = receipt
+        .custody
+        .work()
+        .state
+        .with_original_leaf(|original| original.cancellation().clone());
+    let cancellation = &cancellation;
     let metadata = match metadata {
         Some(metadata) => metadata,
         None => read_source!(reader, receipt, remaining, value,
@@ -181,7 +186,9 @@ pub(super) async fn apply_host_metadata_offloaded(
         }
         #[cfg(windows)]
         {
-            crate::native_host::apply_metadata(target, metadata, work)
+            let result = crate::native_host::apply_metadata(&target, metadata, work);
+            drop(target);
+            result
         }
     })
     .await
@@ -391,7 +398,7 @@ pub(super) fn create_symlink(
 )]
 pub(super) fn create_special(
     host_root: &HostRoot,
-    destination: &Vec<HostPathUnit>,
+    destination: &[HostPathUnit],
     kind: FileKind,
     device: Option<(u32, u32)>,
     _receipt: &mut GenerationReceipt,

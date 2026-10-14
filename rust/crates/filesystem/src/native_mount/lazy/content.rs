@@ -95,7 +95,7 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<((Arc<dyn MountOpenFile>, u64), Option<MountLookup>), MountSourceError> {
         let (text, mut allocation) = self.path(path, work)?;
-        let owner = ViewGate::callback_owner();
+        let owner = ViewGate::callback_owner()?;
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
         let (lease, resolution, source_file) =
             with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
@@ -262,7 +262,7 @@ where
         expected: Option<u64>,
         original: Option<&crate::NativeMaterializationWork>,
     ) -> Result<ViewReadLease, MountSourceError> {
-        let owner = ViewGate::callback_owner();
+        let owner = ViewGate::callback_owner()?;
         let Some(work) = original else {
             return self
                 .runtime
@@ -292,7 +292,7 @@ where
         let (text, _allocation) = self.path(path, work)?;
         self.runtime.wait(|| async {
             match self
-                .resolve(path, &text, ViewGate::callback_owner(), work)
+                .resolve(path, &text, ViewGate::callback_owner()?, work)
                 .await?
             {
                 Resolution::Absent => Err(MountSourceError::NotFound),
@@ -322,17 +322,17 @@ where
         &self,
         path: &MountPath,
         pin: Option<MountContentPin>,
-        offset: u64,
-        length: u64,
+        range: crate::ByteRange,
         piece: u32,
         sink: &mut crate::native_mount::NativeMountContentSink<'_>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
+        let crate::ByteRange { offset, length } = range;
         let end = offset
             .checked_add(length)
             .ok_or(MountSourceError::Invalid("content range overflows".into()))?;
         let (text, _allocation) = self.path(path, work)?;
-        let owner = ViewGate::callback_owner();
+        let owner = ViewGate::callback_owner()?;
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
         let (_lease, resolution, source_file) =
             with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {

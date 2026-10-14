@@ -238,10 +238,6 @@ pub(super) const fn fingerprint_input_length(operation_context: Option<Digest>) 
         + if operation_context.is_some() { 32 } else { 0 }
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "Payload admission checks the evidence length fits u32 before encoding."
-)]
 pub(super) fn write_publication_payload(
     bytes: &mut Vec<u8>,
     volume_id: VolumeId,

@@ -71,15 +71,6 @@ enum TraversalMode {
     Seek(ExtentSeekTarget),
 }
 
-#[allow(
-    clippy::large_enum_variant,
-    reason = "Returning a plan by value avoids another allocation in the bounded seek path."
-)]
-enum RangeOutput {
-    Plan(ExtentPlan),
-    Seek(Option<u64>),
-}
-
 struct PendingPage {
     page: ObjectId,
     first_offset: u64,
@@ -130,20 +121,15 @@ pub(crate) async fn plan_extent_range_with_accounting<S: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(ExtentPlan, KernelOwnedAllocation), FsError> {
-    let result = ReadOwned::from(
-        run_range_async(
-            store,
-            request,
-            TraversalMode::Plan,
-            accounting,
-            cancellation,
-        )
-        .await?,
-    );
-    match result.value {
-        RangeOutput::Plan(plan) => Ok((plan, result.custody)),
-        _ => Err(range_failure(ExtentReadError::TraversalState)),
-    }
+    run_range_async(
+        store,
+        request,
+        TraversalMode::Plan,
+        accounting,
+        cancellation,
+    )
+    .await?
+    .finish_plan(accounting)
 }
 
 /// Finds a data or hole boundary without reading content objects.
@@ -154,24 +140,22 @@ pub async fn seek_extent<S: AsyncObjectStore>(
 ) -> Result<OperationReceipt<Option<u64>>, ExtentReadFailure> {
     let mut accounting = KernelAccounting::standalone(request.budget, cancellation);
     let result = match seek_request(request) {
-        Ok(range) => {
-            run_range_async(
-                store,
-                range,
-                TraversalMode::Seek(request.target),
-                &mut accounting,
-                cancellation,
-            )
-            .await
-        }
+        Ok(range) => run_range_async(
+            store,
+            range,
+            TraversalMode::Seek(request.target),
+            &mut accounting,
+            cancellation,
+        )
+        .await
+        .and_then(|machine| machine.finish_seek(&mut accounting)),
         Err(error) => Err(error),
     };
     match result {
-        Ok((RangeOutput::Seek(value), _)) => Ok(OperationReceipt {
+        Ok(value) => Ok(OperationReceipt {
             value,
             work: accounting.spent(),
         }),
-        Ok(_) => Err(failed(ExtentReadError::TraversalState, accounting.spent())),
         Err(error) => Err(failed(range_error(error), accounting.spent())),
     }
 }
@@ -182,20 +166,15 @@ pub(crate) async fn seek_extent_with_accounting<S: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<Option<u64>, FsError> {
-    let result = ReadOwned::from(
-        run_range_async(
-            store,
-            seek_request(request)?,
-            TraversalMode::Seek(request.target),
-            accounting,
-            cancellation,
-        )
-        .await?,
-    );
-    match result.value {
-        RangeOutput::Seek(value) => Ok(value),
-        _ => Err(range_failure(ExtentReadError::TraversalState)),
-    }
+    run_range_async(
+        store,
+        seek_request(request)?,
+        TraversalMode::Seek(request.target),
+        accounting,
+        cancellation,
+    )
+    .await?
+    .finish_seek(accounting)
 }
 
 fn seek_request(request: ExtentSeekRequest) -> Result<ExtentRangeRequest, FsError> {
@@ -276,8 +255,8 @@ impl RangeMachine {
             spans: Vec::new(),
             spans_capacity: LogicalVecCapacity::default(),
             successor_page: None,
-            pending_custody: KernelOwnedAllocation::Standalone,
-            spans_custody: KernelOwnedAllocation::Standalone,
+            pending_custody: accounting.claim_owned(0, 0)?,
+            spans_custody: accounting.claim_owned(0, 0)?,
         };
         if request.range.length != 0 {
             machine.push_page(
@@ -466,40 +445,54 @@ impl RangeMachine {
         Ok(())
     }
 
-    fn finish(
+    fn finish_plan(
         mut self,
         accounting: &mut KernelAccounting<'_>,
-    ) -> Result<(RangeOutput, KernelOwnedAllocation), FsError> {
-        let output = match self.mode {
-            TraversalMode::Plan => {
-                if self.input.range.length != 0
-                    && (self.spans.first().map(|span| span.offset) != Some(self.input.range.offset)
-                        || self
-                            .spans
-                            .last()
-                            .and_then(|span| span.offset.checked_add(span.length))
-                            != Some(self.range_end)
-                        || self.spans.windows(2).any(|pair| match pair {
-                            [a, b] => a.offset.checked_add(a.length) != Some(b.offset),
-                            _ => false,
-                        }))
-                {
-                    return Err(range_failure(ExtentReadError::IncompleteCoverage));
-                }
-                RangeOutput::Plan(ExtentPlan {
-                    spans: std::mem::take(&mut self.spans),
-                    work: accounting.spent(),
-                    retained_allocation_bytes: self.spans_capacity.logical_bytes(),
-                    next_residency: self.successor_page.map(|(_, hint)| hint),
-                })
-            }
-            TraversalMode::Seek(target) => RangeOutput::Seek(
-                self.seek_result
-                    .or_else(|| (target == ExtentSeekTarget::Hole).then_some(self.input.file_size)),
-            ),
+    ) -> Result<(ExtentPlan, KernelOwnedAllocation), FsError> {
+        if !matches!(self.mode, TraversalMode::Plan) {
+            return Err(range_failure(ExtentReadError::TraversalState));
+        }
+        if self.input.range.length != 0
+            && (self.spans.first().map(|span| span.offset) != Some(self.input.range.offset)
+                || self
+                    .spans
+                    .last()
+                    .and_then(|span| span.offset.checked_add(span.length))
+                    != Some(self.range_end)
+                || self.spans.windows(2).any(|pair| match pair {
+                    [a, b] => a.offset.checked_add(a.length) != Some(b.offset),
+                    _ => false,
+                }))
+        {
+            return Err(range_failure(ExtentReadError::IncompleteCoverage));
+        }
+        let plan = ExtentPlan {
+            spans: std::mem::take(&mut self.spans),
+            work: accounting.spent(),
+            retained_allocation_bytes: self.spans_capacity.logical_bytes(),
+            next_residency: self.successor_page.map(|(_, hint)| hint),
         };
+        self.finish_output(plan, accounting)
+    }
+
+    fn finish_seek(self, accounting: &mut KernelAccounting<'_>) -> Result<Option<u64>, FsError> {
+        let TraversalMode::Seek(target) = self.mode else {
+            return Err(range_failure(ExtentReadError::TraversalState));
+        };
+        let value = self
+            .seek_result
+            .or_else(|| (target == ExtentSeekTarget::Hole).then_some(self.input.file_size));
+        self.finish_output(value, accounting)
+            .map(|(value, _)| value)
+    }
+
+    fn finish_output<T>(
+        mut self,
+        value: T,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(T, KernelOwnedAllocation), FsError> {
         let output = ReadOwned {
-            value: output,
+            value,
             custody: std::mem::replace(&mut self.spans_custody, KernelOwnedAllocation::Standalone),
         };
         let pending_bytes = self.pending_capacity.logical_bytes();
@@ -518,7 +511,7 @@ async fn run_range_async<S: AsyncObjectStore>(
     mode: TraversalMode,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
-) -> Result<(RangeOutput, KernelOwnedAllocation), FsError> {
+) -> Result<RangeMachine, FsError> {
     let mut machine = RangeMachine::new(request, mode, accounting)?;
     while !machine.pending.is_empty() {
         let expected = machine.prepare(accounting)?;
@@ -574,7 +567,7 @@ async fn run_range_async<S: AsyncObjectStore>(
         drop(read);
         super::file_read::release_standalone_read_bytes(retained, accounting)?;
     }
-    machine.finish(accounting)
+    Ok(machine)
 }
 
 fn range_failure(error: ExtentReadError) -> FsError {

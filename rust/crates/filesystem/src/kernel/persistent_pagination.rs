@@ -50,9 +50,7 @@ impl<K> Pending<K> {
 )]
 pub(crate) async fn paginate<S, F>(
     store: &S,
-    root: ObjectId,
-    bound: Bound<&F::Key>,
-    maximum_values: u32,
+    query: (ObjectId, Bound<&F::Key>, u32),
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &CancellationToken,
@@ -62,12 +60,11 @@ where
     S: AsyncObjectStore,
     F: Format,
 {
+    let (root, bound, maximum_values) = query;
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
     let result = paginate_with_accounting::<S, F>(
         store,
-        root,
-        bound,
-        maximum_values,
+        (root, bound, maximum_values),
         limits,
         &mut accounting,
         cancellation,
@@ -85,9 +82,7 @@ where
 )]
 pub(crate) async fn paginate_with_accounting<S, F>(
     store: &S,
-    root: ObjectId,
-    bound: Bound<&F::Key>,
-    maximum_values: u32,
+    query: (ObjectId, Bound<&F::Key>, u32),
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -97,6 +92,7 @@ where
     S: AsyncObjectStore,
     F: Format,
 {
+    let (root, bound, maximum_values) = query;
     accounting.check()?;
     let mut machine = Machine::<F>::new_with_accounting(
         root,

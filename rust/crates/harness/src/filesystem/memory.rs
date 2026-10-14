@@ -17,7 +17,6 @@ use crate::{
     interaction::{InteractionOutcome, InteractionResponse},
     resources::{GenerationRef, ProviderRef},
     runtime::{ContentBindings, RuntimeScope},
-    store::StreamAggregate,
     tool::{
         Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry,
         ToolResult,
@@ -27,6 +26,7 @@ use crate::{
 use crate::{
     conversation::{ConversationMessage, MessageKind},
     executor::TurnInput,
+    store::StreamAggregate,
 };
 use acyclic_fs::{
     DirectoryPage, Fs, MemoryAuthorityBackend, MemoryObjectBackend,
@@ -43,11 +43,24 @@ type MemoryHost = FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>;
 type MemoryJournal =
     FilesystemExecutionJournal<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>;
 
-fn new_memory_store(
-    volume: &VolumeRef,
+async fn new_memory_content(
+    agent: AgentId,
     maximum_file_bytes: u64,
-) -> Result<Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>> {
-    Ok(Arc::new(std::sync::Mutex::new(
+) -> Result<(
+    Arc<MemoryHost>,
+    VolumeRef,
+    Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
+)> {
+    let provider = ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let host: Arc<MemoryHost> = FilesystemHost::new(Fs::memory(), &provider, None)?;
+    let volume = VolumeRef::new(
+        provider,
+        Uuid::new_v4().to_string(),
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(agent),
+        &mut None,
+    )?;
+    let memory_store = Arc::new(std::sync::Mutex::new(
         crate::memory_store::MemoryStore::new(
             volume.clone(),
             maximum_file_bytes,
@@ -55,7 +68,9 @@ fn new_memory_store(
             u64::MAX,
             u64::MAX,
         )?,
-    )))
+    ));
+    host.create_volume(&volume).await?;
+    Ok((host, volume, memory_store))
 }
 
 /// A fully bound in-process journal and owner-private file volume.
@@ -88,10 +103,10 @@ impl MemoryHarnessStorage {
         source: Option<
             Arc<
                 super::ConfiguredRecursiveToolSource<
-                        MemoryStream,
-                        MemoryAuthorityBackend,
-                        MemoryObjectBackend,
-                    >,
+                    MemoryStream,
+                    MemoryAuthorityBackend,
+                    MemoryObjectBackend,
+                >,
             >,
         >,
     ) -> Result<ToolRegistry> {
@@ -165,18 +180,7 @@ impl MemoryHarnessStorage {
                 "memory Harness file limit must be positive".into(),
             ));
         }
-        let provider =
-            ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
-        let host: Arc<MemoryHost> = FilesystemHost::new(Fs::memory(), &provider, None)?;
-        let volume = VolumeRef::new(
-            provider,
-            Uuid::new_v4().to_string(),
-            VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(agent),
-            &mut None,
-        )?;
-        let memory_store = new_memory_store(&volume, maximum_file_bytes)?;
-        host.create_volume(&volume).await?;
+        let (host, volume, memory_store) = new_memory_content(agent, maximum_file_bytes).await?;
         let conversation = Authority {
             kind: AggregateKind::Conversation,
             id: ConversationId::new().to_string(),
@@ -185,36 +189,45 @@ impl MemoryHarnessStorage {
         let issuer = AuthorityIssuer::new("local-harness", key, conversation.clone());
         let read_capability = volume.capability(VolumeOperation::Read, &mut None)?;
         let write_capability = volume.capability(VolumeOperation::Write, &mut None)?;
-        let scope = issuer
-            .issue(
-                "owner",
-                &Capabilities::new([
-                    capability::CONVERSATION_BIND.to_owned(),
-                    capability::CONVERSATION_APPEND.to_owned(),
-                    capability::CONVERSATION_SELECT_CONTEXT.to_owned(),
-                    capability::INTERACTION_OPEN.to_owned(),
-                    read_capability.clone(),
-                    write_capability.clone(),
-                ]),
-                Some(agent),
-                None,
-                &mut None,
-            )
-            .expect("scope proof");
-        let stream = Arc::new(MemoryStream::default());
-        let mut aggregate = StreamAggregate::open(
-            &stream,
-            conversation.clone(),
-            issuer.verifier(&mut None).expect("verifier copy"),
-            SchemaRegistry::new(),
-            None,
-            crate::store::default_projection_read_limits(),
-            crate::store::DEFAULT_TERMINAL_EFFECTS,
+        let scope = issuer.issue(
+            "owner",
+            &Capabilities::new([
+                capability::CONVERSATION_BIND.to_owned(),
+                capability::CONVERSATION_APPEND.to_owned(),
+                capability::CONVERSATION_SELECT_CONTEXT.to_owned(),
+                capability::INTERACTION_OPEN.to_owned(),
+                read_capability.clone(),
+                write_capability.clone(),
+            ]),
+            Some(agent),
             None,
             &mut None,
-        )
-        .await?;
-        aggregate
+        )?;
+        let verifier = issuer.verifier(&mut None)?;
+        let stream = Arc::new(MemoryStream::default());
+        let input = FilesystemContentVerifier::new(
+            Arc::clone(&host),
+            &verifier,
+            &scope,
+            maximum_file_bytes,
+            None,
+        )?;
+        let journal = Arc::new(
+            FilesystemExecutionJournal::new(
+                stream.clone(),
+                Arc::clone(&host),
+                &volume,
+                &verifier,
+                &SchemaRegistry::new(),
+                &scope,
+                maximum_file_bytes,
+                None,
+            )?
+            .with_input_verifier(input.clone()),
+        );
+        journal
+            .conversation_projection(Limits::default())
+            .await?
             .execute(
                 Command {
                     operation_id: OperationId::new(),
@@ -229,31 +242,11 @@ impl MemoryHarnessStorage {
                 &mut None,
             )
             .await?;
-        let input = FilesystemContentVerifier::new(
-            Arc::clone(&host),
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            &scope,
-            maximum_file_bytes,
-            None,
-        )?;
-        let journal = Arc::new(
-            FilesystemExecutionJournal::new(
-                stream.clone(),
-                Arc::clone(&host),
-                &volume,
-                &issuer.verifier(&mut None).expect("verifier copy"),
-                &crate::core::SchemaRegistry::new(),
-                &scope,
-                maximum_file_bytes,
-                None,
-            )?
-            .with_input_verifier(input.clone()),
-        );
         let publisher = Arc::new(MemoryContentPublisher {
             files: FilesystemContentPublisher::new(
                 Arc::clone(&host),
                 &volume,
-                &issuer.verifier(&mut None).expect("verifier copy"),
+                &verifier,
                 &scope,
                 maximum_file_bytes,
                 None,
@@ -486,7 +479,7 @@ impl MemoryHarnessStorage {
     ) -> Result<Arc<FilesystemContentVerifier<MemoryAuthorityBackend, MemoryObjectBackend>>> {
         FilesystemContentVerifier::new(
             self.host.clone(),
-            &self.issuer.verifier(&mut None).expect("verifier copy"),
+            self.content_verifier.verifier.as_ref(),
             scope,
             self.maximum_file_bytes,
             None,
@@ -499,19 +492,16 @@ impl MemoryHarnessStorage {
         id: InteractionId,
         response: InteractionResponse,
     ) -> Result<InteractionOutcome> {
-        let responder = self
-            .issuer
-            .issue(
-                &format!("local-responder:{id}"),
-                &Capabilities::new([
-                    capability::INTERACTION_RESOLVE.to_owned(),
-                    capability::interaction_respond(id),
-                ]),
-                None,
-                None,
-                &mut None,
-            )
-            .expect("scope proof");
+        let responder = self.issuer.issue(
+            &format!("local-responder:{id}"),
+            &Capabilities::new([
+                capability::INTERACTION_RESOLVE.to_owned(),
+                capability::interaction_respond(id),
+            ]),
+            None,
+            None,
+            &mut None,
+        )?;
         self.journal
             .resolve_interaction(id, response, &responder)
             .await?;
@@ -542,7 +532,7 @@ impl MemoryHarnessStorage {
     /// Returns the trusted verifier without disclosing the signing key.
     #[must_use]
     pub fn verifier(&self) -> crate::core::AuthorityVerifier {
-        self.issuer.verifier(&mut None).expect("verifier copy")
+        self.content_verifier.verifier.as_ref().clone()
     }
 }
 

@@ -269,11 +269,12 @@ impl Scheduler {
             return Ok(Plan::Wait);
         }
         match &state.spec.orchestration {
-            Orchestration::Join if terminal => self.inspect_ordered(parent, work),
             Orchestration::Reduce { reducer } if terminal && successful => {
                 Ok(Plan::Reduce(reducer))
             }
-            Orchestration::Reduce { .. } if terminal => self.inspect_ordered(parent, work),
+            Orchestration::Join | Orchestration::Reduce { .. } if terminal => {
+                self.inspect_ordered(parent, work)
+            }
             Orchestration::Race | Orchestration::Quorum { .. } => {
                 let mut successes = 0;
                 for completed in &self.completion_order {

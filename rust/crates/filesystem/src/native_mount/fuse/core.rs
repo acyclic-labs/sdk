@@ -258,7 +258,8 @@ impl ProjectionCore {
             let work = self._allocation.work().state.lock();
             (work.budget, work.cancellation().clone())
         };
-        let result = run_native_mount_handler(budget, &cancellation, run);
+        let result = run_native_mount_handler(budget, &cancellation, run)
+            .map_err(|(error, work)| (error, *work));
         let prefix = match &result {
             Ok(receipt) => receipt.work,
             Err(failure) => failure.1,

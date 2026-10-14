@@ -172,7 +172,8 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
             self.verify_effect_context(&journal).await?;
             let mut preimage = self
                 .backend
-                .capture(&journal.plan.edits[journal.preimages.len()])
+                .capture(journal.plan.edits.get(journal.preimages.len())
+                    .ok_or(MaterializationError::IncompatibleJournal)?)
                 .await
                 .map_err(MaterializationError::Backend)?;
             #[cfg(not(target_arch = "wasm32"))]
@@ -258,8 +259,10 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
                 (journal.applied - journal.restored - 1) as usize
             };
             self.verify_allocation(&journal).await?;
-            let edit = &journal.plan.edits[index];
-            let preimage = &journal.preimages[index];
+            let edit = journal.plan.edits.get(index)
+                .ok_or(MaterializationError::IncompatibleJournal)?;
+            let preimage = journal.preimages.get(index)
+                .ok_or(MaterializationError::IncompatibleJournal)?;
             let effect = match self
                 .backend
                 .observe(edit, preimage)
@@ -477,10 +480,10 @@ pub(super) fn validate_plan<'a>(plan: &'a MaterializationPlan, mut paths: Vec<&'
         }
     }
     paths.sort_unstable();
-    for pair in paths.windows(2) {
-        if pair[0] == pair[1]
-            || pair[1]
-                .strip_prefix(pair[0])
+    for [left, right] in paths.array_windows::<2>() {
+        if left == right
+            || right
+                .strip_prefix(*left)
                 .is_some_and(|suffix| suffix.starts_with('/'))
         {
             return false;

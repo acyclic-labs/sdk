@@ -23,7 +23,7 @@ impl DirectDetach {
         original: &Work,
     ) -> Result<Self, NativeMountError> {
         let credit = original.reserve_work(WRITE_WORK)?.into_runtime_credit()?;
-        let meter = credit.runtime_meter();
+        let meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = credit.clone();
         let mut operation = acyclic_native_runtime::NativeOperationReservation::new(
             Arc::clone(&meter),
             acyclic_native_runtime::NativeOperationKind::Write,

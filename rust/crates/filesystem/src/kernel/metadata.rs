@@ -151,7 +151,7 @@ where
 
 fn file_metadata_encoded_len(metadata: FileMetadata) -> Result<usize, CanonicalDecodeError> {
     metadata.validate()?;
-    fn field<T: Copy>(value: MetadataField<T>, payload: usize) -> usize {
+    fn field<T>(value: &MetadataField<T>, payload: usize) -> usize {
         match value {
             MetadataField::Unavailable => 1,
             MetadataField::Value(_) => 1 + payload,
@@ -164,15 +164,15 @@ fn file_metadata_encoded_len(metadata: FileMetadata) -> Result<usize, CanonicalD
         }
     }
     [
-        field(metadata.posix_mode, std::mem::size_of::<u32>()),
-        field(metadata.posix_uid, std::mem::size_of::<u32>()),
-        field(metadata.posix_gid, std::mem::size_of::<u32>()),
-        field(metadata.posix_flags, std::mem::size_of::<u64>()),
-        field(metadata.windows_attributes, std::mem::size_of::<u32>()),
-        field(metadata.created_ns, std::mem::size_of::<i64>()),
-        field(metadata.modified_ns, std::mem::size_of::<i64>()),
-        field(metadata.accessed_ns, std::mem::size_of::<i64>()),
-        field(metadata.changed_ns, std::mem::size_of::<i64>()),
+        field(&metadata.posix_mode, std::mem::size_of::<u32>()),
+        field(&metadata.posix_uid, std::mem::size_of::<u32>()),
+        field(&metadata.posix_gid, std::mem::size_of::<u32>()),
+        field(&metadata.posix_flags, std::mem::size_of::<u64>()),
+        field(&metadata.windows_attributes, std::mem::size_of::<u32>()),
+        field(&metadata.created_ns, std::mem::size_of::<i64>()),
+        field(&metadata.modified_ns, std::mem::size_of::<i64>()),
+        field(&metadata.accessed_ns, std::mem::size_of::<i64>()),
+        field(&metadata.changed_ns, std::mem::size_of::<i64>()),
         object(metadata.named_attributes),
         object(metadata.acl),
         object(metadata.security_descriptor),

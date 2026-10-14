@@ -15,13 +15,13 @@ fn workspace_names_preserve_nfc_and_cancellation() -> Result<(), Box<dyn Error>>
         "a\u{301}\u{300}",
     ] {
         let expected: String = spelling.nfc().collect();
-        let normalized = WorkspaceName::new(spelling, WorkBudget::UNBOUNDED, &cancellation)?;
+        let normalized = WorkspaceName::new(spelling, &WorkBudget::UNBOUNDED, &cancellation)?;
         assert_eq!(normalized.value.as_str(), expected);
     }
     assert!(matches!(
         value!(WorkspaceName::new(
             "",
-            crate::WorkBudget::UNBOUNDED,
+            &crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new()
         )),
         Err(WorkspaceError::Name(WorkspaceNameError::Empty))
@@ -29,7 +29,7 @@ fn workspace_names_preserve_nfc_and_cancellation() -> Result<(), Box<dyn Error>>
     assert!(matches!(
         value!(WorkspaceName::new(
             "..",
-            crate::WorkBudget::UNBOUNDED,
+            &crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new()
         )),
         Err(WorkspaceError::Name(WorkspaceNameError::Reserved))
@@ -37,14 +37,14 @@ fn workspace_names_preserve_nfc_and_cancellation() -> Result<(), Box<dyn Error>>
     assert!(matches!(
         value!(WorkspaceName::new(
             "parent/child",
-            crate::WorkBudget::UNBOUNDED,
+            &crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new()
         )),
         Err(WorkspaceError::Name(WorkspaceNameError::InvalidCharacter))
     ));
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let failure = WorkspaceName::new("name", WorkBudget::UNBOUNDED, &cancelled)
+    let failure = WorkspaceName::new("name", &WorkBudget::UNBOUNDED, &cancelled)
         .err()
         .ok_or("cancelled canonical name unexpectedly admitted")?;
     assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
@@ -55,13 +55,13 @@ fn workspace_names_preserve_nfc_and_cancellation() -> Result<(), Box<dyn Error>>
 fn identity_is_deterministic_and_namespace_scoped() -> Result<(), Box<dyn Error>> {
     let name = value!(WorkspaceName::new(
         "repo",
-        crate::WorkBudget::UNBOUNDED,
+        &crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     ))?;
     let first = value!(WorkspaceId::derive(
         [1; 16],
         &name,
-        crate::WorkBudget::UNBOUNDED,
+        &crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     ))?;
     assert_eq!(
@@ -69,7 +69,7 @@ fn identity_is_deterministic_and_namespace_scoped() -> Result<(), Box<dyn Error>
         value!(WorkspaceId::derive(
             [1; 16],
             &name,
-            crate::WorkBudget::UNBOUNDED,
+            &crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new()
         ))?
     );
@@ -78,7 +78,7 @@ fn identity_is_deterministic_and_namespace_scoped() -> Result<(), Box<dyn Error>
         value!(WorkspaceId::derive(
             [2; 16],
             &name,
-            crate::WorkBudget::UNBOUNDED,
+            &crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new()
         ))?
     );
@@ -88,10 +88,10 @@ fn identity_is_deterministic_and_namespace_scoped() -> Result<(), Box<dyn Error>
             [1; 16],
             &value!(WorkspaceName::new(
                 "other",
-                crate::WorkBudget::UNBOUNDED,
+                &crate::WorkBudget::UNBOUNDED,
                 &crate::CancellationToken::new()
             ))?,
-            crate::WorkBudget::UNBOUNDED,
+            &crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new()
         ))?
     );

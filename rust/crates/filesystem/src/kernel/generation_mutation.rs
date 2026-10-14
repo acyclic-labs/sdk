@@ -541,11 +541,13 @@ impl Owned<TransactionState> {
             let (listing, allocation) = super::list::list_tree_entries_async_with_accounting(
                 store,
                 entries,
-                None,
-                1,
+                (
+                    (None).map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
+                    1,
+                ),
                 DecodeLimits::for_volume(config),
                 accounting,
-                cancellation.clone(),
+                cancellation,
                 None,
             )
             .await

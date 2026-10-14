@@ -337,36 +337,16 @@ impl ContextPipeline {
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
             let mut stages: Vec<Arc<dyn ContextStage>> = Vec::new();
             let made = (|| {
-                let name = quota
-                    .work()
-                    .as_deref_mut()
-                    .expect("observed summary")
-                    .clone_text("summary-source")?;
+                let name = quota.observer()?.clone_text("summary-source")?;
                 quota.adopt(name.capacity() as u64)?;
                 let bytes = std::mem::size_of::<Context>() as u64;
-                quota
-                    .work()
-                    .as_deref_mut()
-                    .expect("observed summary")
-                    .admit_allocation(bytes)?;
-                quota
-                    .work()
-                    .as_deref_mut()
-                    .expect("observed summary")
-                    .retain_owned(bytes)?;
+                quota.observer()?.admit_allocation(bytes)?;
+                quota.observer()?.retain_owned(bytes)?;
                 quota.adopt(bytes)?;
                 let source = Arc::new(source);
                 let bytes = std::mem::size_of::<SourceStage>() as u64;
-                quota
-                    .work()
-                    .as_deref_mut()
-                    .expect("observed summary")
-                    .admit_allocation(bytes)?;
-                quota
-                    .work()
-                    .as_deref_mut()
-                    .expect("observed summary")
-                    .retain_owned(bytes)?;
+                quota.observer()?.admit_allocation(bytes)?;
+                quota.observer()?.retain_owned(bytes)?;
                 quota.adopt(bytes)?;
                 let stage: Arc<dyn ContextStage> = Arc::new(SourceStage::new(
                     name,

@@ -358,7 +358,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 crate::WorkCounters::UNCHARGED,
             )
             .map_err(MountSourceError::NativeWork)?;
-        let file = checkout.detached_from_record(record, work, work.cancellation())?;
+        let file = checkout.detached_from_record(record, &work, work.cancellation())?;
         NativeDemandCarrier::Native(work).check(work.cancellation(), Some(&self.cancellation))?;
         Ok(Arc::new(CheckoutDetachedFile {
             _native_allocation: allocation,
@@ -427,7 +427,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         A: Send + Sync,
         O: Send + Sync,
     {
-        let owner = ViewGate::callback_owner();
+        let owner = ViewGate::callback_owner()?;
         self.runtime.wait(|| async {
             Ok(self
                 .checkout

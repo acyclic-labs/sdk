@@ -60,15 +60,11 @@ pub(crate) fn clone_metadata(
     let mut result = std::collections::BTreeMap::new();
     let copied = (|| {
         for (key, file) in metadata {
-            let key = quota
-                .work()
-                .as_deref_mut()
-                .expect("observed metadata")
-                .clone_text(key)?;
+            let key = quota.observer()?.clone_text(key)?;
             quota.adopt(key.capacity() as u64)?;
             let file = file.clone_in_quota(&mut quota)?;
             let bytes = std::mem::size_of::<(String, crate::conversation::FileRef)>() as u64;
-            let io = quota.work().as_deref_mut().expect("observed metadata");
+            let io = quota.observer()?;
             io.admit_owned(bytes)?;
             io.retain_owned(bytes)?;
             quota.adopt(bytes)?;
@@ -115,20 +111,16 @@ pub(crate) fn clone_messages(
     let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
     let mut result = Vec::new();
     let copied = (|| {
-        let io = quota.work().as_deref_mut().expect("observed context");
+        let io = quota.observer()?;
         io.admit_allocation(bytes)?;
         io.retain_owned(bytes)?;
         quota.adopt(bytes)?;
-        result.try_reserve_exact(count).map_err(|cause| {
-            quota
-                .work()
-                .as_deref()
-                .expect("observed context")
-                .allocation_failure(cause)
-        })?;
+        if let Err(cause) = result.try_reserve_exact(count) {
+            return Err(quota.observer()?.allocation_failure(cause));
+        }
         let actual = (result.capacity() * std::mem::size_of::<ModelMessage>()) as u64;
         if actual > bytes {
-            let io = quota.work().as_deref_mut().expect("observed context");
+            let io = quota.observer()?;
             io.admit_owned(actual - bytes)?;
             io.retain_owned(actual - bytes)?;
             quota.adopt(actual - bytes)?;
@@ -140,18 +132,10 @@ pub(crate) fn clone_messages(
             .chain(second.iter().map(|m| (m.role, &m.content)))
         {
             let slot = std::mem::size_of::<ModelMessage>() as u64;
-            quota
-                .work()
-                .as_deref()
-                .expect("observed context")
-                .admit_copy(slot)?;
+            quota.observer()?.admit_copy(slot)?;
             let (content, claim) = crate::model::clone_content(content, quota.work())?;
             quota.adopt(claim)?;
-            quota
-                .work()
-                .as_deref_mut()
-                .expect("observed context")
-                .copy_bytes(slot)?;
+            quota.observer()?.copy_bytes(slot)?;
             result.push(ModelMessage { role, content });
         }
         Ok(())

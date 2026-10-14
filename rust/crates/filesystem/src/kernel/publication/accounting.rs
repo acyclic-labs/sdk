@@ -9,9 +9,8 @@ fn accept_backend(
     accounting: &mut KernelAccounting<'_>,
     more: WorkCounters,
 ) -> Result<(), crate::FsError> {
-    let (allocations, work, budget, _) = accounting
-        .standalone_parts()
-        .ok_or(crate::ObjectStoreError::Corrupt)?;
+    let (allocations, work, budget, _) =
+        accounting.standalone_parts().ok_or(WorkError::Overflow)?;
     *work = work.with_backend(more, allocations.live_bytes())?;
     work.verify(budget)?;
     Ok(())

@@ -9,7 +9,7 @@ fn work(
     acyclic_fs::NativeMaterializationWork::new(budget, token).map_err(|(cause, work)| {
         Error::NativeConstruction {
             cause,
-            work: Box::new(work),
+            work: work,
         }
     })
 }

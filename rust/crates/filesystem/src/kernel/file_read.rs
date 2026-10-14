@@ -444,29 +444,16 @@ pub(crate) async fn read_objects_with_accounting<S: AsyncObjectStore>(
     cancellation.check()?;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = accounting.native_work() {
-        return {
-            let __object_args = (requests, original, cancellation);
-            let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
-
-            store
-                .read_many(__object_args.0, &mut __object_work)
-                .await
-                .and_then(|(values, allocation)| {
-                    allocation.map(|allocation| (values, allocation)).ok_or(
-                        crate::ObjectStoreError::Native(
-                            crate::NativeTreeMaterializationError::InvalidLayout,
-                        ),
-                    )
-                })
-        }
-        .map(|batch| {
-            let (value, custody) = batch;
-            ReadOwned {
-                value,
-                custody: KernelOwnedAllocation::NativeOriginal(custody),
-            }
-        })
-        .map_err(read_store_error);
+        let mut work = crate::AuthorityWork::native(original, cancellation);
+        let (value, allocation) = store
+            .read_many(requests, &mut work)
+            .await
+            .map_err(read_store_error)?;
+        let custody = allocation.ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?;
+        return Ok(ReadOwned {
+            value,
+            custody: KernelOwnedAllocation::NativeOriginal(custody),
+        });
     }
     let result = {
         let __object_args = (requests, accounting.remaining()?, cancellation);

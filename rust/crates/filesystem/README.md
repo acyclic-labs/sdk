@@ -179,7 +179,7 @@ Administrative cold recovery accepts its original explicit unbounded acquisition
 and one actual standard-library thread before destination-fence birth. The same
 preallocated command/return slot runs recover and detach on each caller's unchanged
 finite allowance, retaining the original fence identity and actual pending controls
-on failure. LastDrop signals that worker without joining the destructor. Only after
+on failure. `LastDrop` signals that worker without joining the destructor. Only after
 all real helper/task/directory controls physically retire may its original prebirth
 one-write credit close the actual fence file. It preserves the on-disk marker and
 authored namespace DATA, even when namespace detach failed; physical close is not
@@ -228,11 +228,11 @@ short-frame helper records exact compiled frame ownership in each observer's
 pending work, including unwind, without treating frames as retained proof DATA.
 Readonly list vectors and sealed candidate proof preparation are admitted before
 construction; adopting an already prepared candidate does not allocate.
-Inline tree control metadata and opaque BTree layout are not inferred as DATA.
-Immediate Authority preserves its existing HashMap lookup/idempotency engine.
+Inline tree control metadata and opaque `BTree` layout are not inferred as DATA.
+Immediate Authority preserves its existing `HashMap` lookup/idempotency engine.
 Its finite allowance covers SDK-known typed entries and owned strings/record
 buffers; standard-library bucket layout, allocator overhead and RSS are opaque
-and excluded, as with BTree nodes. A real growth reservation counts an SDK
+and excluded, as with `BTree` nodes. A real growth reservation counts an SDK
 allocation attempt; public map capacity is not a physical bucket-byte witness.
 
 Known `Arc<Self>` metadata and owned payloads are admitted before the SDK
@@ -298,7 +298,7 @@ callers must destroy the payload before either guard.
 
 Start with the [embedded workspace example](https://github.com/acyclic-labs/sdk/blob/main/rust/crates/filesystem/examples/embedded_workspace.rs), the [hosted example](https://github.com/acyclic-labs/sdk/blob/main/README.md), or the [Rust API](https://docs.rs/acyclic-fs/latest/acyclic_fs/). The [v2 protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/filesystem) defines compatibility.
 
-On `wasm32-unknown-unknown`, the `browser` feature provides real IndexedDB backing.
+On `wasm32-unknown-unknown`, the `browser` feature provides real `IndexedDB` backing.
 Batch reads collect all Blob handles before awaiting materialization, and work
 budgets include gate IO and the encoded replay buffers retained during decoding.
 Portable provider and property tests remain compiled on this target. Only native
@@ -306,10 +306,10 @@ process, native filesystem and socket fixtures use native-only target dependenci
 the WASM test target uses portable Tokio features and the browser entropy backend.
 
 Rust browser consumers and the installed WASM facade use the same canonical
-version-1 IndexedDB provider. Existing version-4 databases are unsupported:
+version-1 `IndexedDB` provider. Existing version-4 databases are unsupported:
 opening them rejects with the original `DOMException` (`VersionError`) without
 deleting, recreating, or migrating their stores or bytes. OPFS is an explicit
-immutable-object profile; its publication authority remains that same IndexedDB
+immutable-object profile; its publication authority remains that same `IndexedDB`
 provider. Browser object payloads use the shared `OwnedBytes` carrier; logical
 buffer and handle accounting is not a native physical-allocation receipt.
 

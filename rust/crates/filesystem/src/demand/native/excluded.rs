@@ -1,6 +1,6 @@
 struct ExcludedPaths {
     paths: Vec<NamespacePath>,
-    ownership: SourcePayloadOwnership,
+    _ownership: SourcePayloadOwnership,
 }
 impl ExcludedPaths {
     fn excludes(&self, path: &NamespacePath) -> bool {
@@ -25,7 +25,7 @@ impl NativeDemandSource {
     pub fn exclude<W: FsWork>(
         mut self,
         paths: Vec<NamespacePath>,
-        work: W,
+        work: &W,
         cancellation: &CancellationToken,
     ) -> W::Output<Self, DemandError> {
         let mut accounting = work.accounting(cancellation);
@@ -38,7 +38,7 @@ impl NativeDemandSource {
                     + paths.iter().map(NamespacePath::retained_bytes).sum::<u64>();
                 let allocation = context.claim(bytes)?;
                 ownership.retain(allocation, &mut context)?;
-                self.excluded = Arc::new(ExcludedPaths { paths, ownership });
+                self.excluded = Arc::new(ExcludedPaths { paths, _ownership: ownership });
                 Ok(self)
             })();
             finish_context(result, context, &mut accounting)

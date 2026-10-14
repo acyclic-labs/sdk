@@ -995,7 +995,7 @@ where
         self.accounting.charge(hashing)?;
         self.accounting.charge(PAGE_WRITE)?;
         let remaining = self.accounting.remaining()?;
-        let stored = {
+        let res = {
             let __object_args = (hashed, remaining, self.cancellation);
             let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
             let __object_result = crate::AsyncObjectStore::put_hashed(
@@ -1006,7 +1006,7 @@ where
             .await;
             __object_work.receipt(__object_result)
         };
-        match stored {
+        match res {
             Ok(receipt) => self.accounting.charge(receipt.work)?,
             Err(failure) => {
                 self.accounting.charge(*failure.work)?;

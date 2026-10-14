@@ -41,6 +41,7 @@ impl SelectedImportPlan {
         Ok((total, regular))
     }
 
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
     pub(crate) fn input_digest(
         &self,
         destination: LazySnapshotRef,
@@ -243,6 +244,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         Ok((paths, used))
     }
 
+    #[cfg(any(feature = "native-mount", test))]
     pub(super) async fn authored_record(
         &self,
         checkout: &mut crate::Checkout<A, O>,

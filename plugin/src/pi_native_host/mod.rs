@@ -197,11 +197,11 @@ fn view_volume_share(budget: WorkBudget, volumes: u64) -> Result<WorkBudget> {
 }
 
 fn native_construction(
-    (cause, work): (acyclic_fs::NativeTreeMaterializationError, WorkCounters),
+    (cause, work): (acyclic_fs::NativeTreeMaterializationError, Box<WorkCounters>),
 ) -> Error {
     Error::NativeConstruction {
         cause,
-        work: Box::new(work),
+        work,
     }
 }
 fn unauthorized(reason: &'static str) -> Error {

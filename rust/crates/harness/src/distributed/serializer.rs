@@ -26,16 +26,19 @@ pub(super) fn formatted_text(
     if let Some(work) = custody.work().as_deref_mut() {
         work.reserve_text(&mut text, length)?;
         custody.adopt(text.capacity() as u64)?;
-        custody
-            .work()
-            .as_deref_mut()
-            .expect("format observer")
-            .copy_bytes(length as u64)?;
+        if let Some(work) = custody.work().as_deref_mut() {
+            work.copy_bytes(length as u64)?;
+        }
     } else {
         text.reserve_exact(length);
     }
-    text.write_fmt(arguments)
-        .expect("primitive coordinator formatting");
+    text.write_fmt(arguments).map_err(|_| {
+        guarded_boundary(
+            custody.work(),
+            wire::ErrorCode::Invalid,
+            "coordinator formatting failed",
+        )
+    })?;
     custody.transfer();
     Ok(text)
 }
@@ -107,7 +110,8 @@ fn scheduler_json_owned_bytes(input_bytes: u64, items: u64) -> Result<u64> {
     let strings = input_bytes * (CONTENT_LAYERS + 2);
     let scratch = input_bytes.max(8) * 2;
     const LABEL_BYTES: u64 = 9955;
-    let diagnostics = crate::executor::json::audited_serde_diagnostic_bytes(input_bytes, LABEL_BYTES)?;
+    let diagnostics =
+        crate::executor::json::audited_serde_diagnostic_bytes(input_bytes, LABEL_BYTES)?;
     Ok(content_bytes
         + typed_bytes * 2
         + strings
@@ -136,14 +140,12 @@ pub(super) fn decode_json<T: serde::de::DeserializeOwned>(
             Error::Storage(message)
         }
     };
-    if work.is_none() {
+    let Some(observer) = work.as_deref_mut() else {
         return crate::contract::json_from_slice(input)
             .map(|value| (value, 0))
             .map_err(|source| invalid(source.to_string()));
-    }
-    let native = work
-        .as_deref()
-        .is_some_and(operations::original_native_decode_mode);
+    };
+    let native = operations::original_native_decode_mode(observer);
     let diagnostic = if result_value {
         crate::executor::json::audited_serde_diagnostic_bytes(
             input.len() as u64,
@@ -160,7 +162,6 @@ pub(super) fn decode_json<T: serde::de::DeserializeOwned>(
     };
     let mut reservation = 0;
     let mut observed_failure = false;
-    let observer = work.as_deref_mut().expect("JSON observer");
     observer.check_cancellation()?;
     let decoded = operations::decode_preclaimed_json_with_mode::<T, _>(
         input,
@@ -214,11 +215,9 @@ pub(super) fn decode_json<T: serde::de::DeserializeOwned>(
         Error::Invalid(message) if !observed_failure => invalid(message),
         error => error,
     })?;
-    custody
-        .work()
-        .as_deref_mut()
-        .expect("JSON observer")
-        .check_cancellation()?;
+    if let Some(observer) = custody.work().as_deref_mut() {
+        observer.check_cancellation()?;
+    }
     let retained = owned(&value)?;
     let slack = reservation.checked_sub(retained).ok_or_else(|| {
         guarded_boundary(custody.work(), code, "JSON decoder exceeds its admission")
@@ -266,10 +265,22 @@ pub(super) fn inspect_envelope<'a>(
         let header = framed
             .iter()
             .position(|byte| byte & 0x80 == 0)
-            .expect("prost accepted the length varint")
+            .ok_or_else(|| {
+                guarded_boundary(
+                    work,
+                    wire::ErrorCode::Storage,
+                    "invalid scheduler protobuf framing",
+                )
+            })?
             + 1;
         let length = framed.len() - input.len() - header;
-        let value = &framed[header..header + length];
+        let value = framed.get(header..header + length).ok_or_else(|| {
+            guarded_boundary(
+                work,
+                wire::ErrorCode::Storage,
+                "invalid scheduler protobuf framing",
+            )
+        })?;
         if !protocol && tag == 4 {
             key = Some(std::str::from_utf8(value).map_err(|_| {
                 guarded_boundary(
@@ -314,15 +325,7 @@ pub(super) fn decode(
         )
     })?;
     let fields = if quota.work().is_some() {
-        (envelope.canonical_event_json.capacity()
-            + envelope.event_digest.capacity()
-            + envelope.operation_id.capacity()
-            + envelope.idempotency_key.capacity()
-            + envelope
-                .protocol
-                .as_ref()
-                .map_or(0, |p| p.version.capacity() + p.descriptor_digest.capacity()))
-            as u64
+        envelope_owned_bytes(&envelope)
     } else {
         0
     };
@@ -395,15 +398,23 @@ pub(super) fn decode(
     }
     let revision = envelope.revision;
     let key = std::mem::take(&mut envelope.idempotency_key);
-    let key_bytes = if quota.work().is_some() {
-        key.capacity() as u64
-    } else {
-        0
-    };
+    let key_bytes = quota.work().as_ref().map_or(0, |_| key.capacity() as u64);
     drop(envelope);
     quota.relinquish(fields - key_bytes)?;
     quota.transfer();
     Ok((revision, key, digest, committed_at_ms, event))
+}
+
+fn envelope_owned_bytes(envelope: &wire::SchedulerEventEnvelope) -> u64 {
+    let protocol = envelope
+        .protocol
+        .as_ref()
+        .map_or(0, |p| p.version.capacity() + p.descriptor_digest.capacity());
+    (envelope.canonical_event_json.capacity()
+        + envelope.event_digest.capacity()
+        + envelope.operation_id.capacity()
+        + envelope.idempotency_key.capacity()
+        + protocol) as u64
 }
 
 pub(super) fn stream_path(
@@ -433,9 +444,13 @@ pub(super) fn stream_key(
     }
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"acyclic-harness-coordinator-v3");
-    hasher
-        .write_fmt(key)
-        .expect("primitive formatting into an infallible hash writer");
+    hasher.write_fmt(key).map_err(|_| {
+        guarded_boundary(
+            work,
+            wire::ErrorCode::Invalid,
+            "coordinator retry key formatting failed",
+        )
+    })?;
     digest_key(hasher.finalize().as_bytes(), work)
 }
 
@@ -448,7 +463,8 @@ pub(crate) fn digest_key(
     custody.transfer();
     let (bytes, retained) = operations::owned_bytes_from_retained_vec(bytes, custody.work())?;
     Ok((
-        StreamIdempotencyKey::new(bytes).expect("32-byte digest is a bounded SDK key"),
+        StreamIdempotencyKey::new(bytes)
+            .map_err(|error| operations::stream_error_with_work(error, custody.work()))?,
         retained,
     ))
 }
@@ -462,12 +478,19 @@ pub(crate) fn execution_path(
     if let Some(work) = work.as_deref_mut() {
         work.copy_bytes(text.len() as u64)?;
     }
-    text[..PREFIX.len()].copy_from_slice(PREFIX);
+    let (prefix, id) = text.split_at_mut(PREFIX.len());
+    prefix.copy_from_slice(PREFIX);
     uuid::Uuid::from_bytes(operation.into_bytes())
         .hyphenated()
-        .encode_lower(&mut text[PREFIX.len()..]);
+        .encode_lower(id);
     stream_path(
-        std::str::from_utf8(&text).expect("ASCII execution path"),
+        std::str::from_utf8(&text).map_err(|_| {
+            guarded_boundary(
+                work,
+                wire::ErrorCode::Invalid,
+                "execution path is not UTF-8",
+            )
+        })?,
         work,
     )
 }

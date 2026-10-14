@@ -104,8 +104,7 @@ struct Context<'a, 'b, S> {
 )]
 pub async fn apply_extent_mutations<S: crate::AsyncObjectStore>(
     store: &S,
-    root: ObjectId,
-    old_logical_bytes: u64,
+    root: (ObjectId, u64),
     mutations: &[ExtentMutation],
     maximum_mutations: u32,
     limits: DecodeLimits,
@@ -116,7 +115,6 @@ pub async fn apply_extent_mutations<S: crate::AsyncObjectStore>(
     apply_extent_mutations_with_accounting(
         store,
         root,
-        old_logical_bytes,
         mutations,
         maximum_mutations,
         limits,
@@ -133,14 +131,14 @@ pub async fn apply_extent_mutations<S: crate::AsyncObjectStore>(
 )]
 pub(crate) async fn apply_extent_mutations_with_accounting<S: crate::AsyncObjectStore>(
     store: &S,
-    root: ObjectId,
-    old_logical_bytes: u64,
+    root: (ObjectId, u64),
     mutations: &[ExtentMutation],
     maximum_mutations: u32,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<ExtentMutationReceipt, FsError> {
+    let (root, old_logical_bytes) = root;
     accounting.check()?;
     validate_request(root, mutations, maximum_mutations, limits).map_err(extent_error)?;
     let plan = compile_patch_plan(old_logical_bytes, mutations, accounting)?;

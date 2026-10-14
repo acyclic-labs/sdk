@@ -373,8 +373,7 @@ pub(crate) async fn clone_extent_range_with_accounting<S: AsyncObjectStore>(
     plan.retire(accounting)?;
     let receipt = super::extent_mutation::apply_extent_mutations_with_accounting(
         store,
-        request.destination_root,
-        request.destination_logical_bytes,
+        (request.destination_root, request.destination_logical_bytes),
         &mutations.value,
         request.maximum_mutations,
         limits,
@@ -800,8 +799,7 @@ async fn apply_sparse<S: AsyncObjectStore>(
     };
     let receipt = super::extent_mutation::apply_extent_mutations_with_accounting(
         store,
-        extents,
-        logical_bytes,
+        (extents, logical_bytes),
         &[extent_mutation],
         1,
         DecodeLimits::for_volume(config),
@@ -944,8 +942,7 @@ async fn apply_sparse_preallocation<S: AsyncObjectStore>(
     } else {
         super::extent_mutation::apply_extent_mutations_with_accounting(
             store,
-            extents,
-            logical_bytes,
+            (extents, logical_bytes),
             &mutations.value,
             config.limits.maximum_mutations_per_batch,
             DecodeLimits::for_volume(config),

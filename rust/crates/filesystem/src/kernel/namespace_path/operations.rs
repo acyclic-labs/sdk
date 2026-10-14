@@ -148,38 +148,6 @@ impl NamespacePath {
         copy_names(names.iter(), depth, encoded, accounting, cancellation)
     }
 
-    #[cfg(feature = "native-mount")]
-    pub(crate) fn child_with_ledger(
-        &self,
-        name: &LogicalName,
-        limits: VolumeLimits,
-        ledger: &mut AllocationLedger,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<Self, NamespacePathError> {
-        let mut accounting =
-            KernelAccounting::borrowed_standalone(ledger, work, budget, cancellation);
-        self.child_with_accounting(name, limits, &mut accounting, cancellation)
-            .map(|(path, _)| path)
-            .map_err(path_error)
-    }
-
-    #[cfg(feature = "native-mount")]
-    pub(crate) fn clone_with_ledger(
-        &self,
-        ledger: &mut AllocationLedger,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<Self, NamespacePathError> {
-        let mut accounting =
-            KernelAccounting::borrowed_standalone(ledger, work, budget, cancellation);
-        self.clone_with_accounting(&mut accounting, cancellation)
-            .map(|(path, _)| path)
-            .map_err(path_error)
-    }
-
     pub(crate) fn unicode_text_with_accounting(
         &self,
         accounting: &mut KernelAccounting<'_>,

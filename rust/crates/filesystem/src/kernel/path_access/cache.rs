@@ -6,6 +6,7 @@ struct CachedObject {
 }
 pub(super) struct CacheState {
     slots: ReadOwned<Vec<Option<CachedObject>>>,
+
     entry_count: usize,
     pub(super) retained_owned_bytes: u64,
     /// Standalone slots already present in the caller's allocation ledger.

@@ -960,11 +960,14 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
                 let (page, allocation) = super::list::list_tree_entries_async_with_accounting(
                     self.store,
                     entries,
-                    after.as_ref(),
-                    *maximum_entries,
+                    (
+                        (after.as_ref())
+                            .map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
+                        *maximum_entries,
+                    ),
                     self.limits.decode,
                     accounting,
-                    cancellation.clone(),
+                    cancellation,
                     custody,
                 )
                 .await?;

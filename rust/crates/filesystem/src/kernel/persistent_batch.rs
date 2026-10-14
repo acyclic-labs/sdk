@@ -187,7 +187,19 @@ where
     }
     .await;
     match result {
-        Ok(()) => machine.finish(accounting),
+        Ok(()) => machine.finish(accounting).map(
+            |Owned {
+                 value, allocation, ..
+             }| {
+                (
+                    OperationReceipt {
+                        value,
+                        work: accounting.spent(),
+                    },
+                    allocation,
+                )
+            },
+        ),
         Err(error) => {
             machine.abort_cleanup(accounting)?;
             Err(error)
@@ -354,15 +366,13 @@ impl<'a, F: Format> Machine<'a, F> {
         allocation: KernelOwnedAllocation,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), crate::FsError> {
-        let converted = decoded.into_owned_with_accounting(allocation, accounting);
-        let ((page, bytes), allocation) = match converted {
-            Ok(page) => page,
+        let mut page = match decoded.into_owned_with_accounting(allocation, accounting) {
+            Ok(((page, bytes), allocation)) => Owned::new(page, allocation, bytes),
             Err(error) => {
                 Self::retire_request(request, accounting)?;
                 return Err(error);
             }
         };
-        let mut page = Owned::new(page, allocation, bytes);
         let accepted = match &mut page.value {
             Page::Leaf(entries) => self.accept_leaf(
                 &request,
@@ -706,20 +716,10 @@ impl<'a, F: Format> Machine<'a, F> {
         self.cleanup_scratch(accounting)?.retire(accounting)
     }
 
-    #[allow(
-        clippy::type_complexity,
-        reason = "The existing receipt and its actual allocation guard are returned together."
-    )]
     fn finish(
         self,
         accounting: &mut KernelAccounting<'_>,
-    ) -> Result<
-        (
-            OperationReceipt<Vec<Option<F::Value>>>,
-            KernelOwnedAllocation,
-        ),
-        crate::FsError,
-    > {
+    ) -> Result<Owned<Vec<Option<F::Value>>>, crate::FsError> {
         let returned = accounting.charge(WorkCounters {
             items_returned: usize_to_u64(self.values.value.len()),
             ..WorkCounters::UNCHARGED
@@ -728,20 +728,7 @@ impl<'a, F: Format> Machine<'a, F> {
             self.abort_cleanup(accounting)?;
             return Err(error);
         }
-        let values = self.cleanup_scratch(accounting)?;
-        let Owned {
-            value: values,
-            allocation,
-            ..
-        } = values;
-        let work = accounting.spent();
-        Ok((
-            OperationReceipt {
-                value: values,
-                work,
-            },
-            allocation,
-        ))
+        self.cleanup_scratch(accounting)
     }
 }
 
