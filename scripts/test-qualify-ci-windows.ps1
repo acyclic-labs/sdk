@@ -68,8 +68,8 @@ function rustup { Record-Command rustup $args }
 
 $expected = @{
     'windows-rust' = @(
-        'cargo nextest run --workspace --all-features --locked --profile ci --test-threads 32',
-        'cargo test --workspace --all-features --locked --doc'
+        'cargo nextest run --workspace --all-features --locked --profile ci --test-threads 32 --target-dir fixture-target --config profile.test.opt-level=0 --config profile.test.package."*".opt-level=1 --config profile.test.package.acyclic-fs.opt-level=1 --config profile.test.package.sha2.opt-level=3 --config profile.test.package.blake3.opt-level=3',
+        'cargo test --workspace --all-features --locked --doc --target-dir fixture-target --config profile.test.opt-level=0 --config profile.test.package."*".opt-level=1 --config profile.test.package.acyclic-fs.opt-level=1 --config profile.test.package.sha2.opt-level=3 --config profile.test.package.blake3.opt-level=3'
     )
     'windows-fork-join' = @(
         'cargo test -p acyclic-plugin --all-features --locked --test fork_join --ignored --test-threads=1 --skip support::'

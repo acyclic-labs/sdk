@@ -27,6 +27,11 @@ test("Windows Rust tests run independently without changing workspace or ignored
   const body = script.split("    'windows-rust' {")[1]?.split("    'windows-fork-join' {")[0] ?? assert.fail("missing Rust dispatch");
   assert.ok(body.includes('cargo nextest run --workspace --all-features --locked --profile ci --test-threads "$env:RUST_TEST_THREADS"'));
   assert.ok(body.includes("cargo test --workspace --all-features --locked --doc"));
+  assert.equal((body.match(/--target-dir "\$CargoTargetDir" @testProfile/g) ?? []).length, 2);
+  const settings = [...body.matchAll(/'--config', '([^']+)'/g)].map(match => match[1]);
+  assert.deepEqual(settings, ["profile.test.opt-level=0", 'profile.test.package."*".opt-level=1',
+    "profile.test.package.acyclic-fs.opt-level=1", "profile.test.package.sha2.opt-level=3", "profile.test.package.blake3.opt-level=3"]);
+  assert.doesNotMatch(body, /DEBUG_ASSERTIONS|OVERFLOW_CHECKS|CARGO_PROFILE_TEST_OPT_LEVEL|Start-Process/);
   assert.ok(body.includes("nextest/ci/junit.xml"));
   assert.ok(body.includes('Copy-Item -LiteralPath $junit -Destination "$env:SDK_TEMP_DIR/observability/rust.xml"'));
   assert.doesNotMatch(body, /--no-default-features|--exclude|--skip|--ignored|--retries|-E /);
