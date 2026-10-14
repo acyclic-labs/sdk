@@ -245,7 +245,7 @@ pub(super) async fn read_owned_blob_source<R: AsyncBlobSource>(
     if let Some(chunk) = chunk {
         // This is an explicit by-value transfer from the actual source producer.
         let retained = chunk.logical_owned_bytes;
-        let (_custody, capacity_result) = accounting.record_actual_owned(retained)?;
+        let (custody, capacity_result) = accounting.record_actual_owned(retained)?;
         let completed = if measured.is_none() {
             WorkCounters {
                 source_bytes_read: usize_to_u64(chunk.bytes.len()),
@@ -256,9 +256,10 @@ pub(super) async fn read_owned_blob_source<R: AsyncBlobSource>(
         };
         let completed_result = accounting.record_completed(completed);
         if let Err(error) = capacity_result.and(completed_result) {
-            drop(chunk);
-            #[cfg(not(target_arch = "wasm32"))]
-            drop(_custody);
+            {
+                let _custody = custody;
+                drop(chunk);
+            }
             let _ = release_blob_bytes(retained, accounting);
             return Err(error);
         }

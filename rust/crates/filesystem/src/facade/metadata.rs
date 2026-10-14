@@ -210,11 +210,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let file_id = match file.address() {
             ContentAddress::File(id) => id,
             ContentAddress::Path(path) => {
-                let (lookup, _allocation) = self
-                    .lookup_no_follow_with_accounting(path, accounting, cancellation, true)
-                    .await?;
-                #[cfg(not(target_arch = "wasm32"))]
-                drop(_allocation);
+                let lookup = {
+                    let (lookup, _allocation) = self
+                        .lookup_no_follow_with_accounting(path, accounting, cancellation, true)
+                        .await?;
+                    lookup
+                };
                 lookup.record.ok_or(FsError::NotFound)?.file_id
             }
         };

@@ -233,12 +233,14 @@ impl super::native::NativeSession {
             self.stream.clone(),
             self.files.clone(),
             &binding.authority,
-            &verifier,
             &SchemaRegistry::default(),
-            &binding.scope,
-            &entry.private_volume,
-            super::terminal::MAX_FRAME_BYTES as u64,
-            Some(&io),
+            acyclic_harness::filesystem::FilesystemJournalBinding {
+                volume: &entry.private_volume,
+                verifier: &verifier,
+                scope: &binding.scope,
+                maximum_bytes: super::terminal::MAX_FRAME_BYTES as u64,
+                io: Some(&io),
+            },
         )?);
         if let Some(approved) = decision {
             if !context.scope().grants().contains("interaction:route")
@@ -347,12 +349,14 @@ impl super::native::NativeSession {
         let approvals = acyclic_harness::filesystem::FilesystemExecutionJournal::new(
             self.stream.clone(),
             self.files.clone(),
-            &entry.private_volume,
-            &verifier,
             &SchemaRegistry::default(),
-            &binding.scope,
-            super::terminal::MAX_FRAME_BYTES as u64,
-            Some(&io),
+            acyclic_harness::filesystem::FilesystemJournalBinding {
+                volume: &entry.private_volume,
+                verifier: &verifier,
+                scope: &binding.scope,
+                maximum_bytes: super::terminal::MAX_FRAME_BYTES as u64,
+                io: Some(&io),
+            },
         )?
         .into_native_shared(&work)?;
         let authority = NativeProcessAuthority {

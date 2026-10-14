@@ -82,48 +82,21 @@ where
             ));
         }
         let denied = |reason: &str| Error::Unauthorized(reason.into());
-        let bindings = config
-            .callers
-            .iter()
-            .map(|caller| {
-                (
-                    &caller.owner,
-                    &caller.project,
-                    &caller.private_volume,
-                    caller.result_volume.as_ref(),
-                )
-            })
-            .chain(config.forks.iter().map(|fork| {
-                (
-                    &fork.child,
-                    &fork.project,
-                    &fork.private_volume,
-                    fork.result_volume.as_ref(),
-                )
-            }));
-        for (binding, project, private, result) in bindings {
-            verifier(binding)?;
-            let agent = binding
-                .scope
-                .agent()
-                .ok_or_else(|| denied("configured binding has no signed agent"))?;
-            for volume in [project, private].into_iter().chain(result) {
-                volume.validate(&mut None)?;
-                if volume.provider() != provider {
-                    return Err(denied("configured volume belongs to another provider"));
-                }
-            }
-            if private.owner() != &VolumeOwner::Agent(agent)
-                || result.is_some_and(|result| {
-                    result == private
-                        || result.owner() != &VolumeOwner::Agent(agent)
-                        || result.class() != crate::conversation::VolumeClass::AgentPrivate
-                })
-            {
-                return Err(denied(
-                    "configured private/result volume differs from its signed owner",
-                ));
-            }
+        for caller in &config.callers {
+            caller.owner.validate_volumes(
+                provider,
+                &caller.project,
+                &caller.private_volume,
+                caller.result_volume.as_ref(),
+            )?;
+        }
+        for fork in &config.forks {
+            fork.child.validate_volumes(
+                provider,
+                &fork.project,
+                &fork.private_volume,
+                fork.result_volume.as_ref(),
+            )?;
         }
         let mut callers = std::collections::BTreeSet::new();
         for caller in &config.callers {
@@ -279,16 +252,20 @@ where
         context: &ToolContext,
         cancellation: &CancellationToken,
         io: Option<&PreparationIo>,
-    ) -> Result<(Arc<FilesystemTaskRuntime<P, A, O>>, Arc<crate::durable_host::TaskJournalOwner<P>>)> {
+    ) -> Result<(
+        Arc<FilesystemTaskRuntime<P, A, O>>,
+        Arc<crate::durable_host::TaskJournalOwner<P>>,
+    )> {
         native_io(io)?;
         let owner = self.source_owner(context.task(), cancellation, io).await?;
-        self.authenticate(context, Some(&owner), false, cancellation, io).await?;
+        self.authenticate(context, Some(&owner), false, cancellation, io)
+            .await?;
         Ok((self.runtime(io)?, owner))
     }
 }
 
 fn verifier(binding: &ConfiguredRecursiveAuthorityBinding) -> Result<AuthorityVerifier> {
-    let verifier = binding.issuer.verifier(&mut None).expect("verifier copy");
+    let verifier = binding.issuer.verifier(&mut None)?;
     verifier.verify(&binding.scope, &mut None)?;
     Ok(verifier)
 }
@@ -336,10 +313,6 @@ fn allocation_digest(
     };
     admission.resource_proofs = proofs;
     digest
-}
-
-fn invalid_json(error: serde_json::Error) -> Error {
-    Error::Invalid(error.to_string())
 }
 
 fn check_cancellation(

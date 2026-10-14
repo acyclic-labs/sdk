@@ -84,12 +84,14 @@ async fn default_compaction_bounds_small_message_continuation() -> Result<()> {
                 FilesystemExecutionJournal::new(
                     storage.stream.clone(),
                     storage.host.clone(),
-                    &storage.volume,
-                    &storage.verifier(),
                     &crate::core::SchemaRegistry::new(),
-                    &storage.scope,
-                    storage.maximum_file_bytes,
-                    None,
+                    crate::filesystem::FilesystemJournalBinding {
+                        volume: &storage.volume,
+                        verifier: &storage.verifier(),
+                        scope: &storage.scope,
+                        maximum_bytes: storage.maximum_file_bytes,
+                        io: None,
+                    },
                 )?
                 .with_input_verifier(storage.content_verifier.clone()),
             );

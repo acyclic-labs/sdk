@@ -73,12 +73,19 @@ where
             let task = self
                 .owner
                 .as_ref()
-                .expect("native interaction owner was checked")
+                .ok_or(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "native interaction journal has no original owner",
+                })?
                 .0
                 .task_binding()
                 .0;
             let io = PreparationIo::from_native_work(work)?;
-            let id = crate::durable_host::task_interaction_id(task, operation_id, &mut Some(&mut io.history_io()))?;
+            let id = crate::durable_host::task_interaction_id(
+                task,
+                operation_id,
+                &mut Some(&mut io.history_io()),
+            )?;
             self.open_interaction(id, &paid.0, Some(&io))?.await?;
             let outcome = self.interaction_outcome(id, Some(&io))?.await?;
             let retained = io.owned_bytes()?;

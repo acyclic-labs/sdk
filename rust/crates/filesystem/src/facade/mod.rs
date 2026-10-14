@@ -16,19 +16,18 @@ use crate::foundation::{
 use crate::heap_future::in_heap;
 
 use crate::kernel::{
-    list_attributes_async_with_accounting,
-    lookup_file_record_async_with_accounting, lookup_path_async_with_accounting,
-    lookup_paths_with_accounting,
+    list_attributes_async_with_accounting, lookup_file_record_async_with_accounting,
+    lookup_path_async_with_accounting, lookup_paths_with_accounting,
     merge_generation_with_borrowed_map_resolutions_with_accounting,
-    merge_generation_with_borrowed_resolutions_with_accounting, plan_extent_range_with_accounting,
-    read_blob_range_with_accounting,
+    plan_extent_range_with_accounting, read_blob_range_with_accounting,
     read_generation_root_with_accounting, retire_allocation, types,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::kernel::{
-    publish_generation_async_guarded_with_native_work,
-};
+use crate::kernel::merge_generation_with_borrowed_resolutions_with_accounting;
+
+#[cfg(not(target_arch = "wasm32"))]
+use crate::kernel::publish_generation_async_guarded_with_native_work;
 
 use crate::kernel::allocation::{AllocationLedger, KernelAccounting, KernelOwnedAllocation};
 
@@ -65,10 +64,9 @@ use crate::kernel::{
     authenticate_generation_export_manifest_async, build_blob,
     build_generation_export_manifest_async, contextual_publication_fingerprint,
     decode_workspace_deleted, export_generation_batch_async, import_generation_batch_async,
-    merge_generation_async, prove_generation_closure, publish_generation,
-    retention_authority_id, volume_authority_id,
+    merge_generation_async, prove_generation_closure, publish_generation, retention_authority_id,
+    volume_authority_id,
 };
-
 
 pub use crate::kernel::{LiveMutationOutcome, LivePublicationObservation, MergeConflict};
 
@@ -177,6 +175,7 @@ mod workspace_creation;
 
 pub use attributes::NamedAttributeWriteMode;
 use authored_compile::clone_authored_path;
+#[cfg(not(target_arch = "wasm32"))]
 use authored_compile::clone_borrowed_authored_descriptor;
 use authored_compile::push_authored_operation;
 pub use authored_model::AuthoredMutation;

@@ -63,7 +63,7 @@ struct PreparedVolume<A, O> {
 }
 
 enum VolumeView<A, O> {
-    Directory(NativeWorkingSet<A, O>),
+    Directory(Box<NativeWorkingSet<A, O>>),
     Mounted {
         owner: Arc<dyn NativeMountedVolume>,
         _work_scope: acyclic_fs::native_mount::NativeMountWorkScope,
@@ -108,7 +108,7 @@ where
         volume: &VolumeRef,
         operation: VolumeOperation,
         work: &NativeMaterializationWork,
-    ) -> Result<usize> {
+    ) -> Result<&PreparedVolume<A, O>> {
         let io = PreparationIo::from_native_work(work)?;
         if !self.work().shares_ledger(work)
             || !owner.native_shared_work_matches(work)
@@ -120,17 +120,11 @@ where
             });
         }
         owner.require_volume_grant(volume, operation, &mut Some(&mut &io))?;
-        for (index, (mapping, prepared)) in self
-            .manifest()
-            .volumes
-            .iter()
-            .zip(&self.volumes)
-            .enumerate()
-        {
+        for (mapping, prepared) in self.manifest().volumes.iter().zip(&self.volumes) {
             if &mapping.volume == volume && (operation == VolumeOperation::Read || mapping.writable)
             {
                 prepared.callback.check(work)?.await?;
-                return Ok(index);
+                return Ok(prepared);
             }
         }
         Err(Error::NativeBoundary {
@@ -158,9 +152,9 @@ where
         if write && operation != VolumeOperation::Write {
             return Err(preparation_record::invalid());
         }
-        let index = self.require_volume(owner, volume, operation, work).await?;
-        let volume_work = &self.volumes[index].work;
-        let result = match &self.volumes[index].view {
+        let prepared = self.require_volume(owner, volume, operation, work).await?;
+        let volume_work = &prepared.work;
+        let result = match &prepared.view {
             VolumeView::Directory(view) => view
                 .file_io(path, write, parents, volume_work, io)
                 .await
@@ -237,7 +231,7 @@ where
         let result = async {
             // All immutable sources pass before any destination publishes.
             for writable in [false, true] {
-                for (index, (volume, _)) in self
+                for (index, (volume, mapping)) in self
                     .volumes
                     .iter()
                     .zip(&self.manifest().volumes)
@@ -300,7 +294,7 @@ where
                                     .map_err(failure)??;
                                 mounted::require_snapshot(
                                     &snapshot,
-                                    &self.manifest().volumes[index].namespace,
+                                    &mapping.namespace,
                                     &volume.work,
                                 )
                                 .map_err(failure)?;

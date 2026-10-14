@@ -118,6 +118,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(Arc::new(ProofDataCustody::default()))
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn private_candidate(
         &self,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
@@ -169,6 +170,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             + self.root.logical_owned_bytes()
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn private_control_custody(&self) -> Arc<crate::kernel::ProofDataCustody> {
         Arc::clone(&self.dependencies.data_custody)
     }
@@ -204,8 +206,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             cancellation.check()?;
             let held = self
                 .root
-                .hold.as_ref()
-                .map(|_| crate::collection::clone_generation_root(working, accounting, Some(&producer)))
+                .hold
+                .as_ref()
+                .map(|_| {
+                    crate::collection::clone_generation_root(working, accounting, Some(&producer))
+                })
                 .transpose()?;
             return Ok(PreparedCheckoutRoots {
                 base,
@@ -227,7 +232,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         cancellation.check()?;
         let held = self
             .root
-            .hold.as_ref()
+            .hold
+            .as_ref()
             .map(|_| crate::collection::clone_generation_root(working, accounting, None))
             .transpose()?
             .map(|(root, _)| {
@@ -289,8 +295,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             Self::root_control_claim(&working, prepared.producer.as_ref())
                 .expect("an admitted generation-root vector has a representable capacity")
         });
-        self.root
-            .set(generation, working, control, prepared.held);
+        self.root.set(generation, working, control, prepared.held);
         self.base_root = prepared.base.0;
         self.dependencies.base_root_control = prepared.base.1;
     }
@@ -337,6 +342,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             })
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn replica(
         &self,
         mut dependencies: DependencyLedger,

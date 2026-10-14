@@ -116,15 +116,18 @@ pub(super) fn admit_path_frame(
     bytes: u64,
     observation: &mut FrameObservation<'_>,
 ) -> Result<KernelOwnedAllocation, crate::FsError> {
-    let guard = accounting.claim_owned(bytes, u64::from(bytes != 0))?;
-    if let Err(error) = observation.admitted(bytes) {
-        // No box was built: retire only the original admitted claim.
-        #[cfg(not(target_arch = "wasm32"))]
-        drop(guard);
-        release_standalone(accounting, bytes)?;
-        return Err(error);
+    let admitted = {
+        let guard = accounting.claim_owned(bytes, u64::from(bytes != 0))?;
+        observation.admitted(bytes).map(|()| guard)
+    };
+    match admitted {
+        Ok(guard) => Ok(guard),
+        Err(error) => {
+            // No box was built: retire only the original admitted claim.
+            release_standalone(accounting, bytes)?;
+            Err(error)
+        }
     }
-    Ok(guard)
 }
 
 pub(super) fn absorb_allocation(

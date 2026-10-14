@@ -1,5 +1,4 @@
 use super::*;
-use futures::TryStreamExt as _;
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where
@@ -43,28 +42,23 @@ where
                 "execution replay page bound is invalid",
             ));
         }
-        let capacity = maximum.min(EXECUTION_REPLAY_PAGE_RECORDS) as usize;
-        let vector_bytes = capacity
-            .checked_mul(std::mem::size_of::<(ExecutionRecord, Option<ModelEvent>)>())
-            .ok_or_else(|| {
-                stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Invalid,
-                    "execution replay vector ownership overflow",
+        let page_maximum = maximum.min(EXECUTION_REPLAY_PAGE_RECORDS);
+        let capacity = page_maximum as usize;
+        let mut result: Vec<(ExecutionRecord, Option<ModelEvent>)> =
+            crate::model::vec_with_capacity(capacity, io)?;
+        let (_path_hold, path) = {
+            let path = crate::executor::with_history_io(io, |work| {
+                crate::executor::preparation_format(
+                    format_args!("harness/v2/execution/{operation_id}"),
+                    work,
                 )
-            })? as u64;
-        if let Some(io) = io {
-            io.retain_owned(vector_bytes)?;
-            io.allocation_attempt(vector_bytes)?;
-        }
-        let mut result: Vec<(ExecutionRecord, Option<ModelEvent>)> = Vec::with_capacity(capacity);
-        let _path_hold;
-        let path = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("harness/v2/execution/{operation_id}"), work))?;
-        _path_hold = io
-            .map(|io| io.guard_owned(path.capacity() as u64))
-            .transpose()?;
-        let _stream_hold;
-        _stream_hold = if let Some(io) = io {
+            })?;
+            let _path_hold = io
+                .map(|io| io.guard_owned(path.capacity() as u64))
+                .transpose()?;
+            (_path_hold, path)
+        };
+        let _stream_hold = if let Some(io) = io {
             let copying = acyclic_fs::WorkCounters {
                 bytes_copied: path.len() as u64,
                 items_examined: path.len() as u64,
@@ -82,22 +76,19 @@ where
             acyclic_stream::Stream::new(Arc::clone(&self.stream), &path).map_err(|error| {
                 Self::journal_read_stream_error(io, crate::wire::ErrorCode::Invalid, error)
             })?;
-        let _read_path_hold;
-        _read_path_hold = if let Some(io) = io {
-            let call = acyclic_fs::WorkCounters {
-                backend_read_operations: 1,
-                bytes_copied: path.len() as u64,
-                ..Default::default()
-            };
-            io.preflight(call)?;
-            let hold = io.reserve_decode(path.len() as u64)?;
-            io.allocation_attempt(path.len() as u64)?;
-            io.charge(call)?;
-            Some(hold)
-        } else {
-            None
-        };
-        let mut entries = match stream.read(after, capacity as u32).await {
+        let mut history = io.map(PreparationIo::history_io);
+        let mut work = history
+            .as_mut()
+            .map(|io| io as &mut dyn crate::store::HistoryIo);
+        let mut entries = match crate::store::operations::read_records(
+            &self.stream,
+            stream.path(),
+            after,
+            page_maximum,
+            &mut work,
+        )
+        .await?
+        {
             Ok(entries) => entries,
             Err(StreamError::NotFound) => {
                 if let Some(io) = io {
@@ -118,25 +109,17 @@ where
             if let Some(io) = io {
                 io.check_cancellation()?;
             }
-            let Some(record) = entries.try_next().await.map_err(|error| {
-                Self::journal_read_stream_error(io, crate::wire::ErrorCode::Storage, error)
-            })?
-            else {
+            let Some(record) = entries.next(&mut work).await? else {
                 if let Some(io) = io {
                     io.check_cancellation()?;
                 }
                 break;
             };
-            _record_hold = if let Some(io) = io {
-                let read = acyclic_fs::WorkCounters {
-                    authority_records_read: 1,
-                    authority_bytes_read: record.value.len() as u64,
+            _record_hold = if let Some(io) = io.filter(|io| io.original_native_work().is_none()) {
+                io.charge(acyclic_fs::WorkCounters {
                     source_bytes_read: record.value.len() as u64,
-                    items_examined: 1,
                     ..Default::default()
-                };
-                io.charge(read)?;
-                io.retain_owned(record.value.len() as u64)?;
+                })?;
                 Some(io.guard_owned(record.value.len() as u64)?)
             } else {
                 None
@@ -162,16 +145,7 @@ where
                     "execution journal sequence or bound is invalid",
                 ));
             }
-            let observation: Observation = match io {
-                Some(io) => crate::filesystem::retain_decoded(io.decode(
-                    std::marker::PhantomData::<Observation>,
-                    &record.value,
-                    crate::wire::ErrorCode::Storage,
-                )?),
-                None => crate::contract::json_from_slice(&record.value).map_err(|error| {
-                    Error::Storage(format!("execution journal record is invalid: {error}"))
-                })?,
-            };
+            let observation: Observation = crate::filesystem::decode_record(&record.value, io)?;
             if observation.version != OBSERVATION_VERSION {
                 return Err(canonical_boundary(
                     io,
@@ -204,25 +178,19 @@ where
                 }
             }
             let before_model = io.map(PreparationIo::owned_bytes).transpose()?;
-            let _model_hold;
-            let model = self
-                .verify_event_refs_with_io(&observation.event, io)
-                .await?;
-            _model_hold = if retain_models {
-                None
-            } else {
-                match (io, before_model) {
-                    (Some(io), Some(before)) => Some(io.guard_owned(
-                        io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                            stock_boundary(
-                                Some(io),
-                                crate::wire::ErrorCode::Invalid,
-                                "model observation custody underflow",
-                            )
-                        })?,
-                    )?),
-                    _ => None,
-                }
+            let (_model_hold, model) = {
+                let model = self
+                    .verify_event_refs_with_io(&observation.event, io)
+                    .await?;
+                let _model_hold = if retain_models {
+                    None
+                } else {
+                    match (io, before_model) {
+                        (Some(io), Some(before)) => Some(io.guard_owned(io.owned_since(before)?)?),
+                        _ => None,
+                    }
+                };
+                (_model_hold, model)
             };
             let model = if retain_models {
                 model
@@ -247,24 +215,13 @@ where
             ));
         }
         if let Some((owner, _)) = &self.owner {
-            if let Some(io) = io {
-                let mut work = io.history_io();
-                owner
-                    .verify_model_history(
-                        operation_id,
-                        result.iter().map(|(record, _)| record),
-                        &mut Some(&mut work),
-                    )
-                    .await?;
-            } else {
-                owner
-                    .verify_model_history(
-                        operation_id,
-                        result.iter().map(|(record, _)| record),
-                        &mut None,
-                    )
-                    .await?;
-            }
+            owner
+                .verify_model_history(
+                    operation_id,
+                    result.iter().map(|(record, _)| record),
+                    &mut work,
+                )
+                .await?;
         }
         Ok(result)
     }
@@ -276,36 +233,24 @@ where
         maximum: u32,
         io: Option<&PreparationIo>,
     ) -> Result<Vec<ExecutionRecord>> {
-        let page_slots;
-        let page = self
-            .replay_page(operation, after, maximum, io.is_none(), io)
-            .await?;
-        let page_bytes = page
-            .capacity()
-            .checked_mul(std::mem::size_of::<(ExecutionRecord, Option<ModelEvent>)>())
-            .ok_or_else(|| {
-                stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Invalid,
-                    "execution replay vector ownership overflow",
-                )
-            })? as u64;
-        page_slots = io.map(|io| io.guard_owned(page_bytes)).transpose()?;
-        let output_bytes = page
-            .len()
-            .checked_mul(std::mem::size_of::<ExecutionRecord>())
-            .ok_or_else(|| {
-                stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Invalid,
-                    "execution replay vector ownership overflow",
-                )
-            })? as u64;
-        if let Some(io) = io {
-            io.retain_owned(output_bytes)?;
-            io.allocation_attempt(output_bytes)?;
-        }
-        let mut records = Vec::with_capacity(page.len());
+        let (page_slots, page) = {
+            let page = self
+                .replay_page(operation, after, maximum, io.is_none(), io)
+                .await?;
+            let page_bytes = page
+                .capacity()
+                .checked_mul(std::mem::size_of::<(ExecutionRecord, Option<ModelEvent>)>())
+                .ok_or_else(|| {
+                    stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Invalid,
+                        "execution replay vector ownership overflow",
+                    )
+                })? as u64;
+            let page_slots = io.map(|io| io.guard_owned(page_bytes)).transpose()?;
+            (page_slots, page)
+        };
+        let mut records = crate::model::vec_with_capacity(page.len(), io)?;
         for (record, _) in page {
             records.push(record);
         }
@@ -314,4 +259,4 @@ where
     }
 }
 
-use crate::executor::{stock_boundary};
+use crate::executor::stock_boundary;

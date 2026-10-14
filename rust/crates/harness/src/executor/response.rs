@@ -133,11 +133,11 @@ impl StockExecution<'_> {
             Some((reference, accounting)) => (
                 retain_preparation(
                     load_json::<ResponseProjection>(journal, reference, self.io).await?,
-                ),
+                )?,
                 match accounting {
                     Some(reference) => Some(retain_preparation(
                         load_json::<ContextAccounting>(journal, reference, self.io).await?,
-                    )),
+                    )?),
                     None => None,
                 },
             ),
@@ -205,13 +205,13 @@ impl StockExecution<'_> {
         if let Some((retained, proof, final_accounting)) = first {
             let retained = retain_preparation(
                 load_json::<ResponseProjection>(journal, retained, self.io).await?,
-            );
+            )?;
             let proof = retain_preparation(
                 load_json::<crate::context::CompactionReference>(journal, proof, self.io).await?,
-            );
+            )?;
             let final_accounting = retain_preparation(
                 load_json::<ContextAccounting>(journal, final_accounting, self.io).await?,
-            );
+            )?;
             crate::context::validate_projected_context(
                 &retained.context,
                 self.stock.limits,
@@ -305,7 +305,7 @@ impl StockExecution<'_> {
                 let source = match &projection.canonical {
                     Some(reference) => retain_preparation(
                         load_json::<crate::context::Context>(journal, reference, self.io).await?,
-                    ),
+                    )?,
                     None => crate::context::copy_context(&projection.context, self.io)?,
                 };
                 let stage_messages = projection
@@ -344,14 +344,14 @@ impl StockExecution<'_> {
                     journal, checkpoint, self.io,
                 )
                 .await?,
-            );
+            )?;
             envelope.validate(self.stock.limits, self.io)?;
             let source = retain_preparation(
                 load_json::<crate::context::Context>(journal, &envelope.source, self.io).await?,
-            );
+            )?;
             let base = retain_preparation(
                 load_json::<crate::context::Context>(journal, &envelope.retained, self.io).await?,
-            );
+            )?;
             envelope.validate_projection(&source, &base, proof, self.stock.limits, self.io)?;
             if projection.canonical.as_ref() != Some(&envelope.source)
                 || envelope.operation_id != input.operation_id

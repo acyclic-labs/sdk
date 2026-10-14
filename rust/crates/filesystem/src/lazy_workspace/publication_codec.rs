@@ -2,6 +2,7 @@ use super::*;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::kernel::{EncodeWorkStep, Encoder};
 const SNAPSHOT_DOMAIN: &[u8] = b"acyclic-fs-native-publication-snapshot-v1\0";
+#[cfg(not(target_arch = "wasm32"))]
 const CONTEXT_DOMAIN: &[u8] = b"acyclic-fs-native-publication-context-v1\0";
 
 #[cfg(not(target_arch = "wasm32"))]

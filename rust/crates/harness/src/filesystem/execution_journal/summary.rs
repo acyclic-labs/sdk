@@ -140,17 +140,7 @@ impl ExecutionSummary {
         limits: Limits,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
-        let key_work = acyclic_fs::WorkCounters {
-            bytes_hashed: record.idempotency_key.len() as u64,
-            ..Default::default()
-        };
-        if let Some(io) = io {
-            io.preflight(key_work)?;
-        }
-        let key = *blake3::hash(record.idempotency_key.as_bytes()).as_bytes();
-        if let Some(io) = io {
-            io.charge(key_work)?;
-        }
+        let key = crate::model::hash_bytes(record.idempotency_key.as_bytes(), io)?;
         if record.sequence != self.tail + 1
             || record.idempotency_key.is_empty()
             || self.retries.contains_key(&key)
@@ -220,23 +210,21 @@ impl ExecutionSummary {
                     *state = None;
                 }
             }
-            ExecutionEvent::ToolStarted { step, .. } => {
-                self.tools.insert(
-                    (
-                        *step,
-                        tool_key.expect("tool start has an authenticated identity"),
-                    ),
-                    false,
-                );
-            }
-            ExecutionEvent::ToolCompleted { step, .. }
+            ExecutionEvent::ToolStarted { step, .. }
+            | ExecutionEvent::ToolCompleted { step, .. }
             | ExecutionEvent::ToolFailed { step, .. } => {
                 self.tools.insert(
                     (
                         *step,
-                        tool_key.expect("tool settlement has an authenticated identity"),
+                        tool_key.ok_or_else(|| {
+                            canonical_boundary(
+                                io,
+                                crate::wire::ErrorCode::Storage,
+                                "tool observation has no authenticated identity",
+                            )
+                        })?,
                     ),
-                    true,
+                    !matches!(record.event, ExecutionEvent::ToolStarted { .. }),
                 );
             }
             ExecutionEvent::Started { .. } => {}
@@ -316,10 +304,10 @@ impl PreparationRecord for Observation {
                 "publication_rejected",
             ];
             let mut bytes = 0;
-            let mut index = 0;
-            while index < labels.len() {
-                bytes += labels[index].len() as u64 + 4;
-                index += 1;
+            let mut remaining = labels.as_slice();
+            while let Some((label, rest)) = remaining.split_first() {
+                bytes += label.len() as u64 + 4;
+                remaining = rest;
             }
             bytes
         };

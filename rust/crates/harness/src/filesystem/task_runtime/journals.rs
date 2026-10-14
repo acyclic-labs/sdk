@@ -35,11 +35,13 @@ where
             operation,
             turn,
             Arc::clone(&self.filesystem),
-            &self.volume,
-            &self.verifier,
-            &self.signed,
-            maximum_payload_bytes,
-            Some(&io),
+            crate::filesystem::FilesystemJournalBinding {
+                volume: &self.volume,
+                verifier: &self.verifier,
+                scope: &self.signed,
+                maximum_bytes: maximum_payload_bytes,
+                io: Some(&io),
+            },
         )?;
         let journal = if interaction {
             if let Some(owner) = &self.interaction_owner {
@@ -78,11 +80,13 @@ where
             operation,
             turn,
             Arc::clone(&self.filesystem),
-            &self.volume,
-            &self.verifier,
-            &self.signed,
-            maximum_payload_bytes,
-            Some(&io),
+            crate::filesystem::FilesystemJournalBinding {
+                volume: &self.volume,
+                verifier: &self.verifier,
+                scope: &self.signed,
+                maximum_bytes: maximum_payload_bytes,
+                io: Some(&io),
+            },
         )?;
         Ok((journal.into_native_shared(work)?, operation))
     }
@@ -99,11 +103,13 @@ where
             execution_operation(task, turn, None)?,
             turn,
             self.filesystem.clone(),
-            &self.volume,
-            &self.verifier,
-            &self.signed,
-            self.maximum_payload_bytes.min(admission.limits.file_bytes),
-            None,
+            crate::filesystem::FilesystemJournalBinding {
+                volume: &self.volume,
+                verifier: &self.verifier,
+                scope: &self.signed,
+                maximum_bytes: self.maximum_payload_bytes.min(admission.limits.file_bytes),
+                io: None,
+            },
         )?;
         if admission
             .grants
@@ -175,11 +181,13 @@ where
         FilesystemWorkflowJournal::for_task(
             owner,
             self.filesystem.clone(),
-            &self.volume,
-            &self.verifier,
-            &self.signed,
-            maximum_payload_bytes,
-            io,
+            crate::filesystem::FilesystemJournalBinding {
+                volume: &self.volume,
+                verifier: &self.verifier,
+                scope: &self.signed,
+                maximum_bytes: maximum_payload_bytes,
+                io,
+            },
         )
     }
 
@@ -214,11 +222,13 @@ where
         FilesystemWorkflowJournal::for_task(
             Arc::new(owner),
             self.filesystem.clone(),
-            &self.volume,
-            &self.verifier,
-            &self.signed,
-            maximum,
-            None,
+            crate::filesystem::FilesystemJournalBinding {
+                volume: &self.volume,
+                verifier: &self.verifier,
+                scope: &self.signed,
+                maximum_bytes: maximum,
+                io: None,
+            },
         )
     }
 
@@ -245,11 +255,13 @@ where
         FilesystemWorkflowJournal::for_task(
             owner.into_native_shared(work)?,
             Arc::clone(&self.filesystem),
-            &self.volume,
-            &self.verifier,
-            &self.signed,
-            maximum,
-            Some(&io),
+            crate::filesystem::FilesystemJournalBinding {
+                volume: &self.volume,
+                verifier: &self.verifier,
+                scope: &self.signed,
+                maximum_bytes: maximum,
+                io: Some(&io),
+            },
         )
     }
 
@@ -267,11 +279,13 @@ where
         FilesystemWorkflowJournal::for_task(
             owner.into_native_shared(work)?,
             Arc::clone(&self.filesystem),
-            &self.volume,
-            &self.verifier,
-            &self.signed,
-            maximum,
-            Some(&super::super::PreparationIo::from_native_work(work)?),
+            crate::filesystem::FilesystemJournalBinding {
+                volume: &self.volume,
+                verifier: &self.verifier,
+                scope: &self.signed,
+                maximum_bytes: maximum,
+                io: Some(&super::super::PreparationIo::from_native_work(work)?),
+            },
         )
     }
 }

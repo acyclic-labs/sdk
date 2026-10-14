@@ -8,13 +8,17 @@ where
 {
     pub(super) async fn effect_command(
         &self,
-        context: &TaskContext,
-        fence: &LeaseFence,
-        command: OperationId,
+        CommandInvocation {
+            context,
+            fence,
+            command,
+            reconciliation_only,
+            io,
+            ..
+        }: CommandInvocation<'_>,
         payload: Value,
-        reconciliation_only: bool,
-        io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<TaskCommandProgress> {
+        let command = command.operation_id;
         let plan: crate::effect_host::TaskEffectPlan = mail::decode_command(payload, io)?;
         let effects = self.effects.as_ref().ok_or_else(|| {
             crate::filesystem::task_runtime::observed::boundary(
@@ -24,10 +28,12 @@ where
             )
         })?;
         #[cfg(not(target_arch = "wasm32"))]
-        let work = io.map(|io| {
-            io.original_native_work()
-                .expect("dispatch checked original work")
-        });
+        let work = io
+            .map(|io| {
+                io.original_native_work()
+                    .ok_or_else(|| io.invalid("dispatch requires original native work"))
+            })
+            .transpose()?;
         #[cfg(target_arch = "wasm32")]
         let work = None;
         let observed;

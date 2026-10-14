@@ -50,7 +50,7 @@ impl<A, O> FilesystemProjectWorkspaces<A, O> {
             ParentProjectController::new(host.as_ref(), parent, verifier, scope, &project, None)?;
         Ok(Self {
             host: Arc::clone(host),
-            project: controller.project,
+            project,
             verifier: controller.verifier,
             scope: controller.scope,
         })
@@ -209,16 +209,15 @@ where
                     return Err(Error::Invalid("conflict side was selected twice".into()));
                 }
             }
-            let outcome = controller.apply_project_merge(&self.plan, operation_id, sides).await?.0;
+            let outcome = controller
+                .apply_project_merge(&self.plan, operation_id, sides)
+                .await?
+                .0;
             match &outcome {
                 JoinOutcome::Applied(_) | JoinOutcome::AlreadyApplied(_) => {
-                    let receipt = controller.merge_receipt(
-                        &self.plan,
-                        &outcome,
-                        child,
-                        operation_id,
-                        notice,
-                    )?.0;
+                    let receipt = controller
+                        .merge_receipt(&self.plan, &outcome, child, operation_id, notice)?
+                        .0;
                     Ok(if matches!(&outcome, JoinOutcome::AlreadyApplied(_)) {
                         ProjectJoinOutcome::AlreadyApplied(receipt)
                     } else {
@@ -272,44 +271,75 @@ pub(super) fn encode_conflict(conflict: &MergeConflict) -> Vec<u8> {
     }
 }
 
-pub(super) fn decode_conflict(key: &[u8], io: Option<&super::PreparationIo>) -> Result<MergeConflict> {
+pub(super) fn decode_conflict(
+    key: &[u8],
+    io: Option<&super::PreparationIo>,
+) -> Result<MergeConflict> {
     let invalid = |message| stock_boundary(io, crate::wire::ErrorCode::Invalid, message);
-    if let Some(io) = io { io.retain_owned(std::mem::size_of::<MergeConflict>() as u64)?; }
-    let (tag, rest) = key.split_first().ok_or_else(|| invalid("empty conflict key"))?;
-    let id_bytes: [u8; 16] = rest.get(..16).ok_or_else(|| invalid("short conflict key"))?
-        .try_into().map_err(|_| invalid("invalid conflict identity"))?;
+    if let Some(io) = io {
+        io.retain_owned(std::mem::size_of::<MergeConflict>() as u64)?;
+    }
+    let (tag, rest) = key
+        .split_first()
+        .ok_or_else(|| invalid("empty conflict key"))?;
+    let id_bytes: [u8; 16] = rest
+        .get(..16)
+        .ok_or_else(|| invalid("short conflict key"))?
+        .try_into()
+        .map_err(|_| invalid("invalid conflict identity"))?;
     let id = FileId::from_bytes(id_bytes);
     match (*tag, rest.get(16..)) {
         (1, Some([])) => Ok(MergeConflict::File(id)),
         (2, Some([encoding, name @ ..])) => {
             let encoding = match *encoding {
-                1 => NameEncoding::Utf8, 2 => NameEncoding::PosixBytes, 3 => NameEncoding::WindowsUtf16Le,
+                1 => NameEncoding::Utf8,
+                2 => NameEncoding::PosixBytes,
+                3 => NameEncoding::WindowsUtf16Le,
                 _ => return Err(invalid("unknown conflict name encoding")),
             };
-            let copying = acyclic_fs::WorkCounters { bytes_copied: name.len() as u64,
-                ..acyclic_fs::WorkCounters::default() };
+            let copying = acyclic_fs::WorkCounters {
+                bytes_copied: name.len() as u64,
+                ..acyclic_fs::WorkCounters::default()
+            };
             if let Some(io) = io {
-                io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
+                io.charge(acyclic_fs::WorkCounters {
+                    items_examined: 1,
+                    ..Default::default()
+                })?;
                 io.preflight(copying)?;
             }
             let mut copied = crate::model::vec_with_capacity(name.len(), io)?;
             copied.extend_from_slice(name);
-            if let Some(io) = io { io.charge(copying)?; }
+            if let Some(io) = io {
+                io.charge(copying)?;
+            }
             let name = LogicalName::new(encoding, copied, u32::MAX).map_err(|error| {
                 #[cfg(not(target_arch = "wasm32"))]
-                if io.and_then(super::PreparationIo::original_native_work).is_some() {
+                if io
+                    .and_then(super::PreparationIo::original_native_work)
+                    .is_some()
+                {
                     return Error::NativeFilesystem {
-                        source: Box::new(acyclic_fs::FsError::Path(acyclic_fs::kernel::PathLookupError::NamespacePath(
-                            acyclic_fs::kernel::NamespacePathError::Name(error)))), custody: None,
+                        source: Box::new(acyclic_fs::FsError::Path(
+                            acyclic_fs::kernel::PathLookupError::NamespacePath(
+                                acyclic_fs::kernel::NamespacePathError::Name(error),
+                            ),
+                        )),
+                        custody: None,
                     };
                 }
                 Error::Invalid(error.to_string())
             })?;
-            Ok(MergeConflict::Binding { directory_id: id, name })
+            Ok(MergeConflict::Binding {
+                directory_id: id,
+                name,
+            })
         }
         _ => Err(invalid("invalid conflict key")),
     }
 }
+
+use crate::executor::stock_boundary;
 
 #[cfg(test)]
 mod tests {
@@ -326,11 +356,14 @@ mod tests {
         let key = encode_conflict(&conflict);
         let cancellation = acyclic_fs::CancellationToken::new();
         let budget = acyclic_fs::WorkCounters {
-            allocation_operations: 8, peak_allocation_bytes: 65_536,
-            bytes_copied: 2048, items_examined: 64, ..acyclic_fs::WorkCounters::default()
+            allocation_operations: 8,
+            peak_allocation_bytes: 65_536,
+            bytes_copied: 2048,
+            items_examined: 64,
+            ..acyclic_fs::WorkCounters::default()
         };
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
-            .expect("finite actual decoder context");
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let live = work.live_allocation_bytes();
         let io = super::super::PreparationIo::from_native_work(&work)?;
         let decoded = decode_conflict(&key, Some(&io))?;
@@ -341,10 +374,21 @@ mod tests {
         drop(custody);
         assert_eq!(work.live_allocation_bytes(), live);
         let denied = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkCounters { bytes_copied: 0, ..budget }, &cancellation)
-            .expect("zero-copy allowance is valid");
+            acyclic_fs::WorkCounters {
+                bytes_copied: 0,
+                ..budget
+            },
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let before = denied.receipt();
-        assert!(decode_conflict(&key, Some(&super::super::PreparationIo::from_native_work(&denied)?)).is_err());
+        assert!(
+            decode_conflict(
+                &key,
+                Some(&super::super::PreparationIo::from_native_work(&denied)?)
+            )
+            .is_err()
+        );
         assert_eq!(denied.receipt().bytes_copied, before.bytes_copied);
         let file_key = encode_conflict(&MergeConflict::File(FileId::from_bytes([7; 16])));
         let io = super::super::PreparationIo::from_native_work(&denied)?;
@@ -371,5 +415,3 @@ mod tests {
         Ok(())
     }
 }
-
-use crate::executor::{stock_boundary};

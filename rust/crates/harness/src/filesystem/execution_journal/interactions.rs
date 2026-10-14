@@ -113,12 +113,14 @@ where
             host.execute(
                 operation,
                 responder,
-                crate::core::Action::ResolveInteraction { resolution: InteractionResolution {
-                    id: ticket.id,
-                    expected_version,
-                    outcome,
-                    detail,
-                } },
+                crate::core::Action::ResolveInteraction {
+                    resolution: InteractionResolution {
+                        id: ticket.id,
+                        expected_version,
+                        outcome,
+                        detail,
+                    },
+                },
                 None,
                 None,
             )
@@ -137,6 +139,9 @@ where
         interaction: &Interaction,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
+        let reject = |code, reason| {
+            crate::filesystem::interaction_host::interaction_boundary(io, code, reason)
+        };
         let mut borrowed = io.map(PreparationIo::history_io);
         let mut work = borrowed
             .as_mut()
@@ -147,27 +152,20 @@ where
             owner.verify(false, &mut work).await?;
         }
         let host = self.interactions.as_ref().ok_or_else(|| {
-            crate::filesystem::interaction_host::interaction_boundary(
-                io,
+            reject(
                 crate::wire::ErrorCode::Unsupported,
                 "task execution has no conversation interaction owner",
             )
         })?;
         {
-            let request_hold;
-            let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-            let original = host.read_request(id, io).await?;
-            request_hold = io
-                .map(|io| {
-                    io.guard_owned(io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                        crate::filesystem::interaction_host::interaction_boundary(
-                            Some(io),
-                            crate::wire::ErrorCode::Invalid,
-                            "interaction request custody underflows",
-                        )
-                    })?)
-                })
-                .transpose()?;
+            let (request_hold, original) = {
+                let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+                let original = host.read_request(id, io).await?;
+                let request_hold = io
+                    .map(|io| io.guard_owned(io.owned_since(before)?))
+                    .transpose()?;
+                (request_hold, original)
+            };
             if let Some(original) = &original {
                 if let Some((owner, _)) = &self.owner {
                     owner.verify(false, &mut work).await?;
@@ -175,8 +173,7 @@ where
                 return if original == interaction {
                     Ok(())
                 } else {
-                    Err(crate::filesystem::interaction_host::interaction_boundary(
-                        io,
+                    Err(reject(
                         crate::wire::ErrorCode::Conflict,
                         "interaction identity reused",
                     ))
@@ -186,22 +183,14 @@ where
             drop(request_hold);
         }
         let operation = interaction_open_operation(id, io)?;
-        let ticket_hold;
-        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let ticket = host
-            .stage_request(id, interaction, None, io)
-            .await?;
-        ticket_hold = io
-            .map(|io| {
-                io.guard_owned(io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                    crate::filesystem::interaction_host::interaction_boundary(
-                        Some(io),
-                        crate::wire::ErrorCode::Invalid,
-                        "interaction ticket custody underflows",
-                    )
-                })?)
-            })
-            .transpose()?;
+        let (ticket_hold, ticket) = {
+            let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+            let ticket = host.stage_request(id, interaction, None, io).await?;
+            let ticket_hold = io
+                .map(|io| io.guard_owned(io.owned_since(before)?))
+                .transpose()?;
+            (ticket_hold, ticket)
+        };
         let publication = host
             .open(
                 operation,
@@ -224,24 +213,17 @@ where
                     crate::wire::ErrorCode::Conflict | crate::wire::ErrorCode::Indeterminate
                 ) =>
             {
-                let request_hold;
-                let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-                let original = host.read_request(id, io).await?;
-                request_hold = io
-                    .map(|io| {
-                        io.guard_owned(io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                            crate::filesystem::interaction_host::interaction_boundary(
-                                Some(io),
-                                crate::wire::ErrorCode::Invalid,
-                                "interaction request custody underflows",
-                            )
-                        })?)
-                    })
-                    .transpose()?;
+                let (request_hold, original) = {
+                    let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+                    let original = host.read_request(id, io).await?;
+                    let request_hold = io
+                        .map(|io| io.guard_owned(io.owned_since(before)?))
+                        .transpose()?;
+                    (request_hold, original)
+                };
                 let result = match &original {
                     Some(original) if original == interaction => Ok(()),
-                    Some(_) => Err(crate::filesystem::interaction_host::interaction_boundary(
-                        io,
+                    Some(_) => Err(reject(
                         crate::wire::ErrorCode::Conflict,
                         "interaction identity reused",
                     )),

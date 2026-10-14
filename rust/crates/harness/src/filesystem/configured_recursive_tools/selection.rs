@@ -33,7 +33,7 @@ where
             .map(|io| {
                 crate::filesystem::PreparationIo::from_native_work(
                     io.original_native_work()
-                        .expect("child claims verified original work"),
+                        .ok_or_else(|| io.invalid("child claims require original work"))?,
                 )
             })
             .transpose()?;

@@ -91,16 +91,16 @@ pub(crate) fn preparation_owner<'a, P: StreamProvider>(
                 return Err(invalid());
             }
         }
-        if let Some(scratch) = witness.scratch_proof() {
-            if crate::runtime::task_id_for_admission(scratch.origin().intended_child) != intent.task
+        if let Some(scratch) = witness.scratch_proof()
+            && (crate::runtime::task_id_for_admission(scratch.origin().intended_child)
+                != intent.task
                 || !intent
                     .manifest
                     .volumes
                     .iter()
-                    .any(|mapping| mapping.writable && &mapping.volume == scratch.volume())
-            {
-                return Err(invalid());
-            }
+                    .any(|mapping| mapping.writable && &mapping.volume == scratch.volume()))
+        {
+            return Err(invalid());
         }
         witness.verify_with_native_work(work).await?;
         drop(journal);

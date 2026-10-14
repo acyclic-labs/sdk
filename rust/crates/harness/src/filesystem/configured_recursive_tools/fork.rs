@@ -53,9 +53,9 @@ where
             let request: ForkRequest = match io {
                 Some(io) => crate::filesystem::retain_decoded(
                     io.value_decode_preparation(&original.request.payload, ErrorCode::Storage)?,
-                ),
+                )?,
                 None => serde_json::from_value(original.request.payload.clone())
-                    .map_err(invalid_json)?,
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
             };
             if original.caller != caller.task
                 || original.arguments != *arguments
@@ -73,7 +73,9 @@ where
             }
         }
         let ordinary;
-        let observer = if let Some(io) = io { io } else {
+        let observer = if let Some(io) = io {
+            io
+        } else {
             ordinary = PreparationIo::from_budget(self.config.content_budget, cancellation)?;
             &ordinary
         };
@@ -110,25 +112,24 @@ where
             &[context.operation_id().into_bytes()],
             io,
         )?;
-        let source_checkpoint = if let Some(original) = original { crate::executor::with_history_io(io, |work| {
-            original
-                .request
-                .source_checkpoint
-                .as_ref()
-                .ok_or_else(|| {
-                    stock_boundary(
-                        io,
-                        ErrorCode::Unauthorized,
-                        "original fork has no source checkpoint",
-                    )
-                })?
-                .copy(work)
-        })? } else {
-            let bytes = observer.encode(
-                intent,
-                context.effective_scope().limits().file_bytes,
-                false,
-            )?;
+        let source_checkpoint = if let Some(original) = original {
+            crate::executor::with_history_io(io, |work| {
+                original
+                    .request
+                    .source_checkpoint
+                    .as_ref()
+                    .ok_or_else(|| {
+                        stock_boundary(
+                            io,
+                            ErrorCode::Unauthorized,
+                            "original fork has no source checkpoint",
+                        )
+                    })?
+                    .copy(work)
+            })?
+        } else {
+            let bytes =
+                observer.encode(intent, context.effective_scope().limits().file_bytes, false)?;
             let bytes_hold = observer.guard_bytes(&bytes)?;
             let path = crate::executor::with_history_io(io, |work| {
                 crate::executor::preparation_format(
@@ -166,8 +167,10 @@ where
                 std::marker::PhantomData,
                 &bytes,
                 ErrorCode::Storage,
-            )?),
-            _ => serde_json::from_slice(&bytes).map_err(invalid_json)?,
+            )?)?,
+            _ => {
+                serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?
+            }
         };
         if record != *intent {
             return Err(stock_boundary(

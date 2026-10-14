@@ -372,7 +372,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         mutations: &'a [WorkspaceMutation],
         key: IdempotencyKey,
         io: Option<&'a PreparationIo>,
-        preparation: Option<&'a crate::resource_preparation::TaskResourcePreparation>,
+        preparation: Option<&'a Arc<crate::resource_preparation::TaskResourcePreparation>>,
     ) -> Result<Generation<A, O>> {
         let Some(io) = io else {
             return self
@@ -383,34 +383,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         };
         #[cfg(not(target_arch = "wasm32"))]
         let mut native_before = {
-            let owner = preparation.map(|task| Arc::clone(&task.owner));
-            let expected = preparation
-                .and_then(|task| task.native_custody.as_ref())
-                .map(|custody| custody.work().clone());
+            let preparation = preparation.cloned();
             move |work: &acyclic_fs::NativeMaterializationWork| {
-                let owner = owner.clone();
-                let expected = expected.clone();
+                let preparation = preparation.clone();
                 let work = work.clone();
                 async move {
-                    match owner {
-                        Some(owner) => {
-                            if expected
-                                .is_none_or(|expected| !expected.shares_allocation_context(&work))
-                            {
-                                return Err(Error::NativeBoundary {
-                                    code: crate::wire::ErrorCode::Unauthorized,
-                                    reason: "preparation lacks original native custody",
-                                });
-                            }
-                            owner
-                                .verify_lease(
-                                    false,
-                                    Some(&PreparationIo::from_native_work(&work)?),
-                                )?
-                                .await
-                        }
-                        None => Ok(()),
+                    if let Some(task) = preparation {
+                        let io = PreparationIo::from_native_work(&work)?;
+                        task.verify(false, Some(&io))?.await?;
                     }
+                    Ok::<(), Error>(())
                 }
             }
         };

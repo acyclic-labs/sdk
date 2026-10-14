@@ -32,20 +32,24 @@ where
             attempt,
             attempt,
             self.files.clone(),
-            &self.storage,
-            &self.issuer.verifier(&mut None)?,
-            &self.host.owner_scope,
-            65_536,
-            Some(io),
+            crate::filesystem::FilesystemJournalBinding {
+                volume: &self.storage,
+                verifier: &self.issuer.verifier(&mut None)?,
+                scope: &self.host.owner_scope,
+                maximum_bytes: 65_536,
+                io: Some(io),
+            },
         )?;
         let workflow = crate::filesystem::FilesystemWorkflowJournal::for_task(
             Arc::new(self.host.journal_owner(task, &fence, Some(io)).await?),
             self.files.clone(),
-            &self.storage,
-            &self.issuer.verifier(&mut None)?,
-            &self.host.owner_scope,
-            65_536,
-            Some(io),
+            crate::filesystem::FilesystemJournalBinding {
+                volume: &self.storage,
+                verifier: &self.issuer.verifier(&mut None)?,
+                scope: &self.host.owner_scope,
+                maximum_bytes: 65_536,
+                io: Some(io),
+            },
         )?;
         Ok((journal, workflow))
     }
@@ -207,11 +211,13 @@ async fn b20_public_release_rejects_foreign_bindings() -> Result<()> {
     let other_volume = crate::filesystem::FilesystemWorkflowJournal::for_task(
         Arc::new(f.owner(1).await?),
         f.files.clone(),
-        &f.destination,
-        &f.issuer.verifier(&mut None)?,
-        &f.host.owner_scope,
-        65_536,
-        None,
+        crate::filesystem::FilesystemJournalBinding {
+            volume: &f.destination,
+            verifier: &f.issuer.verifier(&mut None)?,
+            scope: &f.host.owner_scope,
+            maximum_bytes: 65_536,
+            io: None,
+        },
     )?;
     assert!(
         current

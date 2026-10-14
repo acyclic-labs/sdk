@@ -199,12 +199,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     };
                     let bytes = directory.retained_bytes();
                     let directory = Owned::new(directory, allocation, bytes);
-                    let (lookup, _allocation) = checkout
+                    let lookup = {
+                        let (lookup, _allocation) = checkout
                         .value
                         .lookup_no_follow_with_accounting(&directory.value, accounting, cancellation, false)
                         .await?;
-                    #[cfg(not(target_arch = "wasm32"))]
-                    drop(_allocation);
+                        lookup
+                    };
                     let original = lookup.record.ok_or(WorkspaceError::NotFound)?;
                     if original.kind != FileKind::Directory {
                         return Err(WorkspaceError::NotDirectory);
@@ -239,12 +240,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         )?;
                         let bytes = child.retained_bytes();
                         let child = Owned::new(child, allocation, bytes);
-                        let (lookup, _allocation) = checkout
+                        let lookup = {
+                            let (lookup, _allocation) = checkout
                             .value
                             .lookup_no_follow_with_accounting(&child.value, accounting, cancellation, false)
                             .await?;
-                        #[cfg(not(target_arch = "wasm32"))]
-                        drop(_allocation);
+                            lookup
+                        };
                         child.retire(accounting)?;
                         let record = lookup.record.ok_or(WorkspaceError::NotFound)?;
                         let (name, mut allocation) =
@@ -361,18 +363,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let mut record = if let Some(record) = record {
                 record
             } else {
-                let (record, _allocation) = lookup_file_record_async_with_accounting(
-                    &self.inner.objects,
-                    root.file_table,
-                    id,
-                    limits,
-                    accounting,
-                    cancellation,
-                    None,
-                )
-                .await?;
-                #[cfg(not(target_arch = "wasm32"))]
-                drop(_allocation);
+                let record = {
+                    let (record, _allocation) = lookup_file_record_async_with_accounting(
+                        &self.inner.objects,
+                        root.file_table,
+                        id,
+                        limits,
+                        accounting,
+                        cancellation,
+                        None,
+                    )
+                    .await?;
+                    record
+                };
                 record.ok_or(WorkspaceError::NotFound)?
             };
             record.link_count = 1;

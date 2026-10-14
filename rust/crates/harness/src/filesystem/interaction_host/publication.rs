@@ -103,13 +103,7 @@ where
             crate::executor::preparation_format(format_args!("interaction:{operation_id}"), work)
         })?)?;
         let hold = io
-            .map(|io| {
-                io.guard_owned(
-                    io.owned_bytes()?
-                        .checked_sub(before)
-                        .ok_or_else(|| io.invalid("interaction command custody underflows"))?,
-                )
-            })
+            .map(|io| io.guard_owned(io.owned_since(before)?))
             .transpose()?;
         let command = Command {
             operation_id,
@@ -176,13 +170,7 @@ where
             ));
         }
         let hold = io
-            .map(|io| {
-                io.guard_owned(
-                    io.owned_bytes()?
-                        .checked_sub(before)
-                        .ok_or_else(|| io.invalid("interaction aggregate custody underflows"))?,
-                )
-            })
+            .map(|io| io.guard_owned(io.owned_since(before)?))
             .transpose()?;
         Ok((aggregate, hold))
     }

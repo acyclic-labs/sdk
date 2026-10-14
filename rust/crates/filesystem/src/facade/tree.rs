@@ -120,75 +120,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget.finish_owned(result, &accounting)
     }
 
-    async fn observe_directory_page(
-        &mut self,
-        directory_id: FileId,
-        after: std::ops::Bound<&LogicalName>,
-        maximum_entries: u32,
-        accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<(), FsError> {
-        let (cursor, allocation) = match after {
-            std::ops::Bound::Excluded(name) => {
-                accounting.charge(WorkCounters {
-                    items_examined: 1,
-                    ..WorkCounters::UNCHARGED
-                })?;
-                let (name, allocation) = name.clone_with_accounting(accounting, cancellation)?;
-                (Some(name), allocation)
-            }
-            std::ops::Bound::Unbounded => (None, accounting.claim_owned(0, 0)?),
-            std::ops::Bound::Included(_) => {
-                unreachable!("included cursors cannot track observations")
-            }
-        };
-        let mut region = (
-            DependencyRegion::DirectoryRange {
-                directory_id,
-                after: cursor,
-                maximum_entries,
-            },
-            allocation,
-        );
-        let (probe, allocation) = AuthenticatedGenerationProbe::new_with_accounting(
-            &self.volume.fs.inner.objects,
-            probe_limits(self.volume.config),
-            accounting,
-        )?;
-        let probe = (
-            probe.with_data_custody(Some(&self.dependencies.data_custody)),
-            allocation,
-        );
-        let state = probe
-            .0
-            .probe_async_with_accounting(
-                GenerationId::new(self.root.base.digest),
-                &region.0,
-                accounting,
-                cancellation,
-            )
-            .await?;
-        let (probe, _allocation) = probe;
-        probe.retire_with_accounting(accounting)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        drop(_allocation);
-        let mut staged = crate::kernel::Owned::<Vec<Dependency>>::allocate(1, accounting)?;
-        staged.allocation.absorb(&mut region.1)?;
-        let copied = WorkCounters {
-            items_examined: 1,
-            bytes_copied: size_of::<Dependency>() as u64,
-            ..WorkCounters::UNCHARGED
-        };
-        accounting.admit(copied)?;
-        staged.value.push(Dependency {
-            region: region.0,
-            expected: state,
-        });
-        accounting.record_completed(copied)?;
-        self.extend_observations_with_accounting(staged, accounting, cancellation)?;
-        Ok(())
-    }
-
     pub(crate) async fn list_directory_with_accounting(
         &mut self,
         path: &NamespacePath,
@@ -217,11 +148,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 Ok::<_, FsError>(())
             },
             |(this, path, after, accounting, cancellation)| async move {
-                let (lookup, _lookup_allocation) = this
-                    .lookup_no_follow_with_accounting(path, accounting, cancellation, false)
-                    .await?;
-                #[cfg(not(target_arch = "wasm32"))]
-                drop(_lookup_allocation);
+                let lookup = {
+                    let (lookup, _lookup_allocation) = this
+                        .lookup_no_follow_with_accounting(path, accounting, cancellation, false)
+                        .await?;
+                    lookup
+                };
                 let record = lookup.record.ok_or(FsError::NotFound)?;
                 let FilePayload::Directory { entries } = record.payload else {
                     return Err(FsError::NotDirectory);
@@ -241,14 +173,66 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .await?;
                 let page = (page, allocation);
                 if this.tracks_observations() {
-                    this.observe_directory_page(
-                        record.file_id,
-                        after,
-                        maximum_entries,
+                    let (cursor, allocation) = match after {
+                        std::ops::Bound::Excluded(name) => {
+                            accounting.charge(WorkCounters {
+                                items_examined: 1,
+                                ..WorkCounters::UNCHARGED
+                            })?;
+                            let (name, allocation) =
+                                name.clone_with_accounting(accounting, cancellation)?;
+                            (Some(name), allocation)
+                        }
+                        std::ops::Bound::Unbounded => (None, accounting.claim_owned(0, 0)?),
+                        std::ops::Bound::Included(_) => {
+                            unreachable!("included cursors cannot track observations")
+                        }
+                    };
+                    let mut region = (
+                        DependencyRegion::DirectoryRange {
+                            directory_id: record.file_id,
+                            after: cursor,
+                            maximum_entries,
+                        },
+                        allocation,
+                    );
+                    let (probe, allocation) = AuthenticatedGenerationProbe::new_with_accounting(
+                        &this.volume.fs.inner.objects,
+                        probe_limits(this.volume.config),
                         accounting,
-                        cancellation,
-                    )
-                    .await?;
+                    )?;
+                    let probe = (
+                        probe.with_data_custody(Some(&this.dependencies.data_custody)),
+                        allocation,
+                    );
+                    let state = probe
+                        .0
+                        .probe_async_with_accounting(
+                            GenerationId::new(this.root.base.digest),
+                            &region.0,
+                            accounting,
+                            cancellation,
+                        )
+                        .await?;
+                    {
+                        let (probe, _allocation) = probe;
+                        probe.retire_with_accounting(accounting)?;
+                    }
+                    let mut staged =
+                        crate::kernel::Owned::<Vec<Dependency>>::allocate(1, accounting)?;
+                    staged.allocation.absorb(&mut region.1)?;
+                    let copied = WorkCounters {
+                        items_examined: 1,
+                        bytes_copied: size_of::<Dependency>() as u64,
+                        ..WorkCounters::UNCHARGED
+                    };
+                    accounting.admit(copied)?;
+                    staged.value.push(Dependency {
+                        region: region.0,
+                        expected: state,
+                    });
+                    accounting.record_completed(copied)?;
+                    this.extend_observations_with_accounting(staged, accounting, cancellation)?;
                 }
                 Ok((page.0, page.1))
             },

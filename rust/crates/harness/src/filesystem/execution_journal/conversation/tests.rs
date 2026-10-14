@@ -110,22 +110,20 @@ async fn open(
     let issuer = AuthorityIssuer::new("durable-continuation", [58; 32], authority.clone());
     let read = volume.capability(VolumeOperation::Read, &mut None)?;
     let write = volume.capability(VolumeOperation::Write, &mut None)?;
-    let scope = issuer
-        .issue(
-            "owner",
-            &Capabilities::new([
-                capability::CONVERSATION_BIND.to_owned(),
-                capability::CONVERSATION_APPEND.to_owned(),
-                capability::CONVERSATION_SELECT_CONTEXT.to_owned(),
-                "model:generate".to_owned(),
-                read.clone(),
-                write.clone(),
-            ]),
-            Some(agent),
-            None,
-            &mut None,
-        )
-        .expect("scope proof");
+    let scope = issuer.issue(
+        "owner",
+        &Capabilities::new([
+            capability::CONVERSATION_BIND.to_owned(),
+            capability::CONVERSATION_APPEND.to_owned(),
+            capability::CONVERSATION_SELECT_CONTEXT.to_owned(),
+            "model:generate".to_owned(),
+            read.clone(),
+            write.clone(),
+        ]),
+        Some(agent),
+        None,
+        &mut None,
+    )?;
     let stream = Arc::new(
         acyclic_stream::LocalStream::open(root.join("stream"), Default::default())
             .await
@@ -134,9 +132,11 @@ async fn open(
     if initialize {
         let mut aggregate = StreamAggregate::open(
             &stream,
-            (authority,
-            issuer.verifier(&mut None).expect("verifier copy"),
-            SchemaRegistry::new()),
+            (
+                authority,
+                issuer.verifier(&mut None)?,
+                SchemaRegistry::new(),
+            ),
             None,
             crate::store::default_projection_read_limits(),
             crate::store::DEFAULT_TERMINAL_EFFECTS,
@@ -162,7 +162,7 @@ async fn open(
     }
     let reader = FilesystemContentVerifier::new(
         host.clone(),
-        &issuer.verifier(&mut None).expect("verifier copy"),
+        &issuer.verifier(&mut None)?,
         &scope,
         262_144,
         None,
@@ -170,7 +170,7 @@ async fn open(
     let writer = FilesystemContentPublisher::new(
         host.clone(),
         &volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
+        &issuer.verifier(&mut None)?,
         &scope,
         262_144,
         None,
@@ -179,12 +179,14 @@ async fn open(
         FilesystemExecutionJournal::new(
             stream,
             host,
-            &volume,
-            &issuer.verifier(&mut None).expect("verifier copy"),
             &crate::core::SchemaRegistry::new(),
-            &scope,
-            262_144,
-            None,
+            crate::filesystem::FilesystemJournalBinding {
+                volume: &volume,
+                verifier: &issuer.verifier(&mut None)?,
+                scope: &scope,
+                maximum_bytes: 262_144,
+                io: None,
+            },
         )?
         .with_input_verifier(reader.clone()),
     );

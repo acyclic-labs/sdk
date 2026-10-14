@@ -72,11 +72,13 @@ where
         operation,
         operation,
         host.clone(),
-        &volume,
-        &task_issuer.verifier(&mut None)?,
-        task_scope,
-        65_536,
-        None,
+        acyclic_harness::filesystem::FilesystemJournalBinding {
+            volume: &volume,
+            verifier: &task_issuer.verifier(&mut None)?,
+            scope: task_scope,
+            maximum_bytes: 65_536,
+            io: None,
+        },
     )?
     .with_input_verifier(reader.clone());
     let adapter = Arc::new(MockAdapter::new(reader.clone()));
@@ -493,11 +495,13 @@ where
             child_operation,
             child_operation,
             host.clone(),
-            &volume,
-            &task_issuer.verifier(&mut None)?,
-            task_scope,
-            65_536,
-            None,
+            acyclic_harness::filesystem::FilesystemJournalBinding {
+                volume: &volume,
+                verifier: &task_issuer.verifier(&mut None)?,
+                scope: task_scope,
+                maximum_bytes: 65_536,
+                io: None,
+            },
         )
         .map(|journal| journal.with_input_verifier(child_reader.clone()))
     };

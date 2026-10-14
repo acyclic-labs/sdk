@@ -38,11 +38,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             )
             .await?;
         match decision {
-            RebaseDecision::Safe { .. } => {
-                #[cfg(not(target_arch = "wasm32"))]
-                drop(allocation);
-                Ok(())
-            }
+            RebaseDecision::Safe { .. } => Ok(()),
             RebaseDecision::Conflicted {
                 conflicts,
                 truncated,
@@ -358,8 +354,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     )
                     .await?
                 {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    drop(_allocation);
                     return Ok(outcome);
                 }
             }
@@ -391,11 +385,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     .rebase_head_with_accounting(maximum_conflicts, accounting, cancellation)
                     .await?;
                 match state.observe_rebase(decision).map_err(FsError::LiveRetry)? {
-                    LiveRetryAction::Publish => {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        drop(allocation);
-                        Ok(None)
-                    }
+                    LiveRetryAction::Publish => Ok(None),
                     LiveRetryAction::Complete(outcome) => Ok(Some((outcome, allocation))),
                     LiveRetryAction::Rebase => {
                         Err(FsError::LiveRetry(LiveRetryError::InvalidTransition))

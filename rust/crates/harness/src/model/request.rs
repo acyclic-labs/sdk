@@ -193,7 +193,7 @@ impl PreparedModelRequest {
                 std::marker::PhantomData::<ModelRequest>,
                 bytes,
                 Storage,
-            )?),
+            )?)?,
             _ => crate::contract::json_from_slice(bytes)
                 .map_err(|error| Error::Invalid(error.to_string()))?,
         };
@@ -228,9 +228,9 @@ impl PreparedModelRequest {
             request.validate(limits, Some(io))?;
             let request_digest = hash_bytes(&bytes, Some(io))?;
             if let Some(hold) = bytes_hold {
-                hold.into_retained();
+                hold.into_retained()?;
             }
-            request_hold.into_retained();
+            request_hold.into_retained()?;
             return Ok(Self {
                 request,
                 bytes,
@@ -263,7 +263,7 @@ impl PreparedModelRequest {
         let request_digest = hash_bytes(&bytes, io)?;
         #[cfg(feature = "filesystem")]
         if let Some(hold) = bytes_hold {
-            hold.into_retained();
+            hold.into_retained()?;
         }
         Ok(Self {
             request,

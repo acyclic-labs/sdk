@@ -13,16 +13,18 @@ where
         verify_machine: bool,
         io: Option<&PreparationIo>,
     ) -> Result<WorkflowRecord> {
-        let _prefix;
-        let prefix = crate::executor::with_history_io(io, |work| {
-            crate::executor::preparation_format(
-                format_args!(".system/workflows/{}/", self.id()),
-                work,
-            )
-        })?;
-        _prefix = io
-            .map(|io| io.guard_owned(prefix.capacity() as u64))
-            .transpose()?;
+        let (_prefix, prefix) = {
+            let prefix = crate::executor::with_history_io(io, |work| {
+                crate::executor::preparation_format(
+                    format_args!(".system/workflows/{}/", self.id()),
+                    work,
+                )
+            })?;
+            let _prefix = io
+                .map(|io| io.guard_owned(prefix.capacity() as u64))
+                .transpose()?;
+            (_prefix, prefix)
+        };
         if reference.volume() != &self.volume
             || reference.descriptor().media_type() != "application/json"
             || !reference.path().starts_with(&prefix)
@@ -36,15 +38,7 @@ where
         let _bytes;
         let bytes = self.read_bound_content(reference, io).await?;
         _bytes = external_read_hold(&bytes, io)?;
-        let record: WorkflowRecord = match io {
-            Some(io) => crate::filesystem::retain_decoded(io.decode(
-                std::marker::PhantomData::<WorkflowRecord>,
-                &bytes,
-                crate::wire::ErrorCode::Storage,
-            )?),
-            None => crate::contract::json_from_slice(&bytes)
-                .map_err(|error| Error::Storage(format!("workflow record is invalid: {error}")))?,
-        };
+        let record: WorkflowRecord = crate::filesystem::decode_record(&bytes, io)?;
         record.validate(io)?;
         if let Some(owner) = &self.owner {
             if verify_machine {
@@ -99,16 +93,17 @@ where
                 "workflow page bounds are invalid",
             ));
         }
-        let _path;
-        let (stream, held) = Self::observation_stream(&self.stream, &self.path, io)?;
-        _path = held;
-        if let Some(io) = io {
-            io.history_io().begin_call()?;
-        }
-        let _request_path = Self::retain_observation_request_path(&self.path, io)?;
-        let entries = match stream
-            .read(after, maximum.min(WORKFLOW_REPLAY_PAGE_RECORDS))
-            .await
+        let (_path, stream) = Self::observation_stream(&self.stream, &self.path, io)?;
+        let mut history = io.map(PreparationIo::history_io);
+        let mut work = history.as_mut().map(|io| io as &mut dyn HistoryIo);
+        let entries = match crate::store::operations::read_records(
+            &self.stream,
+            stream.path(),
+            after,
+            maximum.min(WORKFLOW_REPLAY_PAGE_RECORDS),
+            &mut work,
+        )
+        .await?
         {
             Ok(entries) => entries,
             Err(StreamError::NotFound) => {
@@ -140,11 +135,10 @@ where
         };
         let mut records = Vec::with_capacity(capacity);
         loop {
-            let _entry;
-            let Some((entry, held)) = Self::next_observation_record(&mut entries, io).await? else {
+            let Some((_entry, entry)) = Self::next_observation_record(&mut entries, io).await?
+            else {
                 break;
             };
-            _entry = held;
             let sequence = after + records.len() as u64;
             if records.len() >= capacity || entry.sequence != sequence {
                 return Err(observation_boundary(
@@ -153,25 +147,14 @@ where
                     "workflow sequence or page bound is invalid",
                 ));
             }
-            let reference_hold;
-            let reference_before = io.map(PreparationIo::owned_bytes).transpose()?;
-            let reference: FileRef = match io {
-                Some(io) => crate::filesystem::retain_decoded(io.decode(
-                    std::marker::PhantomData::<FileRef>,
-                    &entry.value,
-                    crate::wire::ErrorCode::Storage,
-                )?),
-                None => crate::contract::json_from_slice(&entry.value).map_err(|error| {
-                    Error::Storage(format!("workflow reference is invalid: {error}"))
-                })?,
-            };
-            reference_hold = match (io, reference_before) {
-                (Some(io), Some(before)) => Some(io.guard_owned(
-                    io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                        Error::Invalid("workflow reference custody underflow".into())
-                    })?,
-                )?),
-                _ => None,
+            let (reference_hold, reference) = {
+                let reference_before = io.map(PreparationIo::owned_bytes).transpose()?;
+                let reference: FileRef = crate::filesystem::decode_record(&entry.value, io)?;
+                let reference_hold = match (io, reference_before) {
+                    (Some(io), Some(before)) => Some(io.guard_owned(io.owned_since(before)?)?),
+                    _ => None,
+                };
+                (reference_hold, reference)
             };
             let record = self
                 .read_record(&reference, verify_payloads, verify_machine, io)
@@ -188,7 +171,7 @@ where
             drop(reference_hold);
         }
         if let Some(hold) = vector_hold {
-            hold.into_retained();
+            hold.into_retained()?;
         }
         Ok(records)
     }

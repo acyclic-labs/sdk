@@ -154,7 +154,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                 std::marker::PhantomData,
                 &selection_bytes,
                 crate::wire::ErrorCode::Storage,
-            )?),
+            )?)?,
             None => crate::contract::json_from_slice(&selection_bytes)
                 .map_err(|error| Error::Storage(error.to_string()))?,
         };
@@ -324,7 +324,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                 std::marker::PhantomData::<crate::workflow::WorkflowRecord>,
                 &bytes,
                 crate::wire::ErrorCode::Storage,
-            )?),
+            )?)?,
             None => crate::contract::json_from_slice(&bytes)
                 .map_err(|error| Error::Storage(error.to_string()))?,
         };

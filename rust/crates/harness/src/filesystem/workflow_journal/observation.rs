@@ -17,15 +17,17 @@ where
                 "task outbox observation requires its original owner",
             )
         })?;
-        self.verify_observation_owner(owner, io).await?;
-        let _path;
-        let (stream, held) = Self::observation_stream(&self.stream, &self.path, io)?;
-        _path = held;
-        if let Some(io) = io {
-            io.history_io().begin_call()?;
-        }
-        let _request_path = Self::retain_observation_request_path(&self.path, io)?;
-        let bounds = match stream.bounds().await {
+        self.verify_observation_owner(owner, true, io).await?;
+        let (_path, stream) = Self::observation_stream(&self.stream, &self.path, io)?;
+        let mut history = io.map(PreparationIo::history_io);
+        let mut work = history.as_mut().map(|io| io as &mut dyn HistoryIo);
+        let bounds = match crate::store::operations::bounds_with_work(
+            &self.stream,
+            stream.path(),
+            &mut work,
+        )
+        .await?
+        {
             Ok(bounds) => bounds,
             Err(StreamError::NotFound) => {
                 if let Some(io) = io {
@@ -56,7 +58,7 @@ where
                     "original outbox record is absent",
                 )
             })?;
-        self.verify_observation_owner(owner, io).await?;
+        self.verify_observation_owner(owner, true, io).await?;
         Ok(Some(record))
     }
 
@@ -73,7 +75,7 @@ where
         let owner = self
             .owner
             .as_ref()
-            .expect("observed outbox has its original owner");
+            .ok_or_else(|| io.invalid("observed outbox has no original owner"))?;
         Ok(Some(WorkflowReleaseWitness {
             binding: owner.task_binding(),
             path: &self.path,
@@ -84,12 +86,13 @@ where
     pub(super) async fn verify_observation_owner(
         &self,
         owner: &TaskJournalOwner<P>,
+        allow_terminal: bool,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         let mut history = io.map(PreparationIo::history_io);
         owner
             .verify(
-                true,
+                allow_terminal,
                 &mut history
                     .as_mut()
                     .map(|history| history as &mut dyn crate::store::history::HistoryIo),
@@ -102,8 +105,8 @@ where
         path: &str,
         io: Option<&'a PreparationIo>,
     ) -> Result<(
-        acyclic_stream::Stream<P>,
         Option<super::super::DecodeReservation<'a>>,
+        acyclic_stream::Stream<P>,
     )> {
         let held = if let Some(io) = io {
             let work = acyclic_fs::WorkCounters {
@@ -120,9 +123,9 @@ where
             None
         };
         Ok((
+            held,
             acyclic_stream::Stream::new(std::sync::Arc::clone(stream), path)
                 .map_err(|error| Self::observation_stream_error(io, error))?,
-            held,
         ))
     }
 
@@ -141,52 +144,33 @@ where
         Error::Storage(source.to_string())
     }
 
-    pub(super) fn retain_observation_request_path<'a>(
-        path: &str,
-        io: Option<&'a PreparationIo>,
-    ) -> Result<Option<super::super::DecodeReservation<'a>>> {
-        let Some(io) = io else {
-            return Ok(None);
-        };
-        let copying = acyclic_fs::WorkCounters {
-            bytes_copied: path.len() as u64,
-            ..Default::default()
-        };
-        io.preflight(copying)?;
-        let held = io.reserve_decode(path.len() as u64)?;
-        io.allocation_attempt(path.len() as u64)?;
-        io.charge(copying)?;
-        Ok(Some(held))
-    }
-
     pub(super) async fn next_observation_record<'a>(
-        entries: &mut acyclic_stream::RecordStream,
+        entries: &mut crate::store::operations::ObservedRecords,
         io: Option<&'a PreparationIo>,
     ) -> Result<
         Option<(
-            acyclic_stream::Record,
             Option<super::super::DecodeReservation<'a>>,
+            crate::store::operations::ObservedRecord,
         )>,
     > {
         if let Some(io) = io {
             io.check_cancellation()?;
         }
-        let held;
-        let Some(record) = entries
-            .try_next()
-            .await
-            .map_err(|error| Self::observation_stream_error(io, error))?
-        else {
-            if let Some(io) = io {
-                io.check_cancellation()?;
-            }
-            return Ok(None);
-        };
-        held = if let Some(io) = io {
-            io.history_io().receive_record(record.value.len() as u64)?;
-            Some(io.guard_owned(record.value.len() as u64)?)
-        } else {
-            None
+        let mut history = io.map(PreparationIo::history_io);
+        let mut work = history.as_mut().map(|io| io as &mut dyn HistoryIo);
+        let (held, record) = {
+            let Some(record) = entries.next(&mut work).await? else {
+                if let Some(io) = io {
+                    io.check_cancellation()?;
+                }
+                return Ok(None);
+            };
+            let bytes = crate::store::operations::sdk_record_retained_bytes(&record, &work);
+            let held = io
+                .filter(|_| bytes != 0)
+                .map(|io| io.guard_owned(bytes))
+                .transpose()?;
+            (held, record)
         };
         if record.value.len() > acyclic_stream::MAX_RECORD_BYTES {
             return Err(observation_boundary(
@@ -195,7 +179,7 @@ where
                 "workflow Stream record exceeds protocol bound",
             ));
         }
-        Ok(Some((record, held)))
+        Ok(Some((held, record)))
     }
 
     pub(super) async fn read_bound_content(
@@ -248,10 +232,9 @@ where
     ) -> Result<(u64, Option<WorkflowRecord>)> {
         let operation_id = candidate.operation_id;
         let mut identities = WorkflowIdentities {
-            io,
-            owned: 0,
             reserved: BTreeSet::new(),
             keys: BTreeSet::new(),
+            hold: io.map(|io| io.guard_owned(0)).transpose()?,
         };
         let mut previous_page_owned = 0;
         let mut matched_page_owned = 0;
@@ -275,10 +258,9 @@ where
                 })
                 .transpose()?
                 .unwrap_or(0);
-            identities.owned = identities
-                .owned
-                .checked_add(page_owned)
-                .ok_or_else(|| Error::Invalid("workflow replay ownership overflow".into()))?;
+            if let Some(hold) = &mut identities.hold {
+                hold.adopt(page_owned)?;
+            }
             let mut page_has_match = false;
             if page.is_empty() {
                 break;
@@ -325,11 +307,16 @@ where
                         }
                     } else {
                         drop(prior);
-                        if previous_page_owned != 0 {
-                            if let Some(io) = io {
-                                io.release(previous_page_owned)?;
-                            }
-                            identities.owned -= previous_page_owned;
+                        if previous_page_owned != 0
+                            && let Some(hold) = &mut identities.hold
+                        {
+                            hold.substitute(
+                                hold.bytes()
+                                    .checked_sub(previous_page_owned)
+                                    .ok_or_else(|| {
+                                        hold.io().invalid("workflow replay ownership underflow")
+                                    })?,
+                            )?;
                         }
                     }
                     previous_page_owned = 0;
@@ -394,10 +381,9 @@ where
             }
             matched = Some(prior);
         }
-        identities.owned = identities
-            .owned
-            .checked_sub(matched_page_owned)
-            .ok_or_else(|| Error::Invalid("workflow matched custody underflow".into()))?;
+        if let Some(hold) = &mut identities.hold {
+            hold.retain_part(matched_page_owned)?;
+        }
         Ok((revision, matched))
     }
 }

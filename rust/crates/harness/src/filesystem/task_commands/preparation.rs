@@ -12,15 +12,18 @@ where
 {
     pub(super) async fn prepare_fork_command(
         &self,
-        task: TaskId,
-        context: &Arc<TaskContext>,
-        fence: &LeaseFence,
-        command: &WorkflowCommand,
+        CommandInvocation {
+            context,
+            admission,
+            fence,
+            command,
+            reconciliation_only,
+            io,
+        }: CommandInvocation<'_>,
         payload: Value,
-        retained_input: Value,
-        reconciliation_only: bool,
-        io: Option<&PreparationIo>,
     ) -> Result<TaskCommandProgress> {
+        let task = admission.task_id();
+        let retained_input = crate::model::clone_value(&admission.input, io)?;
         let request: ResourcePreparationRequest = mail::decode_command(retained_input, io)?;
         if request.command.as_ref() != Some(command) || request.payload != payload {
             return Err(boundary(
@@ -36,16 +39,17 @@ where
         let preparation: Arc<TaskResourcePreparation> = 'preparation: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = io.and_then(PreparationIo::original_native_work)
-                && reconciliation_only {
-                    let Some(preparation) = self
-                        .runtime
-                        .readonly_fork_preparation_with_native_work(task, context, &request, work)
-                        .await?
-                    else {
-                        return Ok(TaskCommandProgress::Indeterminate);
-                    };
-                    break 'preparation preparation;
-                }
+                && reconciliation_only
+            {
+                let Some(preparation) = self
+                    .runtime
+                    .readonly_fork_preparation_with_native_work(task, context, &request, work)
+                    .await?
+                else {
+                    return Ok(TaskCommandProgress::Indeterminate);
+                };
+                break 'preparation preparation;
+            }
             let owner = self
                 .runtime
                 .task_host()
@@ -74,9 +78,9 @@ where
             }
             Arc::new(preparation)
         };
-        let source = if io.is_none() && self.fork_preparer.is_some() {
+        let source = if let Some(preparer) = self.fork_preparer.as_ref().filter(|_| io.is_none()) {
             super::super::RetainedSourceBinding {
-                preparer: Arc::clone(self.fork_preparer.as_ref().expect("selected preparer")),
+                preparer: Arc::clone(preparer),
                 request: mail::decode_command(preparation.request().payload.clone(), None)?,
             }
         } else {
@@ -134,10 +138,12 @@ where
             ));
         }
         #[cfg(not(target_arch = "wasm32"))]
-        let work = io.map(|io| {
-            io.original_native_work()
-                .expect("dispatch checked original work")
-        });
+        let work = io
+            .map(|io| {
+                io.original_native_work()
+                    .ok_or_else(|| io.invalid("dispatch requires original native work"))
+            })
+            .transpose()?;
         if reconciliation_only {
             let retained = 'retained: {
                 #[cfg(not(target_arch = "wasm32"))]
@@ -147,8 +153,14 @@ where
                         .task_host()
                         .reconcile_admission_with_native_work(admission.operation_id, work)?
                         .await?;
-                    io.expect("native child has observer")
-                        .absorb_native_custody(custody)?;
+                    io.ok_or_else(|| {
+                        crate::executor::stock_boundary(
+                            io,
+                            crate::wire::ErrorCode::Invalid,
+                            "native child has observer",
+                        )
+                    })?
+                    .absorb_native_custody(custody)?;
                     break 'retained retained;
                 }
                 self.runtime
@@ -168,7 +180,13 @@ where
         let result = 'admit: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = work {
-                let io = io.expect("native child has observer");
+                let io = io.ok_or_else(|| {
+                    crate::executor::stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Invalid,
+                        "native child has observer",
+                    )
+                })?;
                 let bytes = (std::mem::size_of::<TaskAdmissionRecord>() as u64)
                     .checked_add(admission.logical_owned_bytes()?)
                     .ok_or_else(|| {
@@ -204,14 +222,17 @@ where
 
     pub(super) async fn task_command(
         &self,
-        task: TaskId,
-        context: &TaskContext,
-        fence: &LeaseFence,
-        command: &WorkflowCommand,
+        CommandInvocation {
+            context,
+            admission,
+            fence,
+            command,
+            reconciliation_only,
+            io,
+        }: CommandInvocation<'_>,
         payload: Value,
-        reconciliation_only: bool,
-        io: Option<&PreparationIo>,
     ) -> Result<TaskCommandProgress> {
+        let task = admission.task_id();
         if command.kind == TASK_ADMIT_COMMAND_KIND {
             let input: TaskAdmitCommand = mail::decode_command(payload, io)?;
             let operation = super::super::recursive::derive_operation(
@@ -224,7 +245,7 @@ where
                 if let Some(io) = io {
                     let _work = io
                         .original_native_work()
-                        .expect("dispatch checked original work");
+                        .ok_or_else(|| io.invalid("dispatch requires original native work"))?;
                     let input_bytes = (std::mem::size_of::<Value>() as u64)
                         .checked_add(crate::executor::json::json_value_logical_owned_bytes(
                             &input.input,
@@ -238,21 +259,29 @@ where
                         })?;
                     let custody = io.take_native_custody(input_bytes)?;
                     io.absorb_native_custody(custody)?;
-                    let (admission, _) = self
-                        .runtime
-                        .harness()
-                        .registered_admission(
-                            operation,
-                            &input.name,
-                            &input.version,
-                            input.input,
-                            Some((task, context.scope())),
-                            None,
-                            Some(io),
-                        )?;
+                    let (admission, _) = self.runtime.harness().registered_admission(
+                        operation,
+                        &input.name,
+                        &input.version,
+                        input.input,
+                        Some((task, context.scope())),
+                        None,
+                        Some(io),
+                    )?;
                     break 'admission admission;
                 }
-                self.runtime.harness().registered_admission(operation, &input.name, &input.version, input.input, Some((task, context.scope())), None, None)?.0
+                self.runtime
+                    .harness()
+                    .registered_admission(
+                        operation,
+                        &input.name,
+                        &input.version,
+                        input.input,
+                        Some((task, context.scope())),
+                        None,
+                        None,
+                    )?
+                    .0
             };
             return self
                 .admit(

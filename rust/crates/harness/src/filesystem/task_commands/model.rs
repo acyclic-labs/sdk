@@ -12,15 +12,20 @@ where
 {
     pub(super) async fn model_command(
         &self,
-        task: TaskId,
-        context: Arc<TaskContext>,
-        fence: &LeaseFence,
-        turn: OperationId,
+        CommandInvocation {
+            context,
+            admission,
+            fence,
+            command: workflow,
+            reconciliation_only,
+            io,
+        }: CommandInvocation<'_>,
         payload: Value,
-        reconciliation_only: bool,
-        io: Option<&PreparationIo>,
-        stock: bool,
     ) -> Result<TaskCommandProgress> {
+        let task = admission.task_id();
+        let context = Arc::clone(context);
+        let turn = workflow.operation_id;
+        let stock = admission.task.name == "acyclic.stock_turn";
         let mut command: ModelTaskCommand = mail::decode_command(payload, io)?;
         let binding = self.model.as_ref().ok_or_else(|| {
             boundary(
@@ -248,7 +253,7 @@ where
         let result: CommittedMailResult = match io {
             Some(io) => crate::filesystem::retain_decoded(
                 io.value_decode_preparation(result, ErrorCode::Unauthorized)?,
-            ),
+            )?,
             None => serde_json::from_value(result.clone())
                 .map_err(|error| Error::Unauthorized(error.to_string()))?,
         };

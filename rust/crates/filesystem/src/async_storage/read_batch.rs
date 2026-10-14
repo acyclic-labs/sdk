@@ -15,7 +15,7 @@ pub async fn read_many_sequential<S: AsyncObjectStore + ?Sized>(
         batch.original = context.original;
     }
     let result = async {
-        batch.check().map_err(authority_object_error)?;
+        batch.check().map_err(crate::ObjectStoreError::from)?;
         if requests.is_empty() {
             return Err(crate::ObjectStoreError::EmptyReadBatch);
         }
@@ -26,18 +26,18 @@ pub async fn read_many_sequential<S: AsyncObjectStore + ?Sized>(
                 items_returned: count,
                 ..WorkCounters::UNCHARGED
             })
-            .map_err(authority_object_error)?;
+            .map_err(crate::ObjectStoreError::from)?;
         batch
             .charge(WorkCounters {
                 items_examined: count,
                 ..WorkCounters::UNCHARGED
             })
-            .map_err(authority_object_error)?;
+            .map_err(crate::ObjectStoreError::from)?;
         let mut values = batch
             .vec_owned(requests.len())
-            .map_err(authority_object_error)?;
+            .map_err(crate::ObjectStoreError::from)?;
         for request in requests {
-            let mut read_work = batch.operation().map_err(authority_object_error)?;
+            let mut read_work = batch.operation().map_err(crate::ObjectStoreError::from)?;
             let read = store
                 .read(request.object_id, request.maximum_bytes, &mut read_work)
                 .await;
@@ -62,13 +62,13 @@ pub async fn read_many_sequential<S: AsyncObjectStore + ?Sized>(
             }
             values.0.push(read?);
         }
-        batch.check().map_err(authority_object_error)?;
+        batch.check().map_err(crate::ObjectStoreError::from)?;
         batch
             .charge(WorkCounters {
                 items_returned: count,
                 ..WorkCounters::UNCHARGED
             })
-            .map_err(authority_object_error)?;
+            .map_err(crate::ObjectStoreError::from)?;
         Ok(values)
     }
     .await;
@@ -78,13 +78,17 @@ pub async fn read_many_sequential<S: AsyncObjectStore + ?Sized>(
     result
 }
 
-fn authority_object_error(error: crate::AuthorityStoreError) -> crate::ObjectStoreError {
-    match error {
-        crate::AuthorityStoreError::Work(error) => crate::ObjectStoreError::Work(error),
-        crate::AuthorityStoreError::Cancelled => crate::ObjectStoreError::Cancelled,
-        #[cfg(not(target_arch = "wasm32"))]
-        crate::AuthorityStoreError::NativeOriginal(error) => crate::ObjectStoreError::Native(error),
-        _ => crate::ObjectStoreError::SdkAllocationFailed,
+impl From<crate::AuthorityStoreError> for crate::ObjectStoreError {
+    fn from(error: crate::AuthorityStoreError) -> Self {
+        match error {
+            crate::AuthorityStoreError::Work(error) => crate::ObjectStoreError::Work(error),
+            crate::AuthorityStoreError::Cancelled => crate::ObjectStoreError::Cancelled,
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::AuthorityStoreError::NativeOriginal(error) => {
+                crate::ObjectStoreError::Native(error)
+            }
+            _ => crate::ObjectStoreError::SdkAllocationFailed,
+        }
     }
 }
 

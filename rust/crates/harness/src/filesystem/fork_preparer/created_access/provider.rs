@@ -65,17 +65,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let name = allocation
             .volume
             .storage_name(&mut Some(&mut io.history_io()))?;
+        let suffix = name
+            .strip_prefix("harness-")
+            .ok_or_else(|| io.invalid("content namespace has no harness prefix"))?;
         let read = crate::executor::with_history_io(Some(io), |work| {
-            crate::executor::preparation_format(
-                format_args!("volume:read:{}", &name["harness-".len()..]),
-                work,
-            )
+            crate::executor::preparation_format(format_args!("volume:read:{suffix}"), work)
         })?;
         let write = crate::executor::with_history_io(Some(io), |work| {
-            crate::executor::preparation_format(
-                format_args!("volume:write:{}", &name["harness-".len()..]),
-                work,
-            )
+            crate::executor::preparation_format(format_args!("volume:write:{suffix}"), work)
         })?;
         let id = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(
@@ -127,10 +124,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             prepared_generation: allocation.prepared_generation,
         });
         Arc::get_mut(&mut reader)
-            .expect("new reader is uniquely owned")
+            .ok_or_else(|| io.invalid("new content reader has aliases"))?
             .creation = Some(creation.clone());
         Arc::get_mut(&mut writer)
-            .expect("new writer is uniquely owned")
+            .ok_or_else(|| io.invalid("new content writer has aliases"))?
             .creation = Some(creation.clone());
         let count = allocation.reference_files.len();
         let operations = Vec::new();

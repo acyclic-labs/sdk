@@ -177,7 +177,7 @@ pub fn decode_attachment_manifest(
         if item_count.is_some_and(|count| decoded.0.len() != count as usize) {
             return Err(io.invalid("attachment manifest count is incomplete"));
         }
-        return Ok(crate::filesystem::retain_decoded(decoded));
+        return crate::filesystem::retain_decoded(decoded);
     }
     let items: Vec<Attachment> = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Invalid(format!("attachment manifest is invalid: {error}")))?;

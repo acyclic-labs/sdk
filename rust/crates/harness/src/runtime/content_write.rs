@@ -189,7 +189,7 @@ impl TaskContext {
         let (file, hold) = output;
         #[cfg(feature = "filesystem")]
         if let Some(hold) = hold {
-            hold.into_retained();
+            hold.into_retained()?;
         }
         #[cfg(not(feature = "filesystem"))]
         let _ = hold;

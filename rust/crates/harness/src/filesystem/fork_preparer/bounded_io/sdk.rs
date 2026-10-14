@@ -126,8 +126,7 @@ pub(in crate::filesystem) fn generation_ref(
             None,
             quota.work(),
         )?;
-        let reference =
-            crate::resources::GenerationRef::from_resource(resource, quota.work())?;
+        let reference = crate::resources::GenerationRef::from_resource(resource, quota.work())?;
         quota.transfer();
         Ok(reference)
     })
@@ -200,7 +199,8 @@ pub(in crate::filesystem) async fn retain<A: AsyncAuthorityStore, O: AsyncObject
     let mut label = [0_u8; 83];
     label[..19].copy_from_slice(b"harness-generation-");
     label[19..].copy_from_slice(hex.as_bytes());
-    let label = std::str::from_utf8(&label).expect("ASCII generation identity");
+    let label = std::str::from_utf8(&label)
+        .map_err(|error| LazyError::WorkspaceCause(WorkspaceError::Path(error.to_string())))?;
     let Some(io) = io else {
         return generation
             .pin(label, WorkBudget::UNBOUNDED, &CancellationToken::new())

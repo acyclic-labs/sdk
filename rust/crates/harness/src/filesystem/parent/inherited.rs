@@ -195,70 +195,72 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let reject = |reason| stock_boundary(io, crate::wire::ErrorCode::Invalid, reason);
         let count = usize::try_from(through_sequence)
             .map_err(|_| reject("inherited prefix is too large"))?;
-        let records_hold;
-        let mut records = Vec::new();
-        let mut manifests = Vec::new();
-        let mut manifest_bytes = 0_u64;
-        for message in history.messages.iter().take(count) {
-            crate::model::charge_items(io, 1)?;
-            insert_reference(&mut records, &message.content, None, child_agent, io)?;
-            for file in message.extensions.values() {
-                insert_reference(&mut records, file, None, child_agent, io)?;
-            }
-            match &message.attachments {
-                ReferencedAttachments::Inline { items } => {
-                    for item in items {
-                        insert_reference(&mut records, &item.file, None, child_agent, io)?;
-                    }
+        let (records_hold, records, manifests) = {
+            let mut records = Vec::new();
+            let mut manifests = Vec::new();
+            let mut manifest_bytes = 0_u64;
+            for message in history.messages.iter().take(count) {
+                crate::model::charge_items(io, 1)?;
+                insert_reference(&mut records, &message.content, None, child_agent, io)?;
+                for file in message.extensions.values() {
+                    insert_reference(&mut records, file, None, child_agent, io)?;
                 }
-                ReferencedAttachments::Manifest {
-                    manifest,
-                    item_count,
-                } => {
-                    manifest_bytes = manifest_bytes
-                        .checked_add(manifest.descriptor().byte_length())
-                        .ok_or_else(|| reject("inherited manifests exceed byte limit"))?;
-                    if manifest_bytes > maximum_bytes {
-                        return Err(reject("inherited attachment manifest exceeds limit"));
-                    }
-                    let (items, _items_hold) =
-                        crate::conversation::load_manifest(resolver, manifest, *item_count, io)
-                            .await?;
-                    if items.len() != *item_count as usize {
-                        return Err(reject("inherited attachment manifest count mismatch"));
-                    }
-                    insert_reference(&mut records, manifest, None, child_agent, io)?;
-                    let mut present = false;
-                    for existing in &manifests {
-                        crate::model::charge_items(io, 1)?;
-                        if existing == manifest {
-                            present = true;
-                            break;
+                match &message.attachments {
+                    ReferencedAttachments::Inline { items } => {
+                        for item in items {
+                            insert_reference(&mut records, &item.file, None, child_agent, io)?;
                         }
                     }
-                    if !present {
-                        let copy =
-                            crate::executor::with_history_io(io, |work| manifest.copy(work))?;
-                        crate::executor::stock_vec_push(&mut manifests, copy, io)?;
-                    }
-                    for item in &items {
-                        insert_reference(
-                            &mut records,
-                            &item.file,
-                            Some(manifest),
-                            child_agent,
-                            io,
-                        )?;
+                    ReferencedAttachments::Manifest {
+                        manifest,
+                        item_count,
+                    } => {
+                        manifest_bytes = manifest_bytes
+                            .checked_add(manifest.descriptor().byte_length())
+                            .ok_or_else(|| reject("inherited manifests exceed byte limit"))?;
+                        if manifest_bytes > maximum_bytes {
+                            return Err(reject("inherited attachment manifest exceeds limit"));
+                        }
+                        let (items, _items_hold) =
+                            crate::conversation::load_manifest(resolver, manifest, *item_count, io)
+                                .await?;
+                        if items.len() != *item_count as usize {
+                            return Err(reject("inherited attachment manifest count mismatch"));
+                        }
+                        insert_reference(&mut records, manifest, None, child_agent, io)?;
+                        let mut present = false;
+                        for existing in &manifests {
+                            crate::model::charge_items(io, 1)?;
+                            if existing == manifest {
+                                present = true;
+                                break;
+                            }
+                        }
+                        if !present {
+                            let copy =
+                                crate::executor::with_history_io(io, |work| manifest.copy(work))?;
+                            crate::executor::stock_vec_push(&mut manifests, copy, io)?;
+                        }
+                        for item in &items {
+                            insert_reference(
+                                &mut records,
+                                &item.file,
+                                Some(manifest),
+                                child_agent,
+                                io,
+                            )?;
+                        }
                     }
                 }
+                if records.len() > maximum_references {
+                    return Err(reject("inherited reference count exceeds limit"));
+                }
             }
-            if records.len() > maximum_references {
-                return Err(reject("inherited reference count exceeds limit"));
-            }
-        }
-        records_hold = io
-            .map(|io| io.guard_owned(grant_bytes(&records)?))
-            .transpose()?;
+            let records_hold = io
+                .map(|io| io.guard_owned(grant_bytes(&records)?))
+                .transpose()?;
+            (records_hold, records, manifests)
+        };
         if io.is_some() {
             for record in &records {
                 resolver.verify(&record.file, maximum_bytes, io)?.await?;
@@ -269,7 +271,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             if *reader == child_agent {
                 return Err(reject("inherited readers are duplicated"));
             }
-            for prior in &attached_agents[..index] {
+            for prior in attached_agents.iter().take(index) {
                 crate::model::charge_items(io, 1)?;
                 if prior == reader {
                     return Err(reject("inherited readers are duplicated"));
@@ -332,16 +334,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         continuation_keys: &[IdempotencyKey],
         archived_history: Option<&crate::conversation::ConversationState>,
         io: Option<&PreparationIo>,
-        preparation: Option<&crate::resource_preparation::TaskResourcePreparation>,
-        #[cfg(not(target_arch = "wasm32"))] native_creation_guard: Option<
-            &Arc<crate::resource_preparation::TaskResourcePreparation>,
-        >,
+        preparation: Option<&Arc<crate::resource_preparation::TaskResourcePreparation>>,
     ) -> Result<InheritedContextCapture> {
         #[cfg(not(target_arch = "wasm32"))]
         let native = io.and_then(PreparationIo::original_native_work);
         #[cfg(not(target_arch = "wasm32"))]
         if native.is_some() {
-            native_creation_guard
+            preparation
                 .ok_or_else(|| {
                     stock_boundary(
                         io,
@@ -386,7 +385,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             ));
         }
         for (index, agent) in attached_agents.iter().enumerate() {
-            for prior in &attached_agents[..index] {
+            for prior in attached_agents.iter().take(index) {
                 crate::model::charge_items(io, 1)?;
                 if prior == agent {
                     return Err(stock_boundary(
@@ -455,21 +454,19 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         })?;
         let workspace =
             fork_preparer_io::content_workspace(&self.host.provider, child_private, io)?;
-        let committed = if let Some(prior) =
-            (self.host).operation_generation(&workspace, idempotency_key, io)
-                .await?
+        let committed = if let Some(prior) = (self.host)
+            .operation_generation(&workspace, idempotency_key, io)
+            .await?
         {
             let original = fork_preparer_io::generation_ref(&self.host.provider, prior.id(), io)?;
-            let head = (self.host).resolve(&workspace, io)
-                .await?
-                .generation;
+            let head = (self.host).resolve(&workspace, io).await?.generation;
             if head != original {
                 let mut continued = false;
                 for key in continuation_keys {
                     crate::model::charge_items(io, 1)?;
-                    if let Some(generation) =
-                        (self.host).operation_generation(&workspace, key, io)
-                            .await?
+                    if let Some(generation) = (self.host)
+                        .operation_generation(&workspace, key, io)
+                        .await?
                         && fork_preparer_io::generation_ref(
                             &self.host.provider,
                             generation.id(),
@@ -490,9 +487,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             }
             prior
         } else {
-            let initial = (self.host).resolve(&workspace, io)
-                .await?
-                .generation;
+            let initial = (self.host).resolve(&workspace, io).await?.generation;
             if &initial != initial_generation {
                 return Err(stock_boundary(
                     io,
@@ -500,18 +495,26 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     "child private volume is not fresh",
                 ));
             }
-            (self.host).apply_generation(&workspace, Some(&initial), &[
-                    WorkspaceMutation::CreateDirectory {
-                        path: stock_string_copy("/.system/inherited-conversation", io)?,
-                    },
-                    WorkspaceMutation::PutFile {
-                        path: crate::executor::with_history_io(io, |work| {
-                            crate::executor::preparation_format(format_args!("/{path}"), work)
-                        })?,
-                        bytes: bytes.clone(),
-                    },
-                ], IdempotencyKey(stock_string_copy(idempotency_key.as_str(), io)?), io, preparation)
-            .await?
+            (self.host)
+                .apply_generation(
+                    &workspace,
+                    Some(&initial),
+                    &[
+                        WorkspaceMutation::CreateDirectory {
+                            path: stock_string_copy("/.system/inherited-conversation", io)?,
+                        },
+                        WorkspaceMutation::PutFile {
+                            path: crate::executor::with_history_io(io, |work| {
+                                crate::executor::preparation_format(format_args!("/{path}"), work)
+                            })?,
+                            bytes: bytes.clone(),
+                        },
+                    ],
+                    IdempotencyKey(stock_string_copy(idempotency_key.as_str(), io)?),
+                    io,
+                    preparation,
+                )
+                .await?
         };
         let generation = fork_preparer_io::generation_ref(&self.host.provider, committed.id(), io)?;
         fork_preparer_io::retain(&committed, io).await?;

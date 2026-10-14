@@ -20,104 +20,6 @@ pub struct Checkout<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
-    fn checkout_roots_with_accounting(
-        &self,
-        generation_root: ObjectId,
-        root: (GenerationRoot, KernelOwnedAllocation),
-        accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<
-        (
-            GenerationRoot,
-            crate::collection::CheckoutRoots,
-            DependencyLedger,
-            u64,
-        ),
-        FsError,
-    > {
-        let (root, allocation) = root;
-        let custody = Checkout::<A, O>::checkout_custody(accounting, cancellation)?;
-        let captured_bytes = usize_to_u64(CheckoutDependencies::empty_logical_owned_bytes());
-        let _captured_allocation = accounting.claim_owned(captured_bytes, 1)?;
-        let captured = CheckoutDependencies::new(
-            std::iter::empty(),
-            std::iter::empty(),
-            self.config.limits.maximum_checkout_dependencies,
-        )?;
-        let proof_bytes = usize_to_u64(size_of::<Mutex<Proof>>());
-        let _proof_allocation = accounting.claim_owned(proof_bytes, 1)?;
-        let (base_root, root, dependencies) = match allocation {
-            #[cfg(not(target_arch = "wasm32"))]
-            KernelOwnedAllocation::NativeOriginal(mut root_allocation) => {
-                let original = accounting
-                    .native_work()
-                    .ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?;
-                let witness = original.checkout_control_sink(&custody)?;
-                let working = root_allocation.transfer_checkout_control(&custody, &witness)?;
-                let mut captured_control = native_pinned_allocation(_captured_allocation)?
-                    .transfer_checkout_control(&custody, &witness)?;
-                let mut captured = captured;
-                assert!(
-                    captured.attach_fresh_paid_control(&mut captured_control),
-                    "fresh checkout owns its dependency map"
-                );
-                let proof_control = native_pinned_allocation(_proof_allocation)?
-                    .transfer_checkout_control(&custody, &witness)?;
-                let mut dependencies =
-                    DependencyLedger::new_with_native_custody(captured, custody, proof_control);
-                let (base, control) = crate::collection::clone_generation_root(
-                    &root,
-                    accounting,
-                    Some(&dependencies.data_custody),
-                )?;
-                dependencies.base_root_control = control;
-                let root = crate::collection::CheckoutRoots::new(
-                    self.fs.inner.objects.collection(),
-                    self.config,
-                    generation_root,
-                    (root, working),
-                    accounting,
-                    Some(&dependencies.data_custody),
-                )?;
-                (base, root, dependencies)
-            }
-            KernelOwnedAllocation::Standalone => {
-                #[cfg(not(target_arch = "wasm32"))]
-                drop((_captured_allocation, _proof_allocation));
-                let mut dependencies =
-                    DependencyLedger::sharing_with_custody(Proof::new(captured), custody);
-                dependencies.proof().control =
-                    ProofDataClaim::control(&dependencies.data_custody, proof_bytes);
-                assert!(
-                    dependencies
-                        .proof()
-                        .dependencies
-                        .attach_fresh_control_custody(&dependencies.data_custody),
-                    "fresh checkout owns its dependency map"
-                );
-                let (base, _allocation) =
-                    crate::collection::clone_generation_root_with_accounting(&root, accounting)?;
-                dependencies.base_root_control =
-                    ProofDataClaim::control(&dependencies.data_custody, root_parent_bytes(&base)?);
-                let mut root = crate::collection::CheckoutRoots::new(
-                    self.fs.inner.objects.collection(),
-                    self.config,
-                    generation_root,
-                    (root, ProofDataClaim::default()),
-                    accounting,
-                    None,
-                )?;
-                root.attach_control_custody(&dependencies.data_custody);
-                (base, root, dependencies)
-            }
-        };
-        let proof_owned_bytes = captured_bytes
-            .checked_add(proof_bytes)
-            .and_then(|bytes| bytes.checked_add(size_of::<ProofDataCustody>() as u64))
-            .ok_or(WorkError::Overflow)?;
-        Ok((base_root, root, dependencies, proof_owned_bytes))
-    }
-
     /// Opens one authenticated checkout under the supplied work limits.
     pub async fn checkout<W: FsWork>(
         &self,
@@ -166,13 +68,90 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
                     }
                 });
             }
-            let (base_root, root, dependencies, proof_owned_bytes) = self
-                .checkout_roots_with_accounting(
-                    generation_root,
-                    (root, allocation),
-                    &mut accounting,
-                    cancellation,
-                )?;
+            let custody = Checkout::<A, O>::checkout_custody(&mut accounting, cancellation)?;
+            let captured_bytes = usize_to_u64(CheckoutDependencies::empty_logical_owned_bytes());
+            let captured_allocation = accounting.claim_owned(captured_bytes, 1)?;
+            let captured = CheckoutDependencies::new(
+                std::iter::empty(),
+                std::iter::empty(),
+                self.config.limits.maximum_checkout_dependencies,
+            )?;
+            let proof_bytes = usize_to_u64(size_of::<Mutex<Proof>>());
+            let proof_allocation = accounting.claim_owned(proof_bytes, 1)?;
+            let (base_root, root, dependencies) = match allocation {
+                #[cfg(not(target_arch = "wasm32"))]
+                KernelOwnedAllocation::NativeOriginal(mut root_allocation) => {
+                    let original = accounting
+                        .native_work()
+                        .ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?;
+                    let witness = original.checkout_control_sink(&custody)?;
+                    let working = root_allocation.transfer_checkout_control(&custody, &witness)?;
+                    let mut captured_control = native_pinned_allocation(captured_allocation)?
+                        .transfer_checkout_control(&custody, &witness)?;
+                    let mut captured = captured;
+                    assert!(
+                        captured.attach_fresh_paid_control(&mut captured_control),
+                        "fresh checkout owns its dependency map"
+                    );
+                    let proof_control = native_pinned_allocation(proof_allocation)?
+                        .transfer_checkout_control(&custody, &witness)?;
+                    let mut dependencies =
+                        DependencyLedger::new_with_native_custody(captured, custody, proof_control);
+                    let (base, control) = crate::collection::clone_generation_root(
+                        &root,
+                        &mut accounting,
+                        Some(&dependencies.data_custody),
+                    )?;
+                    dependencies.base_root_control = control;
+                    let root = crate::collection::CheckoutRoots::new(
+                        self.fs.inner.objects.collection(),
+                        self.config,
+                        generation_root,
+                        (root, working),
+                        &mut accounting,
+                        Some(&dependencies.data_custody),
+                    )?;
+                    (base, root, dependencies)
+                }
+                KernelOwnedAllocation::Standalone => {
+                    let (_captured_allocation, _proof_allocation) =
+                        (captured_allocation, proof_allocation);
+                    let mut dependencies =
+                        DependencyLedger::sharing_with_custody(Proof::new(captured), custody);
+                    dependencies.proof().control =
+                        ProofDataClaim::control(&dependencies.data_custody, proof_bytes);
+                    assert!(
+                        dependencies
+                            .proof()
+                            .dependencies
+                            .attach_fresh_control_custody(&dependencies.data_custody),
+                        "fresh checkout owns its dependency map"
+                    );
+                    let (base, _allocation) =
+                        crate::collection::clone_generation_root_with_accounting(
+                            &root,
+                            &mut accounting,
+                        )?;
+                    dependencies.base_root_control = ProofDataClaim::control(
+                        &dependencies.data_custody,
+                        root_parent_bytes(&base)?,
+                    );
+                    let mut root = crate::collection::CheckoutRoots::new(
+                        self.fs.inner.objects.collection(),
+                        self.config,
+                        generation_root,
+                        (root, ProofDataClaim::default()),
+                        &mut accounting,
+                        None,
+                    )?;
+                    root.attach_control_custody(&dependencies.data_custody);
+                    (base, root, dependencies)
+                }
+            };
+            let proof_owned_bytes = captured_bytes
+                .checked_add(proof_bytes)
+                .and_then(|bytes| bytes.checked_add(size_of::<ProofDataCustody>() as u64))
+                .ok_or(WorkError::Overflow)?;
             accounting.check()?;
             Ok(Checkout {
                 volume: self.clone(),
@@ -300,23 +279,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         cancellation: &CancellationToken,
     ) -> Result<(), FsError> {
         let before = readonly_standalone_live(accounting);
-        let (root, _allocation) = read_generation_root_with_accounting(
-            &self.volume.fs.inner.objects,
-            generation_root,
-            self.volume.config,
-            accounting,
-            cancellation,
-        )
-        .await?;
-        readonly_cleanup_standalone(accounting, before, root_parent_bytes(&root)?)?;
-        if root.volume_id != self.volume.id {
-            return Err(FsError::VolumeMismatch);
+        {
+            let (root, _allocation) = read_generation_root_with_accounting(
+                &self.volume.fs.inner.objects,
+                generation_root,
+                self.volume.config,
+                accounting,
+                cancellation,
+            )
+            .await?;
+            readonly_cleanup_standalone(accounting, before, root_parent_bytes(&root)?)?;
+            if root.volume_id != self.volume.id {
+                return Err(FsError::VolumeMismatch);
+            }
+            let prepared =
+                self.prepare_root_replacement(&root, &root, accounting, cancellation, None)?;
+            self.install_root_replacement(generation_root, root, prepared);
         }
-        let prepared =
-            self.prepare_root_replacement(&root, &root, accounting, cancellation, None)?;
-        self.install_root_replacement(generation_root, root, prepared);
-        #[cfg(not(target_arch = "wasm32"))]
-        drop(_allocation);
         self.generation_root = generation_root;
         self.dependencies.proof().clear();
         Ok(())

@@ -81,12 +81,24 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
         let owner = self
             .source
             .as_ref()
-            .expect("authorized source")
+            .ok_or_else(|| {
+                recursive_reject(
+                    io,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "authorized source",
+                )
+            })?
             .owner(context, cancellation, io)
             .await?;
-        let caller = context.durable_task_id().expect("authorized caller");
+        let caller = context.durable_task_id().ok_or_else(|| {
+            recursive_reject(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "authorized caller",
+            )
+        })?;
         {
-            let temporary = recursive_temporary_io(io)?;
+            let temporary = crate::filesystem::PreparationIo::temporary(io)?;
             let admission = owner
                 .0
                 .admission_observed(caller, temporary.as_ref())
@@ -108,7 +120,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             .0
             .owner_observed(caller, owner.1.task_binding().1, false, io)
             .await?;
-        let temporary = recursive_temporary_io(io)?;
+        let temporary = crate::filesystem::PreparationIo::temporary(io)?;
         let plan = self
             .pinned_plan(
                 context,
@@ -159,7 +171,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
 impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     ToolExecutor for RecursiveExecutor<P, A, O>
 {
-        fn authorize(
+    fn authorize(
         &self,
         _scope: Option<&RuntimeScope>,
         context: Option<&ToolContext>,
@@ -169,19 +181,24 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
         let context = context.ok_or_else(|| {
             #[cfg(not(target_arch = "wasm32"))]
             if work.is_some() {
-                return Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "recursive tools require the original durable context" };
+                return Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "recursive tools require the original durable context",
+                };
             }
             Error::Unauthorized("recursive tools require the original durable context".into())
         })?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = work {
-            return self.check_authority(context, invocation, Some(&PreparationIo::from_native_work(work)?));
+            return self.check_authority(
+                context,
+                invocation,
+                Some(&PreparationIo::from_native_work(work)?),
+            );
         }
         let _ = work;
         self.check_authority(context, invocation, None)
     }
-
-
 
     fn execute<'a>(
         &'a self,

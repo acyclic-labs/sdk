@@ -169,12 +169,14 @@ impl Producer {
             self.stream.clone(),
             self.files.clone(),
             &caller.binding.authority,
-            &verifier,
             &SchemaRegistry::default(),
-            &caller.binding.scope,
-            &caller.private,
-            PAYLOAD_BYTES,
-            None,
+            acyclic_harness::filesystem::FilesystemJournalBinding {
+                volume: &caller.private,
+                verifier: &verifier,
+                scope: &caller.binding.scope,
+                maximum_bytes: PAYLOAD_BYTES,
+                io: None,
+            },
         )?
         .open(
             OperationId::new(),

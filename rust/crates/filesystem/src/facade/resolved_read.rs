@@ -153,12 +153,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                         )
                     });
                 }
-                let results = stream::iter(reads.value)
-                    .buffer_unordered(concurrency.min(requests.len().max(1)))
-                    .collect::<Vec<_>>()
-                    .await;
-                #[cfg(not(target_arch = "wasm32"))]
-                drop(reads.allocation);
+                let results = {
+                    let Owned {
+                        value: reads,
+                        allocation: _allocation,
+                        ..
+                    } = reads;
+                    stream::iter(reads)
+                        .buffer_unordered(concurrency.min(requests.len().max(1)))
+                        .collect::<Vec<_>>()
+                        .await
+                };
                 let result = order_batch_results(results, WorkBudget::UNBOUNDED);
                 let work = match &result {
                     Ok(receipt) => receipt.work,

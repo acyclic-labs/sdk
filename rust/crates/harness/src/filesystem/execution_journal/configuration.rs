@@ -37,18 +37,20 @@ where
     }
 
     /// Binds the execution to the task's exact lease and coordinator provider.
-    #[allow(clippy::too_many_arguments)]
     pub fn for_task(
         owner: TaskJournalOwner<P>,
         operation_id: OperationId,
         turn_operation: OperationId,
         host: Arc<FilesystemHost<A, O>>,
-        volume: &VolumeRef,
-        verifier: &AuthorityVerifier,
-        scope: &Scope,
-        maximum_payload_bytes: u64,
-        io: Option<&PreparationIo>,
+        binding: super::super::FilesystemJournalBinding<'_>,
     ) -> Result<Self> {
+        let super::super::FilesystemJournalBinding {
+            volume,
+            verifier,
+            scope,
+            maximum_bytes: maximum_payload_bytes,
+            io,
+        } = binding;
         let mut observer = io.map(PreparationIo::history_io);
         let mut work = observer
             .as_mut()
@@ -57,12 +59,14 @@ where
         let mut journal = Self::new(
             owner.stream(),
             host,
-            volume,
-            verifier,
             &SchemaRegistry::new(),
-            scope,
-            maximum_payload_bytes,
-            io,
+            super::super::FilesystemJournalBinding {
+                volume,
+                verifier,
+                scope,
+                maximum_bytes: maximum_payload_bytes,
+                io,
+            },
         )?;
         journal.owner = Some((owner, operation_id));
         journal.execution = Some((operation_id, turn_operation));
@@ -111,7 +115,7 @@ where
             .map_err(Error::from)?;
         self._native_metadata
             .as_mut()
-            .expect("original funded metadata checked")
+            .ok_or_else(|| io.invalid("original funded journal metadata is missing"))?
             .absorb(&mut body)
             .map_err(|cause| Error::NativeWork {
                 cause,
@@ -141,17 +145,19 @@ where
     }
 
     /// Binds the pinned extension registry with optional original preparation IO.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         stream: Arc<P>,
         host: Arc<FilesystemHost<A, O>>,
-        volume: &VolumeRef,
-        verifier: &AuthorityVerifier,
         schemas: &SchemaRegistry,
-        scope: &Scope,
-        maximum_payload_bytes: u64,
-        io: Option<&PreparationIo>,
+        binding: super::super::FilesystemJournalBinding<'_>,
     ) -> Result<Self> {
+        let super::super::FilesystemJournalBinding {
+            volume,
+            verifier,
+            scope,
+            maximum_bytes: maximum_payload_bytes,
+            io,
+        } = binding;
         #[cfg(not(target_arch = "wasm32"))]
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let invalid = |reason: &'static str| {
@@ -203,12 +209,14 @@ where
                 stream.clone(),
                 Arc::clone(&host),
                 verifier.audience(),
-                &verifier,
                 &schemas,
-                &scope,
-                &volume,
-                maximum_payload_bytes,
-                io,
+                crate::filesystem::FilesystemJournalBinding {
+                    volume: &volume,
+                    verifier: &verifier,
+                    scope: &scope,
+                    maximum_bytes: maximum_payload_bytes,
+                    io,
+                },
             )?),
             crate::core::AggregateKind::Task => None,
             _ => unreachable!("execution authority validated before assembly"),
@@ -216,13 +224,7 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         let _native_metadata = io
             .filter(|io| io.original_native_work().is_some())
-            .map(|io| {
-                io.take_native_custody(
-                    io.owned_bytes()?
-                        .checked_sub(before)
-                        .ok_or_else(|| io.invalid("execution journal custody underflows"))?,
-                )
-            })
+            .map(|io| io.take_native_custody(io.owned_since(before)?))
             .transpose()?;
         Ok(Self {
             stream,
@@ -287,12 +289,14 @@ where
             Arc::clone(&self.stream),
             Arc::clone(&self.host),
             verifier.audience(),
-            verifier,
             schemas,
-            scope,
-            private_volume,
-            self.maximum_payload_bytes,
-            io,
+            crate::filesystem::FilesystemJournalBinding {
+                volume: private_volume,
+                verifier,
+                scope,
+                maximum_bytes: self.maximum_payload_bytes,
+                io,
+            },
         )?);
         Ok(self)
     }

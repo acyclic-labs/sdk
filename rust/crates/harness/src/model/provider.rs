@@ -88,7 +88,7 @@ impl ModelEvent {
     /// Decodes a paid SDK event from borrowed provider bytes.
     pub fn decode_with_native_work(bytes: &[u8], work: &NativeMaterializationWork) -> Result<(Self, NativeAllocation)> {
         let io = PreparationIo::from_native_work(work)?;
-        let event = crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<Self>, bytes, Storage)?);
+        let event = crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<Self>, bytes, Storage)?)?;
         let retained = event.logical_owned_bytes()?;
         Ok((event, io.into_native_custody(retained)?))
     }

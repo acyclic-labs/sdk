@@ -3,6 +3,21 @@ use super::*;
 use crate::executor::json::{JsonBounds, JsonCodecCharge as Charge, JsonValueSchema as Schema};
 use std::mem::size_of;
 
+pub(in crate::filesystem) fn decode_record<T: PreparationRecord>(
+    bytes: &[u8],
+    io: Option<&PreparationIo>,
+) -> Result<T> {
+    match io {
+        Some(io) => retain_decoded(io.decode(
+            std::marker::PhantomData::<T>,
+            bytes,
+            crate::wire::ErrorCode::Storage,
+        )?),
+        None => crate::contract::json_from_slice(bytes)
+            .map_err(|error| Error::Storage(error.to_string())),
+    }
+}
+
 impl PreparationIo {
     fn bounds(&self, bytes: u64, depth: u32) -> Result<JsonBounds> {
         Ok(JsonBounds {
@@ -142,7 +157,7 @@ impl PreparationIo {
             },
         )?;
         decoded.1.substitute(decoded.0.logical_owned_bytes()?)?;
-        Ok(retain_decoded(decoded))
+        retain_decoded(decoded)
     }
 
     pub(crate) fn decode<'a, 'de, T: PreparationRecord>(
@@ -197,7 +212,7 @@ impl PreparationIo {
             &mut |charge| self.codec_charge(charge, false),
         );
         let value = finish_encoding(diagnostics, result)?;
-        held.into_retained();
+        held.into_retained()?;
         Ok(value)
     }
 
@@ -253,7 +268,7 @@ impl PreparationIo {
             .checked_add(decoded.0.logical_owned_bytes()?)
             .ok_or_else(|| decode_allowance_error("typed Value ownership overflow", Some(code)))?;
         decoded.1.substitute(actual)?;
-        Ok(retain_decoded(decoded))
+        retain_decoded(decoded)
     }
 
     pub(crate) fn value_decode_preparation<T: PreparationRecord>(
@@ -387,8 +402,12 @@ pub(in crate::filesystem) fn hex_key(bytes: &[u8], io: Option<&PreparationIo>) -
     text.try_reserve_exact(capacity)
         .map_err(Error::Allocation)?;
     for byte in bytes {
-        text.push(b"0123456789abcdef"[(byte >> 4) as usize] as char);
-        text.push(b"0123456789abcdef"[(byte & 15) as usize] as char);
+        for nibble in [byte >> 4, byte & 15] {
+            let digit = b"0123456789abcdef"
+                .get(usize::from(nibble))
+                .ok_or_else(|| io.invalid("hexadecimal nibble is out of range"))?;
+            text.push(char::from(*digit));
+        }
     }
     io.retain_owned((text.capacity() - capacity) as u64)?;
     io.charge(copied)?;

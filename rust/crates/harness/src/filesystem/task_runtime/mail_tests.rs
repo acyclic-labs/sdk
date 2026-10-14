@@ -29,7 +29,7 @@ async fn native_stock_mail_command_uses_original_atomic_v3_send_and_custody() ->
         acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024),
         &cancellation,
     )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work: work })?;
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&work)?;
     let runtime = fixture.runtime(Some(&io)).await?;
     let (lease, custody) = fixture
@@ -66,14 +66,14 @@ async fn native_stock_mail_command_uses_original_atomic_v3_send_and_custody() ->
         crate::filesystem::retain_decoded(io.value_decode_preparation::<WorkflowCommand>(
             &session.checkpoint().state["command"],
             crate::wire::ErrorCode::Storage,
-        )?);
+        )?)?;
     drop(session);
     let body = context.read_file(&command.payload, Some(&io)).await?;
     let command_payload = crate::filesystem::retain_decoded(io.decode(
         std::marker::PhantomData::<Value>,
         &body,
         crate::wire::ErrorCode::Storage,
-    )?);
+    )?)?;
     drop(body);
     let progress = runtime
         .commands()

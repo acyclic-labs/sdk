@@ -39,12 +39,15 @@ where
         let journal = FilesystemWorkflowJournal::for_task(
             Arc::clone(&owner),
             Arc::clone(&self.filesystem),
-            &self.volume,
-            &self.verifier,
-            &self.signed,
-            self.maximum_payload_bytes
-                .min(owner.input_limits().file_bytes),
-            Some(&super::super::PreparationIo::from_native_work(work)?),
+            crate::filesystem::FilesystemJournalBinding {
+                volume: &self.volume,
+                verifier: &self.verifier,
+                scope: &self.signed,
+                maximum_bytes: self
+                    .maximum_payload_bytes
+                    .min(owner.input_limits().file_bytes),
+                io: Some(&super::super::PreparationIo::from_native_work(work)?),
+            },
         )?;
         self.harness
             .open_registered_task(task, fence, journal, Some(context))

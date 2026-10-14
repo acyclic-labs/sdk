@@ -30,7 +30,7 @@ pub(super) fn decode_command<T: PreparationRecord>(
             io.check_json_byte_bound(&payload, acyclic_stream::MAX_RECORD_BYTES as u64)?;
             Ok(crate::filesystem::retain_decoded(
                 io.value_decode_preparation(&payload, crate::wire::ErrorCode::Storage)?,
-            ))
+            )?)
         }
         None => serde_json::from_value(payload)
             .map_err(|cause| Error::Invalid(format!("invalid stock command: {cause}"))),
@@ -59,14 +59,18 @@ where
 {
     pub(super) async fn mail_command(
         &self,
-        task: TaskId,
-        fence: &LeaseFence,
-        command: &WorkflowCommand,
+        CommandInvocation {
+            admission,
+            fence,
+            command,
+            reconciliation_only,
+            io,
+            ..
+        }: CommandInvocation<'_>,
         payload: Value,
-        io: Option<&PreparationIo>,
-        select_only: bool,
-        reconciliation_only: bool,
     ) -> Result<TaskCommandProgress> {
+        let task = admission.task_id();
+        let select_only = admission.task.name == "acyclic.stock_turn";
         if let Some(io) = io {
             io.check_cancellation()?;
         }
@@ -104,12 +108,7 @@ where
         if let Some(io) = io {
             io.check_cancellation()?;
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        let scratch = io
-            .and_then(PreparationIo::original_native_work)
-            .map(PreparationIo::from_native_work)
-            .transpose()?;
-        #[cfg(not(target_arch = "wasm32"))]
+        let scratch = PreparationIo::temporary(io)?;
         let io = scratch.as_ref().or(io);
         Ok(!self.inbox(task, after, io).await?.is_empty())
     }

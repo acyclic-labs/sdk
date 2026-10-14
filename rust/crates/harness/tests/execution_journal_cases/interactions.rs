@@ -37,12 +37,14 @@ async fn interactions_are_ref_only_authenticated_and_single_resolution() -> Resu
             kind: AggregateKind::Conversation,
             id: "interaction-owner".into(),
         },
-        &issuer.verifier(&mut None).expect("verifier copy"),
         &SchemaRegistry::new(),
-        &scope.clone(),
-        &private.clone(),
-        4_096,
-        None,
+        acyclic_harness::filesystem::FilesystemJournalBinding {
+            volume: &private.clone(),
+            verifier: &issuer.verifier(&mut None).expect("verifier copy"),
+            scope: &scope.clone(),
+            maximum_bytes: 4_096,
+            io: None,
+        },
     )?;
     let journal = journal(stream.clone(), host, &private, &issuer, &scope)?;
     let request = Interaction::question("The private prompt".into(), json!({"type":"string"}))?;

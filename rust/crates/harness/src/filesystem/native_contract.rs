@@ -321,16 +321,11 @@ impl NativeProcessRequest {
         io: Option<&super::PreparationIo>,
     ) -> Result<[u8; 32]> {
         #[cfg(not(target_arch = "wasm32"))]
-        if io
-            .and_then(super::PreparationIo::original_native_work)
-            .is_some()
-            && !io
-                .expect("native approval IO")
-                .remaining()?
-                .has_finite_allowances()
+        if let Some(io) = io.filter(|io| io.original_native_work().is_some())
+            && !io.remaining()?.has_finite_allowances()
         {
             return Err(validation_error(
-                io,
+                Some(io),
                 crate::wire::ErrorCode::Invalid,
                 "native approval digest requires finite original work",
             ));

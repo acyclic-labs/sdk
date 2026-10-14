@@ -243,11 +243,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<crate::kernel::OwnedSourceChunk, FsError> {
-        let (lookup, _allocation) = self
-            .lookup_no_follow_with_accounting(path, accounting, cancellation, true)
-            .await?;
-        #[cfg(not(target_arch = "wasm32"))]
-        drop(_allocation);
+        let lookup = {
+            let (lookup, _allocation) = self
+                .lookup_no_follow_with_accounting(path, accounting, cancellation, true)
+                .await?;
+            lookup
+        };
         let record = lookup.record.ok_or(FsError::NotFound)?;
         read_symbolic_link_record_with_accounting(&self.volume, record, accounting, cancellation)
             .await
@@ -262,11 +263,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> FsResult<acyclic_stream::OwnedBytes> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         let result = async {
-            let (lookup, _allocation) = self
-                .lookup_no_follow_with_accounting(path, &mut accounting, cancellation, true)
-                .await?;
-            #[cfg(not(target_arch = "wasm32"))]
-            drop(_allocation);
+            let lookup = {
+                let (lookup, _allocation) = self
+                    .lookup_no_follow_with_accounting(path, &mut accounting, cancellation, true)
+                    .await?;
+                lookup
+            };
             let record = lookup.record.ok_or(FsError::NotFound)?;
             let FilePayload::ReparsePoint {
                 payload_bytes,
@@ -310,18 +312,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let mut accounting = budget.accounting(cancellation);
         let before = readonly_standalone_live(&accounting);
         let result = async {
-            let (record, _allocation) = crate::kernel::lookup_file_record_async_with_accounting(
-                &self.volume.fs.inner.objects,
-                self.root.file_table,
-                file_id,
-                DecodeLimits::for_volume(self.volume.config),
-                &mut accounting,
-                cancellation,
-                Some(&self.dependencies.data_custody),
-            )
-            .await?;
-            #[cfg(not(target_arch = "wasm32"))]
-            drop(_allocation);
+            let record = {
+                let (record, _allocation) =
+                    crate::kernel::lookup_file_record_async_with_accounting(
+                        &self.volume.fs.inner.objects,
+                        self.root.file_table,
+                        file_id,
+                        DecodeLimits::for_volume(self.volume.config),
+                        &mut accounting,
+                        cancellation,
+                        Some(&self.dependencies.data_custody),
+                    )
+                    .await?;
+                record
+            };
             let record = record.ok_or(FsError::NotFound)?;
             if self.tracks_observations() {
                 self.observe_identity_regions_with_accounting(

@@ -606,12 +606,14 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
     let journal = Arc::new(FilesystemExecutionJournal::new(
         Arc::new(MemoryStream::default()),
         host.clone(),
-        &volume,
-        &journal_issuer.verifier(&mut None).expect("verifier copy"),
         &acyclic_harness::core::SchemaRegistry::new(),
-        &journal_scope,
-        65_536,
-        None,
+        acyclic_harness::filesystem::FilesystemJournalBinding {
+            volume: &volume,
+            verifier: &journal_issuer.verifier(&mut None).expect("verifier copy"),
+            scope: &journal_scope,
+            maximum_bytes: 65_536,
+            io: None,
+        },
     )?);
     let bundle = HarnessBuilder::new()
         .journal(journal.clone())

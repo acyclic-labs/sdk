@@ -9,16 +9,13 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
     pub(super) async fn run_fork(
         &self,
         context: &ToolContext,
-        owner: &(
-            Arc<FilesystemTaskRuntime<P, A, O>>,
-            Arc<TaskJournalOwner<P>>,
-        ),
+        owner: &RecursiveOwner<P, A, O>,
         fork: &RecursiveForkToolPlan,
         cancellation: &CancellationToken,
         output_io: Option<&super::super::PreparationIo>,
     ) -> Result<Option<Value>> {
         let (runtime, journal_owner) = owner;
-        let temporary_io = recursive_temporary_io(output_io)?;
+        let temporary_io = crate::filesystem::PreparationIo::temporary(output_io)?;
         let io = temporary_io.as_ref();
         #[cfg(not(target_arch = "wasm32"))]
         if io.and_then(PreparationIo::original_native_work).is_some() {
@@ -50,7 +47,13 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
         let mut binding = self
             .source
             .as_deref()
-            .expect("recursive source was authorized")
+            .ok_or_else(|| {
+                recursive_reject(
+                    io,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "recursive source was authorized",
+                )
+            })?
             .fork(
                 context,
                 &fork.arguments,
@@ -112,8 +115,14 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                         work,
                     )?
                     .await?;
-                io.expect("native admission")
-                    .absorb_native_custody(custody)?;
+                io.ok_or_else(|| {
+                    crate::executor::stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Invalid,
+                        "native admission",
+                    )
+                })?
+                .absorb_native_custody(custody)?;
                 break 'admit admission;
             }
             runtime
@@ -143,7 +152,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             .admission_observed(fork.preparation.task_id(), io)
             .await?
             == fork.preparation;
-        recursive_release_since(io, before)?;
+        crate::filesystem::PreparationIo::release_since(io, before)?;
         deny(!same, io)?;
         let report = match runtime
             .outcome_observed(fork.preparation.task_id(), io)
@@ -181,7 +190,9 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             report.copy(work).map(|(report, _)| report)
         })?;
         let owned_io;
-        let publication_io = if let Some(io) = io { io } else {
+        let publication_io = if let Some(io) = io {
+            io
+        } else {
             owned_io = super::super::PreparationIo::from_budget(
                 acyclic_fs::performance::work_budget(
                     fork.request.maximum_work,
@@ -244,8 +255,14 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                         work,
                     )?
                     .await?;
-                io.expect("native admission")
-                    .absorb_native_custody(custody)?;
+                io.ok_or_else(|| {
+                    crate::executor::stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Invalid,
+                        "native admission",
+                    )
+                })?
+                .absorb_native_custody(custody)?;
                 break 'admit admission;
             }
             runtime

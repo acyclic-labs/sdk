@@ -38,19 +38,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     if current.file_id == file_id {
                         return Ok(None);
                     }
-                    let (existing, _existing_allocation) =
-                        lookup_file_record_async_with_accounting(
-                            &self.volume.fs.inner.objects,
-                            self.root.file_table,
-                            file_id,
-                            DecodeLimits::for_volume(self.volume.config),
-                            accounting,
-                            cancellation,
-                            Some(&self.dependencies.data_custody),
-                        )
-                        .await?;
-                    #[cfg(not(target_arch = "wasm32"))]
-                    drop(_existing_allocation);
+                    let existing = {
+                        let (existing, _existing_allocation) =
+                            lookup_file_record_async_with_accounting(
+                                &self.volume.fs.inner.objects,
+                                self.root.file_table,
+                                file_id,
+                                DecodeLimits::for_volume(self.volume.config),
+                                accounting,
+                                cancellation,
+                                Some(&self.dependencies.data_custody),
+                            )
+                            .await?;
+                        existing
+                    };
                     if existing.is_some_and(|existing| {
                         existing.kind != current.kind
                             || existing.metadata != current.metadata
@@ -417,6 +418,7 @@ pub(super) fn clone_authored_path(
     Ok(crate::kernel::Owned::new(path, allocation, bytes))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn clone_borrowed_authored_descriptor(
     authored: &AuthoredMutation,
     accounting: &mut KernelAccounting<'_>,

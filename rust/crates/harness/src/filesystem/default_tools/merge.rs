@@ -29,15 +29,12 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
     pub(super) async fn run_merge(
         &self,
         context: &ToolContext,
-        owner: &(
-            Arc<FilesystemTaskRuntime<P, A, O>>,
-            Arc<TaskJournalOwner<P>>,
-        ),
+        owner: &RecursiveOwner<P, A, O>,
         merge: &RecursiveMergeToolPlan,
         cancellation: &CancellationToken,
         output_io: Option<&PreparationIo>,
     ) -> Result<Value> {
-        let temporary = recursive_temporary_io(output_io)?;
+        let temporary = crate::filesystem::PreparationIo::temporary(output_io)?;
         let io = temporary.as_ref();
         let value = self
             .apply_merge(context, owner, merge, cancellation, io)
@@ -66,21 +63,24 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
     pub(super) async fn apply_merge(
         &self,
         context: &ToolContext,
-        owner: &(
-            Arc<FilesystemTaskRuntime<P, A, O>>,
-            Arc<TaskJournalOwner<P>>,
-        ),
+        owner: &RecursiveOwner<P, A, O>,
         merge: &RecursiveMergeToolPlan,
         cancellation: &CancellationToken,
         output_io: Option<&PreparationIo>,
     ) -> Result<Value> {
         let (runtime, owner) = owner;
-        let temporary = recursive_temporary_io(output_io)?;
+        let temporary = crate::filesystem::PreparationIo::temporary(output_io)?;
         let io = temporary.as_ref();
         let binding = self
             .source
             .as_ref()
-            .expect("authorized source")
+            .ok_or_else(|| {
+                recursive_reject(
+                    io,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "authorized source",
+                )
+            })?
             .merge(context, &merge.arguments, Some(merge), cancellation, io)
             .await?;
         validate_merge_binding(context, &binding, io)?;
@@ -151,8 +151,14 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
             .await?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(custody) = custody {
-            io.expect("native controller")
-                .absorb_native_custody(custody)?;
+            io.ok_or_else(|| {
+                crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "native controller",
+                )
+            })?
+            .absorb_native_custody(custody)?;
         }
         #[cfg(target_arch = "wasm32")]
         let _ = custody;
@@ -173,8 +179,14 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                 )?;
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(custody) = custody {
-                    io.expect("native controller")
-                        .absorb_native_custody(custody)?;
+                    io.ok_or_else(|| {
+                        crate::executor::stock_boundary(
+                            io,
+                            crate::wire::ErrorCode::Invalid,
+                            "native controller",
+                        )
+                    })?
+                    .absorb_native_custody(custody)?;
                 }
                 #[cfg(target_arch = "wasm32")]
                 let _ = custody;
@@ -217,21 +229,24 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
     pub(super) async fn publish_merge(
         &self,
         context: &ToolContext,
-        owner: &(
-            Arc<FilesystemTaskRuntime<P, A, O>>,
-            Arc<TaskJournalOwner<P>>,
-        ),
+        owner: &RecursiveOwner<P, A, O>,
         merge: &RecursiveMergeToolPlan,
         receipt: Option<&ProjectMergeReceipt>,
         cancellation: &CancellationToken,
         output_io: Option<&PreparationIo>,
     ) -> Result<Value> {
-        let temporary = recursive_temporary_io(output_io)?;
+        let temporary = crate::filesystem::PreparationIo::temporary(output_io)?;
         let io = temporary.as_ref();
         let mut binding = self
             .source
             .as_ref()
-            .expect("authorized source")
+            .ok_or_else(|| {
+                recursive_reject(
+                    io,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "authorized source",
+                )
+            })?
             .merge(context, &merge.arguments, Some(merge), cancellation, io)
             .await?;
         validate_merge_binding(context, &binding, io)?;

@@ -117,7 +117,7 @@ pub(crate) async fn retained_model_step<'a>(
             && *event_step == step
             && *event_purpose == purpose
         {
-            let event = retain_preparation(load_json::<ModelEvent>(journal, event, io).await?);
+            let event = retain_preparation(load_json::<ModelEvent>(journal, event, io).await?)?;
             stock_vec_push(&mut events, event, io)?;
             let event = events.last().ok_or_else(|| {
                 stock_boundary(

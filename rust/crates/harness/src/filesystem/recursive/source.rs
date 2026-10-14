@@ -222,12 +222,14 @@ where
         let journal = crate::filesystem::FilesystemExecutionJournal::new(
             Arc::clone(stream),
             Arc::clone(&filesystem),
-            selection.checkpoint.volume(),
-            verifier,
             &crate::core::SchemaRegistry::default(),
-            signed,
-            selection.limits.file_bytes,
-            io,
+            crate::filesystem::FilesystemJournalBinding {
+                volume: selection.checkpoint.volume(),
+                verifier,
+                scope: signed,
+                maximum_bytes: selection.limits.file_bytes,
+                io,
+            },
         )?
         .with_input_verifier(Arc::clone(&resolver));
         #[cfg(not(target_arch = "wasm32"))]
@@ -303,15 +305,10 @@ where
     let project = caller_project.copy(&mut observer)?;
     let selected = source_read
         .map(|handle| {
-            let authorization = handle
-                .authorization()
-                .copy(&mut observer)?
-                .0;
+            let authorization = handle.authorization().copy(&mut observer)?.0;
             ProjectSourceReadHandle::seal(authorization, verifier, &mut observer)
         })
         .transpose()?;
-    drop(observer);
-    drop(history);
     let provider = match io {
         Some(io) => stream_provider.clone_with_io(io)?,
         None => stream_provider.clone(),

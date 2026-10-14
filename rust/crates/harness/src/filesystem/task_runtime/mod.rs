@@ -258,7 +258,7 @@ pub struct FilesystemTaskRuntime<P, A, O> {
     interaction_owner: Option<TaskInteractionOwner>,
     recursive_source: Option<Arc<super::ConfiguredRecursiveToolSource<P, A, O>>>,
     #[cfg(not(target_arch = "wasm32"))]
-    native_configuration_custody: Option<acyclic_fs::NativeAllocation>,
+    _native_configuration_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 struct TaskInteractionOwner {
@@ -285,10 +285,10 @@ impl TaskContext {
     ) -> Result<Arc<crate::durable_host::TaskJournalOwner<P>>> {
         let io = crate::executor::PreparationIo::from_native_work(work)?;
         let (_, original_fence) = self.owned_task_binding(Some(&io))?;
-        let mailbox = self
-            .owned_mailbox
-            .as_ref()
-            .expect("validated original owner");
+        let mailbox = self.owned_mailbox.as_ref().ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            reason: "native task context has no original mailbox owner",
+        })?;
         let mailbox = (mailbox.as_ref() as &dyn std::any::Any)
             .downcast_ref::<TaskJournalMailbox<P>>()
             .filter(|mailbox| {
@@ -543,9 +543,8 @@ fn native_step_key_with_custody(
     let (key, mut guard) = match native_step_key(revision, input.work()) {
         Ok(value) => value,
         Err(Error::NativeWork { cause, custody }) => {
-            let mut held = match input.split_off(input.bytes()) {
-                Ok(held) => held,
-                Err(_) => return Err(Error::NativeWork { cause, custody }),
+            let Ok(mut held) = input.split_off(input.bytes()) else {
+                return Err(Error::NativeWork { cause, custody });
             };
             if let Some(mut incoming) = custody
                 && (!held.work().shares_ledger(incoming.work())
@@ -592,7 +591,7 @@ fn native_step_key(
     })?;
     let retained = key.capacity() as u64;
     let key = IdempotencyKey::new(key)?;
-    hold.into_retained();
+    hold.into_retained()?;
     Ok((key, io.into_native_custody(retained)?))
 }
 

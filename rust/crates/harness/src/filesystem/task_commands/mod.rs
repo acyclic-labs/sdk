@@ -30,6 +30,16 @@ mod preparation;
 mod tool;
 use tool::was_dispatched;
 
+#[derive(Clone, Copy)]
+struct CommandInvocation<'a> {
+    context: &'a Arc<TaskContext>,
+    admission: &'a crate::runtime::TaskAdmissionRecord,
+    fence: &'a LeaseFence,
+    command: &'a WorkflowCommand,
+    reconciliation_only: bool,
+    io: Option<&'a super::PreparationIo>,
+}
+
 macro_rules! command_record {
     ($($record:ty $(=> $schema:ident)?),+ $(,)?) => {
         $(impl super::PreparationRecord for $record {
@@ -365,7 +375,7 @@ fn rejected(
         if let Some(io) = io {
             let (message, custody) = io
                 .original_native_work()
-                .expect("native rejection has original work")
+                .ok_or_else(|| io.invalid("native rejection requires original work"))?
                 .display(&reason)?;
             io.absorb_native_custody(custody)?;
             break 'message message;
@@ -381,13 +391,15 @@ fn tool_invocation(
     arguments: Value,
     io: Option<&super::PreparationIo>,
 ) -> Result<ToolInvocation> {
-    let grant_hold;
-    let grant = crate::executor::with_history_io(io, |work| {
-        crate::executor::preparation_format(format_args!("tool:call:{}", definition.name), work)
-    })?;
-    grant_hold = io
-        .map(|io| io.guard_owned(grant.capacity() as u64))
-        .transpose()?;
+    let (grant_hold, grant) = {
+        let grant = crate::executor::with_history_io(io, |work| {
+            crate::executor::preparation_format(format_args!("tool:call:{}", definition.name), work)
+        })?;
+        let grant_hold = io
+            .map(|io| io.guard_owned(grant.capacity() as u64))
+            .transpose()?;
+        (grant_hold, grant)
+    };
     if !context.scope().grants().contains(&grant) {
         return Err(super::task_runtime::observed::boundary(
             io,

@@ -106,12 +106,14 @@ fn journal(
     FilesystemExecutionJournal::new(
         stream,
         host,
-        private,
-        &issuer.verifier(&mut None).expect("verifier copy"),
         &SchemaRegistry::new(),
-        scope,
-        4_096,
-        None,
+        acyclic_harness::filesystem::FilesystemJournalBinding {
+            volume: private,
+            verifier: &issuer.verifier(&mut None).expect("verifier copy"),
+            scope: scope,
+            maximum_bytes: 4_096,
+            io: None,
+        },
     )
 }
 

@@ -22,7 +22,7 @@ fn decode_schema(
             crate::wire::ErrorCode::Storage,
         )?;
         drop(crate::executor::with_history_io(Some(io), |work| crate::executor::compile_json_schema(&schema.0, "effect result", work))?);
-        return Ok(crate::filesystem::retain_decoded(schema));
+        return crate::filesystem::retain_decoded(schema);
     }
     let schema: Value = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Invalid(format!("effect result schema is not JSON: {error}")))?;

@@ -24,27 +24,25 @@ fn native_verifier_copies_authentic_scope_and_keeps_custody_until_drop() -> Resu
             id: "parent".into(),
         },
     );
-    let scope = issuer
-        .issue(
-            "parent-scope",
-            &Capabilities::new([capability::FORK_PUBLISH, capability::PROJECT_MERGE]),
-            Some(AgentId::from_bytes([8; 16])),
-            None,
-            &mut None,
-        )
-        .expect("scope proof");
+    let scope = issuer.issue(
+        "parent-scope",
+        &Capabilities::new([capability::FORK_PUBLISH, capability::PROJECT_MERGE]),
+        Some(AgentId::from_bytes([8; 16])),
+        None,
+        &mut None,
+    )?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs::WorkBudget::UNBOUNDED,
         &cancellation,
     )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work: work })?;
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let verifier = FilesystemForkVerifier::new(
         Arc::clone(&host),
         4096,
         None,
         Some((
-            &issuer.verifier(&mut None).expect("verifier copy"),
+            &issuer.verifier(&mut None)?,
             &scope,
             &crate::filesystem::PreparationIo::from_native_work(&work)?,
         )),
@@ -53,7 +51,7 @@ fn native_verifier_copies_authentic_scope_and_keeps_custody_until_drop() -> Resu
         acyclic_fs::WorkBudget::UNBOUNDED,
         &cancellation,
     )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work: work })?;
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     assert!(matches!(
         verifier
             .native_binding
@@ -77,7 +75,7 @@ fn native_verifier_copies_authentic_scope_and_keeps_custody_until_drop() -> Resu
         FilesystemProjectMergeVerifier::new(
             host,
             Some((
-                &forged_issuer.verifier(&mut None).expect("verifier copy"),
+                &forged_issuer.verifier(&mut None)?,
                 &scope,
                 &PreparationIo::from_native_work(&work)?
             ))
@@ -182,19 +180,17 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             id: "test".into(),
         },
     );
-    let scope = issuer
-        .issue(
-            "owner",
-            &Capabilities::new([
-                volume.capability(VolumeOperation::Read, &mut None)?,
-                volume.capability(VolumeOperation::Write, &mut None)?,
-            ]),
-            Some(owner),
-            None,
-            &mut None,
-        )
-        .expect("scope proof");
-    let verifier = issuer.verifier(&mut None).expect("verifier copy");
+    let scope = issuer.issue(
+        "owner",
+        &Capabilities::new([
+            volume.capability(VolumeOperation::Read, &mut None)?,
+            volume.capability(VolumeOperation::Write, &mut None)?,
+        ]),
+        Some(owner),
+        None,
+        &mut None,
+    )?;
+    let verifier = issuer.verifier(&mut None)?;
     let read = ContentGrant::verify(
         &verifier,
         &scope,
@@ -297,7 +293,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             acyclic_fs::WorkBudget::UNBOUNDED,
             &cancellation,
         )
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work: work })?;
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let native = FilesystemForkVerifier::new(
             Arc::clone(&host),
             16,
@@ -609,22 +605,20 @@ async fn conversation_stream_admission_requires_resident_files() -> Result<()> {
         id: "integration".into(),
     };
     let issuer = AuthorityIssuer::new("integration", [11; 32], authority.clone());
-    let scope = issuer
-        .issue(
-            "agent",
-            &Capabilities::new([
-                "conversation:bind".to_owned(),
-                "conversation:append".to_owned(),
-                volume.capability(VolumeOperation::Read, &mut None)?,
-                volume.capability(VolumeOperation::Write, &mut None)?,
-            ]),
-            Some(agent),
-            None,
-            &mut None,
-        )
-        .expect("scope proof");
+    let scope = issuer.issue(
+        "agent",
+        &Capabilities::new([
+            "conversation:bind".to_owned(),
+            "conversation:append".to_owned(),
+            volume.capability(VolumeOperation::Read, &mut None)?,
+            volume.capability(VolumeOperation::Write, &mut None)?,
+        ]),
+        Some(agent),
+        None,
+        &mut None,
+    )?;
     let read = ContentGrant::verify(
-        &issuer.verifier(&mut None).expect("verifier copy"),
+        &issuer.verifier(&mut None)?,
         &scope,
         &volume,
         VolumeOperation::Read,
@@ -632,7 +626,7 @@ async fn conversation_stream_admission_requires_resident_files() -> Result<()> {
         &mut None,
     )?;
     let write = ContentGrant::verify(
-        &issuer.verifier(&mut None).expect("verifier copy"),
+        &issuer.verifier(&mut None)?,
         &scope,
         &volume,
         VolumeOperation::Write,
@@ -666,19 +660,16 @@ async fn conversation_stream_admission_requires_resident_files() -> Result<()> {
             &IdempotencyKey::new("attachment-list")?,
         )
         .await?;
-    let verifier = FilesystemContentVerifier::new(
-        host,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        4_096,
-        None,
-    )?;
+    let verifier =
+        FilesystemContentVerifier::new(host, &issuer.verifier(&mut None)?, &scope, 4_096, None)?;
     let stream = Arc::new(MemoryStream::default());
     let mut aggregate = StreamAggregate::open(
         &stream,
-        (authority,
-        issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new()),
+        (
+            authority,
+            issuer.verifier(&mut None)?,
+            SchemaRegistry::new(),
+        ),
         None,
         crate::store::default_projection_read_limits(),
         crate::store::DEFAULT_TERMINAL_EFFECTS,

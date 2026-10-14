@@ -536,12 +536,14 @@ where
     Ok(Arc::new(FilesystemExecutionJournal::new(
         stream,
         files,
-        &volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
         &acyclic_harness::core::SchemaRegistry::new(),
-        &scope,
-        1_000_000,
-        None,
+        acyclic_harness::filesystem::FilesystemJournalBinding {
+            volume: &volume,
+            verifier: &issuer.verifier(&mut None).expect("verifier copy"),
+            scope: &scope,
+            maximum_bytes: 1_000_000,
+            io: None,
+        },
     )?))
 }
 

@@ -210,6 +210,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         ),
         FsError,
     > {
+        use crate::kernel::Owned;
         accounting.check()?;
         if self.prepared_merge_parent.is_some() {
             return Err(FsError::PreparedMergePending);
@@ -249,9 +250,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 FsError::Rebase(RebaseError::ZeroConflictLimit)
             }
         });
-        let retired = probe.0.retire_with_accounting(accounting);
-        #[cfg(not(target_arch = "wasm32"))]
-        drop(probe.1);
+        let retired = {
+            let (probe, _allocation) = probe;
+            probe.retire_with_accounting(accounting)
+        };
         retired?;
         let classified = classified?;
         if matches!(classified.0, RebaseDecision::Conflicted { .. }) {
@@ -262,55 +264,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             self.authority_head = Some(candidate_head);
             return Ok(classified);
         }
-        let (rebased, prepared) = self
-            .prepare_rebase_roots(
-                candidate_object,
-                maximum_conflicts,
-                accounting,
-                cancellation,
-            )
-            .await?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let (mut rebased, mut prepared) = (rebased, prepared);
-        if let Err(error) = cancellation.check() {
-            rebased.retire(accounting)?;
-            return Err(error.into());
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = accounting.native_work() {
-            let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(guard) =
-                &mut rebased.allocation
-            else {
-                unreachable!("native root has original custody");
-            };
-            if let Err(error) = self.prepare_root_working_control_with_native_work(
-                &rebased.value,
-                guard,
-                &mut prepared,
-                original,
-                cancellation,
-            ) {
-                rebased.retire(accounting)?;
-                return Err(error);
-            }
-        }
-        // Working-root transfer is the final fallible step. No operation
-        self.install_root_replacement(candidate_object, rebased.value, prepared);
-        self.generation_root = candidate_object;
-        self.authority_head = Some(candidate_head);
-        #[cfg(not(target_arch = "wasm32"))]
-        drop(rebased.allocation);
-        Ok(classified)
-    }
-
-    async fn prepare_rebase_roots(
-        &self,
-        candidate_object: ObjectId,
-        maximum_conflicts: u32,
-        accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<(crate::kernel::Owned<GenerationRoot>, PreparedCheckoutRoots), FsError> {
-        use crate::kernel::Owned;
         let (candidate_root, allocation) = crate::kernel::read_generation_root_with_accounting(
             &self.volume.fs.inner.objects,
             candidate_object,
@@ -354,7 +307,36 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
         .await;
         candidate.retire(accounting)?;
-        outcome
+        let (rebased, prepared) = outcome?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let (mut rebased, mut prepared) = (rebased, prepared);
+        if let Err(error) = cancellation.check() {
+            rebased.retire(accounting)?;
+            return Err(error.into());
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = accounting.native_work() {
+            let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(guard) =
+                &mut rebased.allocation
+            else {
+                unreachable!("native root has original custody");
+            };
+            if let Err(error) = self.prepare_root_working_control_with_native_work(
+                &rebased.value,
+                guard,
+                &mut prepared,
+                original,
+                cancellation,
+            ) {
+                rebased.retire(accounting)?;
+                return Err(error);
+            }
+        }
+        // Working-root transfer is the final fallible step. No operation
+        self.install_root_replacement(candidate_object, rebased.value, prepared);
+        self.generation_root = candidate_object;
+        self.authority_head = Some(candidate_head);
+        Ok(classified)
     }
 
     pub(super) async fn rebase_private_candidate_with_accounting(

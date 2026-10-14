@@ -348,28 +348,27 @@ impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
         };
         self.reads = Vec::new().into_iter();
         self.sources = Vec::new().into_iter();
-        let source_allocation = std::mem::replace(
-            &mut self.source_allocation,
-            KernelOwnedAllocation::Standalone,
-        );
-        let read_allocation =
-            std::mem::replace(&mut self.read_allocation, KernelOwnedAllocation::Standalone);
-        let source_bytes = if matches!(source_allocation, KernelOwnedAllocation::Standalone) {
-            self.source_bytes
-        } else {
-            0
+        let (source_bytes, read_bytes) = {
+            let source_allocation = std::mem::replace(
+                &mut self.source_allocation,
+                KernelOwnedAllocation::Standalone,
+            );
+            let read_allocation =
+                std::mem::replace(&mut self.read_allocation, KernelOwnedAllocation::Standalone);
+            let source_bytes = if matches!(source_allocation, KernelOwnedAllocation::Standalone) {
+                self.source_bytes
+            } else {
+                0
+            };
+            let read_bytes = if matches!(read_allocation, KernelOwnedAllocation::Standalone) {
+                self.read_container_bytes
+                    .checked_add(self.remaining_owned_bytes)
+                    .ok_or(CanonicalDecodeError::AllocationFailed)?
+            } else {
+                0
+            };
+            (source_bytes, read_bytes)
         };
-        let read_bytes = if matches!(read_allocation, KernelOwnedAllocation::Standalone) {
-            self.read_container_bytes
-                .checked_add(self.remaining_owned_bytes)
-                .ok_or(CanonicalDecodeError::AllocationFailed)?
-        } else {
-            0
-        };
-        #[cfg(not(target_arch = "wasm32"))]
-        drop(source_allocation);
-        #[cfg(not(target_arch = "wasm32"))]
-        drop(read_allocation);
         let bytes = source_bytes
             .checked_add(read_bytes)
             .ok_or(CanonicalDecodeError::AllocationFailed)?;

@@ -73,7 +73,7 @@ pub(super) fn generation_from_record(
         )?;
         (published.volume_id, published.generation_root)
     };
-    drop(observer.into_allocation());
+    let _allocation = observer.into_allocation();
     if record_volume != volume_id {
         return Err(FsError::VolumeMismatch);
     }
@@ -81,6 +81,7 @@ pub(super) fn generation_from_record(
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn observe_volume_operation(
         &self,
         volume_id: VolumeId,

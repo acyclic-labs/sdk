@@ -23,7 +23,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if expected_generation.is_some() {
             crate::tool::edit::validate_edit_bound(maximum_bytes)?;
         }
-        self.put_content_impl(volume, grant, path, bytes, media_type, display_name, maximum_bytes, key, None, expected_generation, io)
+        self.put_content_impl(
+            volume,
+            grant,
+            path,
+            bytes,
+            media_type,
+            display_name,
+            maximum_bytes,
+            key,
+            None,
+            expected_generation,
+            io,
+        )
         .await
     }
 
@@ -39,38 +51,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<Option<FileRef>> {
         self.content_for_operation_impl(volume, grant, key, Some(path), maximum_bytes, io)
             .await
-    }
-
-    pub(crate) async fn original_internal_content_for_operation_with_io(
-        &self,
-        volume: &VolumeRef,
-        verifier: &AuthorityVerifier,
-        scope: &Scope,
-        key: &IdempotencyKey,
-        path: &str,
-        maximum_bytes: u64,
-        class: InternalContentClass,
-        io: &PreparationIo,
-    ) -> Result<Option<FileRef>> {
-        crate::executor::with_history_io(Some(io), |work| {
-            ContentGrant::authorize_volume(
-                verifier,
-                scope,
-                volume,
-                VolumeOperation::Read,
-                io.remaining()?.bytes_encoded,
-                work,
-            )
-        })?;
-        self.content_for_operation_record_io(
-            volume,
-            key,
-            Some(path),
-            maximum_bytes,
-            Some(class),
-            Some(io),
-        )
-        .await
     }
 
     pub(in crate::filesystem) async fn content_for_operation_record_io(
@@ -94,28 +74,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             crate::executor::with_history_io(io, |work| {
                 crate::conversation::validate_content_path(path, work)
             })?;
-            if internal_class.is_some_and(|class| !path.starts_with(class.prefix()))
-                || (internal_class.is_none()
-                    && (path == ".system"
-                        || path.starts_with(".system/")
-                        || path == "turns/.canonical"
-                        || path.starts_with("turns/.canonical/")))
-            {
-                return Err(stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Invalid,
-                    if internal_class.is_some() {
-                        "content path is outside its authorized storage class"
-                    } else {
-                        "internal storage paths are reserved"
-                    },
-                ));
-            }
+            InternalContentClass::require_path(internal_class, path, io)?;
         }
         let workspace = fork_preparer_io::content_workspace(&self.provider, volume, io)?;
-        let Some(original) =
-            (self).operation_generation(&workspace, key, io).await?
-        else {
+        let Some(original) = (self).operation_generation(&workspace, key, io).await? else {
             return Ok(None);
         };
         let receipt_path =
@@ -141,23 +103,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "original upload metadata differs from requested identity",
             ));
         }
-        if internal_class.is_some_and(|class| !recorded.path().starts_with(class.prefix()))
-            || (internal_class.is_none()
-                && (recorded.path() == ".system"
-                    || recorded.path().starts_with(".system/")
-                    || recorded.path() == "turns/.canonical"
-                    || recorded.path().starts_with("turns/.canonical/")))
-        {
-            return Err(stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                if internal_class.is_some() {
-                    "original content is outside its authorized storage class"
-                } else {
-                    "internal storage paths are reserved"
-                },
-            ));
-        }
+        InternalContentClass::require_path(internal_class, recorded.path(), io)?;
         let canonical = match io {
             Some(io) => io.encode(&(&recorded, expected.as_ref()), RECORD_BYTES, true)?,
             None => crate::contract::canonical_json_bytes(&(&recorded, expected.as_ref()))?.into(),
@@ -185,23 +131,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             ));
         }
         let generation = fork_preparer_io::generation_ref(&self.provider, original.id(), io)?;
-        match io {
-            Some(io) => fork_preparer_io::retain(&original, Some(io)).await?,
-            None => {
-                original
-                    .pin(
-                        format!(
-                            "harness-generation-{}",
-                            hex::encode(generation.as_resource().key())
-                        ),
-                        acyclic_fs::WorkBudget::UNBOUNDED,
-                        &acyclic_fs::CancellationToken::new(),
-                    )
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| map_error(failure.error))?;
-            }
-        }
+        fork_preparer_io::retain(&original, io).await?;
         let version = fork_preparer_io::hex_key(generation.as_resource().key(), io)?;
         let reference = crate::executor::with_history_io(io, |work| {
             FileRef::new(
@@ -240,7 +170,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         A: 'static,
         O: 'static,
     {
-        self.put_content_impl(volume, grant, path, bytes, media_type, display_name, maximum_bytes, key, Some(class), None, io)
+        self.put_content_impl(
+            volume,
+            grant,
+            path,
+            bytes,
+            media_type,
+            display_name,
+            maximum_bytes,
+            key,
+            Some(class),
+            None,
+            io,
+        )
         .await
     }
 

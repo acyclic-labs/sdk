@@ -17,10 +17,11 @@ pub(super) fn authored_input_owned_bytes(
 
 pub(super) enum AuthoredTransactionInput<'a> {
     Owned {
-        mutations: std::vec::IntoIter<AuthoredMutation>,
-        allocation: KernelOwnedAllocation,
+        mutations: &'a mut std::vec::IntoIter<AuthoredMutation>,
+        allocation: &'a mut KernelOwnedAllocation,
         capacity: usize,
     },
+    #[cfg(not(target_arch = "wasm32"))]
     Borrowed(&'a [AuthoredMutation]),
 }
 
@@ -28,6 +29,7 @@ impl AuthoredTransactionInput<'_> {
     pub(super) fn mutations(&self) -> &[AuthoredMutation] {
         match self {
             Self::Owned { mutations, .. } => mutations.as_slice(),
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Borrowed(mutations) => mutations,
         }
     }
@@ -35,6 +37,7 @@ impl AuthoredTransactionInput<'_> {
     pub(super) fn capacity(&self) -> usize {
         match self {
             Self::Owned { capacity, .. } => *capacity,
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Borrowed(mutations) => mutations.len(),
         }
     }
@@ -46,16 +49,21 @@ impl AuthoredTransactionInput<'_> {
                 allocation,
                 capacity,
             } => {
-                drop(mutations);
-                let backing = match &allocation {
+                drop(std::mem::take(mutations));
+                let backing = match &*allocation {
                     KernelOwnedAllocation::Standalone => {
                         usize_to_u64(capacity * size_of::<AuthoredMutation>())
                     }
                     #[cfg(not(target_arch = "wasm32"))]
                     KernelOwnedAllocation::NativeOriginal(guard) => guard.bytes(),
                 };
-                retire_allocation(allocation, backing, accounting)
+                retire_allocation(
+                    std::mem::replace(allocation, KernelOwnedAllocation::Standalone),
+                    backing,
+                    accounting,
+                )
             }
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Borrowed(_) => Ok(()),
         }
     }
@@ -235,10 +243,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         #[cfg(not(target_arch = "wasm32"))]
         self.validate_authored_input(&input, accounting)?;
         let capacity = input.value.capacity();
+        let mut input = (input.value.into_iter(), input.allocation);
         self.apply_authored_transaction_input_with_accounting(
             AuthoredTransactionInput::Owned {
-                mutations: input.value.into_iter(),
-                allocation: input.allocation,
+                mutations: &mut input.0,
+                allocation: &mut input.1,
                 capacity,
             },
             accounting,
@@ -274,23 +283,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let length = input.mutations().len();
         let mut created = Owned::<Vec<Option<FileId>>>::allocate(length, accounting)?;
         let mut metadata = AuthoredMetadataCache::new();
-        for index in 0..length {
+        for _index in 0..length {
             let authored = match &mut input {
                 AuthoredTransactionInput::Owned {
                     mutations,
                     allocation,
                     ..
                 } => {
-                    let mutation = mutations
-                        .next()
-                        .ok_or(FsError::InvalidDiff)?;
+                    let mutation = mutations.next().ok_or(FsError::InvalidDiff)?;
                     let bytes = mutation.logical_owned_bytes();
                     let allocation = split_allocation(allocation, bytes)?;
                     Owned::new(mutation, allocation, bytes)
                 }
+                #[cfg(not(target_arch = "wasm32"))]
                 AuthoredTransactionInput::Borrowed(mutations) => {
                     accounting.check()?;
-                    clone_borrowed_authored_descriptor(mutations.get(index).ok_or(FsError::InvalidDiff)?, accounting)?
+                    clone_borrowed_authored_descriptor(
+                        mutations.get(_index).ok_or(FsError::InvalidDiff)?,
+                        accounting,
+                    )?
                 }
             };
             let file_id = self
@@ -332,6 +343,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         ))
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn apply_authored_bulk_transaction_with_accounting(
         &mut self,
         input: crate::kernel::Owned<Vec<AuthoredMutation>>,
@@ -404,6 +416,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     /// The compiler's already-bound retry identity, not a publication grant.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) const fn bound_authored_operation_id(&self) -> Option<OperationId> {
         self.authored_operation_id
     }

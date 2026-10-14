@@ -482,36 +482,37 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
     fn accept(
         &mut self,
         decoded: OwnedPage<F>,
-        mut allocation: KernelOwnedAllocation,
+        allocation: KernelOwnedAllocation,
         mut pending: Pending<F::Key>,
     ) -> Result<(), Failure> {
-        #[cfg(not(target_arch = "wasm32"))]
-        let native_custody = decoded.native_custody;
-        let logical_bytes = decoded.logical_bytes;
-        let page = decoded.page;
-        let result = match page {
-            persistent_io::PageLease::Owned(Page::Leaf(values)) => {
-                self.accept_leaf_owned(values, logical_bytes, &mut allocation, &pending)
-            }
-            persistent_io::PageLease::Owned(Page::Internal(children)) => {
-                self.accept_internal_owned(children, logical_bytes, &mut allocation, &mut pending)
-            }
-            persistent_io::PageLease::Shared { page, .. } => {
-                // Keep the decoded cache's original guard through the entire callback.
-                let result = match page.as_ref() {
-                    Page::Leaf(values) => self.accept_shared_leaf(values, &pending),
-                    Page::Internal(children) => {
-                        self.accept_shared_internal_state(children, &mut pending)
-                    }
-                };
-                drop(page);
-                result
-            }
+        let result = {
+            let mut allocation = allocation;
+            #[cfg(not(target_arch = "wasm32"))]
+            let native_custody = decoded.native_custody;
+            let logical_bytes = decoded.logical_bytes;
+            let page = decoded.page;
+            let result = match page {
+                persistent_io::PageLease::Owned(Page::Leaf(values)) => {
+                    self.accept_leaf_owned(values, logical_bytes, &mut allocation, &pending)
+                }
+                persistent_io::PageLease::Owned(Page::Internal(children)) => self
+                    .accept_internal_owned(children, logical_bytes, &mut allocation, &mut pending),
+                persistent_io::PageLease::Shared { page, .. } => {
+                    // Keep the decoded cache's original guard through the entire callback.
+                    let result = match page.as_ref() {
+                        Page::Leaf(values) => self.accept_shared_leaf(values, &pending),
+                        Page::Internal(children) => {
+                            self.accept_shared_internal_state(children, &mut pending)
+                        }
+                    };
+                    drop(page);
+                    result
+                }
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            drop(native_custody);
+            result
         };
-        #[cfg(not(target_arch = "wasm32"))]
-        drop(native_custody);
-        #[cfg(not(target_arch = "wasm32"))]
-        drop(allocation);
         pending
             .retire(self.accounting)
             .map_err(|error| self.failure(error))?;

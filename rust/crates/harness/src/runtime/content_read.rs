@@ -296,7 +296,7 @@ impl TaskContext {
             verified_content_bytes(reader, file, file.descriptor().byte_length(), io).await?;
         #[cfg(feature = "filesystem")]
         if let Some(hold) = hold {
-            hold.into_retained();
+            hold.into_retained()?;
         }
         #[cfg(not(feature = "filesystem"))]
         let _ = hold;
@@ -339,7 +339,7 @@ impl TaskContext {
         let _ = hold;
         #[cfg(feature = "filesystem")]
         if let Some(hold) = hold {
-            hold.into_retained();
+            hold.into_retained()?;
         }
         if let Some(file) = &file {
             crate::executor::with_history_io(io, |work| scope.limits.validate_file(file, work))?;

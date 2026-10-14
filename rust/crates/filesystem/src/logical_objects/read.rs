@@ -196,11 +196,12 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
             drop(incoming);
             release(work, custody, request_bytes)?;
             for request in requests {
-                let (read, _allocation) = self
-                    .fetch(request.object_id, request.maximum_bytes, work)
-                    .await?;
-                #[cfg(not(target_arch = "wasm32"))]
-                drop(_allocation);
+                let read = {
+                    let (read, _allocation) = self
+                        .fetch(request.object_id, request.maximum_bytes, work)
+                        .await?;
+                    read
+                };
                 values.push(read);
             }
             return Ok((values, output));

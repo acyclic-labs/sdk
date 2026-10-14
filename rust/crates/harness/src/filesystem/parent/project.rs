@@ -148,8 +148,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                         context,
                         handle,
                         Some(
-                            io.original_native_work()
-                                .expect("native controller custody"),
+                            io.original_native_work().ok_or_else(|| {
+                                io.invalid("native controller has no original work")
+                            })?,
                         ),
                     )
                     .await;
@@ -204,7 +205,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let cancellation = acyclic_fs::CancellationToken::new();
         #[cfg(not(target_arch = "wasm32"))]
         let native = native_io.is_some();
-        let io = if let Some(io) = native_io { io } else {
+        let io = if let Some(io) = native_io {
+            io
+        } else {
             self.require(capability::PROJECT_MERGE, VolumeOperation::Write, None)?;
             if !selected {
                 ContentGrant::verify(
@@ -474,7 +477,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                         custody: None,
                     }) => {
                         let custody = io.take_native_custody(diagnostics.bytes())?;
-                        diagnostics.into_retained();
+                        diagnostics.into_retained()?;
                         return Err(Error::NativeJson {
                             code,
                             source,
@@ -483,7 +486,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     }
                     result => result?,
                 };
-                root_hold.into_retained();
+                root_hold.into_retained()?;
                 drop(diagnostics);
                 statement
             }

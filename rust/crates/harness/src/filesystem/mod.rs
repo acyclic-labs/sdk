@@ -28,18 +28,15 @@ use crate::{
 use acyclic_fs::WorkCounters;
 use acyclic_fs::kernel::{FileKind, LogicalName, NameEncoding};
 use acyclic_fs::{
-    ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ConflictSide, Digest, DirectoryPage, Fs, Generation, GenerationId, IdempotencyKey as FilesystemKey, JoinCommitWitness,
-    JoinHistory, JoinOutcome, JoinPlan, MergeConflict, MergePlan, PublicationReservation,
-    TransactionCommit, Workspace, WorkspaceError, WorkspaceStat,
+    ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ConflictSide, Digest, DirectoryPage, Fs,
+    Generation, GenerationId, IdempotencyKey as FilesystemKey, JoinCommitWitness, JoinHistory,
+    JoinOutcome, JoinPlan, MergeConflict, MergePlan, PublicationReservation, TransactionCommit,
+    Workspace, WorkspaceError, WorkspaceStat,
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeMap,
-    future::Future,
-    sync::Arc,
-};
+use std::{collections::BTreeMap, future::Future, sync::Arc};
 
 const FILESYSTEM_JOIN_PROOF_FORMAT: &str = "acyclic.filesystem.join-commit.v2";
 
@@ -57,6 +54,7 @@ pub(crate) use fork_preparer::bounded_io::native_decoded;
 pub(crate) use fork_preparer::bounded_io::{
     DecodeReservation, PreparationRecord, UploadRecord, preparation_slot_bytes, retain_decoded,
 };
+use fork_preparer_io::decode_record;
 mod summary_fork;
 pub use fork_preparer::{FilesystemForkPreparer, FilesystemResourceCreationProvider};
 mod interaction_host;
@@ -113,8 +111,8 @@ pub use mailbox_machine::MailboxModelMachine;
 pub(crate) use native_execution::journal::preparation_owner;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_execution::{
-    BorrowedNativeVolumeBinding, NativePreparationRoot, NativeViewPublicationError, NativeMountedVolume,
-    NativeVolumeView,
+    BorrowedNativeVolumeBinding, NativeMountedVolume, NativePreparationRoot,
+    NativeViewPublicationError, NativeVolumeView,
 };
 pub use recursive::{
     ForkPreparationLimits, ForkPreparationMachine, ForkToolArguments, RecursiveForkConfig,
@@ -137,7 +135,7 @@ pub use task_runtime::{
 
 mod config;
 use config::*;
-pub use config::{WorkspaceMutation, WorkspaceObservation};
+pub use config::{FilesystemJournalBinding, WorkspaceMutation, WorkspaceObservation};
 mod host;
 pub(crate) use host::map_error;
 use host::*;
@@ -379,7 +377,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 ));
             }
             let reference = {
-                let io = io;
                 let descriptor = &descriptor;
                 crate::executor::with_history_io(io, |work| {
                     crate::conversation::FileRef::new(
@@ -469,7 +466,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
         }
         let reference = {
-            let io = io;
             let descriptor = &descriptor;
             crate::executor::with_history_io(io, |work| {
                 crate::conversation::FileRef::new(
@@ -500,7 +496,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if let Some((io, original)) =
             io.and_then(|io| io.original_native_work().map(|original| (io, original)))
         {
-            use sha2::Digest as _;
             reference.validate(&mut Some(&mut io.history_io()))?;
             if reference.volume().provider() != &self.provider
                 || reference.descriptor().byte_length() > maximum_bytes
@@ -531,27 +526,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     custody: None,
                 })?;
             fork_preparer_io::retain(&pinned, Some(io)).await?;
-            let hashed = acyclic_fs::WorkCounters {
-                bytes_hashed: bytes.len() as u64,
-                ..acyclic_fs::WorkCounters::default()
-            };
-            original.admit(hashed).map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
+            crate::executor::with_history_io(Some(io), |work| {
+                reference.descriptor().verify(&bytes, work)
             })?;
-            let digest = sha2::Sha256::digest(&bytes);
-            original.spent(hashed).map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
-            if bytes.len() as u64 != reference.descriptor().byte_length()
-                || digest.as_slice() != reference.descriptor().sha256()
-            {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid,
-                    reason: "file content does not match its descriptor",
-                });
-            }
             drop(path);
             drop(path_custody);
             return Ok(bytes);

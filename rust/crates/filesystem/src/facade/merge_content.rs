@@ -31,11 +31,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             None,
         )
         .await
-        .map(|(record, _allocation)| {
-            #[cfg(not(target_arch = "wasm32"))]
-            drop(_allocation);
-            record
-        })
+        .map(|(record, _allocation)| record)
         .map_err(WorkspaceError::engine);
         root.retire(&mut accounting)
             .map_err(WorkspaceError::engine)?;

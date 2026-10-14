@@ -203,14 +203,17 @@ impl PiNativeCommandHost {
             command,
             context.id(),
             self.filesystem.clone(),
-            &self.protected.policy().journal,
-            &storage.verifier,
-            &storage.signed,
-            self.protected
-                .policy()
-                .maximum_payload_bytes
-                .min(context.scope().limits().file_bytes),
-            Some(&io),
+            acyclic_harness::filesystem::FilesystemJournalBinding {
+                volume: &self.protected.policy().journal,
+                verifier: &storage.verifier,
+                scope: &storage.signed,
+                maximum_bytes: self
+                    .protected
+                    .policy()
+                    .maximum_payload_bytes
+                    .min(context.scope().limits().file_bytes),
+                io: Some(&io),
+            },
         )?
         .with_interaction_owner(
             &interaction_verifier.0,
