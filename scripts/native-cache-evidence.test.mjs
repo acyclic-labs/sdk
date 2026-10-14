@@ -7,6 +7,27 @@ import YAML from "./vendor/yaml.cjs";
 
 const workflow = YAML.parse(readFileSync(".github/workflows/release-acyclic.yml", "utf8"));
 
+test("the product Cargo invocation preserves the configured compiler wrapper", () => {
+  const result = spawnSync(process.execPath, ["--input-type=module", "--eval", `
+    import childProcess from 'node:child_process';
+    import { syncBuiltinESMExports } from 'node:module';
+    childProcess.spawnSync = (command, args, options) => {
+      console.log(JSON.stringify({ command, args, wrapper: options.env.RUSTC_WRAPPER }));
+      return { status: 0 };
+    };
+    syncBuiltinESMExports();
+    await import('./scripts/build-product.mjs');
+  `], { encoding: "utf8", timeout: 60_000,
+    env: { ...process.env, CARGO: "fixture-cargo", RUSTC_WRAPPER: "fixture-sccache",
+      RUSTFLAGS: "", CARGO_ENCODED_RUSTFLAGS: "" } });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  const invocation = JSON.parse(result.stdout);
+  assert.equal(invocation.command, "fixture-cargo");
+  assert.equal(invocation.wrapper, "fixture-sccache");
+  assert.deepEqual(invocation.args.slice(0, 6), ["build", "--locked", "--profile", "dist", "-p", "acyclic-plugin"]);
+});
+
 test("native compiler caches keep one daily snapshot while restoring the previous working set", () => {
   const action = YAML.parse(readFileSync(".github/actions/rust-build-cache/action.yml", "utf8"));
   const compiler = action.runs.steps.find(step => step.name === "Restore compiler output");
@@ -96,6 +117,9 @@ test("native cache snapshot runs before leaving the build step and preserves its
   assert.ok(start >= 0 && end > start);
   const trap = build.run.slice(start, end + "\n' EXIT".length) + "\n";
   assert.ok(end < build.run.indexOf("node scripts/build-product.mjs"));
+  assert.ok(build.run.indexOf("sccache --start-server") < build.run.indexOf("cargo build --locked"));
+  assert.ok(build.run.indexOf("sccache --start-server") < build.run.indexOf("node scripts/build-product.mjs"));
+  assert.ok(build.run.includes('command -v "$RUSTC_WRAPPER"'));
   assert.ok(build.run.includes('wait "${pids[$index]}"'));
   mkdirSync(".tools", { recursive: true });
   const root = mkdtempSync(".tools/native-cache-").replaceAll("\\", "/");

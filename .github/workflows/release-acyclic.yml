@@ -137,6 +137,10 @@ jobs:
           # Complete rust-toolchain.toml components once, before parallel builds
           # race to install them.
           cargo --version
+          # Start outside the Node/Cargo child processes so their exit cannot
+          # leave the final snapshot querying an absent daemon.
+          printf 'Native compiler wrapper: %s (%s)\n' "$RUSTC_WRAPPER" "$(command -v "$RUSTC_WRAPPER")"
+          sccache --start-server
           pids=()
           names=()
           if [[ "$BUILD_QUALIFIER" == true ]]; then

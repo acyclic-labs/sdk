@@ -3,8 +3,8 @@ import { pathToFileURL } from "node:url";
 
 /** @param {string} primaryKey @param {string} matchedKey @param {string[]} snapshots */
 export function cacheSaveDecision(primaryKey, matchedKey, snapshots) {
-  if (primaryKey && matchedKey === primaryKey) return { save: false, reason: "this day's snapshot already exists" };
   if (!matchedKey) return { save: true, reason: "no restored cache" };
+  if (!primaryKey || matchedKey !== primaryKey) return { save: true, reason: "no current-day snapshot" };
   if (!snapshots.length) return { save: true, reason: "no compiler snapshot" };
   for (const path of snapshots) {
     let snapshot;
