@@ -272,7 +272,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                 maximum_generations: self.maximum_generations,
                 maximum_changes: self.maximum_changes,
                 maximum_conflicts: self.maximum_conflicts,
-                resolutions: crate::facade::WorkspaceJoinResolutions::Map(resolutions),
+                resolutions: crate::facade::WorkspaceJoinResolutions::Map(&resolutions),
             })
             .await?;
         self.map_join_outcome(outcome)

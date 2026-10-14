@@ -103,8 +103,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             )
             .await;
         crate::kernel::retire_allocation(exact_regions.allocation, region_bytes, accounting)?;
-        probe.0.retire_with_accounting(accounting)?;
-        drop(probe.1);
+        {
+            let (probe, _allocation) = probe;
+            probe.retire_with_accounting(accounting)?;
+        }
         let captured = captured?;
         let bytes = Self::mutation_dependency_bytes(&captured.0, accounting)?;
         Self::append_mutation_dependencies(
@@ -241,16 +243,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        cancellation.check().map_err(|_| OperationFailure::before_work(FsError::Cancelled(CancellationError)))?;
+        cancellation
+            .check()
+            .map_err(|_| OperationFailure::before_work(FsError::Cancelled(CancellationError)))?;
         if self.mode.access != AccessMode::ReadWrite
-            || !matches!(self.mode.mutations, MutationMode::PrivateOverlay | MutationMode::DirectLive)
+            || !matches!(
+                self.mode.mutations,
+                MutationMode::PrivateOverlay | MutationMode::DirectLive
+            )
         {
             return Err(OperationFailure::before_work(FsError::MutationNotAllowed));
         }
         let maximum = usize::try_from(self.volume.config.limits.maximum_mutations_per_batch)
             .unwrap_or(usize::MAX);
         if operations.capacity() > maximum {
-            return Err(OperationFailure::before_work(FsError::ExcessiveMutationCapacity));
+            return Err(OperationFailure::before_work(
+                FsError::ExcessiveMutationCapacity,
+            ));
         }
         crate::heap_future::in_heap_measured(
             move |budget| async move {
@@ -392,8 +401,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { .. } => self
                 .root
-                .hold.as_ref()
-                .map(|_| crate::collection::clone_generation_root(&working.0, accounting, Some(producer)))
+                .hold
+                .as_ref()
+                .map(|_| {
+                    crate::collection::clone_generation_root(&working.0, accounting, Some(producer))
+                })
                 .transpose()?,
             _ => {
                 let (allocations, work, budget, token) = accounting
@@ -401,8 +413,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     .ok_or(FsError::PendingMutationAllocationFailed)?;
                 token.check()?;
                 self.root
-                    .hold.as_ref()
-                    .map(|_| crate::collection::clone_generation_root(&working.0, &mut KernelAccounting::borrowed_standalone(allocations, work, budget, token), None))
+                    .hold
+                    .as_ref()
+                    .map(|_| {
+                        crate::collection::clone_generation_root(
+                            &working.0,
+                            &mut KernelAccounting::borrowed_standalone(
+                                allocations,
+                                work,
+                                budget,
+                                token,
+                            ),
+                            None,
+                        )
+                    })
                     .transpose()?
                     .map(|(root, _)| {
                         let control = Self::root_control_claim(&root, Some(producer))?;
@@ -534,9 +558,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .map(crate::foundation::usize_to_u64)
                 .ok_or(WorkError::Overflow)?;
             let captured = Owned::new(value, allocation, bytes);
-            let (probe, allocation) = probe;
-            probe.retire_with_accounting(accounting)?;
-            drop(allocation);
+            {
+                let (probe, _allocation) = probe;
+                probe.retire_with_accounting(accounting)?;
+            }
             self.extend_observations_with_accounting(captured, accounting, cancellation)
         }
         .await;
@@ -553,17 +578,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> Result<(), FsError> {
         let before = readonly_standalone_live(accounting);
         let result = async {
-            let (record, allocation) = crate::kernel::lookup_file_record_async_with_accounting(
-                &self.volume.fs.inner.objects,
-                self.base_root.file_table,
-                file_id,
-                DecodeLimits::for_volume(self.volume.config),
-                accounting,
-                cancellation,
-                Some(&self.dependencies.data_custody),
-            )
-            .await?;
-            drop(allocation);
+            let record = {
+                let (record, _allocation) =
+                    crate::kernel::lookup_file_record_async_with_accounting(
+                        &self.volume.fs.inner.objects,
+                        self.base_root.file_table,
+                        file_id,
+                        DecodeLimits::for_volume(self.volume.config),
+                        accounting,
+                        cancellation,
+                        Some(&self.dependencies.data_custody),
+                    )
+                    .await?;
+                record
+            };
             self.observe_identity_regions_with_accounting(
                 regular_range_regions(record, range.offset, range.length),
                 accounting,

@@ -62,8 +62,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .lookup_no_follow_with_accounting(path, &mut accounting, cancellation, true)
             .await;
         let work = accounting.spent();
-        let result = result.map(|(mut lookup, allocation)| {
-            drop(allocation);
+        let result = result.map(|(mut lookup, _allocation)| {
             lookup.work = work;
             lookup
         });
@@ -90,10 +89,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Option<PathMetadataLookup>, FsError> {
-        let (lookup, allocation) = self
-            .lookup_no_follow_with_accounting(path, accounting, cancellation, false)
-            .await?;
-        drop(allocation);
+        let lookup = {
+            let (lookup, _allocation) = self
+                .lookup_no_follow_with_accounting(path, accounting, cancellation, false)
+                .await?;
+            lookup
+        };
         let Some(record) = lookup.record else {
             return Ok(None);
         };
@@ -347,7 +348,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     } else {
                         crate::kernel::PathBatchMode::NoFollow
                     },
-                ).await?;
+                )
+                .await?;
                 return Ok(lookup);
             }
             // The unchanged root answers and observes in the same shared walk.
@@ -451,10 +453,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> Result<FileRecord, FsError> {
         let record = match file.address() {
             ContentAddress::Path(path) => {
-                let (lookup, allocation) = self
-                    .lookup_no_follow_with_accounting(path, accounting, cancellation, false)
-                    .await?;
-                drop(allocation);
+                let lookup = {
+                    let (lookup, _allocation) = self
+                        .lookup_no_follow_with_accounting(path, accounting, cancellation, false)
+                        .await?;
+                    lookup
+                };
                 lookup.record
             }
             ContentAddress::File(id) => {
@@ -483,9 +487,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         )
         .await;
         readonly_cleanup_standalone(accounting, before, 0)?;
-        result.map(|(record, allocation)| {
-            drop(allocation);
-            record
-        })
+        result.map(|(record, _allocation)| record)
     }
 }

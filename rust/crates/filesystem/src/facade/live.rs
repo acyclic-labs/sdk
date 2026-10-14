@@ -38,10 +38,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             )
             .await?;
         match decision {
-            RebaseDecision::Safe { .. } => {
-                drop(allocation);
-                Ok(())
-            }
+            RebaseDecision::Safe { .. } => Ok(()),
             RebaseDecision::Conflicted {
                 conflicts,
                 truncated,
@@ -346,7 +343,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 let publication = publication
                     .map(|receipt| receipt.value)
                     .map_err(|failure| failure.error)?;
-                if let Some((outcome, allocation)) = self
+                if let Some((outcome, _allocation)) = self
                     .finish_live_retry(
                         &mut state,
                         publication,
@@ -357,7 +354,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     )
                     .await?
                 {
-                    drop(allocation);
                     return Ok(outcome);
                 }
             }
@@ -389,10 +385,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     .rebase_head_with_accounting(maximum_conflicts, accounting, cancellation)
                     .await?;
                 match state.observe_rebase(decision).map_err(FsError::LiveRetry)? {
-                    LiveRetryAction::Publish => {
-                        drop(allocation);
-                        Ok(None)
-                    }
+                    LiveRetryAction::Publish => Ok(None),
                     LiveRetryAction::Complete(outcome) => Ok(Some((outcome, allocation))),
                     LiveRetryAction::Rebase => {
                         Err(FsError::LiveRetry(LiveRetryError::InvalidTransition))

@@ -24,6 +24,7 @@ pub(crate) enum CancellationWaitError {
 }
 
 impl Cancelled<'_> {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn detach_meter(mut self) -> Cancelled<'static> {
         self.meter.take();
         Cancelled {
@@ -125,6 +126,7 @@ impl Cancelled<'_> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Cancelled<'static> {
     pub(crate) fn cleanup_items(&self) -> u64 {
         u64::from(self.waiter.is_some())

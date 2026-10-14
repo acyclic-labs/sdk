@@ -49,10 +49,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         match file.address() {
             ContentAddress::File(id) => Ok(id),
             ContentAddress::Path(path) => {
-                let (lookup, allocation) = self
-                    .lookup_no_follow_with_accounting(path, accounting, cancellation, false)
-                    .await?;
-                drop(allocation);
+                let lookup = {
+                    let (lookup, _allocation) = self
+                        .lookup_no_follow_with_accounting(path, accounting, cancellation, false)
+                        .await?;
+                    lookup
+                };
                 Ok(lookup.record.ok_or(FsError::NotFound)?.file_id)
             }
         }

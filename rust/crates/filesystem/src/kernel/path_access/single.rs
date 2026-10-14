@@ -46,20 +46,21 @@ pub(super) async fn resolve_path_with_accounting<S: AsyncObjectStore>(
                     accounting,
                     data_custody,
                 )?;
-                let root = crate::kernel::file_table::lookup_file_record_async_with_accounting(
-                    &cache,
-                    generation.file_table,
-                    generation.root_file_id,
-                    limits,
-                    accounting,
-                    cancellation,
-                    data_custody,
-                )
-                .await?;
-                cache.reconcile(accounting)?;
-                let (root_record, root_guard) = root;
-                let mut current = root_record.ok_or(PathLookupError::MissingRootRecord)?;
-                drop(root_guard);
+                let mut current = {
+                    let (root_record, _root_guard) =
+                        crate::kernel::file_table::lookup_file_record_async_with_accounting(
+                            &cache,
+                            generation.file_table,
+                            generation.root_file_id,
+                            limits,
+                            accounting,
+                            cancellation,
+                            data_custody,
+                        )
+                        .await?;
+                    cache.reconcile(accounting)?;
+                    root_record.ok_or(PathLookupError::MissingRootRecord)?
+                };
                 let mut parent = None;
                 let mut resolved = 0;
                 let mut found = true;
@@ -155,20 +156,21 @@ pub(super) async fn resolve_path_with_accounting<S: AsyncObjectStore>(
                     if let Some(bytes) = entry_bytes {
                         release_standalone(accounting, bytes)?;
                     }
-                    let (record, record_guard) =
-                        crate::kernel::file_table::lookup_file_record_async_with_accounting(
-                            &cache,
-                            generation.file_table,
-                            file_id,
-                            limits,
-                            accounting,
-                            cancellation,
-                            data_custody,
-                        )
-                        .await?;
-                    cache.reconcile(accounting)?;
-                    current = record.ok_or(PathLookupError::KindMismatch)?;
-                    drop(record_guard);
+                    current = {
+                        let (record, _record_guard) =
+                            crate::kernel::file_table::lookup_file_record_async_with_accounting(
+                                &cache,
+                                generation.file_table,
+                                file_id,
+                                limits,
+                                accounting,
+                                cancellation,
+                                data_custody,
+                            )
+                            .await?;
+                        cache.reconcile(accounting)?;
+                        record.ok_or(PathLookupError::KindMismatch)?
+                    };
                     if current.kind != kind {
                         return Err(PathLookupError::KindMismatch.into());
                     }

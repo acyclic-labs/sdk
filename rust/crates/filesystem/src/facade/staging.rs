@@ -318,14 +318,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         };
         accounting.admit(owner)?;
         accounting.admit(hashing)?;
-        let (payload, allocation) = encoded;
-        let bytes = acyclic_stream::OwnedBytes::from(payload);
-        if let Err(error) = accounting.record_completed(owner) {
-            drop(bytes);
-            drop(allocation);
-            return Err(error);
-        }
-        drop(allocation);
+        let bytes = {
+            let (payload, _allocation) = encoded;
+            let bytes = acyclic_stream::OwnedBytes::from(payload);
+            if let Err(error) = accounting.record_completed(owner) {
+                drop(bytes);
+                return Err(error);
+            }
+            bytes
+        };
         let hashed = HashedObject::new(kind, bytes);
         accounting.record_completed(hashing)?;
         let object = hashed.object_id();

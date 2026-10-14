@@ -94,10 +94,7 @@ pub async fn classify_rebase_async<P: AsyncRebaseProbe>(
     .await;
     let work = accounting.spent();
     match classified {
-        Ok((decision, allocation)) => {
-            drop(allocation);
-            Ok(RebaseReceipt { decision, work })
-        }
+        Ok((decision, _allocation)) => Ok(RebaseReceipt { decision, work }),
         Err(error) => Err(OperationFailure::new(
             match error {
                 ClassifyRebaseFailure::Probe(error) => RebaseError::Probe(error),

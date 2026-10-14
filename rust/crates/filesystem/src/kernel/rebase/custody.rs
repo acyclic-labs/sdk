@@ -110,6 +110,7 @@ impl ProofDataCustody {
         (self.retained_payload_bytes(), standing)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) const fn logical_owned_bytes(&self) -> u64 {
         std::mem::size_of::<Self>() as u64
     }

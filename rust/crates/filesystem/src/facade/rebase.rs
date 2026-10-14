@@ -250,8 +250,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 FsError::Rebase(RebaseError::ZeroConflictLimit)
             }
         });
-        let retired = probe.0.retire_with_accounting(accounting);
-        drop(probe.1);
+        let retired = {
+            let (probe, _allocation) = probe;
+            probe.retire_with_accounting(accounting)
+        };
         retired?;
         let classified = classified?;
         if matches!(classified.0, RebaseDecision::Conflicted { .. }) {
@@ -334,7 +336,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         self.install_root_replacement(candidate_object, rebased.value, prepared);
         self.generation_root = candidate_object;
         self.authority_head = Some(candidate_head);
-        drop(rebased.allocation);
         Ok(classified)
     }
 

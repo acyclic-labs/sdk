@@ -2,8 +2,11 @@ use super::*;
 /// Metadata-only selection frozen from an authenticated lazy cut.
 #[derive(Debug)]
 pub struct SelectedImportPlan {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) source: LazySnapshotRef,
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) source_config: VolumeConfig,
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) source_used: bool,
     pub(crate) roots: Vec<String>,
     pub(crate) entries: Vec<SelectedImportRecord>,
@@ -26,10 +29,16 @@ impl SelectedImportPlan {
                 .sum::<u64>()
     }
     /// Returns total selected content bytes and the largest regular file.
-    pub fn byte_limits(&self, ctx: &mut KernelAccounting<'_>) -> Result<(u64, u64), LazyWorkspaceError> {
+    pub fn byte_limits(
+        &self,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<(u64, u64), LazyWorkspaceError> {
         let (mut total, mut regular) = (0u64, 0u64);
         for entry in &self.entries {
-            ctx.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+            ctx.charge(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
             if let Some((record, _)) = entry.record {
                 let bytes = record_logical_bytes(record).unwrap_or(0);
                 total = total.checked_add(bytes).ok_or(crate::WorkError::Overflow)?;
@@ -165,7 +174,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             Ok((entries, used))
         }
         .await;
-        let (mut entries, used) = match result {
+        let (mut entries, _used) = match result {
             Ok(value) => value,
             Err(error) => {
                 roots.retire(ctx)?;
@@ -175,9 +184,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         entries.allocation.absorb(&mut roots.allocation)?;
         Ok((
             SelectedImportPlan {
+                #[cfg(not(target_arch = "wasm32"))]
                 source: cut,
+                #[cfg(not(target_arch = "wasm32"))]
                 source_config: self.workspace.volume.config,
-                source_used: used,
+                #[cfg(not(target_arch = "wasm32"))]
+                source_used: _used,
                 roots: roots.value,
                 entries: entries.value,
             },

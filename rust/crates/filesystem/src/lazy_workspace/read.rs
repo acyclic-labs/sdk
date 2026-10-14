@@ -163,6 +163,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         }
         Ok(bytes)
     }
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) async fn open_source_file(
         &self,
         path: &str,

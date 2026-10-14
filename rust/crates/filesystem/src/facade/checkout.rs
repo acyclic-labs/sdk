@@ -114,7 +114,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
                     (base, root, dependencies)
                 }
                 KernelOwnedAllocation::Standalone => {
-                    drop((captured_allocation, proof_allocation));
+                    let (_captured_allocation, _proof_allocation) =
+                        (captured_allocation, proof_allocation);
                     let mut dependencies =
                         DependencyLedger::sharing_with_custody(Proof::new(captured), custody);
                     dependencies.proof().control =
@@ -278,22 +279,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         cancellation: &CancellationToken,
     ) -> Result<(), FsError> {
         let before = readonly_standalone_live(accounting);
-        let (root, allocation) = read_generation_root_with_accounting(
-            &self.volume.fs.inner.objects,
-            generation_root,
-            self.volume.config,
-            accounting,
-            cancellation,
-        )
-        .await?;
-        readonly_cleanup_standalone(accounting, before, root_parent_bytes(&root)?)?;
-        if root.volume_id != self.volume.id {
-            return Err(FsError::VolumeMismatch);
+        {
+            let (root, _allocation) = read_generation_root_with_accounting(
+                &self.volume.fs.inner.objects,
+                generation_root,
+                self.volume.config,
+                accounting,
+                cancellation,
+            )
+            .await?;
+            readonly_cleanup_standalone(accounting, before, root_parent_bytes(&root)?)?;
+            if root.volume_id != self.volume.id {
+                return Err(FsError::VolumeMismatch);
+            }
+            let prepared =
+                self.prepare_root_replacement(&root, &root, accounting, cancellation, None)?;
+            self.install_root_replacement(generation_root, root, prepared);
         }
-        let prepared =
-            self.prepare_root_replacement(&root, &root, accounting, cancellation, None)?;
-        self.install_root_replacement(generation_root, root, prepared);
-        drop(allocation);
         self.generation_root = generation_root;
         self.dependencies.proof().clear();
         Ok(())

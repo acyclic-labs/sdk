@@ -222,10 +222,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .await?;
             self.plan_record_extents(record, range, maximum_spans, &mut accounting, cancellation)
                 .await
-                .map(|(plan, allocation)| {
-                    drop(allocation);
-                    plan
-                })
+                .map(|(plan, _allocation)| plan)
         }
         .await;
         measured(result, &accounting)

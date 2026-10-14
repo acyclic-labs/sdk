@@ -85,7 +85,8 @@ pub(super) fn workspace_join_context(
 }
 
 pub(crate) enum WorkspaceJoinResolutions<'a> {
-    Map(BTreeMap<MergeConflict, MergeConflictResolution>),
+    Map(&'a BTreeMap<MergeConflict, MergeConflictResolution>),
+    #[cfg(not(target_arch = "wasm32"))]
     Slice(&'a [(MergeConflict, MergeConflictResolution)]),
 }
 
@@ -96,10 +97,11 @@ impl WorkspaceJoinResolutions<'_> {
     ) -> Result<(), FsError> {
         match self {
             Self::Map(map) => {
-                for (key, value) in map {
+                for (key, value) in *map {
                     visit(key, value)?;
                 }
             }
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Slice(slice) => {
                 for (key, value) in *slice {
                     visit(key, value)?;

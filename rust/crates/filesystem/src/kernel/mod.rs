@@ -67,10 +67,11 @@ pub(crate) use generation_mutation::{
     apply_generation_mutations_retaining_with_accounting, clone_generation_root_with_accounting,
 };
 pub(crate) use list::list_tree_entries_async_with_accounting;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use merge::merge_generation_with_borrowed_resolutions_with_accounting;
 pub(crate) use merge::{
     MergeGenerationBorrowedRequest, merge_generation_with_accounting,
     merge_generation_with_borrowed_map_resolutions_with_accounting,
-    merge_generation_with_borrowed_resolutions_with_accounting,
 };
 pub(crate) use persistent_diff::{
     ValueChange, diff_file_records_with_accounting, diff_tree_entries_with_accounting,

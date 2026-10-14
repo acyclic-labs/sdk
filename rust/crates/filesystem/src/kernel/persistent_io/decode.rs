@@ -1,6 +1,7 @@
 use super::*;
 use crate::kernel::codec::ReadAllocationStep;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn clone_page<F: Format>(
     page: &Page<F>,
     observe: &mut impl FnMut(crate::kernel::codec::ReadAllocationStep) -> Result<(), FsError>,
