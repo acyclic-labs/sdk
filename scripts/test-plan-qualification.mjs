@@ -391,6 +391,13 @@ ${helpers}
 ${commands}
 printf 'joined\\n'
 `], { stdio: "pipe" });
+        const deadlock = setTimeout(() => {
+          child.kill("SIGKILL");
+          child.stdin.destroy();
+          child.stdout.destroy();
+          child.stderr.destroy();
+          reject(new Error(`macOS join fixture deadlocked: ${fixture}\n${stdout}\n${stderr}`));
+        }, 60_000);
         let stdout = "", stderr = "", released = false;
         child.stdout.on("data", chunk => {
           stdout += chunk.toString();
@@ -401,9 +408,12 @@ printf 'joined\\n'
         });
         child.stderr.on("data", chunk => { stderr += chunk.toString(); });
         child.stdin.on("error", reject);
-        child.on("error", reject);
+        child.on("error", error => { clearTimeout(deadlock); reject(error); });
         child.on("exit", () => { if (!released) child.stdin.end(); });
-        child.on("close", status => resolve({ status, stdout, stderr, events: stdout.split(/\r?\n/).filter(line => line === "fixture-workspace-started").length }));
+        child.on("close", status => {
+          clearTimeout(deadlock);
+          resolve({ status, stdout, stderr, events: stdout.split(/\r?\n/).filter(line => line === "fixture-workspace-started").length });
+        });
       });
       const result = await run;
       assert.equal(result.events, 1, result.stderr);
