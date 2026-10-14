@@ -224,9 +224,11 @@ impl IndexedPublication {
                     tail.checked_add(1).is_some_and(|end| {
                         (append.start, append.end, append.tail, append.records.len())
                             == (tail, end, end, 1)
-                            && append.records[0].sequence == tail
-                            && append.records[0].value == *bytes
-                            && append.records[0].commit_id == envelope.commit_id
+                            && append.records.first().is_some_and(|record| {
+                                record.sequence == tail
+                                    && record.value == *bytes
+                                    && record.commit_id == envelope.commit_id
+                            })
                     })
                 });
         }

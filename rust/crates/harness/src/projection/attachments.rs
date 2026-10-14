@@ -32,13 +32,12 @@ pub(super) fn native_image(
 
 pub(super) fn omission_text(count: usize, io: Option<&PreparationIo>) -> Result<String> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-        let (text, custody) = io
-            .original_native_work()
-            .expect("checked native work")
-            .display(&format_args!(
-                "[{count} additional attachments omitted from this bounded model context]"
-            ))?;
+    if let Some(io) = io
+        && let Some(work) = io.original_native_work()
+    {
+        let (text, custody) = work.display(&format_args!(
+            "[{count} additional attachments omitted from this bounded model context]"
+        ))?;
         io.absorb_native_custody(custody)?;
         return Ok(text);
     }
@@ -63,7 +62,7 @@ pub(super) fn omission_text(count: usize, io: Option<&PreparationIo>) -> Result<
             &mut text,
             "[{count} additional attachments omitted from this bounded model context]"
         )
-        .expect("String formatter");
+        .map_err(|_| stock_boundary(Some(io), Invalid, "attachment omission formatting failed"))?;
         io.charge(charge)?;
         return Ok(text);
     }
@@ -145,7 +144,14 @@ pub(super) fn append(
     };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let move_files = if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-        let hold = source_hold.as_ref().expect("native manifest ownership");
+        let missing_hold = || {
+            stock_boundary(
+                Some(io),
+                crate::wire::ErrorCode::Storage,
+                "native manifest lacks ownership",
+            )
+        };
+        let hold = source_hold.as_ref().ok_or_else(missing_hold)?;
         let mut retained = 0_u64;
         for item in items.iter().take(count) {
             crate::model::charge_items(Some(io), 1)?;
@@ -163,9 +169,7 @@ pub(super) fn append(
             )
         })?;
         _hold = Some(io.guard_owned(discarded)?);
-        source_hold
-            .expect("checked manifest ownership")
-            .into_retained();
+        source_hold.ok_or_else(missing_hold)?.into_retained();
         true
     } else {
         _hold = source_hold;

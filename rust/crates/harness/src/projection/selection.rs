@@ -206,7 +206,7 @@ pub fn validate_model_context_selection(
                     .ok_or_else(|| diagnostic(work, Invalid, "tool result lacks call identity"))?;
                 let mut linked = None;
                 if let Some(reply) = message.reply_to {
-                    for id in selection.message_ids[..index].iter().rev() {
+                    for id in selection.message_ids.iter().take(index).rev() {
                         if let Some(observer) = work.as_deref_mut() {
                             observer.codec_charge(
                                 crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 },

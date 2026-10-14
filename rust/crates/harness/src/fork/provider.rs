@@ -139,8 +139,8 @@ pub(in crate::fork) fn release_frame<T>(
         Ok(())
     } else {
         work.as_deref_mut()
-            .expect("funded fork frame")
-            .release_owned(bytes)
+            .ok_or_else(|| Error::Storage("funded fork frame has no observer".into()))
+            .and_then(|io| io.release_owned(bytes))
     };
     match result {
         Err(error) => Err(error),

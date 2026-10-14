@@ -98,7 +98,13 @@ impl ResourcePreparationRequest {
             charge(work, index as u64 + 1)?;
             file.validate(work)?;
             total = add(total, file.descriptor().byte_length())?;
-            if total > self.maximum_bytes || self.input_files[..index].contains(file) {
+            if total > self.maximum_bytes
+                || self
+                    .input_files
+                    .iter()
+                    .take(index)
+                    .any(|prior| prior == file)
+            {
                 return Err(invalid(work));
             }
         }
