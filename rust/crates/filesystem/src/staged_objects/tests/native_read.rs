@@ -9,28 +9,28 @@ async fn native_spill_alias_retains_actual_buffer_after_cache_and_store_drop()
     let (id, bytes) = spill_fixture(&store, &token).await?;
     let work =
         NativeMaterializationWork::new(native_read_budget(), &token).map_err(|(error, _)| error)?;
-    let read = {
-        let __object_args = (id, bytes.len() as u64, &work, &token);
-        let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
-        let __object_result = store
-            .read(__object_args.0, __object_args.1, &mut __object_work)
-            .await;
-        __object_result
-    }?;
+    let read = store
+        .read(
+            id,
+            bytes.len() as u64,
+            &mut crate::AuthorityWork::native(&work, &token),
+        )
+        .await?;
     assert_eq!(read.bytes, bytes);
     let alias = read.bytes.clone();
     let held = work.live_allocation_bytes();
     assert!(held >= NativeMaterializationWork::accounting_state_bytes() + bytes.len() as u64);
     assert_eq!(work.receipt().object_bytes_read, bytes.len() as u64);
     let prefix = work.receipt();
-    drop({
-        let __object_args = (id, bytes.len() as u64, &work, &token);
-        let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
-        let __object_result = store
-            .read(__object_args.0, __object_args.1, &mut __object_work)
-            .await;
-        __object_result
-    }?);
+    drop(
+        store
+            .read(
+                id,
+                bytes.len() as u64,
+                &mut crate::AuthorityWork::native(&work, &token),
+            )
+            .await?,
+    );
     assert_eq!(
         work.receipt().backend_read_operations,
         prefix.backend_read_operations
@@ -62,14 +62,13 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
     budget.backend_read_operations = 0;
     let denied = NativeMaterializationWork::new(budget, &token).map_err(|(error, _)| error)?;
     assert!(matches!(
-        {
-            let __object_args = (id, bytes.len() as u64, &denied, &token);
-            let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
-            let __object_result = store
-                .read(__object_args.0, __object_args.1, &mut __object_work)
-                .await;
-            __object_result
-        },
+        store
+            .read(
+                id,
+                bytes.len() as u64,
+                &mut crate::AuthorityWork::native(&denied, &token),
+            )
+            .await,
         Err(ObjectStoreError::Native(
             NativeTreeMaterializationError::Work(crate::WorkError::BudgetExceeded {
                 counter: "backend_read_operations",
@@ -88,12 +87,13 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
         NativeMaterializationWork::new(native_read_budget(), &token).map_err(|(error, _)| error)?;
     let spill_file = store.spill_io.write().await;
     let mut future = Box::pin(async {
-        let __object_args = (id, bytes.len() as u64, &work, &token);
-        let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
-        let __object_result = store
-            .read(__object_args.0, __object_args.1, &mut __object_work)
-            .await;
-        __object_result
+        store
+            .read(
+                id,
+                bytes.len() as u64,
+                &mut crate::AuthorityWork::native(&work, &token),
+            )
+            .await
     });
     assert!(
         Future::poll(
@@ -121,14 +121,13 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
     let work =
         NativeMaterializationWork::new(native_read_budget(), &token).map_err(|(error, _)| error)?;
     assert!(matches!(
-        {
-            let __object_args = (id, bytes.len() as u64, &work, &token);
-            let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
-            let __object_result = store
-                .read(__object_args.0, __object_args.1, &mut __object_work)
-                .await;
-            __object_result
-        },
+        store
+            .read(
+                id,
+                bytes.len() as u64,
+                &mut crate::AuthorityWork::native(&work, &token),
+            )
+            .await,
         Err(ObjectStoreError::Corrupt)
     ));
     assert_eq!(work.receipt().object_bytes_read, bytes.len() as u64);
@@ -162,14 +161,13 @@ async fn native_staged_decoded_alias_keeps_original_guard_after_resident_ejectio
     let work =
         NativeMaterializationWork::new(native_read_budget(), &token).map_err(|(error, _)| error)?;
     let initial = work.receipt().allocation_operations;
-    let read = {
-        let __object_args = (id, bytes.len() as u64, &work, &token);
-        let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
-        let __object_result = store
-            .read(__object_args.0, __object_args.1, &mut __object_work)
-            .await;
-        __object_result
-    }?;
+    let read = store
+        .read(
+            id,
+            bytes.len() as u64,
+            &mut crate::AuthorityWork::native(&work, &token),
+        )
+        .await?;
     assert_eq!(read.bytes.as_ptr(), bytes.as_ptr());
     assert_eq!(work.receipt().allocation_operations, initial);
     assert_eq!(work.receipt().backend_read_operations, 0);
@@ -281,15 +279,10 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
             maximum_bytes: second_bytes.len() as u64,
         },
     ];
-    let batch = {
-        let __object_args = (&requests, &work, &token);
-        let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
-        let __object_result = store
-            .read_many(__object_args.0, &mut __object_work)
-            .await
-            .map(|(values, allocation)| (values, allocation.expect("native batch allocation")));
-        __object_result
-    }?;
+    let batch = store
+        .read_many(&requests, &mut crate::AuthorityWork::native(&work, &token))
+        .await
+        .map(|(values, allocation)| (values, allocation.expect("native batch allocation")))?;
     assert_eq!(batch.0.len(), 2);
     assert_eq!(batch.0[0].bytes, first_bytes);
     assert_eq!(batch.0[1].bytes, second_bytes);

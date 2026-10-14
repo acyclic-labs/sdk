@@ -18,7 +18,8 @@ fn budget() -> WorkBudget {
 fn native_event_round_trip_releases_custody() -> Result<()> {
     let bytes = tests::fixture();
     let token = CancellationToken::new();
-    let native = NativeMaterializationWork::new(budget(), &token).unwrap();
+    let native = NativeMaterializationWork::new(budget(), &token)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let baseline = native.live_allocation_bytes();
     for suffix in [&[][..], &[0x18, 0x01], &[0x78, 0x01]] {
         let mut input = bytes.clone();
@@ -41,14 +42,16 @@ fn native_event_round_trip_releases_custody() -> Result<()> {
 }
 #[test]
 fn native_partial_payload_cause_keeps_original_guard_until_cause_drop() -> Result<()> {
-    let mut envelope = wire::EventEnvelope::decode(tests::fixture().as_slice()).unwrap();
+    let mut envelope = wire::EventEnvelope::decode(tests::fixture().as_slice())
+        .map_err(|error| Error::Invalid(error.to_string()))?;
     envelope.event_type = "conversation_bound".into();
     envelope.canonical_payload_json =
         br#"{"kind":"conversation_bound","agent":"not-a-UUID"}"#.to_vec();
     let original =
         serde_json::from_slice::<EventPayload>(&envelope.canonical_payload_json).unwrap_err();
     let token = CancellationToken::new();
-    let native = NativeMaterializationWork::new(budget(), &token).unwrap();
+    let native = NativeMaterializationWork::new(budget(), &token)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let baseline = native.live_allocation_bytes();
     let mut io = HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native)?);
     let Error::NativeJson {
@@ -80,7 +83,8 @@ fn native_malformed_prost_preserves_original_cause_and_preclaimed_custody() -> R
         &[0x7b; 101],
     ] {
         let token = CancellationToken::new();
-        let native = NativeMaterializationWork::new(budget(), &token).unwrap();
+        let native = NativeMaterializationWork::new(budget(), &token)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let baseline = native.live_allocation_bytes();
         let mut io = HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native)?);
         let Error::NativeProstDecode {
@@ -114,7 +118,8 @@ fn native_malformed_prost_preserves_original_cause_and_preclaimed_custody() -> R
 }
 #[test]
 fn native_quota_precedes_allocating_original_deserialize_failure() -> Result<()> {
-    let mut envelope = wire::EventEnvelope::decode(tests::fixture().as_slice()).unwrap();
+    let mut envelope = wire::EventEnvelope::decode(tests::fixture().as_slice())
+        .map_err(|error| Error::Invalid(error.to_string()))?;
     envelope.canonical_payload_json = format!(
         r#"{{"type":"not_an_event","untrusted":["{}"]}}"#,
         "x".repeat(4096)
@@ -126,7 +131,8 @@ fn native_quota_precedes_allocating_original_deserialize_failure() -> Result<()>
     allowance.peak_allocation_bytes =
         NativeMaterializationWork::accounting_state_bytes() + carrier + 8192;
     let token = CancellationToken::new();
-    let native = NativeMaterializationWork::new(allowance, &token).unwrap();
+    let native = NativeMaterializationWork::new(allowance, &token)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let mut io = HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native)?);
     let error = decode_event(&bytes, &mut Some(&mut io)).unwrap_err();
     assert!(!matches!(
@@ -142,7 +148,8 @@ fn native_diagnostic_quota_denies_before_even_malformed_key_decode() -> Result<(
     let mut allowance = budget();
     allowance.peak_allocation_bytes = NativeMaterializationWork::accounting_state_bytes();
     let token = CancellationToken::new();
-    let native = NativeMaterializationWork::new(allowance, &token).unwrap();
+    let native = NativeMaterializationWork::new(allowance, &token)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let mut io = HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native)?);
     assert!(matches!(
         admission::decode_quota(&[0x00], &mut Some(&mut io)),

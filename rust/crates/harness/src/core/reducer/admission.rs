@@ -349,12 +349,14 @@ impl Reducer {
             VolumeOperation::Write => "volume:write:",
         };
         let mut label = [0_u8; 77];
-        label[..prefix.len()].copy_from_slice(prefix.as_bytes());
-        label[prefix.len()..prefix.len() + 64].copy_from_slice(hash.as_bytes());
-        require_capability(
-            scope,
-            std::str::from_utf8(&label[..prefix.len() + 64]).expect("hex capability"),
-        )
+        for (slot, byte) in label.iter_mut().zip(prefix.bytes().chain(hash.bytes())) {
+            *slot = byte;
+        }
+        let invalid = || {
+            crate::fork::boundary_error(work, ErrorCode::Invalid, "volume capability is invalid")
+        };
+        let bytes = label.get(..prefix.len() + hash.len()).ok_or_else(invalid)?;
+        require_capability(scope, std::str::from_utf8(bytes).map_err(|_| invalid())?)
     }
 
     /// Applies an event after its canonical Stream append commits.

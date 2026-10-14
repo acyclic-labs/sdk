@@ -136,8 +136,16 @@ impl<P: StreamProvider> HistoryReader<P> {
             through_revision: cursor.through_revision,
         };
         quota.adopt(next.authority.id.capacity() as u64)?;
-        let count = (cursor.through_revision - cursor.after_revision)
-            .min(u64::from(limits.maximum_events)) as u32;
+        let count = u32::try_from(
+            (cursor.through_revision - cursor.after_revision).min(u64::from(limits.maximum_events)),
+        )
+        .map_err(|_| {
+            boundary(
+                quota.work(),
+                Invalid,
+                "history page exceeds event allowance",
+            )
+        })?;
         let mut events = Vec::new();
         if count != 0 {
             let mut records = crate::store::operations::read_records(

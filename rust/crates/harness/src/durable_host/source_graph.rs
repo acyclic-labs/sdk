@@ -132,6 +132,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The bounded creator traversal retains its proof custody and scan credit in one future."
+    )]
     pub(super) async fn source_created_project(
         &self,
         source: &TaskAdmissionRecord,

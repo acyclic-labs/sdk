@@ -103,9 +103,8 @@ fn created_resource_proofs_are_exact_canonical_child_data() -> Result<()> {
             .map_err(|error| Error::Invalid(error.to_string()))?;
     let mut admission = TaskAdmissionRecord::from_canonical_value(wire.clone(), &mut None)?.0;
     let provider = ProviderRef::new("test".into(), "creator".into(), "1".into(), &mut None)?;
-    let resource = |kind, id: &[u8]| {
-        ResourceRef::new(kind, provider.clone(), id.to_vec(), None, &mut None)
-    };
+    let resource =
+        |kind, id: &[u8]| ResourceRef::new(kind, provider.clone(), id.to_vec(), None, &mut None);
     let proof = ResourceCreationProofRef {
         provider: provider.clone(),
         preparation: TaskId::from_bytes([71; 16]),
@@ -153,7 +152,8 @@ fn rejected_native_admission_releases_conversion_reservation() -> Result<()> {
     let mut value: Value =
         serde_json::from_str(include_str!("../../../fixtures/v2/task-admission.json"))
             .map_err(|error| Error::Invalid(error.to_string()))?;
-    value["task"]["digest"] = serde_json::to_value([0_u8; 32]).expect("digest serializes");
+    value["task"]["digest"] =
+        serde_json::to_value([0_u8; 32]).map_err(|error| Error::Invalid(error.to_string()))?;
     let bytes = crate::contract::canonical_json_bytes(&value)?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(

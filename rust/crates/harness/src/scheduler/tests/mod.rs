@@ -9,6 +9,7 @@ mod model_ordering;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native;
 mod orchestration;
+#[cfg(not(target_arch = "wasm32"))]
 mod property;
 mod session;
 fn id(value: u8) -> OperationId {

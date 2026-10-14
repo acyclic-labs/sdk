@@ -3,7 +3,7 @@ use proptest::prelude::*;
 
 #[derive(Clone, Debug)]
 enum Exercise {
-    Event(SchedulerEvent),
+    Event(Box<SchedulerEvent>),
     Orchestrate(u8),
     Advance(u8, u8),
 }
@@ -107,7 +107,7 @@ fn exercise() -> impl Strategy<Value = Exercise> {
             .prop_map(|(op, lease, attempt, step, digest)| claim(op, lease, attempt, step, digest)),
         4 => (op(), 0..4_u8, proptest::option::weighted(0.8, lease()))
             .prop_map(|(op, kind, lease)| completion(op, kind, lease).expect("completion")),
-    ].prop_map(Exercise::Event);
+    ].prop_map(|event| Exercise::Event(Box::new(event)));
     prop_oneof![
         27 => events,
         4 => op().prop_map(Exercise::Orchestrate),
@@ -117,7 +117,7 @@ fn exercise() -> impl Strategy<Value = Exercise> {
 
 fn event(scheduler: &Scheduler, exercise: Exercise) -> Result<Option<SchedulerEvent>> {
     match exercise {
-        Exercise::Event(event) => Ok(Some(event)),
+        Exercise::Event(event) => Ok(Some(*event)),
         Exercise::Advance(op, choice) => {
             let Some(state) = scheduler.operation(id(op)) else {
                 return Ok(None);

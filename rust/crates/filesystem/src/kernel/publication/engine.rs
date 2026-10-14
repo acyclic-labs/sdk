@@ -1,5 +1,10 @@
 use super::*;
 
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "This state transition keeps admission, effects and resource retirement in one frame."
+)]
 pub(super) async fn publish_generation_async_inner<O, E, F, Fut, G, Dispatch, R>(
     objects: &O,
     request: PublishGenerationRequest,
@@ -102,8 +107,12 @@ where
     };
     // Field order keeps the concrete proof data physically ahead of its guard.
     let mut output = (proof, guard);
-    if let ProofGuard::Standalone { .. } = &output.1 {
-        retain(accounting, output.1.retained_bytes()).map_err(E::from)?;
+    match &output.1 {
+        ProofGuard::Standalone { .. } => {
+            retain(accounting, output.1.retained_bytes()).map_err(E::from)?;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        ProofGuard::Native(_) => {}
     }
     if output.0.root.volume_id != request.volume_id {
         return Err(E::from(crate::FsError::Publication(

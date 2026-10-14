@@ -3,6 +3,7 @@ use super::*;
 use crate::durable_host::TaskJournalOwner;
 
 fn guarded_publication_error(error: Error, operation: OperationId) -> Error {
+    let _ = &error;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if matches!(
         &error,
@@ -292,7 +293,13 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 return owner
                     .append_conversation(
                         &publication,
-                        key.as_ref().expect("publication key"),
+                        key.as_ref().ok_or_else(|| {
+                            guarded_boundary(
+                                transient.work(),
+                                crate::wire::ErrorCode::Storage,
+                                "publication key is missing",
+                            )
+                        })?,
                         write,
                         transient.work(),
                         Some(&mut append_phase),
@@ -302,7 +309,13 @@ impl<P: StreamProvider> StreamAggregate<P> {
             let request = publication
                 .request(
                     &self.client,
-                    key.take().expect("publication key"),
+                    key.take().ok_or_else(|| {
+                        guarded_boundary(
+                            transient.work(),
+                            crate::wire::ErrorCode::Storage,
+                            "publication key is missing",
+                        )
+                    })?,
                     transient.work(),
                 )
                 .await?;

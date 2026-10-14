@@ -344,14 +344,13 @@ impl AsyncObjectStore for PanicProbeStore<'_> {
                     let __object_args = (object, maximum_bytes, work, cancellation);
                     let mut __object_work =
                         crate::AuthorityWork::native(__object_args.2, __object_args.3);
-                    let __object_result = AsyncObjectStore::read(
+                    AsyncObjectStore::read(
                         &self.store,
                         __object_args.0,
                         __object_args.1,
                         &mut __object_work,
                     )
-                    .await;
-                    __object_result
+                    .await
                 }
             }
             .await;

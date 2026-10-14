@@ -7,7 +7,7 @@ use acyclic_native_runtime::{
 #[cfg(not(target_arch = "wasm32"))]
 type Allocation = Option<ReadAllocation>;
 #[cfg(target_arch = "wasm32")]
-type Allocation = ();
+type Allocation = Option<()>;
 
 #[cfg(not(target_arch = "wasm32"))]
 type WriteReservation = (

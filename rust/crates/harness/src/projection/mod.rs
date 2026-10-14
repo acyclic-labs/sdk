@@ -151,14 +151,15 @@ pub async fn select_model_context(
                 )
             }
             MessageKind::ToolResult => {
-                let call_id = message
-                    .tool_call_id
-                    .as_deref()
-                    .expect("validated tool result identity");
+                let call_id = message.tool_call_id.as_deref().ok_or_else(|| {
+                    stock_boundary(io, Invalid, "tool result lacks call identity")
+                })?;
                 let mut linked = None;
                 if let Some(reply) = message.reply_to {
-                    for (id, projected) in selection.message_ids[..messages.len()]
+                    for (id, projected) in selection
+                        .message_ids
                         .iter()
+                        .take(messages.len())
                         .zip(&messages)
                         .rev()
                     {
@@ -180,10 +181,10 @@ pub async fn select_model_context(
                         "selected tool result lacks its call",
                     ));
                 };
-                let _hold;
+
                 let (items, hold) =
                     attachments::resolve(message, resolver, limits.attachments, io).await?;
-                _hold = hold;
+                let _hold = hold;
                 let mut projection = None;
                 for item in items.iter() {
                     crate::model::charge_items(io, 1)?;
@@ -224,10 +225,10 @@ pub async fn select_model_context(
                     }
                     _ => FileProjectionPolicy::Reference,
                 };
-                let hold;
+
                 let (items, source_hold) =
                     attachments::resolve(message, resolver, limits.attachments, io).await?;
-                hold = source_hold;
+                let hold = source_hold;
                 let count = items.len().min(maximum_projected_attachments);
                 let omitted = items.len() - count;
                 let mut parts = crate::model::vec_with_capacity::<ModelContentPart>(

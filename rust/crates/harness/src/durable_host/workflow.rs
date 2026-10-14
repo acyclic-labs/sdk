@@ -277,15 +277,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<Option<(u64, Value)>> {
         let operation = OperationId::from_bytes(task.into_bytes());
         #[cfg(feature = "filesystem")]
-        let mut admission_history = io.map(|io| io.history_io());
-        #[cfg(feature = "filesystem")]
-        let mut admission_work = admission_history
-            .as_mut()
-            .map(|io| io as &mut dyn crate::store::HistoryIo);
-        #[cfg(not(feature = "filesystem"))]
-        let mut admission_work = None;
-        let admission = self.admission(operation, &mut admission_work).await?;
-        #[cfg(feature = "filesystem")]
         let mut history = io.map(|io| io.history_io());
         #[cfg(feature = "filesystem")]
         let mut work = history
@@ -293,10 +284,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .map(|io| io as &mut dyn crate::store::HistoryIo);
         #[cfg(not(feature = "filesystem"))]
         let mut work: Option<&mut dyn crate::store::HistoryIo> = None;
-        let mut quota = crate::wire_codec::CodecQuota::from_retained(
-            &mut work,
-            std::mem::size_of::<TaskAdmissionRecord>() as u64 + admission.logical_owned_bytes()?,
-        );
+        let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
         let slot = {
             let mut coordinator = self.coordinator.lock().await;
             coordinator.refresh(quota.work()).await?;
@@ -321,6 +309,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let Some(input) = slot.input else {
             return Ok(None);
         };
+        let admission = self.admission(operation, quota.work()).await?;
+        quota.adopt(
+            std::mem::size_of::<TaskAdmissionRecord>() as u64 + admission.logical_owned_bytes()?,
+        )?;
         admission.limits.validate_file(&input, quota.work())?;
         if !read_granted(&admission.grants, &input)? {
             return Err(crate::scheduler::diagnostic(

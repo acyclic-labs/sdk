@@ -13,7 +13,7 @@ pub(crate) async fn send_cli_control_request(
     // cold start. The published marker is an instance nonce, not a binary compatibility identity.
     let ping = ping_request()?;
     for attempt in 0..10 {
-        match send_control_request(data, &ping).await {
+        match send_control_request_once(data, &ping).await {
             Ok(active)
                 if active.get("identity").and_then(Value::as_str) == Some(identity.as_str()) =>
             {

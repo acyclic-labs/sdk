@@ -2,7 +2,7 @@ use super::content_write::bound_content_writer;
 use super::*;
 
 /// One admitted task's mailbox borrowed from its current owner token.
-pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
+pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform + Any {
     fn validate_scope(
         &self,
         scope: &RuntimeScope,
@@ -10,6 +10,12 @@ pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
     ) -> Result<()>;
     #[cfg(feature = "filesystem")]
     fn task_binding(&self) -> (TaskId, &crate::scheduler::LeaseFence);
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn admission(&self) -> (&TaskAdmissionRecord, &WorkflowAdmission);
+    fn verify_owner<'a>(
+        &'a self,
+        io: Option<&'a crate::executor::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>>;
     fn send<'a>(
         &'a self,
         recipient: TaskId,
@@ -69,9 +75,13 @@ impl TaskContext {
         }
     }
 
-    pub(crate) fn into_shared(mut self) -> Result<Arc<TaskContext>> {
+    pub(crate) fn into_shared(self) -> Result<Arc<TaskContext>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(mut custody) = self.native_custody.take() {
+        let mut context = self;
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let context = self;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(mut custody) = context.native_custody.take() {
             let mut slot = match custody.work().claim(
                 (2 * std::mem::size_of::<usize>()) as u64,
                 1,
@@ -79,7 +89,7 @@ impl TaskContext {
             ) {
                 Ok(slot) => slot,
                 Err(cause) => {
-                    drop(self);
+                    drop(context);
                     return Err(Error::NativeWork {
                         cause,
                         custody: Some(custody),
@@ -87,9 +97,9 @@ impl TaskContext {
                 }
             };
             custody.absorb(&mut slot)?;
-            self.native_custody = Some(custody);
+            context.native_custody = Some(custody);
         }
-        Ok(Arc::new(self))
+        Ok(Arc::new(context))
     }
 
     /// Selects an authenticated created destination without widening task authority.
@@ -112,13 +122,34 @@ impl TaskContext {
             return self
                 .project_output_binding(
                     &binding,
-                    io.original_native_work().expect("original context work"),
+                    io.original_native_work().ok_or_else(|| {
+                        native_context::boundary(
+                            crate::wire::ErrorCode::Invalid,
+                            "original context work is missing",
+                        )
+                    })?,
                 )
                 .await;
         }
         let mut context = self.as_ref().clone();
         context.output_content = Some(binding);
         context.into_shared()
+    }
+
+    /// Borrows the immutable admission retained by this context's original owner.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn admission(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<&TaskAdmissionRecord>> {
+        self.require_original_native_work(work)?;
+        let Some(owner) = &self.owned_mailbox else {
+            return Ok(None);
+        };
+        self.owned_task_binding(Some(&crate::executor::PreparationIo::from_native_work(
+            work,
+        )?))?;
+        Ok(Some(owner.admission().0))
     }
 
     /// Borrows the task and fence from this context's original owner.
@@ -224,6 +255,11 @@ impl TaskContext {
 
     /// Returns a separately cancellable bounded group for additional local work.
     #[must_use]
+    #[allow(
+        clippy::expect_used,
+        clippy::missing_panics_doc,
+        reason = "A child with no native work performs no fallible quota operations."
+    )]
     pub fn group(&self) -> RuntimeGroup {
         RuntimeGroup {
             harness: Arc::clone(&self.harness),
@@ -300,8 +336,11 @@ pub(crate) fn read_granted_with_work(
     {
         return Ok(true);
     }
-    for (slash, _) in file.path().match_indices('/') {
-        let prefix = &file.path()[..slash];
+    for prefix in file
+        .path()
+        .match_indices('/')
+        .filter_map(|(slash, _)| file.path().get(..slash))
+    {
         if !crate::conversation::is_internal_path(prefix)
             && contains_content_grant_with_work(
                 grants,
@@ -322,6 +361,20 @@ pub(super) fn contains_content_grant_with_work<T: Serialize + ?Sized>(
     prefix: &str,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<bool> {
+    if let Some(io) = work.as_deref_mut() {
+        io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
+    }
+    if !grants
+        .0
+        .range::<str, _>((
+            std::ops::Bound::Included(prefix),
+            std::ops::Bound::Unbounded,
+        ))
+        .next()
+        .is_some_and(|grant| grant.starts_with(prefix))
+    {
+        return Ok(false);
+    }
     let digest = crate::executor::json::canonical_json_digest(
         value,
         acyclic_stream::MAX_RECORD_BYTES as u64,

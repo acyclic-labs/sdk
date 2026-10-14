@@ -1,9 +1,9 @@
 #[cfg(feature = "native-watch")]
 use super::*;
 use crate::NativeMaterializationWork;
-use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(feature = "native-watch")]
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(feature = "native-watch")]
 #[derive(Debug, Default)]
@@ -91,13 +91,9 @@ impl SourcePayloadOwnership {
 #[cfg(feature = "native-watch")]
 impl Drop for SourcePayloadOwnership {
     fn drop(&mut self) {
-        if let Self::Registered(custody, bytes) = self
-            && let Err(error) = custody.retire(*bytes.get_mut())
-                && let Some(original) = &custody.original {
-                    original.with_original_leaf(|work| {
-                        work.record_native_io_failure(error.into());
-                    });
-                }
+        if let Self::Registered(custody, bytes) = self {
+            custody.retire_deferred(*bytes.get_mut());
+        }
     }
 }
 
@@ -130,7 +126,11 @@ impl NativeMountAllocationCustody {
                 bytes: AtomicU64::new(metadata),
                 original,
             });
-            let slot = work.roots.native_mount_admissions.0.get_mut(index)
+            let slot = work
+                .roots
+                .native_mount_admissions
+                .0
+                .get_mut(index)
                 .ok_or(DemandError::InvalidRequest)?;
             *slot = (Arc::downgrade(&custody), metadata);
             Ok(custody)
@@ -198,15 +198,26 @@ impl NativeMountAllocationCustody {
             .map_err(|_| crate::WorkError::Overflow)?;
         self.retire_resource(bytes)
     }
+    #[cfg(feature = "native-watch")]
+    pub(crate) fn retire_deferred(&self, bytes: u64) {
+        if let Err(error) = self.retire(bytes)
+            && let Some(original) = &self.original
+        {
+            original.with_original_leaf(|work| {
+                work.record_native_io_failure(error.into());
+            });
+        }
+    }
     fn retire_resource(&self, bytes: u64) -> Result<(), crate::WorkError> {
         if let Some(original) = &self.original
             && let Some(resource) = &original.resource
-            && let Err(error) = resource.retire(bytes) {
-                original.with_original_leaf(|work| {
-                    work.record_native_io_failure(error);
-                });
-                return Err(crate::WorkError::Overflow);
-            }
+            && let Err(error) = resource.retire(bytes)
+        {
+            original.with_original_leaf(|work| {
+                work.record_native_io_failure(error);
+            });
+            return Err(crate::WorkError::Overflow);
+        }
         Ok(())
     }
 }

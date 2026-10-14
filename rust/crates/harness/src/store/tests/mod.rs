@@ -54,15 +54,13 @@ fn command(identity: u8) -> Result<Command> {
         operation_id: OperationId::from_bytes([identity; 16]),
         idempotency_key: IdempotencyKey(format!("append-conversation-1-{identity}")),
         expected_revision: 0,
-        scope: issuer()
-            .issue(
-                "root",
-                &Capabilities::new(["event:append"]),
-                None,
-                None,
-                &mut None,
-            )
-            .expect("scope proof"),
+        scope: issuer().issue(
+            "root",
+            &Capabilities::new(["event:append"]),
+            None,
+            None,
+            &mut None,
+        )?,
         causal_parent: None,
         action: Action::AppendCustom {
             schema: "example.message".into(),

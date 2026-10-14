@@ -43,6 +43,7 @@ impl<'a> AuthorityWork<'a> {
 
     pub(super) fn vec<T>(&mut self, capacity: usize) -> Result<Vec<T>, AuthorityStoreError> {
         let (value, allocation) = self.vec_owned(capacity)?;
+        let _ = &allocation;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(mut allocation) = allocation {
             match &mut self.request_allocation {
@@ -84,7 +85,10 @@ impl<'a> AuthorityWork<'a> {
     ) -> Result<(T, ProviderAllocation), AuthorityStoreError> {
         let (value, allocation) = result
             .map_err(|error| self.native_io_failure(error))?
-            .map_err(AuthorityStoreError::from)?
+            .map_err(|error| match error {
+                acyclic_stream::StreamError::NotFound => AuthorityStoreError::Missing,
+                error => AuthorityStoreError::from(error),
+            })?
             .into_parts();
         Ok((value, Some(allocation)))
     }
@@ -121,7 +125,9 @@ impl<'a> AuthorityWork<'a> {
         domain: &[u8],
         fields: &[&[u8]],
     ) -> Result<acyclic_stream::OwnedBytes, AuthorityStoreError> {
-        let mut buffer = self.byte_buffer(domain, fields)?;
+        let buffer = self.byte_buffer(domain, fields)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut buffer = buffer;
         #[cfg(not(target_arch = "wasm32"))]
         if self.is_native() {
             return acyclic_stream::OwnedBytes::from_vec_with_guard_in_place(
@@ -175,20 +181,29 @@ impl<'a> AuthorityWork<'a> {
         let writes = codec_work(length as u64, (PREFIX.len() + suffix.len()) as u64, 0);
         self.admit(writes)?;
         let mut text = [0_u8; acyclic_stream::MAX_PATH_BYTES];
-        text[..PREFIX.len()].copy_from_slice(PREFIX);
+        text.get_mut(..PREFIX.len())
+            .ok_or(crate::WorkError::Overflow)?
+            .copy_from_slice(PREFIX);
         let cursor = PREFIX.len() + 32;
-        hex::encode_to_slice(authority.into_bytes(), &mut text[PREFIX.len()..cursor])
-            .expect("authority hex width");
-        text[cursor..cursor + suffix.len()].copy_from_slice(suffix.as_bytes());
+        hex::encode_to_slice(
+            authority.into_bytes(),
+            text.get_mut(PREFIX.len()..cursor)
+                .ok_or(crate::WorkError::Overflow)?,
+        )
+        .map_err(|_| crate::WorkError::Overflow)?;
+        text.get_mut(cursor..cursor + suffix.len())
+            .ok_or(crate::WorkError::Overflow)?
+            .copy_from_slice(suffix.as_bytes());
         if let Some(generation) = generation {
             hex::encode_to_slice(
                 generation.digest().as_bytes(),
-                &mut text[cursor + suffix.len()..length],
+                text.get_mut(cursor + suffix.len()..length)
+                    .ok_or(crate::WorkError::Overflow)?,
             )
-            .expect("generation hex width");
+            .map_err(|_| crate::WorkError::Overflow)?;
         }
         self.charge(writes)?;
-        let text = std::str::from_utf8(&text[..length])
+        let text = std::str::from_utf8(text.get(..length).ok_or(crate::WorkError::Overflow)?)
             .map_err(|_| AuthorityStoreError::RejectedStatic("fork path is not UTF-8"))?;
         self.own_path(text)
     }
@@ -224,7 +239,7 @@ impl<'a> AuthorityWork<'a> {
             &mut text,
             Some(self),
         )?;
-        let text = std::str::from_utf8(&text[..length])
+        let text = std::str::from_utf8(text.get(..length).ok_or(crate::WorkError::Overflow)?)
             .map_err(|_| authority_corrupt("lease path is not UTF-8", self))?;
         self.own_path(text)
     }

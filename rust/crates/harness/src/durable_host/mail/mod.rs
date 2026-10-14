@@ -294,6 +294,10 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         Ok(retained)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Conditional append and same-key recovery share one admitted parcel and observer."
+    )]
     pub(super) async fn publish_mail(
         &self,
         sender: TaskId,
@@ -476,6 +480,10 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "One bounded replay authenticates both the retained parcel and its journal location."
+    )]
     pub(super) async fn observe_mail_location(
         &self,
         sender: TaskId,

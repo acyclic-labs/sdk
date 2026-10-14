@@ -176,7 +176,7 @@ fn rollback_never_replaces_a_concurrent_binding() -> TestResult {
         recover_native_exchange(&f.journal),
         Err(NativeExchangeError::CarriedPathConflict(_))
     ));
-    changed.join().expect("concurrent writer");
+    changed.join().map_err(|_| "concurrent writer panicked")?;
     assert_eq!(fs::read(f.live.join("private"))?, b"user");
     assert_eq!(fs::read(f.prepared.join("private"))?, b"original");
     Ok(())
@@ -194,7 +194,7 @@ fn journal_rejections_preserve_the_original_request_and_roots() -> TestResult {
             matches!(recover_native_exchange(&f.journal), Err(NativeExchangeError::UnsupportedJournalVersion(v)) if v == version)
         );
     }
-    let mut invalid_paths = vec![
+    let invalid_paths = vec![
         PathBuf::new(),
         ".".into(),
         "../outside".into(),
@@ -202,7 +202,11 @@ fn journal_rejections_preserve_the_original_request_and_roots() -> TestResult {
         f.live.clone(),
     ];
     #[cfg(windows)]
-    invalid_paths.extend(["C:relative".into(), r"\rooted".into()]);
+    let invalid_paths = {
+        let mut paths = invalid_paths;
+        paths.extend(["C:relative".into(), r"\rooted".into()]);
+        paths
+    };
     for path in invalid_paths {
         let mut invalid = original.clone();
         invalid.carried = vec![path];

@@ -226,7 +226,11 @@ impl<P: StreamProvider> StreamAggregate<P> {
 
     /// Captures the authoritative tail for a finite incremental refresh.
     pub async fn tail_revision(&self) -> Result<u64> {
-        Ok(self.client.tail(self.path.clone()).await?)
+        match self.client.tail(self.path.clone()).await {
+            Ok(tail) => Ok(tail),
+            Err(acyclic_stream::StreamError::NotFound) if self.reducer.revision() == 0 => Ok(0),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Advances the existing verified projection by at most one caller-sized page.

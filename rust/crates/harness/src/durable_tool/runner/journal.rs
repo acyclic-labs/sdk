@@ -56,10 +56,13 @@ impl DurableToolRunner<'_> {
             decoded
                 .1
                 .as_mut()
-                .expect("funded decode holds its output")
+                .ok_or_else(|| boundary(io, Storage, "funded decode lacks output custody"))?
                 .substitute(retained)?;
-            let (value, custody) =
-                crate::filesystem::native_decoded((decoded.0, decoded.1.take().unwrap()))?;
+            let custody = decoded
+                .1
+                .take()
+                .ok_or_else(|| boundary(io, Storage, "funded decode lacks output custody"))?;
+            let (value, custody) = crate::filesystem::native_decoded((decoded.0, custody))?;
             return Ok((value, Some(custody)));
         }
         Ok((decoded.0, None))
@@ -99,6 +102,7 @@ impl DurableToolRunner<'_> {
         context: &ToolContext,
         io: Option<&PreparationIo>,
     ) -> Result<(ToolResult, NativeCustody)> {
+        let _ = io;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = native_work(io) {
             let (result, custody) = tool
@@ -121,6 +125,7 @@ impl DurableToolRunner<'_> {
         context: &ToolContext,
         io: Option<&PreparationIo>,
     ) -> Result<Option<(ToolResult, NativeCustody)>> {
+        let _ = io;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = native_work(io) {
             let (result, custody) = tool

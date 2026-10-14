@@ -55,21 +55,24 @@ fn actual_sdk_prebirth_interrupt_returns_without_creating_a_namespace() -> TestR
     let (context, destination, pointers) = resources
         .state
         .lock()
-        .unwrap()
+        .map_err(|_| "poisoned SDK loop state")?
         .resources
         .as_ref()
-        .unwrap()
+        .ok_or("provider resources missing")?
         .clone();
     work.charge(WRITE_WORK)?;
     let mut interrupted = 0;
+    let argc = c_int::try_from(
+        pointers
+            .iter()
+            .position(|pointer| *pointer == 0)
+            .unwrap_or(pointers.len()),
+    )?;
     // SAFETY: all SDK inputs and the callback owner remain live through the loop.
     let status = unsafe {
         acyclic_fs_darwin_mount_run(
             resources.pointer() as *mut c_void,
-            pointers
-                .iter()
-                .position(|pointer| *pointer == 0)
-                .unwrap_or(7) as c_int,
+            argc,
             pointers.as_ptr().cast(),
             destination.as_ptr(),
             Arc::as_ptr(&context) as usize,
@@ -80,8 +83,14 @@ fn actual_sdk_prebirth_interrupt_returns_without_creating_a_namespace() -> TestR
     };
     assert_eq!(status, 0);
     assert_eq!(interrupted, 1);
-    assert!(!resources.state.lock().unwrap().mounted);
-    let mut probe = MountProbe::new(temporary.path(), &work)?;
+    assert!(
+        !resources
+            .state
+            .lock()
+            .map_err(|_| "poisoned SDK loop state")?
+            .mounted
+    );
+    let probe = MountProbe::new(temporary.path(), &work)?;
     assert!(!probe.mounted(temporary.path(), &ProbeWork::Live(&work))?);
     drop(probe);
     cancellation.cancel();
@@ -120,7 +129,7 @@ fn pending_detach_can_finish_with_its_actual_panic_without_a_wait_token() -> Tes
             .reserve_work(WorkCounters::UNCHARGED)?
             .into_runtime_credit()?,
     };
-    let mut credit = original.reserve_work(WorkCounters {
+    let credit = original.reserve_work(WorkCounters {
         backend_read_operations: 1,
         items_examined: 1,
         ..WorkCounters::UNCHARGED

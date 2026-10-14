@@ -106,6 +106,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .await
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The admitted lease and unresolved append error retain original custody through same-key resolution."
+    )]
     async fn pull_for(
         &mut self,
         worker: &Worker,
@@ -313,20 +317,19 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             if attempt.work().is_some() {
                 attempt.adopt(reservation.logical_owned_bytes()?)?;
             }
-            let key = match identity {
-                Some((key, _)) => key,
-                None => {
-                    let key = formatted_text(
-                        "pull:".len() + worker.id.len() + 1 + 36 + 1 + revision_digits,
-                        format_args!("pull:{}:{operation_id}:{revision}", worker.id),
-                        attempt.work(),
-                    )?;
-                    if attempt.work().is_some() {
-                        attempt.adopt(key.capacity() as u64)?;
-                    }
-                    validate_idempotency_key(&key, attempt.work())?;
-                    IdempotencyKey(key)
+            let key = if let Some((key, _)) = identity {
+                key
+            } else {
+                let key = formatted_text(
+                    "pull:".len() + worker.id.len() + 1 + 36 + 1 + revision_digits,
+                    format_args!("pull:{}:{operation_id}:{revision}", worker.id),
+                    attempt.work(),
+                )?;
+                if attempt.work().is_some() {
+                    attempt.adopt(key.capacity() as u64)?;
                 }
+                validate_idempotency_key(&key, attempt.work())?;
+                IdempotencyKey(key)
             };
             self.apply(
                 key,

@@ -1,7 +1,8 @@
 //! Schema admission and diagnostic formatting on the invocation ledger.
+use crate::executor::json::JsonCodecCharge;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use crate::executor::json::{
-    JsonBounds, JsonCodecCharge, JsonValueSchema, json_owned_value_shape_bounded,
-    json_value_decode_owned_bytes,
+    JsonBounds, JsonValueSchema, json_owned_value_shape_bounded, json_value_decode_owned_bytes,
 };
 use crate::store::history::HistoryIo;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -112,16 +113,10 @@ fn admit_schema_value(value: &serde_json::Value, scope: &mut CodecQuota<'_, '_>)
                 maximum_depth: 256,
             },
             JsonValueSchema::None,
-            &mut |charge| {
-                scope
-                    .work()
-                    .as_deref_mut()
-                    .expect("schema ledger")
-                    .codec_charge(charge)
-            },
+            &mut |charge| scope.observer()?.codec_charge(charge),
         )?;
         let owned = json_value_decode_owned_bytes(shape)?;
-        let observer = scope.work().as_deref_mut().expect("schema ledger");
+        let observer = scope.observer()?;
         observer.admit_owned(owned)?;
         observer.retain_owned(owned)?;
         return scope.adopt(owned);
@@ -146,7 +141,7 @@ fn admit_schema_value(value: &serde_json::Value, scope: &mut CodecQuota<'_, '_>)
                 .and_then(|strings| size.checked_add(strings))
         })
         .ok_or_else(|| Error::Invalid("schema data scope overflow".into()))?;
-    let observer = scope.work().as_deref_mut().expect("schema ledger");
+    let observer = scope.observer()?;
     observer.admit_owned(owned)?;
     observer.retain_owned(owned)?;
     scope.adopt(owned)?;
@@ -168,12 +163,13 @@ fn schema_error(
         .is_some()
     {
         let retained = scope.retained();
-        let custody = scope
-            .work()
-            .as_deref_mut()
-            .expect("schema ledger")
-            .take_native_custody(retained)
-            .expect("admitted schema custody");
+        let custody = match scope
+            .observer()
+            .and_then(|io| io.take_native_custody(retained))
+        {
+            Ok(custody) => custody,
+            Err(error) => return error,
+        };
         scope.transfer();
         return Error::NativeSchema {
             code: ErrorCode::Invalid,

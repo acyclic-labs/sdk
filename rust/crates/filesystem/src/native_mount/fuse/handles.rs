@@ -364,7 +364,8 @@ impl FuseProjection {
             self.check_source_write(work)?;
         }
         let (open_file, opened) = source.open_file_with_lookup_with_meter(path, work)?;
-        let open_file = FuseOpenFile::Source(fuse_open_file(open_file, work)?);
+        let open_file =
+            FuseOpenFile::Source(fuse_open_file((open_file.file, open_file.bytes), work)?);
         if opened.node.file_id != file_id {
             return Err(libc::ESTALE.into());
         }
@@ -393,6 +394,10 @@ impl FuseProjection {
         Ok((open_file, refreshed, stamp))
     }
 
+    #[allow(
+        clippy::mutable_key_type,
+        reason = "FuseOwned hashes and compares only its immutable path, never its accounting owner."
+    )]
     pub(super) fn create_file(
         &self,
         request: &Request,

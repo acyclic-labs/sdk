@@ -312,6 +312,10 @@ impl RangeMachine {
         Ok(expected)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "This state transition keeps admission, effects and resource retirement in one frame."
+    )]
     fn accept_decoded(
         &mut self,
         decoded: &ExtentPage,

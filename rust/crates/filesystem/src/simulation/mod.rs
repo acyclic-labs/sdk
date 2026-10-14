@@ -260,7 +260,10 @@ impl<A, O> Simulation<A, O> {
             return Err(SimulationError::IncompatibleFault);
         }
         let mut state = self.lock_state()?;
-        let occurrence = state.occurrences[operation as usize]
+        let occurrence = state
+            .occurrences
+            .get(operation as usize)
+            .ok_or(SimulationError::PastOccurrence)?
             .checked_add(1)
             .ok_or(SimulationError::PastOccurrence)?;
         let scheduled = ScheduledSimulationFault {
@@ -292,7 +295,12 @@ fn schedule_locked(
     {
         return Err(SimulationError::DuplicateFault);
     }
-    if state.occurrences[scheduled.operation as usize] >= scheduled.occurrence {
+    if *state
+        .occurrences
+        .get(scheduled.operation as usize)
+        .ok_or(SimulationError::PastOccurrence)?
+        >= scheduled.occurrence
+    {
         return Err(SimulationError::PastOccurrence);
     }
     if state.faults.len() == state.options.maximum_scheduled_faults {

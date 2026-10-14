@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+type ReconciledAdmission = Option<(TaskId, TaskAdmissionRecord)>;
+
 fn unbound(reason: &str) -> Error {
     Error::Unsupported(reason.into())
 }
@@ -309,8 +312,7 @@ pub trait TaskSpawner: acyclic_stream::ProviderPlatform {
         &'a self,
         _operation: OperationId,
         _work: &'a NativeMaterializationWork,
-    ) -> Result<NativeFutureBundle<'a, (Option<(TaskId, TaskAdmissionRecord)>, NativeAllocation)>>
-    {
+    ) -> Result<NativeFutureBundle<'a, (ReconciledAdmission, NativeAllocation)>> {
         Err(native_unbound(
             "task spawner has no original-ledger admission reconciliation producer",
         ))

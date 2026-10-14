@@ -1,3 +1,4 @@
+#[cfg(not(target_arch = "wasm32"))]
 use super::*;
 
 /// A decoded acknowledgement inseparable from its original metadata custody.
@@ -72,7 +73,7 @@ impl<T> ExactSizeIterator for ObjectsBatch<T> {}
 #[cfg(not(target_arch = "wasm32"))]
 type GuardAllocation = Option<acyclic_native_runtime::ReadAllocation>;
 #[cfg(target_arch = "wasm32")]
-type GuardAllocation = ();
+type GuardAllocation = Option<()>;
 
 pin_project_lite::pin_project! {
     /// Storage that retires before its allocation guard.

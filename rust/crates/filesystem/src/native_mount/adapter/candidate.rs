@@ -25,6 +25,20 @@ impl InstallScope<'_> {
 }
 
 impl InputBuffers<'_, '_> {
+    fn find_charged<T>(
+        &mut self,
+        entries: impl IntoIterator<Item = T>,
+        mut matches: impl FnMut(&T) -> bool,
+    ) -> Result<Option<T>, MountSourceError> {
+        for entry in entries {
+            self.items(1)?;
+            if matches(&entry) {
+                return Ok(Some(entry));
+            }
+        }
+        Ok(None)
+    }
+
     pub(super) fn clone_namespace(
         &mut self,
         names: &[LogicalName],
@@ -95,7 +109,47 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
         installed.nodes.push(change.file_id);
     }
     inputs.release(file_buffer_bytes)?;
-    let mut directories = inputs.vec::<(FileId, NamespacePath)>(diff.bindings.len())?;
+    let directories = installed_directories(
+        base,
+        candidate,
+        scope,
+        &diff.bindings,
+        &mut inputs,
+        &native,
+        cancellation,
+    )
+    .await?;
+    for binding in diff.bindings {
+        install_binding_change(
+            binding,
+            &directories,
+            scope,
+            base.volume_config().limits,
+            &mut installed,
+            &mut inputs,
+        )?;
+    }
+    inputs.release(binding_buffer_bytes)?;
+    let bytes = (directories.capacity() * std::mem::size_of::<(FileId, NamespacePath)>()) as u64
+        + directories
+            .iter()
+            .map(|(_, path)| path.retained_bytes())
+            .sum::<u64>();
+    drop(directories);
+    inputs.release(bytes)?;
+    Ok((installed, inputs.retain()))
+}
+
+async fn installed_directories<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    base: &Checkout<A, O>,
+    candidate: &Checkout<A, O>,
+    scope: InstallScope<'_>,
+    bindings: &[crate::DirectoryBindingChange],
+    inputs: &mut InputBuffers<'_, '_>,
+    native: &crate::NativeMaterializationWork,
+    cancellation: &CancellationToken,
+) -> Result<Vec<(FileId, NamespacePath)>, MountSourceError> {
+    let mut directories = inputs.vec::<(FileId, NamespacePath)>(bindings.len())?;
     for path in scope.paths() {
         for length in 0..=path.depth() {
             let prefix = inputs.clone_namespace(
@@ -108,31 +162,23 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
                 if let Some(record) = checkout
                     .inspector(
                         &mut crate::kernel::allocation::KernelAccounting::native(
-                            &native,
+                            native,
                             cancellation,
                         ),
                         cancellation,
                     )?
-                    .lookup_no_follow(&prefix, &native, cancellation)
+                    .lookup_no_follow(&prefix, native, cancellation)
                     .await?
                     .record
                 {
-                    let mut relevant = false;
-                    for binding in &diff.bindings {
-                        inputs.items(1)?;
-                        if binding.directory_id == record.file_id {
-                            relevant = true;
-                            break;
-                        }
-                    }
-                    let mut known = false;
-                    for (file_id, _) in &directories {
-                        inputs.items(1)?;
-                        if *file_id == record.file_id {
-                            known = true;
-                            break;
-                        }
-                    }
+                    let relevant = inputs
+                        .find_charged(bindings, |binding| binding.directory_id == record.file_id)?
+                        .is_some();
+                    let known = inputs
+                        .find_charged(directories.iter(), |(file_id, _)| {
+                            *file_id == record.file_id
+                        })?
+                        .is_some();
                     if relevant && !known {
                         directories.push((
                             record.file_id,
@@ -149,56 +195,54 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
             inputs.release(bytes)?;
         }
     }
-    for binding in diff.bindings {
-        let name_bytes = binding.name.retained_bytes() as u64;
-        let history_bytes = binding
-            .before
+    Ok(directories)
+}
+
+fn install_binding_change(
+    binding: crate::DirectoryBindingChange,
+    directories: &[(FileId, NamespacePath)],
+    scope: InstallScope<'_>,
+    limits: VolumeLimits,
+    installed: &mut ViewEffect,
+    inputs: &mut InputBuffers<'_, '_>,
+) -> Result<(), MountSourceError> {
+    let name_bytes = binding.name.retained_bytes() as u64;
+    let history_bytes = binding
+        .before
+        .as_ref()
+        .map_or(0, |entry| entry.name.retained_bytes() as u64)
+        + binding
+            .after
             .as_ref()
-            .map_or(0, |entry| entry.name.retained_bytes() as u64)
-            + binding
-                .after
-                .as_ref()
-                .map_or(0, |entry| entry.name.retained_bytes() as u64);
-        drop(binding.before);
-        drop(binding.after);
-        inputs.release(history_bytes)?;
-        let mut directory = None;
-        for (file_id, path) in &directories {
-            inputs.items(1)?;
-            if *file_id == binding.directory_id {
-                directory = Some(path);
-                break;
+            .map_or(0, |entry| entry.name.retained_bytes() as u64);
+    drop(binding.before);
+    drop(binding.after);
+    inputs.release(history_bytes)?;
+    let directory = inputs
+        .find_charged(directories.iter(), |(file_id, _)| {
+            *file_id == binding.directory_id
+        })?
+        .map(|(_, path)| path);
+    match (directory, scope) {
+        (Some(directory), _) => installed.names.push((
+            inputs.clone_namespace(directory.components(), limits)?,
+            binding.name,
+        )),
+        (None, InstallScope::Subtree(root)) => {
+            drop(binding.name);
+            inputs.release(name_bytes)?;
+            if installed.subtrees.is_empty() {
+                installed.subtrees = inputs.vec(1)?;
+                installed
+                    .subtrees
+                    .push(inputs.clone_namespace(root.components(), limits)?);
             }
         }
-        match (directory, scope) {
-            (Some(directory), _) => installed.names.push((
-                inputs.clone_namespace(directory.components(), base.volume_config().limits)?,
-                binding.name,
-            )),
-            (None, InstallScope::Subtree(root)) => {
-                drop(binding.name);
-                inputs.release(name_bytes)?;
-                if installed.subtrees.is_empty() {
-                    installed.subtrees = inputs.vec(1)?;
-                    installed.subtrees.push(
-                        inputs.clone_namespace(root.components(), base.volume_config().limits)?,
-                    );
-                }
-            }
-            (None, _) => {
-                drop(binding.name);
-                inputs.release(name_bytes)?;
-                installed.everything = true;
-            }
+        (None, _) => {
+            drop(binding.name);
+            inputs.release(name_bytes)?;
+            installed.everything = true;
         }
     }
-    inputs.release(binding_buffer_bytes)?;
-    let bytes = (directories.capacity() * std::mem::size_of::<(FileId, NamespacePath)>()) as u64
-        + directories
-            .iter()
-            .map(|(_, path)| path.retained_bytes())
-            .sum::<u64>();
-    drop(directories);
-    inputs.release(bytes)?;
-    Ok((installed, inputs.retain()))
+    Ok(())
 }

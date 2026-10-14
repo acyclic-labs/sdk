@@ -152,10 +152,10 @@ mod range;
 pub(crate) use range::read_blob_range_with_accounting;
 pub use range::{BlobRead, read_blob_range};
 mod error;
+#[cfg(not(target_arch = "wasm32"))]
+pub use error::BlobDemandFailure;
 use error::*;
-pub use error::{
-    BlobBuildError, BlobBuildFailure, BlobDemandFailure, BlobReadError, BlobReadFailure,
-};
+pub use error::{BlobBuildError, BlobBuildFailure, BlobReadError, BlobReadFailure};
 
 #[cfg(all(test, feature = "memory"))]
 #[path = "../tests/blob/mod.rs"]

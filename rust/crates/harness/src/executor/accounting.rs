@@ -20,7 +20,7 @@ pub(super) fn stock_context_capacity(
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     if io.is_some() {
         return Err(stock_boundary(
-            io.into(),
+            io,
             crate::wire::ErrorCode::Unsupported,
             "native stock model capacity is unavailable",
         ));
@@ -50,7 +50,7 @@ pub(super) fn stock_count_tokens(
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     if io.is_some() {
         return Err(stock_boundary(
-            io.into(),
+            io,
             crate::wire::ErrorCode::Unsupported,
             "native stock token accounting is unavailable",
         ));

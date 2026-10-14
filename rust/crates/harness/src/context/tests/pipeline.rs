@@ -62,9 +62,10 @@ impl ContextStage for Transform {
                 &format!("{}:{:?}", self.0, input.input),
             ));
             context.messages.reverse();
-            context.current_input_index = context
-                .current_input_index
-                .map(|index| context.messages.len() as u32 - 1 - index);
+            let length = u32::try_from(context.messages.len())
+                .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+            context.current_input_index =
+                context.current_input_index.map(|index| length - 1 - index);
             Ok(context)
         })
     }
@@ -350,6 +351,7 @@ async fn attribute_reload_modes_and_schema_bounds() -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 proptest::proptest! {
     #[test]
     fn file_spans_are_exact_and_bounded(start in 0u64..20, end in 0u64..20) {

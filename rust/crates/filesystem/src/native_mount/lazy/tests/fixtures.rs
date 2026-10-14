@@ -36,7 +36,7 @@ pub(super) async fn recorded_view(
     .await?;
     let recorded = Arc::new(Recorded::default());
     let observer: Weak<Recorded> = Arc::downgrade(&recorded);
-    view.observe_view(observer);
+    view.observe_view(observer)?;
     Ok((demand, view, recorded))
 }
 pub(super) async fn mounted_view(

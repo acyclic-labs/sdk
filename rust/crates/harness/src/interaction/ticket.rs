@@ -115,13 +115,7 @@ impl InteractionTicket {
             .as_deref()
             .is_some_and(original_native_decode_mode)
         {
-            let allocation = decoded
-                .1
-                .work()
-                .as_deref_mut()
-                .unwrap()
-                .take_native_custody(retained)
-                .expect("preclaimed native DTO custody");
+            let allocation = decoded.1.observer()?.take_native_custody(retained)?;
             retained = 0;
             Some(allocation)
         } else {

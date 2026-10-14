@@ -2,7 +2,6 @@ use super::*;
 use acyclic_harness::filesystem::PreparationIo;
 
 pub(crate) struct PiNativeRoot {
-    pub(crate) view: Option<Arc<crate::pi_native_host::PiNativeLiveView>>,
     allocation: Option<NativePreparationRoot>,
     filesystem: acyclic_fs::LocalFs,
     view_root: PathBuf,
@@ -257,7 +256,7 @@ impl PiNativeRoot {
                 &mut Some(&mut &PreparationIo::from_native_work(meter)?),
             )
             .await?;
-        let authority_revision = native_digest(
+        let authority_revision = *digest_pi_value(
             &(authority.0.audience(), &authority.1),
             context
                 .scope()
@@ -265,7 +264,8 @@ impl PiNativeRoot {
                 .file_bytes
                 .min(crate::MAXIMUM_ADAPTER_STATE_BYTES),
             meter,
-        )?;
+        )?
+        .as_bytes();
         let mut volume_io =
             acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(meter)?);
         let volume_copy = volume.copy(&mut Some(&mut volume_io))?;
@@ -303,7 +303,7 @@ impl PiNativeRoot {
 
     /// Retains the creator through every fallible preparation step.
     pub(crate) async fn prepare<'a>(
-        &mut self,
+        &self,
         owner: &'a Arc<TaskJournalOwner<acyclic_stream::LocalStream>>,
         options: &'a NativeViewOptions,
         bindings: &'a [BorrowedNativeVolumeBinding<
@@ -313,7 +313,7 @@ impl PiNativeRoot {
         >],
         guards: &'a [Arc<TaskContext>],
         meter: &'a NativeMaterializationWork,
-    ) -> Result<()> {
+    ) -> Result<Arc<crate::pi_native_host::PiNativeLiveView>> {
         owner
             .verify(
                 false,
@@ -353,8 +353,7 @@ impl PiNativeRoot {
             allocation_operations: 1,
             ..WorkCounters::UNCHARGED
         })?;
-        self.view = Some(Arc::new(view));
-        Ok(())
+        Ok(Arc::new(view))
     }
 }
 
@@ -446,7 +445,6 @@ pub(crate) async fn native_root<'a>(
     custody.absorb(&mut view_root.1)?;
     custody.absorb(&mut operation_root.1)?;
     Ok(PiNativeRoot {
-        view: None,
         allocation: None,
         filesystem: resources.fs.clone(),
         view_root: view_root.0,

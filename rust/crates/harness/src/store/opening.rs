@@ -6,7 +6,10 @@ use crate::{
 
 impl<P: StreamProvider> StreamAggregate<P> {
     /// Restores an authenticated aggregate at a bounded committed cut.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "opening binds independent reducer, authority and stream scopes"
+    )]
     pub async fn open(
         client: &Arc<P>,
         authority: Authority,
@@ -63,11 +66,15 @@ impl<P: StreamProvider> StreamAggregate<P> {
         reducer.set_resident_terminal_effect_limit(maximum_terminal_effects)?;
         let start = reducer.revision();
         let through = loaded.through_revision;
-        let count = through
-            .checked_sub(start)
-            .filter(|count| *count <= u64::from(limits.maximum_events - loaded.consumed_events))
-            .ok_or_else(|| Error::Invalid("projection suffix exceeds event allowance".into()))?
-            as u32;
+        let count = u32::try_from(
+            through
+                .checked_sub(start)
+                .filter(|count| *count <= u64::from(limits.maximum_events - loaded.consumed_events))
+                .ok_or_else(|| {
+                    Error::Invalid("projection suffix exceeds event allowance".into())
+                })?,
+        )
+        .map_err(|_| Error::Invalid("projection suffix exceeds event allowance".into()))?;
         if count != 0 {
             let maximum_bytes = limits.maximum_bytes.saturating_sub(loaded.consumed_bytes);
             if maximum_bytes == 0 {

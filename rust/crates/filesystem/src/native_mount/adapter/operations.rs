@@ -105,14 +105,15 @@ where
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
-        self.open_handle(path, work).map(|(file, _)| file)
+        self.open_handle(path, work)
+            .map(|(file, _)| (file.file, file.bytes))
     }
 
     fn open_file_with_lookup_with_meter(
         &self,
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<((Arc<dyn MountOpenFile>, u64), MountLookup), MountSourceError> {
+    ) -> Result<(crate::native_mount::MountOpenClaim, MountLookup), MountSourceError> {
         self.open_handle(path, work)
     }
 
@@ -225,11 +226,10 @@ where
             .then(|| self.checkout.ledger.stamp())
     }
 
-    fn observe_view(&self, observer: Weak<dyn ViewObserver>) {
+    fn observe_view(&self, observer: Weak<dyn ViewObserver>) -> Result<(), MountSourceError> {
         boundary(&self.cancellation, |work| {
             self.observe_view_with_meter(observer, work)
         })
-        .expect("observer registration budget");
     }
 
     fn unchanged_since(&self, path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp) -> bool {
@@ -369,7 +369,7 @@ where
     }
 
     fn open_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
-        boundary(&self.cancellation, |work| self.open_handle(path, work)).map(|((file, _), _)| file)
+        boundary(&self.cancellation, |work| self.open_handle(path, work)).map(|(file, _)| file.file)
     }
 
     fn open_created(

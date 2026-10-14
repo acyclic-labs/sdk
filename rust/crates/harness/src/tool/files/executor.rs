@@ -252,8 +252,13 @@ impl ToolExecutor for FileTool {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
             return if self.is_read() {
-                context
-                    .authorize_file_read_with_native_work(file.as_ref().expect("read source"), work)
+                context.authorize_file_read_with_native_work(
+                    file.as_ref().ok_or_else(|| Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Storage,
+                        reason: "file read source is missing",
+                    })?,
+                    work,
+                )
             } else {
                 context.authorize_content_publication_with_native_work(file.as_ref(), work)
             };

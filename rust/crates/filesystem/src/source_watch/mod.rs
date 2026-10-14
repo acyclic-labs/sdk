@@ -53,21 +53,26 @@ pub(super) fn reserve_cleanup_credits(
             } else {
                 error
             };
-            for (credit, count) in &credits[..index] {
-                work.refund(credit.delta(*count))
-                    .expect("balanced cleanup credit");
+            for (credit, count) in credits.iter().take(index) {
+                work.refund(credit.delta(*count))?;
             }
             return Err(error);
         }
     }
     Ok(())
 }
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[allow(
+    clippy::expect_used,
+    reason = "Cancellation refunds only credits reserved by the paired reservation function."
+)]
 pub(super) fn cancel_cleanup_credits(work: &mut DemandWork, delta: WorkCounters) {
     for (credit, count) in cleanup_credits(delta) {
         work.refund(credit.delta(count))
             .expect("balanced cleanup credit");
     }
 }
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) fn record_cleanup_credits(
     work: &mut DemandWork,
     delta: WorkCounters,
@@ -177,6 +182,10 @@ pub(crate) trait NativeEventSink: Send + Sync {
     }
 }
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Callback work stays on the stack; boxing would add an unadmitted allocation."
+)]
 pub(crate) enum CallbackWork {
     Ordinary(DemandWork),
     Original(crate::NativeMaterializationWork),

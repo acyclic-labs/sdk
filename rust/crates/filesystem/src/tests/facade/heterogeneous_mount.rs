@@ -1,8 +1,6 @@
 use super::*;
 use crate::model::VolumeLimits;
-use crate::storage::{
-    ObjectId, ObjectRead, ObjectReadRequest, ObjectWrite,
-};
+use crate::storage::{ObjectId, ObjectRead, ObjectReadRequest, ObjectWrite};
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, EmbeddedCapabilities, LocalFs, LocalOptions, MemoryFs,
 };
@@ -64,7 +62,7 @@ impl AsyncAuthorityStore for Stores {
             crate::AuthorityError::Authority(error.into_error(std::convert::identity))
         })?;
         if matches!(value, crate::CreateAuthorityOutcome::Existing(_)) {
-            crate::async_storage::seal(guard.as_deref_mut(), work).await?;
+            crate::async_storage::seal(guard, work).await?;
         }
         Ok(value)
     }
@@ -91,7 +89,7 @@ impl AsyncAuthorityStore for Stores {
             crate::AuthorityError::Authority(error.into_error(std::convert::identity))
         })?;
         if matches!(value, crate::CreateAuthorityOutcome::Existing(_)) {
-            crate::async_storage::seal(guard.as_deref_mut(), work).await?;
+            crate::async_storage::seal(guard, work).await?;
         }
         Ok(value)
     }
@@ -99,9 +97,8 @@ impl AsyncAuthorityStore for Stores {
         &self,
         request: crate::GuardedAppend,
         work: &mut crate::AuthorityWork<'_>,
-        mut guard: Option<&mut G>,
-    ) -> Result<crate::AppendOutcome, crate::AuthorityError<G::Error>>
-    {
+        guard: Option<&mut G>,
+    ) -> Result<crate::AppendOutcome, crate::AuthorityError<G::Error>> {
         #[cfg(not(target_arch = "wasm32"))]
         if work.original.is_some() {
             return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into());
@@ -112,7 +109,7 @@ impl AsyncAuthorityStore for Stores {
             )
             .into());
         }
-        crate::async_storage::seal(guard.as_deref_mut(), work).await?;
+        crate::async_storage::seal(guard, work).await?;
         delegate!(
             self,
             AsyncAuthorityStore,
@@ -128,7 +125,7 @@ impl AsyncAuthorityStore for Stores {
     ) -> Result<crate::Head, crate::AuthorityStoreError> {
         #[cfg(not(target_arch = "wasm32"))]
         if work.original.is_some() {
-            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into());
+            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported);
         }
 
         delegate!(self, AsyncAuthorityStore, authority, head(authority, work))
@@ -143,7 +140,7 @@ impl AsyncAuthorityStore for Stores {
     {
         #[cfg(not(target_arch = "wasm32"))]
         if work.original.is_some() {
-            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into());
+            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported);
         }
 
         delegate!(
@@ -161,7 +158,7 @@ impl AsyncAuthorityStore for Stores {
     ) -> Result<crate::FenceOutcome, crate::AuthorityStoreError> {
         #[cfg(not(target_arch = "wasm32"))]
         if work.original.is_some() {
-            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into());
+            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported);
         }
 
         delegate!(
@@ -176,13 +173,10 @@ impl AsyncAuthorityStore for Stores {
         authority: crate::AuthorityId,
         operation: crate::OperationId,
         work: &mut crate::AuthorityWork<'_>,
-    ) -> Result<
-        Option<crate::DurableCommit>,
-        crate::AuthorityStoreError,
-    > {
+    ) -> Result<Option<crate::DurableCommit>, crate::AuthorityStoreError> {
         #[cfg(not(target_arch = "wasm32"))]
         if work.original.is_some() {
-            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into());
+            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported);
         }
 
         delegate!(
@@ -240,7 +234,7 @@ delegate!(
         ) -> Result<bool, crate::ObjectStoreError>;
         fn flush_before_publish(
             context: &mut crate::AuthorityWork<'_>,
-            scope: crate::PublicationScope<'_>
+            scope: crate::PublicationScope<'_>,
         ) -> Result<crate::PublicationHold, crate::ObjectStoreError>;
     }
 );

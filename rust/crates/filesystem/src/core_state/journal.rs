@@ -45,7 +45,7 @@ impl MaterializationJournalStore for LocalCoreStateStore {
                 let original = namespace
                     ._allocation
                     .as_ref()
-                    .expect("bound native work")
+                    .ok_or(NativeTreeMaterializationError::MissingCustody)?
                     .work()
                     .clone();
                 let work = &original;
@@ -127,7 +127,7 @@ impl MaterializationJournalStore for LocalCoreStateStore {
                 paths
                     .allocation
                     .as_ref()
-                    .expect("native record paths")
+                    .ok_or(NativeTreeMaterializationError::MissingCustody)?
                     .work()
                     .set_original_work(
                         journal
@@ -208,7 +208,7 @@ impl Future for LocalMaterializationActionCompletion {
         std::task::Poll::Ready((|| {
             journal.work = this._body_custody.work().journal_work()?;
             let capacity = this.encoding.len();
-            let mut writer = &mut this.encoding[..];
+            let mut writer = this.encoding.as_mut_slice();
             let encoded = serde_json::to_writer(&mut writer, &journal);
             let length = capacity - writer.len();
             this.encoding_credit.record_completed(crate::WorkCounters {
@@ -220,7 +220,11 @@ impl Future for LocalMaterializationActionCompletion {
             this.host
                 .take()
                 .ok_or(NativeTreeMaterializationError::MissingCustody)?
-                .complete(&this.encoding[..length])?;
+                .complete(
+                    this.encoding
+                        .get(..length)
+                        .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
+                )?;
             this.record_lock.unlock()?;
             Ok(journal)
         })())

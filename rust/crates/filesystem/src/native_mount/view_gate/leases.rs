@@ -107,42 +107,72 @@ impl Drop for ViewReadLease {
             .state
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        state.readers = state.readers.checked_sub(1).expect("owned view read");
-        if let Some(ReadSlot::Owner { readers, .. }) = &mut state.reader_slots[self.owner_slot] {
-            *readers = readers.checked_sub(1).expect("owned callback read");
+        state.readers = {
+            assert!(state.readers >= 1, "owned view read");
+            state.readers - 1
+        };
+        assert!(
+            self.owner_slot < state.reader_slots.len(),
+            "owned callback slot"
+        );
+        if let Some(slot) = state.reader_slots.get_mut(self.owner_slot)
+            && let Some(ReadSlot::Owner { readers, .. }) = slot
+        {
+            *readers = {
+                assert!(*readers >= 1, "owned callback read");
+                *readers - 1
+            };
             if *readers == 0 {
-                state.reader_slots[self.owner_slot] = None;
-                state.occupied_slots = state
-                    .occupied_slots
-                    .checked_sub(1)
-                    .expect("owned callback slot");
+                *slot = None;
+                state.occupied_slots = {
+                    assert!(state.occupied_slots > 0, "owned callback slot");
+                    state.occupied_slots - 1
+                };
             }
         }
-        if let Some(index) = self.cleanup_slot
-            && let Some(ReadSlot::Meter {
-                readers,
-                finished,
-                proof_alive,
-                payload_active,
-                payload_finished,
-            }) = &mut state.reader_slots[index]
-        {
-            *readers = readers.checked_sub(1).expect("owned view read cleanup");
-            *finished = finished
-                .checked_add(1)
-                .expect("admitted view read cleanup addressability");
-            *payload_active = payload_active
-                .checked_sub(self.payload_bytes)
-                .expect("owned original binding payload");
-            *payload_finished = payload_finished
-                .checked_add(self.payload_bytes)
-                .expect("admitted binding payload cleanup addressability");
-            if *readers == 0 && !*proof_alive {
-                state.reader_slots[index] = None;
-                state.occupied_slots = state
-                    .occupied_slots
-                    .checked_sub(1)
-                    .expect("owned cleanup slot");
+        if let Some(index) = self.cleanup_slot {
+            assert!(index < state.reader_slots.len(), "owned cleanup slot");
+            if let Some(slot) = state.reader_slots.get_mut(index)
+                && let Some(ReadSlot::Meter {
+                    readers,
+                    finished,
+                    proof_alive,
+                    payload_active,
+                    payload_finished,
+                }) = slot
+            {
+                *readers = {
+                    assert!(*readers >= 1, "owned view read cleanup");
+                    *readers - 1
+                };
+                *finished = {
+                    assert!(
+                        *finished < u64::MAX,
+                        "admitted view read cleanup addressability"
+                    );
+                    *finished + 1
+                };
+                *payload_active = {
+                    assert!(
+                        *payload_active >= self.payload_bytes,
+                        "owned original binding payload"
+                    );
+                    *payload_active - self.payload_bytes
+                };
+                *payload_finished = {
+                    assert!(
+                        *payload_finished <= u64::MAX - self.payload_bytes,
+                        "admitted binding payload cleanup addressability"
+                    );
+                    *payload_finished + self.payload_bytes
+                };
+                if *readers == 0 && !*proof_alive {
+                    *slot = None;
+                    state.occupied_slots = {
+                        assert!(state.occupied_slots > 0, "owned cleanup slot");
+                        state.occupied_slots - 1
+                    };
+                }
             }
         }
         state.release_empty_registry(&self.gate);

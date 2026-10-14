@@ -192,9 +192,11 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
 impl Drop for InputBuffers<'_, '_> {
     fn drop(&mut self) {
         if self.allocation.is_none() {
-            self.carrier
-                .with_work(|work| work.release(self.bytes))
-                .expect("owned input buffers balance");
+            self.carrier.with_work(|work| {
+                if let Err(error) = work.release(self.bytes) {
+                    work.record_native_io_failure(error);
+                }
+            });
         }
     }
 }

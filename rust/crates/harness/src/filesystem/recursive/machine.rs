@@ -93,7 +93,11 @@ impl ForkPreparationMachine {
             return Err(invalid("fork preparation command kind differs"));
         }
         let request_digest = crate::executor::with_history_io(io, |work| {
-            crate::executor::json::canonical_json_digest(&request.payload, u64::MAX, work)
+            crate::executor::json::canonical_json_digest(
+                &request.payload,
+                request.maximum_bytes,
+                work,
+            )
         })?;
         encode(
             &State::Ready {

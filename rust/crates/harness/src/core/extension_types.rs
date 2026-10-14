@@ -201,8 +201,10 @@ impl ExtensionAdmission {
                     "extension dependency is invalid",
                 ));
             }
-            if self.selected[..index]
+            if self
+                .selected
                 .iter()
+                .take(index)
                 .any(|prior| prior.name == extension.name)
             {
                 return Err(boundary_error(

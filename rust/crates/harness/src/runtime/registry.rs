@@ -91,7 +91,8 @@ impl TaskRegistry {
                 .0
                 .iter()
                 .position(|stored| Arc::ptr_eq(stored, definition))?;
-            self.1[slot]
+            self.1
+                .get(slot)?
                 .downcast_ref::<Arc<TaskDefinition<I, O>>>()
                 .cloned()
         }
@@ -100,18 +101,18 @@ impl TaskRegistry {
     /// Registers an exact task version.
     pub fn register<I: 'static, O: 'static>(
         &mut self,
-        mut definition: TaskDefinition<I, O>,
+        definition: TaskDefinition<I, O>,
     ) -> Result<()>
     where
         TaskDefinition<I, O>: acyclic_stream::ProviderPlatform,
     {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let mut definition = definition;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let native = definition
             .native_metadata_custody
             .as_ref()
             .map(|held| held.work().clone());
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let native: Option<&NativeWork> = None;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let registration_work = native
             .clone()
@@ -139,12 +140,10 @@ impl TaskRegistry {
         if let Some(work) = registration_work.as_ref() {
             if let Some(original) = native.as_ref() {
                 definition.require_native_identity(original)?;
+            }
+            if let Some(held) = definition.native_metadata_custody.as_mut() {
                 // The definition retains its value; registration funds the Arc header.
-                definition
-                    .native_metadata_custody
-                    .as_mut()
-                    .expect("native definition")
-                    .grow((2 * std::mem::size_of::<usize>()) as u64)
+                held.grow((2 * std::mem::size_of::<usize>()) as u64)
                     .map_err(Error::from)?;
             }
             let slots = self.0.len().checked_add(1).ok_or(Error::NativeBoundary {
@@ -154,16 +153,19 @@ impl TaskRegistry {
             let bytes = (slots.max(self.0.capacity())
                 * std::mem::size_of::<Arc<dyn RegisteredTaskDefinition>>()
                 + std::mem::size_of::<Self>()) as u64;
-            if self.1.is_none() {
-                self.1 = Some(
+            let held = match &mut self.1 {
+                Some(held) => {
+                    if slots > self.0.capacity() {
+                        held.grow(bytes.saturating_sub(held.bytes()))
+                            .map_err(Error::from)?;
+                    }
+                    held
+                }
+                slot @ None => slot.insert(
                     work.claim(bytes, 1, acyclic_fs::WorkCounters::UNCHARGED)
                         .map_err(Error::from)?,
-                );
-            } else if slots > self.0.capacity() {
-                let held = self.1.as_mut().expect("registry allocation");
-                held.grow(bytes.saturating_sub(held.bytes()))
-                    .map_err(Error::from)?;
-            }
+                ),
+            };
             if slots > self.0.capacity() {
                 self.0
                     .try_reserve_exact(slots - self.0.len())
@@ -175,13 +177,8 @@ impl TaskRegistry {
             let actual = (self.0.capacity()
                 * std::mem::size_of::<Arc<dyn RegisteredTaskDefinition>>()
                 + std::mem::size_of::<Self>()) as u64;
-            self.1
-                .as_mut()
-                .expect("registry allocation")
-                .reconcile_capacity(actual)
-                .map_err(Error::from)?;
+            held.reconcile_capacity(actual).map_err(Error::from)?;
         }
-        let _ = native;
         let definition = Arc::new(definition);
         #[cfg(target_arch = "wasm32")]
         self.1.push(Arc::new(definition.clone()));
@@ -306,6 +303,11 @@ impl TaskRegistry {
         Ok(Self(definitions, Some(held)))
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The admission boundary keeps the task identity, payload and authority explicit."
+    )]
+    #[cfg(any(test, feature = "filesystem"))]
     pub(super) fn registered_admission(
         &self,
         operation: OperationId,
@@ -343,40 +345,7 @@ impl TaskRegistry {
             ));
         }
         if parent.is_some() {
-            let mut descendant = false;
-            for grant in scope.grants().iter() {
-                if let Some(io) = work.as_deref_mut() {
-                    io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
-                }
-                if grant
-                    .strip_prefix("task:spawn:")
-                    .and_then(|grant| grant.strip_prefix(name))
-                    .and_then(|grant| grant.strip_prefix('@'))
-                    == Some(version)
-                {
-                    descendant = true;
-                    break;
-                }
-            }
-            if !descendant {
-                return Err(crate::store::guarded_boundary(
-                    work,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "original scope lacks the registered descendant grant",
-                ));
-            }
-            if scope.extensions().is_some()
-                || definition
-                    .requirements()
-                    .iter()
-                    .any(|requirement| requirement.starts_with("extension:"))
-            {
-                return Err(crate::store::guarded_boundary(
-                    work,
-                    crate::wire::ErrorCode::Unsupported,
-                    "stock child extension runner is not composed",
-                ));
-            }
+            Self::validate_child_grant(name, version, scope, definition.requirements(), work)?;
         }
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         if let Some(io) = quota.work().as_deref_mut() {
@@ -431,6 +400,50 @@ impl TaskRegistry {
         record.validate(quota.work())?;
         quota.transfer();
         Ok(record)
+    }
+
+    #[cfg(any(test, feature = "filesystem"))]
+    fn validate_child_grant(
+        name: &str,
+        version: &str,
+        scope: &RuntimeScope,
+        requirements: &BTreeSet<String>,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        let mut descendant = false;
+        for grant in scope.grants().iter() {
+            if let Some(io) = work.as_deref_mut() {
+                io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
+            }
+            if grant
+                .strip_prefix("task:spawn:")
+                .and_then(|grant| grant.strip_prefix(name))
+                .and_then(|grant| grant.strip_prefix('@'))
+                == Some(version)
+            {
+                descendant = true;
+                break;
+            }
+        }
+        if !descendant {
+            return Err(crate::store::guarded_boundary(
+                work,
+                crate::wire::ErrorCode::Unauthorized,
+                "original scope lacks the registered descendant grant",
+            ));
+        }
+        if scope.extensions().is_some()
+            || requirements
+                .iter()
+                .any(|requirement| requirement.starts_with("extension:"))
+        {
+            return Err(crate::store::guarded_boundary(
+                work,
+                crate::wire::ErrorCode::Unsupported,
+                "stock child extension runner is not composed",
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) fn validate_durable_admission(

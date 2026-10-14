@@ -34,19 +34,17 @@ where
 }
 
 pub(crate) fn retain_original_decode_error<T>(
-    mut result: Result<T>,
+    result: Result<T>,
     _reservation: &mut u64,
     _observer: &mut dyn HistoryIo,
 ) -> Result<T> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let mut result = result;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Err(Error::NativeJson { custody, .. }) = &mut result
         && custody.is_none()
     {
-        *custody = Some(
-            _observer
-                .take_native_custody(*_reservation)
-                .expect("original native decoder reservation has source custody"),
-        );
+        *custody = Some(_observer.take_native_custody(*_reservation)?);
         *_reservation = 0;
     }
     result
@@ -136,7 +134,7 @@ pub(in crate::store) fn decode_index<T: serde::de::DeserializeOwned>(
         ));
     }
     quota.replace(owned)?;
-    let observer = quota.work().as_deref_mut().expect("index observer");
+    let observer = quota.observer()?;
     observer.copy_bytes(copied)?;
     quota.transfer();
     Ok(value)

@@ -39,12 +39,9 @@ async fn native_flush_exact_closure_preserves_intrinsic_alias_without_readoption
     )
     .await?;
     let before = work.receipt();
-    {
-        let __object_args = (object, &work, &token);
-        let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
-        let __object_result = store.put_hashed(__object_args.0, &mut __object_work).await;
-        __object_result
-    }?;
+    store
+        .put_hashed(object, &mut crate::AuthorityWork::native(&work, &token))
+        .await?;
     assert_eq!(
         work.receipt().allocation_operations,
         before.allocation_operations
@@ -55,30 +52,23 @@ async fn native_flush_exact_closure_preserves_intrinsic_alias_without_readoption
     };
     assert_eq!(alias.as_ptr(), bytes.as_ptr());
     let (unselected, obsolete) = blob(OwnedBytes::from_static(b"unpublished superseded object"));
-    {
-        let __object_args = (unselected, obsolete, &work, &token);
-        let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
-        let __object_result = store
-            .put(__object_args.0, __object_args.1, &mut __object_work)
-            .await;
-        __object_result
-    }?;
+    store
+        .put(
+            unselected,
+            obsolete,
+            &mut crate::AuthorityWork::native(&work, &token),
+        )
+        .await?;
     let closure = [object_id];
-    let hold = {
-        let __object_args = (
+    let hold = store
+        .flush_before_publish(
             PublicationScope::Closure {
                 objects: &closure,
                 proven_at: store.collection.sweeps(),
             },
-            &work,
-            &token,
-        );
-        let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
-        let __object_result = store
-            .flush_before_publish(__object_args.0, &mut __object_work)
-            .await;
-        __object_result
-    }?;
+            &mut crate::AuthorityWork::native(&work, &token),
+        )
+        .await?;
     assert!(!store.index().objects.contains_key(&object_id));
     assert!(store.index().objects.contains_key(&unselected));
     assert!(
@@ -122,21 +112,15 @@ async fn native_spilled_flush_cleans_acknowledged_objects_and_reuses_spill()
     let work = NativeMaterializationWork::new(native_write_budget(), &token)
         .map_err(|(error, _)| error)?;
     let closure = [id];
-    let hold = {
-        let __object_args = (
+    let hold = store
+        .flush_before_publish(
             PublicationScope::Closure {
                 objects: &closure,
                 proven_at: store.collection.sweeps(),
             },
-            &work,
-            &token,
-        );
-        let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
-        let __object_result = store
-            .flush_before_publish(__object_args.0, &mut __object_work)
-            .await;
-        __object_result
-    }?;
+            &mut crate::AuthorityWork::native(&work, &token),
+        )
+        .await?;
     assert!(store.index().objects.is_empty());
     assert_eq!(store.index().spilled_objects, 0);
     assert_eq!(store.index().spill_end, 0);
@@ -216,22 +200,16 @@ async fn native_flush_spilled_read_denial_keeps_private_remainder()
     let work = NativeMaterializationWork::new(budget, &token).map_err(|(error, _)| error)?;
     let closure = [id];
     assert!(
-        {
-            let __object_args = (
+        store
+            .flush_before_publish(
                 PublicationScope::Closure {
                     objects: &closure,
                     proven_at: store.collection.sweeps(),
                 },
-                &work,
-                &token,
-            );
-            let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
-            let __object_result = store
-                .flush_before_publish(__object_args.0, &mut __object_work)
-                .await;
-            __object_result
-        }
-        .is_err()
+                &mut crate::AuthorityWork::native(&work, &token),
+            )
+            .await
+            .is_err()
     );
     assert_eq!(work.receipt().backend_read_operations, 0);
     assert_eq!(work.receipt().backend_write_operations, 0);
@@ -257,19 +235,13 @@ impl AsyncObjectStore for CancelAfterNativePut {
         if let Some(work) = context.original {
             let cancellation = context.cancellation;
             return async {
-                {
-                    let __object_args = (id, bytes, work, cancellation);
-                    let mut __object_work =
-                        crate::AuthorityWork::native(__object_args.2, __object_args.3);
-                    let __object_result = AsyncObjectStore::put(
-                        &self.inner,
-                        __object_args.0,
-                        __object_args.1,
-                        &mut __object_work,
-                    )
-                    .await;
-                    __object_result
-                }?;
+                AsyncObjectStore::put(
+                    &self.inner,
+                    id,
+                    bytes,
+                    &mut crate::AuthorityWork::native(work, cancellation),
+                )
+                .await?;
                 if self.cancel_once.swap(false, Ordering::Relaxed) {
                     cancellation.cancel();
                 }
@@ -393,39 +365,31 @@ async fn native_flush_cancellation_removes_successful_prefix_only()
     let (second, second_bytes) = blob(OwnedBytes::from_static(b"retryable second"));
     let work = NativeMaterializationWork::new(native_write_budget(), &token)
         .map_err(|(error, _)| error)?;
-    {
-        let __object_args = (first, first_bytes.clone(), &work, &token);
-        let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
-        let __object_result = store
-            .put(__object_args.0, __object_args.1, &mut __object_work)
-            .await;
-        __object_result
-    }?;
-    {
-        let __object_args = (second, second_bytes, &work, &token);
-        let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
-        let __object_result = store
-            .put(__object_args.0, __object_args.1, &mut __object_work)
-            .await;
-        __object_result
-    }?;
+    store
+        .put(
+            first,
+            first_bytes.clone(),
+            &mut crate::AuthorityWork::native(&work, &token),
+        )
+        .await?;
+    store
+        .put(
+            second,
+            second_bytes,
+            &mut crate::AuthorityWork::native(&work, &token),
+        )
+        .await?;
     let closure = [first, second];
     assert!(matches!(
-        {
-            let __object_args = (
+        store
+            .flush_before_publish(
                 PublicationScope::Closure {
                     objects: &closure,
                     proven_at: store.collection.sweeps(),
                 },
-                &work,
-                &token,
-            );
-            let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
-            let __object_result = store
-                .flush_before_publish(__object_args.0, &mut __object_work)
-                .await;
-            __object_result
-        },
+                &mut crate::AuthorityWork::native(&work, &token),
+            )
+            .await,
         Err(ObjectStoreError::Native(
             crate::NativeTreeMaterializationError::Cancelled
         ))
@@ -440,21 +404,15 @@ async fn native_flush_cancellation_removes_successful_prefix_only()
     let token = CancellationToken::new();
     let retry = NativeMaterializationWork::new(native_write_budget(), &token)
         .map_err(|(error, _)| error)?;
-    let hold = {
-        let __object_args = (
+    let hold = store
+        .flush_before_publish(
             PublicationScope::Closure {
                 objects: &closure,
                 proven_at: store.collection.sweeps(),
             },
-            &retry,
-            &token,
-        );
-        let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
-        let __object_result = store
-            .flush_before_publish(__object_args.0, &mut __object_work)
-            .await;
-        __object_result
-    }?;
+            &mut crate::AuthorityWork::native(&retry, &token),
+        )
+        .await?;
     assert!(store.index().objects.is_empty());
     assert_eq!(retry.receipt().backend_write_operations, 1);
     assert_eq!(work.receipt().backend_write_operations, 1);

@@ -197,17 +197,16 @@ impl TaskAdmissionRecord {
             crate::wire_codec::CodecQuota::new(&mut observer, std::mem::size_of::<Self>() as u64)?;
         let copied = crate::core::copy(self, &mut quota, |record, work| {
             let bytes = record.logical_owned_bytes()?;
-            if bytes != 0 {
-                work.as_deref_mut()
-                    .expect("native admission copy")
-                    .admit_allocation(bytes)?;
+            if bytes != 0
+                && let Some(io) = work.as_deref_mut()
+            {
+                io.admit_allocation(bytes)?;
             }
             Ok(bytes)
         })?;
         let held = quota.retained();
         quota.transfer();
         drop(quota);
-        drop(observer);
         Ok((copied, io.take_native_custody(held)?))
     }
 
@@ -312,7 +311,7 @@ impl TaskAdmissionRecord {
             ));
         }
         for (index, proof) in self.resource_proofs.iter().enumerate() {
-            for previous in &self.resource_proofs[..index] {
+            for previous in self.resource_proofs.iter().take(index) {
                 if let Some(io) = work.as_deref_mut() {
                     io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
                 }
@@ -387,6 +386,11 @@ impl TaskAdmissionRecord {
 
     /// Ref-only v2 envelope retained by the owner outside event history.
     #[must_use]
+    #[allow(
+        clippy::expect_used,
+        clippy::missing_panics_doc,
+        reason = "This closed admission payload contains only infallible JSON-serializable fields."
+    )]
     pub fn canonical_value(&self) -> Value {
         serde_json::to_value(self.canonical_payload()).expect("task admission serializes")
     }
@@ -397,22 +401,13 @@ impl TaskAdmissionRecord {
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<(Self, u64)> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let canonical = crate::store::history::canonical_bytes_with_work(
-            &value,
-            acyclic_stream::MAX_RECORD_BYTES as u64,
-            quota.work(),
-        )?;
-        quota.adopt(canonical.capacity() as u64)?;
         let mut body = value;
-        let fields = match body.as_object_mut() {
-            Some(fields) => fields,
-            None => {
-                return Err(crate::store::guarded_boundary(
-                    quota.work(),
-                    crate::wire::ErrorCode::Invalid,
-                    "task admission must be an object",
-                ));
-            }
+        let Some(fields) = body.as_object_mut() else {
+            return Err(crate::store::guarded_boundary(
+                quota.work(),
+                crate::wire::ErrorCode::Invalid,
+                "task admission must be an object",
+            ));
         };
         if !matches!(fields.remove("contract"), Some(Value::String(contract)) if contract == "harness.task-admission.v2")
         {
@@ -422,16 +417,31 @@ impl TaskAdmissionRecord {
                 "unsupported task admission contract",
             ));
         }
-        let (admission, added) = Self::decode_body(body, quota.work())?;
+        let (admission, added) = Self::decode_body(&body, quota.work())?;
         quota.adopt(added)?;
         admission.validate(quota.work())?;
-        let expected = crate::store::history::canonical_bytes_with_work(
-            &admission.canonical_payload(),
-            acyclic_stream::MAX_RECORD_BYTES as u64,
-            quota.work(),
-        )?;
-        quota.adopt(expected.capacity() as u64)?;
-        if expected != canonical {
+        let expected = match quota.work().as_deref_mut() {
+            Some(io) => {
+                let code = crate::store::operations::original_native_decode_mode(io)
+                    .then_some(crate::wire::ErrorCode::Invalid);
+                crate::executor::json::json_value_bounded(
+                    &admission,
+                    crate::executor::json::JsonBounds {
+                        maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
+                        maximum_items: acyclic_stream::MAX_RECORD_BYTES as u64 + 1,
+                        maximum_depth: 256,
+                    },
+                    code,
+                    &mut |charge| io.codec_charge(charge),
+                )?
+            }
+            None => serde_json::to_value(&admission)
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+        };
+        quota.adopt(crate::executor::json::json_value_logical_owned_bytes(
+            &expected,
+        )?)?;
+        if expected != body {
             return Err(crate::store::guarded_boundary(
                 quota.work(),
                 crate::wire::ErrorCode::Invalid,
@@ -439,16 +449,18 @@ impl TaskAdmissionRecord {
             ));
         }
         drop(expected);
-        drop(canonical);
+        drop(body);
         quota.replace(added)?;
         quota.transfer();
         Ok((admission, added))
     }
 
-    pub(super) fn decode_body(
-        body: Value,
+    fn decode_body(
+        body: &Value,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(Self, u64)> {
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let _ = work;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if work
             .as_deref()
@@ -456,7 +468,7 @@ impl TaskAdmissionRecord {
         {
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
             let decoded = crate::executor::json::json_from_value_bounded(
-                std::borrow::Cow::Owned(body),
+                std::borrow::Cow::Borrowed(body),
                 crate::executor::json::JsonBounds {
                     maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
                     maximum_items: acyclic_stream::MAX_RECORD_BYTES as u64,
@@ -467,12 +479,8 @@ impl TaskAdmissionRecord {
                 crate::executor::json::JsonValueSchema::TaskAdmissionRecord,
                 &mut |charge| match charge {
                     crate::executor::json::JsonCodecCharge::Admission { value_shape, .. } => {
-                        let containers = crate::executor::json::json_decode_owned_bytes(
-                            value_shape,
-                            false,
-                            Some(crate::wire::ErrorCode::Invalid),
-                        )?
-                        .0;
+                        let containers =
+                            crate::executor::json::json_value_decode_owned_bytes(value_shape)?;
                         let diagnostics = crate::executor::json::json_typed_diagnostic_owned_bytes(
                             value_shape,
                             crate::executor::json::preparation_serde_diagnostic_label_bytes(),
@@ -490,34 +498,44 @@ impl TaskAdmissionRecord {
                             })?;
                         quota.replace(bytes)
                     }
-                    charge => quota
-                        .work()
-                        .as_deref_mut()
-                        .expect("native admission observer")
-                        .codec_charge(charge),
+                    charge => match quota.work().as_deref_mut() {
+                        Some(io) => io.codec_charge(charge),
+                        None => Err(Error::NativeBoundary {
+                            code: crate::wire::ErrorCode::Invalid,
+                            reason: "native admission observer is missing",
+                        }),
+                    },
                 },
             );
-            let admission = decoded.map_err(|mut error| {
-                if let Error::NativeJson { custody, .. } = &mut error {
-                    let retained = quota.retained();
-                    *custody = Some(
-                        quota
+            let admission: Self = match decoded {
+                Ok(admission) => admission,
+                Err(mut error) => {
+                    if let Error::NativeJson { custody, .. } = &mut error {
+                        let retained = quota.retained();
+                        let held = quota
                             .work()
                             .as_deref_mut()
-                            .expect("native admission observer")
-                            .take_native_custody(retained)
-                            .expect("preclaimed admission custody"),
-                    );
-                    quota.transfer();
+                            .ok_or(Error::NativeBoundary {
+                                code: crate::wire::ErrorCode::Invalid,
+                                reason: "native admission observer is missing",
+                            })?
+                            .take_native_custody(retained)?;
+                        *custody = Some(held);
+                        quota.transfer();
+                    }
+                    return Err(error);
                 }
-                error
-            })?;
-            let bytes = quota.retained();
+            };
+            let bytes = crate::core::owned_sum([
+                std::mem::size_of::<Self>() as u64,
+                admission.logical_owned_bytes()?,
+            ])?;
+            quota.replace(bytes)?;
             quota.transfer();
             return Ok((admission, bytes));
         }
         Ok((
-            serde_json::from_value(body).map_err(|source| Error::Invalid(source.to_string()))?,
+            Self::deserialize(body).map_err(|source| Error::Invalid(source.to_string()))?,
             0,
         ))
     }

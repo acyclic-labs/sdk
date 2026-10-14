@@ -2,7 +2,10 @@ use super::*;
 use crate::wire::ErrorCode::{Conflict, Invalid, Storage, Unauthorized, Unsupported};
 
 /// Imports a checkpoint and its complete canonical delta through a logical cut.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "checkpoint identity and projection bounds remain explicit"
+)]
 pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider>(
     journal: &dyn ExecutionJournal,
     reference: &FileRef,
@@ -154,6 +157,7 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
         limits,
         Some(scope),
         io,
+        None,
     )
     .await?;
     drop(selected.selection);
@@ -332,6 +336,7 @@ pub async fn load_canonical_checkpoint(
         limits,
         scope,
         io,
+        None,
     )
     .await?;
     for file in retained.0.metadata.values() {

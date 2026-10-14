@@ -82,6 +82,7 @@ pub(super) fn retain_task_value<T>(
     value: (T, crate::NativeCustody),
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<T> {
+    let _ = io;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = task_original_work(io)? {
         if value
@@ -95,10 +96,16 @@ pub(super) fn retain_task_value<T>(
                 custody: value.1,
             });
         }
-        io.expect("original workflow IO")
-            .absorb_native_custody(value.1.expect("checked custody"))?;
+        let (Some(io), Some(custody)) = (io, value.1) else {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "original workflow custody is missing",
+            });
+        };
+        io.absorb_native_custody(custody)?;
         return Ok(value.0);
     }
+    let _ = io;
     Ok(value.0)
 }
 
@@ -141,6 +148,7 @@ pub struct ResumableTaskSession {
     pub(super) task_id: TaskId,
     pub(super) fence: crate::scheduler::LeaseFence,
     pub(super) host: Arc<dyn DurableTaskHost>,
+    pub(super) owner: Option<Arc<dyn OwnedTaskMailbox>>,
     pub(super) workflow: DurableWorkflowHost,
     pub(super) definition: Arc<dyn RegisteredTaskDefinition>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -207,9 +215,14 @@ impl ResumableTaskSession {
         if let Some(work) = native {
             self.require_native_session(work)?;
         }
-        self.host
-            .verify_dispatch_owner(self.task_id, &self.fence, io)?
-            .await?;
+        match &self.owner {
+            Some(owner) => owner.verify_owner(io)?.await?,
+            None => {
+                self.host
+                    .verify_dispatch_owner(self.task_id, &self.fence, io)?
+                    .await?;
+            }
+        }
         let schema = self.definition.output_schema();
         let check =
             |transition: &MachineTransition| validate_task_transition(schema, transition, io);
@@ -227,9 +240,14 @@ impl ResumableTaskSession {
                 None,
             ),
         };
-        self.host
-            .verify_dispatch_owner(self.task_id, &self.fence, io)?
-            .await?;
+        match &self.owner {
+            Some(owner) => owner.verify_owner(io)?.await?,
+            None => {
+                self.host
+                    .verify_dispatch_owner(self.task_id, &self.fence, io)?
+                    .await?;
+            }
+        }
         Ok(transition)
     }
 }

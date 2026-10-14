@@ -145,40 +145,40 @@ impl<'a> ProofMeter<'a> {
         object: ObjectId,
         maximum: u64,
     ) -> Result<(crate::storage::ObjectRead, ProofGuard), crate::FsError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Self::Native {
-            original,
-            cancellation,
-        } = self
-        {
-            cancellation.check()?;
-            let mut work = crate::AuthorityWork::native(original, cancellation);
-            let read = store
-                .read(object, maximum, &mut work)
-                .await
-                .map_err(crate::kernel::file_read::read_store_error)?;
-            return Ok((read, self.empty_guard()?));
+        match self {
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Native {
+                original,
+                cancellation,
+            } => {
+                cancellation.check()?;
+                let mut work = crate::AuthorityWork::native(original, cancellation);
+                let read = store
+                    .read(object, maximum, &mut work)
+                    .await
+                    .map_err(crate::kernel::file_read::read_store_error)?;
+                Ok((read, self.empty_guard()?))
+            }
+            Self::Standalone { cancellation, .. } => {
+                cancellation.check()?;
+                let remaining = self.with_accounting(|accounting| accounting.remaining())?;
+                let mut work = crate::AuthorityWork::new(remaining, cancellation);
+                let result = store.read(object, maximum, &mut work).await;
+                self.owned(|accounting| {
+                    crate::kernel::file_read::accept_standalone_object_read(
+                        work.receipt(result),
+                        accounting,
+                    )
+                    .map(|(read, bytes)| {
+                        (
+                            read,
+                            crate::kernel::allocation::KernelOwnedAllocation::Standalone,
+                            bytes,
+                        )
+                    })
+                })
+            }
         }
-        let Self::Standalone { cancellation, .. } = self else {
-            unreachable!("native proof read returned on its original ledger")
-        };
-        cancellation.check()?;
-        let remaining = self.with_accounting(|accounting| accounting.remaining())?;
-        let mut work = crate::AuthorityWork::new(remaining, cancellation);
-        let result = store.read(object, maximum, &mut work).await;
-        self.owned(|accounting| {
-            crate::kernel::file_read::accept_standalone_object_read(
-                work.receipt(result),
-                accounting,
-            )
-            .map(|(read, bytes)| {
-                (
-                    read,
-                    crate::kernel::allocation::KernelOwnedAllocation::Standalone,
-                    bytes,
-                )
-            })
-        })
     }
 
     pub(super) fn decode_steps<T>(
@@ -236,6 +236,10 @@ pub(crate) enum ProofGuard {
 impl ProofGuard {
     // A retained standalone result also keeps this proof's shared meter alive.
     // Count its one admitted Arc body, never the original native root state.
+    #[allow(
+        clippy::expect_used,
+        reason = "These guards retire only the allocation bytes admitted by their constructors."
+    )]
     pub(crate) fn retained_bytes(&self) -> u64 {
         match self {
             ProofGuard::Standalone { bytes, .. } => bytes
@@ -279,6 +283,10 @@ impl ProofGuard {
 }
 
 impl Drop for ProofGuard {
+    #[allow(
+        clippy::expect_used,
+        reason = "These guards retire only the allocation bytes admitted by their constructors."
+    )]
     fn drop(&mut self) {
         match self {
             Self::Standalone { state, bytes } => {
@@ -403,6 +411,10 @@ impl<'a, T> ProofVec<'a, T> {
 }
 
 impl<T> Drop for ProofVec<'_, T> {
+    #[allow(
+        clippy::expect_used,
+        reason = "These guards retire only the allocation bytes admitted by their constructors."
+    )]
     fn drop(&mut self) {
         drop(std::mem::take(&mut self.values));
         drop(self.guard.take());
@@ -414,7 +426,7 @@ pub(super) fn map_get<'v, K: Ord, V>(entries: &'v ProofVec<'_, (K, V)>, key: &K)
         .values
         .binary_search_by(|entry| entry.0.cmp(key))
         .ok()
-        .map(|index| &entries.values[index].1)
+        .and_then(|index| entries.values.get(index).map(|entry| &entry.1))
 }
 
 pub(super) fn map_insert<K: Ord, V>(
@@ -429,7 +441,11 @@ pub(super) fn map_insert<K: Ord, V>(
                 ..WorkCounters::UNCHARGED
             };
             entries.meter.admit(copied)?;
-            let previous = std::mem::replace(&mut entries.values[index].1, value);
+            let entry = entries
+                .values
+                .get_mut(index)
+                .ok_or(crate::ObjectStoreError::Corrupt)?;
+            let previous = std::mem::replace(&mut entry.1, value);
             entries.meter.record_completed(copied)?;
             Ok(Some(previous))
         }

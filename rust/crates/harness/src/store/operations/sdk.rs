@@ -122,10 +122,16 @@ impl ObservedRecords {
             }
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::Native(records) => {
-                let original = work
-                    .as_deref()
-                    .and_then(|observer| observer.original_native_work())
-                    .expect("native cursor has its original observer")
+                let observer = work.as_deref_mut().ok_or(Error::NativeBoundary {
+                    code: Storage,
+                    reason: "native cursor has no observer",
+                })?;
+                let original = observer
+                    .original_native_work()
+                    .ok_or(Error::NativeBoundary {
+                        code: Storage,
+                        reason: "native cursor has no original ledger",
+                    })?
                     .clone();
                 let Some(record) = records
                     .value_mut()
@@ -136,9 +142,7 @@ impl ObservedRecords {
                     return Ok(None);
                 };
                 let record = crate::store::history::native_sdk_result(&original, Ok(record))?;
-                work.as_deref_mut()
-                    .expect("native cursor observer")
-                    .receive_native_record(record.value().value.len() as u64)?;
+                observer.receive_native_record(record.value().value.len() as u64)?;
                 let (record, allocation) =
                     original_sdk_metadata_output(&original, record)?.into_parts();
                 Ok(Some(ObservedRecord {
@@ -216,7 +220,9 @@ pub(crate) async fn tail_optional_with_work<P: StreamProvider>(
     path: &StreamPath,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Option<u64>> {
-    let mut result: Option<std::result::Result<u64, StreamError>> = None;
+    let result: Option<std::result::Result<u64, StreamError>> = None;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let mut result = result;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(original) = work.as_deref().and_then(|io| io.original_native_work()) {
         let tail = client

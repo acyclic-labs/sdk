@@ -171,6 +171,10 @@ pub(crate) fn namespace_host_units_with_work<W: crate::native_host::NativeHostWo
 }
 
 #[cfg(unix)]
+#[allow(
+    clippy::type_complexity,
+    reason = "The borrowed emitter uses the existing work context without a separate callback trait."
+)]
 pub(super) fn namespace_component_bytes<W: crate::native_host::NativeHostWork>(
     component: &LogicalName,
     work: &mut W,
@@ -200,6 +204,10 @@ pub(super) fn namespace_component_bytes<W: crate::native_host::NativeHostWork>(
 }
 
 #[cfg(windows)]
+#[allow(
+    clippy::type_complexity,
+    reason = "The borrowed emitter uses the existing work context without a separate callback trait."
+)]
 pub(crate) fn namespace_component_wide<W: crate::native_host::NativeHostWork>(
     component: &LogicalName,
     work: &mut W,

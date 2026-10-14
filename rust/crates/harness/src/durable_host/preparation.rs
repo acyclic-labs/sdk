@@ -2,6 +2,10 @@
 use super::*;
 impl<P: StreamProvider> TaskJournalOwner<P> {
     /// Authenticates one immutable resource request under its current owner lease.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The accepted preparation future retains the original request, observer and custody together."
+    )]
     pub async fn resource_preparation(
         self: &Arc<Self>,
         request: crate::resource_preparation::ResourcePreparationRequest,

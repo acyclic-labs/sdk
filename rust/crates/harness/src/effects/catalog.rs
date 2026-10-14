@@ -80,19 +80,21 @@ impl EffectRegistry {
                 "effect provider is not registered",
             )
         })?;
-        let supported = 'guarantee: {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if let Some(native) = native {
-                break 'guarantee provider.supports_guarantee_with_native_work(
-                    &effect.effect_kind,
-                    effect.guarantee,
-                    native,
-                )?;
-            }
-            provider
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let supported = match native {
+            Some(native) => provider.supports_guarantee_with_native_work(
+                &effect.effect_kind,
+                effect.guarantee,
+                native,
+            )?,
+            None => provider
                 .guarantees(&effect.effect_kind)
-                .contains(&effect.guarantee)
+                .contains(&effect.guarantee),
         };
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let supported = provider
+            .guarantees(&effect.effect_kind)
+            .contains(&effect.guarantee);
         if !supported {
             return Err(crate::store::guarded_boundary(
                 work,
@@ -200,7 +202,10 @@ impl EffectRegistry {
             custody = io.into_custody()?;
             self.native_metadata
                 .as_mut()
-                .expect("validated native catalog")
+                .ok_or(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Storage,
+                    reason: "native catalog lacks metadata custody",
+                })?
                 .absorb(&mut custody)?;
             id
         } else {
