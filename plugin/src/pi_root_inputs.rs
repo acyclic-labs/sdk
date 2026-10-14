@@ -6,6 +6,7 @@ use super::{
 };
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
 use acyclic_harness::filesystem::PreparationIo;
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::{
     Error, OperationId, Result, TaskId, conversation::FileRef, core::EffectGuarantee,
     effect_host::TaskEffectPlan, filesystem::EFFECT_TASK_COMMAND_KIND, workflow::WorkflowCommand,
@@ -50,9 +51,20 @@ impl PiRootPreparation {
         let owner = PiOwnerConfig::load(private_root, session, work)?;
         runtime.verify_owner_with_native_work(&owner, work)?;
         owner.validate_root(binding)?;
-        let admitted =
-            super::pi_recovery::authenticate_pi_task(&runtime.runtime, binding, origin, work)
+        let admitted = {
+            let admission = runtime
+                .runtime
+                .task_host()
+                .observe_admission_with_native_work(binding.task_id, work)?
                 .await?;
+            super::pi_recovery::authenticate_pi_task(
+                &admission.0,
+                binding,
+                origin,
+                work,
+                runtime.definition.identity(),
+            )?
+        };
         let context = if let Some(context) = context {
             context
         } else {
