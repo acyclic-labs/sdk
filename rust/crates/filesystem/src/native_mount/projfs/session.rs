@@ -399,6 +399,30 @@ impl ProjFsSession {
         crate::WorkCounters::UNCHARGED
     }
 
+    pub(in crate::native_mount) fn capture_host_paths(
+        &self,
+        paths: &[MountPath],
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
+        let runtime = self
+            .runtime
+            .as_ref()
+            .ok_or(NativeMountError::ControlPending)?;
+        for path in paths {
+            let _guard = MetadataProbeGuard::enter(&runtime.metadata_probes, path);
+            runtime
+                .source
+                .capture_host_paths_with_meter(
+                    &runtime.root,
+                    std::slice::from_ref(path),
+                    runtime.metadata_root.identity(),
+                    work,
+                )
+                .map_err(NativeMountError::Source)?;
+        }
+        Ok(())
+    }
+
     pub(in crate::native_mount) fn flush_callbacks(
         &self,
         work: &crate::NativeMaterializationWork,

@@ -53,6 +53,39 @@ where
         self.source.native_source_io_lease().map_err(Into::into)
     }
 
+    /// Captures one provider-side host edit through the original mounted owner.
+    pub fn capture_host_path(
+        &self,
+        relative: &Path,
+        work: &NativeMaterializationWork,
+    ) -> Result<(), MountLifecycleError> {
+        let _scope = self.begin_original_work(work)?;
+        let work = work.with_source_io_lease(self.native_source_io_lease()?)?;
+        let config = crate::model::VolumeConfig::native(crate::model::Lifecycle::Ephemeral);
+        let mut path = crate::native_host::buffer(relative.components().count(), &mut &work)?;
+        for component in relative.components() {
+            let std::path::Component::Normal(name) = component else {
+                return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
+            };
+            let mut name = crate::native_name::host_name_bytes_with_native_work(
+                name,
+                config.profile,
+                config.limits.maximum_component_bytes,
+                &work,
+            )?;
+            path.1.absorb(&mut name.1)?;
+            path.0.push(name.0.1);
+        }
+        if path.0.is_empty() {
+            return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
+        }
+        let path = (MountPath { components: path.0 }, path.1);
+        with_live_session(&self.session, |session| {
+            session.capture_host_paths(std::slice::from_ref(&path.0), &work)
+        })?;
+        Ok(())
+    }
+
     /// Retains already-paid container capacity until its payload drops.
     pub fn retain_payload_allocation(
         &mut self,

@@ -17,7 +17,6 @@ async fn verify_binding<P: StreamProvider + 'static, A, O>(
         .into_iter()
         .chain(binding.writable.then_some(VolumeOperation::Write))
     {
-        owner.require_volume_grant(binding.volume, operation, &mut Some(&mut io.history_io()))?;
         ContentGrant::authorize_volume(
             binding.verifier,
             binding.scope,
@@ -264,10 +263,8 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                 return Err(invalid());
             }
             let verify = move || async move {
-                for (binding, guard) in bindings.iter().zip(guards) {
-                    verify_binding(owner, binding, guard, work).await?;
-                }
-                Ok::<_, Error>(())
+                let io = PreparationIo::from_native_work(work)?;
+                owner.verify(false, &mut Some(&mut io.history_io())).await
             };
             if journal.phase == MaterializationPhase::Preparing && journal.preimages.is_empty() {
                 for (binding, (generation, volume_work)) in bindings.iter().zip(&generations) {
