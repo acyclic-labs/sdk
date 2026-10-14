@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_PROJECTION_EVENTS: u32 = 64;
 
 const MAX_PROJECTION_BYTES: u64 = 16 * acyclic_stream::MAX_COMMAND_BYTES as u64;
+const MIN_PROJECTION_CHUNK_BYTES: usize = 16 * 1024;
 
 /// Default finite cold input allowance; includes pointer, snapshot, anchor and suffix.
 #[must_use]
@@ -32,7 +33,14 @@ pub const fn default_projection_read_limits() -> HistoryReadLimits {
 #[serde(deny_unknown_fields)]
 pub(super) struct ProjectionLocation {
     pub(super) bytes: u64,
-    pub(super) chunks: Vec<[u8; 32]>,
+    pub(super) chunks: Vec<ProjectionChunk>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ProjectionChunk {
+    digest: [u8; 32],
+    bytes: u32,
 }
 
 pub(super) struct LoadedProjection {
@@ -226,17 +234,10 @@ async fn load_chunks<P: StreamProvider>(
             "projection size exceeds platform",
         )
     })?;
-    if length == 0 || location.chunks.len() != length.div_ceil(acyclic_stream::MAX_RECORD_BYTES) {
-        return Err(super::guarded_boundary(
-            work,
-            crate::wire::ErrorCode::Storage,
-            "projection chunk manifest has invalid lengths",
-        ));
-    }
     let mut quota = CodecQuota::from_retained(work, 0);
     let mut bytes = crate::core::reserve_copy_vector(length, &mut quota)?;
     for chunk in &location.chunks {
-        let expected = (length - bytes.len()).min(acyclic_stream::MAX_RECORD_BYTES);
+        let expected = chunk.bytes as usize;
         if expected as u64 > maximum.saturating_sub(*consumed) {
             return Err(super::guarded_boundary(
                 quota.work(),
@@ -244,7 +245,7 @@ async fn load_chunks<P: StreamProvider>(
                 "projection read exceeds byte allowance",
             ));
         }
-        let digest = blake3::Hash::from_bytes(*chunk);
+        let digest = blake3::Hash::from_bytes(chunk.digest);
         let path = operations::publication_path(
             authority,
             "harness/v3/projection-chunks/",
@@ -271,7 +272,7 @@ async fn load_chunks<P: StreamProvider>(
             if let Some(io) = received.work().as_deref_mut() {
                 io.hashed_bytes(record.value.len() as u64)?;
             }
-            blake3::hash(&record.value).as_bytes() != chunk
+            blake3::hash(&record.value).as_bytes() != &chunk.digest
         } {
             return Err(super::guarded_boundary(
                 received.work(),
@@ -302,7 +303,7 @@ fn decode_projection_location(
     let location: ProjectionLocation = operations::decode_index(
         index,
         acyclic_stream::MAX_RECORD_BYTES as u64,
-        "ProjectionLocation Vec u8 u64 bytes chunks",
+        "ProjectionLocation ProjectionChunk Vec u8 u32 u64 bytes chunks digest",
         |shape, _| {
             shape
                 .lexical_items()
@@ -314,7 +315,7 @@ fn decode_projection_location(
         },
         |location: &ProjectionLocation| {
             (
-                location.chunks.capacity() as u64 * 32
+                (location.chunks.capacity() * std::mem::size_of::<ProjectionChunk>()) as u64
                     + std::mem::size_of::<ProjectionLocation>() as u64,
                 0,
             )
@@ -322,7 +323,8 @@ fn decode_projection_location(
         quota.work(),
     )?;
     quota.adopt(
-        location.chunks.capacity() as u64 * 32 + std::mem::size_of::<ProjectionLocation>() as u64,
+        (location.chunks.capacity() * std::mem::size_of::<ProjectionChunk>()) as u64
+            + std::mem::size_of::<ProjectionLocation>() as u64,
     )?;
     Ok(location)
 }
@@ -344,6 +346,46 @@ fn validate_projection_bounds(
             quota.work(),
             crate::wire::ErrorCode::Invalid,
             "projection checkpoint boundary exceeds read allowance",
+        ));
+    }
+    let mut total = 0_u64;
+    if location.chunks.is_empty() {
+        return Err(super::guarded_boundary(
+            quota.work(),
+            crate::wire::ErrorCode::Storage,
+            "projection chunk manifest is empty",
+        ));
+    }
+    if let Some(io) = quota.work().as_deref_mut() {
+        io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect {
+            items: location.chunks.len() as u64,
+        })?;
+    }
+    for (index, chunk) in location.chunks.iter().enumerate() {
+        if chunk.bytes == 0
+            || chunk.bytes as usize > acyclic_stream::MAX_RECORD_BYTES
+            || (index + 1 < location.chunks.len()
+                && (chunk.bytes as usize) < MIN_PROJECTION_CHUNK_BYTES)
+        {
+            return Err(super::guarded_boundary(
+                quota.work(),
+                crate::wire::ErrorCode::Storage,
+                "projection chunk manifest has invalid lengths",
+            ));
+        }
+        total = total.checked_add(u64::from(chunk.bytes)).ok_or_else(|| {
+            super::guarded_boundary(
+                quota.work(),
+                crate::wire::ErrorCode::Storage,
+                "projection chunk manifest overflows",
+            )
+        })?;
+    }
+    if total != location.bytes {
+        return Err(super::guarded_boundary(
+            quota.work(),
+            crate::wire::ErrorCode::Storage,
+            "projection chunk manifest total differs",
         ));
     }
     Ok(revision)

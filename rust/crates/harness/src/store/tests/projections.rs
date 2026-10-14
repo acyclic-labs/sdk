@@ -209,7 +209,7 @@ async fn cold_projection_rejects_forged_state_and_non_atomic_heads() -> Result<(
         .await?;
     let location: Value = crate::contract::json_from_slice(&heads[0].value)
         .map_err(|error| Error::Invalid(error.to_string()))?;
-    let digest: [u8; 32] = serde_json::from_value(location["chunks"][0].clone())
+    let digest: [u8; 32] = serde_json::from_value(location["chunks"][0]["digest"].clone())
         .map_err(|error| Error::Invalid(error.to_string()))?;
     let chunk_path = format!(
         "harness/v3/projection-chunks/conversations/conversation-1/{}",
@@ -238,7 +238,7 @@ async fn cold_projection_rejects_forged_state_and_non_atomic_heads() -> Result<(
             payload = crate::contract::canonical_json_bytes(&snapshot)?;
             let digest = blake3::hash(&payload);
             location["bytes"] = json!(payload.len());
-            location["chunks"] = json!([*digest.as_bytes()]);
+            location["chunks"] = json!([{"digest": *digest.as_bytes(), "bytes": payload.len()}]);
             path = format!("harness/v3/projection-chunks/conversations/conversation-1/{digest}");
         }
         acyclic_stream::Stream::new(client.clone(), path)?

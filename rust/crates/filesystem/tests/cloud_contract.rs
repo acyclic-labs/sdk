@@ -7,7 +7,7 @@ use acyclic_fs::model::FilesystemProfile;
 use acyclic_fs::wire::filesystem::v2::{
     self as wire, filesystem_service_client::FilesystemServiceClient,
 };
-use acyclic_fs::{Fs, HostedFs, HostedFsOptions, HostedGeneration, IdempotencyKey};
+use acyclic_fs::{HostedFs, HostedFsOptions, HostedGeneration, IdempotencyKey};
 use futures::future::{Ready, ready};
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage};
@@ -199,7 +199,7 @@ async fn hosted_and_generated_clients_match_cloud_filesystem_roundtrip()
                 let _ = stopping.await;
             }),
     );
-    let hosted = Fs::hosted(HostedFsOptions::new(&endpoint, "fixture")).await?;
+    let hosted = HostedFs::connect(HostedFsOptions::new(&endpoint, "fixture")).await?;
     let workspace = hosted
         .create_workspace(
             "same-name",

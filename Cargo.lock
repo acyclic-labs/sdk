@@ -28,6 +28,8 @@ dependencies = [
  "protoc-bin-vendored",
  "rcgen",
  "reqwest 0.12.28",
+ "rustls",
+ "rustls-platform-verifier",
  "serde",
  "serde_bytes",
  "serde_json",
@@ -148,6 +150,7 @@ dependencies = [
  "parking_lot",
  "proptest",
  "prost",
+ "prost-reflect",
  "prost-types",
  "rcgen",
  "rustix",
@@ -501,6 +504,7 @@ dependencies = [
  "acyclic-native-runtime",
  "acyclic-stream",
  "async-trait",
+ "axum",
  "base64 0.23.1",
  "blake3",
  "bytes",
@@ -509,6 +513,8 @@ dependencies = [
  "hex",
  "libc",
  "notify",
+ "reqwest 0.12.28",
+ "ring",
  "rustix",
  "serde",
  "serde_json",
@@ -614,40 +620,16 @@ dependencies = [
 name = "acyclic-workers"
 version = "0.2.0"
 dependencies = [
- "acyclic-contract-derive",
- "acyclic-grpc-observability",
- "acyclic-tonic-web-wasm-client",
- "gloo-timers",
- "http-body",
- "js-sys",
- "napi",
- "napi-build",
- "napi-derive",
+ "acyclic-objects",
+ "axum",
+ "bytes",
+ "hex",
  "prost",
  "prost-reflect",
- "protoc-bin-vendored",
- "rcgen",
- "reqwest 0.12.28",
- "rustls",
- "rustls-platform-verifier",
- "serde",
- "serde-wasm-bindgen",
- "serde_bytes",
  "serde_json",
  "sha2 0.11.0",
- "tempfile",
  "thiserror 2.0.21",
  "tokio",
- "tokio-util",
- "tonic",
- "tonic-prost",
- "tonic-prost-build",
- "tracing",
- "tracing-subscriber",
- "ts-rs",
- "url",
- "wasm-bindgen",
- "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -1615,7 +1597,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1926,18 +1908,6 @@ dependencies = [
  "libc",
  "r-efi 6.0.0",
  "rand_core 0.10.1",
- "wasm-bindgen",
-]
-
-[[package]]
-name = "gloo-timers"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "482ce8a491a501da4cd806bd190275363d674f2845005c6ddbd5d3e1dd54495d"
-dependencies = [
- "futures-channel",
- "futures-core",
- "js-sys",
  "wasm-bindgen",
 ]
 
@@ -2420,7 +2390,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20fd6de4ccfcc187e38bc21cfa543cb5a302cb86a8b114eb7f0bf0dc9f8ac00f"
 dependencies = [
  "io-lifetimes 3.0.1",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3082,7 +3052,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3734,7 +3704,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4133,7 +4103,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4202,7 +4172,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4231,9 +4201,9 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "ruzstd"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a252f5e20f038fe7b4ea53e073e65398d652c864cc162fc77c56c2f13717b888"
+checksum = "69e4ce4a039f42bf25920b95667e4d789e98749ab11bbb8d2c2936f788421bb5"
 dependencies = [
  "twox-hash",
 ]
@@ -4436,6 +4406,20 @@ dependencies = [
  "protoc-gen-tonic",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "sdk-service-examples"
+version = "0.0.0"
+dependencies = [
+ "acyclic-actors",
+ "acyclic-fs",
+ "acyclic-objects",
+ "acyclic-stream",
+ "acyclic-workers",
+ "reqwest 0.12.28",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -4893,10 +4877,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4915,7 +4899,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5769,7 +5753,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

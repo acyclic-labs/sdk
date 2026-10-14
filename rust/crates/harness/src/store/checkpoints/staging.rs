@@ -119,20 +119,7 @@ pub(in crate::store) async fn publication_with_work<P: StreamProvider>(
         let bytes = operations::release_owned_after_drop(encoded, snapshot_owned, work)?;
         let mut quota = CodecQuota::from_retained(work, bytes.capacity() as u64);
         let staged = async {
-            let mut chunks = crate::core::reserve_copy_vector(
-                bytes.len().div_ceil(acyclic_stream::MAX_RECORD_BYTES),
-                &mut quota,
-            )?;
-            for chunk in bytes.chunks(acyclic_stream::MAX_RECORD_BYTES) {
-                if let Some(io) = quota.work().as_deref_mut() {
-                    io.hashed_bytes(chunk.len() as u64)?;
-                }
-                chunks.push(*blake3::hash(chunk).as_bytes());
-            }
-            let location = ProjectionLocation {
-                bytes: bytes.len() as u64,
-                chunks,
-            };
+            let location = projection_location(&bytes, &mut quota)?;
             let manifest = crate::store::history::canonical_bytes_with_work(
                 &location,
                 acyclic_stream::MAX_RECORD_BYTES as u64,
@@ -145,12 +132,14 @@ pub(in crate::store) async fn publication_with_work<P: StreamProvider>(
                     "projection manifest exceeds one record".into(),
                 ));
             }
-            for (descriptor, chunk) in location
-                .chunks
-                .iter()
-                .zip(bytes.chunks(acyclic_stream::MAX_RECORD_BYTES))
-            {
-                let hash = blake3::Hash::from_bytes(*descriptor).to_hex();
+            let mut offset = 0;
+            for descriptor in &location.chunks {
+                let end = offset + descriptor.bytes as usize;
+                let chunk = bytes
+                    .get(offset..end)
+                    .ok_or_else(|| Error::Invalid("projection chunk boundary is invalid".into()))?;
+                offset = end;
+                let hash = blake3::Hash::from_bytes(descriptor.digest).to_hex();
                 let path = operations::publication_path(
                     reducer.authority(),
                     "harness/v3/projection-chunks/",
@@ -194,4 +183,44 @@ pub(in crate::store) async fn publication_with_work<P: StreamProvider>(
             operations::release_owned_after_drop(Err(error), owned, work)
         }
     }
+}
+
+fn projection_location(bytes: &[u8], quota: &mut CodecQuota<'_, '_>) -> Result<ProjectionLocation> {
+    if let Some(io) = quota.work().as_deref_mut() {
+        io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect {
+            items: bytes.len() as u64,
+        })?;
+    }
+    let mut chunks =
+        crate::core::reserve_copy_vector(bytes.len().div_ceil(MIN_PROJECTION_CHUNK_BYTES), quota)?;
+    let mut start = 0;
+    let mut rolling = 0_u64;
+    for (index, byte) in bytes.iter().enumerate() {
+        let mut gear = u64::from(*byte).wrapping_add(0x9e37_79b9_7f4a_7c15);
+        gear = (gear ^ (gear >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        gear = (gear ^ (gear >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        rolling = (rolling << 1).wrapping_add(gear ^ (gear >> 31));
+        let length = index + 1 - start;
+        if index + 1 == bytes.len()
+            || length == acyclic_stream::MAX_RECORD_BYTES
+            || (length >= MIN_PROJECTION_CHUNK_BYTES && rolling & 0x3fff == 0)
+        {
+            let chunk = bytes
+                .get(start..=index)
+                .ok_or_else(|| Error::Invalid("projection chunk boundary is invalid".into()))?;
+            if let Some(io) = quota.work().as_deref_mut() {
+                io.hashed_bytes(chunk.len() as u64)?;
+            }
+            chunks.push(ProjectionChunk {
+                digest: *blake3::hash(chunk).as_bytes(),
+                bytes: u32::try_from(chunk.len())
+                    .map_err(|_| Error::Invalid("projection chunk exceeds platform".into()))?,
+            });
+            start = index + 1;
+        }
+    }
+    Ok(ProjectionLocation {
+        bytes: bytes.len() as u64,
+        chunks,
+    })
 }

@@ -1,14 +1,140 @@
 //! Authenticated HTTP client using the canonical descriptor's Protobuf JSON mapping.
 use crate::{FILE_DESCRIPTOR_SET, HTTP_ROUTES, wire};
 use prost::Message;
-use prost_reflect::DescriptorPool;
+use prost_reflect::{DescriptorPool, DynamicMessage};
 use reqwest::{
     Client as Transport, Url,
     header::{AUTHORIZATION, HeaderValue},
 };
 
 /// HTTP configuration, encoding, or remote service failure.
-pub type Error = acyclic_workers::http::Error<wire::Error>;
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// Invalid endpoint, credential, bound, or request path.
+    #[error("invalid HTTP client configuration or request")]
+    InvalidArgument,
+    /// Network failure.
+    #[error(transparent)]
+    Transport(#[from] reqwest::Error),
+    /// Response exceeded the configured bound.
+    #[error("HTTP response exceeds configured bound")]
+    ResponseTooLarge,
+    /// Malformed canonical response.
+    #[error("malformed Protobuf JSON response")]
+    MalformedResponse,
+    /// Service rejected the request, with canonical detail when available.
+    #[error("HTTP service returned status {status}")]
+    Service {
+        /// HTTP response status.
+        status: u16,
+        /// Decoded wire error, including service codes unknown to this SDK.
+        detail: Option<wire::Error>,
+        /// Exact response body, including empty or malformed error payloads.
+        raw_details: Vec<u8>,
+    },
+}
+
+impl Error {
+    /// Stable classification for tracing's `error.kind`.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::InvalidArgument => "invalid_argument",
+            Self::Transport(_) => "transport",
+            Self::ResponseTooLarge => "response_too_large",
+            Self::MalformedResponse => "malformed_response",
+            Self::Service { .. } => "service",
+        }
+    }
+}
+
+/// Configures bounded authenticated HTTP without redirects.
+fn configure(
+    endpoint: &str,
+    token: &str,
+    maximum: usize,
+) -> Result<(Transport, Url, HeaderValue), Error> {
+    let mut endpoint = Url::parse(endpoint).map_err(|_| Error::InvalidArgument)?;
+    let loopback = endpoint.host_str().is_some_and(|host| {
+        host == "localhost"
+            || host
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+    });
+    if !(endpoint.scheme() == "https" || endpoint.scheme() == "http" && loopback)
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || endpoint.query().is_some()
+        || endpoint.fragment().is_some()
+        || !crate::valid_token(token)
+        || maximum == 0
+    {
+        return Err(Error::InvalidArgument);
+    }
+    let mut authorization =
+        HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| Error::InvalidArgument)?;
+    authorization.set_sensitive(true);
+    if !endpoint.path().ends_with('/') {
+        endpoint.set_path(&format!("{}/", endpoint.path()));
+    }
+    let transport = Transport::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    Ok((transport, endpoint, authorization))
+}
+
+/// Encodes a request through its canonical JSON descriptor.
+fn encode(
+    descriptors: &DescriptorPool,
+    name: &str,
+    request: &impl Message,
+) -> Result<Vec<u8>, Error> {
+    let descriptor = descriptors
+        .get_message_by_name(name)
+        .ok_or(Error::MalformedResponse)?;
+    let message = DynamicMessage::decode(descriptor, request.encode_to_vec().as_slice())
+        .map_err(|_| Error::InvalidArgument)?;
+    serde_json::to_vec(&message).map_err(|_| Error::InvalidArgument)
+}
+
+/// Decodes a complete response through its canonical JSON descriptor.
+fn decode<O: Message + Default>(
+    descriptors: &DescriptorPool,
+    name: &str,
+    bytes: &[u8],
+) -> Result<O, Error> {
+    let descriptor = descriptors
+        .get_message_by_name(name)
+        .ok_or(Error::MalformedResponse)?;
+    let mut json = serde_json::Deserializer::from_slice(bytes);
+    let message =
+        DynamicMessage::deserialize(descriptor, &mut json).map_err(|_| Error::MalformedResponse)?;
+    json.end().map_err(|_| Error::MalformedResponse)?;
+    message.transcode_to().map_err(|_| Error::MalformedResponse)
+}
+
+/// Collects a response within `maximum`, returning `None` when it exceeds the bound.
+async fn response_body(
+    response: &mut reqwest::Response,
+    maximum: usize,
+) -> Result<Option<Vec<u8>>, reqwest::Error> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > maximum as u64)
+    {
+        return Ok(None);
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if chunk.len() > maximum.saturating_sub(bytes.len()) {
+            return Ok(None);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(Some(bytes))
+}
 
 /// Typed HTTP operations with bearer authentication and bounded responses.
 #[derive(Clone)]
@@ -38,11 +164,8 @@ macro_rules! operations {
 impl Client {
     /// Create a client. HTTPS or loopback HTTP is required.
     pub fn new(endpoint: &str, token: &str, maximum_response_bytes: usize) -> Result<Self, Error> {
-        let (transport, endpoint, authorization) = acyclic_workers::http::configure::<wire::Error>(
-            endpoint,
-            token,
-            maximum_response_bytes,
-        )?;
+        let (transport, endpoint, authorization) =
+            configure(endpoint, token, maximum_response_bytes)?;
         Ok(Self {
             transport,
             endpoint,
@@ -72,8 +195,7 @@ impl Client {
         request: &I,
     ) -> Result<O, Error> {
         let result = async {
-            let body =
-                acyclic_workers::http::encode::<wire::Error>(&self.descriptors, input, request)?;
+            let body = encode(&self.descriptors, input, request)?;
             let mut response = self
                 .transport
                 .post(
@@ -88,27 +210,24 @@ impl Client {
                 .await?;
             let status = response.status();
             tracing::Span::current().record("http.status", status.as_u16());
-            let bytes = acyclic_workers::http::response_body(&mut response, self.maximum)
+            let bytes = response_body(&mut response, self.maximum)
                 .await?
                 .ok_or(Error::ResponseTooLarge)?;
             if !status.is_success() {
-                let detail = acyclic_workers::http::decode::<wire::Error, wire::Error>(
-                    &self.descriptors,
-                    "acyclic.actors.v1.Error",
-                    &bytes,
-                )
-                .ok()
-                .filter(|detail| {
-                    wire::ErrorCode::try_from(detail.code)
-                        .is_ok_and(|code| code != wire::ErrorCode::Unspecified)
-                });
+                let detail =
+                    decode::<wire::Error>(&self.descriptors, "acyclic.actors.v1.Error", &bytes)
+                        .ok()
+                        .filter(|detail| {
+                            wire::ErrorCode::try_from(detail.code)
+                                .is_ok_and(|code| code != wire::ErrorCode::Unspecified)
+                        });
                 return Err(Error::Service {
                     status: status.as_u16(),
                     detail,
                     raw_details: bytes,
                 });
             }
-            acyclic_workers::http::decode(&self.descriptors, output, &bytes)
+            decode(&self.descriptors, output, &bytes)
         }
         .await;
         let span = tracing::Span::current();

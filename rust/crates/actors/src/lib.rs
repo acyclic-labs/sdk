@@ -33,7 +33,14 @@ pub mod wire;
 /// Canonical version-one descriptor set.
 pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-actors-v1.bin"));
-pub use acyclic_workers::MAX_BEARER_TOKEN_BYTES;
+/// Largest accepted bearer credential, in bytes.
+pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
+
+pub(crate) fn valid_token(token: &str) -> bool {
+    !token.trim().is_empty()
+        && token.len() <= MAX_BEARER_TOKEN_BYTES
+        && !token.contains(['\r', '\n', '\0'])
+}
 
 /// Rust-owned route names used by the TypeScript transport generator.
 pub const HTTP_ROUTES: &[(&str, &str)] = &[

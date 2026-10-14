@@ -5,6 +5,35 @@ use crate::wire;
 use prost::Message;
 use std::future::Future;
 use tokio_util::sync::CancellationToken;
+use tonic::metadata::{Ascii, MetadataValue};
+
+/// Sensitive bearer metadata applied to each generated RPC.
+#[derive(Clone)]
+pub struct BearerAuth(MetadataValue<Ascii>);
+impl BearerAuth {
+    /// Validates a bounded bearer credential and marks its metadata sensitive.
+    pub fn new(token: &str) -> Result<Self, Error> {
+        let invalid = || Error::Configuration("invalid bearer credential".to_owned());
+        if !crate::valid_token(token) {
+            return Err(invalid());
+        }
+        let mut value: MetadataValue<Ascii> =
+            format!("Bearer {token}").parse().map_err(|_| invalid())?;
+        value.set_sensitive(true);
+        Ok(Self(value))
+    }
+}
+impl tonic::service::Interceptor for BearerAuth {
+    fn call(
+        &mut self,
+        mut request: tonic::Request<()>,
+    ) -> Result<tonic::Request<()>, tonic::Status> {
+        request
+            .metadata_mut()
+            .insert("authorization", self.0.clone());
+        Ok(request)
+    }
+}
 
 /// Maximum encoded request or response accepted by the Actors client.
 pub const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
@@ -169,10 +198,7 @@ pub struct Client {
     inner: crate::grpc::Client,
     #[cfg(target_arch = "wasm32")]
     inner: wire::actors_service_client::ActorsServiceClient<
-        tonic::codegen::InterceptedService<
-            tonic_web_wasm_client::Client,
-            acyclic_workers::BearerAuth,
-        >,
+        tonic::codegen::InterceptedService<tonic_web_wasm_client::Client, BearerAuth>,
     >,
 }
 
@@ -252,7 +278,7 @@ pub async fn connect(endpoint: &str, token: &str, ca: Option<&[u8]>) -> Result<C
                 "Actors endpoint must use HTTPS; HTTP is limited to loopback tests and userinfo, query, and fragment are forbidden".into(),
             ));
         }
-        let authorization = acyclic_workers::BearerAuth::new(token)
+        let authorization = BearerAuth::new(token)
             .map_err(|_| Error::Configuration("invalid Actors bearer credential".into()))?;
         let transport = tonic_web_wasm_client::Client::new_with_options(
             endpoint.as_str().trim_end_matches('/').to_owned(),

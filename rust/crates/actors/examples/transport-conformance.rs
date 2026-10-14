@@ -125,7 +125,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await,
         Err(actors::http::Error::Service {
             status: 401,
-            detail: Some(_)
+            detail: Some(_),
+            ..
         })
     ));
     let bounded = actors::http::Client::new(http_endpoint, token, 8)?;
