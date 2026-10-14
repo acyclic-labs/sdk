@@ -25,64 +25,70 @@ where
                 "workflow payload exceeds private-file limit".into(),
             ));
         }
-        let _path;
-        let path = match transition {
-            Some((revision, operation)) => crate::executor::with_history_io(io, |work| {
-                crate::executor::preparation_format(
-                    format_args!(
-                        ".system/workflows/{}/{revision:020}-{operation}.json",
-                        self.id()
-                    ),
-                    work,
-                )
-            })?,
-            None => crate::executor::with_history_io(io, |work| {
-                crate::executor::preparation_format(
-                    format_args!(".system/workflows/{}/admission.json", self.id()),
-                    work,
-                )
-            })?,
+        let (_path, path) = {
+            let path = match transition {
+                Some((revision, operation)) => crate::executor::with_history_io(io, |work| {
+                    crate::executor::preparation_format(
+                        format_args!(
+                            ".system/workflows/{}/{revision:020}-{operation}.json",
+                            self.id()
+                        ),
+                        work,
+                    )
+                })?,
+                None => crate::executor::with_history_io(io, |work| {
+                    crate::executor::preparation_format(
+                        format_args!(".system/workflows/{}/admission.json", self.id()),
+                        work,
+                    )
+                })?,
+            };
+            let held = io
+                .map(|io| io.guard_owned(path.capacity() as u64))
+                .transpose()?;
+            (held, path)
         };
-        _path = io
-            .map(|io| io.guard_owned(path.capacity() as u64))
-            .transpose()?;
-        let _key;
-        let key = match transition {
-            Some((_, operation)) => crate::executor::with_history_io(io, |work| {
-                crate::executor::preparation_format(
-                    format_args!("workflow:{}:{operation}", self.id()),
-                    work,
-                )
-            })?,
-            None => crate::executor::with_history_io(io, |work| {
-                crate::executor::preparation_format(
-                    format_args!("workflow:{}:admission", self.id()),
-                    work,
-                )
-            })?,
+        let (_key, key) = {
+            let key = match transition {
+                Some((_, operation)) => crate::executor::with_history_io(io, |work| {
+                    crate::executor::preparation_format(
+                        format_args!("workflow:{}:{operation}", self.id()),
+                        work,
+                    )
+                })?,
+                None => crate::executor::with_history_io(io, |work| {
+                    crate::executor::preparation_format(
+                        format_args!("workflow:{}:admission", self.id()),
+                        work,
+                    )
+                })?,
+            };
+            let held = io
+                .map(|io| io.guard_owned(key.capacity() as u64))
+                .transpose()?;
+            (held, key)
         };
-        _key = io
-            .map(|io| io.guard_owned(key.capacity() as u64))
-            .transpose()?;
         let key = IdempotencyKey::new(key)?;
-        let _grant;
         let maximum = io
             .map(|io| io.remaining().map(|remaining| remaining.bytes_encoded))
             .transpose()?
             .unwrap_or(u64::MAX);
-        let grant = crate::executor::with_history_io(io, |work| {
-            ContentGrant::verify(
-                &self.verifier,
-                &self.scope,
-                &self.volume,
-                VolumeOperation::Write,
-                maximum,
-                work,
-            )
-        })?;
-        _grant = io
-            .map(|io| io.guard_owned(grant.logical_owned_bytes()?))
-            .transpose()?;
+        let (_grant, grant) = {
+            let grant = crate::executor::with_history_io(io, |work| {
+                ContentGrant::verify(
+                    &self.verifier,
+                    &self.scope,
+                    &self.volume,
+                    VolumeOperation::Write,
+                    maximum,
+                    work,
+                )
+            })?;
+            let held = io
+                .map(|io| io.guard_owned(grant.logical_owned_bytes()?))
+                .transpose()?;
+            (held, grant)
+        };
         self.host
             .put_content_impl(
                 &self.volume,
@@ -128,13 +134,15 @@ where
             ));
         }
         let digest = {
-            let _input;
-            let input = crate::executor::with_history_io(io, |work| {
-                crate::executor::preparation_format(format_args!("{path}:{retry}"), work)
-            })?;
-            _input = io
-                .map(|io| io.guard_owned(input.capacity() as u64))
-                .transpose()?;
+            let (_input, input) = {
+                let input = crate::executor::with_history_io(io, |work| {
+                    crate::executor::preparation_format(format_args!("{path}:{retry}"), work)
+                })?;
+                let held = io
+                    .map(|io| io.guard_owned(input.capacity() as u64))
+                    .transpose()?;
+                (held, input)
+            };
             if let Some(io) = io {
                 let hashing = acyclic_fs::WorkCounters {
                     bytes_hashed: input.len() as u64,
@@ -290,20 +298,20 @@ where
                 .map(|work| work as &mut dyn crate::store::history::HistoryIo);
             owner.verify(false, &mut work).await?;
         }
-        let _admission;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let admission = self.read_admission(io).await?.ok_or_else(|| {
-            Error::Conflict("workflow transition has no retained admission".into())
-        })?;
-        _admission = io
-            .map(|io| {
-                io.guard_owned(
-                    io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
+        let (_admission, admission) = {
+            let admission = self.read_admission(io).await?.ok_or_else(|| {
+                Error::Conflict("workflow transition has no retained admission".into())
+            })?;
+            let held = io
+                .map(|io| {
+                    io.guard_owned(io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
                         Error::Invalid("workflow admission custody underflow".into())
-                    })?,
-                )
-            })
-            .transpose()?;
+                    })?)
+                })
+                .transpose()?;
+            (held, admission)
+        };
         crate::workflow::validate_workflow_commit(
             expected_revision,
             &idempotency_key,
@@ -314,16 +322,19 @@ where
             owner.validate_workflow_record(&record, io)?;
         }
         {
-            let history_hold;
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-            let (revision, existing) = self.verified_history(&admission, &record, true, io).await?;
-            history_hold = io
-                .map(|io| {
-                    io.guard_owned(io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                        Error::Invalid("workflow preflight custody underflow".into())
-                    })?)
-                })
-                .transpose()?;
+            let (history_hold, (revision, existing)) = {
+                let (revision, existing) =
+                    self.verified_history(&admission, &record, true, io).await?;
+                let history_hold = io
+                    .map(|io| {
+                        io.guard_owned(io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
+                            Error::Invalid("workflow preflight custody underflow".into())
+                        })?)
+                    })
+                    .transpose()?;
+                (history_hold, (revision, existing))
+            };
             if let Some(existing) = existing {
                 if existing != record {
                     return Err(Error::Conflict(
@@ -342,36 +353,38 @@ where
                 ));
             }
         }
-        let _reference;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         self.verify_command_payloads(&record, io).await?;
-        let reference = self
-            .stage_payload(
-                &record,
-                Some((record.prior.revision, record.operation_id)),
-                io,
-            )
-            .await?;
-        _reference = io
-            .map(|io| {
-                io.guard_owned(
-                    io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                        Error::Invalid("workflow staging custody underflow".into())
-                    })?,
+        let (_reference, reference) = {
+            let reference = self
+                .stage_payload(
+                    &record,
+                    Some((record.prior.revision, record.operation_id)),
+                    io,
                 )
-            })
-            .transpose()?;
-        {
-            let _staged;
-            let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-            let staged = self.read_record(&reference, true, true, io).await?;
-            _staged = io
+                .await?;
+            let held = io
                 .map(|io| {
                     io.guard_owned(io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                        Error::Invalid("workflow staged-record custody underflow".into())
+                        Error::Invalid("workflow staging custody underflow".into())
                     })?)
                 })
                 .transpose()?;
+            (held, reference)
+        };
+        {
+            let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+            let (_staged, staged) = {
+                let staged = self.read_record(&reference, true, true, io).await?;
+                let held = io
+                    .map(|io| {
+                        io.guard_owned(io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
+                            Error::Invalid("workflow staged-record custody underflow".into())
+                        })?)
+                    })
+                    .transpose()?;
+                (held, staged)
+            };
             if staged != record {
                 return Err(Error::Conflict(
                     "staged workflow record disagrees with its transition".into(),
