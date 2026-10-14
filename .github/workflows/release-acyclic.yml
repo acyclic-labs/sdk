@@ -110,6 +110,16 @@ jobs:
           VERIFY_CARGO_INSTALL: ${{ matrix.target == 'linux-x64-gnu' }}
         run: |
           set -euo pipefail
+          # Capture the live daemon before the runner closes this step's processes.
+          record_native_cache() {
+            status=$?
+            trap - EXIT
+            set +e
+            mkdir -p "$RUNNER_TEMP/native-build-timings"
+            sccache --show-stats --stats-format=json >"$RUNNER_TEMP/native-build-timings/sccache.json"
+            exit "$status"
+          }
+          trap record_native_cache EXIT
           # Complete rust-toolchain.toml components once, before parallel builds
           # race to install them.
           cargo --version
@@ -147,6 +157,15 @@ jobs:
             echo "::endgroup::"
           done
           exit "$status"
+      - name: Retain native compiler-cache evidence
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          retention-days: ${{ contains(github.workflow, 'Release') && 30 || 3 }}
+          name: native-build-timings-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-build-timings
+          if-no-files-found: ignore
       - name: Verify release architecture and runtime ABI
         shell: bash
         run: node scripts/verify-release-binary.mjs '${{ matrix.target }}' 'target/${{ matrix.rust_target }}/dist/${{ matrix.executable }}'

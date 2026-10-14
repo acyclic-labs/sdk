@@ -356,6 +356,7 @@ case "$lane" in
     node --test scripts/test-publish-npm-packages.mjs
     node --test scripts/static-policy.test.mjs scripts/static-ci.test.mjs scripts/check-boundaries.test.mjs
     node --test scripts/tiny-ci.test.mjs scripts/cargo-lock-policy.test.mjs scripts/publish-release-assets.test.mjs scripts/release-qualification-artifacts.test.mjs scripts/release-source.test.mjs
+    node --test scripts/native-cache-evidence.test.mjs
     node --test scripts/test-typescript-qualification.mjs
     node --test scripts/test-plan-qualification.mjs scripts/test-plan-qualification-gate.mjs scripts/test-plan-qualification-windows-rust.mjs scripts/build-windows-wasm.test.mjs
     node --test scripts/test-contract-artifacts.mjs scripts/test-contract-targets.mjs
