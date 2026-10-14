@@ -62,19 +62,17 @@ impl ToolInvocation {
         name: Option<&str>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        if work.is_some() {
+        if let Some(io) = work.as_deref_mut() {
             let items = (call_id.len() as u64)
                 .checked_add(name.map_or(0, |name| name.len() as u64))
                 .ok_or_else(|| {
                     crate::store::guarded_boundary(
-                        work,
+                        &Some(&mut *io),
                         crate::wire::ErrorCode::Invalid,
                         "tool identity scan overflow",
                     )
                 })?;
-            work.as_deref_mut()
-                .expect("identity observer")
-                .codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items })?;
+            io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items })?;
         }
         if name.is_some_and(|name| !crate::contract::is_valid_component_label(name)) {
             return Err(crate::store::guarded_boundary(

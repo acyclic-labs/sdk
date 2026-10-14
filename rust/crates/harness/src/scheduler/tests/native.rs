@@ -75,8 +75,8 @@ fn phase_fence_capacity_quota_and_cancellation_are_atomic() -> Result<()> {
     for event in invalid {
         rejected(&mut scheduler, &event);
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work =
-            acyclic_fs::NativeMaterializationWork::new(budget(), &cancellation).expect("work");
+        let work = acyclic_fs::NativeMaterializationWork::new(budget(), &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let error = apply_native(&mut scheduler, &event, &work).expect_err("invalid event");
         assert!(error.is_native_failure());
         assert_ne!(error.code(), crate::wire::ErrorCode::Unsupported);
@@ -94,14 +94,15 @@ fn phase_fence_capacity_quota_and_cancellation_are_atomic() -> Result<()> {
         },
         &cancellation,
     )
-    .expect("work");
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     assert!(
         apply_native(&mut scheduler, &event, &work)
             .expect_err("copy limit")
             .is_native_failure()
     );
     assert_eq!(scheduler, before);
-    let work = acyclic_fs::NativeMaterializationWork::new(budget(), &cancellation).expect("work");
+    let work = acyclic_fs::NativeMaterializationWork::new(budget(), &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     cancellation.cancel();
     let receipt = work.receipt();
     assert!(

@@ -1,5 +1,9 @@
 use super::*;
 
+#[allow(
+    clippy::mutable_key_type,
+    reason = "FuseOwned hashes and compares only its immutable path, never its accounting owner."
+)]
 pub(super) fn confirm_name(
     names: &mut HashMap<(crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>>,
     file_id: crate::FileId,
@@ -23,6 +27,10 @@ pub(super) fn confirm_name(
     Ok(())
 }
 
+#[allow(
+    clippy::mutable_key_type,
+    reason = "FuseOwned hashes and compares only its immutable path, never its accounting owner."
+)]
 pub(super) fn name_is_bound(
     names: &HashMap<(crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>>,
     source: &dyn MountFilesystem,
@@ -122,11 +130,7 @@ impl DirectoryStreams {
             }
         }
         for (key, path) in replacements.drain(..) {
-            self.waiting
-                .get_mut(&key)
-                .expect("planned stream remains locked")
-                .0
-                .path = path;
+            self.waiting.get_mut(&key).ok_or(libc::EIO)?.0.path = path;
         }
         Ok(())
     }
@@ -175,6 +179,10 @@ impl ProjectionState {
         })
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "One listing frame owns the pending reply and releases any unlisted lookup reference on failure."
+    )]
     pub(super) fn list_directory(
         &mut self,
         source: &dyn MountFilesystem,
@@ -183,10 +191,7 @@ impl ProjectionState {
         listing: &mut Option<DirectoryReply>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
-        let counts_lookups = matches!(
-            listing.as_ref().expect("unsent listing"),
-            DirectoryReply::Plus(_)
-        );
+        let counts_lookups = matches!(listing.as_ref().ok_or(libc::EIO)?, DirectoryReply::Plus(_));
         let mut listed = false;
         let mut unlisted_reference = None;
         let result = (|| -> Result<(), NativeMountError> {
@@ -204,13 +209,13 @@ impl ProjectionState {
                         ..attr
                     };
                     work.admit(Copy.delta(name.len() as u64))?;
-                    if listing.as_mut().expect("unsent listing").push(
+                    if listing.as_mut().ok_or(libc::EIO)?.push(
                         next,
                         OsStr::new(name),
                         &dot,
                         &Duration::ZERO,
                     ) {
-                        listing.take().expect("unsent listing").ok();
+                        listing.take().ok_or(libc::EIO)?.ok();
                         return Ok(());
                     }
                     work.record_admitted(Copy.delta(name.len() as u64))?;
@@ -225,7 +230,7 @@ impl ProjectionState {
                     .as_ref()
                     .and_then(|page| page.entries().get(stream.entry_position))
                 else {
-                    listing.take().expect("unsent listing").ok();
+                    listing.take().ok_or(libc::EIO)?.ok();
                     return Ok(());
                 };
                 work.charge(Items.delta(1))?;
@@ -284,7 +289,7 @@ impl ProjectionState {
                     Duration::ZERO
                 };
                 work.admit(Copy.delta(entry.name.len() as u64))?;
-                if listing.as_mut().expect("unsent listing").push(
+                if listing.as_mut().ok_or(libc::EIO)?.push(
                     next,
                     OsStr::from_bytes(&entry.name),
                     &attr,
@@ -293,7 +298,7 @@ impl ProjectionState {
                     if let Some(inode) = unlisted_reference.take() {
                         self.release_lookup_reference(inode, 1);
                     }
-                    listing.take().expect("unsent listing").ok();
+                    listing.take().ok_or(libc::EIO)?.ok();
                     return Ok(());
                 }
                 work.record_admitted(Copy.delta(entry.name.len() as u64))?;
@@ -307,7 +312,7 @@ impl ProjectionState {
             self.release_lookup_reference(inode, 1);
         }
         if result.is_err() && listed {
-            listing.take().expect("unsent listing prefix").ok();
+            listing.take().ok_or(libc::EIO)?.ok();
         }
         result
     }
@@ -420,6 +425,14 @@ impl FuseProjection {
         }
     }
 
+    #[allow(
+        clippy::mutable_key_type,
+        reason = "FuseOwned hashes and compares only its immutable path, never its accounting owner."
+    )]
+    #[allow(
+        clippy::type_complexity,
+        reason = "The result is the existing file-and-path confirmation map with no extra carrier type."
+    )]
     pub(super) fn confirm_listed_names(
         &self,
         directory: &MountPath,

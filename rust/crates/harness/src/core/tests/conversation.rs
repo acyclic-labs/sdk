@@ -5,7 +5,7 @@ fn interactions_are_ref_only_versioned_and_responder_bound() -> Result<()> {
     use crate::interaction::{ApprovalBinding, Interaction, InteractionKind};
     let mut reducer = reducer_fixture();
     let request = Interaction::approval("approve exact effect".into(), operation(12), [3; 32])?;
-    let bytes = serde_json::to_vec(&request).unwrap();
+    let bytes = serde_json::to_vec(&request).map_err(|error| Error::Invalid(error.to_string()))?;
     let ticket = InteractionTicket {
         id: uuid::Uuid::from_bytes([5; 16]),
         kind: InteractionKind::Approval,
@@ -75,7 +75,7 @@ fn conversation_binding_and_messages_replay_through_snapshot() -> Result<()> {
     let message: ConversationMessage = serde_json::from_slice(include_bytes!(
         "../../../fixtures/v2/conversation-message.json"
     ))
-    .unwrap();
+    .map_err(|error| Error::Invalid(error.to_string()))?;
     let VolumeOwner::Agent(agent) = message.content.volume().owner() else {
         panic!("agent-owned fixture")
     };

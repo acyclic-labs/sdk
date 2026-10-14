@@ -94,8 +94,8 @@ impl DarwinMountSession {
             .run(false, |work| {
                 work.charge(WRITE_WORK)?;
                 context.forget_view();
-                // SAFETY: this owner retains the SDK; the bridge ignores the name.
                 let native = self.unmount.native();
+                // SAFETY: this owner retains the SDK; the bridge ignores the name.
                 let status = unsafe {
                     acyclic_fs_darwin_mount_invalidate(native.value as *mut c_void, ptr::null())
                 };
@@ -239,7 +239,7 @@ impl DarwinMountSession {
             self.loop_result = Some(
                 self.thread
                     .take()
-                    .expect("finished provider")
+                    .ok_or(NativeMountError::ControlPending)?
                     .join()
                     .map_err(|panic| NativeMountError::DriverPanicked {
                         operation: "Darwin mount loop shutdown",
@@ -259,7 +259,7 @@ impl DarwinMountSession {
         };
         let before = self
             .loop_finished_before_teardown
-            .expect("sampled provider");
+            .ok_or(NativeMountError::ControlPending)?;
         match result {
             Ok(0) if !before || !was_mounted => Ok(()),
             Ok(status) => Err(NativeMountError::DarwinTeardown(DarwinTeardownFailure(
@@ -274,6 +274,10 @@ impl DarwinMountSession {
 }
 
 impl Drop for DarwinMountSession {
+    #[allow(
+        clippy::expect_used,
+        reason = "Interrupt without a wait token consumes birth-paid credit and has no fallible path."
+    )]
     fn drop(&mut self) {
         self.unmount.requested.store(true, Ordering::Release);
         self.unmount.changed.notify_all();

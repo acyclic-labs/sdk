@@ -46,7 +46,7 @@ impl InheritedConversationPrefix {
         }
         for (index, reader) in attached_agents.iter().enumerate() {
             owned.checkpoint()?;
-            for prior in &attached_agents[..index] {
+            for prior in attached_agents.iter().take(index) {
                 owned.checkpoint()?;
                 if prior == reader {
                     return Err(owned.invalid("inherited attached agents are invalid"));

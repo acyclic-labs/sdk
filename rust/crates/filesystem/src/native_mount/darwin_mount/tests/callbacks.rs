@@ -64,7 +64,7 @@ fn authored_guard_denies_before_mutation_and_reports_revocation_after_it() -> Te
                         || {
                             context.source.create_file(
                                 &path,
-                                create_metadata(0o644, libc::S_IFREG as u32, 0, 0),
+                                create_metadata(0o644, u32::from(libc::S_IFREG), 0, 0),
                                 None,
                                 work,
                             )
@@ -119,8 +119,8 @@ fn rejected_allocations_and_copies_leave_source_contents_unchanged() -> TestResu
         let context = callback_context(&source, budget, &crate::CancellationToken::new())?;
         if copying {
             let incoming = b"after";
-            // SAFETY: context, terminated path and input remain alive through the callback.
             assert_eq!(
+                // SAFETY: context, terminated path and input remain alive through the callback.
                 unsafe {
                     acyclic_fs_darwin_mount_write(
                         Arc::as_ptr(&context) as usize,
@@ -229,7 +229,7 @@ impl crate::native_mount::NativeMountCallbackGuard for DarwinAuthoredGuard {
         &'a self,
         work: &'a Work,
     ) -> Result<crate::native_mount::NativeMountCallbackFuture<'a>, NativeMountError> {
-        if !self.original.shares_ledger(&work) {
+        if !self.original.shares_ledger(work) {
             return Err(NativeMountError::ControlPending);
         }
         crate::native_mount::NativeMountCallbackFuture::new(work, || async move {
@@ -242,7 +242,7 @@ impl crate::native_mount::NativeMountCallbackGuard for DarwinAuthoredGuard {
         &'a self,
         work: &'a Work,
     ) -> Result<crate::native_mount::NativeMountCallbackFuture<'a>, NativeMountError> {
-        if !self.original.shares_ledger(&work) {
+        if !self.original.shares_ledger(work) {
             return Err(NativeMountError::ControlPending);
         }
         crate::native_mount::NativeMountCallbackFuture::new_guarded(work, move || async move {
@@ -255,6 +255,10 @@ impl crate::native_mount::NativeMountCallbackGuard for DarwinAuthoredGuard {
     }
 }
 
+#[allow(
+    clippy::type_complexity,
+    reason = "The fixture returns its context, authorization guard and shared work directly."
+)]
 fn authored_guard_context(
     writable: bool,
 ) -> Result<(Arc<DarwinMountContext>, Arc<DarwinAuthoredGuard>, Work), Box<dyn std::error::Error>> {

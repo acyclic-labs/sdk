@@ -23,8 +23,12 @@ fn build_path<'a>(
         name.extend_from_slice(part);
         path.allocation
             .as_mut()
-            .expect("funded components")
-            .absorb(name.allocation.as_mut().expect("funded name"))?;
+            .ok_or(NativeMountError::ControlPending)?
+            .absorb(
+                name.allocation
+                    .as_mut()
+                    .ok_or(NativeMountError::ControlPending)?,
+            )?;
         path.components.push(std::mem::take(&mut name.value));
     }
     Ok(path)
@@ -59,14 +63,15 @@ pub(super) fn native_name(
     if name.contains(&0) {
         return Err(driver_errno(libc::EIO));
     }
-    let bytes = name.len().checked_add(1).ok_or(WorkError::Overflow)? as u64;
-    let mut value = vector(work, bytes as usize)?;
-    work.charge(copy_work(bytes))?;
+    let capacity = name.len().checked_add(1).ok_or(WorkError::Overflow)?;
+    let mut value = vector(work, capacity)?;
+    work.charge(copy_work(capacity as u64))?;
     value.extend_from_slice(name);
     value.push(0);
     let DarwinOwned { value, allocation } = value;
     Ok(DarwinOwned {
-        value: CString::from_vec_with_nul(value).expect("validated native name"),
+        // SAFETY: name was checked for embedded NULs before appending its sole terminator.
+        value: unsafe { CString::from_vec_with_nul_unchecked(value) },
         allocation,
     })
 }
@@ -123,8 +128,8 @@ pub(super) fn copy_variable_result(
     if output.is_null() || bytes.len() > length {
         return Err(driver_errno(libc::ERANGE));
     }
-    // SAFETY: `output` is a non-null bridge buffer of `length` bytes and `bytes` fits in it (checked above).
     work.charge(copy_work(bytes.len() as u64))?;
+    // SAFETY: the checked length bounds this copy into the non-null bridge buffer.
     unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), output.cast(), bytes.len()) };
     c_int::try_from(bytes.len()).map_err(|_| driver_errno(libc::EOVERFLOW))
 }

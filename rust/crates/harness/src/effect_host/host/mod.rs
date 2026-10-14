@@ -80,7 +80,10 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             )?;
             host.native_metadata
                 .as_mut()
-                .expect("validated host custody")
+                .ok_or(Error::NativeBoundary {
+                    code: Invalid,
+                    reason: "effect host lacks metadata custody",
+                })?
                 .absorb(&mut slot)?;
         }
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]

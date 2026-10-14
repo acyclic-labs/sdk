@@ -92,7 +92,13 @@ pub(super) fn encode_line<T: Serialize + ?Sized>(
     {
         let (source, custody) = crate::filesystem::native_decoded((
             source,
-            diagnostics.expect("native encoder diagnostics"),
+            diagnostics.ok_or_else(|| {
+                error(
+                    work,
+                    ErrorCode::Storage,
+                    "native encoder lacks diagnostics ownership",
+                )
+            })?,
         ))?;
         return Err(Error::NativeJson {
             code,
