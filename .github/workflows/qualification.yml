@@ -49,7 +49,8 @@ jobs:
           persist-credentials: false
 
       - name: Restore preflight tools
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: preflight-tools
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/tools
           key: sdk-preflight-tools-v1-gitleaks-8.30.1-${{ runner.os }}-${{ runner.arch }}
@@ -82,6 +83,13 @@ jobs:
       - name: Select lanes to execute
         id: select
         run: node scripts/plan-qualification.mjs select
+
+      - name: Save preflight tools
+        if: github.ref == 'refs/heads/main' && steps.preflight-tools.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/tools
+          key: ${{ steps.preflight-tools.outputs.cache-primary-key }}
 
   qualification:
     name: ${{ matrix.lane }}

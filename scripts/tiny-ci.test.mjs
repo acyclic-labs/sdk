@@ -22,6 +22,31 @@ test('only expiry cleanup is scheduled',()=>{
  assert.deepEqual(workflows.filter(name=>/^  schedule:/m.test(triggers(read(name)))),SCHEDULED);
 });
 
+test('every cache save is main-only, with no per-run keys or automatic branch saves',()=>{
+ const files=workflows.map(name=>'.github/workflows/'+name).concat([
+  '.github/actions/qualification-lane/action.yml',
+  '.github/actions/rust-build-cache/action.yml',
+ ]);
+ for(const file of files){
+  const document=YAML.parse(fs.readFileSync(file,'utf8'));
+  const steps=document.runs?.steps??Object.values(document.jobs??{}).flatMap(job=>job.steps??[]);
+  for(const step of steps){
+   assert.doesNotMatch(step.uses??'',/^actions\/cache@/,file+': automatic post-save');
+   assert.doesNotMatch(step.with?.key??'',/run_id|run_attempt/,file+': per-run snapshot');
+   if(step.uses?.startsWith('actions/cache/save@'))
+    assert.ok(step.if.startsWith("github.ref == 'refs/heads/main' &&"),file+': '+step.name);
+   if(step.uses?.startsWith('Swatinem/rust-cache@'))
+    assert.ok(step.with['save-if'].startsWith("${{ github.ref == 'refs/heads/main' &&"),file);
+  }
+ }
+ const lane=YAML.parse(fs.readFileSync('.github/actions/qualification-lane/action.yml','utf8'));
+ const hosts=YAML.parse(read('agent-host-qualification.yml'));
+ for(const steps of [lane.runs.steps,hosts.jobs.qualify.steps]){
+  for(const step of steps.filter(step=>step.uses?.startsWith('actions/cache/')))
+   assert.doesNotMatch(step.with.path,/sccache/,'off-critical compiler snapshot');
+ }
+});
+
 test('all publishers use the one qualified source and explicit artifacts',()=>{
  const release=read('release.yml');
  assert.match(release,/workflow_dispatch:/);
@@ -42,7 +67,7 @@ test('all publishers use the one qualified source and explicit artifacts',()=>{
  assert.equal(qualification.env.FORCE,'true');
  assert.equal(qualification.on.workflow_call.inputs.force,undefined);
  assert.deepEqual(Object.keys(qualification.jobs),['plan','qualification','gate']);
- assert.equal(qualification.jobs.plan.steps.filter(step=>step.uses?.startsWith('actions/cache/restore@')).length,0);
+ assert.deepEqual(qualification.jobs.plan.steps.filter(step=>step.uses?.startsWith('actions/cache/restore@')).map(step=>step.name),['Restore preflight tools']);
  assert.equal(qualification.jobs.plan.steps.filter(step=>step.name==='Select lanes to execute').length,1);
  assert.equal((read('release-acyclic.yml').match(/uses: \.\/\.github\/workflows\/qualification\.yml/g)??[]).length,1);
 });

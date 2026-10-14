@@ -53,44 +53,20 @@ test("only current-day snapshots with complete zero-miss statistics suppress sav
   }
 });
 
-test("all compiler cache consumers gate saving on the shared decision", () => {
-  const read = file => YAML.parse(readFileSync(file, "utf8"));
-  const native = read(".github/workflows/release-acyclic.yml").jobs.build.steps;
-  const hosts = read(".github/workflows/agent-host-qualification.yml").jobs.qualify.steps;
-  for (const steps of [native, hosts]) {
-    const decision = steps.find(step => step.id === "compiler-cache");
-    assert.equal(decision.env.PRIMARY_CACHE_KEY, "${{ steps.rust-cache.outputs.compiler-key }}");
-    assert.equal(decision.env.MATCHED_CACHE_KEY, "${{ steps.rust-cache.outputs.compiler-matched-key }}");
-    assert.ok(decision.run.startsWith('node scripts/cache-save-decision.mjs "$PRIMARY_CACHE_KEY" "$MATCHED_CACHE_KEY"'));
-    const save = steps.find(step => step.name === "Save native compiler output");
-    assert.ok(save.if.includes("steps.compiler-cache.outputs.save == 'true'"));
-    assert.ok(steps.indexOf(save) > steps.indexOf(decision));
-  }
-  assert.ok(native.find(step => step.id === "compiler-cache").run.includes("native-build-timings/sccache.json"));
-  const cargoSteps = hosts.filter(step => step.run?.includes("cargo test"));
-  assert.equal(cargoSteps.length, 4);
-  for (const step of cargoSteps) assert.match(step.run, /trap 'sccache --show-stats --stats-format=json > .*host-cache-.*\|\| true' EXIT/);
-  assert.ok(hosts.find(step => step.id === "compiler-cache").run.includes('"$RUNNER_TEMP"/host-cache-*.json'));
-  const lane = read(".github/actions/qualification-lane/action.yml").runs.steps;
-  assert.equal(lane.find(step => step.id === "build-cache").name, "Restore lane build cache");
-  const decision = lane.find(step => step.id === "cache-save");
-  assert.equal(decision.env.PRIMARY_CACHE_KEY, "${{ steps.build-cache.outputs.cache-primary-key }}");
-  assert.equal(decision.env.MATCHED_CACHE_KEY, "${{ steps.build-cache.outputs.cache-matched-key }}");
-  assert.ok(decision.run.includes("sdk/observability/sccache.json"));
-  const save = lane.find(step => step.name === "Save lane build cache");
-  assert.ok(save.if.includes("steps.cache-save.outputs.save == 'true'"));
-  assert.ok(save.if.includes("!cancelled()"));
+test("native compiler output is saved on main after the shared decision", () => {
+  const native = YAML.parse(readFileSync(".github/workflows/release-acyclic.yml", "utf8")).jobs.build.steps;
+  const decision = native.find(step => step.id === "compiler-cache");
+  assert.equal(decision.env.PRIMARY_CACHE_KEY, "${{ steps.rust-cache.outputs.compiler-key }}");
+  assert.equal(decision.env.MATCHED_CACHE_KEY, "${{ steps.rust-cache.outputs.compiler-matched-key }}");
+  assert.ok(decision.run.includes("native-build-timings/sccache.json"));
+  const save = native.find(step => step.name === "Save native compiler output");
+  assert.ok(save.if.includes("steps.compiler-cache.outputs.save == 'true'"));
   assert.ok(save.if.includes("github.ref == 'refs/heads/main'"));
-  assert.ok(save.if.includes("inputs.lane != 'windows-rust'"));
-  assert.ok(lane.indexOf(decision) > lane.findIndex(step => step.name === "Summarize lane timings"));
-  const restore = lane.find(step => step.id === "build-cache");
-  assert.ok(restore.with.key.endsWith("${{ steps.sccache.outputs.day }}"));
-  assert.doesNotMatch(restore.with.key, /run_id|run_attempt/);
-  assert.equal(save.with.key, restore.with.key);
+  assert.ok(native.indexOf(save) > native.indexOf(decision));
 });
 
-test("native and qualification snapshots use UTC day boundaries", () => {
-  const actions = [".github/actions/rust-build-cache/action.yml", ".github/actions/qualification-lane/action.yml"];
+test("native snapshots use UTC day boundaries", () => {
+  const actions = [".github/actions/rust-build-cache/action.yml"];
   mkdirSync(".tools", { recursive: true });
   const root = mkdtempSync(".tools/cache-save-day-").replaceAll("\\", "/");
   const bash = process.platform === "win32" ? join(process.env.ProgramFiles ?? "C:/Program Files", "Git", "bin", "bash.exe") : "bash";
@@ -118,34 +94,6 @@ ${step.run}`;
         assert.equal(localDate.status, 0, localDate.stderr);
         assert.doesNotMatch(readFileSync(join(root, "output"), "utf8"), /^day=[0-9]{8}$/m);
       }
-    }
-  } finally {
-    assert.ok(resolve(root).startsWith(resolve(".tools") + sep));
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("host live snapshots preserve failed builds even when diagnostics fail", () => {
-  const hosts = YAML.parse(readFileSync(".github/workflows/agent-host-qualification.yml", "utf8"));
-  const step = hosts.jobs.qualify.steps.find(step => step.name === "Build host scenario");
-  const trap = step.run.split("\n")[0];
-  mkdirSync(".tools", { recursive: true });
-  const root = mkdtempSync(".tools/cache-save-host-").replaceAll("\\", "/");
-  const bash = process.platform === "win32" ? join(process.env.ProgramFiles ?? "C:/Program Files", "Git", "bin", "bash.exe") : "bash";
-  try {
-    for (const [buildStatus, snapshotStatus] of [[0, 0], [7, 0], [0, 9], [7, 9]]) {
-      const result = spawnSync(bash, ["-c", `set -euo pipefail
-RUNNER_TEMP='${root}'
-sccache() {
-  printf '{"stats":{"compile_requests":1,"cache_misses":{"counts":{"Rust":1}}}}\\n'
-  return ${snapshotStatus}
-}
-${trap}
-exit ${buildStatus}
-`], { encoding: "utf8", timeout: 60_000 });
-      assert.ifError(result.error);
-      assert.equal(result.status, buildStatus, result.stderr);
-      assert.equal(cacheSaveDecision("today", "matched", [join(root, "host-cache-build.json")]).save, true);
     }
   } finally {
     assert.ok(resolve(root).startsWith(resolve(".tools") + sep));

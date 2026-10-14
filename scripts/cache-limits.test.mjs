@@ -12,9 +12,9 @@ test("every compiler-cache scope receives its matrix limit without increasing ex
   const native = read(".github/workflows/release-acyclic.yml").jobs.build;
   const hosts = read(".github/workflows/agent-host-qualification.yml").jobs.qualify;
   const qualification = read(".github/workflows/qualification.yml").jobs.qualification;
-  const restores = [native, hosts].map(job => job.steps.find(step => step.uses === "./.github/actions/rust-build-cache"));
-  assert.equal(restores[0].with.cache_size, "${{ matrix.cache_size }}");
-  assert.equal(restores[1].with.cache_size, "${{ matrix.platform.cache_size }}");
+  const restore = native.steps.find(step => step.uses === "./.github/actions/rust-build-cache");
+  assert.equal(restore.with.cache_size, "${{ matrix.cache_size }}");
+  assert.equal(hosts.env.SCCACHE_CACHE_SIZE, "${{ matrix.platform.cache_size }}");
   const lane = qualification.steps.find(step => step.uses === "./.github/actions/qualification-lane");
   assert.equal(lane.with.cache_size, "${{ matrix.cache_size }}");
   assert.equal(qualification.env.SCCACHE_CACHE_SIZE, undefined);

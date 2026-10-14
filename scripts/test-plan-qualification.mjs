@@ -150,8 +150,6 @@ test("ARM native binding production runs independently and all original ARM chec
  const workflow=readFileSync(".github/workflows/qualification.yml","utf8");
  assert.match(workflow,/needs: \[ plan, qualification \]/);assert.match(workflow,/test "\$RESULT" = success/);
  assert.ok(matrix.length<=18,"all ARM work fits in the simultaneous matrix");
- const action=readFileSync(".github/actions/qualification-lane/action.yml","utf8");
- assert.match(action,/inputs\.lane == 'linux-arm64-bindings' && format\('sdk-sccache-v5-linux-arm64-/);
 });
 
 test("the workspace gate, docs and generation run as independent required matrix lanes",()=>{
@@ -196,7 +194,6 @@ test("Windows native audits are independent required lanes without moving public
   assert.match(workflow, /test "\$RESULT" = success/);
   const action = readFileSync(".github/actions/qualification-lane/action.yml", "utf8");
   assert.ok(action.includes('qualify-ci.ps1 -Lane "${{ inputs.lane }}"'));
-  assert.match(action, /startsWith\(inputs.lane, 'windows-'\).*sdk-sccache-v5-windows-/);
   for (const name of ["Find Visual Studio clang", "Restore Windows ARM64 compiler", "Install Windows ARM64 compiler"]) {
     const begin = action.indexOf(`    - name: ${name}`);
     const step = action.slice(begin, action.indexOf("\n    - name:", begin + 1));
@@ -311,8 +308,6 @@ test("Linux mount and fork/join qualification overlap packages on an independent
   assert.ok(matrix.length <= 18);
   assert.ok(workflow.includes("max-parallel: 18"));
   assert.ok(workflow.includes('test "$RESULT" = success'));
-  const action = readFileSync(".github/actions/qualification-lane/action.yml", "utf8");
-  assert.ok(action.includes("inputs.lane == 'linux-runtime' && format('sdk-sccache-v5-linux-"));
 });
 
 

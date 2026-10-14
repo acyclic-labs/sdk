@@ -61,8 +61,7 @@ test("native restore summaries use matched-key outputs and post-build saves pres
   assert.ok(summary.run.includes('tee -a "$GITHUB_STEP_SUMMARY"'));
   assert.ok(summary.run.includes('${DOWNLOAD_MATCHED:-none}'));
   assert.ok(summary.run.includes('${COMPILER_MATCHED:-none}'));
-  const hosts = YAML.parse(readFileSync(".github/workflows/agent-host-qualification.yml", "utf8"));
-  for (const steps of [workflow.jobs.build.steps, hosts.jobs.qualify.steps]) {
+  for (const steps of [workflow.jobs.build.steps]) {
     const restore = steps.find(step => step.uses === "./.github/actions/rust-build-cache");
     assert.equal(restore.id, "rust-cache");
     for (const [id, name] of [["compiler", "Save native compiler output"], ["downloads", "Save native Cargo downloads"]]) {
@@ -72,8 +71,8 @@ test("native restore summaries use matched-key outputs and post-build saves pres
       assert.equal(save.with.path, cached.with.path);
       assert.equal(save.with.key, `\${{ steps.rust-cache.outputs.${id}-key }}`);
       assert.equal(save.if, id === "compiler"
-        ? "steps.rust-cache.outputs.compiler-key != '' && steps.compiler-cache.outputs.save == 'true'"
-        : "steps.rust-cache.outputs.downloads-key != '' && steps.rust-cache.outputs.downloads-hit != 'true'");
+        ? "github.ref == 'refs/heads/main' && steps.rust-cache.outputs.compiler-key != '' && steps.compiler-cache.outputs.save == 'true'"
+        : "github.ref == 'refs/heads/main' && steps.rust-cache.outputs.downloads-key != '' && steps.rust-cache.outputs.downloads-hit != 'true'");
       assert.ok(steps.indexOf(save) > steps.findLastIndex(step => step.run));
       assert.ok(steps.indexOf(save) > steps.findLastIndex(step => step.uses?.startsWith("actions/upload-artifact@")));
     }
