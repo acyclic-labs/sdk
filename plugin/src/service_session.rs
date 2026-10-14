@@ -454,7 +454,7 @@ impl PiSession {
         )
         .map_err(|(cause, work)| RootError::NativeConstruction {
             cause,
-            work: Box::new(work),
+            work,
         })?;
         *original_native_work = Some(work.clone());
         Ok(work)

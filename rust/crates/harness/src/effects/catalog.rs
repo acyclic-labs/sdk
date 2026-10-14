@@ -165,11 +165,11 @@ impl EffectRegistry {
             None
         };
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let mut observed = owned_io
+        let observed = owned_io
             .as_mut()
             .map(|io| io as &mut dyn crate::store::history::HistoryIo);
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let mut observed = None;
+        let observed = None;
         let source = provider.id();
         if source.trim().is_empty() {
             return Err(crate::store::guarded_boundary(

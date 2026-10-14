@@ -56,6 +56,80 @@ pub(crate) fn manifest_owned_bytes(items: &[Attachment], capacity: usize) -> Res
     Ok(bytes)
 }
 
+#[cfg(feature = "filesystem")]
+fn guard<T, E: serde::de::Error>(
+    result: Result<T>,
+    failure: &mut Option<Error>,
+) -> std::result::Result<T, E> {
+    result.map_err(|error| {
+        *failure = Some(error);
+        E::custom("manifest admission interrupted")
+    })
+}
+#[cfg(feature = "filesystem")]
+struct ManifestSeed<'a> {
+    maximum: usize,
+    io: &'a crate::filesystem::PreparationIo,
+    failure: &'a mut Option<Error>,
+}
+#[cfg(feature = "filesystem")]
+impl<'de> serde::de::DeserializeSeed<'de> for ManifestSeed<'_> {
+    type Value = Vec<Attachment>;
+    fn deserialize<D: Deserializer<'de>>(
+        self,
+        decoder: D,
+    ) -> std::result::Result<Self::Value, D::Error> {
+        decoder.deserialize_seq(self)
+    }
+}
+#[cfg(feature = "filesystem")]
+impl<'de> serde::de::Visitor<'de> for ManifestSeed<'_> {
+    type Value = Vec<Attachment>;
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a bounded complete attachment array")
+    }
+    fn visit_seq<S: serde::de::SeqAccess<'de>>(
+        self,
+        mut sequence: S,
+    ) -> std::result::Result<Self::Value, S::Error> {
+        let mut items: Vec<Attachment> = Vec::new();
+        loop {
+            guard::<_, S::Error>(self.io.remaining().map_err(Into::into), self.failure)?;
+            if items.len() == self.maximum {
+                if sequence.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                    return guard::<_, S::Error>(
+                        Err(self
+                            .io
+                            .invalid("attachment manifest exceeds member allowance")),
+                        self.failure,
+                    );
+                }
+                break;
+            }
+            let Some(item) = sequence.next_element::<Attachment>()? else {
+                break;
+            };
+            guard::<_, S::Error>(
+                item.validate(&mut Some(&mut self.io.history_io())),
+                self.failure,
+            )?;
+            if items.len() == items.capacity() {
+                let capacity = items.capacity().saturating_mul(2).max(4).min(self.maximum);
+                let bytes = guard::<_, S::Error>(
+                    capacity
+                        .checked_mul(std::mem::size_of::<Attachment>())
+                        .map(|bytes| bytes as u64)
+                        .ok_or_else(|| self.io.invalid("manifest vector capacity overflow")),
+                    self.failure,
+                )?;
+                guard::<_, S::Error>(self.io.allocation_attempt(bytes), self.failure)?;
+                items.reserve_exact(capacity - items.len());
+            }
+            items.push(item);
+        }
+        Ok(items)
+    }
+}
 /// Decodes one complete canonical manifest under the optional content ledger.
 pub fn decode_attachment_manifest(
     reference: &FileRef,
@@ -75,85 +149,12 @@ pub fn decode_attachment_manifest(
         }
         reference.descriptor().verify(bytes, work)
     })?;
-    let maximum_members = item_count.map_or(MAX_PORTABLE_COUNT, |count| count as usize);
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
-        fn guard<T, E: serde::de::Error>(
-            result: Result<T>,
-            failure: &mut Option<Error>,
-        ) -> std::result::Result<T, E> {
-            result.map_err(|error| {
-                *failure = Some(error);
-                E::custom("manifest admission interrupted")
-            })
-        }
-        struct ManifestSeed<'a> {
-            maximum: usize,
-            io: &'a crate::filesystem::PreparationIo,
-            failure: &'a mut Option<Error>,
-        }
-        impl<'de> serde::de::DeserializeSeed<'de> for ManifestSeed<'_> {
-            type Value = Vec<Attachment>;
-            fn deserialize<D: Deserializer<'de>>(
-                self,
-                decoder: D,
-            ) -> std::result::Result<Self::Value, D::Error> {
-                decoder.deserialize_seq(self)
-            }
-        }
-        impl<'de> serde::de::Visitor<'de> for ManifestSeed<'_> {
-            type Value = Vec<Attachment>;
-            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("a bounded complete attachment array")
-            }
-            fn visit_seq<S: serde::de::SeqAccess<'de>>(
-                self,
-                mut sequence: S,
-            ) -> std::result::Result<Self::Value, S::Error> {
-                let mut items: Vec<Attachment> = Vec::new();
-                loop {
-                    guard::<_, S::Error>(self.io.remaining().map_err(Into::into), self.failure)?;
-                    if items.len() == self.maximum {
-                        if sequence.next_element::<serde::de::IgnoredAny>()?.is_some() {
-                            return guard::<_, S::Error>(
-                                Err(self
-                                    .io
-                                    .invalid("attachment manifest exceeds member allowance")),
-                                self.failure,
-                            );
-                        }
-                        break;
-                    }
-                    let Some(item) = sequence.next_element::<Attachment>()? else {
-                        break;
-                    };
-                    guard::<_, S::Error>(
-                        item.validate(&mut Some(&mut self.io.history_io())),
-                        self.failure,
-                    )?;
-                    if items.len() == items.capacity() {
-                        let capacity = items.capacity().saturating_mul(2).max(4).min(self.maximum);
-                        let bytes = guard::<_, S::Error>(
-                            capacity
-                                .checked_mul(std::mem::size_of::<Attachment>())
-                                .map(|bytes| bytes as u64)
-                                .ok_or_else(|| {
-                                    self.io.invalid("manifest vector capacity overflow")
-                                }),
-                            self.failure,
-                        )?;
-                        guard::<_, S::Error>(self.io.allocation_attempt(bytes), self.failure)?;
-                        items.reserve_exact(capacity - items.len());
-                    }
-                    items.push(item);
-                }
-                Ok(items)
-            }
-        }
         let mut failure = None;
         let result = io.decode(
             ManifestSeed {
-                maximum: maximum_members,
+                maximum: item_count.map_or(MAX_PORTABLE_COUNT, |count| count as usize),
                 io,
                 failure: &mut failure,
             },

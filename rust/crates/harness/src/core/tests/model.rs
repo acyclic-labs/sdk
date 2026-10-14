@@ -202,12 +202,8 @@ async fn native_component_model_10000_real_signed_transitions_stays_live_source_
         else {
             panic!("fresh model event replayed")
         };
-        let query = NativeMaterializationWork::new(budget, &CancellationToken::new()).map_err(
-            |(cause, work)| Error::NativeConstruction {
-                cause,
-                work: Box::new(work),
-            },
-        )?;
+        let query = NativeMaterializationWork::new(budget, &CancellationToken::new())
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = crate::filesystem::PreparationIo::from_native_work(&query)?;
         let ApplyResult::Applied { event } =
             state.apply_committed(event, &mut Some(&mut io.history_io()))?

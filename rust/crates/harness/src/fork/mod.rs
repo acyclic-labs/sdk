@@ -48,11 +48,9 @@ pub use capture::{Capture, CapturedResource, ForkOmission, ReferenceGrant, Share
 pub use content::StreamHistoryForkVerifier;
 pub(in crate::fork) use grants::{decode_fork_manifest, reserve_reference_bytes};
 pub use history::{InheritedConversationPrefix, PreparedForkHistory};
-pub use provider::{ForkPublicationGuard, ForkSeedVerifier};
-pub(crate) use provider::{
-    ObservedForkPublicationGuard, admit_fork_future, boundary_error, release_fork_guard_with_work,
-};
+pub use provider::{ForkPublicationGuard, ForkSeedVerifier, ObservedForkPublicationGuard};
 pub(in crate::fork) use provider::{acquire_fork_fence, frame_bytes, release_frame};
+pub(crate) use provider::{admit_fork_future, boundary_error, release_fork_guard_with_work};
 pub(crate) use quota::CodecQuota;
 pub use report::ForkReport;
 pub use request::ForkRequest;

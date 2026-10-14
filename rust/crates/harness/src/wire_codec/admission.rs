@@ -133,13 +133,8 @@ pub(super) fn metadata_quota(authority: &Authority, event: &Event) -> Result<(u6
     let (issuer, agent) = event.scope.wire_parts();
     let buffer = |n: u64| n.checked_mul(2).and_then(|n| n.checked_add(8));
     let overflow = || Error::Storage("event metadata overflow".into());
-    let mut buffers = buffer(64).unwrap()
-        + buffer(36).unwrap()
-        + if agent.is_some() {
-            buffer(36).unwrap()
-        } else {
-            0
-        };
+    let mut buffers: u64 =
+        (64 * 2 + 8) + (36 * 2 + 8) + if agent.is_some() { 36 * 2 + 8 } else { 0 };
     let mut copied = 0_u64;
     for length in [
         EVENT_WIRE_VERSION.len(),
@@ -186,6 +181,11 @@ impl<'a, 'b> Quota<'a, 'b> {
     }
     pub(crate) fn work(&mut self) -> &mut Option<&'b mut dyn HistoryIo> {
         self.work
+    }
+    pub(crate) fn observer(&mut self) -> Result<&mut (dyn HistoryIo + 'b)> {
+        self.work
+            .as_deref_mut()
+            .ok_or_else(|| Error::Invalid("funded codec quota requires its observer".into()))
     }
     pub(crate) fn replace(&mut self, bytes: u64) -> Result<()> {
         if let Some(work) = self.work.as_deref_mut() {

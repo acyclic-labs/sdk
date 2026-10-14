@@ -25,7 +25,7 @@ impl NativeSession {
         .await
         {
             Ok(receipt) => receipt,
-            Err((error, work)) => return Ok(publication_failure(binding, error.to_string(), *work)),
+            Err((error, work)) => return Ok(publication_failure(binding, error.to_string(), work)),
         };
         if let Some(original) = &receipt.value {
             publication_digest(binding, original)?;
@@ -229,7 +229,7 @@ impl NativeSession {
                 )
                 .await
             }
-            Err((error, work)) => Ok(publication_failure(binding, error.to_string(), *work)),
+            Err((error, work)) => Ok(publication_failure(binding, error.to_string(), work)),
         }
     }
 }

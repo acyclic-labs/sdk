@@ -1,6 +1,8 @@
 use super::*;
+#[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
 use crate::conversation::MAX_PRIVATE_DIRECTORY_PAGE;
 
+#[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
 /// One entry in a bounded directory page.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub(crate) struct MemoryStoreEntry {
@@ -8,6 +10,7 @@ pub(crate) struct MemoryStoreEntry {
     pub(crate) kind: MemoryStoreEntryKind,
 }
 
+#[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum MemoryStoreEntryKind {
@@ -15,6 +18,7 @@ pub(crate) enum MemoryStoreEntryKind {
     Directory,
 }
 
+#[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
 /// A generation-pinned page produced by the shared content core.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -25,10 +29,12 @@ pub(crate) struct MemoryStorePage {
 }
 
 impl MemoryStore {
+    #[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
     pub(crate) fn generation(&self) -> u64 {
         self.generation
     }
 
+    #[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
     pub(crate) fn list(
         &self,
         path: &str,
@@ -117,6 +123,7 @@ impl MemoryStore {
             .ok_or_else(|| Error::NotFound("owner has no file at this path".into()))
     }
 
+    #[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
     pub(crate) fn path_conflicts(&self, path: &str) -> bool {
         self.paths
             .keys()
@@ -201,7 +208,7 @@ impl MemoryStore {
                         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                         capacity_custody: None,
                         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                        key_custody,
+                        _key_custody: key_custody,
                     },
                 );
                 #[cfg(feature = "filesystem")]
@@ -228,7 +235,7 @@ impl MemoryStore {
                 generation,
                 file: retained_reference,
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                custody,
+                _custody: custody,
             });
         }
         Ok(())

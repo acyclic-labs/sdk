@@ -125,11 +125,11 @@ async fn external_registry_growth_reconciles_original_backing_proof() {
 }
 
 #[tokio::test]
-async fn measured_reentrant_reads_do_not_wait_for_queued_writer() {
+async fn measured_reentrant_reads_do_not_wait_for_queued_writer() -> Result<(), MountSourceError> {
     let gate = Arc::new(ViewGate::new());
     let cancellation = CancellationToken::new();
     let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-    let owner = ViewGate::callback_owner();
+    let owner = ViewGate::callback_owner()?;
     let outer = measured_read(&gate, owner, &mut work).expect("outer callback");
     let mut writer = std::pin::pin!(gate.write());
     assert!(futures::poll!(writer.as_mut()).is_pending());
@@ -143,6 +143,7 @@ async fn measured_reentrant_reads_do_not_wait_for_queued_writer() {
         .expect("two actual callback releases");
     let receipt = work.receipt();
     assert_eq!(receipt.items_examined, before + 2);
+    Ok(())
 }
 
 #[test]

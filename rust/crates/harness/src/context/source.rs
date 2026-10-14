@@ -84,7 +84,7 @@ impl SourceStage {
         let revision = crate::core::copy_text(revision, &mut quota)?;
         quota.transfer();
         drop(quota);
-        drop(observed);
+
         Ok((
             Self::new(name, revision, source, placement),
             io.into_custody()?,

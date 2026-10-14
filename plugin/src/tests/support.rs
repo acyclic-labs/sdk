@@ -45,7 +45,7 @@ pub(crate) async fn configured_test_service_bootstrap(
     )
     .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction {
         cause,
-        work: Box::new(work),
+        work,
     })?;
     let root = data.to_path_buf();
     Ok((lock, configured, root, work))
