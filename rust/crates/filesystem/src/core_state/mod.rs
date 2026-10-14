@@ -228,7 +228,7 @@ impl LocalCoreStateStore {
                 work.spent(read)?;
                 match acquired {
                     Ok(()) => Admission::Shared {
-                        _lock: owner_lock.expect("acquired lock"),
+                        _lock: owner_lock.ok_or(LocalCoreStateStoreError::Integrity)?,
                     },
                     Err(error) if acyclic_native_runtime::is_exclusive_lock_contention(&error) => {
                         return Err(LocalCoreStateStoreError::LazyWork(
@@ -421,7 +421,9 @@ impl Namespace {
                 parent,
                 leaf,
                 work,
-                allocation.as_mut().expect("native path allocation"),
+                allocation
+                    .as_mut()
+                    .ok_or(crate::NativeTreeMaterializationError::MissingCustody)?,
             ),
             None => Ok(parent.join(leaf)),
         };
