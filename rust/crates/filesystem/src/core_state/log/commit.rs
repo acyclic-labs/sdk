@@ -208,7 +208,7 @@ impl CoreLog {
             crash_point("frame flushed", self.flushed);
         }
         self.sequence = next_sequence;
-        self.apply(change, installation.as_ref()).inspect_err(|error| {
+        self.apply(change, installation.as_ref()).inspect_err(|_| {
             self.broken = true;
         })?;
         Ok(())

@@ -1,4 +1,5 @@
 use super::*;
+use crate::WorkBudget;
 use crate::kernel::allocation::AllocationLedger;
 use crate::storage::{ObjectId, ObjectKind};
 
