@@ -34,6 +34,38 @@ unsafe impl Send for ProjFsSession {}
 unsafe impl Sync for ProjFsSession {}
 
 impl ProjFsSession {
+    pub(in crate::native_mount) fn owns_parent_entry(
+        &self,
+        entry: &crate::native_host::HostListedEntry,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<bool, crate::NativeTreeMaterializationError> {
+        let (Some(runtime), Some(stat)) = (&self.runtime, &entry.stat) else {
+            return Ok(false);
+        };
+        let _custody = work.claim(
+            (runtime.root.as_os_str().len() as u64)
+                .checked_mul(4)
+                .and_then(|bytes| bytes.checked_add(128))
+                .ok_or(crate::WorkError::Overflow)?,
+            2,
+            crate::WorkCounters::UNCHARGED,
+        )?;
+        let path = staging_path(&runtime.root);
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?;
+        work.charge(crate::materializer::NativeResourceCredit::Items.delta(name.len() as u64))?;
+        if entry.is_named(name)
+            && let Some((directory, _)) = &*lock_recover(&runtime.staging)
+        {
+            return Ok(
+                stat.identity() == crate::native_host::directory_identity(directory, &mut &*work)?
+            );
+        }
+        Ok(false)
+    }
+
     pub(in crate::native_mount) fn start<F>(
         request: &NativeMountRequest,
         source: Arc<dyn MountFilesystem>,

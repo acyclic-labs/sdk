@@ -4,6 +4,7 @@ use crate::filesystem::{
     BorrowedNativeVolumeBinding, NativeMountedVolume, NativePreparationRoot, NativeViewOptions,
     NativeVolumeNamespace, NativeVolumeView,
 };
+use crate::runtime::TaskDefinition;
 use acyclic_fs::{
     CancellationToken, LazyWorkspace, MemoryLazyWorkspaceStore, MountOptions, MountPublication,
     NativeMaterializationWork, PublicationPermit,
@@ -18,6 +19,7 @@ use std::{
 #[tokio::test(flavor = "multi_thread")]
 async fn native_command_reads_lazy_snapshot_and_publishes_on_finite_work()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
+    acyclic_native_runtime::initialize_native_io_services()?;
     acyclic_fs::initialize_native_mount_services()?;
     let mut fixture = Fixture::new().await?;
     let project = VolumeRef::new(
@@ -122,7 +124,8 @@ async fn native_command_reads_lazy_snapshot_and_publishes_on_finite_work()
         &ResumableToolRegistry::default(),
         Some(&io),
     )
-    .await?;
+    .await
+    .expect("native runtime opens within its allowance");
     let lease = fixture.admit(&runtime).await?;
     runtime
         .task_host()
@@ -130,6 +133,8 @@ async fn native_command_reads_lazy_snapshot_and_publishes_on_finite_work()
         .await?;
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     let fence = LeaseFence::from(&lease.reservation);
+    let work = NativeMaterializationWork::new(budget, &cancellation).map_err(|(cause, _)| cause)?;
+    let io = PreparationIo::from_native_work(&work)?;
     let owner = runtime
         .task_host()
         .journal_owner(task, &fence, Some(&io))
@@ -137,7 +142,8 @@ async fn native_command_reads_lazy_snapshot_and_publishes_on_finite_work()
         .into_native_shared(&work)?;
     let context = runtime
         .task_context_with_native_work(task, &fence, &work)
-        .await?;
+        .await
+        .expect("native task context retains its original allowance");
     let source = tempfile::tempdir()?;
     std::fs::write(source.path().join("input.txt"), b"live source")?;
     let native = acyclic_fs::demand::native::NativeDemandSource::open(
@@ -149,7 +155,8 @@ async fn native_command_reads_lazy_snapshot_and_publishes_on_finite_work()
         &work,
         &cancellation,
     )
-    .await?;
+    .await
+    .expect("native source opens within its allowance");
     let workspace = fixture
         .filesystem
         .filesystem
@@ -164,7 +171,8 @@ async fn native_command_reads_lazy_snapshot_and_publishes_on_finite_work()
             cancellation: &cancellation,
         },
     )
-    .await?;
+    .await
+    .expect("lazy workspace binds within its allowance");
     let root = tempfile::tempdir()?;
     let preparation = tempfile::tempdir()?;
     std::fs::create_dir(preparation.path().join("target"))?;
@@ -180,7 +188,8 @@ async fn native_command_reads_lazy_snapshot_and_publishes_on_finite_work()
                 .publication(MountPublication::Manual)
                 .native_context(&work, Some(callback), Some(&work)),
         )
-        .await?,
+        .await
+        .expect("lazy mount starts within its allowance"),
     );
     let snapshot = mount.snapshot(&work, &cancellation).await?;
     let (generation, _generation) = crate::resources::GenerationRef::new(
@@ -215,8 +224,11 @@ async fn native_command_reads_lazy_snapshot_and_publishes_on_finite_work()
         &bindings,
         &work,
     )?
-    .await?;
-    view.validate_for_dispatch().await?;
+    .await
+    .unwrap_or_else(|error| panic!("mounted preparation: {error:?}; work: {:?}", work.receipt()));
+    view.validate_for_dispatch()
+        .await
+        .expect("mounted view validates within its allowance");
     let before = work.receipt();
     let mut stdout = work.copy_bytes(&[0; 128])?;
     let mut stderr = work.copy_bytes(&[0; 128])?;
@@ -273,7 +285,10 @@ async fn native_command_reads_lazy_snapshot_and_publishes_on_finite_work()
         },
     )
     .await?;
-    let published = view.publish(&owner).await?;
+    let published = view
+        .publish(&owner)
+        .await
+        .expect("mounted publication stays within its allowance");
     assert!(published.0[0].1.is_lazy());
     assert_eq!(
         workspace

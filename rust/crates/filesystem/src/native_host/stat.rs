@@ -230,11 +230,26 @@ pub(super) fn windows_time(ticks: u64) -> cap_std::time::SystemTime {
 
 /// One enumerated native name and its optional facts.
 pub struct HostListedEntry {
+    /// Original directory-entry name.
     #[cfg(unix)]
     pub name: OsString,
+    /// Original UTF-16 directory-entry name.
     #[cfg(windows)]
     pub name: Vec<u16>,
+    /// Facts observed without following a link.
     pub stat: Option<HostStat>,
+}
+impl HostListedEntry {
+    pub(crate) fn is_named(&self, name: &str) -> bool {
+        #[cfg(unix)]
+        {
+            self.name == OsStr::new(name)
+        }
+        #[cfg(windows)]
+        {
+            self.name.iter().copied().eq(name.encode_utf16())
+        }
+    }
 }
 pub(crate) fn stat_file<W: NativeHostWork>(
     file: &File,

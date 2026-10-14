@@ -1,6 +1,7 @@
 //! Immutable fork inputs and bounded copies on the coordinator's work context.
 use super::*;
 use acyclic_fs::NativeAllocation;
+use acyclic_harness::runtime::TaskSpawner as _;
 use acyclic_harness::{JsonValueSchema, filesystem::PreparationIo, runtime::TaskContext};
 use serde::de::DeserializeOwned;
 

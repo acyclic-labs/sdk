@@ -80,6 +80,12 @@ pub trait NativeMountedVolume: Send + Sync {
     fn io_lease(&self) -> Result<NativeSourceIoLease>;
     /// Actual mounted directory identity.
     fn identity(&self) -> Result<acyclic_fs::NativeRootIdentity>;
+    /// Recognizes held SDK resources beside this mounted directory.
+    fn owns_parent_entry(
+        &self,
+        entry: &acyclic_fs::native_host::HostListedEntry,
+        work: &NativeMaterializationWork,
+    ) -> std::result::Result<bool, acyclic_fs::NativeTreeMaterializationError>;
     /// Observes the actual mounted snapshot without copying its tree.
     fn snapshot<'a>(
         &'a self,
@@ -132,6 +138,13 @@ where
     fn identity(&self) -> Result<acyclic_fs::NativeRootIdentity> {
         self.native_root_identity()
             .ok_or_else(super::preparation_record::invalid)
+    }
+    fn owns_parent_entry(
+        &self,
+        entry: &acyclic_fs::native_host::HostListedEntry,
+        work: &NativeMaterializationWork,
+    ) -> std::result::Result<bool, acyclic_fs::NativeTreeMaterializationError> {
+        self.owns_native_parent_entry(entry, work)
     }
     fn snapshot<'a>(
         &'a self,

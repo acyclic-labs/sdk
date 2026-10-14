@@ -141,6 +141,15 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                         &mut Some(&mut io.history_io()),
                     )?,
                 });
+                selected.push(acyclic_fs::MaterializationPreparationSelection {
+                    provider_identity: crate::store::history::canonical_bytes_with_work(
+                        binding.volume.provider(),
+                        acyclic_stream::MAX_RECORD_BYTES as u64,
+                        &mut Some(&mut plan_io.history_io()),
+                    )?,
+                    volume: workspace.id().volume_id(),
+                    generation: generation.id(),
+                });
                 if let Some(mount) = binding.mounted {
                     if mount.path() != mappings[index].path
                         || !matches!(binding.namespace, NativeVolumeNamespace::LazyMount { snapshot } if snapshot.workspace_id == workspace.id() && snapshot.authored_generation == generation.id())
@@ -164,15 +173,6 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                     plan_io.absorb_native_custody(custody)?;
                     edits.push(MaterializationEdit::Install { path, image });
                 }
-                selected.push(acyclic_fs::MaterializationPreparationSelection {
-                    provider_identity: crate::store::history::canonical_bytes_with_work(
-                        binding.volume.provider(),
-                        acyclic_stream::MAX_RECORD_BYTES as u64,
-                        &mut Some(&mut plan_io.history_io()),
-                    )?,
-                    volume: workspace.id().volume_id(),
-                    generation: generation.id(),
-                });
                 generations.push((Some(generation), volume_work));
             }
             edits.sort_unstable_by(|left, right| match (left, right) {
@@ -200,7 +200,17 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
             let operation = super::journal::operation(owner.task_binding().0, work)?;
             let retained = store.load(operation).await?;
             let backend = allocation.backend(work).await?;
-            backend.require_selected_root(&edits, &preserved)?;
+            backend.require_selected_root(&edits, &preserved, |entry| {
+                for binding in bindings {
+                    if let Some(mount) = binding.mounted
+                        && mount.path().parent() == Some(options.root.as_path())
+                        && mount.owns_parent_entry(entry, work)?
+                    {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            })?;
             let intent = if let Some(retained) = &retained {
                 let original = super::preparation_record::intent(retained, &io)?;
                 if (original.task, &original.original_fence) != owner.task_binding()
@@ -211,7 +221,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                 }
                 original
             } else {
-                backend.require_initial_empty(&preserved)?;
+                backend.require_empty_staging()?;
                 let (operation_directory, custody) =
                     work.path(&allocation.operation_directory, None)?;
                 io.absorb_native_custody(custody)?;
