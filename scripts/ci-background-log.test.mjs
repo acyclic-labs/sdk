@@ -21,8 +21,8 @@ test("background log replay preserves all bytes and annotations under stdout and
       } });
       const stdout = slow(output), stderr = slow(errors);
       await replayLog(path, "fixture", status, stdout, stderr);
-      assert.equal(Buffer.concat(output).toString(), `::group::fixture\n${text}::endgroup::\n` +
-        (status ? "::error::fixture failed with exit status 13\n" : ""));
+      assert.equal(Buffer.concat(output).toString(),
+        (status ? "::error::fixture failed with exit status 13\n" : "") + `::group::fixture\n${text}::endgroup::\n`);
       assert.equal(Buffer.concat(errors).toString(), status ? lines.slice(-80).join("\n") + "\n" : "");
       assert.equal(stdout.writableEnded, false);
       assert.equal(stderr.writableEnded, false);
@@ -69,7 +69,7 @@ printf 'result=%s\\n' "$result"
       assert.ok(result.stdout.includes(`result=${expected}`));
       if (missingLog) assert.match(result.stderr, /ENOENT/);
       assert.doesNotMatch(result.stderr, /Resource temporarily unavailable/);
-      assert.equal(result.stdout.includes("::error::first failed with exit status 13"), status === 13 && !missingLog);
+      assert.equal(result.stdout.includes("::error::first failed with exit status 13"), status === 13);
     } finally {
       assert.ok(resolve(directory).startsWith(resolve(".tools") + sep));
       rmSync(directory, { recursive: true, force: true });

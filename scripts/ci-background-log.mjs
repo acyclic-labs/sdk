@@ -16,11 +16,11 @@ export async function replayLog(path, name, status, stdout, stderr) {
     stream.write(text, error => error ? reject(error) : resolve(undefined));
   });
   // Inherited CI pipes can be nonblocking; await every write, including annotations.
+  if (status !== 0) await write(stdout, `::error::${name} failed with exit status ${status}\n`);
   await write(stdout, `::group::${name}\n`);
   await pipeline(createReadStream(path), stdout, { end: false });
   await write(stdout, "::endgroup::\n");
   if (status !== 0) {
-    await write(stdout, `::error::${name} failed with exit status ${status}\n`);
     const lines = [];
     for await (const line of createInterface({ input: createReadStream(path), crlfDelay: Infinity })) {
       lines.push(line);
