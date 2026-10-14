@@ -148,6 +148,51 @@ pub(crate) async fn materialize_reader_paths<A: AsyncAuthorityStore, O: AsyncObj
     .await
 }
 
+fn select_materialization_paths<'a>(
+    paths: &'a [NamespacePath],
+    receipt: &mut GenerationReceipt,
+) -> Result<Vec<&'a NamespacePath>, MaterializeError> {
+    let mut selected_paths = Vec::<&NamespacePath>::new();
+    receipt.reserve(&mut selected_paths, paths.len())?;
+    for path in paths {
+        let mut insertion = selected_paths.len();
+        while insertion != 0 {
+            let previous = *selected_paths
+                .get(insertion - 1)
+                .ok_or(MaterializeError::InvalidOptions)?;
+            receipt
+                .custody
+                .work()
+                .charge(crate::materializer::NativeResourceCredit::Items.delta(1))
+                .map_err(MaterializeError::from)?;
+            if previous <= path {
+                break;
+            }
+            insertion -= 1;
+        }
+        receipt
+            .custody
+            .work()
+            .charge(crate::materializer::NativeResourceCredit::Copy.delta(
+                ((selected_paths.len() - insertion + 1) * std::mem::size_of::<&NamespacePath>())
+                    as u64,
+            ))
+            .map_err(MaterializeError::from)?;
+        selected_paths.insert(insertion, path);
+    }
+    for pair in selected_paths.windows(2) {
+        receipt
+            .custody
+            .work()
+            .charge(crate::materializer::NativeResourceCredit::Items.delta(1))
+            .map_err(MaterializeError::from)?;
+        if matches!(pair, [ancestor, path] if path.is_within(ancestor)) {
+            return Err(MaterializeError::OverlappingPaths);
+        }
+    }
+    Ok(selected_paths)
+}
+
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,
@@ -188,44 +233,7 @@ where
             (*reader).clone()
         }
     };
-    let mut selected_paths = Vec::<&NamespacePath>::new();
-    receipt.reserve(&mut selected_paths, paths.len())?;
-    for path in paths {
-        let mut insertion = selected_paths.len();
-        while insertion != 0 {
-            let previous = *selected_paths
-                .get(insertion - 1)
-                .ok_or(MaterializeError::InvalidOptions)?;
-            receipt
-                .custody
-                .work()
-                .charge(crate::materializer::NativeResourceCredit::Items.delta(1))
-                .map_err(MaterializeError::from)?;
-            if previous <= path {
-                break;
-            }
-            insertion -= 1;
-        }
-        receipt
-            .custody
-            .work()
-            .charge(crate::materializer::NativeResourceCredit::Copy.delta(
-                ((selected_paths.len() - insertion + 1) * std::mem::size_of::<&NamespacePath>())
-                    as u64,
-            ))
-            .map_err(MaterializeError::from)?;
-        selected_paths.insert(insertion, path);
-    }
-    for pair in selected_paths.windows(2) {
-        receipt
-            .custody
-            .work()
-            .charge(crate::materializer::NativeResourceCredit::Items.delta(1))
-            .map_err(MaterializeError::from)?;
-        if matches!(pair, [ancestor, path] if path.is_within(ancestor)) {
-            return Err(MaterializeError::OverlappingPaths.into());
-        }
-    }
+    let selected_paths = select_materialization_paths(paths, &mut receipt)?;
     let selection_bytes = vec_bytes(&selected_paths);
     let destination = validate_options(options, &mut receipt)?;
     let host_root = receipt.owned_arc(destination, 0)?;
@@ -477,7 +485,6 @@ where
             &directory.0,
             &host_directory,
             None,
-            cancellation,
             &mut receipt,
             &mut before_effect,
         )
