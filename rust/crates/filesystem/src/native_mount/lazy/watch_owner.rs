@@ -87,9 +87,7 @@ impl Drop for NativeMountSourceWatchOwner {
         drop(self.sink.take());
         drop(self.startup_failure.take());
         if let Some(custody) = &self.custody {
-            custody
-                .retire(self.bytes)
-                .expect("watch custody retires only after its physical owner and sink drop");
+            custody.retire_deferred(self.bytes);
         }
     }
 }
