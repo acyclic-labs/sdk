@@ -12,6 +12,22 @@ run only through **SDK Release**. Whitespace checks cover changes since the prev
 `acyclic-v*` release tag, or the tracked tree for the first release. Tags and GitHub
 Release events start no workflows.
 
+Workflow validation requires actionlint 1.7.7 and an executable ShellCheck on
+PATH. Use the same wrapper as release policy qualification locally:
+
+```sh
+bash scripts/check-workflows.sh
+```
+
+For a scoped check, pass the actionlint executable and workflow paths:
+
+```sh
+bash scripts/check-workflows.sh actionlint .github/workflows/release-acyclic.yml
+```
+
+The wrapper fails when ShellCheck is missing and passes its resolved executable
+to actionlint explicitly, so a successful check includes shell validation.
+
 ## Coordinated release
 
 Commit the same version in all publishable npm, Cargo, and plugin manifests, then

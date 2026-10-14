@@ -350,7 +350,8 @@ case "$lane" in
       https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz \
       023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757 \
       "$TOOLS_DIR/actionlint-1.7.7" actionlint
-    "$TOOLS_DIR/actionlint-1.7.7/actionlint" .github/workflows/*.yml
+    node --test scripts/check-workflows.test.mjs
+    bash scripts/check-workflows.sh "$TOOLS_DIR/actionlint-1.7.7/actionlint"
     node scripts/publish-cargo-crates.mjs check
     node --test scripts/test-publish-cargo-crates.mjs
     node --test scripts/test-publish-npm-packages.mjs
