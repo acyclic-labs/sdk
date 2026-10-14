@@ -99,18 +99,24 @@ test("native and qualification snapshots use UTC day boundaries", () => {
       const step = YAML.parse(readFileSync(file, "utf8")).runs.steps.find(step => step.name.startsWith("Configure"));
       for (const day of ["20261014", "20261015"]) {
         writeFileSync(join(root, "output"), "");
-        const result = spawnSync(bash, ["-c", `set -euo pipefail
+        const command = `set -euo pipefail
 CACHE_SIZE=384M
 RUNNER_TEMP='${root}'
 GITHUB_ENV='${root}/env'
 GITHUB_OUTPUT='${root}/output'
 GITHUB_EVENT_NAME=workflow_dispatch
 RUNNER_OS=Linux
-date() { [[ "$*" == '-u +%Y%m%d' ]]; printf '${day}\\n'; }
-${step.run}`], { encoding: "utf8", timeout: 60_000 });
+date() { [[ "$*" == '-u +%Y%m%d' ]] || return 1; printf '${day}\\n'; }
+${step.run}`;
+        const result = spawnSync(bash, ["-c", command], { encoding: "utf8", timeout: 60_000 });
         assert.ifError(result.error);
         assert.equal(result.status, 0, result.stderr);
         assert.match(readFileSync(join(root, "output"), "utf8"), new RegExp(`^day=${day}$`, "m"));
+        writeFileSync(join(root, "output"), "");
+        const localDate = spawnSync(bash, ["-c", command.replace("date -u ", "date ")], { encoding: "utf8", timeout: 60_000 });
+        assert.ifError(localDate.error);
+        assert.equal(localDate.status, 0, localDate.stderr);
+        assert.doesNotMatch(readFileSync(join(root, "output"), "utf8"), /^day=[0-9]{8}$/m);
       }
     }
   } finally {
