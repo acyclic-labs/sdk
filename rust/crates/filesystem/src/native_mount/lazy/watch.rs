@@ -82,29 +82,7 @@ where
         let mut scratch_carrier = adapter::NativeDemandCarrier::Native(work);
         let mut scratch = adapter::InputBuffers::new(&mut scratch_carrier)?;
         let mut effect = ViewEffect::default();
-        let (nodes, subtrees, listings) =
-            changes
-                .iter()
-                .try_fold((0usize, 0usize, 0usize), |(n, s, l), change| {
-                    crate::native_host::NativeHostWork::check(work).map_err(mount_demand_error)?;
-                    work.charge(crate::materializer::NativeResourceCredit::Items.delta(1))
-                        .map_err(MountSourceError::NativeWork)?;
-                    let extra = match change {
-                        SourceChange::Entry(path) => 1 + usize::from(!path.is_root()),
-                        _ => 0,
-                    };
-                    Ok::<_, MountSourceError>((
-                        n.checked_add(usize::from(matches!(change, SourceChange::Node(_)))),
-                        s.checked_add(usize::from(matches!(change, SourceChange::Name(_)))),
-                        l.checked_add(extra),
-                    ))
-                    .and_then(|(n, s, l)| {
-                        n.zip(s)
-                            .zip(l)
-                            .map(|((n, s), l)| (n, s, l))
-                            .ok_or(MountSourceError::Work(crate::WorkError::Overflow))
-                    })
-                })?;
+        let (nodes, subtrees, listings) = change_counts(changes, work)?;
         let mut namespace_allocations = scratch.vec(
             subtrees
                 .checked_add(listings)
@@ -181,4 +159,32 @@ where
         }
         crate::native_host::NativeHostWork::check(work).map_err(mount_demand_error)
     }
+}
+
+fn change_counts(
+    changes: &[SourceChange],
+    work: &crate::NativeMaterializationWork,
+) -> Result<(usize, usize, usize), MountSourceError> {
+    changes
+        .iter()
+        .try_fold((0usize, 0usize, 0usize), |(n, s, l), change| {
+            crate::native_host::NativeHostWork::check(work).map_err(mount_demand_error)?;
+            work.charge(crate::materializer::NativeResourceCredit::Items.delta(1))
+                .map_err(MountSourceError::NativeWork)?;
+            let extra = match change {
+                SourceChange::Entry(path) => 1 + usize::from(!path.is_root()),
+                _ => 0,
+            };
+            Ok::<_, MountSourceError>((
+                n.checked_add(usize::from(matches!(change, SourceChange::Node(_)))),
+                s.checked_add(usize::from(matches!(change, SourceChange::Name(_)))),
+                l.checked_add(extra),
+            ))
+            .and_then(|(n, s, l)| {
+                n.zip(s)
+                    .zip(l)
+                    .map(|((n, s), l)| (n, s, l))
+                    .ok_or(MountSourceError::Work(crate::WorkError::Overflow))
+            })
+        })
 }

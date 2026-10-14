@@ -1,6 +1,10 @@
 use super::*;
 
 /// Replays one watcher batch with the caller's full original native resource.
+#[allow(
+    clippy::too_many_lines,
+    reason = "Admission, rename validation, replay and commit share one funded candidate frame."
+)]
 pub async fn capture_watch_batch<
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,

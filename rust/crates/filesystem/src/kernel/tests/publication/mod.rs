@@ -1,9 +1,4 @@
 use super::*;
-fn encode_publication_payload(volume_id: VolumeId, generation_root: ObjectId) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(publication_payload_length());
-    write_publication_payload(&mut bytes, volume_id, generation_root, None);
-    bytes
-}
 use crate::GuardedAppend;
 use crate::async_storage::AsyncAuthorityStore;
 use crate::async_storage::AsyncObjectStore;
