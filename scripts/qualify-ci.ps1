@@ -61,27 +61,16 @@ switch ($Lane) {
         # directly through rustc while leaving the independent native builds cached.
         $rustcWrapper = $env:RUSTC_WRAPPER
         Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
-        # Uncached workspace compilation dominates this lane. Keep dependency
-        # artifacts and the hot filesystem/hash paths at their existing settings.
         try {
-            $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
-            $testProfile = @(
-                foreach ($package in $metadata.packages | Sort-Object name) {
-                    if ($package.id -in $metadata.workspace_members -and $package.name -ne 'acyclic-fs') {
-                        '--config'
-                        'profile.test.package."' + $package.name + '".opt-level=0'
-                    }
-                }
-            )
             try {
-                cargo nextest run --workspace --all-features --locked --profile ci --test-threads "$env:RUST_TEST_THREADS" --target-dir "$CargoTargetDir" @testProfile
+                cargo nextest run --workspace --all-features --locked --profile ci --test-threads "$env:RUST_TEST_THREADS"
             } finally {
                 $junit = Join-Path $CargoTargetDir 'nextest/ci/junit.xml'
                 if (Test-Path -LiteralPath $junit) {
                     Copy-Item -LiteralPath $junit -Destination "$env:SDK_TEMP_DIR/observability/rust.xml"
                 }
             }
-            cargo test --workspace --all-features --locked --doc --target-dir "$CargoTargetDir" @testProfile
+            cargo test --workspace --all-features --locked --doc
         } finally {
             if ($null -eq $rustcWrapper) {
                 Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue

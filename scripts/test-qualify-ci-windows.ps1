@@ -57,15 +57,7 @@ function Record-Command([string] $Name, [object[]] $Arguments) {
     $script:Calls.Add("$Name $($Arguments -join ' ')")
     if ($script:Calls.Count -eq $script:FailCall) { throw 'simulated command failure' }
 }
-function cargo {
-    Record-Command cargo $args
-    if ($args[0] -eq 'metadata') {
-        @{workspace_members=@('harness','filesystem'); packages=@(
-            @{id='filesystem';name='acyclic-fs'}, @{id='harness';name='acyclic-harness'},
-            @{id='dependency';name='serde'}
-        )} | ConvertTo-Json -Depth 5 -Compress
-    }
-}
+function cargo { Record-Command cargo $args }
 function node {
     if ($args[0] -eq 'scripts/clippy-feature-sets.mjs' -and $env:CARGO_BUILD_JOBS -ne '4') {
         throw 'clippy worker allocation changed'
@@ -76,9 +68,8 @@ function rustup { Record-Command rustup $args }
 
 $expected = @{
     'windows-rust' = @(
-        'cargo metadata --locked --no-deps --format-version 1',
-        'cargo nextest run --workspace --all-features --locked --profile ci --test-threads 32 --target-dir fixture-target --config profile.test.package."acyclic-harness".opt-level=0',
-        'cargo test --workspace --all-features --locked --doc --target-dir fixture-target --config profile.test.package."acyclic-harness".opt-level=0'
+        'cargo nextest run --workspace --all-features --locked --profile ci --test-threads 32',
+        'cargo test --workspace --all-features --locked --doc'
     )
     'windows-fork-join' = @(
         'cargo test -p acyclic-plugin --all-features --locked --test fork_join --ignored --test-threads=1 --skip support::'
