@@ -93,7 +93,7 @@ pub async fn seal_checkout_with_permit<A: AsyncAuthorityStore, O: AsyncObjectSto
 
 /// Publishes the retained operation on its original allocation family.
 /// `None` is a deterministic SDK rejection; an unchanged checkout is not an ACK.
-pub(super) fn seal_checkout_with_permit_guarded_with_native_work<'a, A, O, T, F, Fut>(
+pub(super) async fn seal_checkout_with_permit_guarded_with_native_work<'a, A, O, T, F, Fut>(
     checkout: &'a mut Checkout<A, O>,
     operation_id: OperationId,
     permit: PublicationPermit,
@@ -105,10 +105,7 @@ pub(super) fn seal_checkout_with_permit_guarded_with_native_work<'a, A, O, T, F,
     operation_context: Option<crate::Digest>,
     operation_evidence: Option<acyclic_stream::OwnedBytes>,
     original_fingerprint_permit: Option<PublicationPermit>,
-) -> acyclic_stream::BoxProviderFuture<
-    'a,
-    Result<Option<(Option<OperationId>, crate::GenerationId)>, T>,
->
+) -> Result<Option<(Option<OperationId>, crate::GenerationId)>, T>
 where
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
@@ -116,19 +113,46 @@ where
     F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
     Fut: std::future::Future<Output = Result<(), T>> + Send + 'static,
 {
-    Box::pin(async move {
-        cancellation
-            .check()
-            .map_err(|error| T::from(crate::FsError::Cancelled(error)))?;
-        let mode = checkout.mode().mutations;
-        if mode != MutationMode::PrivateOverlay
-            && (force || permit != PublicationPermit::Unrestricted || mode == MutationMode::None)
-        {
-            return Err(T::from(MountSourceError::NativeUnsupported));
-        }
-        if mode == MutationMode::PrivateOverlay
-            && let Some(outcome) = checkout
-                .retry_stale_commit_with_native_work(
+    cancellation
+        .check()
+        .map_err(|error| T::from(crate::FsError::Cancelled(error)))?;
+    let mode = checkout.mode().mutations;
+    if mode != MutationMode::PrivateOverlay
+        && (force || permit != PublicationPermit::Unrestricted || mode == MutationMode::None)
+    {
+        return Err(T::from(MountSourceError::NativeUnsupported));
+    }
+    if mode == MutationMode::PrivateOverlay
+        && let Some(outcome) = checkout
+            .retry_stale_commit_with_native_work(
+                operation_id,
+                permit,
+                original,
+                cancellation,
+                before_publication,
+                producer_custody,
+                operation_context,
+                operation_evidence.clone(),
+                original_fingerprint_permit,
+            )
+            .await?
+    {
+        return Ok(private_ack(operation_id, outcome));
+    }
+    if !force && !checkout.has_pending_mutations() {
+        return Ok(Some((None, checkout.generation_id())));
+    }
+    if mode == MutationMode::PrivateOverlay {
+        for _ in 0..(if force {
+            MAXIMUM_SAFE_REBASE_ATTEMPTS
+        } else {
+            1
+        }) {
+            original
+                .charge(crate::materializer::NativeResourceCredit::Items.delta(1))
+                .map_err(|error| T::from(MountSourceError::NativeWork(error)))?;
+            let outcome = checkout
+                .commit_even_if_clean_with_native_work(
                     operation_id,
                     permit,
                     original,
@@ -139,80 +163,51 @@ where
                     operation_evidence.clone(),
                     original_fingerprint_permit,
                 )
-                .await?
-        {
-            return Ok(private_ack(operation_id, outcome));
-        }
-        if !force && !checkout.has_pending_mutations() {
-            return Ok(Some((None, checkout.generation_id())));
-        }
-        if mode == MutationMode::PrivateOverlay {
-            for _ in 0..(if force {
-                MAXIMUM_SAFE_REBASE_ATTEMPTS
-            } else {
-                1
-            }) {
-                original
-                    .charge(crate::materializer::NativeResourceCredit::Items.delta(1))
-                    .map_err(|error| T::from(MountSourceError::NativeWork(error)))?;
-                let outcome = checkout
-                    .commit_even_if_clean_with_native_work(
-                        operation_id,
-                        permit,
+                .await?;
+            if matches!(outcome, LivePublicationObservation::Conflict { .. }) && force {
+                let (decision, allocation) = checkout
+                    .rebase_head(
+                        checkout
+                            .volume_config()
+                            .limits
+                            .maximum_checkout_dependencies,
                         original,
                         cancellation,
-                        before_publication,
-                        producer_custody,
-                        operation_context,
-                        operation_evidence.clone(),
-                        original_fingerprint_permit,
                     )
-                    .await?;
-                if matches!(outcome, LivePublicationObservation::Conflict { .. }) && force {
-                    let (decision, allocation) = checkout
-                        .rebase_head(
-                            checkout
-                                .volume_config()
-                                .limits
-                                .maximum_checkout_dependencies,
-                            original,
-                            cancellation,
-                        )
-                        .await
-                        .map_err(T::from)?;
-                    let conflicted = matches!(decision, RebaseDecision::Conflicted { .. });
-                    drop(decision);
-                    drop(allocation);
-                    if conflicted {
-                        return Ok(None);
-                    }
-                } else {
-                    return Ok(private_ack(operation_id, outcome));
+                    .await
+                    .map_err(T::from)?;
+                let conflicted = matches!(decision, RebaseDecision::Conflicted { .. });
+                drop(decision);
+                drop(allocation);
+                if conflicted {
+                    return Ok(None);
                 }
+            } else {
+                return Ok(private_ack(operation_id, outcome));
             }
-            Err(T::from(MountSourceError::PublicationRetryLimit))
-        } else {
-            let (outcome, allocation) = checkout
-                .resume_live_with_native_work(
-                    operation_id,
-                    8,
-                    256,
-                    permit,
-                    original,
-                    cancellation,
-                    before_publication,
-                    producer_custody,
-                    operation_context,
-                    operation_evidence,
-                    original_fingerprint_permit,
-                )
-                .await?;
-            let ack = live_ack(operation_id, &outcome);
-            drop(outcome);
-            drop(allocation);
-            Ok(ack)
         }
-    })
+        Err(T::from(MountSourceError::PublicationRetryLimit))
+    } else {
+        let (outcome, allocation) = checkout
+            .resume_live_with_native_work(
+                operation_id,
+                8,
+                256,
+                permit,
+                original,
+                cancellation,
+                before_publication,
+                producer_custody,
+                operation_context,
+                operation_evidence,
+                original_fingerprint_permit,
+            )
+            .await?;
+        let ack = live_ack(operation_id, &outcome);
+        drop(outcome);
+        drop(allocation);
+        Ok(ack)
+    }
 }
 
 fn private_ack(
