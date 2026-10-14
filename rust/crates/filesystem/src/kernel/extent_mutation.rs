@@ -5,9 +5,7 @@ use super::allocation::{AllocationError, KernelAccounting, VisitedObjectSet};
 use super::extent::extent_page_encoded_length;
 use super::persistent_point::{Owned, retire_allocation};
 use super::search::{binary_search_with_accounting, partition_point_with_accounting};
-use super::{
-    CanonicalDecodeError, DecodeLimits, Extent, ExtentChild, ExtentKind, ExtentPage,
-};
+use super::{CanonicalDecodeError, DecodeLimits, Extent, ExtentChild, ExtentKind, ExtentPage};
 use crate::FsError;
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
@@ -100,6 +98,10 @@ struct Context<'a, 'b, S> {
 }
 
 /// Applies ordered extent mutations by rewriting only intersecting frontiers.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
+)]
 pub async fn apply_extent_mutations<S: crate::AsyncObjectStore>(
     store: &S,
     root: (ObjectId, u64),
@@ -111,14 +113,29 @@ pub async fn apply_extent_mutations<S: crate::AsyncObjectStore>(
 ) -> Result<ExtentMutationReceipt, ExtentMutationFailure> {
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
     apply_extent_mutations_with_accounting(
-        store, root, mutations, maximum_mutations,
-        limits, &mut accounting, cancellation,
-    ).await.map_err(|error| OperationFailure::new(project_extent_error(error), accounting.spent()))
+        store,
+        root,
+        mutations,
+        maximum_mutations,
+        limits,
+        &mut accounting,
+        cancellation,
+    )
+    .await
+    .map_err(|error| OperationFailure::new(project_extent_error(error), accounting.spent()))
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
+)]
 pub(crate) async fn apply_extent_mutations_with_accounting<S: crate::AsyncObjectStore>(
-    store: &S, root: (ObjectId, u64), mutations: &[ExtentMutation],
-    maximum_mutations: u32, limits: DecodeLimits, accounting: &mut KernelAccounting<'_>,
+    store: &S,
+    root: (ObjectId, u64),
+    mutations: &[ExtentMutation],
+    maximum_mutations: u32,
+    limits: DecodeLimits,
+    accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<ExtentMutationReceipt, FsError> {
     let (root, old_logical_bytes) = root;
@@ -130,18 +147,33 @@ pub(crate) async fn apply_extent_mutations_with_accounting<S: crate::AsyncObject
         .map_err(|_| extent_error(ExtentMutationError::InvalidLimits))?;
     let visited = VisitedObjectSet::new_with_accounting(maximum, accounting)?;
     let mut context = Context {
-        store, limits, accounting, visited,
-        patches: plan.patches, maximum_seen_height: 0, cancellation,
+        store,
+        limits,
+        accounting,
+        visited,
+        patches: plan.patches,
+        maximum_seen_height: 0,
+        cancellation,
     };
     let result = async {
-        let summaries = context.rewrite(root, 0, old_logical_bytes, final_size).await?;
+        let summaries = context
+            .rewrite(root, 0, old_logical_bytes, final_size)
+            .await?;
         context.finish_root(summaries).await
-    }.await;
-    let Context { visited, patches, accounting, .. } = context;
+    }
+    .await;
+    let Context {
+        visited,
+        patches,
+        accounting,
+        ..
+    } = context;
     visited.retire(accounting)?;
     patches.retire(accounting)?;
     Ok(ExtentMutationReceipt {
-        root: result?, logical_bytes: final_size, work: accounting.spent(),
+        root: result?,
+        logical_bytes: final_size,
+        work: accounting.spent(),
     })
 }
 
@@ -171,7 +203,9 @@ fn validate_request(
 }
 
 fn compile_patch_plan(
-    old_size: u64, mutations: &[ExtentMutation], accounting: &mut KernelAccounting<'_>,
+    old_size: u64,
+    mutations: &[ExtentMutation],
+    accounting: &mut KernelAccounting<'_>,
 ) -> Result<CompiledPatchPlan, FsError> {
     let (final_size, raw_count) = admit_patch_plan(old_size, mutations, accounting)?;
     let mut raw = Owned::<Vec<Patch>>::allocate(raw_count, accounting)?;
@@ -179,18 +213,32 @@ fn compile_patch_plan(
     for mutation in mutations {
         charge_items(accounting, 1)?;
         match mutation {
-            ExtentMutation::Replace { offset, length, kind, .. } => {
+            ExtentMutation::Replace {
+                offset,
+                length,
+                kind,
+                ..
+            } => {
                 let end = offset.checked_add(*length).ok_or(WorkError::Overflow)?;
                 if *offset > size {
-                    raw.value.push(Patch { offset: size, end: *offset, kind: ExtentKind::Hole });
+                    raw.value.push(Patch {
+                        offset: size,
+                        end: *offset,
+                        kind: ExtentKind::Hole,
+                    });
                 }
-                raw.value.push(Patch { offset: *offset, end, kind: kind.clone() });
+                raw.value.push(Patch {
+                    offset: *offset,
+                    end,
+                    kind: kind.clone(),
+                });
                 size = size.max(end);
             }
             ExtentMutation::Resize { logical_bytes } => {
                 if *logical_bytes != size {
                     raw.value.push(Patch {
-                        offset: size.min(*logical_bytes), end: size.max(*logical_bytes),
+                        offset: size.min(*logical_bytes),
+                        end: size.max(*logical_bytes),
                         kind: ExtentKind::Hole,
                     });
                     size = *logical_bytes;
@@ -200,29 +248,46 @@ fn compile_patch_plan(
     }
     let patches = normalize_raw_patches(&raw.value, final_size, accounting);
     raw.retire(accounting)?;
-    Ok(CompiledPatchPlan { patches: patches?, final_size })
+    Ok(CompiledPatchPlan {
+        patches: patches?,
+        final_size,
+    })
 }
 
 fn admit_patch_plan(
-    old_size: u64, mutations: &[ExtentMutation], accounting: &mut KernelAccounting<'_>,
+    old_size: u64,
+    mutations: &[ExtentMutation],
+    accounting: &mut KernelAccounting<'_>,
 ) -> Result<(u64, usize), FsError> {
     let mut size = old_size;
     let mut raw_count = 0_usize;
     for mutation in mutations {
         charge_items(accounting, 1)?;
         match mutation {
-            ExtentMutation::Replace { offset, length, kind, extend } => {
-                if *length == 0 { return Err(extent_error(ExtentMutationError::EmptyRange)); }
+            ExtentMutation::Replace {
+                offset,
+                length,
+                kind,
+                extend,
+            } => {
+                if *length == 0 {
+                    return Err(extent_error(ExtentMutationError::EmptyRange));
+                }
                 validate_kind(kind, *length).map_err(extent_error)?;
-                let end = offset.checked_add(*length)
+                let end = offset
+                    .checked_add(*length)
                     .ok_or_else(|| extent_error(ExtentMutationError::RangeOverflow))?;
-                if end > size && !extend { return Err(extent_error(ExtentMutationError::OutsideFile)); }
-                raw_count = raw_count.checked_add(usize::from(*offset > size) + 1)
+                if end > size && !extend {
+                    return Err(extent_error(ExtentMutationError::OutsideFile));
+                }
+                raw_count = raw_count
+                    .checked_add(usize::from(*offset > size) + 1)
                     .ok_or(WorkError::Overflow)?;
                 size = size.max(end);
             }
             ExtentMutation::Resize { logical_bytes } => {
-                raw_count = raw_count.checked_add(usize::from(*logical_bytes != size))
+                raw_count = raw_count
+                    .checked_add(usize::from(*logical_bytes != size))
                     .ok_or(WorkError::Overflow)?;
                 size = *logical_bytes;
             }
@@ -232,11 +297,16 @@ fn admit_patch_plan(
 }
 
 fn charge_items(accounting: &mut KernelAccounting<'_>, count: u64) -> Result<(), FsError> {
-    accounting.charge(WorkCounters { items_examined: count, ..WorkCounters::UNCHARGED })
+    accounting.charge(WorkCounters {
+        items_examined: count,
+        ..WorkCounters::UNCHARGED
+    })
 }
 
 fn normalize_raw_patches(
-    raw: &[Patch], final_size: u64, accounting: &mut KernelAccounting<'_>,
+    raw: &[Patch],
+    final_size: u64,
+    accounting: &mut KernelAccounting<'_>,
 ) -> Result<Owned<Vec<Patch>>, FsError> {
     let capacity = raw.len().checked_mul(2).ok_or(WorkError::Overflow)?;
     let mut coordinates = Owned::<Vec<u64>>::allocate(capacity, accounting)?;
@@ -244,7 +314,9 @@ fn normalize_raw_patches(
         charge_items(accounting, 1)?;
         let start = patch.offset.min(final_size);
         let end = patch.end.min(final_size);
-        if start < end { coordinates.value.extend([start, end]); }
+        if start < end {
+            coordinates.value.extend([start, end]);
+        }
     }
     if coordinates.value.is_empty() {
         coordinates.retire(accounting)?;
@@ -268,13 +340,18 @@ fn normalize_raw_patches(
             charge_items(accounting, 1)?;
             let start = patch.offset.min(final_size);
             let end = patch.end.min(final_size);
-            if start >= end { continue; }
+            if start >= end {
+                continue;
+            }
             let left = coordinate_index(&coordinates.value, start, accounting)?;
             let right = coordinate_index(&coordinates.value, end, accounting)?;
             let mut interval = find_next(&mut parents.value, left, accounting)?;
             while interval < right {
                 charge_items(accounting, 1)?;
-                *assignments.value.get_mut(interval).ok_or(WorkError::Overflow)? = Some(patch_index);
+                *assignments
+                    .value
+                    .get_mut(interval)
+                    .ok_or(WorkError::Overflow)? = Some(patch_index);
                 let successor = find_next(&mut parents.value, interval + 1, accounting)?;
                 *parents.value.get_mut(interval).ok_or(WorkError::Overflow)? = successor;
                 interval = successor;
@@ -283,18 +360,27 @@ fn normalize_raw_patches(
         let mut result = Owned::<Vec<Patch>>::allocate(intervals, accounting)?;
         for (interval, assignment) in assignments.value.iter().enumerate() {
             charge_items(accounting, 1)?;
-            let Some(patch_index) = assignment else { continue; };
+            let Some(patch_index) = assignment else {
+                continue;
+            };
             let source = raw.get(*patch_index).ok_or(WorkError::Overflow)?;
             let offset = *coordinates.value.get(interval).ok_or(WorkError::Overflow)?;
-            let end = *coordinates.value.get(interval + 1).ok_or(WorkError::Overflow)?;
+            let end = *coordinates
+                .value
+                .get(interval + 1)
+                .ok_or(WorkError::Overflow)?;
             let candidate = Patch {
-                offset, end,
+                offset,
+                end,
                 kind: offset_kind(&source.kind, offset - source.offset).map_err(extent_error)?,
             };
             if let Some(previous) = result.value.last_mut()
                 && patch_continues(previous, &candidate).map_err(extent_error)?
-            { previous.end = candidate.end; }
-            else { result.value.push(candidate); }
+            {
+                previous.end = candidate.end;
+            } else {
+                result.value.push(candidate);
+            }
         }
         Ok(result)
     })();
@@ -305,19 +391,31 @@ fn normalize_raw_patches(
 }
 
 fn radix_sort(
-    values: &mut Owned<Vec<u64>>, scratch: &mut Owned<Vec<u64>>, accounting: &mut KernelAccounting<'_>,
+    values: &mut Owned<Vec<u64>>,
+    scratch: &mut Owned<Vec<u64>>,
+    accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), FsError> {
     scratch.value.resize(values.value.len(), 0);
     for byte in 0..8_u32 {
         accounting.charge(WorkCounters {
-            items_examined: usize_to_u64(values.value.len()).checked_mul(2).ok_or(WorkError::Overflow)?,
-            bytes_copied: usize_to_u64(values.value.len().checked_mul(size_of::<u64>()).ok_or(WorkError::Overflow)?),
+            items_examined: usize_to_u64(values.value.len())
+                .checked_mul(2)
+                .ok_or(WorkError::Overflow)?,
+            bytes_copied: usize_to_u64(
+                values
+                    .value
+                    .len()
+                    .checked_mul(size_of::<u64>())
+                    .ok_or(WorkError::Overflow)?,
+            ),
             ..WorkCounters::UNCHARGED
         })?;
         let shift = byte * 8;
         let mut counts = [0_usize; 256];
         for value in values.value.iter() {
-            let count = counts.get_mut(usize::from(((value >> shift) & 0xff) as u8)).ok_or(WorkError::Overflow)?;
+            let count = counts
+                .get_mut(usize::from(((value >> shift) & 0xff) as u8))
+                .ok_or(WorkError::Overflow)?;
             *count += 1;
         }
         let mut offset = 0;
@@ -327,7 +425,9 @@ fn radix_sort(
             offset += current;
         }
         for value in values.value.iter() {
-            let count = counts.get_mut(usize::from(((value >> shift) & 0xff) as u8)).ok_or(WorkError::Overflow)?;
+            let count = counts
+                .get_mut(usize::from(((value >> shift) & 0xff) as u8))
+                .ok_or(WorkError::Overflow)?;
             *scratch.value.get_mut(*count).ok_or(WorkError::Overflow)? = *value;
             *count += 1;
         }
@@ -338,14 +438,18 @@ fn radix_sort(
 }
 
 fn coordinate_index(
-    values: &[u64], target: u64, accounting: &mut KernelAccounting<'_>,
+    values: &[u64],
+    target: u64,
+    accounting: &mut KernelAccounting<'_>,
 ) -> Result<usize, FsError> {
     let found = binary_search_with_accounting(values, accounting, |value| value.cmp(&target))?;
     found.map_err(|_| extent_error(ExtentMutationError::PatchInvariant))
 }
 
 fn find_next(
-    parents: &mut [usize], start: usize, accounting: &mut KernelAccounting<'_>,
+    parents: &mut [usize],
+    start: usize,
+    accounting: &mut KernelAccounting<'_>,
 ) -> Result<usize, FsError> {
     let mut root = start;
     while *parents.get(root).ok_or(WorkError::Overflow)? != root {
@@ -376,9 +480,15 @@ pub(super) fn project_extent_error(error: FsError) -> ExtentMutationError {
         FsError::Work(error) => error.into(),
         FsError::Decode(error) => error.into(),
         FsError::BlobRead(super::BlobReadError::Storage(error)) => error.into(),
-        FsError::FileRead(super::FileRangeReadError::Extent(super::ExtentReadError::Decode(error))) => error.into(),
-        FsError::FileRead(super::FileRangeReadError::Extent(super::ExtentReadError::Work(error))) => error.into(),
-        FsError::FileRead(super::FileRangeReadError::Extent(super::ExtentReadError::Storage(error))) => error.into(),
+        FsError::FileRead(super::FileRangeReadError::Extent(super::ExtentReadError::Decode(
+            error,
+        ))) => error.into(),
+        FsError::FileRead(super::FileRangeReadError::Extent(super::ExtentReadError::Work(
+            error,
+        ))) => error.into(),
+        FsError::FileRead(super::FileRangeReadError::Extent(super::ExtentReadError::Storage(
+            error,
+        ))) => error.into(),
         #[cfg(not(target_arch = "wasm32"))]
         FsError::NativeKernel(error) => ObjectStoreError::Native(error).into(),
         FsError::Cancelled(_) => ObjectStoreError::Cancelled.into(),
@@ -479,17 +589,30 @@ fn extent_chunk_end<T>(
 
 impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
     async fn rewrite(
-        &mut self, page: ObjectId, original_first: u64, original_end: u64, output_end: u64,
+        &mut self,
+        page: ObjectId,
+        original_first: u64,
+        original_end: u64,
+        output_end: u64,
     ) -> Result<Owned<Vec<ExtentChild>>, FsError> {
         let mut stack = Owned::<Vec<InternalFrame>>::allocate(0, self.accounting)?;
         let result = async {
-            let mut request = NodeRequest { page, original_first, original_end, output_end, height: 1 };
+            let mut request = NodeRequest {
+                page,
+                original_first,
+                original_end,
+                output_end,
+                height: 1,
+            };
             'traverse: loop {
                 let mut result = match self.enter_node(request).await? {
                     EnteredNode::Complete(result) => result,
                     EnteredNode::Internal(mut frame) => {
                         if let Some(next) = self.advance_frame(&mut frame)? {
-                            stack.ensure_for_push(usize::from(self.limits.maximum_page_height), self.accounting)?;
+                            stack.ensure_for_push(
+                                usize::from(self.limits.maximum_page_height),
+                                self.accounting,
+                            )?;
                             stack.value.push(frame);
                             request = next;
                             continue;
@@ -498,14 +621,21 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
                     }
                 };
                 loop {
-                    let Some(mut frame) = stack.value.pop() else { return Ok(result); };
+                    let Some(mut frame) = stack.value.pop() else {
+                        return Ok(result);
+                    };
                     for summary in result.value.drain(..) {
-                        frame.rewritten.ensure_for_push(usize::MAX, self.accounting)?;
+                        frame
+                            .rewritten
+                            .ensure_for_push(usize::MAX, self.accounting)?;
                         frame.rewritten.value.push(summary);
                     }
                     result.retire(self.accounting)?;
                     if let Some(next) = self.advance_frame(&mut frame)? {
-                        stack.ensure_for_push(usize::from(self.limits.maximum_page_height), self.accounting)?;
+                        stack.ensure_for_push(
+                            usize::from(self.limits.maximum_page_height),
+                            self.accounting,
+                        )?;
                         stack.value.push(frame);
                         request = next;
                         continue 'traverse;
@@ -513,7 +643,8 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
                     result = self.finish_frame(frame).await?;
                 }
             }
-        }.await;
+        }
+        .await;
         stack.retire(self.accounting)?;
         result
     }
@@ -527,25 +658,49 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
         }
         self.maximum_seen_height = self.maximum_seen_height.max(request.height);
         let visited = VisitedObjectSet::insert_with_accounting(
-            &mut self.visited, request.page, self.accounting,
+            &mut self.visited,
+            request.page,
+            self.accounting,
         )?;
-        if !visited.inserted { return Err(extent_error(ExtentMutationError::CycleOrAlias)); }
+        if !visited.inserted {
+            return Err(extent_error(ExtentMutationError::CycleOrAlias));
+        }
         let decoded = self.read_page(request.page).await?;
-        let Owned { value: page, allocation, bytes } = decoded;
+        let Owned {
+            value: page,
+            allocation,
+            bytes,
+        } = decoded;
         match page {
             ExtentPage::Leaf(extents) => {
                 let extents = Owned::new(extents, allocation, bytes);
-                Ok(EnteredNode::Complete(self.rewrite_leaf(
-                    request.page, extents, request.original_first, request.original_end, request.output_end,
-                ).await?))
+                Ok(EnteredNode::Complete(
+                    self.rewrite_leaf(
+                        request.page,
+                        extents,
+                        request.original_first,
+                        request.original_end,
+                        request.output_end,
+                    )
+                    .await?,
+                ))
             }
             ExtentPage::Internal(children) => {
                 let children = Owned::new(children, allocation, bytes);
-                validate_children(&children.value, request.original_first, request.original_end).map_err(extent_error)?;
+                validate_children(
+                    &children.value,
+                    request.original_first,
+                    request.original_end,
+                )
+                .map_err(extent_error)?;
                 Ok(EnteredNode::Internal(InternalFrame {
-                    original: request.page, children, original_first: request.original_first,
-                    original_end: request.original_end, output_end: request.output_end,
-                    height: request.height, next_child: 0,
+                    original: request.page,
+                    children,
+                    original_first: request.original_first,
+                    original_end: request.original_end,
+                    output_end: request.output_end,
+                    height: request.height,
+                    next_child: 0,
                     rewritten: Owned::allocate(0, self.accounting)?,
                 }))
             }
@@ -567,29 +722,54 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
                 child_output_end = frame.output_end;
             }
             let (first, last) = overlapping_patch_range(
-                &self.patches.value, child.first_offset, child_output_end, self.accounting,
+                &self.patches.value,
+                child.first_offset,
+                child_output_end,
+                self.accounting,
             )?;
             self.charge_items(1)?;
             let patch_touched = first < last;
             if child_output_end != child.end_offset || patch_touched {
                 return Ok(Some(NodeRequest {
-                    page: child.page, original_first: child.first_offset, original_end: child.end_offset,
+                    page: child.page,
+                    original_first: child.first_offset,
+                    original_end: child.end_offset,
                     output_end: child_output_end,
-                    height: frame.height.checked_add(1).ok_or_else(|| extent_error(ExtentMutationError::HeightExceeded))?,
+                    height: frame
+                        .height
+                        .checked_add(1)
+                        .ok_or_else(|| extent_error(ExtentMutationError::HeightExceeded))?,
                 }));
             }
-            frame.rewritten.ensure_for_push(usize::MAX, self.accounting)?;
+            frame
+                .rewritten
+                .ensure_for_push(usize::MAX, self.accounting)?;
             frame.rewritten.value.push(child.clone());
         }
         Ok(None)
     }
 
-    async fn finish_frame(&mut self, frame: InternalFrame) -> Result<Owned<Vec<ExtentChild>>, FsError> {
-        let InternalFrame { children, mut rewritten, original_first, original_end, original, height, .. } = frame;
+    async fn finish_frame(
+        &mut self,
+        frame: InternalFrame,
+    ) -> Result<Owned<Vec<ExtentChild>>, FsError> {
+        let InternalFrame {
+            children,
+            mut rewritten,
+            original_first,
+            original_end,
+            original,
+            height,
+            ..
+        } = frame;
         if rewritten.value.is_empty() || rewritten.value == children.value {
             if !rewritten.value.is_empty() {
                 rewritten.value.clear();
-                rewritten.value.push(ExtentChild { first_offset: original_first, end_offset: original_end, page: original });
+                rewritten.value.push(ExtentChild {
+                    first_offset: original_first,
+                    end_offset: original_end,
+                    page: original,
+                });
             }
             children.retire(self.accounting)?;
             return Ok(rewritten);
@@ -605,34 +785,62 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
     }
 
     async fn rewrite_leaf(
-        &mut self, original: ObjectId, extents: Owned<Vec<Extent>>,
-        original_first: u64, original_end: u64, output_end: u64,
+        &mut self,
+        original: ObjectId,
+        extents: Owned<Vec<Extent>>,
+        original_first: u64,
+        original_end: u64,
+        output_end: u64,
     ) -> Result<Owned<Vec<ExtentChild>>, FsError> {
         validate_leaf(&extents.value, original_first, original_end).map_err(extent_error)?;
         let mut clipped = Owned::<Vec<Extent>>::allocate(
-            extents.value.len().checked_add(usize::from(output_end > original_end)).ok_or(WorkError::Overflow)?,
+            extents
+                .value
+                .len()
+                .checked_add(usize::from(output_end > original_end))
+                .ok_or(WorkError::Overflow)?,
             self.accounting,
         )?;
-        clip_and_grow(&extents.value, output_end, original_end, &mut clipped.value).map_err(extent_error)?;
+        clip_and_grow(&extents.value, output_end, original_end, &mut clipped.value)
+            .map_err(extent_error)?;
         let (first, last) = overlapping_patch_range(
-            &self.patches.value, original_first, output_end, self.accounting,
+            &self.patches.value,
+            original_first,
+            output_end,
+            self.accounting,
         )?;
-        let patches = self.patches.value.get(first..last).ok_or(WorkError::Overflow)?;
-        let capacity = clipped.value.len().checked_add(patches.len().checked_mul(2).ok_or(WorkError::Overflow)?)
+        let patches = self
+            .patches
+            .value
+            .get(first..last)
+            .ok_or(WorkError::Overflow)?;
+        let capacity = clipped
+            .value
+            .len()
+            .checked_add(patches.len().checked_mul(2).ok_or(WorkError::Overflow)?)
             .ok_or(WorkError::Overflow)?;
         let mut rewritten = Owned::<Vec<Extent>>::allocate(capacity, self.accounting)?;
         self.accounting.admit(WorkCounters {
             items_examined: usize_to_u64(clipped.value.len())
-                .checked_add(usize_to_u64(patches.len()).checked_mul(3).ok_or(WorkError::Overflow)?)
+                .checked_add(
+                    usize_to_u64(patches.len())
+                        .checked_mul(3)
+                        .ok_or(WorkError::Overflow)?,
+                )
                 .ok_or(WorkError::Overflow)?,
             ..WorkCounters::UNCHARGED
         })?;
-        let examined = apply_patches_linear(&clipped.value, patches, &mut rewritten.value).map_err(extent_error)?;
+        let examined = apply_patches_linear(&clipped.value, patches, &mut rewritten.value)
+            .map_err(extent_error)?;
         self.charge_items(examined)?;
         coalesce(&mut rewritten.value).map_err(extent_error)?;
         let result = if rewritten.value == extents.value {
             let mut result = Owned::<Vec<ExtentChild>>::allocate(1, self.accounting)?;
-            result.value.push(ExtentChild { first_offset: original_first, end_offset: original_end, page: original });
+            result.value.push(ExtentChild {
+                first_offset: original_first,
+                end_offset: original_end,
+                page: original,
+            });
             Ok(result)
         } else {
             self.write_leaf_chunks(&rewritten.value).await
@@ -643,33 +851,49 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
         result
     }
 
-    async fn write_leaf_chunks(&mut self, extents: &[Extent]) -> Result<Owned<Vec<ExtentChild>>, FsError> {
+    async fn write_leaf_chunks(
+        &mut self,
+        extents: &[Extent],
+    ) -> Result<Owned<Vec<ExtentChild>>, FsError> {
         let mut result = Owned::<Vec<ExtentChild>>::allocate(0, self.accounting)?;
         let mut start = 0;
         while start < extents.len() {
-            let (end_index, examined) = extent_leaf_chunk_end(extents, start, self.limits).map_err(extent_error)?;
+            let (end_index, examined) =
+                extent_leaf_chunk_end(extents, start, self.limits).map_err(extent_error)?;
             self.charge_items(examined)?;
             let chunk = extents.get(start..end_index).ok_or(WorkError::Overflow)?;
             let first = chunk.first().ok_or(WorkError::Overflow)?.offset;
             let end = extent_end(chunk.last().ok_or(WorkError::Overflow)?).map_err(extent_error)?;
             let mut items = Owned::<Vec<Extent>>::allocate(chunk.len(), self.accounting)?;
             items.value.extend_from_slice(chunk);
-            let Owned { value, allocation, bytes } = items;
+            let Owned {
+                value,
+                allocation,
+                bytes,
+            } = items;
             let page = Owned::new(ExtentPage::Leaf(value), allocation, bytes);
             let written = self.write_page(&page.value).await;
             page.retire(self.accounting)?;
             result.ensure_for_push(usize::MAX, self.accounting)?;
-            result.value.push(ExtentChild { first_offset: first, end_offset: end, page: written? });
+            result.value.push(ExtentChild {
+                first_offset: first,
+                end_offset: end,
+                page: written?,
+            });
             start = end_index;
         }
         Ok(result)
     }
 
-    async fn write_internal_chunks(&mut self, children: &[ExtentChild]) -> Result<Owned<Vec<ExtentChild>>, FsError> {
+    async fn write_internal_chunks(
+        &mut self,
+        children: &[ExtentChild],
+    ) -> Result<Owned<Vec<ExtentChild>>, FsError> {
         let mut cursor = 0;
         let mut chunks = 0;
         while cursor < children.len() {
-            let (end, examined) = extent_internal_chunk_end(children, cursor, self.limits).map_err(extent_error)?;
+            let (end, examined) =
+                extent_internal_chunk_end(children, cursor, self.limits).map_err(extent_error)?;
             self.charge_items(examined)?;
             chunks += 1;
             cursor = end;
@@ -680,31 +904,45 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
         let mut result = Owned::<Vec<ExtentChild>>::allocate(chunks, self.accounting)?;
         let mut start = 0;
         while start < children.len() {
-            let (end_index, examined) = extent_internal_chunk_end(children, start, self.limits).map_err(extent_error)?;
+            let (end_index, examined) =
+                extent_internal_chunk_end(children, start, self.limits).map_err(extent_error)?;
             self.charge_items(examined)?;
             let chunk = children.get(start..end_index).ok_or(WorkError::Overflow)?;
             let first = chunk.first().ok_or(WorkError::Overflow)?.first_offset;
             let end = chunk.last().ok_or(WorkError::Overflow)?.end_offset;
             let mut items = Owned::<Vec<ExtentChild>>::allocate(chunk.len(), self.accounting)?;
             items.value.extend_from_slice(chunk);
-            let Owned { value, allocation, bytes } = items;
+            let Owned {
+                value,
+                allocation,
+                bytes,
+            } = items;
             let page = Owned::new(ExtentPage::Internal(value), allocation, bytes);
             let written = self.write_page(&page.value).await;
             page.retire(self.accounting)?;
-            result.value.push(ExtentChild { first_offset: first, end_offset: end, page: written? });
+            result.value.push(ExtentChild {
+                first_offset: first,
+                end_offset: end,
+                page: written?,
+            });
             start = end_index;
         }
         Ok(result)
     }
 
-    async fn finish_root(&mut self, mut summaries: Owned<Vec<ExtentChild>>) -> Result<ObjectId, FsError> {
+    async fn finish_root(
+        &mut self,
+        mut summaries: Owned<Vec<ExtentChild>>,
+    ) -> Result<ObjectId, FsError> {
         if summaries.value.is_empty() {
             summaries.retire(self.accounting)?;
             return self.write_page(&ExtentPage::Leaf(Vec::new())).await;
         }
         let mut height = self.maximum_seen_height;
         while summaries.value.len() > 1 {
-            height = height.checked_add(1).ok_or_else(|| extent_error(ExtentMutationError::HeightExceeded))?;
+            height = height
+                .checked_add(1)
+                .ok_or_else(|| extent_error(ExtentMutationError::HeightExceeded))?;
             if height > self.limits.maximum_page_height {
                 return Err(extent_error(ExtentMutationError::HeightExceeded));
             }
@@ -718,10 +956,18 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
     }
 
     async fn read_page(&mut self, page: ObjectId) -> Result<Owned<ExtentPage>, FsError> {
-        self.accounting.charge(WorkCounters { page_reads: 1, ..WorkCounters::UNCHARGED })?;
+        self.accounting.charge(WorkCounters {
+            page_reads: 1,
+            ..WorkCounters::UNCHARGED
+        })?;
         let (read, retained) = super::file_read::read_object_with_accounting(
-            self.store, page, self.limits.maximum_page_object_bytes(), self.accounting, self.cancellation,
-        ).await?;
+            self.store,
+            page,
+            self.limits.maximum_page_object_bytes(),
+            self.accounting,
+            self.cancellation,
+        )
+        .await?;
         let before = match &self.accounting {
             KernelAccounting::Standalone { allocations, .. } => Some(allocations.live_bytes()),
             KernelAccounting::BorrowedStandalone { allocations, .. } => {
@@ -730,8 +976,11 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { .. } => None,
         };
-        let decoded = super::extent::decode_extent_page_with_accounting(&read, self.limits, self.accounting);
-        if decoded.is_err() && let Some(before) = before {
+        let decoded =
+            super::extent::decode_extent_page_with_accounting(&read, self.limits, self.accounting);
+        if decoded.is_err()
+            && let Some(before) = before
+        {
             let ledger = match &mut self.accounting {
                 KernelAccounting::Standalone { allocations, .. } => &mut *allocations,
                 KernelAccounting::BorrowedStandalone { allocations, .. } => &mut **allocations,
@@ -740,7 +989,13 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
                     unreachable!("standalone decoder custody")
                 }
             };
-            ledger.release(ledger.live_bytes().checked_sub(before).ok_or(WorkError::Overflow)?)
+            ledger
+                .release(
+                    ledger
+                        .live_bytes()
+                        .checked_sub(before)
+                        .ok_or(WorkError::Overflow)?,
+                )
                 .map_err(extent_allocation_error)?;
         }
         drop(read);
@@ -754,37 +1009,66 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
     }
 
     async fn write_page(&mut self, page: &ExtentPage) -> Result<ObjectId, FsError> {
-        put_extent_page_with_accounting(self.store, page, self.limits, self.accounting, self.cancellation).await
+        put_extent_page_with_accounting(
+            self.store,
+            page,
+            self.limits,
+            self.accounting,
+            self.cancellation,
+        )
+        .await
     }
 }
 
 pub(crate) async fn put_extent_page_with_accounting<S: crate::AsyncObjectStore>(
-    store: &S, page: &ExtentPage, limits: DecodeLimits,
-    accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+    store: &S,
+    page: &ExtentPage,
+    limits: DecodeLimits,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
 ) -> Result<ObjectId, FsError> {
     accounting.check()?;
-    let length = usize_to_u64(super::extent::extent_page_encoded_length(page, limits.maximum_page_items)?);
+    let length = usize_to_u64(super::extent::extent_page_encoded_length(
+        page,
+        limits.maximum_page_items,
+    )?);
     if length > limits.maximum_page_object_bytes() {
         return Err(CanonicalDecodeError::ObjectTooLarge {
-            observed: length, maximum: limits.maximum_page_object_bytes(),
-        }.into());
+            observed: length,
+            maximum: limits.maximum_page_object_bytes(),
+        }
+        .into());
     }
-    accounting.admit(WorkCounters { page_writes: 1, ..WorkCounters::UNCHARGED })?;
+    accounting.admit(WorkCounters {
+        page_writes: 1,
+        ..WorkCounters::UNCHARGED
+    })?;
     let (value, allocation) = super::codec::encode_owned(accounting, |observe, reserve_error| {
         super::extent::encode_extent_page(page, limits.maximum_page_items, observe, reserve_error)
     })?;
     let bytes = usize_to_u64(value.capacity());
     let encoded = Owned::new(value, allocation, bytes);
-    put_encoded_with_accounting(store, ObjectKind::ExtentPage, encoded, accounting, cancellation).await
+    put_encoded_with_accounting(
+        store,
+        ObjectKind::ExtentPage,
+        encoded,
+        accounting,
+        cancellation,
+    )
+    .await
 }
 
 pub(crate) async fn put_encoded_with_accounting<S: crate::AsyncObjectStore>(
-    store: &S, kind: ObjectKind, encoded: Owned<Vec<u8>>,
-    accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+    store: &S,
+    kind: ObjectKind,
+    encoded: Owned<Vec<u8>>,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
 ) -> Result<ObjectId, FsError> {
     accounting.check()?;
     accounting.admit(WorkCounters {
-        page_writes: u64::from(kind != ObjectKind::BlobChunk), ..WorkCounters::UNCHARGED
+        page_writes: u64::from(kind != ObjectKind::BlobChunk),
+        ..WorkCounters::UNCHARGED
     })?;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = accounting.native_work() {
@@ -795,9 +1079,18 @@ pub(crate) async fn put_encoded_with_accounting<S: crate::AsyncObjectStore>(
                 return Err(extent_error(ExtentMutationError::AllocationFailed));
             }
         };
-        let hashed = HashedObject::from_native_vec(kind, &mut encoded.value, allocation, original, cancellation)?;
+        let hashed = HashedObject::from_native_vec(
+            kind,
+            &mut encoded.value,
+            allocation,
+            original,
+            cancellation,
+        )?;
         let object = hashed.object_id();
-        accounting.charge(WorkCounters { page_writes: u64::from(kind != ObjectKind::BlobChunk), ..WorkCounters::UNCHARGED })?;
+        accounting.charge(WorkCounters {
+            page_writes: u64::from(kind != ObjectKind::BlobChunk),
+            ..WorkCounters::UNCHARGED
+        })?;
         {
             let __object_args = (hashed, original, cancellation);
             let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
@@ -808,14 +1101,23 @@ pub(crate) async fn put_encoded_with_accounting<S: crate::AsyncObjectStore>(
         return Ok(object);
     }
     let hashing = WorkCounters {
-        bytes_hashed: usize_to_u64(encoded.value.len()).checked_add(OBJECT_DIGEST_ENVELOPE_BYTES).ok_or(WorkError::Overflow)?,
+        bytes_hashed: usize_to_u64(encoded.value.len())
+            .checked_add(OBJECT_DIGEST_ENVELOPE_BYTES)
+            .ok_or(WorkError::Overflow)?,
         ..WorkCounters::UNCHARGED
     };
     accounting.admit(hashing)?;
-    let Owned { value, allocation, bytes } = encoded;
+    let Owned {
+        value,
+        allocation,
+        bytes,
+    } = encoded;
     let hashed = HashedObject::new(kind, value.into());
     accounting.charge(hashing)?;
-    accounting.charge(WorkCounters { page_writes: u64::from(kind != ObjectKind::BlobChunk), ..WorkCounters::UNCHARGED })?;
+    accounting.charge(WorkCounters {
+        page_writes: u64::from(kind != ObjectKind::BlobChunk),
+        ..WorkCounters::UNCHARGED
+    })?;
     let object = hashed.object_id();
     let receipt = {
         let __object_args = (hashed, accounting.remaining()?, cancellation);
@@ -823,7 +1125,10 @@ pub(crate) async fn put_encoded_with_accounting<S: crate::AsyncObjectStore>(
         let __object_result = store.put_hashed(__object_args.0, &mut __object_work).await;
         __object_work.receipt(__object_result)
     };
-    let spent = match &receipt { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
+    let spent = match &receipt {
+        Ok(receipt) => receipt.work,
+        Err(failure) => *failure.work,
+    };
     super::file_read::complete_standalone_backend(accounting, spent, 0)?;
     retire_allocation(allocation, bytes, accounting)?;
     receipt.map_err(|failure| super::file_read::read_store_error(failure.error))?;
@@ -916,16 +1221,25 @@ fn apply_patches_linear(
 fn coalesce(extents: &mut Vec<Extent>) -> Result<(), ExtentMutationError> {
     let mut output = 0_usize;
     for index in 0..extents.len() {
-        let extent = extents.get(index).ok_or(ExtentMutationError::PatchInvariant)?.clone();
+        let extent = extents
+            .get(index)
+            .ok_or(ExtentMutationError::PatchInvariant)?
+            .clone();
         if output != 0 {
-            let previous = extents.get_mut(output - 1).ok_or(ExtentMutationError::PatchInvariant)?;
+            let previous = extents
+                .get_mut(output - 1)
+                .ok_or(ExtentMutationError::PatchInvariant)?;
             if equivalent_continuation(previous, &extent)? {
-                previous.length = previous.length.checked_add(extent.length)
+                previous.length = previous
+                    .length
+                    .checked_add(extent.length)
                     .ok_or(ExtentMutationError::RangeOverflow)?;
                 continue;
             }
         }
-        *extents.get_mut(output).ok_or(ExtentMutationError::PatchInvariant)? = extent;
+        *extents
+            .get_mut(output)
+            .ok_or(ExtentMutationError::PatchInvariant)? = extent;
         output += 1;
     }
     extents.truncate(output);
@@ -1001,10 +1315,14 @@ fn validate_children(
 }
 
 fn overlapping_patch_range(
-    patches: &[Patch], start: u64, end: u64, accounting: &mut KernelAccounting<'_>,
+    patches: &[Patch],
+    start: u64,
+    end: u64,
+    accounting: &mut KernelAccounting<'_>,
 ) -> Result<(usize, usize), FsError> {
     let first = partition_point_with_accounting(patches, accounting, |patch| patch.end <= start)?;
-    let after_last = partition_point_with_accounting(patches, accounting, |patch| patch.offset < end)?;
+    let after_last =
+        partition_point_with_accounting(patches, accounting, |patch| patch.offset < end)?;
     Ok((first, after_last.max(first)))
 }
 

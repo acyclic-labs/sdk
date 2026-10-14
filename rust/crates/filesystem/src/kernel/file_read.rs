@@ -58,6 +58,10 @@ pub async fn read_file_range_async<S: AsyncObjectStore>(
         .map_err(|error| failed(file_error(error), accounting.spent()))
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "This state transition keeps admission, effects and resource retirement in one frame."
+)]
 pub(crate) async fn read_file_range_with_accounting<S: AsyncObjectStore>(
     store: &S,
     request: FileRangeRequest,
@@ -136,10 +140,18 @@ pub(crate) async fn read_file_range_with_accounting<S: AsyncObjectStore>(
                 else {
                     continue;
                 };
-                let nested = super::blob::read_blob_range_with_accounting(store, object, ByteRange {
+                let nested = super::blob::read_blob_range_with_accounting(
+                    store,
+                    object,
+                    ByteRange {
                         offset: object_offset,
                         length: span.length,
-                    }, request.limits, accounting, cancellation, false)
+                    },
+                    request.limits,
+                    accounting,
+                    cancellation,
+                    false,
+                )
                 .await?;
                 let start = usize::try_from(span.offset - request.range.offset)
                     .map_err(|_| FileRangeReadError::InvalidRange)?;
@@ -433,8 +445,10 @@ pub(crate) async fn read_objects_with_accounting<S: AsyncObjectStore>(
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = accounting.native_work() {
         let mut work = crate::AuthorityWork::native(original, cancellation);
-        let (value, allocation) = store.read_many(requests, &mut work)
-            .await.map_err(read_store_error)?;
+        let (value, allocation) = store
+            .read_many(requests, &mut work)
+            .await
+            .map_err(read_store_error)?;
         let custody = allocation.ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?;
         return Ok(ReadOwned {
             value,

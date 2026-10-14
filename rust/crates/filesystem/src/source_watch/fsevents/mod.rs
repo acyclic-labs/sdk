@@ -125,6 +125,7 @@ impl NativeSourceWatch {
         Ok(false)
     }
 
+    #[cfg(test)]
     pub(crate) fn fence(&self) -> io::Result<()> {
         self.fence_with_work(Duration::ZERO, &mut crate::native_host::ordinary_work())
             .map(|_| ())

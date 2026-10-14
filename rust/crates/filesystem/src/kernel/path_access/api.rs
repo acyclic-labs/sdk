@@ -149,6 +149,10 @@ pub(crate) async fn lookup_path_async_with_accounting<S: AsyncObjectStore>(
     Ok(result.0.lookup)
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
+)]
 pub(crate) async fn observe_path_async_with_accounting<S: AsyncObjectStore>(
     store: &S,
     generation: &crate::kernel::GenerationRoot,
@@ -172,6 +176,10 @@ pub(crate) async fn observe_path_async_with_accounting<S: AsyncObjectStore>(
     )
     .await
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
+)]
 pub(crate) async fn lookup_paths_with_accounting<S: AsyncObjectStore>(
     store: &S,
     generation: &crate::kernel::GenerationRoot,
@@ -220,6 +228,10 @@ pub(crate) async fn observe_paths_async_with_accounting<S: AsyncObjectStore>(
     .await
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
+)]
 pub(super) async fn lookup_path_queries_async<S: AsyncObjectStore>(
     store: &S,
     generation: &crate::kernel::GenerationRoot,

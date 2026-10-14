@@ -70,12 +70,8 @@ pub(crate) fn decode_publication_evidence<'a, E: From<CanonicalDecodeError>>(
     let envelope_bytes = usize_to_u64(publication_payload_length())
         .checked_add(4 + 32)
         .ok_or(CanonicalDecodeError::LengthOverflow)?;
-    let maximum = u32::try_from(
-        maximum_payload_bytes
-            .checked_sub(envelope_bytes)
-            .unwrap_or(0),
-    )
-    .unwrap_or(u32::MAX);
+    let maximum =
+        u32::try_from(maximum_payload_bytes.saturating_sub(envelope_bytes)).unwrap_or(u32::MAX);
     if length > maximum {
         return Err(E::from(CanonicalDecodeError::FieldTooLarge {
             observed: length,
@@ -242,6 +238,10 @@ pub(super) const fn fingerprint_input_length(operation_context: Option<Digest>) 
         + if operation_context.is_some() { 32 } else { 0 }
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "Payload admission checks the evidence length fits u32 before encoding."
+)]
 pub(super) fn write_publication_payload(
     bytes: &mut Vec<u8>,
     volume_id: VolumeId,

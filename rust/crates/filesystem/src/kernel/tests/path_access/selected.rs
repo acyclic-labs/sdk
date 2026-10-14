@@ -8,10 +8,7 @@ async fn selected_batch_proves_absent_descendants_in_the_original_authenticated_
         .child_with_accounting(
             &child,
             config().limits,
-            &mut KernelAccounting::standalone(
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            ),
+            &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &CancellationToken::new()),
             &CancellationToken::new(),
         )?
         .0;
@@ -49,7 +46,10 @@ async fn selected_batch_proves_absent_descendants_in_the_original_authenticated_
     assert_eq!(selected.entries.len(), queries.len());
     assert!(selected.entries[0].record.is_none());
     assert!(selected.entries[0].parent.is_none());
-    assert_eq!(selected.entries[0].resolved_components, main.depth() as u16);
+    assert_eq!(
+        selected.entries[0].resolved_components,
+        u16::try_from(main.depth())?
+    );
     assert_eq!(selected.entries[0], selected.entries[3]);
     assert_eq!(
         selected.entries[1].record.map(|record| record.kind),
@@ -115,10 +115,7 @@ async fn selected_batch_keeps_malformed_bindings_and_resource_failures_fail_clos
         .child_with_accounting(
             &LogicalName::new(NameEncoding::Utf8, b"child".to_vec(), 255)?,
             config().limits,
-            &mut KernelAccounting::standalone(
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            ),
+            &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &CancellationToken::new()),
             &CancellationToken::new(),
         )?
         .0;
@@ -128,7 +125,7 @@ async fn selected_batch_keeps_malformed_bindings_and_resource_failures_fail_clos
         lookup_paths_with_accounting(
             &store,
             &generation,
-            crate::kernel::PathQueries::Owned(&[query.clone()]),
+            crate::kernel::PathQueries::Owned(std::slice::from_ref(&query)),
             config(),
             &mut accounting,
             cancellation,
@@ -151,7 +148,7 @@ async fn selected_batch_keeps_malformed_bindings_and_resource_failures_fail_clos
         lookup_paths_with_accounting(
             &store,
             &generation,
-            crate::kernel::PathQueries::Owned(&[query.clone()]),
+            crate::kernel::PathQueries::Owned(std::slice::from_ref(&query)),
             config(),
             &mut accounting,
             cancellation,

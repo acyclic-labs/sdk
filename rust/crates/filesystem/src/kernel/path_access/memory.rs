@@ -98,6 +98,10 @@ impl FrameObservation<'_> {
     }
 }
 impl Drop for FrameObservation<'_> {
+    #[allow(
+        clippy::expect_used,
+        reason = "The frame releases exactly the bytes admitted by its observer."
+    )]
     fn drop(&mut self) {
         if let Some(owner) = self.owner.filter(|_| self.bytes != 0) {
             owner

@@ -27,6 +27,10 @@ impl NativeSourceWatch {
             .clone();
         self.stop(&mut work, true, wait)
     }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "This state transition keeps admission, effects and resource retirement in one frame."
+    )]
     pub(super) fn stop<W: SourceDemandReadWork>(
         &self,
         work: &mut W,
@@ -49,19 +53,11 @@ impl NativeSourceWatch {
         let mut thread = lock(&self.shared.thread, wait)?;
         check_wait(wait)?;
         if native && self.shared.stopping.load(Ordering::Acquire) {
-            return Err(
-                if self
-                    .shared
-                    .cleanup
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)[0]
-                    .is_none()
-                {
-                    DemandError::NativeWorkUnavailable
-                } else {
-                    DemandError::WorkerUnavailable
-                },
-            );
+            return Err(if self.shared.cleanup_pending() {
+                DemandError::WorkerUnavailable
+            } else {
+                DemandError::NativeWorkUnavailable
+            });
         }
         let running = thread.is_some();
         let wake = running && is_open(&self.shared.completed);
@@ -79,7 +75,8 @@ impl NativeSourceWatch {
                 .cleanup
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            let remaining = credit[0]
+            let [active, _] = &*credit;
+            let remaining = active
                 .as_ref()
                 .ok_or(DemandError::NativeWorkUnavailable)?
                 .remaining_work();
@@ -132,13 +129,7 @@ impl NativeSourceWatch {
                 self.shared.finish_native_reader();
                 reads = self.shared.lock_reads();
             }
-            while !self
-                .shared
-                .cleanup
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)[0]
-                .is_none()
-            {
+            while self.shared.cleanup_pending() {
                 reads = self
                     .shared
                     .reading_changed
@@ -211,6 +202,11 @@ impl Drop for NativeSourceWatch {
 }
 
 impl Shared {
+    fn cleanup_pending(&self) -> bool {
+        let cleanup = self.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
+        let [active, _] = &*cleanup;
+        active.is_some()
+    }
     fn cleanup_start<W: SourceDemandReadWork>(
         &self,
         work: &mut W,
@@ -285,7 +281,7 @@ impl Shared {
             unsafe { CloseHandle(HANDLE(handle.as_raw_handle())) }.map_err(io::Error::from)?;
             let _ = thread
                 .take()
-                .expect("closed owned handle")
+                .ok_or(DemandError::NativeWorkUnavailable)?
                 .into_raw_handle();
         }
         Ok(())
@@ -300,7 +296,7 @@ impl Shared {
             return result;
         }
         for handle in [&self.directory, &self.completed] {
-            if is_open(&handle) {
+            if is_open(handle) {
                 result = result.and(self.cleanup_start(work, WRITE).and_then(|_| close(handle)));
             }
         }
@@ -338,7 +334,7 @@ impl Shared {
         let mut work = self.delivery.callback_work();
         loop {
             let mut reads = self.lock_reads();
-            let terminal = self.cleanup.lock().unwrap_or_else(PoisonError::into_inner)[0].is_none();
+            let terminal = !self.cleanup_pending();
             if let Err(error) = self.retire(&mut reads, &mut work) {
                 self.note_failure(error);
             }
@@ -348,7 +344,8 @@ impl Shared {
                 if retired {
                     std::mem::take(&mut *cleanup)
                 } else {
-                    [cleanup[0].take(), None]
+                    let [active, _] = &mut *cleanup;
+                    [active.take(), None]
                 }
             };
             drop(credit);
