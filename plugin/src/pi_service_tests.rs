@@ -349,7 +349,7 @@ async fn recovery_preserves_missing_storage_and_rejects_a_foreign_valid_owner() 
         &work(),
     )
     .unwrap()
-    .validate_root(binding, &work())
+    .validate_root(binding)
     .unwrap();
     assert!(
         SessionController::open(session.clone(), &resources, &work())

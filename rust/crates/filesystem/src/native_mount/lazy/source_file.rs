@@ -43,7 +43,7 @@ where
         let mut carrier = crate::native_mount::adapter::NativeDemandCarrier::Native(work);
         with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
             self.runtime.wait_prepared(prepared, || async {
-                let owner = ViewGate::callback_owner();
+                let owner = ViewGate::callback_owner()?;
                 let caller = carrier.cancellation();
                 let _lease = self
                     .source_view
@@ -89,7 +89,7 @@ where
         let mut carrier = crate::native_mount::adapter::NativeDemandCarrier::Native(work);
         with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
             self.runtime.wait_prepared(prepared, || async {
-                let owner = ViewGate::callback_owner();
+                let owner = ViewGate::callback_owner()?;
                 let caller = carrier.cancellation();
                 let _lease = self
                     .source_view

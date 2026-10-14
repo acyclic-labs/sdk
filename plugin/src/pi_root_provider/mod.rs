@@ -58,7 +58,7 @@ mod sources;
 
 pub(crate) use codec::{
     canonical_pi_value, digest_pi_value, guarded_pi_bytes, guarded_pi_decode, guarded_pi_value,
-    native_buffer_codec_charge, read_pi_input_with_native_work,
+    native_buffer_codec_charge, read_pi_input,
 };
 use inputs::{
     NativeInputCoordinates, observe_pi_input_at, publish_pi_input_with_native_coordinates,
@@ -68,7 +68,7 @@ pub(crate) use inputs::{
     load_original_preparation_with_native_work, observe_pi_input, stage_pi_input,
     stage_pi_operator_input, stage_pi_root_input_with_native_work,
 };
-pub(crate) use preparation::bind_root_output_context_with_native_work;
+pub(crate) use preparation::bind_root_output_context;
 pub(crate) use sources::{
     guard_root_preparation_source_with_native_work, prove_root_project_source_with_native_work,
 };
@@ -85,27 +85,26 @@ impl PiRootHandle {
     pub(crate) fn from_observed_with_native_work(
         workspace: LocalLazyWorkspace,
         physical: Arc<SharedPhysicalRoot>,
-        key: (String, NativeAllocation),
+        mut key: (String, NativeAllocation),
         work: &NativeMaterializationWork,
     ) -> Result<(String, Self)> {
-        let mut key = (key.0, key.1);
         if !key.1.work().shares_ledger(work) {
             return Err(Error::NativeBoundary {
                 code: ErrorCode::Unauthorized,
                 reason: "root index key custody differs from original source work",
             });
         }
-        work.charge(WorkCounters {
-            allocation_operations: 1,
-            ..WorkCounters::UNCHARGED
-        })?;
-        let workspace = Arc::new(workspace);
         let mut entry = work.claim(
             std::mem::size_of::<(String, Self)>() as u64,
             0,
             acyclic_fs::WorkCounters::UNCHARGED,
         )?;
         key.1.absorb(&mut entry)?;
+        work.charge(WorkCounters {
+            allocation_operations: 1,
+            ..WorkCounters::UNCHARGED
+        })?;
+        let workspace = Arc::new(workspace);
         Ok((
             key.0,
             Self {
@@ -162,7 +161,6 @@ pub(crate) struct PiRootProvider {
     journal_owner: Option<Arc<TaskJournalOwner<LocalStream>>>,
     original: NativeMaterializationWork,
     state: Mutex<ProviderState>,
-    creation_cancelled: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     fault: std::sync::atomic::AtomicU8,
     _custody: NativeAllocation,
@@ -232,9 +230,9 @@ pub(crate) fn root_provider(
             reason: "root allocator differs from its original admission and issued context",
         });
     }
-    let authority = owner.authority(&original)?;
+    let grants = &owner.policy().grants;
     for grant in ["effect:run", "conversation:bind"] {
-        if !authority.scope.grants().contains(grant) {
+        if !grants.contains(grant) {
             return Err(Error::NativeBoundary {
                 code: ErrorCode::Unauthorized,
                 reason: "original root allocation scope lacks a required capability",
@@ -243,7 +241,7 @@ pub(crate) fn root_provider(
     }
     let provider_grant =
         original.display(&format_args!("effect:provider:{ROOT_ALLOCATION_PROVIDER}"))?;
-    if !authority.scope.grants().contains(&provider_grant.0) {
+    if !grants.contains(&provider_grant.0) {
         return Err(Error::NativeBoundary {
             code: ErrorCode::Unauthorized,
             reason: "original root allocation provider grant is absent",
@@ -262,9 +260,7 @@ pub(crate) fn root_provider(
             let value = volume.capability(VolumeOperation::Read, &mut Some(&mut io))?;
             (value, io.into_custody()?)
         };
-        if volume.provider() != owner.policy().journal.provider()
-            || !authority.scope.grants().contains(&grant.0)
-        {
+        if volume.provider() != owner.policy().journal.provider() || !grants.contains(&grant.0) {
             return Err(Error::NativeBoundary {
                 code: ErrorCode::Unauthorized,
                 reason: "original root volume provider or read grant differs",
@@ -282,14 +278,13 @@ pub(crate) fn root_provider(
             .capability(VolumeOperation::Write, &mut Some(&mut io))?;
         (value, io.into_custody()?)
     };
-    if !authority.scope.grants().contains(&grant.0) {
+    if !grants.contains(&grant.0) {
         return Err(Error::NativeBoundary {
             code: ErrorCode::Unauthorized,
             reason: "original root scratch write grant is absent",
         });
     }
     drop(grant);
-    drop(authority);
     let custody = original.claim(
         std::mem::size_of::<PiRootProvider>() as u64,
         0,
@@ -313,7 +308,6 @@ pub(crate) fn root_provider(
             dispatched: false,
             handles: BTreeMap::new(),
         }),
-        creation_cancelled: std::sync::atomic::AtomicBool::new(false),
         #[cfg(test)]
         fault: std::sync::atomic::AtomicU8::new(0),
         _custody: custody,

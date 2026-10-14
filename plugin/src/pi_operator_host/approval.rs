@@ -74,7 +74,7 @@ pub(crate) fn open_prepared_approval<'a>(
     async move {
         validate_descriptor(protected, descriptor, work)?;
         runtime.verify_owner_with_native_work(protected, work)?;
-        protected.validate_root(binding, work)?;
+        protected.validate_root(binding)?;
         let (task, fence) =
             context.owned_task_binding(Some(&PreparationIo::from_native_work(work)?))?;
         if task != protected.policy().root_task
@@ -194,13 +194,12 @@ pub(crate) async fn read_prepared_approval(
         .durable_context(root, OperationId::from_bytes(root.into_bytes()), Some(&io))
         .await?;
     let descriptor: Option<(PiPreparedApproval, _)> =
-        crate::pi_root_provider::read_pi_input_with_native_work(
+        crate::pi_root_provider::read_pi_input(
             protected,
             filesystem,
             operation,
             "operator-approval",
             crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8,
-            acyclic_harness::JsonValueSchema::None,
             pi_operator::PREPARED_LABEL_BYTES,
             &context,
             work,

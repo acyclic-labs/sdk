@@ -19,9 +19,6 @@ impl WorkspaceLineageStore for LocalCoreStateStore {
         self.compare_and_swap_logged(workspace_id, expected_revision, replacement)
             .await
     }
-
-
-
 }
 
 impl WorkspaceContextStore for LocalCoreStateStore {
@@ -33,10 +30,6 @@ impl WorkspaceContextStore for LocalCoreStateStore {
     ) -> Result<Option<WorkspaceContext>, Self::Error> {
         self.load_logged(context_id).await
     }
-
-
-
-
 
     async fn list(&self) -> Result<Vec<WorkspaceContext>, Self::Error> {
         self.transaction(move |root| {
@@ -254,7 +247,13 @@ impl LocalCoreStateStore {
             && let Ok(residents) = owner.residents.read()
             && let Some(index) = residents.position(T::key(id), work)?
         {
-            return Ok(residents.0[index].value.clone().and_then(T::from_value));
+            return Ok(residents
+                .0
+                .get(index)
+                .ok_or(LocalCoreStateStoreError::Integrity)?
+                .value
+                .clone()
+                .and_then(T::from_value));
         }
         self.transaction(move |root| {
             root.with_log(|log| {
@@ -490,10 +489,14 @@ impl LocalCoreStateStore {
         self.materialization(original.clone())
             .transaction(move |root| {
                 let root = &root;
-                let work = root._allocation.as_ref().expect("bound native work").work();
+                let work = root
+                    ._allocation
+                    .as_ref()
+                    .ok_or(crate::NativeTreeMaterializationError::MissingCustody)?
+                    .work();
                 root.with_log(|log| {
                     native_records::load::<WorkspaceContext>(
-                        &root,
+                        root,
                         log,
                         context_id,
                         work,
@@ -545,10 +548,14 @@ impl LocalCoreStateStore {
         self.materialization(original.clone())
             .transaction(move |root| {
                 let root = &root;
-                let work = root._allocation.as_ref().expect("bound native work").work();
+                let work = root
+                    ._allocation
+                    .as_ref()
+                    .ok_or(crate::NativeTreeMaterializationError::MissingCustody)?
+                    .work();
                 root.with_log(|log| {
                     native_records::compare_native_context(
-                        &root,
+                        root,
                         log,
                         context_id,
                         expected_revision,
@@ -590,10 +597,14 @@ impl LocalCoreStateStore {
         self.materialization(original.clone())
             .transaction(move |root| {
                 let root = &root;
-                let work = root._allocation.as_ref().expect("bound native work").work();
+                let work = root
+                    ._allocation
+                    .as_ref()
+                    .ok_or(crate::NativeTreeMaterializationError::MissingCustody)?
+                    .work();
                 root.with_log(|log| {
                     native_records::load::<WorkspaceLineageRecord>(
-                        &root,
+                        root,
                         log,
                         workspace_id,
                         work,
@@ -631,10 +642,14 @@ impl LocalCoreStateStore {
         self.materialization(original.clone())
             .transaction(move |root| {
                 let root = &root;
-                let work = root._allocation.as_ref().expect("bound native work").work();
+                let work = root
+                    ._allocation
+                    .as_ref()
+                    .ok_or(crate::NativeTreeMaterializationError::MissingCustody)?
+                    .work();
                 root.with_log(|log| {
                     native_records::compare_native_lineage(
-                        &root,
+                        root,
                         log,
                         workspace_id,
                         expected_revision,

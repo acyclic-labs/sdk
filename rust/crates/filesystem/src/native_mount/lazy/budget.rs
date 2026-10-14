@@ -40,9 +40,6 @@ pub(in crate::native_mount) fn mount_wait_error(
         crate::cancellation::CancellationWaitError::Native(error) => {
             MountSourceError::NativeWork(error)
         }
-        crate::cancellation::CancellationWaitError::AllocationFailed => {
-            MountSourceError::Engine("cancellation waiter allocation failed".into())
-        }
     }
 }
 

@@ -23,7 +23,10 @@ impl CoreLog {
                 *candidate == key
             });
             if let Some(index) = index {
-                residents.0[index] = record;
+                *residents
+                    .0
+                    .get_mut(index)
+                    .ok_or(LocalCoreStateStoreError::Integrity)? = record;
             } else {
                 residents.0.push(record);
             }
@@ -60,29 +63,26 @@ impl CoreLog {
                 })?;
             }
             let paths = key.paths(root)?;
-            let file = match work {
-                Some(work) => {
-                    crate::native_host::create_directories(paths.directory(), &mut &*work)?;
-                    let file = materialization_open_options(
-                        &paths.current,
-                        &crate::native_host::NativeOpenOptions::ReadWriteCreate,
-                        work,
-                    )?;
-                    work.charge(crate::WorkCounters {
-                        backend_write_operations: 1,
-                        ..Default::default()
-                    })?;
-                    file.set_len(0)?;
-                    file
-                }
-                None => {
-                    std::fs::create_dir_all(paths.directory())?;
-                    OpenOptions::new()
-                        .create(true)
-                        .truncate(true)
-                        .write(true)
-                        .open(&paths.current)?
-                }
+            let file = if let Some(work) = work {
+                crate::native_host::create_directories(paths.directory(), &mut &*work)?;
+                let file = materialization_open_options(
+                    &paths.current,
+                    &crate::native_host::NativeOpenOptions::ReadWriteCreate,
+                    work,
+                )?;
+                work.charge(crate::WorkCounters {
+                    backend_write_operations: 1,
+                    ..Default::default()
+                })?;
+                file.set_len(0)?;
+                file
+            } else {
+                std::fs::create_dir_all(paths.directory())?;
+                OpenOptions::new()
+                    .create(true)
+                    .truncate(true)
+                    .write(true)
+                    .open(&paths.current)?
             };
             let mut writer = MaterializationWriter {
                 file,
@@ -90,9 +90,16 @@ impl CoreLog {
                 encoded: true,
             };
             let residents = self.residents();
-            let value = residents
-                .position(*key, work)?
-                .and_then(|index| residents.0[index].value.as_ref());
+            let value = if let Some(index) = residents.position(*key, work)? {
+                residents
+                    .0
+                    .get(index)
+                    .ok_or(LocalCoreStateStoreError::Integrity)?
+                    .value
+                    .as_ref()
+            } else {
+                None
+            };
             RecordValue::write_bare(value, &mut writer)?;
             crash_point("record written", self.flushed);
             if let Some(work) = work {

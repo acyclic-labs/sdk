@@ -1,6 +1,6 @@
+//! Native view paths under main's hashed session directory.
 use super::*;
 
-/// References only.
 pub(crate) struct PiNativePaths {
     pub(crate) cwd: PathBuf,
     pub(crate) session_file: PathBuf,
@@ -16,17 +16,16 @@ pub(crate) fn planned_native_paths(
 ) -> Result<(PiNativePaths, acyclic_fs::NativeAllocation)> {
     work.remaining()?;
     let route = native_root_route(root_key, work)?;
-    let task = native_task_directory(resources, root_session, task, work)?;
-    let mut view = work.path(&task.0, Some(Path::new("view")))?;
-    let session = work.path(&view.0, Some(Path::new("scratch")))?;
+    let mut view = native_view_root(resources, root_session, task, work)?;
+    let scratch = work.path(&view.0, Some(Path::new("scratch")))?;
     let mut cwd = work.path(&view.0, Some(Path::new(&route.0)))?;
-    let mut session_file = work.path(&session.0, Some(Path::new("session.jsonl")))?;
+    let mut session_file = work.path(&scratch.0, Some(Path::new("session.jsonl")))?;
     let custody = work.claim(
         std::mem::size_of::<PiNativePaths>() as u64,
         0,
-        acyclic_fs::WorkCounters::default(),
+        WorkCounters::UNCHARGED,
     )?;
-    let mut planned = (
+    let mut paths = (
         PiNativePaths {
             cwd: cwd.0,
             session_file: session_file.0,
@@ -34,10 +33,10 @@ pub(crate) fn planned_native_paths(
         },
         custody,
     );
-    for incoming in [&mut cwd.1, &mut session_file.1, &mut view.1] {
-        planned.1.absorb(incoming)?;
+    for allocation in [&mut cwd.1, &mut session_file.1, &mut view.1] {
+        paths.1.absorb(allocation)?;
     }
-    Ok(planned)
+    Ok(paths)
 }
 
 pub(super) fn native_root_route(
@@ -48,7 +47,7 @@ pub(super) fn native_root_route(
     work.remaining()?;
     work.charge(WorkCounters {
         items_examined: key.len() as u64,
-        ..WorkCounters::default()
+        ..WorkCounters::UNCHARGED
     })?;
     let reject = || Error::NativeBoundary {
         code: acyclic_harness::wire::ErrorCode::Invalid,
@@ -56,44 +55,42 @@ pub(super) fn native_root_route(
     };
     let mut identity = [0; 16];
     hex::decode_to_slice(key, &mut identity).map_err(|_| reject())?;
-    let mut canonical = [0; 32];
-    hex::encode_to_slice(identity, &mut canonical).map_err(|_| reject())?;
-    if key.as_bytes() != canonical {
+    if key.bytes().any(|byte| byte.is_ascii_uppercase()) {
         return Err(reject());
     }
-    let mut route = [0_u8; 23];
-    let [prefix, tail @ ..] = &mut route;
-    *prefix = b'r';
+    let mut route = [0; 23];
+    route[0] = b'r';
     base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode_slice(identity, tail)
-        .map_err(|_| reject())?;
-    pi_native_string(std::str::from_utf8(&route).map_err(|_| reject())?, work)
+        .encode_slice(identity, &mut route[1..])
+        .expect("fixed root identity fits base64 buffer");
+    work.display(std::str::from_utf8(&route).expect("base64 route is ASCII"))
+        .map_err(Error::from)
 }
 
-fn native_task_directory(
+fn native_view_root(
     resources: &crate::ServiceResources,
-    root_session: &str,
+    session: &str,
     task: acyclic_harness::TaskId,
     work: &NativeMaterializationWork,
 ) -> Result<(PathBuf, acyclic_fs::NativeAllocation)> {
-    if root_session.is_empty() || !resources.data.is_absolute() {
+    if session.is_empty() || !resources.data.is_absolute() {
         return Err(Error::NativeBoundary {
             code: acyclic_harness::wire::ErrorCode::Invalid,
             reason: "Pi native path references require their original absolute service root",
         });
     }
     work.charge(WorkCounters {
-        bytes_hashed: root_session.len() as u64 + 16,
-        ..WorkCounters::default()
+        bytes_hashed: session.len() as u64 + 16,
+        ..WorkCounters::UNCHARGED
     })?;
-    let session_hash = blake3::hash(root_session.as_bytes()).to_hex();
+    let session_hash = blake3::hash(session.as_bytes()).to_hex();
     let task_hash = blake3::hash(&task.into_bytes()).to_hex();
     let separator = std::path::MAIN_SEPARATOR;
     let relative = work.display(&format_args!(
-        "sessions{separator}{session_hash}{separator}agents{separator}{task_hash}"
+        "sessions{separator}{session_hash}{separator}agents{separator}{task_hash}{separator}view"
     ))?;
     work.path(&resources.data, Some(Path::new(&relative.0)))
-        .map_err(acyclic_harness::Error::from)
+        .map_err(Error::from)
 }
 
 pub(crate) fn native_view_options(
@@ -109,15 +106,14 @@ pub(crate) fn native_view_options(
             "Pi native options require their original finite composition allowances",
         ));
     }
-    let task = native_task_directory(resources, root_session, task, work)?;
-    let view = work.path(&task.0, Some(Path::new("view")))?;
+    let (root, custody) = native_view_root(resources, root_session, task, work)?;
     Ok((
         NativeViewOptions {
-            root: view.0,
+            root,
             maximum_volumes,
             work_per_volume,
         },
-        view.1,
+        custody,
     ))
 }
 
@@ -130,7 +126,7 @@ pub(super) fn native_service_root<'a>(
 ) -> Result<&'a Path> {
     work.charge(WorkCounters {
         bytes_hashed: root_session.len() as u64 + 16,
-        ..WorkCounters::default()
+        ..WorkCounters::UNCHARGED
     })?;
     let session_hash = blake3::hash(root_session.as_bytes()).to_hex();
     let task_hash = blake3::hash(&task.into_bytes()).to_hex();

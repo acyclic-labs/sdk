@@ -1,4 +1,4 @@
-//! Stock CoreLog projections retain physical payload custody in the original invocation.
+//! Stock `CoreLog` projections retain physical payload custody in the original invocation.
 use super::*;
 use crate::CancellationToken;
 use crate::materializer::{
@@ -146,7 +146,14 @@ pub(super) fn load<T: Logged>(
     check(work, cxl)?;
     let value = log.get::<T>(root, id, None, Some(cxl))?;
     check(work, cxl)?;
-    Ok(value.map(|(value, allocation)| (value, allocation.expect("native record allocation"))))
+    value
+        .map(|(value, allocation)| {
+            Ok((
+                value,
+                allocation.ok_or(crate::NativeTreeMaterializationError::MissingCustody)?,
+            ))
+        })
+        .transpose()
 }
 
 pub(super) fn compare_native_lineage(
@@ -161,7 +168,7 @@ pub(super) fn compare_native_lineage(
     check(work, cxl)?;
     if load::<WorkspaceLineageRecord>(root, log, id, work, cxl)?
         .as_ref()
-        .map_or(0, |value| (&value.0).revision)
+        .map_or(0, |value| value.0.revision)
         != expected
     {
         return Ok(false);

@@ -28,7 +28,8 @@ impl NativePreparationRoot {
         }
         crate::NativeFutureBundle::new(work, || async move {
             let backend = open(root, operation_directory, work).await?;
-            backend.require_initial_empty()?;
+            backend.require_selected_root(&[], &[], |_| Ok(false))?;
+            backend.require_empty_staging()?;
             let expected_identity = acyclic_fs::NativeRootIdentity::from_bytes(
                 backend
                     .allocation_identity()

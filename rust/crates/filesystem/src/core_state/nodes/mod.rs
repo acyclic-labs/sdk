@@ -197,7 +197,7 @@ impl LocalCoreStateStore {
                 return Err(LocalCoreStateStoreError::Integrity);
             }
             if T::address(id) == empty {
-                return if (&owned.0) == &T::default() {
+                return if owned.0 == T::default() {
                     Ok(())
                 } else {
                     Err(LocalCoreStateStoreError::Integrity)
@@ -217,7 +217,7 @@ impl LocalCoreStateStore {
                                 items_examined: 1,
                                 ..Default::default()
                             })?;
-                            if &existing.0 != &owned.0 {
+                            if existing.0 != owned.0 {
                                 return Err(LocalCoreStateStoreError::Integrity);
                             }
                         } else {

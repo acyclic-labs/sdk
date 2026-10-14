@@ -30,12 +30,12 @@ pub(crate) fn encode(
     }
     text[..PREFIX.len()].copy_from_slice(PREFIX);
     let mut cursor = PREFIX.len();
-    hex::encode_to_slice(&workspace, &mut text[cursor..cursor + workspace.len() * 2])
+    hex::encode_to_slice(workspace, &mut text[cursor..cursor + workspace.len() * 2])
         .expect("fixed-width workspace lease path has its exact hex capacity");
     cursor += workspace.len() * 2;
     text[cursor..cursor + SEPARATOR.len()].copy_from_slice(SEPARATOR);
     cursor += SEPARATOR.len();
-    hex::encode_to_slice(&lease, &mut text[cursor..cursor + lease.len() * 2])
+    hex::encode_to_slice(lease, &mut text[cursor..cursor + lease.len() * 2])
         .expect("fixed-width lease identity has its exact hex capacity");
     cursor += lease.len() * 2;
     text[cursor] = b'/';

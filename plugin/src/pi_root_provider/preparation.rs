@@ -3,21 +3,17 @@ use super::*;
 use acyclic_harness::filesystem::PreparationIo;
 
 /// Root output is its genuinely created private scratch, never the protected bootstrap journal.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "actual caller, original protected creator and bounded producers"
-)]
-pub(crate) async fn bind_root_output_context_with_native_work(
-    context: Arc<acyclic_harness::runtime::TaskContext>,
+pub(crate) async fn bind_root_output_context(
     current_owner: &Arc<TaskJournalOwner<LocalStream>>,
     owner: Arc<PiOwnerConfig>,
     resources: &ServiceResources,
     filesystem: Arc<Host>,
     stream: Arc<LocalStream>,
-    binding: &crate::PiTaskBinding,
-    root: &PiRootIntent,
+    preparation: PiRootPreparation,
     work: &NativeMaterializationWork,
 ) -> Result<Arc<acyclic_harness::runtime::TaskContext>> {
+    let context = Arc::clone(&preparation.context);
+    let binding = &preparation.request.binding;
     work.admit(WorkCounters::UNCHARGED)?;
     let invalid = || Error::NativeBoundary {
         code: ErrorCode::Unauthorized,
@@ -41,15 +37,6 @@ pub(crate) async fn bind_root_output_context_with_native_work(
             &mut Some(&mut &PreparationIo::from_native_work(work)?),
         )
         .await?;
-    let preparation = load_original_preparation_with_native_work(
-        &owner,
-        &filesystem,
-        binding,
-        root,
-        Arc::clone(&context),
-        work,
-    )
-    .await?;
     let observer = root_provider(
         owner,
         resources,
@@ -61,7 +48,7 @@ pub(crate) async fn bind_root_output_context_with_native_work(
     )?;
     let effect = observer.effect_id_with_native_work(work)?;
     let attempt = EffectAttemptId::from_bytes(effect.into_bytes());
-    let (scratch, operation, _scratch_custody) = observer
+    let (_scratch, operation, _scratch_custody) = observer
         .prove_scratch_allocation_with_native_work(attempt, work)
         .await?
         .ok_or_else(invalid)?;
@@ -72,6 +59,33 @@ pub(crate) async fn bind_root_output_context_with_native_work(
         &observer.owner.policy().grants,
         work,
     )?;
+    let verifier = {
+        let mut io =
+            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
+        let value = authority.1.verifier(&mut Some(&mut io))?;
+        (value, io.into_custody()?)
+    };
+    let io = PreparationIo::from_native_work(work)?;
+    let maximum = context.scope().limits().file_bytes.min(observer.maximum());
+    let output = acyclic_harness::runtime::ContentBindings {
+        reader: acyclic_harness::filesystem::FilesystemContentVerifier::new(
+            Arc::clone(&filesystem),
+            &verifier.0,
+            &authority.2,
+            maximum,
+            Some(&io),
+        )?,
+        writer: Some(
+            acyclic_harness::filesystem::FilesystemContentPublisher::new(
+                filesystem,
+                &binding.scratch.volume,
+                &verifier.0,
+                &authority.2,
+                maximum,
+                Some(&io),
+            )?,
+        ),
+    };
     crate::pi_conversation::bind_task_conversation(
         &observer.stream,
         (authority, custody),
@@ -82,54 +96,6 @@ pub(crate) async fn bind_root_output_context_with_native_work(
         work,
     )
     .await?;
-    let generation = observer
-        .creation_with_native_work(
-            effect,
-            attempt,
-            "scratch",
-            &binding.scratch.volume,
-            VolumeConfig::portable(Lifecycle::Durable),
-            work,
-        )
-        .await?
-        .ok_or_else(invalid)?;
-    let actual = observer.scratch_creation_with_native_work(&generation, work)?;
-    if actual.0.workspace_id != scratch.workspace_id || actual.0.generation != scratch.generation {
-        return Err(invalid());
-    }
-    let authority = observer.owner.conversation_authority_with_native_work(
-        binding.task_id,
-        binding.agent_id,
-        &observer.owner.policy().grants,
-        work,
-    )?;
-    let verifier = {
-        let mut io =
-            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
-        let value = authority.0.1.verifier(&mut Some(&mut io))?;
-        (value, io.into_custody()?)
-    };
-    let io = PreparationIo::from_native_work(work)?;
-    let maximum = context.scope().limits().file_bytes.min(observer.maximum());
-    let output = acyclic_harness::runtime::ContentBindings {
-        reader: acyclic_harness::filesystem::FilesystemContentVerifier::new(
-            Arc::clone(&filesystem),
-            &verifier.0,
-            &authority.0.2,
-            maximum,
-            Some(&io),
-        )?,
-        writer: Some(
-            acyclic_harness::filesystem::FilesystemContentPublisher::new(
-                filesystem,
-                &binding.scratch.volume,
-                &verifier.0,
-                &authority.0.2,
-                maximum,
-                Some(&io),
-            )?,
-        ),
-    };
     context.with_output_bindings(output).await
 }
 impl PiRootProvider {
@@ -326,38 +292,12 @@ impl PiRootProvider {
                     .0
                     .get(key)
                     .ok_or_else(|| Self::native_failure("root attachment input is missing"))?;
-                self.validate_attachment(input)?;
-                let Some(generation) = self
-                    .creation_with_native_work(
-                        effect,
-                        attempt,
-                        key,
-                        volume,
-                        VolumeConfig::native(Lifecycle::Durable),
-                        work,
-                    )
+                let Some(root) = self
+                    .observe_project(effect, attempt, key, volume, path, input, work)
                     .await?
                 else {
                     return Ok(None);
                 };
-                let Some(state) = self
-                    .store
-                    .load_lazy_workspace(
-                        generation.workspace().id(),
-                        &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-                            work,
-                            cancellation: work.cancellation(),
-                        },
-                    )
-                    .await?
-                else {
-                    return Ok(None);
-                };
-                state.validate_root_binding(generation.workspace().id(), input.0)?;
-                let observed = work.root_identity(Path::new(path))?;
-                if observed.to_bytes() != input.1 {
-                    return Err(Self::native_failure("root native identity was substituted"));
-                }
                 let owned_key = work.display(key)?;
                 let mut slot = work.claim(
                     std::mem::size_of::<(String, RootCreation)>() as u64,
@@ -367,15 +307,7 @@ impl PiRootProvider {
                 roots.1.absorb(&mut slot)?;
                 let (value, mut _custody) = owned_key;
                 roots.1.absorb(&mut _custody)?;
-                roots.0.insert(
-                    value,
-                    RootCreation {
-                        repository_workspace_id: generation.workspace().id().into_bytes(),
-                        source_identity: input.0.identity,
-                        source_epoch: input.0.epoch,
-                        native_root_identity: input.1,
-                    },
-                );
+                roots.0.insert(value, root);
             }
         }
         let Some(generation) = self
@@ -403,6 +335,55 @@ impl PiRootProvider {
         );
         allocation.0.validate(&self.preparation.request.binding)?;
         Ok(Some(allocation))
+    }
+
+    pub(super) async fn observe_project(
+        &self,
+        effect: EffectId,
+        attempt: EffectAttemptId,
+        key: &str,
+        volume: &VolumeRef,
+        path: &str,
+        input: &(SourceReference, [u8; 16]),
+        work: &NativeMaterializationWork,
+    ) -> Result<Option<RootCreation>> {
+        self.validate_attachment(input)?;
+        let Some(generation) = self
+            .creation_with_native_work(
+                effect,
+                attempt,
+                key,
+                volume,
+                VolumeConfig::native(Lifecycle::Durable),
+                work,
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+        let Some(state) = self
+            .store
+            .load_lazy_workspace(
+                generation.workspace().id(),
+                &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                    work,
+                    cancellation: work.cancellation(),
+                },
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+        state.validate_root_binding(generation.workspace().id(), input.0)?;
+        if work.root_identity(Path::new(path))?.to_bytes() != input.1 {
+            return Err(Self::native_failure("root native identity was substituted"));
+        }
+        Ok(Some(RootCreation {
+            repository_workspace_id: generation.workspace().id().into_bytes(),
+            source_identity: input.0.identity,
+            source_epoch: input.0.epoch,
+            native_root_identity: input.1,
+        }))
     }
 
     pub(super) async fn observe_result_with_native_work(
