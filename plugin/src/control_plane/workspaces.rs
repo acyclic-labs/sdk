@@ -64,7 +64,7 @@ impl ControlPlane {
                 .get(&root_id)
                 .ok_or_else(|| "workspace route root is absent from its core context".to_owned())?
                 .workspace_id;
-            WorkspaceGraph::new(self.store.clone()).workspace(&self.fs, workspace_id, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            acyclic_fs::WorkspaceResolver::resolve(&(self.fs.clone(), WorkspaceGraph::new(self.store.clone())), workspace_id)
                 .await
                 .map_err(display)
         }

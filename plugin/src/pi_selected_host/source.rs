@@ -98,14 +98,8 @@ impl PiControlHost<'_> {
                 work,
             )
             .await?;
-        if self.native()?.live_view(task).is_some() {
+        if self.native()?.live_view(task).is_some() || task != root {
             inspection.require_project_selection(snapshot, work).await?;
-        } else if task != root {
-            let mut custody = self
-                .native()?
-                .validate_published_selection_snapshot(task, &inspection, project, snapshot, work)
-                .await?;
-            project_cut.1.absorb(&mut custody)?;
         }
         let mut io = HistoryWork::new(PreparationIo::from_native_work(work)?);
         let name = project.storage_name(&mut Some(&mut io))?;

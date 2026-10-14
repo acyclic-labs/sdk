@@ -64,15 +64,16 @@ fn encode_pi<T>(
                     ))
                 })?;
                 if let Some(maximum) = maximum_owned_bytes
-                    && observed > maximum {
-                        return Err(acyclic_harness::Error::from(
-                            NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
-                                counter: "pi_value_owned_bytes",
-                                observed,
-                                maximum,
-                            }),
-                        ));
-                    }
+                    && observed > maximum
+                {
+                    return Err(acyclic_harness::Error::from(
+                        NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
+                            counter: "pi_value_owned_bytes",
+                            observed,
+                            maximum,
+                        }),
+                    ));
+                }
                 if let Some(mut quota) = parser_quota.take() {
                     custody.absorb(&mut quota)?;
                 }
@@ -80,7 +81,7 @@ fn encode_pi<T>(
                     .resize(observed)
                     .map_err(acyclic_harness::Error::from)
             }
-            charge => native_buffer_codec_charge(work, &mut custody, charge),
+            charge => native_buffer_codec_charge(&mut custody, charge),
         }
     });
     match result {
@@ -115,7 +116,6 @@ fn encode_pi<T>(
 }
 
 pub(crate) fn native_buffer_codec_charge(
-    work: &NativeMaterializationWork,
     custody: &mut NativeAllocation,
     charge: JsonCodecCharge,
 ) -> Result<()> {
@@ -123,6 +123,7 @@ pub(crate) fn native_buffer_codec_charge(
         return custody.release(bytes).map_err(acyclic_harness::Error::from);
     }
     use acyclic_harness::store::HistoryIo;
+    let work = custody.work();
     work.cancellation()
         .check()
         .map_err(|_| NativeTreeMaterializationError::Cancelled)?;
@@ -161,13 +162,12 @@ pub(crate) fn native_buffer_codec_charge(
     clippy::too_many_arguments,
     reason = "original immutable operation plus actual scoped content reader"
 )]
-pub(crate) async fn read_pi_input_with_native_work<T: DeserializeOwned>(
+pub(crate) async fn read_pi_input<T: DeserializeOwned>(
     owner: &PiOwnerConfig,
     filesystem: &Host,
     operation: OperationId,
     label: &str,
     maximum_owned_bytes: u64,
-    value_schema: &'static JsonValueSchema,
     schema_label_bytes: u64,
     context: &TaskContext,
     work: &NativeMaterializationWork,
@@ -193,7 +193,7 @@ pub(crate) async fn read_pi_input_with_native_work<T: DeserializeOwned>(
         maximum,
         maximum_owned_bytes,
         ErrorCode::Storage,
-        value_schema,
+        JsonValueSchema::None,
         schema_label_bytes,
         work,
     )?;
@@ -220,16 +220,13 @@ pub(crate) fn digest_pi_value<T: Serialize + ?Sized>(
     value: &T,
     maximum: u64,
     work: &NativeMaterializationWork,
-) -> Result<(String, NativeAllocation)> {
+) -> Result<blake3::Hash> {
     let bytes = canonical_pi_value(value, maximum, work)?;
     work.charge(WorkCounters {
         bytes_hashed: bytes.0.len() as u64,
         ..WorkCounters::default()
     })?;
-    let digest = blake3::hash(&bytes.0);
-    drop(bytes);
-    work.display(&format_args!("{}", digest.to_hex()))
-        .map_err(acyclic_harness::Error::from)
+    Ok(blake3::hash(&bytes.0))
 }
 
 pub(crate) fn guarded_pi_decode<T: DeserializeOwned>(
@@ -285,7 +282,7 @@ pub(crate) fn guarded_pi_decode<T: DeserializeOwned>(
                         .resize(admitted)
                         .map_err(acyclic_harness::Error::from)
                 }
-                charge => native_buffer_codec_charge(work, &mut custody, charge),
+                charge => native_buffer_codec_charge(&mut custody, charge),
             }
         },
     );

@@ -119,15 +119,22 @@ impl crate::pi_host::PiControlHost<'_> {
             let PiTaskExecution::Host { root, .. } = &input.execution else {
                 return Err(denied("Pi original root input substituted a child"));
             };
-            crate::pi_root_provider::bind_root_output_context_with_native_work(
+            let preparation = crate::pi_root_provider::load_original_preparation_with_native_work(
+                &self.protected,
+                &self.filesystem,
+                &input.binding,
+                root,
                 shared,
+                work,
+            )
+            .await?;
+            crate::pi_root_provider::bind_root_output_context(
                 owner,
                 self.protected.clone(),
                 self.resources,
                 self.filesystem.clone(),
                 self.stream.clone(),
-                &input.binding,
-                root,
+                preparation,
                 work,
             )
             .await?

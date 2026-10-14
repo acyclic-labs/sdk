@@ -46,7 +46,7 @@ pub use lazy::{LazyMountSource, NativeMountSourceWatchOwner};
 mod customer;
 pub use customer::{
     LazyMount, Mount, MountLifecycleError, MountOptions, MountPublication, NativeMountDrainProof,
-    NativeMountPublicationFailure, NativeWorkingSet,
+    NativeMountPublicationFailure, NativeWorkingSet, native_file_io,
 };
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

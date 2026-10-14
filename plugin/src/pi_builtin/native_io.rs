@@ -38,21 +38,19 @@ pub(super) async fn accepted_builtin_io(
     };
     let response = match &request.io {
         PiBuiltinIo::Read { maximum_bytes, .. } | PiBuiltinIo::EditRead { maximum_bytes } => {
-            let mut candidates = std::iter::once(leaf)
-                .chain(leaves.into_iter().flatten())
-                .zip(std::iter::once(&request.path).chain(variants.iter()))
-                .peekable();
-            while let Some((leaf, candidate)) = candidates.next() {
+            for index in 0..=variants.len() {
+                let (leaf, candidate) = if index == 0 {
+                    (leaf, request.path.as_str())
+                } else {
+                    (leaves[index - 1].expect("validated variant"), variants[index - 1].as_str())
+                };
                 let operation = if matches!(request.io, PiBuiltinIo::EditRead { .. }) {
                     VolumeOperation::Write
                 } else {
                     VolumeOperation::Read
                 };
-                let volume = view
-                    .working_volume(owner, &mapping.volume, operation, work)
-                    .await?;
-                match volume
-                    .file_io(leaf, false, false, work, |file, work| {
+                match view
+                    .file_io(owner, &mapping.volume, operation, leaf, false, false, work, |file, work| {
                         read_file(
                             file,
                             usize::try_from(*maximum_bytes).map_err(|_| {
@@ -66,8 +64,6 @@ pub(super) async fn accepted_builtin_io(
                     .await
                 {
                     Ok((bytes, _bytes_custody)) => {
-                        view.working_volume(owner, &mapping.volume, VolumeOperation::Read, work)
-                            .await?;
                         authorize_owner(context, owner, request.caller, work).await?;
                         let (value, custody) =
                             read_response(bytes.as_slice(), candidate, volume_role, work)?;
@@ -75,7 +71,7 @@ pub(super) async fn accepted_builtin_io(
                     }
                     Err(error) => {
                         let error = Error::from(error);
-                        if !is_absent(&error) || candidates.peek().is_none() {
+                        if !is_absent(&error) || index == variants.len() {
                             return Err(error);
                         }
                     }
@@ -90,19 +86,17 @@ pub(super) async fn accepted_builtin_io(
                 } => Some(expected_digest(expected_sha256)?),
                 _ => None,
             };
-            let volume = view
-                .working_volume(owner, &mapping.volume, VolumeOperation::Write, work)
-                .await?;
-            volume
+            view
                 .file_io(
+                    owner,
+                    &mapping.volume,
+                    VolumeOperation::Write,
                     leaf,
                     true,
                     matches!(request.io, PiBuiltinIo::Write { .. }),
                     work,
                     |file, work| write_file(file, content.as_bytes(), expected, work),
                 )
-                .await?;
-            view.working_volume(owner, &mapping.volume, VolumeOperation::Write, work)
                 .await?;
             authorize_owner(context, owner, request.caller, work).await?;
             #[derive(Serialize)]

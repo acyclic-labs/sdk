@@ -41,11 +41,15 @@ impl PiNativeCommandHost {
                 "Pi native command requires its original registered child admission",
             ));
         }
-        input.0.binding.validate_with_native_work(
+        input.0.binding.validate(
             None,
-            input.0.binding.project_volumes.keys().map(String::as_str),
+            input
+                .0
+                .binding
+                .project_volumes
+                .keys()
+                .map(|key| key.as_str()),
             true,
-            work,
         )?;
         admission.1.absorb(&mut input.1)?;
         Ok((admission.0, input.0, admission.1))
@@ -226,69 +230,6 @@ impl PiNativeCommandHost {
         .into_native_shared(work)
     }
 
-    pub(super) fn authority(
-        &self,
-        context: &TaskContext,
-        input: &PiTaskInput,
-        journal: Arc<Journal>,
-        work: &NativeMaterializationWork,
-    ) -> Result<NativeProcessAuthority> {
-        let bindings = self.result_bindings(context, input, work)?;
-        let conversation = self.protected.conversation_authority_with_native_work(
-            input.binding.task_id,
-            input.binding.agent_id,
-            context.scope().grants(),
-            work,
-        )?;
-        let verifier = {
-            let mut io =
-                acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
-            let value = conversation.0.1.verifier(&mut Some(&mut io))?;
-            (value, io.into_custody()?)
-        };
-        Ok(NativeProcessAuthority {
-            verifier: verifier.0,
-            schemas: SchemaRegistry::new(),
-            content: bindings.reader,
-            results: bindings
-                .writer
-                .ok_or_else(|| unauthorized("Pi sealed result has no original publisher"))?,
-            approvals: journal,
-        })
-    }
-
-    pub(super) fn effects(
-        &self,
-        context: &TaskContext,
-        input: &PiTaskInput,
-        provider: &Arc<
-            NativeProcessProvider<LocalStream, LocalAuthorityBackend, LocalObjectBackend>,
-        >,
-        work: &NativeMaterializationWork,
-    ) -> Result<Arc<Effects>> {
-        let content = self.result_bindings(context, input, work)?.reader;
-        let authorization = self.protected.conversation_authority_with_native_work(
-            input.binding.task_id,
-            input.binding.agent_id,
-            context.scope().grants(),
-            work,
-        )?;
-        let mut registry = EffectRegistry::new(Some(work), Some(content.clone()))?;
-        registry.register(provider.clone(), Some(work))?;
-        let ((audience, issuer, scope), custody) = authorization;
-        Effects::new(
-            self.stream.clone(),
-            audience,
-            issuer,
-            scope,
-            SchemaRegistry::new(),
-            content,
-            registry,
-            Some(custody),
-            Some(work),
-        )
-    }
-
     pub(super) async fn original_effect(
         &self,
         context: &TaskContext,
@@ -340,7 +281,7 @@ impl PiNativeCommandHost {
         work: &NativeMaterializationWork,
     ) -> Result<Arc<BoundEffect>> {
         let context = shared.as_ref();
-        let mut plan = effect_plan(
+        let plan = effect_plan(
             &effect.provider,
             effect.guarantee,
             &effect.effect_kind,
@@ -354,52 +295,16 @@ impl PiNativeCommandHost {
             ));
         }
         let journal = self.journal(&owner, context, input, command, work).await?;
-        let authority = self.authority(context, input, journal.clone(), work)?;
-        let mut provider_plan = effect_plan(
-            &plan.0.provider,
-            plan.0.guarantee,
-            &plan.0.effect_kind,
-            &plan.0.request,
-            &plan.0.result_schema,
-            work,
-        )?;
-        plan.1.absorb(&mut provider_plan.1)?;
-        plan.1.absorb(&mut work.claim(
-            std::mem::size_of::<
-                NativeProcessProvider<LocalStream, LocalAuthorityBackend, LocalObjectBackend>,
-            >() as u64,
-            1,
-            WorkCounters {
-                allocation_operations: 1,
-                ..WorkCounters::UNCHARGED
-            },
-        )?)?;
-        let provider = Arc::new(
-            NativeProcessProvider::new(
-                owner.clone(),
-                command,
-                provider_plan.0,
-                None,
-                task_interaction_id(
-                    input.binding.task_id,
-                    command,
-                    &mut Some(&mut &PreparationIo::from_native_work(work)?),
-                )?,
-                authority,
-            )
-            .await?,
-        );
-        let effects = self.effects(context, input, &provider, work)?;
-        let bound = Arc::new(BoundEffect {
-            work: work.clone(),
-            effects,
-            owner,
-            journal,
-            context: shared,
+        let approval = task_interaction_id(
+            input.binding.task_id,
             command,
-            staged: None,
-            plan,
-        });
+            &mut Some(&mut &PreparationIo::from_native_work(work)?),
+        )?;
+        let bound = self
+            .bind_effect(
+                shared, input, owner, command, plan, journal, None, approval, None, work,
+            )
+            .await?;
         self.registered_entry(input.binding.task_id)?
             .handles
             .lock()
@@ -423,8 +328,8 @@ impl PiNativeCommandHost {
         };
         let retained = {
             let handles = entry.handles.lock().await;
-            if !matches!(&handles.scratch_gate.reservation, Some((_, _, Some(_))))
-                || !matches!(&handles.project_gate.reservation, Some((_, _, Some(_))))
+            if !matches!(&handles.scratch_gate, Some((_, _, Some(_))))
+                || !matches!(&handles.project_gate, Some((_, _, Some(_))))
             {
                 return Ok(None);
             }

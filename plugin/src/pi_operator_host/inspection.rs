@@ -39,7 +39,7 @@ pub(crate) async fn validate_approval_request(
         crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
         work,
     )?;
-    if original.0 != supplied.0 {
+    if original != supplied {
         return Err(denied(
             "operator substituted the prepared selection, generations or digest",
         ));

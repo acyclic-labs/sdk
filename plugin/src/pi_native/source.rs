@@ -28,8 +28,6 @@ pub(crate) const PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES: u64 = 957;
 
 const NATIVE_HEADER_DIAGNOSTIC_LABEL_BYTES: u64 = 103;
 
-pub(super) const NATIVE_CAPABILITIES_DIAGNOSTIC_LABEL_BYTES: u64 = 42;
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NativeHeader {

@@ -18,7 +18,7 @@ impl PiRootProvider {
         };
         for key in paths
             .keys()
-            .map(String::as_str)
+            .map(|key| key.as_str())
             .chain(std::iter::once("scratch"))
         {
             let (volume, config) = if key == "scratch" {
@@ -58,7 +58,6 @@ impl PiRootProvider {
                     &mut Some(&mut &PreparationIo::from_native_work(work)?),
                 )
                 .await?;
-            self.require_native_creation()?;
             let physical = self
                 .acquire_original_source_with_native_work(
                     key,
@@ -102,7 +101,6 @@ impl PiRootProvider {
     {
         async move {
             self.check_native_ledger(work)?;
-            self.require_native_creation()?;
             let cancellation = work.cancellation().clone();
             let owner = self.execution_owner()?;
             owner
@@ -161,7 +159,6 @@ impl PiRootProvider {
                             &mut Some(&mut &PreparationIo::from_native_work(work)?),
                         )
                         .await?;
-                    self.require_native_creation()?;
                     let identity = guard_root_preparation_source_with_native_work(
                         self.preparation.context.as_ref(),
                         owner,
@@ -230,7 +227,6 @@ impl PiRootProvider {
                             &mut Some(&mut &PreparationIo::from_native_work(work)?),
                         )
                         .await?;
-                    self.require_native_creation()?;
                     let workspace = if let Some(workspace) = existing_workspace {
                         let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
                             work,
@@ -285,26 +281,13 @@ impl PiRootProvider {
                         .map_err(crate::pi_fork_host::native_lazy_error)?
                         .0
                     };
-                    let mut owned_key = work.display(key)?;
-                    let mut slot = work.claim(
-                        std::mem::size_of::<(String, PiRootHandle)>() as u64,
-                        0,
-                        acyclic_fs::WorkCounters::UNCHARGED,
+                    let (key, handle) = PiRootHandle::from_observed_with_native_work(
+                        workspace,
+                        physical,
+                        work.display(key)?,
+                        work,
                     )?;
-                    slot.absorb(&mut owned_key.1)?;
-                    work.charge(WorkCounters {
-                        allocation_operations: 1,
-                        ..WorkCounters::UNCHARGED
-                    })?;
-                    let workspace = Arc::new(workspace);
-                    state.handles.insert(
-                        owned_key.0,
-                        PiRootHandle {
-                            workspace,
-                            physical,
-                            _custody: slot,
-                        },
-                    );
+                    state.handles.insert(key, handle);
                     #[cfg(test)]
                     self.test_fault_native("after-root-creation")?;
                 }
@@ -339,7 +322,6 @@ impl PiRootProvider {
                         &mut Some(&mut &PreparationIo::from_native_work(work)?),
                     )
                     .await?;
-                self.require_native_creation()?;
                 let operation =
                     self.creation_operation_with_native_work(effect, attempt, "scratch", work)?;
                 let name = {

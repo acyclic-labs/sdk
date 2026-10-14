@@ -326,6 +326,7 @@ impl super::native::NativeSession {
                     volume: &mapping.volume,
                     generation: &mapping.generation,
                     namespace: &mapping.namespace,
+                    mounted: None,
                     path,
                     writable: mapping.writable,
                     verifier: &verifier,

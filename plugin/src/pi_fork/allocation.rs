@@ -36,19 +36,7 @@ impl<'a> PiForkCoordinator<'a> {
         cancel: CancellationToken,
     ) -> impl std::future::Future<Output = Result<Option<PreparedPiFork>>> + Send + 'b {
         async move {
-            let original = self
-                .load_original_plan(plan.original)
-                .await?
-                .ok_or_else(|| Error::NativeBoundary {
-                    code: acyclic_harness::wire::ErrorCode::Unauthorized,
-                    reason: "Pi prepared observation lost its original immutable plan",
-                })?;
-            if original != *plan {
-                return Err(Error::NativeBoundary {
-                    code: acyclic_harness::wire::ErrorCode::Unauthorized,
-                    reason: "Pi prepared observation substituted its original plan",
-                });
-            }
+            self.require_original_plan(plan).await?;
             {
                 let work = &self.work;
                 let preparation = match self
@@ -108,42 +96,7 @@ impl<'a> PiForkCoordinator<'a> {
                         reason: "Pi original child admission changed",
                     });
                 }
-                let reference = crate::pi_root_provider::observe_pi_input(
-                    &self.owner,
-                    &self.filesystem,
-                    derived(plan.original, "native-input", &self.work)?,
-                    "native-input",
-                    &self.work,
-                )
-                .await?
-                .ok_or(Error::NativeBoundary {
-                    code: acyclic_harness::wire::ErrorCode::Unauthorized,
-                    reason: "Pi original native input disappeared",
-                })?;
-                let child: (PiTaskInput, acyclic_fs::NativeAllocation) = self.decode_input_value(
-                    &admission.0.input,
-                    acyclic_harness::JsonValueSchema::None,
-                    crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES,
-                )?;
-                let PiTaskExecution::Child { launch } = &child.0.execution else {
-                    return Err(Error::NativeBoundary {
-                        code: acyclic_harness::wire::ErrorCode::Unauthorized,
-                        reason: "Pi admitted child substituted Root execution",
-                    });
-                };
-                let bytes = self.read_original_input(&reference.0).await?;
-                let intent: (PiNativeLaunchIntent, acyclic_fs::NativeAllocation) = self
-                    .decode_original_input(
-                        bytes.as_ref(),
-                        acyclic_harness::JsonValueSchema::None,
-                        crate::pi_native::PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES,
-                    )?;
-                if launch.payload != reference.0 || intent.0 != plan.commit.launch {
-                    return Err(Error::NativeBoundary {
-                        code: acyclic_harness::wire::ErrorCode::Unauthorized,
-                        reason: "Pi admitted child changed its sealed native intent",
-                    });
-                }
+                self.authenticate_launch(plan).await?;
                 let parent_admission = self
                     .runtime
                     .runtime
@@ -336,10 +289,10 @@ impl<'a> PiForkCoordinator<'a> {
             context.scope().grants(),
             work,
         )?;
-        let request: (ForkRequest, acyclic_fs::NativeAllocation) = self.native_copy(
+        let request: (ForkRequest, acyclic_fs::NativeAllocation) = self.decode_input_value(
             &plan.request.payload,
             acyclic_harness::JsonValueSchema::ForkRequest,
-            work,
+            FORK_PLAN_DIAGNOSTIC_LABEL_BYTES,
         )?;
         let checkpoint = context
             .read_file(

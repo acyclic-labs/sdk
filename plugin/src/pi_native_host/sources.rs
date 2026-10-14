@@ -19,70 +19,9 @@ pub(super) struct PiNativeColdLocator {
 }
 
 impl PiNativeCommandHost {
-    /// Retains the authenticated sealed preparation; dispatch checks its current SDK owner.
-    pub(crate) async fn register_prepared(&self, prepared: PreparedPiFork) -> Result<()> {
-        let original_work = prepared._metadata_custody.work().clone();
-        prepared
-            .report
-            .validate(&mut Some(&mut &PreparationIo::from_native_work(
-                &original_work,
-            )?))?;
-        let binding = &prepared.binding;
-        binding.validate_with_native_work(
-            None,
-            binding.project_volumes.keys().map(String::as_str),
-            false,
-            &original_work,
-        )?;
-        let admitted = self
-            .child_admission(binding.task_id, &original_work)
-            .await?;
-        let actual = &admitted.0;
-        let input = &admitted.1;
-        if actual != &prepared.admission
-            || prepared.report.request.child.id != binding.task_id.to_string()
-            || prepared.report.request.child_agent != binding.agent_id
-        {
-            return Err(unauthorized(
-                "Pi prepared child differs from its original sealed admission",
-            ));
-        }
-        validate_child_binding(binding, &input.binding)?;
-        if !matches!(input.execution, PiTaskExecution::Child { .. })
-            || actual.parent.is_none()
-            || binding.project_volumes.len() != 1
-            || binding.project_volumes.values().next()
-                != Some(&prepared.report.request.preparation.child_project_volume)
-            || binding.scratch.volume != prepared.report.child_private_volume
-            || binding.results.as_ref().map(|result| &result.volume)
-                != prepared.report.child_result_volume.as_ref()
-            || prepared.native_lazy.workspace_id != prepared.workspace.workspace().id()
-        {
-            return Err(unauthorized(
-                "Pi prepared selection differs from the actual original fork report",
-            ));
-        }
-        let PiScratchAllocation::Created(scratch) = &binding.scratch.allocation else {
-            return Err(unauthorized(
-                "Pi native scratch has no original filesystem creator",
-            ));
-        };
-        let Some(result) = &binding.results else {
-            return Err(unauthorized("Pi child has no unmounted result volume"));
-        };
-        let PiScratchAllocation::Created(result) = &result.allocation else {
-            return Err(unauthorized(
-                "Pi native result has no original filesystem creator",
-            ));
-        };
-        if scratch.generation != prepared.report.child_private_generation
-            || Some(&result.generation) != prepared.report.child_result_generation.as_ref()
-        {
-            return Err(unauthorized(
-                "Pi private generations differ from their actual creator report",
-            ));
-        }
-        let entry = self.entry(binding.task_id, &original_work)?;
+    /// Retains the fork coordinator's authenticated result.
+    pub(crate) fn register_prepared(&self, prepared: PreparedPiFork) -> Result<()> {
+        let entry = self.entry(prepared.binding.task_id, prepared._metadata_custody.work())?;
         let mut retained = entry
             .prepared
             .write()
@@ -212,8 +151,9 @@ impl PiNativeCommandHost {
             &locator.sdk_operation,
             work,
         )?;
+        coordinator.require_input_read(shared.as_ref())?;
         let plan = coordinator
-            .load_plan(shared.as_ref(), original)
+            .load_original_plan(original)
             .await?
             .ok_or_else(|| {
                 unauthorized("Pi cold child has no original immutable preparation plan")
@@ -238,7 +178,7 @@ impl PiNativeCommandHost {
                 cancellation.clone(),
             )
             .await?;
-        self.register_prepared(prepared).await
+        self.register_prepared(prepared)
     }
 
     pub(crate) fn live_view(&self, task: TaskId) -> Option<Arc<PiNativeLiveView>> {
@@ -322,34 +262,6 @@ impl PiNativeCommandHost {
             .or(prepared.admission.parent)
     }
 
-    /// Approval display metadata only; authority remains the selected FS volume.
-    pub(crate) fn with_selected_project_path<T>(
-        &self,
-        task: TaskId,
-        volume: &acyclic_harness::conversation::VolumeRef,
-        display: impl FnOnce(&std::path::Path) -> T,
-    ) -> Option<T> {
-        let prepared = self.prepared(task)?;
-        if !prepared
-            .binding
-            .project_volumes
-            .values()
-            .any(|selected| selected == volume)
-        {
-            return None;
-        }
-        let view = self.live_view(task)?;
-        let (mount, _) = self.project_mount(task, volume)?;
-        let mapping = view.manifest().volumes.iter().find(|mapping| {
-            &mapping.volume == volume
-                && matches!(&mapping.namespace, NativeVolumeNamespace::LazyMount { .. })
-        })?;
-        if mapping.path != mount.path() {
-            return None;
-        }
-        Some(display(&mapping.path))
-    }
-
     /// Captures an active source checkpoint or a terminal publication candidate.
     pub(crate) async fn selection_snapshot(
         &self,
@@ -423,59 +335,6 @@ impl PiNativeCommandHost {
             .await
             .map_err(crate::pi_fork_host::native_lazy_error)?;
         Ok((snapshot, meter.claim(0, 0, WorkCounters::UNCHARGED)?))
-    }
-
-    /// Checks the selected cut against the SDK's operation-sealed Project reader.
-    pub(crate) async fn validate_published_selection_snapshot(
-        &self,
-        task: TaskId,
-        inspection: &TaskSourceInspection<LocalStream, LocalAuthorityBackend, LocalObjectBackend>,
-        project: &acyclic_harness::conversation::VolumeRef,
-        frozen: LazySnapshotRef,
-        meter: &NativeMaterializationWork,
-    ) -> Result<acyclic_fs::NativeAllocation> {
-        let prepared = self.prepared(task).ok_or_else(|| {
-            unauthorized("Pi published selection has no authenticated creator companion")
-        })?;
-        if prepared.binding.project_volumes.len() != 1
-            || prepared.binding.project_volumes.values().next() != Some(project)
-        {
-            return Err(unauthorized(
-                "Pi published selection replaced its original project binding",
-            ));
-        }
-        let authorization = inspection.project_authorization().ok_or_else(|| {
-            unauthorized("Pi selected project has no SDK operation-sealed reader")
-        })?;
-        let encoded = crate::pi_root_provider::guarded_pi_value(
-            &frozen,
-            self.protected.policy().maximum_payload_bytes,
-            meter,
-        )?;
-        if inspection.source().task_id() != task
-            || authorization.source_task != task
-            || &authorization.project != project
-            || authorization.generation.as_resource().key()
-                != frozen.authored_generation.digest().as_bytes()
-            || authorization.native_snapshot.as_ref() != Some(&encoded.0)
-        {
-            return Err(Error::NativeBoundary {
-                code: acyclic_harness::wire::ErrorCode::Unauthorized,
-                reason: "Pi selected snapshot differs from its SDK Project authorization",
-            });
-        }
-        prepared
-            .workspace
-            .validate_snapshot(
-                frozen,
-                &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-                    work: meter,
-                    cancellation: meter.cancellation(),
-                },
-            )
-            .await
-            .map_err(crate::pi_fork_host::native_lazy_error)?;
-        Ok(encoded.1)
     }
 
     pub(crate) fn project_mount(

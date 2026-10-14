@@ -34,7 +34,7 @@ impl Producer {
                 path,
                 bytes,
                 media,
-                path,
+                path.rsplit('/').next().unwrap_or(path),
                 PAYLOAD_BYTES,
                 &IdempotencyKey::new(OperationId::new().to_string())?,
                 None,
@@ -104,7 +104,8 @@ impl Producer {
                 host: self.files.as_ref(),
                 volume: &caller.project,
                 generation: &generation,
-                namespace: &NativeVolumeNamespace::MaterializedDirectory,
+                    namespace: &NativeVolumeNamespace::MaterializedDirectory,
+                    mounted: None,
                 path: "project",
                 writable: false,
                 verifier: &verifier,
@@ -467,14 +468,13 @@ impl Producer {
                 "retained fork command exceeds fixture artifact bound".into(),
             ));
         }
-        let (command_file, _) = context
-            .stage_file_once(
-                OperationId::new(),
+        let command_file = self
+            .file(
+                parent,
+                &parent.private,
                 &format!(".qualification-forks/{operation}.json"),
                 &bytes,
                 "application/json",
-                "fork-request.json",
-                None,
             )
             .await?;
         let request = fork_preparation_request(

@@ -77,9 +77,9 @@ impl NativeTreeMaterializationBackend {
         allocation.absorb(&mut extra)?;
         Ok((result, allocation))
     }
-    /// Requires empty original checkout and recovery allocations.
-    pub fn require_initial_empty(&self) -> Result<(), NativeTreeMaterializationError> {
-        for root in [&self.held_root, &self.held_target, &self.held_backup] {
+    /// Requires empty recovery allocations.
+    pub fn require_empty_staging(&self) -> Result<(), NativeTreeMaterializationError> {
+        for root in [&self.held_target, &self.held_backup] {
             let (mut reader, _cursor) = host_path(Path::new(""), &mut &self.work, |path, work| {
                 root.read_dir_stats(path, work)
             })?;
@@ -94,6 +94,9 @@ impl NativeTreeMaterializationBackend {
         &self,
         edits: &[MaterializationEdit],
         preserved: &[&str],
+        mut owned: impl FnMut(
+            &crate::native_host::HostListedEntry,
+        ) -> Result<bool, NativeTreeMaterializationError>,
     ) -> Result<(), NativeTreeMaterializationError> {
         for path in preserved {
             self.check_path(path)?;
@@ -102,7 +105,6 @@ impl NativeTreeMaterializationBackend {
             self.held_root.read_dir_stats(path, work)
         })?;
         while let Some((entry, _allocation)) = reader.next(&mut &self.work)? {
-            let name = entry.name;
             let mut selected = false;
             for path in edits
                 .iter()
@@ -115,22 +117,12 @@ impl NativeTreeMaterializationBackend {
                 let top = path.split('/').next().unwrap_or_default();
                 self.work
                     .charge(NativeResourceCredit::Items.delta(top.len() as u64))?;
-                let matches = {
-                    #[cfg(unix)]
-                    {
-                        name == std::ffi::OsStr::new(top)
-                    }
-                    #[cfg(windows)]
-                    {
-                        name.iter().copied().eq(top.encode_utf16())
-                    }
-                };
-                if matches {
+                if entry.is_named(top) {
                     selected = true;
                     break;
                 }
             }
-            if !selected {
+            if !selected && !owned(&entry)? {
                 return Err(NativeTreeMaterializationError::ExternalMutation);
             }
         }
