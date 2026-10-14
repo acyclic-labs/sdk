@@ -92,7 +92,7 @@ impl ControlPlane {
                         .get(&WorkspaceRootId::from_bytes(root.root_id))
                         .ok_or_else(|| "adapter route is absent from its core context".to_owned())?
                         .workspace_id;
-                    let current = WorkspaceGraph::new(self.store.clone()).workspace(&self.fs, workspace_id, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                    let current = self.workspace_by_id(workspace_id)
                         .await
                         .map_err(display)?.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                         .map_err(display)?
@@ -242,7 +242,7 @@ impl ControlPlane {
                     let parent_id = lineage.parent_workspace_id.ok_or_else(|| {
                         "Git compatibility branch does not reach its repository workspace".to_owned()
                     })?;
-                    let parent = WorkspaceGraph::new(self.store.clone()).workspace(&self.fs, parent_id, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                    let parent = self.workspace_by_id(parent_id)
                         .await
                         .map_err(display)?;
                     graph
@@ -255,7 +255,7 @@ impl ControlPlane {
                     .roots
                     .get(&root_id)
                     .ok_or_else(|| "direct parent root is missing".to_owned())?;
-                let parent = WorkspaceGraph::new(self.store.clone()).workspace(&self.fs, parent_root.workspace_id, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                let parent = self.workspace_by_id(parent_root.workspace_id)
                     .await
                     .map_err(display)?;
                 let lineage = graph
