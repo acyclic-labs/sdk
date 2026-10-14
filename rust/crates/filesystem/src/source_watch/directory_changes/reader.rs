@@ -72,7 +72,7 @@ impl Shared {
             ReadDirectoryChangesExW(
                 HANDLE(self.directory.load(Ordering::Acquire)),
                 buffer.as_mut_ptr().cast(),
-                BUFFER_BYTES as u32,
+                u32::try_from(BUFFER_BYTES).map_err(|_| DemandError::InvalidRequest)?,
                 self.recursive,
                 FILE_NOTIFY_CHANGE_FILE_NAME
                     | FILE_NOTIFY_CHANGE_DIR_NAME
@@ -129,9 +129,9 @@ impl Shared {
                 return Err(io::Error::from(error).into());
             }
             Ok(()) => {
-                reads.filled = (transferred as usize).min(BUFFER_BYTES as usize);
+                reads.filled = (transferred as usize).min(size_of::<[u64; BUFFER_WORDS]>());
                 reads.cursor = 0;
-                reads.loss |= transferred == 0 || transferred as u64 > BUFFER_BYTES;
+                reads.loss |= transferred == 0 || u64::from(transferred) > BUFFER_BYTES;
                 reads.pending = false;
                 work.record(WorkCounters {
                     source_bytes_read: reads.filled as u64,
@@ -166,15 +166,15 @@ impl Shared {
                 let buffer = reads
                     .buffer
                     .as_ref()
-                    .expect("completed read retains its buffer");
+                    .ok_or(DemandError::NativeWorkUnavailable)?;
                 // SAFETY: only completed, aligned bytes are borrowed under the read lock.
                 let bytes = unsafe {
                     std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), reads.filled)
                 };
-                let Some((next, action, path, file)) = notification(
-                    &bytes[reads.cursor..],
-                    self.extended.load(Ordering::Acquire),
-                ) else {
+                let Some((next, action, path, file)) = bytes
+                    .get(reads.cursor..)
+                    .and_then(|record| notification(record, self.extended.load(Ordering::Acquire)))
+                else {
                     self.delivery
                         .deliver_wide(&[HostChangeWide::Everything], work)?;
                     reads.cursor = reads.filled;
@@ -184,8 +184,12 @@ impl Shared {
                     HostChangeWide::Path { action, path },
                     HostChangeWide::File(file.unwrap_or(0)),
                 ];
-                self.delivery
-                    .deliver_wide(&changes[..if file.is_some() { 2 } else { 1 }], work)?;
+                let delivered = if file.is_some() {
+                    changes.as_slice()
+                } else {
+                    std::slice::from_ref(&changes[0])
+                };
+                self.delivery.deliver_wide(delivered, work)?;
                 reads.cursor = if next == 0 {
                     reads.filled
                 } else {
@@ -220,6 +224,7 @@ impl Shared {
 }
 
 impl NativeSourceWatch {
+    #[cfg(test)]
     pub(crate) fn fence(&self) -> io::Result<()> {
         let mut work = self.shared.delivery.callback_work();
         self.fence_with_work(Duration::from_secs(10), &mut work)
@@ -307,7 +312,7 @@ pub(super) fn notification(
     let action = field(4)?;
     let length = field(length_offset)? as usize;
     let name = record.get(name_offset..name_offset.checked_add(length)?)?;
-    if length % 2 != 0 || name.as_ptr().align_offset(std::mem::align_of::<u16>()) != 0 {
+    if !length.is_multiple_of(2) || name.as_ptr().align_offset(std::mem::align_of::<u16>()) != 0 {
         return None;
     }
     let file = if extended {

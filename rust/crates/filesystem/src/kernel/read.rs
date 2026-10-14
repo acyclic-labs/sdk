@@ -37,6 +37,10 @@ pub async fn lookup_tree_entries<S: AsyncObjectStore>(
     .await
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
+)]
 pub(crate) async fn lookup_tree_entries_async_with_accounting<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
@@ -46,10 +50,26 @@ pub(crate) async fn lookup_tree_entries_async_with_accounting<S: AsyncObjectStor
     accounting: &mut super::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
     data_custody: Option<&super::ProofDataCustody>,
-) -> Result<(Vec<Option<TreeEntry>>, super::allocation::KernelOwnedAllocation), crate::FsError> {
+) -> Result<
+    (
+        Vec<Option<TreeEntry>>,
+        super::allocation::KernelOwnedAllocation,
+    ),
+    crate::FsError,
+> {
     persistent_batch::lookup_async_with_accounting::<S, TreeFormat>(
-        store, root, names, maximum_queries, limits, accounting, cancellation, data_custody,
-    ).await.map(|(receipt, allocation)| (receipt.value, allocation)).map_err(map_accounting_failure)
+        store,
+        root,
+        names,
+        maximum_queries,
+        limits,
+        accounting,
+        cancellation,
+        data_custody,
+    )
+    .await
+    .map(|(receipt, allocation)| (receipt.value, allocation))
+    .map_err(map_accounting_failure)
 }
 
 fn map_batch_failure(failure: persistent_batch::Failure) -> TreeReadFailure {
@@ -83,9 +103,17 @@ pub async fn lookup_tree_entry<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<Option<TreeEntry>>, TreeReadFailure> {
-    persistent_point::lookup_async::<S, TreeFormat>(store, root, name, limits, budget, cancellation, None)
-        .await
-        .map_err(map_batch_failure)
+    persistent_point::lookup_async::<S, TreeFormat>(
+        store,
+        root,
+        name,
+        limits,
+        budget,
+        cancellation,
+        None,
+    )
+    .await
+    .map_err(map_batch_failure)
 }
 
 pub(crate) async fn lookup_tree_entry_async_with_accounting<S: AsyncObjectStore>(
@@ -98,8 +126,16 @@ pub(crate) async fn lookup_tree_entry_async_with_accounting<S: AsyncObjectStore>
     data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<(Option<TreeEntry>, super::allocation::KernelOwnedAllocation), crate::FsError> {
     persistent_point::lookup_async_with_accounting::<S, TreeFormat>(
-        store, root, name, limits, accounting, cancellation, data_custody,
-    ).await.map_err(map_accounting_failure)
+        store,
+        root,
+        name,
+        limits,
+        accounting,
+        cancellation,
+        data_custody,
+    )
+    .await
+    .map_err(map_accounting_failure)
 }
 
 fn map_accounting_failure(error: crate::FsError) -> crate::FsError {

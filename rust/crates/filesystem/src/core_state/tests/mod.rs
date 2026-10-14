@@ -175,7 +175,7 @@ pub(super) fn rewrite_intact_frame(
         let namespace = store.namespace().unwrap();
         &namespace.record(CORE_LOG_FAMILY, &[0; 16]).unwrap().current
     };
-    let bytes = std::fs::read(&log).unwrap();
+    let bytes = std::fs::read(log).unwrap();
     let line = bytes.strip_suffix(b"\n").unwrap();
     let mut frame: serde_json::Value = serde_json::from_slice(&line[65..]).unwrap();
     edit(&mut frame);
@@ -184,7 +184,7 @@ pub(super) fn rewrite_intact_frame(
     rewritten.push(b' ');
     rewritten.extend_from_slice(&frame);
     rewritten.push(b'\n');
-    std::fs::write(&log, &rewritten).unwrap();
+    std::fs::write(log, &rewritten).unwrap();
     rewritten
 }
 
@@ -332,10 +332,10 @@ pub(super) fn lose_unflushed_writes(root: &Path, flushed: usize) {
     let store = LocalCoreStateStore::new(root);
     let namespace = store.namespace().unwrap();
     let log = &namespace.record(CORE_LOG_FAMILY, &[0; 16]).unwrap().current;
-    let mut bytes = std::fs::read(&log).unwrap();
+    let mut bytes = std::fs::read(log).unwrap();
     let torn = flushed + (bytes.len().saturating_sub(flushed)) / 2;
     bytes.truncate(torn);
-    std::fs::write(&log, &bytes).unwrap();
+    std::fs::write(log, &bytes).unwrap();
     for line in bytes
         .get(..flushed)
         .unwrap_or(&bytes)

@@ -1,5 +1,10 @@
 use super::*;
 
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "This state transition keeps admission, effects and resource retirement in one frame."
+)]
 pub(super) async fn publish_generation_async_inner<O, E, F, Fut, G, Dispatch, R>(
     objects: &O,
     request: PublishGenerationRequest,

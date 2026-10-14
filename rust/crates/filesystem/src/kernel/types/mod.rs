@@ -8,7 +8,7 @@ use crate::foundation::{Digest, FileId};
 use crate::kernel::Child;
 use crate::model::FilesystemProfile;
 use crate::storage::{ObjectId, ObjectKind};
-use crate::{CancellationToken, WorkBudget, WorkCounters};
+use crate::{CancellationToken, WorkCounters};
 use thiserror::Error;
 
 mod name;

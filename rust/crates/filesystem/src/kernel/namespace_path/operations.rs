@@ -229,7 +229,7 @@ fn validate(
         let length = LogicalName::validate_unicode(encoding, part, limits.maximum_component_bytes)
             .map_err(NamespacePathError::Name)?;
         encoded = encoded
-            .checked_add(length as u32)
+            .checked_add(u32::try_from(length).map_err(|_| NamespacePathError::PathTooLong)?)
             .and_then(|n| n.checked_add(1))
             .ok_or(NamespacePathError::PathTooLong)?;
     }

@@ -89,7 +89,7 @@ impl StartupCleanup {
                     items_examined: self.records,
                     ..WorkCounters::UNCHARGED
                 },
-            )
+            );
         });
         *self = Self::default();
     }

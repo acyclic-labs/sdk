@@ -241,7 +241,7 @@ fn original_cleanup_wait_precancel_and_contention_preserve_custody_for_retry()
             &cancellation,
         ),
     )));
-    let mut work = crate::NativeMaterializationWork::from_meter((&original).clone());
+    let mut work = crate::NativeMaterializationWork::from_meter(original.clone());
     let delivery = Arc::new(Delivery::new(Arc::new(Ignored), &mut work)?);
     let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
 
@@ -352,7 +352,7 @@ fn original_cleanup_wait_late_cancel_waits_for_the_actual_native_terminal()
             &CancellationToken::new(),
         ),
     )));
-    let mut work = crate::NativeMaterializationWork::from_meter((&original).clone());
+    let mut work = crate::NativeMaterializationWork::from_meter(original.clone());
     let delivery = Arc::new(Delivery::new(Arc::new(Ignored), &mut work)?);
     let watch = Arc::new(NativeSourceWatch::start_driver(&host, delivery, &mut work)?);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -362,14 +362,14 @@ fn original_cleanup_wait_late_cancel_waits_for_the_actual_native_terminal()
     assert!(watch.shared.polling.load(Ordering::Acquire));
     let wait = CancellationToken::new();
     // Holding only the test's accounting leaf delays recording a genuine wake/retirement, without inventing a mock native completion.
-    let mut state = original.lock();
+    let state = original.lock();
 
     let stopping = Arc::clone(&watch);
     let caller_wait = wait.clone();
     let (finished, received) = std::sync::mpsc::channel();
     let stopper = std::thread::spawn(move || {
         let result = stopping.stop_with_cleanup_wait(&caller_wait);
-        finished.send(result).expect("live test controller");
+        assert!(finished.send(result).is_ok(), "live test controller");
     });
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while !watch.shared.stopping.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
@@ -385,7 +385,9 @@ fn original_cleanup_wait_late_cancel_waits_for_the_actual_native_terminal()
         Err(std::sync::mpsc::TryRecvError::Empty) => received.recv()?,
         Err(error) => return Err(error.into()),
     };
-    stopper.join().expect("actual native stop controller");
+    stopper
+        .join()
+        .map_err(|_| "actual native stop controller panicked")?;
     assert!(started);
     assert!(!terminal_before_release);
     assert!(matches!(result, Err(DemandError::Cancelled)));
@@ -427,7 +429,7 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
                 items_returned: 1,
                 ..WorkCounters::UNCHARGED
             })?;
-            self.entered.send(()).expect("live callback controller");
+            assert!(self.entered.send(()).is_ok(), "live callback controller");
             let mut release = self.release.lock().unwrap_or_else(PoisonError::into_inner);
             while !*release {
                 release = self
@@ -452,7 +454,7 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
         release: Mutex::new(false),
         changed: Condvar::new(),
     });
-    let mut work = crate::NativeMaterializationWork::from_meter((&original).clone());
+    let mut work = crate::NativeMaterializationWork::from_meter(original.clone());
     let delivery = Arc::new(Delivery::new(sink.clone(), &mut work)?);
     let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
     let retained_control = original.lock().live_allocation_bytes()
@@ -550,7 +552,7 @@ fn original_late_callback_cancellation_retains_the_driver_until_admitted_quiesce
         cancellation: cancellation.clone(),
         invoked: AtomicBool::new(false),
     });
-    let mut work = crate::NativeMaterializationWork::from_meter((&original).clone());
+    let mut work = crate::NativeMaterializationWork::from_meter(original.clone());
     let delivery = Arc::new(Delivery::new(sink.clone(), &mut work)?);
     let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
 
@@ -662,7 +664,7 @@ fn original_last_controller_drop_in_callback_retires_the_actual_reader()
         original: lifetime.clone(),
         invoked: AtomicBool::new(false),
     });
-    let mut work = crate::NativeMaterializationWork::from_meter((&original).clone());
+    let mut work = crate::NativeMaterializationWork::from_meter(original.clone());
     let delivery = Arc::new(Delivery::new(sink.clone(), &mut work)?);
     let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
     let reader = Arc::downgrade(&watch.shared);

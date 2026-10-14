@@ -76,8 +76,7 @@ where
         plan: crate::SelectedImportPlan,
         operation: crate::OperationId,
         permit: crate::PublicationPermit,
-        mut carrier: adapter::NativeDemandCarrier<'_>,
-        cancellation: &CancellationToken,
+        mut accounting: crate::kernel::KernelAccounting<'_>,
         mut before_publication: F,
     ) -> Result<crate::LazySnapshotRef, E>
     where
@@ -85,9 +84,13 @@ where
         Fut: Future<Output = Result<(), E>> + Send + 'static,
         E: From<MountSourceError> + From<crate::FsError> + Send + 'static,
     {
-        let work = carrier
-            .original_native_work()
-            .ok_or(MountSourceError::OriginalSnapshotUnavailable)?;
+        let (work, cancellation) = match &accounting {
+            crate::kernel::KernelAccounting::NativeOriginal { work, cancellation } => {
+                ((*work).clone(), *cancellation)
+            }
+            _ => return Err(MountSourceError::OriginalSnapshotUnavailable.into()),
+        };
+        let mut carrier = adapter::NativeDemandCarrier::Native(&work);
         let _phase = self
             .source_view
             .write_stable_with_carrier(
@@ -98,7 +101,6 @@ where
             )
             .await?
             .into_mutation_phase();
-        let mut accounting = crate::kernel::KernelAccounting::native(&work, cancellation);
         if let Some(generation) = self
             .lazy
             .operation_generation(
@@ -116,50 +118,15 @@ where
                 .lock()
                 .map_err(|_| MountSourceError::Stale)?
                 .publication;
-            let retained = {
-                let mut checkout = adapter::await_lock(
-                    self.authored.shared_checkout().lock(),
-                    &mut carrier,
-                    cancellation,
-                    Some(self.authored.cancellation()),
-                )
-                .await?;
-                checkout
-                    .has_retained_operation()
-                    .then(|| checkout.retained_operation_id())
-            };
-            if retained == Some(operation) {
-                let context = crate::lazy_workspace::NativeSnapshotContext::Selected {
-                    cut: self
-                        .lazy
-                        .publication_cut(Some(operation), &mut accounting)
-                        .await
-                        .map_err(lazy_error)?,
-                    input,
-                };
-                let mut acknowledged = None;
-                self.authored
-                    .shared_checkout()
-                    .publish(
-                        crate::PublicationPermit::Unrestricted,
-                        &work,
-                        cancellation,
-                        Some(self.authored.cancellation()),
-                        &mut adapter::source_publication_guard(
-                            self.authored.callback_guard().cloned(),
-                            Some(self.authored.cancellation().clone()),
-                        ),
-                        Some(context),
-                        &mut acknowledged,
-                    )
-                    .await
-                    .map_err(|(error, _)| error)?;
-                if !acknowledged.is_some_and(|snapshot| {
-                    snapshot.operation() == Some(operation) && snapshot.generation() == generation
-                }) {
-                    return Err(MountSourceError::Indeterminate.into());
-                }
-            }
+            self.replay_selected_publication(
+                operation,
+                generation,
+                input,
+                &mut carrier,
+                &mut accounting,
+                cancellation,
+            )
+            .await?;
             let snapshot = self
                 .lazy
                 .finish_selected_import(

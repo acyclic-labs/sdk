@@ -69,7 +69,7 @@ impl<F: Format> OwnedPage<F> {
                 }
                 let (allocations, work, budget, _) = accounting
                     .standalone_parts()
-                    .expect("the native page clone uses the original step engine");
+                    .ok_or(crate::ObjectStoreError::Corrupt)?;
                 allocations
                     .claim_bytes(logical_bytes, u64::from(logical_bytes != 0), work, budget)
                     .map_err(allocation_error)?;

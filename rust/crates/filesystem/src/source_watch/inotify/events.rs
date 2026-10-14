@@ -53,6 +53,10 @@ impl Shared {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "One locked event drain retains its cursor, accounting and failure state together."
+    )]
     pub(super) fn read_events_and_deliver<W: SourceDemandReadWork>(
         &self,
         timeout: std::time::Duration,
@@ -75,14 +79,14 @@ impl Shared {
                     self.delivery.invalidate(work)?;
                     return Ok(false);
                 }
-                while reading.alias_cursor == 0 && !reading.cleanup.is_empty() {
+                while let Some(path) = reading.cleanup.last().filter(|_| reading.alias_cursor == 0)
+                {
                     if started.elapsed() >= timeout {
                         self.delivery.invalidate(work)?;
                         return Ok(false);
                     }
-                    let path = reading.cleanup.last().expect("nonempty pending cleanup");
                     self.unadmit_with_work(path, work)?;
-                    let path = reading.cleanup.pop().expect("pending cleanup remains held");
+                    let path = reading.cleanup.pop().ok_or(DemandError::InvalidRequest)?;
                     let bytes = path.capacity() as u64;
 
                     drop(path);
@@ -92,11 +96,12 @@ impl Shared {
                         .fetch_sub(bytes, Ordering::AcqRel);
                 }
                 if reading.cursor == reading.filled {
-                    let maximum = (work
-                        .remaining()?
-                        .source_bytes_read
-                        .min(reading.buffer.len() as u64))
-                        as usize;
+                    let maximum = usize::try_from(
+                        work.remaining()?
+                            .source_bytes_read
+                            .min(reading.buffer.len() as u64),
+                    )
+                    .map_err(|_| WorkError::Overflow)?;
                     if maximum < EVENT_HEADER_BYTES {
                         work.admit(WorkCounters {
                             source_bytes_read: EVENT_HEADER_BYTES as u64,
@@ -137,24 +142,40 @@ impl Shared {
                     }
                 }
                 work.started_io(ITEM)?;
-                let raw = &reading.buffer[reading.cursor..reading.filled];
-                let Some(header) = raw.get(..EVENT_HEADER_BYTES) else {
+                let raw = reading
+                    .buffer
+                    .get(reading.cursor..reading.filled)
+                    .ok_or(DemandError::InvalidRequest)?;
+                let Some(
+                    &[
+                        d0,
+                        d1,
+                        d2,
+                        d3,
+                        m0,
+                        m1,
+                        m2,
+                        m3,
+                        c0,
+                        c1,
+                        c2,
+                        c3,
+                        l0,
+                        l1,
+                        l2,
+                        l3,
+                    ],
+                ) = raw.first_chunk::<EVENT_HEADER_BYTES>()
+                else {
                     self.delivery.invalidate(work)?;
                     reading.cursor = reading.filled;
                     return Ok(false);
                 };
-                let field = |offset: usize| {
-                    u32::from_ne_bytes(
-                        header[offset..offset + 4]
-                            .try_into()
-                            .expect("fixed inotify header"),
-                    )
-                };
-                let descriptor = i32::from_ne_bytes(field(0).to_ne_bytes());
-                let mask = field(4);
-                let cookie = field(8) as usize;
+                let descriptor = i32::from_ne_bytes([d0, d1, d2, d3]);
+                let mask = u32::from_ne_bytes([m0, m1, m2, m3]);
+                let cookie = u32::from_ne_bytes([c0, c1, c2, c3]) as usize;
                 let end = EVENT_HEADER_BYTES
-                    .checked_add(field(12) as usize)
+                    .checked_add(u32::from_ne_bytes([l0, l1, l2, l3]) as usize)
                     .ok_or(WorkError::Overflow)?;
                 let Some(bytes) = raw.get(EVENT_HEADER_BYTES..end) else {
                     self.delivery.invalidate(work)?;
@@ -169,7 +190,7 @@ impl Shared {
                     }
                     name_length += 1;
                 }
-                let name = OsStr::from_bytes(&bytes[..name_length]);
+                let name = OsStr::from_bytes(bytes.split_at(name_length).0);
                 if mask & (libc::IN_Q_OVERFLOW | libc::IN_UNMOUNT) != 0 {
                     self.delivery.invalidate(work)?;
                     reading.cursor += end;
@@ -224,11 +245,10 @@ impl Shared {
                         return Ok(false);
                     }
                     let watches = self.watches.lock().unwrap_or_else(PoisonError::into_inner);
-                    if reading.alias_cursor >= watches.len() {
+                    let Some((alias, watched)) = watches.get(reading.alias_cursor) else {
                         break;
-                    }
+                    };
                     work.started_io(ITEM)?;
-                    let (alias, watched) = &watches[reading.alias_cursor];
                     if *watched != descriptor {
                         reading.alias_cursor += 1;
                         continue;
@@ -372,9 +392,9 @@ impl Shared {
                 if mask & libc::IN_IGNORED != 0 {
                     let mut watches = self.watches.lock().unwrap_or_else(PoisonError::into_inner);
                     let mut at = 0;
-                    while at < watches.len() {
+                    while let Some((_, watched)) = watches.get(at) {
                         work.started_io(ITEM)?;
-                        if watches[at].1 == descriptor {
+                        if *watched == descriptor {
                             let shifted = (watches.len() - at - 1)
                                 .checked_mul(std::mem::size_of::<(PathBuf, i32)>())
                                 .ok_or(WorkError::Overflow)?;

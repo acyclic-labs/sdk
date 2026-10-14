@@ -5,9 +5,7 @@ impl Delivery {
         sink: Arc<dyn HostChangeSink>,
         work: &mut W,
     ) -> Result<Self, DemandError> {
-        let original = work
-            .native_source_work()
-            .map(|work| work.clone().allocation_work());
+        let original = work.native_source_work().map(|work| work.allocation_work());
         let controls = |work: &mut DemandWork| (work.budget, work.cancellation().clone());
         let (budget, cancellation) = work.with_original_leaf(controls);
         let ownership = SourcePayloadOwnership::new(work)?;
@@ -132,6 +130,7 @@ impl Delivery {
             .unwrap_or(Err(DemandError::NativeWorkUnavailable))
     }
 
+    #[cfg(target_os = "linux")]
     pub(super) fn invalidate<W: SourceDemandReadWork>(
         &self,
         work: &mut W,

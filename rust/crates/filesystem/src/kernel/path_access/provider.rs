@@ -34,7 +34,7 @@ pub(super) fn compose_backend(
 ) -> Result<(), crate::FsError> {
     let (_, work, budget, _) = accounting
         .standalone_parts()
-        .expect("native backend work is original, never composed");
+        .ok_or(crate::ObjectStoreError::Corrupt)?;
     *work = work.with_backend(backend, resident)?;
     work.verify(budget)?;
     Ok(())
@@ -149,7 +149,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             // Resident backend aliases coexist with a new table during growth.
             let (allocations, work, _, _) = accounting
                 .standalone_parts()
-                .expect("ordinary read owns its standalone projection");
+                .ok_or(crate::ObjectStoreError::Corrupt)?;
             allocations
                 .record_owned_bytes(
                     resident.checked_add(owned).ok_or(WorkError::Overflow)?,

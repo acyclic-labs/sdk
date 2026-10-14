@@ -1,7 +1,7 @@
 use super::super::allocation::AllocationLedger;
 use super::*;
 use crate::async_storage::AsyncObjectStore;
-use crate::foundation::{Digest, FileId, VolumeId};
+use crate::foundation::{FileId, VolumeId};
 use crate::kernel::{
     FileMetadata, FileTablePage, GenerationRoot, InlineFileData, LogicalName, MetadataField,
     NameEncoding, TreeEntry, TreePage, encode_file_metadata, encode_file_table_page,

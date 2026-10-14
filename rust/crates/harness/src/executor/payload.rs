@@ -64,42 +64,6 @@ pub(crate) fn retain_preparation<T>(
     decoded.0
 }
 
-#[cfg(feature = "filesystem")]
-pub(crate) fn reserve_preparation_workspace<'a, T: Serialize>(
-    value: &T,
-    io: &'a PreparationIo,
-) -> Result<crate::filesystem::DecodeReservation<'a>> {
-    let before_items = io.receipt().items_examined;
-    let _encoded_hold;
-    let encoded = io.encode(value, io.remaining()?.bytes_encoded, false)?;
-    _encoded_hold = io.guard_owned(encoded.len() as u64)?;
-    let items = io
-        .receipt()
-        .items_examined
-        .checked_sub(before_items)
-        .ok_or_else(|| Error::Invalid("preparation item accounting underflow".into()))?;
-    let slot = [
-        std::mem::size_of::<T>() as u64,
-        <crate::context::Context as PreparationRecord>::maximum_slot_bytes(),
-        std::mem::size_of::<crate::conversation::ConversationMessage>() as u64,
-        std::mem::size_of::<crate::context::CompactionReference>() as u64,
-    ]
-    .into_iter()
-    .max()
-    .unwrap_or(0);
-    let bytes = items
-        .checked_mul(slot)
-        .and_then(|slots| slots.checked_mul(8))
-        .and_then(|slots| {
-            (encoded.len() as u64)
-                .checked_mul(4)
-                .and_then(|strings| slots.checked_add(strings))
-        })
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<T>() as u64))
-        .ok_or_else(|| Error::Invalid("preparation allowance overflow".into()))?;
-    io.reserve_decode(bytes)
-}
-
 pub(crate) fn preparation_digest<T: Serialize>(
     value: &T,
     io: Option<&PreparationIo>,

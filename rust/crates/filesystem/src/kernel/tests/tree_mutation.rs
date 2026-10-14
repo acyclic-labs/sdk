@@ -121,7 +121,6 @@ async fn original_mutation_write_denial_preserves_paid_orphan_prefix()
         |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
     )?;
     assert_eq!(work.receipt().bytes_encoded, first_page_bytes.len() as u64);
-    drop(accounting);
     drop(store);
     assert_eq!(
         work.live_allocation_bytes(),

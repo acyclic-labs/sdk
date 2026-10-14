@@ -364,7 +364,7 @@ where
         {
             let _staged;
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-            let staged = self.read_record(&reference, true, true, io).await?;
+            let staged = self.read_record(&reference, false, false, io).await?;
             _staged = io
                 .map(|io| {
                     io.guard_owned(io.owned_bytes()?.checked_sub(before).ok_or_else(|| {

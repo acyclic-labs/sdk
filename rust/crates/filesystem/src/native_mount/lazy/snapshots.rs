@@ -162,50 +162,15 @@ where
         if let Some((id, Some((destination, source, config, input)))) = remembered
             && id == operation
         {
-            let retained = {
-                let mut checkout = adapter::await_lock(
-                    self.authored.shared_checkout().lock(),
-                    &mut carrier,
-                    cancellation,
-                    Some(self.authored.cancellation()),
-                )
-                .await?;
-                checkout
-                    .has_retained_operation()
-                    .then(|| checkout.retained_operation_id())
-            };
-            if retained == Some(operation) {
-                let context = crate::lazy_workspace::NativeSnapshotContext::Selected {
-                    cut: self
-                        .lazy
-                        .publication_cut(Some(operation), &mut accounting)
-                        .await
-                        .map_err(lazy_error)?,
-                    input,
-                };
-                let mut acknowledged = None;
-                self.authored
-                    .shared_checkout()
-                    .publish(
-                        crate::PublicationPermit::Unrestricted,
-                        original,
-                        cancellation,
-                        Some(self.authored.cancellation()),
-                        &mut adapter::source_publication_guard(
-                            self.authored.callback_guard().cloned(),
-                            Some(self.authored.cancellation().clone()),
-                        ),
-                        Some(context),
-                        &mut acknowledged,
-                    )
-                    .await
-                    .map_err(|(error, _)| error)?;
-                if !acknowledged.is_some_and(|snapshot| {
-                    snapshot.operation() == Some(operation) && snapshot.generation() == generation
-                }) {
-                    return Err(MountSourceError::Indeterminate);
-                }
-            }
+            self.replay_selected_publication(
+                operation,
+                generation,
+                input,
+                &mut carrier,
+                &mut accounting,
+                cancellation,
+            )
+            .await?;
             self.lazy
                 .finish_selected_import(
                     operation,
@@ -222,5 +187,64 @@ where
             self.clear_mount_removals()?;
         }
         Ok(Some(snapshot))
+    }
+
+    pub(super) async fn replay_selected_publication(
+        &self,
+        operation: crate::OperationId,
+        generation: crate::GenerationId,
+        input: crate::Digest,
+        carrier: &mut adapter::NativeDemandCarrier<'_>,
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), MountSourceError> {
+        let original = carrier
+            .original_native_work()
+            .ok_or(MountSourceError::OriginalSnapshotUnavailable)?;
+        let retained = {
+            let mut checkout = adapter::await_lock(
+                self.authored.shared_checkout().lock(),
+                carrier,
+                cancellation,
+                Some(self.authored.cancellation()),
+            )
+            .await?;
+            checkout
+                .has_retained_operation()
+                .then(|| checkout.retained_operation_id())
+        };
+        if retained == Some(operation) {
+            let context = crate::lazy_workspace::NativeSnapshotContext::Selected {
+                cut: self
+                    .lazy
+                    .publication_cut(Some(operation), accounting)
+                    .await
+                    .map_err(lazy_error)?,
+                input,
+            };
+            let mut acknowledged = None;
+            self.authored
+                .shared_checkout()
+                .publish(
+                    crate::PublicationPermit::Unrestricted,
+                    &original,
+                    cancellation,
+                    Some(self.authored.cancellation()),
+                    &mut adapter::source_publication_guard(
+                        self.authored.callback_guard().cloned(),
+                        Some(self.authored.cancellation().clone()),
+                    ),
+                    Some(context),
+                    &mut acknowledged,
+                )
+                .await
+                .map_err(|(error, _)| error)?;
+            if !acknowledged.is_some_and(|snapshot| {
+                snapshot.operation() == Some(operation) && snapshot.generation() == generation
+            }) {
+                return Err(MountSourceError::Indeterminate);
+            }
+        }
+        Ok(())
     }
 }
