@@ -174,14 +174,10 @@ impl<'a> PiControlHost<'a> {
             .policy()
             .maximum_payload_bytes
             .min(admission.0.limits.file_bytes);
-        let bytes = crate::pi_root_provider::canonical_pi_value(&admission.0.input, maximum, work)?;
-        let mut input = crate::pi_root_provider::guarded_pi_decode::<PiTaskInput>(
-            &bytes.0,
-            maximum,
-            self.protected.policy().maximum_payload_bytes,
-            acyclic_harness::wire::ErrorCode::Invalid,
+        let mut input = crate::pi_recovery::decode_recovery_value::<PiTaskInput>(
+            std::borrow::Cow::Borrowed(&admission.0.input),
             acyclic_harness::JsonValueSchema::None,
-            crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES,
+            maximum,
             work,
         )?;
         if input.0.binding.task_id != task {

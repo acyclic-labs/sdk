@@ -21,14 +21,10 @@ impl PiNativeCommandHost {
             .policy()
             .maximum_payload_bytes
             .min(admission.0.limits.file_bytes);
-        let bytes = crate::pi_root_provider::canonical_pi_value(&admission.0.input, maximum, work)?;
-        let mut input = crate::pi_root_provider::guarded_pi_decode::<PiTaskInput>(
-            &bytes.0,
+        let mut input = crate::pi_recovery::decode_recovery_value::<PiTaskInput>(
+            std::borrow::Cow::Borrowed(&admission.0.input),
+            acyclic_harness::JsonValueSchema::None,
             maximum,
-            self.protected.policy().maximum_payload_bytes,
-            acyclic_harness::wire::ErrorCode::Invalid,
-            JsonValueSchema::None,
-            crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES,
             work,
         )?;
         if task == self.protected.policy().root_task
@@ -93,14 +89,10 @@ impl PiNativeCommandHost {
             .policy()
             .maximum_payload_bytes
             .min(context.scope().limits().file_bytes);
-        let supplied_bytes = crate::pi_root_provider::canonical_pi_value(&payload, maximum, work)?;
-        let supplied = crate::pi_root_provider::guarded_pi_decode::<PiNativeLaunchIntent>(
-            &supplied_bytes.0,
+        let supplied = crate::pi_recovery::decode_recovery_value::<PiNativeLaunchIntent>(
+            std::borrow::Cow::Owned(payload),
+            acyclic_harness::JsonValueSchema::None,
             maximum,
-            self.protected.policy().maximum_payload_bytes,
-            acyclic_harness::wire::ErrorCode::Invalid,
-            JsonValueSchema::None,
-            pi_native::PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES,
             work,
         )?;
         if original.0 != supplied.0 {

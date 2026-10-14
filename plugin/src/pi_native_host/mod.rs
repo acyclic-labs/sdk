@@ -18,7 +18,7 @@ use acyclic_harness::filesystem::PreparationIo;
 use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::store::HistoryIo;
 use acyclic_harness::{
-    Error, JsonValueSchema, OperationId, Outcome, Result, TaskId,
+    Error, OperationId, Outcome, Result, TaskId,
     conversation::VolumeOperation,
     core::{EffectStatus, SchemaRegistry},
     distributed::{WorkPull, Worker},

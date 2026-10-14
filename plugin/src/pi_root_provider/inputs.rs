@@ -1,7 +1,7 @@
 //! Immutable uploads and their original task bindings.
 use super::*;
 
-fn pi_input_write_grant_with_native_work(
+pub(super) fn pi_input_write_grant_with_native_work(
     owner: &PiOwnerConfig,
     work: &NativeMaterializationWork,
 ) -> Result<(ContentGrant, NativeAllocation)> {
@@ -106,7 +106,16 @@ pub(crate) async fn observe_pi_input(
         "input",
         work,
     )?;
-    observe_pi_input_at(owner, filesystem, coordinates, "application/json", work).await
+    let grant = pi_input_write_grant_with_native_work(owner, work)?;
+    observe_pi_input_at(
+        owner,
+        filesystem,
+        &grant.0,
+        coordinates,
+        "application/json",
+        work,
+    )
+    .await
 }
 
 #[allow(
@@ -207,21 +216,22 @@ pub(crate) async fn observe_pi_root_input_with_native_work(
     owner: &PiOwnerConfig,
     filesystem: &Host,
     name: &str,
+    grant: &ContentGrant,
     work: &NativeMaterializationWork,
 ) -> Result<Option<(FileRef, NativeAllocation)>> {
     let media_type = root_input_media(name)?;
     let coordinates = root_input_coordinates_with_native_work(owner, name, work)?;
-    observe_pi_input_at(owner, filesystem, coordinates, media_type, work).await
+    observe_pi_input_at(owner, filesystem, grant, coordinates, media_type, work).await
 }
 
 pub(super) async fn observe_pi_input_at(
     owner: &PiOwnerConfig,
     filesystem: &Host,
+    grant: &ContentGrant,
     coordinates: NativeInputCoordinates,
     media_type: &str,
     work: &NativeMaterializationWork,
 ) -> Result<Option<(FileRef, NativeAllocation)>> {
-    let grant = pi_input_write_grant_with_native_work(owner, work)?;
     let maximum = owner
         .policy()
         .maximum_payload_bytes
@@ -230,7 +240,7 @@ pub(super) async fn observe_pi_input_at(
     let result = filesystem
         .content_for_operation(
             &owner.policy().journal,
-            &grant.0,
+            grant,
             &coordinates.key.0,
             &coordinates.path.0,
             maximum,
@@ -398,21 +408,33 @@ pub(crate) fn load_original_preparation_with_native_work<'a>(
             code: ErrorCode::Unauthorized,
             reason: "original root preparation upload operation is absent",
         };
-        let mut payload =
-            observe_pi_root_input_with_native_work(owner, filesystem, "preparation", work)
-                .await?
-                .ok_or_else(missing)?;
+        let grant = pi_input_write_grant_with_native_work(owner, work)?;
+        let mut payload = observe_pi_root_input_with_native_work(
+            owner,
+            filesystem,
+            "preparation",
+            &grant.0,
+            work,
+        )
+        .await?
+        .ok_or_else(missing)?;
         let plan = read_root_artifact_with_native_work::<
             acyclic_harness::effect_host::TaskEffectPlan,
         >(owner, context.as_ref(), &payload.0, work)
         .await?;
-        let root = observe_pi_root_input_with_native_work(owner, filesystem, "root", work)
-            .await?
-            .ok_or_else(missing)?;
-        let schema_reference =
-            observe_pi_root_input_with_native_work(owner, filesystem, "allocation-schema", work)
+        let root =
+            observe_pi_root_input_with_native_work(owner, filesystem, "root", &grant.0, work)
                 .await?
                 .ok_or_else(missing)?;
+        let schema_reference = observe_pi_root_input_with_native_work(
+            owner,
+            filesystem,
+            "allocation-schema",
+            &grant.0,
+            work,
+        )
+        .await?
+        .ok_or_else(missing)?;
         if plan.0.provider != ROOT_ALLOCATION_PROVIDER
             || plan.0.effect_kind != ROOT_ALLOCATION_EFFECT
             || plan.0.guarantee != EffectGuarantee::AtMostOnce

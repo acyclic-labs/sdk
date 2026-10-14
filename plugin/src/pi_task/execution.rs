@@ -33,6 +33,7 @@ impl ResumableMachine for PiTaskMachine {
         let mut decoded = crate::pi_recovery::decode_recovery_value::<PiTaskInput>(
             std::borrow::Cow::Borrowed(input),
             acyclic_harness::JsonValueSchema::None,
+            crate::MAXIMUM_ADAPTER_STATE_BYTES,
             work,
         )?;
         let state = initial_state(decoded.0, work)?;

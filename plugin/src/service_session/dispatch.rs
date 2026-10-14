@@ -41,26 +41,21 @@ impl PiSession {
                         &work,
                     )?;
                     self.runtime.verify_owner_with_native_work(&owner, &work)?;
-                    let caller = request
-                        .arguments
-                        .get("caller")
-                        .map(|value| {
-                            let bytes = pi_root_provider::canonical_pi_value(
-                                value,
-                                MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
-                                &work,
-                            )?;
-                            pi_root_provider::guarded_pi_decode::<acyclic_harness::core::Scope>(
-                                &bytes.0,
-                                MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
-                                MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
-                                acyclic_harness::wire::ErrorCode::Invalid,
-                                acyclic_harness::JsonValueSchema::None,
-                                0,
-                                &work,
-                            )
-                        })
-                        .transpose()?;
+                    let caller =
+                        request
+                            .arguments
+                            .get("caller")
+                            .map(|value| {
+                                crate::pi_recovery::decode_recovery_value::<
+                                    acyclic_harness::core::Scope,
+                                >(
+                                    std::borrow::Cow::Borrowed(value),
+                                    acyclic_harness::JsonValueSchema::None,
+                                    MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
+                                    &work,
+                                )
+                            })
+                            .transpose()?;
                     let task = if let Some((scope, _)) = &caller {
                         pi_caller::verify(&owner, &self.state, scope, session, &work)?.task_id
                     } else {

@@ -223,12 +223,14 @@ pub(crate) async fn observe_pi_session(
             >(
                 std::borrow::Cow::Owned(std::mem::take(&mut admission.0.input)),
                 acyclic_harness::JsonValueSchema::ResourcePreparationRequest,
+                super::MAXIMUM_ADAPTER_STATE_BYTES,
                 work,
             )?;
             request.0.validate(&mut None)?;
             let child = decode_recovery_value::<PiTaskInput>(
                 std::borrow::Cow::Owned(std::mem::take(&mut request.0.child.input)),
                 acyclic_harness::JsonValueSchema::None,
+                super::MAXIMUM_ADAPTER_STATE_BYTES,
                 work,
             )?;
             if admission.0.task
@@ -371,6 +373,7 @@ pub(crate) async fn observe_pi_session(
                                 let mut decoded = decode_recovery_value::<FileRef>(
                                     std::borrow::Cow::Owned(value),
                                     acyclic_harness::JsonValueSchema::None,
+                                    super::MAXIMUM_ADAPTER_STATE_BYTES,
                                     work,
                                 )?;
                                 custody.absorb(&mut decoded.1)?;
@@ -468,6 +471,7 @@ pub(crate) fn authenticate_pi_task(
     let admitted = decode_recovery_value::<PiTaskInput>(
         std::borrow::Cow::Borrowed(&admission.input),
         acyclic_harness::JsonValueSchema::None,
+        super::MAXIMUM_ADAPTER_STATE_BYTES,
         work,
     )?;
     if admission.operation_id.into_bytes() != binding.task_id.into_bytes()
@@ -597,6 +601,7 @@ fn invalid(message: &'static str) -> Error {
 pub(crate) fn decode_recovery_value<T: serde::de::DeserializeOwned>(
     value: std::borrow::Cow<'_, serde_json::Value>,
     schema: &'static acyclic_harness::JsonValueSchema,
+    maximum_bytes: u64,
     work: &NativeMaterializationWork,
 ) -> Result<(T, NativeAllocation)> {
     let borrowed = matches!(value, std::borrow::Cow::Borrowed(_));
@@ -604,7 +609,7 @@ pub(crate) fn decode_recovery_value<T: serde::de::DeserializeOwned>(
     let mut retained_owned = 0;
     let remaining = work.remaining()?;
     let bounds = acyclic_harness::JsonBounds {
-        maximum_bytes: super::MAXIMUM_ADAPTER_STATE_BYTES,
+        maximum_bytes,
         maximum_items: remaining.items_examined,
         maximum_depth: 64,
     };

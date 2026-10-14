@@ -252,9 +252,11 @@ impl PiRootProvider {
         work: &NativeMaterializationWork,
     ) -> Result<Option<(FileRef, NativeAllocation)>> {
         let coordinates = self.artifact_with_native_work(effect, attempt, name, work)?;
+        let grant = inputs::pi_input_write_grant_with_native_work(&self.owner, work)?;
         observe_pi_input_at(
             &self.owner,
             &self.filesystem,
+            &grant.0,
             coordinates,
             "application/json",
             work,
