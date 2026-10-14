@@ -146,8 +146,8 @@ test('native builds and mount checks overlap qualification and still gate public
  ]);
  for(const [target,runner] of new Map([
   ['linux-x64-gnu','blacksmith-16vcpu-ubuntu-2404'],
-  ['linux-arm64-gnu','blacksmith-32vcpu-ubuntu-2404-arm'],
-  ['linux-arm64-musl','blacksmith-32vcpu-ubuntu-2404-arm'],
+  ['linux-arm64-gnu','blacksmith-16vcpu-ubuntu-2404-arm'],
+  ['linux-arm64-musl','blacksmith-16vcpu-ubuntu-2404-arm'],
   ['win32-x64','blacksmith-32vcpu-windows-2025'],
  ])){
   const row=matrix.find(row=>row.target===target)??assert.fail(target);
