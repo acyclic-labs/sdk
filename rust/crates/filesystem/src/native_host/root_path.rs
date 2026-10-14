@@ -18,7 +18,7 @@ pub(super) fn open_windows_root_name(
         )
     }
     .map_err(|error| io::Error::from_raw_os_error(error.code().0 & 0xffff))?;
-    // SAFETY: CreateFileW returned a fresh handle whose sole ownership moves into File.
+    // SAFETY: CreateFileW returned a fresh handle, now owned by File.
     Ok(unsafe { File::from_raw_handle(handle.0) })
 }
 
@@ -76,11 +76,11 @@ pub(super) fn with_root_name<W: NativeHostWork, T>(
             let (mut output, allocation) = buffer(required + 8, work)?;
             output.resize(required + 8, 0);
             let result = (|| {
-                let count = query(Some(&mut output[8..]), work)?;
+                let count = query(Some(output.get_mut(8..).ok_or_else(W::invalid_request)?), work)?;
                 if count >= required {
                     return Ok(Err(count));
                 }
-                let (prefix, skip): (&[u16], usize) = match &output[8..8 + count] {
+                let (prefix, skip): (&[u16], usize) = match output.get(8..8 + count).ok_or_else(W::invalid_request)? {
                     [_, 58, 92, ..] => (VERBATIM, 0),
                     [92, 92, 46, 92, ..] => (VERBATIM, 4),
                     [92, 92, 63, 92, ..] | [92, 63, 63, 92, ..] => (&[], 0),
@@ -89,11 +89,12 @@ pub(super) fn with_root_name<W: NativeHostWork, T>(
                 };
                 let begin = 8 + skip - prefix.len();
                 work.started_io(copy_work(prefix.len() as u64 * 2))?;
-                output[begin..begin + prefix.len()].copy_from_slice(prefix);
+                output.get_mut(begin..begin + prefix.len()).ok_or_else(W::invalid_request)?.copy_from_slice(prefix);
                 Ok::<_, W::Error>(Ok((begin, 8 + count + 1)))
             })();
             if let Ok(Ok((begin, end))) = result {
-                let result = operation(&output[begin..end], work);
+                let result = output.get(begin..end).ok_or_else(W::invalid_request)
+                    .and_then(|path| operation(path, work));
                 drop(output);
                 work.release(allocation)?;
                 return result;

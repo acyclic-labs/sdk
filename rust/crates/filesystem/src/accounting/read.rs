@@ -33,19 +33,14 @@ pub async fn accounting_page<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         return Err(AccountingError::InvalidBounds);
     }
     let head = ({
-        let __authority_args = (authority_id, budget, cancellation);
-        let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.1, __authority_args.2);
-        let __authority_result = authority
-            .head(__authority_args.0, &mut __authority_work)
-            .await;
-        __authority_work.receipt(__authority_result)
+        let mut work = crate::AuthorityWork::new(budget, cancellation);
+        let result = authority.head(authority_id, &mut work).await;
+        work.receipt(result)
     })
     .map_err(|e| AccountingError::Authority(e.error.to_string()))?;
     accounting_page_at_head(
-        authority,
+        (authority, authority_id),
         objects,
-        authority_id,
         cursor,
         maximum_records,
         head.value,
@@ -61,15 +56,15 @@ pub async fn accounting_page<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 }
 
 pub(crate) async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    authority: &A,
+    authority: (&A, AuthorityId),
     objects: &O,
-    authority_id: AuthorityId,
     cursor: AccountingCursor,
     maximum_records: u32,
     head: crate::foundation::Head,
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<AccountingPage, AccountingError> {
+    let (authority, authority_id) = authority;
     if maximum_records == 0
         || maximum_records > 256
         || !budget.has_finite_allowances()
@@ -263,17 +258,21 @@ pub(crate) async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObje
                     Ok::<_, crate::kernel::VolumeCreatedError>(())
                 })
                 .map_err(|_| AccountingError::InvalidHistory)?;
-                prove_published(
+                let bytes = prove_bytes(
                     objects,
                     created.initial_generation_root,
-                    *volume_id,
-                    *config,
+                    (*volume_id, *config),
                     authority_id,
                     &record,
                     &mut measured,
                     cancellation,
                 )
-                .await?
+                .await?;
+                AccountingTransition::Published {
+                    volume_id: *volume_id,
+                    generation_root: created.initial_generation_root,
+                    logical_regular_file_bytes: bytes,
+                }
             }
             AuthorityKind::Volume { volume_id, config } => {
                 if let Ok(published) =
@@ -284,17 +283,21 @@ pub(crate) async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObje
                     if published.volume_id != *volume_id {
                         return Err(AccountingError::InvalidHistory);
                     }
-                    prove_published(
+                    let bytes = prove_bytes(
                         objects,
                         published.generation_root,
-                        *volume_id,
-                        *config,
+                        (*volume_id, *config),
                         authority_id,
                         &record,
                         &mut measured,
                         cancellation,
                     )
-                    .await?
+                    .await?;
+                    AccountingTransition::Published {
+                        volume_id: *volume_id,
+                        generation_root: published.generation_root,
+                        logical_regular_file_bytes: bytes,
+                    }
                 } else {
                     let deleted = decode_workspace_deleted(&record.payload, MAX_EVENT_BYTES)
                         .map_err(|_| AccountingError::InvalidHistory)?;
@@ -324,8 +327,7 @@ pub(crate) async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObje
                 let bytes = prove_bytes(
                     objects,
                     retained.generation_root,
-                    *volume_id,
-                    *config,
+                    (*volume_id, *config),
                     authority_id,
                     &record,
                     &mut measured,
@@ -465,28 +467,16 @@ impl AccountingReadWork {
         cancellation: &CancellationToken,
     ) -> Result<Vec<DurableCommit>, AccountingError> {
         let receipt = ({
-            let __authority_args = (
-                authority_id,
-                after,
-                ReplayLimit {
-                    records: maximum_records,
-                    payload_bytes: MAX_EVENT_BYTES * u64::from(maximum_records),
-                },
-                self.remaining()?,
-                cancellation,
-            );
-            let mut __authority_work =
-                crate::AuthorityWork::new(__authority_args.3, __authority_args.4);
-            let __authority_result = authority
-                .replay(
-                    __authority_args.0,
-                    __authority_args.1,
-                    __authority_args.2,
-                    &mut __authority_work,
-                )
+            let limit = ReplayLimit {
+                records: maximum_records,
+                payload_bytes: MAX_EVENT_BYTES * u64::from(maximum_records),
+            };
+            let mut work = crate::AuthorityWork::new(self.remaining()?, cancellation);
+            let result = authority
+                .replay(authority_id, after, limit, &mut work)
                 .await
                 .map(|(value, _allocation)| value);
-            __authority_work.receipt(__authority_result)
+            work.receipt(result)
         })
         .map_err(|failure| AccountingError::Authority(failure.error.to_string()))?;
         self.backend(receipt.work)?;

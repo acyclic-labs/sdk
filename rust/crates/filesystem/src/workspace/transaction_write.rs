@@ -107,7 +107,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             .map(|(index, _)| index)
             .chain(std::iter::once(path.len()))
         {
-            let path = self.mutation_path(&path[..end], accounting, cancellation)?;
+            let prefix = path.get(..end).ok_or(crate::FsError::InvalidDiff)?;
+            let path = self.mutation_path(prefix, accounting, cancellation)?;
             match self
                 .checkout
                 .lookup_no_follow_with_accounting(&path.value, accounting, cancellation, true)

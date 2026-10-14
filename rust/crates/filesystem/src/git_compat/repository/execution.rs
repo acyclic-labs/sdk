@@ -135,11 +135,9 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         let mut hash = blake3::Hasher::new();
         hash.update(&pending.id.into_bytes());
         hash.update(b"abort");
-        let operation = OperationId::from_bytes(
-            hash.finalize().as_bytes()[..16]
-                .try_into()
-                .expect("digest width"),
-        );
+        let mut identity = [0; 16];
+        identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+        let operation = OperationId::from_bytes(identity);
         let result = self
             .perform(
                 operation,

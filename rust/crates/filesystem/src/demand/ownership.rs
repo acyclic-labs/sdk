@@ -1,10 +1,11 @@
+#[cfg(feature = "native-watch")]
 use super::*;
 use crate::NativeMaterializationWork;
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "native-watch")]
+use std::sync::Arc;
 
+#[cfg(feature = "native-watch")]
 #[derive(Debug, Default)]
 pub(crate) enum SourcePayloadOwnership {
     #[default]
@@ -12,6 +13,7 @@ pub(crate) enum SourcePayloadOwnership {
     Allocation(crate::NativeAllocation),
     Registered(Arc<NativeMountAllocationCustody>, AtomicU64),
 }
+#[cfg(feature = "native-watch")]
 impl SourcePayloadOwnership {
     pub(crate) fn from_native_allocation(allocation: crate::NativeAllocation) -> Self {
         Self::Allocation(allocation)
@@ -62,6 +64,7 @@ impl SourcePayloadOwnership {
             }
         }
     }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn has_native_custody(&self) -> bool {
         !matches!(self, Self::Borrowed)
     }
@@ -85,6 +88,7 @@ impl SourcePayloadOwnership {
         }
     }
 }
+#[cfg(feature = "native-watch")]
 impl Drop for SourcePayloadOwnership {
     fn drop(&mut self) {
         if let Self::Registered(custody, bytes) = self
@@ -107,6 +111,7 @@ impl NativeMountAllocationCustody {
     pub(super) fn retained_bytes(&self) -> u64 {
         self.bytes.load(Ordering::Acquire)
     }
+    #[cfg(feature = "native-watch")]
     pub(crate) fn new<W: SourceDemandReadWork>(work: &mut W) -> Result<Arc<Self>, DemandError> {
         work.check()?;
         let original = work.native_source_work().map(|work| work.allocation_work());
@@ -125,10 +130,13 @@ impl NativeMountAllocationCustody {
                 bytes: AtomicU64::new(metadata),
                 original,
             });
-            work.roots.native_mount_admissions.0[index] = (Arc::downgrade(&custody), metadata);
+            let slot = work.roots.native_mount_admissions.0.get_mut(index)
+                .ok_or(DemandError::InvalidRequest)?;
+            *slot = (Arc::downgrade(&custody), metadata);
             Ok(custody)
         })
     }
+    #[cfg(feature = "native-watch")]
     pub(crate) fn is_admitted(&self, work: &mut DemandWork) -> Result<bool, DemandError> {
         work.reconcile_cancellation_registry()?;
         for entry in work.roots.native_mount_admissions.0.iter() {
@@ -139,6 +147,7 @@ impl NativeMountAllocationCustody {
         }
         Ok(false)
     }
+    #[cfg(feature = "native-watch")]
     pub(crate) fn claim(&self, bytes: u64, work: &mut DemandWork) -> Result<(), DemandError> {
         work.check()?;
         self.retained_bytes()
@@ -150,6 +159,7 @@ impl NativeMountAllocationCustody {
         work.claim_allocation(bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED)?;
         self.retain(bytes, work).map_err(DemandError::from)
     }
+    #[cfg(feature = "native-watch")]
     pub(crate) fn retain(&self, bytes: u64, work: &mut DemandWork) -> Result<(), crate::WorkError> {
         let entry = work
             .roots
@@ -177,6 +187,7 @@ impl NativeMountAllocationCustody {
         entry.1 = adopted;
         Ok(())
     }
+    #[cfg(feature = "native-watch")]
     pub(crate) fn retire(&self, bytes: u64) -> Result<(), crate::WorkError> {
         self.bytes
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {

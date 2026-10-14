@@ -153,6 +153,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         accept_receipt(result, ctx)
     }
 
+    #[cfg(feature = "native-mount")]
     pub(crate) fn source_reference(&self) -> SourceReference {
         self.source.reference()
     }

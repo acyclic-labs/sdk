@@ -53,7 +53,11 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             };
             let read = WorkCounters {
                 authority_records_read: 1,
-                authority_bytes_read: record.0.value.len() as u64,
+                authority_bytes_read: if work.is_native() {
+                    0
+                } else {
+                    record.0.value.len() as u64
+                },
                 ..WorkCounters::UNCHARGED
             };
             work.admit(read)?;

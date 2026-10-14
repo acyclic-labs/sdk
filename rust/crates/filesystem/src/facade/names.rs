@@ -160,7 +160,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     .map(|(_, id)| id)
                     .filter(|other| *other != id);
                     let ids = [id, removed_id.unwrap_or(id)];
-                    let allowed = &ids[..if removed_id.is_some() { 2 } else { 1 }];
+                    let allowed = if removed_id.is_some() {
+                        ids.as_slice()
+                    } else {
+                        std::slice::from_ref(&id)
+                    };
                     self.admit_binding_name(
                         destination,
                         &pending.value,
@@ -503,10 +507,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         accounting: &'a mut KernelAccounting<'accounting>,
         cancellation: &'a CancellationToken,
         allowed_file_ids: &'a [FileId],
-    ) -> impl std::future::Future<
-        Output = Result<Option<(LogicalName, KernelOwnedAllocation)>, FsError>,
-    > + ProviderTask
-    + 'a {
+    ) -> impl std::future::Future<Output = Result<Option<(LogicalName, KernelOwnedAllocation)>, FsError>> + ProviderTask + 'a {
         async move {
             let mut frame_custody = None;
             let (future, frame_bytes) = crate::heap_future::in_heap_admitted(

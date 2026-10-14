@@ -83,7 +83,7 @@ fn core_lazy_work(
         |(cause, work)| {
             if let Some((_, prefix, _, _)) = accounting.standalone_parts() {
                 *prefix = prefix
-                    .checked_add(work)
+                    .checked_add(*work)
                     .expect("constructor used its remaining allowance");
             }
             crate::LazyWorkspaceError::NativeWork(cause)

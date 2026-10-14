@@ -122,6 +122,16 @@ impl ProjFsSession {
             prepare(packet)?;
         }
         session.retirement = retirement.take();
+        session.activate(request, &runtime, work, warm)
+    }
+
+    fn activate(
+        &mut self,
+        request: &NativeMountRequest,
+        runtime: &Arc<Runtime>,
+        work: &crate::NativeMaterializationWork,
+        warm: Option<ProjFsNamespaceQualification>,
+    ) -> Result<(), NativeMountError> {
         let guid = warm.map_or_else(
             || guid_from_key(u128::from_le_bytes(request.mount_id.into_bytes())),
             |warm| warm.instance_id,
@@ -155,13 +165,13 @@ impl ProjFsSession {
                 PrjStartVirtualizing(
                     &root_name,
                     &raw const callbacks,
-                    Some(Arc::as_ptr(&runtime).cast::<c_void>()),
+                    Some(Arc::as_ptr(runtime).cast::<c_void>()),
                     Some(&raw const options),
                 )
             }
             .map_err(|error| std::io::Error::from_raw_os_error(error.code().0))
         })?;
-        session.context = Some(context);
+        self.context = Some(context);
         let mut instance =
             windows::Win32::Storage::ProjectedFileSystem::PRJ_VIRTUALIZATION_INSTANCE_INFO::default(
             );
@@ -178,7 +188,7 @@ impl ProjFsSession {
         if warm.is_some_and(|warm| warm.instance_id != instance.InstanceID) {
             return Err(NativeMountError::InvalidDestination);
         }
-        session.qualification = Some(ProjFsNamespaceQualification {
+        self.qualification = Some(ProjFsNamespaceQualification {
             root_identity: runtime.metadata_root.identity(),
             instance_id: instance.InstanceID,
         });

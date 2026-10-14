@@ -6,12 +6,12 @@ fn workspace(name: &str) -> WorkspaceId {
         [9; 16],
         &WorkspaceName::new(
             name,
-            crate::WorkBudget::UNBOUNDED,
+            &crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )
         .expect("valid name")
         .value,
-        crate::WorkBudget::UNBOUNDED,
+        &crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     )
     .expect("unbounded workspace identity")

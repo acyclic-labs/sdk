@@ -283,14 +283,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 } => {
                     let mutation = mutations
                         .next()
-                        .expect("preflight retained every authored mutation");
+                        .ok_or(FsError::InvalidDiff)?;
                     let bytes = mutation.logical_owned_bytes();
                     let allocation = split_allocation(allocation, bytes)?;
                     Owned::new(mutation, allocation, bytes)
                 }
                 AuthoredTransactionInput::Borrowed(mutations) => {
                     accounting.check()?;
-                    clone_borrowed_authored_descriptor(&mutations[index], accounting)?
+                    clone_borrowed_authored_descriptor(mutations.get(index).ok_or(FsError::InvalidDiff)?, accounting)?
                 }
             };
             let file_id = self

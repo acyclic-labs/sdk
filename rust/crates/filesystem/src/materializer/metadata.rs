@@ -132,7 +132,7 @@ fn hash_native_entry(
         (metadata.raw.st_mtime_nsec as i64) as u64,
     ];
     #[cfg(windows)]
-    let facts = [metadata.len(), metadata.raw.LastWriteTime as u64];
+    let facts = [metadata.len(), metadata.raw.LastWriteTime.cast_unsigned()];
     for value in facts {
         hash_bytes(&value.to_le_bytes(), hasher, work)?;
     }
@@ -215,13 +215,15 @@ fn hash_native_entry(
                 acyclic_native_runtime::NativeOperationKind::Read,
                 maximum,
                 work,
-                || std::io::Read::read(&mut &file, &mut buffer[..maximum]),
+                || std::io::Read::read(&mut &file, buffer.get_mut(..maximum)
+                    .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?),
             )?;
             if read == 0 {
                 return Err(NativeTreeMaterializationError::ExternalMutation);
             }
-            remaining -= read as u64;
-            hash_bytes(&buffer[..read], hasher, work)?;
+            remaining = remaining.checked_sub(read as u64)
+                .ok_or(NativeTreeMaterializationError::ExternalMutation)?;
+            hash_bytes(buffer.get(..read).ok_or(NativeTreeMaterializationError::ExternalMutation)?, hasher, work)?;
         }
         if !same_file_version(
             metadata,
@@ -335,6 +337,8 @@ pub(super) fn apply_native_metadata(
             },
             ..Default::default()
         };
+        let length = u32::try_from(std::mem::size_of::<FILE_BASIC_INFO>())
+            .map_err(|_| NativeTreeMaterializationError::InvalidLayout)?;
         work.charge(NativeResourceCredit::WriteOperations.delta(1))?;
         // SAFETY: the witnessed handle and fixed-size input remain live through the call.
         unsafe {
@@ -342,7 +346,7 @@ pub(super) fn apply_native_metadata(
                 windows::Win32::Foundation::HANDLE(file.as_raw_handle()),
                 FileBasicInfo,
                 std::ptr::from_ref(&information).cast(),
-                std::mem::size_of::<FILE_BASIC_INFO>() as u32,
+                length,
             )
         }
         .map_err(|error| std::io::Error::from_raw_os_error(error.code().0 & 0xffff))?;

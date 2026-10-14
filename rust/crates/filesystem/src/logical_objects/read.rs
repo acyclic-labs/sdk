@@ -110,7 +110,6 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
         };
         let completed = work.record_completed(WorkCounters {
             object_bytes_read: observed,
-            source_bytes_read: observed,
             ..WorkCounters::UNCHARGED
         });
         let value = result?;
@@ -329,7 +328,6 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
         }
         let completed = work.record_completed(WorkCounters {
             object_bytes_read: observed,
-            source_bytes_read: observed,
             ..WorkCounters::UNCHARGED
         });
         if !count_valid {

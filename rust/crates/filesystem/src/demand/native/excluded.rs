@@ -25,7 +25,7 @@ impl NativeDemandSource {
     pub fn exclude<W: FsWork>(
         mut self,
         paths: Vec<NamespacePath>,
-        work: W,
+        work: &W,
         cancellation: &CancellationToken,
     ) -> W::Output<Self, DemandError> {
         let mut accounting = work.accounting(cancellation);

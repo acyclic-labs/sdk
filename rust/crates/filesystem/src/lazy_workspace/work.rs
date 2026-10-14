@@ -117,12 +117,14 @@ pub(super) fn source_file_metadata(source: crate::demand::SourceMetadata) -> Fil
 
 pub(super) fn path_priority(path: &str) -> u64 {
     let digest = blake3::hash(path.as_bytes());
-    u64::from_be_bytes(digest.as_bytes()[..8].try_into().expect("digest prefix"))
+    let &[a, b, c, d, e, f, g, h, ..] = digest.as_bytes();
+    u64::from_be_bytes([a, b, c, d, e, f, g, h])
 }
 
 pub(super) fn shadow_priority(file_id: FileId) -> u64 {
     let digest = blake3::hash(&file_id.into_bytes());
-    u64::from_le_bytes(digest.as_bytes()[..8].try_into().expect("digest prefix"))
+    let &[a, b, c, d, e, f, g, h, ..] = digest.as_bytes();
+    u64::from_le_bytes([a, b, c, d, e, f, g, h])
 }
 
 pub(super) fn parent_path(path: &str) -> Option<&str> {

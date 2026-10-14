@@ -25,7 +25,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
                     record.0.cmp(&file_id)
                 })?
                 .ok()
-                .map(|index| &search.0.records[index].1)
+                .and_then(|index| search.0.records.get(index))
+                .map(|(_, records)| records)
             {
                 for (path, _) in records {
                     paths.ensure_for_push(records.len(), &mut accounting)?;

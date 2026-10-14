@@ -31,10 +31,10 @@ impl GenerationReceipt {
     pub(super) fn new(
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> Result<Self, (MaterializeError, WorkCounters)> {
+    ) -> Result<Self, OperationFailure<MaterializeError>> {
         let original = crate::NativeMaterializationWork::new(budget, cancellation)
-            .map_err(|(error, work)| (MaterializeError::from(error), work))?;
-        Self::from_work(&original).map_err(|error| (error, original.receipt()))
+            .map_err(|(error, work)| OperationFailure { error: MaterializeError::from(error), work })?;
+        Self::from_work(&original).map_err(|error| OperationFailure::new(error, original.receipt()))
     }
 
     pub(super) fn from_work(
@@ -154,19 +154,16 @@ pub(super) fn clone_namespace(
         .custody
         .work()
         .allocations(|ledger, work, budget, cancellation| {
+            let mut accounting = crate::kernel::KernelAccounting::borrowed_standalone(
+                ledger, work, budget, cancellation,
+            );
             let result = match extra {
-                Some(name) => {
-                    path.child_with_ledger(name, limits, ledger, work, budget, cancellation)
-                }
-                None => path.clone_with_ledger(ledger, work, budget, cancellation),
+                Some(name) => path.child_with_accounting(name, limits, &mut accounting, cancellation),
+                None => path.clone_with_accounting(&mut accounting, cancellation),
             };
-            result.map_err(|error| match error {
-                crate::kernel::NamespacePathError::Work(error) => {
-                    crate::NativeTreeMaterializationError::Work(error)
-                }
-                crate::kernel::NamespacePathError::Cancelled => {
-                    crate::NativeTreeMaterializationError::Cancelled
-                }
+            result.map(|(path, _)| path).map_err(|error| match error {
+                crate::FsError::Work(error) => crate::NativeTreeMaterializationError::Work(error),
+                crate::FsError::Cancelled(_) => crate::NativeTreeMaterializationError::Cancelled,
                 _ => crate::NativeTreeMaterializationError::InvalidLayout,
             })
         });

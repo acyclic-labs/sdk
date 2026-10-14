@@ -112,7 +112,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                     crate::facade::DetachedFile::from_record(
                         self.workspace.volume.clone(),
                         *record,
-                        work,
+                        &work,
                         cancel,
                     )
                 })?;

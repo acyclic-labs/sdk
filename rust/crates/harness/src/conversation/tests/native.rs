@@ -1,19 +1,30 @@
 use super::*;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+use acyclic_fs::NativeMaterializationWork;
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn original_work(
+    budget: acyclic_fs::WorkBudget,
+    cancellation: &acyclic_fs::CancellationToken,
+) -> Result<NativeMaterializationWork> {
+    NativeMaterializationWork::new(budget, cancellation).map_err(|(cause, work)| {
+        Error::NativeConstruction {
+            cause,
+            work: work,
+        }
+    })
+}
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[test]
 fn native_file_validation_and_descriptor_hash_use_original_static_denials() -> Result<()> {
-    use acyclic_fs::{
-        CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError, WorkError,
-    };
+    use acyclic_fs::{CancellationToken, NativeTreeMaterializationError, WorkError};
     let agent = AgentId::from_bytes([24; 16]);
     let mut source = file(agent, "native-validation.txt")?;
     let cancellation = CancellationToken::new();
-    let native = NativeMaterializationWork::new(native_conversation_budget(), &cancellation)
-        .expect("original validation ledger");
+    let native = original_work(native_conversation_budget(), &cancellation)?;
     let mut io = crate::store::HistoryWork::new(
-        crate::filesystem::PreparationIo::from_native_work(&native)
-            .expect("original validation observer"),
+        crate::filesystem::PreparationIo::from_native_work(&native)?,
     );
     source.path = "../escape".into();
     assert!(matches!(
@@ -42,10 +53,9 @@ fn native_file_validation_and_descriptor_hash_use_original_static_denials() -> R
     source.descriptor().verify(b"hello", &mut Some(&mut io))?;
     let mut allowance = native_conversation_budget();
     allowance.bytes_hashed = 0;
-    let denied =
-        NativeMaterializationWork::new(allowance, &cancellation).expect("hash denial ledger");
+    let denied = original_work(allowance, &cancellation)?;
     let mut denied_io = crate::store::HistoryWork::new(
-        crate::filesystem::PreparationIo::from_native_work(&denied).expect("hash denial observer"),
+        crate::filesystem::PreparationIo::from_native_work(&denied)?,
     );
     assert!(matches!(
         source
@@ -63,18 +73,14 @@ fn native_file_validation_and_descriptor_hash_use_original_static_denials() -> R
 #[test]
 fn native_file_clone_partial_failure_retires_only_its_actual_strings() -> Result<()> {
     use crate::store::history::HistoryIo as _;
-    use acyclic_fs::{
-        CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError, WorkError,
-    };
+    use acyclic_fs::{CancellationToken, NativeTreeMaterializationError, WorkError};
     let source = file(AgentId::from_bytes([29; 16]), "native-partial-clone.txt")?;
     let cancellation = CancellationToken::new();
     let mut budget = native_conversation_budget();
     budget.bytes_copied = 4 + source.volume().provider().namespace().len() as u64;
-    let native =
-        NativeMaterializationWork::new(budget, &cancellation).expect("partial clone ledger");
+    let native = original_work(budget, &cancellation)?;
     let mut io = crate::store::HistoryWork::new(
-        crate::filesystem::PreparationIo::from_native_work(&native)
-            .expect("partial clone observer"),
+        crate::filesystem::PreparationIo::from_native_work(&native)?,
     );
     let held = io.clone_text("held")?;
     assert!(matches!(
@@ -106,7 +112,7 @@ fn native_file_clone_partial_failure_retires_only_its_actual_strings() -> Result
 #[test]
 fn native_state_clone_and_suffix_transfer_only_actual_message_components() -> Result<()> {
     use crate::store::history::HistoryIo;
-    use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+    use acyclic_fs::CancellationToken;
     let agent = AgentId::from_bytes([31; 16]);
     let content = file(agent, "native-component-copy.txt")?;
     let mut source = ConversationState::default();
@@ -116,10 +122,9 @@ fn native_state_clone_and_suffix_transfer_only_actual_message_components() -> Re
     }
     let first_token = CancellationToken::new();
     let budget = native_conversation_budget();
-    let first = NativeMaterializationWork::new(budget, &first_token).expect("snapshot copy ledger");
-    let mut io = crate::store::HistoryWork::new(
-        crate::filesystem::PreparationIo::from_native_work(&first).expect("snapshot copy observer"),
-    );
+    let first = original_work(budget, &first_token)?;
+    let mut io =
+        crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&first)?);
     let (held, produced) = source.copy(&mut Some(&mut io), None)?;
     assert_eq!(held, source);
     let deep = io.into_custody()?;
@@ -136,24 +141,23 @@ fn native_state_clone_and_suffix_transfer_only_actual_message_components() -> Re
         checkpoint: Some(file(agent, "native-component-checkpoint.json")?),
     };
     let second_token = CancellationToken::new();
-    let second =
-        NativeMaterializationWork::new(budget, &second_token).expect("independent suffix ledger");
+    let second = original_work(budget, &second_token)?;
     let mut io = crate::store::HistoryWork::new(
-        crate::filesystem::PreparationIo::from_native_work(&second).expect("suffix observer"),
+        crate::filesystem::PreparationIo::from_native_work(&second)?,
     );
     let mut components = Vec::with_capacity(2);
-    let mut retain = |sequence, bytes, work: &mut Option<&mut dyn HistoryIo>| -> Result<()> {
-        assert!(components.len() < components.capacity());
-        let guard = work
-            .as_deref_mut()
-            .expect("same suffix observer")
-            .take_native_custody(bytes)?;
-        components.push((sequence, guard));
-        Ok(())
+    let (suffix, produced) = {
+        let mut retain = |sequence, bytes, work: &mut Option<&mut dyn HistoryIo>| -> Result<()> {
+            assert!(components.len() < components.capacity());
+            let observer = work
+                .as_deref_mut()
+                .ok_or_else(|| Error::Invalid("native suffix callback lost its observer".into()))?;
+            let guard = observer.take_native_custody(bytes)?;
+            components.push((sequence, guard));
+            Ok(())
+        };
+        held.checkpointed_suffix(&selection, &mut Some(&mut io), Some(&mut retain))?
     };
-    let (suffix, produced) =
-        held.checkpointed_suffix(&selection, &mut Some(&mut io), Some(&mut retain))?;
-    drop(retain);
     assert_eq!(produced, 0);
     assert_eq!(io.into_custody()?.bytes(), 0);
     assert_eq!(
@@ -192,29 +196,26 @@ fn native_state_clone_and_suffix_transfer_only_actual_message_components() -> Re
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[test]
 fn native_append_failed_hash_and_growth_preserve_actual_state() -> Result<()> {
-    use acyclic_fs::{
-        CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError, WorkError,
-    };
+    use acyclic_fs::{CancellationToken, NativeTreeMaterializationError, WorkError};
     let cancellation = CancellationToken::new();
     let budget = native_conversation_budget();
-    let funded = NativeMaterializationWork::new(budget, &cancellation).expect("state ledger");
+    let funded = original_work(budget, &cancellation)?;
     let agent = AgentId::from_bytes([22; 16]);
     let content = file(agent, "native-failed-growth.txt")?;
     let mut state = ConversationState::default();
     state.bind(agent)?;
     for sequence in 1..=4 {
         let mut io = crate::store::HistoryWork::new(
-            crate::filesystem::PreparationIo::from_native_work(&funded).expect("original observer"),
+            crate::filesystem::PreparationIo::from_native_work(&funded)?,
         );
         state.append(message(&content, sequence), &mut Some(&mut io))?;
     }
     let head = state.history_digest();
     let mut denied_budget = budget;
     denied_budget.bytes_hashed = 0;
-    let denied =
-        NativeMaterializationWork::new(denied_budget, &cancellation).expect("hash denial ledger");
+    let denied = original_work(denied_budget, &cancellation)?;
     let mut io = crate::store::HistoryWork::new(
-        crate::filesystem::PreparationIo::from_native_work(&denied).expect("hash denial observer"),
+        crate::filesystem::PreparationIo::from_native_work(&denied)?,
     );
     assert!(matches!(
         state.append(message(&content, 5), &mut Some(&mut io)),
@@ -226,11 +227,9 @@ fn native_append_failed_hash_and_growth_preserve_actual_state() -> Result<()> {
     drop(io);
     assert_eq!(state.history_digest(), head);
     assert_eq!(state.messages.len(), 4);
-    let probe =
-        NativeMaterializationWork::new(budget, &cancellation).expect("original hash control");
-    let mut probe_io = crate::store::HistoryWork::new(
-        crate::filesystem::PreparationIo::from_native_work(&probe).expect("original hash observer"),
-    );
+    let probe = original_work(budget, &cancellation)?;
+    let mut probe_io =
+        crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&probe)?);
     advance_history_digest(
         head,
         &message(&content, 5),
@@ -240,11 +239,9 @@ fn native_append_failed_hash_and_growth_preserve_actual_state() -> Result<()> {
     denied_budget = budget;
     denied_budget.allocation_operations = probe.receipt().allocation_operations;
     drop(probe_io);
-    let denied =
-        NativeMaterializationWork::new(denied_budget, &cancellation).expect("growth denial ledger");
+    let denied = original_work(denied_budget, &cancellation)?;
     let mut io = crate::store::HistoryWork::new(
-        crate::filesystem::PreparationIo::from_native_work(&denied)
-            .expect("growth denial observer"),
+        crate::filesystem::PreparationIo::from_native_work(&denied)?,
     );
     assert!(matches!(
         state.append(message(&content, 5), &mut Some(&mut io)),
@@ -346,8 +343,7 @@ fn admitted_conversation_rebuild_observes_original_digests_and_negative_work() -
     let result = ConversationState::from_wire(wire, bytes.len() as u64, &mut Some(&mut work));
     let failed = work
         .finish(result)
-        .err()
-        .expect("first original message hash must reject");
+        .expect_err("first original message hash must reject");
     assert_eq!(failed.work.bytes_hashed, 0);
     assert!(failed.work.bytes_encoded > 0);
     assert_eq!(failed.work.output_bytes, 0);
@@ -361,8 +357,7 @@ fn admitted_conversation_rebuild_observes_original_digests_and_negative_work() -
     let result = ConversationState::from_wire(wire, bytes.len() as u64, &mut Some(&mut work));
     let failed = work
         .finish(result)
-        .err()
-        .expect("cancelled reconstruction must not start");
+        .expect_err("cancelled reconstruction must not start");
     assert_eq!(failed.work.bytes_encoded + failed.work.bytes_hashed, 0);
     Ok(())
 }

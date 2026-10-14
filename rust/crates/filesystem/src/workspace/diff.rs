@@ -75,10 +75,11 @@ fn merge_changed_record(
         Ok(index) => {
             let copied = copy_work(std::mem::size_of::<Option<crate::kernel::FileRecord>>() as u64);
             accounting.admit(copied)?;
+            let entry = paths.0.get_mut(index).ok_or(FsError::InvalidDiff)?;
             if before {
-                paths.0[index].before = record;
+                entry.before = record;
             } else {
-                paths.0[index].after = record;
+                entry.after = record;
             }
             accounting.record_completed(copied)?;
         }
@@ -193,7 +194,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
         let mut retired_paths = 0_u64;
         for index in 0..paths.0.len() {
             accounting.charge(item_work(1))?;
-            let changed = match (&paths.0[index].before, &paths.0[index].after) {
+            let entry = paths.0.get(index).ok_or(FsError::InvalidDiff)?;
+            let changed = match (&entry.before, &entry.after) {
                 (Some(before), Some(after)) => {
                     before.kind != after.kind
                         || before.metadata != after.metadata
@@ -212,7 +214,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
                 retained += 1;
             } else {
                 retired_paths = retired_paths
-                    .checked_add(paths.0[index].path.retained_bytes())
+                    .checked_add(entry.path.retained_bytes())
                     .ok_or(crate::WorkError::Overflow)?;
             }
         }

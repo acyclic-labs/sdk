@@ -426,7 +426,7 @@ async fn a_shadowed_identity_keeps_256k_of_content_across_restart() {
     let detached = crate::facade::DetachedFile::from_record(
         root.workspace().volume.clone(),
         shadow,
-        WorkBudget::UNBOUNDED,
+        &WorkBudget::UNBOUNDED,
         &cancel,
     )
     .unwrap()

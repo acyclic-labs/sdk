@@ -60,6 +60,12 @@ impl YieldingFile {
         file: File,
         work: &mut W,
     ) -> Result<Self, DemandError> {
+        let version = u16::try_from(REQUEST_OPLOCK_CURRENT_VERSION)
+            .map_err(|_| DemandError::InvalidRequest)?;
+        let input_length = u16::try_from(size_of::<REQUEST_OPLOCK_INPUT_BUFFER>())
+            .map_err(|_| DemandError::InvalidRequest)?;
+        let output_length = u32::try_from(size_of::<REQUEST_OPLOCK_OUTPUT_BUFFER>())
+            .map_err(|_| DemandError::InvalidRequest)?;
         let bytes = (size_of::<File>() + size_of::<YieldingHeld>()) as u64;
         work.claim_allocation(bytes, 2, WorkCounters::UNCHARGED)?;
         let handle = HANDLE(file.as_raw_handle());
@@ -71,6 +77,7 @@ impl YieldingFile {
             wait: None,
         };
         let result = (|| {
+            let held = Arc::get_mut(&mut yielding.held).ok_or(DemandError::InvalidRequest)?;
             // SAFETY: creation transfers sole ownership of this unnamed event.
             let event = unsafe {
                 Owned::new(CreateEventW(None, true, false, None).map_err(io::Error::other)?)
@@ -83,8 +90,8 @@ impl YieldingFile {
                     ..Default::default()
                 },
                 input: REQUEST_OPLOCK_INPUT_BUFFER {
-                    StructureVersion: REQUEST_OPLOCK_CURRENT_VERSION as u16,
-                    StructureLength: size_of::<REQUEST_OPLOCK_INPUT_BUFFER>() as u16,
+                    StructureVersion: version,
+                    StructureLength: input_length,
                     RequestedOplockLevel: OPLOCK_LEVEL_CACHE_READ | OPLOCK_LEVEL_CACHE_HANDLE,
                     Flags: REQUEST_OPLOCK_INPUT_FLAG_REQUEST,
                 },
@@ -97,26 +104,22 @@ impl YieldingFile {
                 return Err(error);
             }
             let request = Box::into_raw(request);
-            Arc::get_mut(&mut yielding.held)
-                .expect("unpublished oplock state")
-                .request = request;
+            held.request = request;
             // SAFETY: request and held handle live until completion; Drop closes the handle and waits.
             let requested = unsafe {
                 DeviceIoControl(
                     handle,
                     FSCTL_REQUEST_OPLOCK,
                     Some((&raw const (*request).input).cast()),
-                    size_of::<REQUEST_OPLOCK_INPUT_BUFFER>() as u32,
+                    u32::from(input_length),
                     Some((&raw mut (*request).output).cast()),
-                    size_of::<REQUEST_OPLOCK_OUTPUT_BUFFER>() as u32,
+                    output_length,
                     None,
                     Some(&raw mut (*request).overlapped),
                 )
             };
             if !requested.is_err_and(|error| error.code() == ERROR_IO_PENDING.to_hresult()) {
-                Arc::get_mut(&mut yielding.held)
-                    .expect("unpublished oplock state")
-                    .request = std::ptr::null_mut();
+                held.request = std::ptr::null_mut();
                 // SAFETY: no pending request or registered callback refers to this storage.
                 drop(unsafe { Box::from_raw(request) });
                 work.release(bytes)?;
@@ -192,6 +195,7 @@ impl YieldingFile {
                 NativeOperationReservation::new(meter, NativeOperationKind::Read, 2)
                     .map_err(crate::demand::native_demand_error)?;
             let length = destination.len().min(u32::MAX as usize);
+            let destination = destination.get_mut(..length).ok_or(DemandError::InvalidRequest)?;
             let mut bytes = NativeByteReservation::new(meter, NativeOperationKind::Read, length)
                 .map_err(crate::demand::native_demand_error)?;
             let held = self
@@ -209,13 +213,13 @@ impl YieldingFile {
                 hEvent: *event,
                 ..Default::default()
             };
-            overlapped.Anonymous.Anonymous.Offset = offset as u32;
+            overlapped.Anonymous.Anonymous.Offset = (offset & 0xffff_ffff) as u32;
             overlapped.Anonymous.Anonymous.OffsetHigh = (offset >> 32) as u32;
             // SAFETY: storage remains live through terminal completion, including cancellation.
             let (started, start_charge) = operations.attempt(|| unsafe {
                 ReadFile(
                     handle,
-                    Some(&mut destination[..length]),
+                    Some(&mut *destination),
                     None,
                     Some(&raw mut overlapped),
                 )
@@ -232,7 +236,7 @@ impl YieldingFile {
                         .examine(1, 0)
                         .map_err(crate::demand::native_demand_error)
                         .map(|()| {
-                            // SAFETY: the owned I/O event remains live throughout the wait.
+                            // SAFETY: the event remains owned by this live read through the wait.
                             unsafe { WaitForSingleObject(*event, 10) }
                         });
                     match status {

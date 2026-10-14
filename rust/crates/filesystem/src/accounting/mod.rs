@@ -148,7 +148,7 @@ pub enum AccountingError {
 mod proof;
 mod read;
 
-use proof::{prove_bytes, prove_published, verify_record};
+use proof::{prove_bytes, verify_record};
 use read::AccountingReadWork;
 pub use read::accounting_page;
 #[cfg(feature = "distributed")]

@@ -31,7 +31,8 @@ impl MemoryGenerationPathIndex {
             let position = crate::kernel::binary_search_with_accounting(
                 &entries.value, accounting, |entry| entry.0.cmp(&key),
             )?;
-            position.ok().map(|index| copy(&entries.value[index].1.value, accounting)).transpose()
+            position.ok().and_then(|index| entries.value.get(index))
+                .map(|(_, entry)| copy(&entry.value, accounting)).transpose()
         })();
         let keep = result.as_ref().ok().and_then(Option::as_ref).map_or(0, |value| value.bytes);
         restore(accounting, before, keep)?;

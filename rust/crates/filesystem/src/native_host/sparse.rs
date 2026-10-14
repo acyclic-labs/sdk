@@ -57,7 +57,7 @@ pub(crate) fn filesystem_is_local<W: NativeHostWork>(
     let mut device = [0_u32; 2];
     let mut status = IO_STATUS_BLOCK::default();
     work.started_io(READ)?;
-    // SAFETY: the live handle and two-u32 buffer match FILE_FS_DEVICE_INFORMATION.
+    // SAFETY: the live handle and buffers match the sizes passed to this synchronous call.
     let queried = unsafe {
         NtQueryVolumeInformationFile(
             HANDLE(directory.as_raw_handle()),
@@ -284,7 +284,7 @@ pub(super) fn windows_copy_tail<W: SourceDemandReadWork>(
         offset = offset
             .checked_add(count as u64)
             .ok_or(crate::WorkError::Overflow)?;
-        remaining = &mut remaining[count..];
+        remaining = remaining.get_mut(count..).ok_or(DemandError::InvalidRequest)?;
     }
     let mut offset = target_offset;
     let mut input = &*buffer;
@@ -299,7 +299,7 @@ pub(super) fn windows_copy_tail<W: SourceDemandReadWork>(
         offset = offset
             .checked_add(count as u64)
             .ok_or(crate::WorkError::Overflow)?;
-        input = &input[count..];
+        input = input.get(count..).ok_or(DemandError::InvalidRequest)?;
     }
     Ok(())
 }

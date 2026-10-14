@@ -40,7 +40,7 @@ where
         let work = match crate::NativeMaterializationWork::new(budget, &cancellation) {
             Ok(work) => work,
             Err((error, completed)) => {
-                crate::demand::merge_source_work(completed, accounting)?;
+                crate::demand::merge_source_work(*completed, accounting)?;
                 return Err(demand_error(MountSourceError::NativeWork(error)));
             }
         };

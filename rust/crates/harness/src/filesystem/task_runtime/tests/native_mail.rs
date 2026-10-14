@@ -17,7 +17,7 @@ fn work(budget: WorkBudget, cancellation: &CancellationToken) -> Result<NativeMa
     NativeMaterializationWork::new(budget, cancellation).map_err(|(cause, work)| {
         Error::NativeConstruction {
             cause,
-            work: Box::new(work),
+            work: work,
         }
     })
 }

@@ -65,17 +65,13 @@ impl NativeTreeMaterializationBackend {
     fn paths<'a>(
         &'a self,
         path: &'a str,
-    ) -> (
-        (&'a HostRoot, &'a Path),
-        (&'a HostRoot, &'a Path),
-        (&'a HostRoot, &'a Path),
-    ) {
+    ) -> [(&'a HostRoot, &'a Path); 3] {
         let path = Path::new(path);
-        (
+        [
             (&self.held_root, path),
             (&self.held_target, path),
             (&self.held_backup, path),
-        )
+        ]
     }
     async fn run<T: Send + 'static>(
         self: &Arc<Self>,
@@ -160,7 +156,7 @@ impl MaterializationBackend for Arc<NativeTreeMaterializationBackend> {
         edit: &MaterializationEdit,
     ) -> Result<MaterializationPreimage, Self::Error> {
         self.run(edit, &[], |backend, edit, _| {
-            let (live, target, backup) = backend.paths(edit_path(edit));
+            let [live, target, backup] = backend.paths(edit_path(edit));
             if host_stat(backup.0, backup.1, &backend.work)?.is_some() { return Err(Self::Error::UnexpectedBackup); }
             let before = native_entry_fingerprint_for_edit(&live, edit, &backend.work)?;
             if before.is_some() && matches!(edit, MaterializationEdit::Install { image, .. } if image.starts_with(NATIVE_PREPARATION_ABSENT_IMAGE_PREFIX)) { return Err(Self::Error::ExternalMutation); }
@@ -181,8 +177,8 @@ impl MaterializationBackend for Arc<NativeTreeMaterializationBackend> {
         preimage: &MaterializationPreimage,
     ) -> Result<MaterializationObservation, Self::Error> {
         self.run(edit, &preimage.image, |backend, edit, image| {
-            let (before, after) = decode_native_witness(image)?;
-            let (live, target, backup) = backend.paths(edit_path(edit));
+            let [before, after] = decode_native_witness(image)?;
+            let [live, target, backup] = backend.paths(edit_path(edit));
             let current = native_entry_fingerprint_for_edit(&live, edit, &backend.work)?;
             let target = if matches!(edit, MaterializationEdit::Install { .. }) {
                 native_entry_fingerprint(&target, &backend.work)?
@@ -229,8 +225,8 @@ impl MaterializationBackend for Arc<NativeTreeMaterializationBackend> {
         preimage: &MaterializationPreimage,
     ) -> Result<(), Self::Error> {
         self.run(edit, &preimage.image, |backend, edit, image| {
-            let (live, target, backup) = backend.paths(edit_path(edit));
-            let (before, after) = decode_native_witness(image)?;
+            let [live, target, backup] = backend.paths(edit_path(edit));
+            let [before, after] = decode_native_witness(image)?;
             if let MaterializationEdit::SetMetadata { image, .. } = edit {
                 let current = native_entry_fingerprint_for_edit(&live, edit, &backend.work)?;
                 if current == after {
@@ -300,8 +296,8 @@ impl MaterializationBackend for Arc<NativeTreeMaterializationBackend> {
         preimage: &MaterializationPreimage,
     ) -> Result<(), Self::Error> {
         self.run(edit, &preimage.image, |backend, edit, image| {
-            let (live, _, backup) = backend.paths(edit_path(edit));
-            let (before, after) = decode_native_witness(image)?;
+            let [live, _, backup] = backend.paths(edit_path(edit));
+            let [before, after] = decode_native_witness(image)?;
             let current = native_entry_fingerprint_for_edit(&live, edit, &backend.work)?;
             if matches!(edit, MaterializationEdit::SetMetadata { .. }) {
                 if current == before {

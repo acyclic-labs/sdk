@@ -46,7 +46,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     pub(crate) fn detached_from_record<W: FsWork>(
         &self,
         record: FileRecord,
-        budget: W,
+        budget: &W,
         cancellation: &CancellationToken,
     ) -> W::Output<DetachedFile<A, O>, FsError> {
         DetachedFile::from_record(self.volume.clone(), record, budget, cancellation)
@@ -57,7 +57,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
     pub(crate) fn from_record<W: FsWork>(
         volume: Volume<A, O>,
         record: FileRecord,
-        budget: W,
+        budget: &W,
         cancellation: &CancellationToken,
     ) -> W::Output<Self, FsError> {
         let mut accounting = budget.accounting(cancellation);

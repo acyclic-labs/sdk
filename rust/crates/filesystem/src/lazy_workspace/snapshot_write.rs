@@ -8,13 +8,14 @@ where
     E: From<crate::FsError>,
 {
     let native = ctx.native_work().is_some();
-    let mut work = match ctx.native_work() {
-        Some(original) => crate::AuthorityWork::native(original, cancellation(ctx)),
-        None => crate::AuthorityWork::new(ctx.remaining()?, cancellation(ctx)),
+    let (result, spent) = {
+        let mut work = match ctx.native_work() {
+            Some(original) => crate::AuthorityWork::native(original, cancellation(ctx)),
+            None => crate::AuthorityWork::new(ctx.remaining()?, cancellation(ctx)),
+        };
+        let result = guard.seal(&mut work).await;
+        (result, work.spent())
     };
-    let result = guard.seal(&mut work).await;
-    let spent = work.spent();
-    drop(work);
     if !native {
         ctx.record_completed(spent)?;
     }

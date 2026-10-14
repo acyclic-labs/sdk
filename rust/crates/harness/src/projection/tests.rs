@@ -154,7 +154,7 @@ async fn native_manifest_resolution_never_calls_the_ordinary_resolver() -> Resul
         peak_allocation_bytes: 16 * 1024 * 1024, allocation_operations: 1024, source_bytes_read: 1024 * 1024,
         bytes_copied: 1024 * 1024, bytes_hashed: 1024 * 1024, bytes_encoded: 1024 * 1024, items_examined: 1024,
         ..Default::default()
-    }, &acyclic_fs::CancellationToken::new()).map_err(|(cause, work)| Error::NativeConstruction { cause, work: Box::new(work) })?;
+    }, &acyclic_fs::CancellationToken::new()).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
     assert!(matches!(attachments::resolve(&message, &resolver, 1, Some(&io)).await,
         Err(Error::NativeBoundary { code: Invalid, .. })));

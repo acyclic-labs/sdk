@@ -123,7 +123,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         label: impl AsRef<str>,
     ) -> Result<(WorkspaceName, Generation<A, O>), WorkspaceError> {
         let cancellation = CancellationToken::new();
-        let label = WorkspaceName::new(label, WorkBudget::UNBOUNDED, &cancellation)
+        let label = WorkspaceName::new(label, &WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|failure| failure.error)?
             .value;
         let generation = self

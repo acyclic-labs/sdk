@@ -95,6 +95,7 @@ mod publication_codec;
 mod qualification;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use publication_codec::publication_evidence;
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 mod selected_apply;
 mod selected_commit;
 mod selected_plan;

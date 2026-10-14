@@ -131,7 +131,6 @@ use memory::*;
 mod cache;
 use cache::*;
 mod provider;
-use provider::*;
 mod single;
 use single::*;
 mod batch;
@@ -139,7 +138,6 @@ pub(crate) use batch::PathQueries;
 use batch::*;
 mod api;
 pub(crate) use api::PathBatchMode;
-use api::lookup_path_queries_async;
 pub use api::{
     lookup_path, lookup_path_refs, lookup_paths, observe_path_async, observe_paths_async,
 };

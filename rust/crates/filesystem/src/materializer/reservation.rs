@@ -229,6 +229,7 @@ impl NativeWorkReservation {
                 error => native_materialization_work_error(error),
             })
     }
+    #[cfg(all(feature = "native-mount", target_os = "macos"))]
     pub(crate) fn into_runtime_credit(
         mut self,
     ) -> Result<Arc<Self>, NativeTreeMaterializationError> {
@@ -240,11 +241,6 @@ impl NativeWorkReservation {
         )?;
         self.header_bytes = std::mem::take(&mut header.bytes);
         Ok(Arc::new(self))
-    }
-    pub(crate) fn runtime_meter(
-        self: &Arc<Self>,
-    ) -> Arc<dyn acyclic_native_runtime::NativeReadMeter> {
-        self.clone()
     }
     pub(super) fn start_transfer(
         &self,
