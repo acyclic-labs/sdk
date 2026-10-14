@@ -62,7 +62,17 @@ const documents = [
 ];
 for (const [documentPath, schemaPath] of documents) {
   const validate = ajv.compile(await load(schemaPath));
-  if (!validate(await load(documentPath))) throw new Error(`${documentPath}: ${ajv.errorsText(validate.errors)}`);
+  const document = await load(documentPath);
+  if (!validate(document)) throw new Error(`${documentPath}: ${ajv.errorsText(validate.errors)}`);
+  if (documentPath === ".github/qualification-lanes.json") {
+    const lanes = /** @type {Record<string, unknown>[]} */ (document);
+    const { cache_size, ...withoutLimit } = lanes[0];
+    const fixtures = [[withoutLimit], ...["", "0M", "-1M", "1.5M", "1G", "01M", 384]
+      .map(value => [{ ...lanes[0], cache_size: value }])];
+    for (const fixture of fixtures) {
+      if (validate(fixture)) throw new Error("qualification cache limit schema accepted an invalid fixture");
+    }
+  }
 }
 const provenance = await load("provenance/manifest.json");
 for (const item of provenance.imports) if (item.auditResult !== "approved") throw new Error(`unapproved import: ${item.destinationPath}`);

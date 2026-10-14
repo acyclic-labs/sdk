@@ -4,21 +4,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { join, resolve, sep } from "node:path";
 import test from "node:test";
 import YAML from "./vendor/yaml.cjs";
-import { Ajv2020 } from "ajv/dist/2020.js";
 
 const read = file => YAML.parse(readFileSync(file, "utf8"));
 const lanes = JSON.parse(readFileSync(".github/qualification-lanes.json", "utf8"));
-
-test("qualification metadata requires a positive MiB cache limit", () => {
-  const schema = JSON.parse(readFileSync("compatibility/schemas/qualification-lanes.schema.json", "utf8"));
-  const validate = new Ajv2020().compile(schema);
-  assert.equal(validate(lanes), true, JSON.stringify(validate.errors));
-  const { cache_size, ...withoutLimit } = lanes[0];
-  assert.equal(validate([withoutLimit]), false);
-  for (const value of ["", "0M", "-1M", "1.5M", "1G", "01M", 384]) {
-    assert.equal(validate([{ ...lanes[0], cache_size: value }]), false, String(value));
-  }
-});
 
 test("every compiler-cache scope receives its matrix limit without increasing existing caps", () => {
   const native = read(".github/workflows/release-acyclic.yml").jobs.build;
