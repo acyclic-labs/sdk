@@ -241,11 +241,7 @@ impl CompositeForkVerifier {
                 let retained = result.as_ref().map_or(0, |(_, retained)| *retained);
                 let result = release_frame(result, frame, owned.work());
                 if result.is_err() && retained != 0 {
-                    let _ = owned
-                        .work()
-                        .as_deref_mut()
-                        .expect("retained manifest observer")
-                        .release_owned(retained);
+                    let _ = owned.observer()?.release_owned(retained);
                 }
                 result
             }?;

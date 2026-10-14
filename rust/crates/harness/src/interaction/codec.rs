@@ -63,7 +63,7 @@ pub(super) fn decode_interaction_json<'loan, 'io, T: serde::de::DeserializeOwned
                                 "interaction JSON custody overflows",
                             )
                         })?;
-                    let observer = custody.work().as_deref_mut().expect("observed interaction");
+                    let observer = custody.observer()?;
                     observer.admit_owned(planned)?;
                     observer.retain_owned(planned)?;
                     custody.adopt(planned)?;
@@ -71,11 +71,7 @@ pub(super) fn decode_interaction_json<'loan, 'io, T: serde::de::DeserializeOwned
                 }
                 _ => {}
             }
-            custody
-                .work()
-                .as_deref_mut()
-                .expect("observed interaction")
-                .codec_charge(charge)
+            custody.observer()?.codec_charge(charge)
         };
         crate::executor::json::json_from_slice_bounded(
             std::marker::PhantomData::<T>,
@@ -88,27 +84,7 @@ pub(super) fn decode_interaction_json<'loan, 'io, T: serde::de::DeserializeOwned
         )
     };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    let decoded = decoded.map_err(|mut error| {
-        if let Error::NativeJson {
-            custody: error_custody,
-            ..
-        } = &mut error
-            && error_custody.is_none()
-        {
-            // Split preclaimed custody without replacing the original Serde cause.
-            let bytes = custody.retained();
-            *error_custody = Some(
-                custody
-                    .work()
-                    .as_deref_mut()
-                    .expect("observed interaction")
-                    .take_native_custody(bytes)
-                    .expect("preclaimed interaction decoder custody"),
-            );
-            custody.transfer();
-        }
-        error
-    });
+    let decoded = decoded.map_err(|error| custody.json_error(error));
     let value = decoded?;
     Ok((value, custody))
 }

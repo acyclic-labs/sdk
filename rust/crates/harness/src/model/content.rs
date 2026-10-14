@@ -171,13 +171,13 @@ impl ModelContent {
                     return Err(invalid(work, "model text exceeds render limit"));
                 }
                 ModelContentPart::File { file, policy } => {
-                    policy.validate_file(file, limits, work)?
+                    policy.validate_file(file, limits, work)?;
                 }
                 ModelContentPart::ToolCall { arguments, .. } => {
-                    value_bound(arguments, limits.render_bytes, work)?
+                    value_bound(arguments, limits.render_bytes, work)?;
                 }
                 ModelContentPart::ToolResult { content, .. } => {
-                    content.validate_limits(limits, work)?
+                    content.validate_limits(limits, work)?;
                 }
                 ModelContentPart::Text { .. } => {}
             }

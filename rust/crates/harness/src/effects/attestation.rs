@@ -179,14 +179,14 @@ impl EffectRegistry {
             if work.is_some() {
                 let mut content = crate::wire_codec::CodecQuota::new(work, 0)?;
                 let (bytes, claim) = crate::store::history::read_content_with_work(
-                    content.work().as_deref_mut().expect("observer"),
+                    content.observer()?,
                     resolver.as_ref(),
                     result,
                 )
                 .await?;
                 content.adopt(claim)?;
                 let (schema_bytes, claim) = crate::store::history::read_content_with_work(
-                    content.work().as_deref_mut().expect("observer"),
+                    content.observer()?,
                     resolver.as_ref(),
                     &effect.result_schema,
                 )
