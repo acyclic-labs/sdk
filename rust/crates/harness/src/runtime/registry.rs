@@ -302,6 +302,11 @@ impl TaskRegistry {
         Ok(Self(definitions, Some(held)))
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The admission boundary keeps the task identity, payload and authority explicit."
+    )]
+    #[cfg(any(test, feature = "filesystem"))]
     pub(super) fn registered_admission(
         &self,
         operation: OperationId,
@@ -339,40 +344,7 @@ impl TaskRegistry {
             ));
         }
         if parent.is_some() {
-            let mut descendant = false;
-            for grant in scope.grants().iter() {
-                if let Some(io) = work.as_deref_mut() {
-                    io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
-                }
-                if grant
-                    .strip_prefix("task:spawn:")
-                    .and_then(|grant| grant.strip_prefix(name))
-                    .and_then(|grant| grant.strip_prefix('@'))
-                    == Some(version)
-                {
-                    descendant = true;
-                    break;
-                }
-            }
-            if !descendant {
-                return Err(crate::store::guarded_boundary(
-                    work,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "original scope lacks the registered descendant grant",
-                ));
-            }
-            if scope.extensions().is_some()
-                || definition
-                    .requirements()
-                    .iter()
-                    .any(|requirement| requirement.starts_with("extension:"))
-            {
-                return Err(crate::store::guarded_boundary(
-                    work,
-                    crate::wire::ErrorCode::Unsupported,
-                    "stock child extension runner is not composed",
-                ));
-            }
+            Self::validate_child_grant(name, version, scope, definition.requirements(), work)?;
         }
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         if let Some(io) = quota.work().as_deref_mut() {
@@ -427,6 +399,50 @@ impl TaskRegistry {
         record.validate(quota.work())?;
         quota.transfer();
         Ok(record)
+    }
+
+    #[cfg(any(test, feature = "filesystem"))]
+    fn validate_child_grant(
+        name: &str,
+        version: &str,
+        scope: &RuntimeScope,
+        requirements: &BTreeSet<String>,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        let mut descendant = false;
+        for grant in scope.grants().iter() {
+            if let Some(io) = work.as_deref_mut() {
+                io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
+            }
+            if grant
+                .strip_prefix("task:spawn:")
+                .and_then(|grant| grant.strip_prefix(name))
+                .and_then(|grant| grant.strip_prefix('@'))
+                == Some(version)
+            {
+                descendant = true;
+                break;
+            }
+        }
+        if !descendant {
+            return Err(crate::store::guarded_boundary(
+                work,
+                crate::wire::ErrorCode::Unauthorized,
+                "original scope lacks the registered descendant grant",
+            ));
+        }
+        if scope.extensions().is_some()
+            || requirements
+                .iter()
+                .any(|requirement| requirement.starts_with("extension:"))
+        {
+            return Err(crate::store::guarded_boundary(
+                work,
+                crate::wire::ErrorCode::Unsupported,
+                "stock child extension runner is not composed",
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) fn validate_durable_admission(

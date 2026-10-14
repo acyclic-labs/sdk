@@ -73,47 +73,11 @@ impl ConversationState {
         })
     }
 
-    pub(crate) fn checkpointed_suffix<'work>(
+    fn prefix_has_open_calls(
         &self,
-        selection: &ModelContextSelection,
-        work: &mut Option<&'work mut dyn crate::store::history::HistoryIo>,
-        mut retain: Option<
-            &mut dyn FnMut(
-                u64,
-                u64,
-                &mut Option<&'work mut dyn crate::store::history::HistoryIo>,
-            ) -> Result<()>,
-        >,
-    ) -> Result<(Self, u64)> {
-        if retain.is_some() {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if !work
-                .as_deref()
-                .is_some_and(|io| io.original_native_work().is_some())
-            {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid,
-                    reason: "message component custody requires original native work",
-                });
-            }
-            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            return Err(Error::Invalid(
-                "message component custody requires original native work".into(),
-            ));
-        }
-        self.require_native_work(work)?;
-        let reference = selection.checkpoint.as_ref().ok_or_else(|| {
-            conversation_error(
-                work,
-                crate::wire::ErrorCode::Invalid,
-                "history retirement requires a checkpoint pin",
-            )
-        })?;
-        let cut = selection.conversation_revision;
-        if cut <= self.resident_after_sequence() || self.pending_user.is_some() {
-            return self.copy(work, retain);
-        }
-        crate::projection::validate_model_context_selection(self, selection, cut, work)?;
+        cut: u64,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<bool> {
         let mut temporary = crate::wire_codec::CodecQuota::new(work, 0)?;
         let mut calls = BTreeSet::new();
         for message in self
@@ -149,13 +113,47 @@ impl ConversationState {
                 _ => {}
             }
         }
-        if !calls.is_empty() {
-            drop(calls);
-            drop(temporary);
+        Ok(!calls.is_empty())
+    }
+
+    pub(crate) fn checkpointed_suffix<'work>(
+        &self,
+        selection: &ModelContextSelection,
+        work: &mut Option<&'work mut dyn crate::store::history::HistoryIo>,
+        mut retain: Option<&mut super::clone::RetainMessage<'_, 'work>>,
+    ) -> Result<(Self, u64)> {
+        if retain.is_some() {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if !work
+                .as_deref()
+                .is_some_and(|io| io.original_native_work().is_some())
+            {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "message component custody requires original native work",
+                });
+            }
+            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+            return Err(Error::Invalid(
+                "message component custody requires original native work".into(),
+            ));
+        }
+        self.require_native_work(work)?;
+        let reference = selection.checkpoint.as_ref().ok_or_else(|| {
+            conversation_error(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "history retirement requires a checkpoint pin",
+            )
+        })?;
+        let cut = selection.conversation_revision;
+        if cut <= self.resident_after_sequence() || self.pending_user.is_some() {
             return self.copy(work, retain);
         }
-        drop(calls);
-        drop(temporary);
+        crate::projection::validate_model_context_selection(self, selection, cut, work)?;
+        if self.prefix_has_open_calls(cut, work)? {
+            return self.copy(work, retain);
+        }
         let digest = self.history_prefix_digest(cut, work)?;
         let start = self
             .messages

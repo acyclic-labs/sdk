@@ -219,6 +219,7 @@ impl RuntimeScope {
     }
 
     /// Extends the caller's existing quota with the same physical proof copy.
+    #[cfg(any(test, feature = "filesystem"))]
     pub(crate) fn copy_resource_proofs(
         proofs: &[crate::resource_preparation::ResourceCreationProofRef],
         quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
@@ -227,14 +228,12 @@ impl RuntimeScope {
             return Ok(proofs.to_vec());
         }
         crate::core::copy_vector(proofs, quota, |proof, quota| {
-            quota
-                .work()
-                .as_deref_mut()
-                .expect("proof vector copy observer")
-                .codec_charge(crate::executor::json::JsonCodecCharge::Work {
+            if let Some(io) = quota.work().as_deref_mut() {
+                io.codec_charge(crate::executor::json::JsonCodecCharge::Work {
                     bytes: 0,
                     items: 1,
                 })?;
+            }
             let (copied, retained) = proof.copy(quota.work())?;
             quota.adopt(retained)?;
             Ok(copied)
@@ -430,6 +429,7 @@ impl RuntimeScope {
         &self.resource_proofs
     }
 
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) fn validate_resumed_scope(
         &self,
         admitted: &Self,
@@ -497,6 +497,7 @@ impl RuntimeScope {
         lease.fence()
     }
 
+    #[cfg(feature = "filesystem")]
     pub(crate) fn current_created_content(
         &self,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
@@ -547,6 +548,7 @@ impl RuntimeScope {
     }
 
     /// Finds only an exact provider-authenticated, owner-consumed reference.
+    #[cfg(feature = "filesystem")]
     pub(crate) fn created_reference(
         &self,
         file: &FileRef,

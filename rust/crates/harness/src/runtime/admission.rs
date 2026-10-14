@@ -197,17 +197,16 @@ impl TaskAdmissionRecord {
             crate::wire_codec::CodecQuota::new(&mut observer, std::mem::size_of::<Self>() as u64)?;
         let copied = crate::core::copy(self, &mut quota, |record, work| {
             let bytes = record.logical_owned_bytes()?;
-            if bytes != 0 {
-                work.as_deref_mut()
-                    .expect("native admission copy")
-                    .admit_allocation(bytes)?;
+            if bytes != 0
+                && let Some(io) = work.as_deref_mut()
+            {
+                io.admit_allocation(bytes)?;
             }
             Ok(bytes)
         })?;
         let held = quota.retained();
         quota.transfer();
         drop(quota);
-        drop(observer);
         Ok((copied, io.take_native_custody(held)?))
     }
 
@@ -312,7 +311,7 @@ impl TaskAdmissionRecord {
             ));
         }
         for (index, proof) in self.resource_proofs.iter().enumerate() {
-            for previous in &self.resource_proofs[..index] {
+            for previous in self.resource_proofs.iter().take(index) {
                 if let Some(io) = work.as_deref_mut() {
                     io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
                 }
@@ -387,6 +386,11 @@ impl TaskAdmissionRecord {
 
     /// Ref-only v2 envelope retained by the owner outside event history.
     #[must_use]
+    #[allow(
+        clippy::expect_used,
+        clippy::missing_panics_doc,
+        reason = "This closed admission payload contains only infallible JSON-serializable fields."
+    )]
     pub fn canonical_value(&self) -> Value {
         serde_json::to_value(self.canonical_payload()).expect("task admission serializes")
     }
@@ -398,15 +402,12 @@ impl TaskAdmissionRecord {
     ) -> Result<(Self, u64)> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let mut body = value;
-        let fields = match body.as_object_mut() {
-            Some(fields) => fields,
-            None => {
-                return Err(crate::store::guarded_boundary(
-                    quota.work(),
-                    crate::wire::ErrorCode::Invalid,
-                    "task admission must be an object",
-                ));
-            }
+        let Some(fields) = body.as_object_mut() else {
+            return Err(crate::store::guarded_boundary(
+                quota.work(),
+                crate::wire::ErrorCode::Invalid,
+                "task admission must be an object",
+            ));
         };
         if !matches!(fields.remove("contract"), Some(Value::String(contract)) if contract == "harness.task-admission.v2")
         {
@@ -458,6 +459,8 @@ impl TaskAdmissionRecord {
         body: &Value,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(Self, u64)> {
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let _ = work;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if work
             .as_deref()
@@ -495,28 +498,34 @@ impl TaskAdmissionRecord {
                             })?;
                         quota.replace(bytes)
                     }
-                    charge => quota
-                        .work()
-                        .as_deref_mut()
-                        .expect("native admission observer")
-                        .codec_charge(charge),
+                    charge => match quota.work().as_deref_mut() {
+                        Some(io) => io.codec_charge(charge),
+                        None => Err(Error::NativeBoundary {
+                            code: crate::wire::ErrorCode::Invalid,
+                            reason: "native admission observer is missing",
+                        }),
+                    },
                 },
             );
-            let admission: Self = decoded.map_err(|mut error| {
-                if let Error::NativeJson { custody, .. } = &mut error {
-                    let retained = quota.retained();
-                    *custody = Some(
-                        quota
+            let admission: Self = match decoded {
+                Ok(admission) => admission,
+                Err(mut error) => {
+                    if let Error::NativeJson { custody, .. } = &mut error {
+                        let retained = quota.retained();
+                        let held = quota
                             .work()
                             .as_deref_mut()
-                            .expect("native admission observer")
-                            .take_native_custody(retained)
-                            .expect("preclaimed admission custody"),
-                    );
-                    quota.transfer();
+                            .ok_or(Error::NativeBoundary {
+                                code: crate::wire::ErrorCode::Invalid,
+                                reason: "native admission observer is missing",
+                            })?
+                            .take_native_custody(retained)?;
+                        *custody = Some(held);
+                        quota.transfer();
+                    }
+                    return Err(error);
                 }
-                error
-            })?;
+            };
             let bytes = crate::core::owned_sum([
                 std::mem::size_of::<Self>() as u64,
                 admission.logical_owned_bytes()?,

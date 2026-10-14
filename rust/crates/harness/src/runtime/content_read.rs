@@ -1,5 +1,6 @@
 use super::content_write::bound_content_writer;
 use super::*;
+#[cfg(feature = "filesystem")]
 use crate::conversation::BoundedContentFuture;
 use crate::conversation::{ContentIo, content_error};
 use crate::wire::ErrorCode;
