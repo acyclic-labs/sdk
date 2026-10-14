@@ -5,8 +5,7 @@
     reason = "one ordered scenario keeps each step next to the state it checks"
 )]
 
-#[path = "support/stream/mod.rs"]
-mod test_stream;
+use crate::stream_fixture as test_stream;
 
 use acyclic_fs::Fs;
 use acyclic_harness::filesystem::{FilesystemContentVerifier, FilesystemHost};
