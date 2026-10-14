@@ -3,9 +3,10 @@ use crate::async_storage::AsyncObjectStore;
 use crate::foundation::VolumeId;
 use crate::kernel::{
     BlobChunkRef, BlobNode, BlobPage, CheckoutDependencies, Dependency, Extent, ExtentPage,
-    FileKind, FileMetadata, FileTablePage, GenerationRoot, InlineFileData, LogicalName, MetadataField,
-    NameEncoding, RebaseDecision, TreeEntry, TreePage, classify_rebase_async, encode_blob_page,
-    encode_extent_page, encode_file_metadata, encode_file_table_page, encode_generation_root, encode_tree_page,
+    FileKind, FileMetadata, FileTablePage, GenerationRoot, InlineFileData, LogicalName,
+    MetadataField, NameEncoding, RebaseDecision, TreeEntry, TreePage, classify_rebase_async,
+    encode_blob_page, encode_extent_page, encode_file_metadata, encode_file_table_page,
+    encode_generation_root, encode_tree_page,
 };
 use crate::memory::MemoryObjectStore;
 use crate::storage::object_digest;
@@ -45,21 +46,26 @@ async fn fixture(
     let metadata = put(
         store,
         ObjectKind::Metadata,
-        encode_file_metadata(FileMetadata {
-            posix_mode: MetadataField::Unavailable,
-            posix_uid: MetadataField::Unavailable,
-            posix_gid: MetadataField::Unavailable,
-            posix_flags: MetadataField::Unavailable,
-            windows_attributes: MetadataField::Unavailable,
-            created_ns: MetadataField::Unavailable,
-            modified_ns: MetadataField::Unavailable,
-            accessed_ns: MetadataField::Unavailable,
-            changed_ns: MetadataField::Unavailable,
-            named_attributes: MetadataField::Unavailable,
-            acl: MetadataField::Unavailable,
-            security_descriptor: MetadataField::Unavailable,
-        }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+        encode_file_metadata(
+            FileMetadata {
+                posix_mode: MetadataField::Unavailable,
+                posix_uid: MetadataField::Unavailable,
+                posix_gid: MetadataField::Unavailable,
+                posix_flags: MetadataField::Unavailable,
+                windows_attributes: MetadataField::Unavailable,
+                created_ns: MetadataField::Unavailable,
+                modified_ns: MetadataField::Unavailable,
+                accessed_ns: MetadataField::Unavailable,
+                changed_ns: MetadataField::Unavailable,
+                named_attributes: MetadataField::Unavailable,
+                acl: MetadataField::Unavailable,
+                security_descriptor: MetadataField::Unavailable,
+            },
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     let file_id = FileId::from_bytes([1; 16]);
     let child_id = FileId::from_bytes([3; 16]);
     let tree_entries = inserted_name
@@ -75,8 +81,14 @@ async fn fixture(
     let entries = put(
         store,
         ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Leaf(tree_entries), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+        encode_tree_page(
+            &TreePage::Leaf(tree_entries),
+            8,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     let mut records = vec![FileRecord {
         file_id,
         kind: FileKind::Directory,
@@ -96,19 +108,30 @@ async fn fixture(
     let table = put(
         store,
         ObjectKind::FileTablePage,
-        encode_file_table_page(&FileTablePage::Leaf(records), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+        encode_file_table_page(
+            &FileTablePage::Leaf(records),
+            8,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     let root = put(
         store,
         ObjectKind::GenerationRoot,
-        encode_generation_root(&GenerationRoot {
-            volume_id: VolumeId::from_bytes([2; 16]),
-            root_file_id: file_id,
-            file_table: table,
-            parents: Vec::new(),
-            required_features: 0,
-        }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+        encode_generation_root(
+            &GenerationRoot {
+                volume_id: VolumeId::from_bytes([2; 16]),
+                root_file_id: file_id,
+                file_table: table,
+                parents: Vec::new(),
+                required_features: 0,
+            },
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     Ok((GenerationId::new(root.digest), file_id, metadata))
 }
 
@@ -118,21 +141,26 @@ async fn non_regular_fixture(
     let metadata = put(
         store,
         ObjectKind::Metadata,
-        encode_file_metadata(FileMetadata {
-            posix_mode: MetadataField::Unavailable,
-            posix_uid: MetadataField::Unavailable,
-            posix_gid: MetadataField::Unavailable,
-            posix_flags: MetadataField::Unavailable,
-            windows_attributes: MetadataField::Unavailable,
-            created_ns: MetadataField::Unavailable,
-            modified_ns: MetadataField::Unavailable,
-            accessed_ns: MetadataField::Unavailable,
-            changed_ns: MetadataField::Unavailable,
-            named_attributes: MetadataField::Unavailable,
-            acl: MetadataField::Unavailable,
-            security_descriptor: MetadataField::Unavailable,
-        }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+        encode_file_metadata(
+            FileMetadata {
+                posix_mode: MetadataField::Unavailable,
+                posix_uid: MetadataField::Unavailable,
+                posix_gid: MetadataField::Unavailable,
+                posix_flags: MetadataField::Unavailable,
+                windows_attributes: MetadataField::Unavailable,
+                created_ns: MetadataField::Unavailable,
+                modified_ns: MetadataField::Unavailable,
+                accessed_ns: MetadataField::Unavailable,
+                changed_ns: MetadataField::Unavailable,
+                named_attributes: MetadataField::Unavailable,
+                acl: MetadataField::Unavailable,
+                security_descriptor: MetadataField::Unavailable,
+            },
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     let root_id = FileId::from_bytes([11; 16]);
     let symbolic_link_id = FileId::from_bytes([12; 16]);
     let empty_id = FileId::from_bytes([13; 16]);
@@ -141,8 +169,14 @@ async fn non_regular_fixture(
     let empty_tree = put(
         store,
         ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Leaf(Vec::new()), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+        encode_tree_page(
+            &TreePage::Leaf(Vec::new()),
+            8,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     let absent_blob = ObjectId {
         kind: ObjectKind::Blob,
         digest: Digest::from_bytes([16; 32]),
@@ -195,19 +229,30 @@ async fn non_regular_fixture(
     let table = put(
         store,
         ObjectKind::FileTablePage,
-        encode_file_table_page(&FileTablePage::Leaf(records), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+        encode_file_table_page(
+            &FileTablePage::Leaf(records),
+            8,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     let root = put(
         store,
         ObjectKind::GenerationRoot,
-        encode_generation_root(&GenerationRoot {
-            volume_id: VolumeId::from_bytes([17; 16]),
-            root_file_id: root_id,
-            file_table: table,
-            parents: Vec::new(),
-            required_features: 0,
-        }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+        encode_generation_root(
+            &GenerationRoot {
+                volume_id: VolumeId::from_bytes([17; 16]),
+                root_file_id: root_id,
+                file_table: table,
+                parents: Vec::new(),
+                required_features: 0,
+            },
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     Ok((
         GenerationId::new(root.digest),
         vec![symbolic_link_id, empty_id, device_id, reparse_id],
@@ -228,26 +273,32 @@ async fn sparse_probe_fixture(
     let metadata = put(
         store,
         ObjectKind::Metadata,
-        encode_file_metadata(FileMetadata {
-            posix_mode: MetadataField::Unavailable,
-            posix_uid: MetadataField::Unavailable,
-            posix_gid: MetadataField::Unavailable,
-            posix_flags: MetadataField::Unavailable,
-            windows_attributes: MetadataField::Unavailable,
-            created_ns: MetadataField::Unavailable,
-            modified_ns: MetadataField::Unavailable,
-            accessed_ns: MetadataField::Unavailable,
-            changed_ns: MetadataField::Unavailable,
-            named_attributes: MetadataField::Unavailable,
-            acl: MetadataField::Unavailable,
-            security_descriptor: MetadataField::Unavailable,
-        }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+        encode_file_metadata(
+            FileMetadata {
+                posix_mode: MetadataField::Unavailable,
+                posix_uid: MetadataField::Unavailable,
+                posix_gid: MetadataField::Unavailable,
+                posix_flags: MetadataField::Unavailable,
+                windows_attributes: MetadataField::Unavailable,
+                created_ns: MetadataField::Unavailable,
+                modified_ns: MetadataField::Unavailable,
+                accessed_ns: MetadataField::Unavailable,
+                changed_ns: MetadataField::Unavailable,
+                named_attributes: MetadataField::Unavailable,
+                acl: MetadataField::Unavailable,
+                security_descriptor: MetadataField::Unavailable,
+            },
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     let chunk = put(store, ObjectKind::BlobChunk, b"DATA".to_vec()).await?;
     let blob = put(
         store,
         ObjectKind::Blob,
-        encode_blob_page(&BlobPage {
+        encode_blob_page(
+            &BlobPage {
                 first_offset: 0,
                 end_offset: 4,
                 node: BlobNode::Leaf(vec![BlobChunkRef {
@@ -255,12 +306,18 @@ async fn sparse_probe_fixture(
                     end_offset: 4,
                     chunk,
                 }]),
-            }, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+            },
+            8,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     let extents = put(
         store,
         ObjectKind::ExtentPage,
-        encode_extent_page(&ExtentPage::Leaf(vec![
+        encode_extent_page(
+            &ExtentPage::Leaf(vec![
                 Extent {
                     offset: 0,
                     length: 4,
@@ -284,8 +341,13 @@ async fn sparse_probe_fixture(
                     length: 4,
                     kind: ExtentKind::Hole,
                 },
-            ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+            ]),
+            8,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     let root_id = FileId::from_bytes([21; 16]);
     let inline_id = FileId::from_bytes([22; 16]);
     let regular_id = FileId::from_bytes([23; 16]);
@@ -294,7 +356,8 @@ async fn sparse_probe_fixture(
     let tree = put(
         store,
         ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Leaf(vec![
+        encode_tree_page(
+            &TreePage::Leaf(vec![
                 TreeEntry {
                     name: inline_name,
                     file_id: inline_id,
@@ -305,12 +368,18 @@ async fn sparse_probe_fixture(
                     file_id: regular_id,
                     kind: FileKind::Regular,
                 },
-            ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+            ]),
+            8,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     let table = put(
         store,
         ObjectKind::FileTablePage,
-        encode_file_table_page(&FileTablePage::Leaf(vec![
+        encode_file_table_page(
+            &FileTablePage::Leaf(vec![
                 FileRecord {
                     file_id: root_id,
                     kind: FileKind::Directory,
@@ -335,19 +404,29 @@ async fn sparse_probe_fixture(
                         extents,
                     },
                 },
-            ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+            ]),
+            8,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     let root = put(
         store,
         ObjectKind::GenerationRoot,
-        encode_generation_root(&GenerationRoot {
-            volume_id: VolumeId::from_bytes([24; 16]),
-            root_file_id: root_id,
-            file_table: table,
-            parents: Vec::new(),
-            required_features: 0,
-        }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+        encode_generation_root(
+            &GenerationRoot {
+                volume_id: VolumeId::from_bytes([24; 16]),
+                root_file_id: root_id,
+                file_table: table,
+                parents: Vec::new(),
+                required_features: 0,
+            },
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     Ok(SparseProbeFixture {
         generation: GenerationId::new(root.digest),
         root_id,
@@ -363,31 +442,37 @@ async fn immutable_summaries_are_cached_without_becoming_authority()
     let store = MemoryObjectStore::default();
     let (generation, file_id, metadata) = fixture(&store, None).await?;
     let probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
-    let first = probe.probe_async(
-        generation,
-        &DependencyRegion::Metadata(file_id),
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    ).await?;
+    let first = probe
+        .probe_async(
+            generation,
+            &DependencyRegion::Metadata(file_id),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
     assert_eq!(first.value, DependencyState::Present(metadata.digest));
     assert_eq!(first.work.backend_read_operations, 2);
-    let cached = probe.probe_async(
-        generation,
-        &DependencyRegion::Metadata(file_id),
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    ).await?;
+    let cached = probe
+        .probe_async(
+            generation,
+            &DependencyRegion::Metadata(file_id),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
     assert_eq!(cached.value, first.value);
     assert_eq!(cached.work.backend_read_operations, 0);
-    let absent = probe.probe_async(
-        generation,
-        &DependencyRegion::DirectoryName {
-            directory_id: file_id,
-            name: LogicalName::new(NameEncoding::Utf8, b"absent".to_vec(), 255)?,
-        },
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    ).await?;
+    let absent = probe
+        .probe_async(
+            generation,
+            &DependencyRegion::DirectoryName {
+                directory_id: file_id,
+                name: LogicalName::new(NameEncoding::Utf8, b"absent".to_vec(), 255)?,
+            },
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
     assert_eq!(absent.value, DependencyState::Absent);
     assert_eq!(absent.work.page_reads, 1);
     assert_eq!(absent.work.backend_read_operations, 1);
@@ -429,28 +514,26 @@ async fn immutable_summaries_are_cached_without_becoming_authority()
 }
 
 #[tokio::test]
-async fn poisoned_summary_caches_fail_closed()
--> Result<(), Box<dyn std::error::Error>> {
+async fn poisoned_summary_caches_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, file_id, _) = fixture(&store, None).await?;
     let region = DependencyRegion::Metadata(file_id);
 
     let generation_probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
     let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _async_guard = generation_probe.async_generations.lock()
+        let _async_guard = generation_probe
+            .async_generations
+            .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         std::panic::resume_unwind(Box::new("poison generation summary cache"));
     }));
     assert!(poisoned.is_err());
     let cancellation = CancellationToken::new();
-    let failure = (generation_probe.probe_async(
-        generation,
-        &region,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await
-    .err()
-    .ok_or("poisoned asynchronous generation cache probe succeeded")?;
+    let failure =
+        (generation_probe.probe_async(generation, &region, WorkBudget::UNBOUNDED, &cancellation))
+            .await
+            .err()
+            .ok_or("poisoned asynchronous generation cache probe succeeded")?;
     assert!(matches!(
         failure.error,
         AuthenticatedProbeError::CachePoisoned
@@ -459,19 +542,18 @@ async fn poisoned_summary_caches_fail_closed()
 
     let record_probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
     let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _async_guard = record_probe.async_records.lock()
+        let _async_guard = record_probe
+            .async_records
+            .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         std::panic::resume_unwind(Box::new("poison record summary cache"));
     }));
     assert!(poisoned.is_err());
-    let failure = (record_probe.probe_async(
-        generation,
-        &region,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await
-    .err()
-    .ok_or("poisoned asynchronous record cache probe succeeded")?;
+    let failure =
+        (record_probe.probe_async(generation, &region, WorkBudget::UNBOUNDED, &cancellation))
+            .await
+            .err()
+            .ok_or("poisoned asynchronous record cache probe succeeded")?;
     assert!(matches!(
         failure.error,
         AuthenticatedProbeError::CachePoisoned
@@ -492,7 +574,14 @@ async fn inserted_directory_entry_conflicts_with_an_observed_empty_page()
         after: None,
         maximum_entries: 8,
     };
-    let captured = probe.probe_async(base, &region, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
+    let captured = probe
+        .probe_async(
+            base,
+            &region,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
     let dependencies = CheckoutDependencies::new(
         [Dependency {
             region: region.clone(),
@@ -509,7 +598,8 @@ async fn inserted_directory_entry_conflicts_with_an_observed_empty_page()
         1,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert!(matches!(
         decision.decision,
         RebaseDecision::Conflicted {
@@ -534,23 +624,47 @@ async fn content_digest_is_layout_independent_and_hash_budget_is_exact()
         ..WorkBudget::UNBOUNDED
     };
     let inline = capture_content_range_bytes(&[0; 8], 8, exact_budget)?;
-    let extents = put(&store, ObjectKind::ExtentPage, encode_extent_page(
-        &ExtentPage::Leaf(vec![Extent {
-            offset: 0,
-            length: 8,
-            kind: ExtentKind::Hole,
-        }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-    )?).await?;
-    let sparse = probe.capture_record_async(
-        Some(FileRecord { file_id, kind: FileKind::Regular, link_count: 1, metadata,
-            payload: FilePayload::Regular { logical_bytes: 8, extents } }),
-        &DependencyRegion::ContentRange { file_id, offset: 0, length: 8 },
-        WorkBudget::UNBOUNDED, &CancellationToken::new(),
-    ).await?;
+    let extents = put(
+        &store,
+        ObjectKind::ExtentPage,
+        encode_extent_page(
+            &ExtentPage::Leaf(vec![Extent {
+                offset: 0,
+                length: 8,
+                kind: ExtentKind::Hole,
+            }]),
+            8,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
+    let sparse = probe
+        .capture_record_async(
+            Some(FileRecord {
+                file_id,
+                kind: FileKind::Regular,
+                link_count: 1,
+                metadata,
+                payload: FilePayload::Regular {
+                    logical_bytes: 8,
+                    extents,
+                },
+            }),
+            &DependencyRegion::ContentRange {
+                file_id,
+                offset: 0,
+                length: 8,
+            },
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
     assert_eq!(inline.value, sparse.value);
     assert_eq!(inline.work.bytes_hashed, hash_bytes);
     let failure = capture_content_range_bytes(
-        &[0; 8], 8,
+        &[0; 8],
+        8,
         WorkBudget {
             bytes_hashed: hash_bytes - 1,
             ..WorkBudget::UNBOUNDED
@@ -806,16 +920,44 @@ async fn bounded_summary_cache_eviction_reauthenticates_without_changing_state()
         },
     )?;
     let region = DependencyRegion::Metadata(file_id);
-    let first = probe.probe_async(generation_a, &region, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
+    let first = probe
+        .probe_async(
+            generation_a,
+            &region,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
     assert_eq!(first.value, DependencyState::Present(metadata.digest));
     assert!(first.work.backend_read_operations > 0);
-    let cached = probe.probe_async(generation_a, &region, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
+    let cached = probe
+        .probe_async(
+            generation_a,
+            &region,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
     assert_eq!(cached.value, first.value);
     assert_eq!(cached.work.backend_read_operations, 0);
-    let other = probe.probe_async(generation_b, &region, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
+    let other = probe
+        .probe_async(
+            generation_b,
+            &region,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
     assert_eq!(other.value, first.value);
     assert!(other.work.backend_read_operations > 0);
-    let reauthenticated = probe.probe_async(generation_a, &region, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
+    let reauthenticated = probe
+        .probe_async(
+            generation_a,
+            &region,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
     assert_eq!(reauthenticated.value, first.value);
     assert!(reauthenticated.work.backend_read_operations > 0);
     Ok(())
@@ -829,12 +971,14 @@ async fn non_regular_dependency_regions_use_authenticated_record_state()
     let name = LogicalName::new(NameEncoding::Utf8, b"not-a-directory-entry".to_vec(), 255)?;
     for file_id in file_ids {
         let baseline_probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
-        let baseline = baseline_probe.probe_async(
-            generation,
-            &DependencyRegion::FileRecord(file_id),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        ).await?;
+        let baseline = baseline_probe
+            .probe_async(
+                generation,
+                &DependencyRegion::FileRecord(file_id),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await?;
         let regions = [
             DependencyRegion::FileLength(file_id),
             DependencyRegion::ContentRange {
@@ -865,7 +1009,8 @@ async fn non_regular_dependency_regions_use_authenticated_record_state()
                 &region,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
-            )).await?;
+            ))
+            .await?;
             assert_eq!(asynchronous.value, baseline.value);
         }
     }
@@ -879,28 +1024,55 @@ async fn inline_content_probe_rejects_overflow_and_eof_before_hashing()
     let probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
     let file_id = FileId::from_bytes([1; 16]);
     let record = Some(FileRecord {
-        file_id, kind: FileKind::Regular, link_count: 1,
-        metadata: ObjectId { kind: ObjectKind::Metadata, digest: Digest::from_bytes([0; 32]) },
+        file_id,
+        kind: FileKind::Regular,
+        link_count: 1,
+        metadata: ObjectId {
+            kind: ObjectKind::Metadata,
+            digest: Digest::from_bytes([0; 32]),
+        },
         payload: FilePayload::InlineRegular(InlineFileData::new(b"abcdefgh")?),
     });
     for (offset, length) in [(u64::MAX, 1), (7, 2)] {
-        let failure = probe.capture_record_async(
-            record, &DependencyRegion::ContentRange { file_id, offset, length },
-            WorkBudget::UNBOUNDED, &CancellationToken::new(),
-        ).await
-        .err()
-        .ok_or("invalid inline content range unexpectedly succeeded")?;
+        let failure = probe
+            .capture_record_async(
+                record,
+                &DependencyRegion::ContentRange {
+                    file_id,
+                    offset,
+                    length,
+                },
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .err()
+            .ok_or("invalid inline content range unexpectedly succeeded")?;
         if offset == u64::MAX {
-            assert!(matches!(failure.error, AuthenticatedProbeError::InvalidDependency(DependencyError::RangeOverflow)));
+            assert!(matches!(
+                failure.error,
+                AuthenticatedProbeError::InvalidDependency(DependencyError::RangeOverflow)
+            ));
         } else {
-            assert!(matches!(failure.error, AuthenticatedProbeError::Extent(ExtentReadError::InvalidRange)));
+            assert!(matches!(
+                failure.error,
+                AuthenticatedProbeError::Extent(ExtentReadError::InvalidRange)
+            ));
         }
         assert_eq!(*failure.work, WorkCounters::default());
     }
-    let exact = probe.capture_record_async(
-        record, &DependencyRegion::ContentRange { file_id, offset: 4, length: 4 },
-        WorkBudget::UNBOUNDED, &CancellationToken::new(),
-    ).await?;
+    let exact = probe
+        .capture_record_async(
+            record,
+            &DependencyRegion::ContentRange {
+                file_id,
+                offset: 4,
+                length: 4,
+            },
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
     assert!(matches!(exact.value, DependencyState::Present(_)));
     assert_eq!(exact.work.backend_read_operations, 0);
     assert!(exact.work.bytes_hashed > 4);
@@ -987,20 +1159,28 @@ async fn every_sparse_dependency_region_preserves_ordinary_and_native_evidence()
             &region,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        )).await?;
+        ))
+        .await?;
         #[cfg(not(target_arch = "wasm32"))]
         {
             let cancellation = CancellationToken::new();
-            let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-                .map_err(|(error, _)| error)?;
+            let original =
+                crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+                    .map_err(|(error, _)| error)?;
             let baseline = original.live_allocation_bytes();
             let mut accounting = KernelAccounting::native(&original, &cancellation);
             let (native_probe, constructor) = AuthenticatedGenerationProbe::new_with_accounting(
-                &store, ProbeLimits::default(), &mut accounting,
+                &store,
+                ProbeLimits::default(),
+                &mut accounting,
             )?;
             let native = (native_probe.probe_async_with_accounting(
-                generation, &region, &mut accounting, &cancellation,
-            )).await?;
+                generation,
+                &region,
+                &mut accounting,
+                &cancellation,
+            ))
+            .await?;
             assert_eq!(native, asynchronous.value);
             native_probe.retire_with_accounting(&mut accounting)?;
             drop(constructor);
@@ -1032,7 +1212,8 @@ async fn bounded_batch_capture_reuses_generation_and_record_frontiers()
         3,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    )).await?;
+    ))
+    .await?;
 
     assert_eq!(captured.value.len(), 3);
     assert_eq!(captured.value[0].region, regions[0]);
@@ -1053,7 +1234,8 @@ async fn bounded_batch_capture_reuses_generation_and_record_frontiers()
         2,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    )).await
+    ))
+    .await
     .err()
     .ok_or("excessive batch unexpectedly succeeded")?;
     assert!(matches!(
@@ -1072,15 +1254,32 @@ async fn authenticated_batch_admits_dependency_copy_before_output_push()
     let probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
     let cancellation = CancellationToken::new();
     let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-    let record = probe.record_with_accounting(generation, file_id, &mut accounting, &cancellation).await?;
+    let record = probe
+        .record_with_accounting(generation, file_id, &mut accounting, &cancellation)
+        .await?;
     for budget in [
-        WorkBudget { bytes_copied: 0, ..WorkBudget::UNBOUNDED },
-        WorkBudget { items_returned: 0, ..WorkBudget::UNBOUNDED },
+        WorkBudget {
+            bytes_copied: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+        WorkBudget {
+            items_returned: 0,
+            ..WorkBudget::UNBOUNDED
+        },
     ] {
         let failure = (probe.capture_records_many_async(
-            vec![(record, DependencyRegion::Metadata(file_id))], 1, budget, &cancellation,
-        )).await.err().ok_or("output push exceeded its budget")?;
-        assert!(matches!(failure.error, AuthenticatedProbeError::Work(WorkError::BudgetExceeded { .. })));
+            vec![(record, DependencyRegion::Metadata(file_id))],
+            1,
+            budget,
+            &cancellation,
+        ))
+        .await
+        .err()
+        .ok_or("output push exceeded its budget")?;
+        assert!(matches!(
+            failure.error,
+            AuthenticatedProbeError::Work(WorkError::BudgetExceeded { .. })
+        ));
         assert_eq!(failure.work.bytes_copied, 0);
         assert_eq!(failure.work.items_returned, 0);
         assert_eq!(failure.work.backend_read_operations, 0);
@@ -1088,11 +1287,21 @@ async fn authenticated_batch_admits_dependency_copy_before_output_push()
     }
     let copied = usize_to_u64(size_of::<Dependency>());
     let receipt = (probe.capture_records_many_async(
-        vec![(record, DependencyRegion::Metadata(file_id))], 1,
-        WorkBudget { bytes_copied: copied, items_returned: 1, ..WorkBudget::UNBOUNDED }, &cancellation,
-    )).await?;
+        vec![(record, DependencyRegion::Metadata(file_id))],
+        1,
+        WorkBudget {
+            bytes_copied: copied,
+            items_returned: 1,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    ))
+    .await?;
     assert_eq!(receipt.value.len(), 1);
-    assert_eq!(receipt.value[0].expected, DependencyState::Present(metadata.digest));
+    assert_eq!(
+        receipt.value[0].expected,
+        DependencyState::Present(metadata.digest)
+    );
     assert_eq!(receipt.work.bytes_copied, copied);
     assert_eq!(receipt.work.items_returned, 1);
     assert_eq!(receipt.work.backend_read_operations, 0);
@@ -1110,7 +1319,9 @@ struct PanicProbeStore<'a> {
 #[cfg(not(target_arch = "wasm32"))]
 impl AsyncObjectStore for PanicProbeStore<'_> {
     async fn put(
-        &self, object: ObjectId, bytes: OwnedBytes,
+        &self,
+        object: ObjectId,
+        bytes: OwnedBytes,
         context: &mut crate::AuthorityWork<'_>,
     ) -> Result<(), crate::ObjectStoreError> {
         #[cfg(not(target_arch = "wasm32"))]
@@ -1123,7 +1334,8 @@ impl AsyncObjectStore for PanicProbeStore<'_> {
             {
                 let __object_args = (object, bytes, budget, cancellation);
                 let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-                let __object_result = AsyncObjectStore::put(&self.store,
+                let __object_result = AsyncObjectStore::put(
+                    &self.store,
                     __object_args.0,
                     __object_args.1,
                     &mut __object_work,
@@ -1137,34 +1349,47 @@ impl AsyncObjectStore for PanicProbeStore<'_> {
     }
 
     async fn read(
-        &self, object: ObjectId, maximum_bytes: u64,
+        &self,
+        object: ObjectId,
+        maximum_bytes: u64,
         context: &mut crate::AuthorityWork<'_>,
     ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = context.original {
             let cancellation = context.cancellation;
             return async {
-        cancellation.check().map_err(|_| ObjectStoreError::Cancelled)?;
-        work.admit(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED })
-            .map_err(ObjectStoreError::Native)?;
-        self.reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if object.kind == ObjectKind::FileTablePage {
-            *self.reached.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
-                Some((self.original.live_allocation_bytes(), self.original.receipt()));
-            std::panic::resume_unwind(Box::new("cold original authenticated probe read"));
-        }
+                cancellation
+                    .check()
+                    .map_err(|_| ObjectStoreError::Cancelled)?;
+                work.admit(WorkCounters {
+                    backend_read_operations: 1,
+                    ..WorkCounters::UNCHARGED
+                })
+                .map_err(ObjectStoreError::Native)?;
+                self.reads
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if object.kind == ObjectKind::FileTablePage {
+                    *self
+                        .reached
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
+                        self.original.live_allocation_bytes(),
+                        self.original.receipt(),
+                    ));
+                    std::panic::resume_unwind(Box::new("cold original authenticated probe read"));
+                }
                 {
                     let __object_args = (object, maximum_bytes, work, cancellation);
                     let mut __object_work =
                         crate::AuthorityWork::native(__object_args.2, __object_args.3);
-                    let __object_result = AsyncObjectStore::read(
+
+                    AsyncObjectStore::read(
                         &self.store,
                         __object_args.0,
                         __object_args.1,
                         &mut __object_work,
                     )
-                    .await;
-                    __object_result
+                    .await
                 }
             }
             .await;
@@ -1190,7 +1415,8 @@ impl AsyncObjectStore for PanicProbeStore<'_> {
     }
 
     async fn read_many(
-        &self, requests: &[crate::storage::ObjectReadRequest],
+        &self,
+        requests: &[crate::storage::ObjectReadRequest],
         context: &mut crate::AuthorityWork<'_>,
     ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
         crate::async_storage::read_many_sequential(self, requests, context).await
@@ -1230,23 +1456,43 @@ async fn original_probe_denies_before_backend_and_retires_panic_temporaries()
     let (generation, file_id, _) = fixture(&store, None).await?;
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(
-        WorkBudget { backend_read_operations: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
-    ).map_err(|(error, _)| error)?;
+        WorkBudget {
+            backend_read_operations: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    )
+    .map_err(|(error, _)| error)?;
     let store = PanicProbeStore {
-        store, original: &original, reads: std::sync::atomic::AtomicU64::new(0), reached: Mutex::new(None),
+        store,
+        original: &original,
+        reads: std::sync::atomic::AtomicU64::new(0),
+        reached: Mutex::new(None),
     };
     let baseline = original.live_allocation_bytes();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let (probe, constructor) = AuthenticatedGenerationProbe::new_with_accounting(
-        &store, ProbeLimits::default(), &mut accounting,
+        &store,
+        ProbeLimits::default(),
+        &mut accounting,
     )?;
     let region = DependencyRegion::Metadata(file_id);
     let denied = (super::super::rebase::AccountingRebaseProbe::probe_with_accounting(
-        &probe, generation, &region, &mut accounting, &cancellation,
-    )).await.err().ok_or("zero read budget accepted")?;
-    assert!(matches!(denied, super::super::rebase::ClassifyRebaseFailure::Accounting(
-        crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_))
-    )));
+        &probe,
+        generation,
+        &region,
+        &mut accounting,
+        &cancellation,
+    ))
+    .await
+    .err()
+    .ok_or("zero read budget accepted")?;
+    assert!(matches!(
+        denied,
+        super::super::rebase::ClassifyRebaseFailure::Accounting(crate::FsError::NativeKernel(
+            crate::NativeTreeMaterializationError::Work(_)
+        ))
+    ));
     assert_eq!(store.reads.load(std::sync::atomic::Ordering::Relaxed), 0);
     assert_eq!(original.receipt().backend_read_operations, 0);
     probe.retire_with_accounting(&mut accounting)?;
@@ -1257,23 +1503,41 @@ async fn original_probe_denies_before_backend_and_retires_panic_temporaries()
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
     let store = PanicProbeStore {
-        store, original: &original, reads: std::sync::atomic::AtomicU64::new(0), reached: Mutex::new(None),
+        store,
+        original: &original,
+        reads: std::sync::atomic::AtomicU64::new(0),
+        reached: Mutex::new(None),
     };
     let baseline = original.live_allocation_bytes();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let (probe, constructor) = AuthenticatedGenerationProbe::new_with_accounting(
-        &store, ProbeLimits::default(), &mut accounting,
+        &store,
+        ProbeLimits::default(),
+        &mut accounting,
     )?;
     let panic = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(async {
-        (probe.probe_async_with_accounting(
-            generation, &region, &mut accounting, &cancellation,
-        )).await
-    })).await;
+        (probe.probe_async_with_accounting(generation, &region, &mut accounting, &cancellation))
+            .await
+    }))
+    .await;
     assert!(panic.is_err());
-    let (reached_live, reached_work) = store.reached.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    let (reached_live, reached_work) = store
+        .reached
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .ok_or("original file-table read was not reached")?;
-    let cached = probe.async_generations.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entries.bytes
-        + probe.async_records.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entries.bytes;
+    let cached = probe
+        .async_generations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entries
+        .bytes
+        + probe
+            .async_records
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entries
+            .bytes;
     assert_eq!(original.live_allocation_bytes(), baseline + cached);
     assert!(reached_live > original.live_allocation_bytes());
     assert_eq!(original.receipt(), reached_work);
@@ -1292,46 +1556,77 @@ async fn original_probe_generation_caches_preserve_dependency_conflicts()
     let store = MemoryObjectStore::default();
     let (base, directory_id, _) = fixture(&store, None).await?;
     let (candidate, _, _) = fixture(&store, Some("phantom")).await?;
-    let region = DependencyRegion::DirectoryRange { directory_id, after: None, maximum_entries: 8 };
+    let region = DependencyRegion::DirectoryRange {
+        directory_id,
+        after: None,
+        maximum_entries: 8,
+    };
     let ordinary = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
-    let expected = ordinary.probe_async(base, &region, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?.value;
-    let dependencies = CheckoutDependencies::new([Dependency { region: region.clone(), expected }], [], 1)?;
+    let expected = ordinary
+        .probe_async(
+            base,
+            &region,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?
+        .value;
+    let dependencies = CheckoutDependencies::new(
+        [Dependency {
+            region: region.clone(),
+            expected,
+        }],
+        [],
+        1,
+    )?;
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let (probe, constructor) = AuthenticatedGenerationProbe::new_with_accounting(
-        &store, ProbeLimits { maximum_cached_generations: 1, maximum_cached_records: 1, ..ProbeLimits::default() },
+        &store,
+        ProbeLimits {
+            maximum_cached_generations: 1,
+            maximum_cached_records: 1,
+            ..ProbeLimits::default()
+        },
         &mut accounting,
     )?;
-    let source = (probe.probe_async_with_accounting(
-        base, &region, &mut accounting, &cancellation,
-    )).await?;
-    let destination = (probe.probe_async_with_accounting(
-        candidate, &region, &mut accounting, &cancellation,
-    )).await?;
+    let source =
+        (probe.probe_async_with_accounting(base, &region, &mut accounting, &cancellation)).await?;
+    let destination =
+        (probe.probe_async_with_accounting(candidate, &region, &mut accounting, &cancellation))
+            .await?;
     assert_eq!(source, expected);
     assert_ne!(destination, source);
-    let source_again = (probe.probe_async_with_accounting(
-        base, &region, &mut accounting, &cancellation,
-    )).await?;
+    let source_again =
+        (probe.probe_async_with_accounting(base, &region, &mut accounting, &cancellation)).await?;
     assert_eq!(source_again, source);
     let (decision, allocation) = (super::super::rebase::classify_rebase_with_accounting(
-        &probe, base, candidate, &dependencies, 1, &mut accounting, &cancellation,
-    )).await
-        .map_err(|failure| -> Box<dyn std::error::Error> {
-            match failure {
-                super::super::rebase::ClassifyRebaseFailure::Accounting(error)
-                | super::super::rebase::ClassifyRebaseFailure::Probe(error) => Box::new(error),
-                super::super::rebase::ClassifyRebaseFailure::ZeroConflictLimit => {
+        &probe,
+        base,
+        candidate,
+        &dependencies,
+        1,
+        &mut accounting,
+        &cancellation,
+    ))
+    .await
+    .map_err(|failure| -> Box<dyn std::error::Error> {
+        match failure {
+            super::super::rebase::ClassifyRebaseFailure::Accounting(error)
+            | super::super::rebase::ClassifyRebaseFailure::Probe(error) => Box::new(error),
+            super::super::rebase::ClassifyRebaseFailure::ZeroConflictLimit => {
                 "zero conflict limit".into()
             }
         }
-        })?;
-    assert!(matches!(&decision, RebaseDecision::Conflicted { conflicts, truncated: false }
+    })?;
+    assert!(
+        matches!(&decision, RebaseDecision::Conflicted { conflicts, truncated: false }
         if conflicts.len() == 1 && conflicts[0].region == region
-            && conflicts[0].expected == source && conflicts[0].actual == destination));
+            && conflicts[0].expected == source && conflicts[0].actual == destination)
+    );
     drop(decision);
     drop(allocation);
     probe.retire_with_accounting(&mut accounting)?;
@@ -1341,20 +1636,36 @@ async fn original_probe_generation_caches_preserve_dependency_conflicts()
 }
 
 #[test]
-fn stack_dependency_denial_precedes_array_encoding()
--> Result<(), Box<dyn std::error::Error>> {
+fn stack_dependency_denial_precedes_array_encoding() -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
     for budget in [
-        WorkBudget { bytes_encoded: 0, ..WorkBudget::UNBOUNDED },
-        WorkBudget { bytes_hashed: 0, ..WorkBudget::UNBOUNDED },
+        WorkBudget {
+            bytes_encoded: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+        WorkBudget {
+            bytes_hashed: 0,
+            ..WorkBudget::UNBOUNDED
+        },
     ] {
         let reached = std::cell::Cell::new(false);
         let mut accounting = KernelAccounting::standalone(budget, &cancellation);
         let denied = capture_stack_state_with_accounting(
-            || { reached.set(true); [0_u8; 10] },
-            b"acyclic-fs-dependency-sparse-seek-v1\0", &mut accounting, &cancellation, None,
-        ).err().ok_or("stack dependency exceeded its admission")?;
-        assert!(matches!(denied, crate::FsError::Work(WorkError::BudgetExceeded { .. })));
+            || {
+                reached.set(true);
+                [0_u8; 10]
+            },
+            b"acyclic-fs-dependency-sparse-seek-v1\0",
+            &mut accounting,
+            &cancellation,
+            None,
+        )
+        .err()
+        .ok_or("stack dependency exceeded its admission")?;
+        assert!(matches!(
+            denied,
+            crate::FsError::Work(WorkError::BudgetExceeded { .. })
+        ));
         assert!(!reached.get());
         assert_eq!(accounting.spent(), WorkCounters::UNCHARGED);
     }
@@ -1371,12 +1682,21 @@ fn original_stack_encoding_retains_completed_prefix_on_late_cancellation()
     let before = original.receipt();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let result = capture_stack_state_with_accounting(
-        || { cancellation.cancel(); [0_u8; 10] },
-        b"acyclic-fs-dependency-sparse-seek-v1\0", &mut accounting, &cancellation, None,
+        || {
+            cancellation.cancel();
+            [0_u8; 10]
+        },
+        b"acyclic-fs-dependency-sparse-seek-v1\0",
+        &mut accounting,
+        &cancellation,
+        None,
     );
     assert!(result.is_err());
     assert_eq!(original.receipt().bytes_encoded, before.bytes_encoded + 10);
     assert_eq!(original.receipt().bytes_hashed, before.bytes_hashed);
-    assert_eq!(original.receipt().allocation_operations, before.allocation_operations);
+    assert_eq!(
+        original.receipt().allocation_operations,
+        before.allocation_operations
+    );
     Ok(())
 }

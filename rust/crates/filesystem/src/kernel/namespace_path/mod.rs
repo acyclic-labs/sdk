@@ -1,6 +1,8 @@
 //! Bounded profile-independent namespace paths.
 
-use super::allocation::{AllocationLedger, KernelAccounting, KernelOwnedAllocation};
+#[cfg(feature = "native-mount")]
+use super::allocation::AllocationLedger;
+use super::allocation::{KernelAccounting, KernelOwnedAllocation};
 use super::{LogicalName, NameEncoding, TreePageError};
 use crate::model::{FilesystemProfile, VolumeLimits};
 use crate::path::PortablePath;
@@ -8,7 +10,7 @@ use crate::{CancellationToken, WorkBudget, WorkCounters};
 use thiserror::Error;
 mod allocation;
 mod operations;
-pub(super) use allocation::{NamespacePathStep, finish_owned, observe_path};
+pub(super) use allocation::finish_owned;
 
 /// Canonical absolute path represented as exact logical-name components.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -110,7 +112,7 @@ impl NamespacePath {
     /// Returns the exact parent path, or `None` for the namespace root.
     #[must_use]
     pub fn parent(&self) -> Option<Self> {
-        let (_, name) = self.split_last()?;
+        let (parents, name) = self.split_last()?;
         let encoded_bytes = if self.components.len() == 1 {
             1
         } else {
@@ -118,7 +120,7 @@ impl NamespacePath {
                 .saturating_sub(u32::try_from(name.as_bytes().len()).unwrap_or(u32::MAX))
                 .saturating_sub(1)
         };
-        let components = self.components[..self.components.len() - 1].to_vec();
+        let components = parents.to_vec();
         Some(Self {
             components,
             encoded_bytes,

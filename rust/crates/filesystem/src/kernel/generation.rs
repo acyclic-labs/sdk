@@ -1,6 +1,8 @@
 //! Canonical immutable volume-generation roots and parent lineage.
 
-use super::codec::{CanonicalDecodeError, DecodeLimits, Decoder, Encoder, EncodeWorkStep, ReadAllocationStep};
+use super::codec::{
+    CanonicalDecodeError, DecodeLimits, Decoder, EncodeWorkStep, Encoder, ReadAllocationStep,
+};
 use super::types::digest_object;
 use crate::foundation::{Digest, FileId, GenerationId, VolumeId};
 use crate::storage::{ObjectId, ObjectKind, object_digest};
@@ -64,7 +66,10 @@ pub fn encode_generation_root<E: From<CanonicalDecodeError>>(
     allocation_error: impl FnOnce(std::collections::TryReserveError) -> E,
 ) -> Result<Vec<u8>, E> {
     observe(EncodeWorkStep::Check)?;
-    let item = WorkCounters { items_examined: 1, ..WorkCounters::default() };
+    let item = WorkCounters {
+        items_examined: 1,
+        ..WorkCounters::default()
+    };
     observe(EncodeWorkStep::Admit(item))?;
     let length = generation_root_encoded_length(root);
     observe(EncodeWorkStep::Completed(item))?;
@@ -77,15 +82,20 @@ pub fn encode_generation_root<E: From<CanonicalDecodeError>>(
     observe(EncodeWorkStep::Admit(encoded))?;
     observe(EncodeWorkStep::Check)?;
     let mut encoder = Encoder::with_exact_capacity(
-        DOMAIN, VERSION, length,
+        DOMAIN,
+        VERSION,
+        length,
         |step| observe(EncodeWorkStep::Allocation(step)),
         allocation_error,
     )?;
     encoder.fixed(&root.volume_id.into_bytes());
     encoder.fixed(&root.root_file_id.into_bytes());
     encoder.fixed(root.file_table.digest.as_bytes());
-    encoder.u32(root.parents.len() as u32);
-    for parent in &root.parents { encoder.fixed(parent.digest().as_bytes()); }
+    encoder
+        .u32(u32::try_from(root.parents.len()).map_err(|_| CanonicalDecodeError::LengthOverflow)?);
+    for parent in &root.parents {
+        encoder.fixed(parent.digest().as_bytes());
+    }
     encoder.u64(root.required_features);
     observe(EncodeWorkStep::Completed(WorkCounters {
         bytes_encoded: (length - DOMAIN.len() - 2) as u64,
@@ -95,10 +105,19 @@ pub fn encode_generation_root<E: From<CanonicalDecodeError>>(
     Ok(encoder.finish())
 }
 
-pub(crate) fn generation_root_encoded_length(root: &GenerationRoot) -> Result<usize, CanonicalDecodeError> {
+pub(crate) fn generation_root_encoded_length(
+    root: &GenerationRoot,
+) -> Result<usize, CanonicalDecodeError> {
     root.validate()?;
-    DOMAIN.len().checked_add(2 + 16 + 16 + 32 + 4 + 8)
-        .and_then(|length| root.parents.len().checked_mul(32).and_then(|parents| length.checked_add(parents)))
+    DOMAIN
+        .len()
+        .checked_add(2 + 16 + 16 + 32 + 4 + 8)
+        .and_then(|length| {
+            root.parents
+                .len()
+                .checked_mul(32)
+                .and_then(|parents| length.checked_add(parents))
+        })
         .ok_or(CanonicalDecodeError::LengthOverflow)
 }
 
@@ -112,33 +131,38 @@ where
     E: From<CanonicalDecodeError>,
 {
     let mut decoder = Decoder::new(
-        bytes, DOMAIN, VERSION, limits.maximum_object_bytes,
+        bytes,
+        DOMAIN,
+        VERSION,
+        limits.maximum_object_bytes,
         &mut observe,
     )?;
-    let volume_id = VolumeId::from_bytes(decoder.fixed::<16, E>(
-        &mut observe,
-    )?);
-    let root_file_id = FileId::from_bytes(decoder.fixed::<16, E>(
-        &mut observe,
-    )?);
-    let file_table = digest_object(ObjectKind::FileTablePage, decoder.fixed::<32, E>(
-        &mut observe,
-    )?);
+    let volume_id = VolumeId::from_bytes(decoder.fixed::<16, E>(&mut observe)?);
+    let root_file_id = FileId::from_bytes(decoder.fixed::<16, E>(&mut observe)?);
+    let file_table = digest_object(
+        ObjectKind::FileTablePage,
+        decoder.fixed::<32, E>(&mut observe)?,
+    );
     let parent_count = decoder.u32(&mut observe)?;
     if parent_count > MAXIMUM_PARENTS {
         return Err(CanonicalDecodeError::FieldTooLarge {
             observed: parent_count,
             maximum: MAXIMUM_PARENTS,
-        }.into());
+        }
+        .into());
     }
     let parent_count =
         usize::try_from(parent_count).map_err(|_| CanonicalDecodeError::LengthOverflow)?;
-    observe(ReadAllocationStep::BeforeCopy((parent_count * std::mem::size_of::<GenerationId>()) as u64))?;
+    observe(ReadAllocationStep::BeforeCopy(
+        (parent_count * std::mem::size_of::<GenerationId>()) as u64,
+    ))?;
     let mut parents = Vec::new();
     super::file_read::reserve_decoded_items(&mut parents, parent_count, &mut observe)?;
     for _ in 0..parent_count {
         observe(ReadAllocationStep::BeforeItem)?;
-        parents.push(GenerationId::new(Digest::from_bytes(decoder.fixed(&mut observe)?)));
+        parents.push(GenerationId::new(Digest::from_bytes(
+            decoder.fixed(&mut observe)?,
+        )));
         observe(ReadAllocationStep::Item)?;
     }
     let required_features = decoder.u64(&mut observe)?;
@@ -162,8 +186,13 @@ pub(crate) async fn read_generation_root_with_accounting<S: crate::AsyncObjectSt
     cancellation: &CancellationToken,
 ) -> Result<(GenerationRoot, super::allocation::KernelOwnedAllocation), crate::FsError> {
     read_generation_root_with_limits_and_accounting(
-        objects, generation_root, DecodeLimits::for_volume(config), accounting, cancellation,
-    ).await
+        objects,
+        generation_root,
+        DecodeLimits::for_volume(config),
+        accounting,
+        cancellation,
+    )
+    .await
 }
 
 pub(crate) async fn read_generation_root_with_limits_and_accounting<S: crate::AsyncObjectStore>(
@@ -177,8 +206,14 @@ pub(crate) async fn read_generation_root_with_limits_and_accounting<S: crate::As
     cancellation.check()?;
     let maximum_bytes = MAXIMUM_GENERATION_ROOT_BYTES.min(limits.maximum_object_bytes);
     let (read, retained) = super::file_read::read_object_with_accounting(
-        objects, generation_root, maximum_bytes, accounting, cancellation,
-    ).await.map_err(|error| match error {
+        objects,
+        generation_root,
+        maximum_bytes,
+        accounting,
+        cancellation,
+    )
+    .await
+    .map_err(|error| match error {
         crate::FsError::BlobRead(super::BlobReadError::Storage(error)) => error.into(),
         error => error,
     })?;
@@ -186,7 +221,10 @@ pub(crate) async fn read_generation_root_with_limits_and_accounting<S: crate::As
     let root = decode_generation_root(&read, limits, |step| scope.observe(step));
     let root = match root {
         Ok(root) => Ok((root, scope.into_allocation())),
-        Err(error) => { let _retired = scope.release_failed(); Err(error) }
+        Err(error) => {
+            let _retired = scope.release_failed();
+            Err(error)
+        }
     };
     drop(read);
     super::file_read::release_standalone_read_bytes(retained, accounting)?;
@@ -197,7 +235,11 @@ pub(crate) async fn read_generation_root_with_limits_and_accounting<S: crate::As
 pub fn generation_root_id(
     root: &GenerationRoot,
 ) -> Result<(ObjectId, GenerationId), CanonicalDecodeError> {
-    let bytes = encode_generation_root(root, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
+    let bytes = encode_generation_root(
+        root,
+        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+        |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+    )?;
     let object = ObjectId {
         kind: ObjectKind::GenerationRoot,
         digest: object_digest(ObjectKind::GenerationRoot, &bytes),

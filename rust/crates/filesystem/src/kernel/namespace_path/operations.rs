@@ -148,6 +148,7 @@ impl NamespacePath {
         copy_names(names.iter(), depth, encoded, accounting, cancellation)
     }
 
+    #[cfg(feature = "native-mount")]
     pub(crate) fn child_with_ledger(
         &self,
         name: &LogicalName,
@@ -164,6 +165,7 @@ impl NamespacePath {
             .map_err(path_error)
     }
 
+    #[cfg(feature = "native-mount")]
     pub(crate) fn clone_with_ledger(
         &self,
         ledger: &mut AllocationLedger,
@@ -208,7 +210,8 @@ impl NamespacePath {
         let result = (|| {
             owned.admit(delta)?;
             let bytes = vector::<u8>(length, &mut owned, cancellation)?;
-            let mut output = String::from_utf8(bytes).expect("empty UTF-8 buffer");
+            let mut output =
+                String::from_utf8(bytes).map_err(|_| NamespacePathError::NonUnicodeProjection)?;
             if self.is_root() {
                 output.push('/');
                 owned.record_completed(delta)?;
@@ -258,7 +261,7 @@ fn validate(
         let length = LogicalName::validate_unicode(encoding, part, limits.maximum_component_bytes)
             .map_err(NamespacePathError::Name)?;
         encoded = encoded
-            .checked_add(length as u32)
+            .checked_add(u32::try_from(length).map_err(|_| NamespacePathError::PathTooLong)?)
             .and_then(|n| n.checked_add(1))
             .ok_or(NamespacePathError::PathTooLong)?;
     }

@@ -71,6 +71,10 @@ enum TraversalMode {
     Seek(ExtentSeekTarget),
 }
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Returning a plan by value avoids another allocation in the bounded seek path."
+)]
 enum RangeOutput {
     Plan(ExtentPlan),
     Seek(Option<u64>),
@@ -329,6 +333,10 @@ impl RangeMachine {
         Ok(expected)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "This state transition keeps admission, effects and resource retirement in one frame."
+    )]
     fn accept_decoded(
         &mut self,
         decoded: &ExtentPage,
@@ -579,8 +587,9 @@ fn range_error(error: FsError) -> ExtentReadError {
             ExtentReadError::AllocationFailed
         }
         FsError::Work(error) => error.into(),
-        FsError::Object(error) => error.into(),
-        FsError::BlobRead(super::BlobReadError::Storage(error)) => error.into(),
+        FsError::Object(error) | FsError::BlobRead(super::BlobReadError::Storage(error)) => {
+            error.into()
+        }
         FsError::Cancelled(_) => ExtentReadError::Cancelled,
         error => ExtentReadError::Context(Box::new(error)),
     }

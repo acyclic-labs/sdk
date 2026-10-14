@@ -5,7 +5,7 @@ struct CachedObject {
     bytes: OwnedBytes,
 }
 pub(super) struct CacheState {
-    pub(super) slots: ReadOwned<Vec<Option<CachedObject>>>,
+    slots: ReadOwned<Vec<Option<CachedObject>>>,
     entry_count: usize,
     pub(super) retained_owned_bytes: u64,
     /// Standalone slots already present in the caller's allocation ledger.
@@ -124,7 +124,10 @@ impl<'a, S> OperationReadCache<'a, S> {
             for entry in state.slots.value.iter_mut() {
                 if let Some(value) = entry.as_ref() {
                     let vacant = probe_slots(&grown.value, value.object_id, accounting, None)?.1;
-                    grown.value[vacant] = entry.take();
+                    *grown
+                        .value
+                        .get_mut(vacant)
+                        .ok_or(ObjectStoreError::Corrupt)? = entry.take();
                 }
             }
             let old = std::mem::replace(&mut state.slots, grown);
@@ -142,7 +145,11 @@ impl<'a, S> OperationReadCache<'a, S> {
             }
         }
         let vacant = probe_slots(&state.slots.value, object_id, accounting, None)?.1;
-        state.slots.value[vacant] = Some(CachedObject {
+        *state
+            .slots
+            .value
+            .get_mut(vacant)
+            .ok_or(ObjectStoreError::Corrupt)? = Some(CachedObject {
             object_id,
             bytes: bytes.clone(),
         });
@@ -172,7 +179,7 @@ impl<'a, S> OperationReadCache<'a, S> {
                 // the caller retains the old baseline until this short leaf.
                 let (allocations, work, budget, _) = accounting
                     .standalone_parts()
-                    .expect("native residency keeps its physical guards");
+                    .ok_or(crate::ObjectStoreError::Corrupt)?;
                 if actual >= state.accounted_bytes {
                     allocations
                         .record_owned_bytes(actual - state.accounted_bytes, work)
@@ -195,6 +202,10 @@ impl<'a, S> OperationReadCache<'a, S> {
     }
 }
 impl<S> Drop for OperationReadCache<'_, S> {
+    #[allow(
+        clippy::expect_used,
+        reason = "Every cached capacity and payload is counted before it becomes resident."
+    )]
     fn drop(&mut self) {
         let state = self
             .state
@@ -213,7 +224,7 @@ impl<S> Drop for OperationReadCache<'_, S> {
         }
     }
 }
-pub(super) fn probe_slots(
+fn probe_slots(
     slots: &[Option<CachedObject>],
     object_id: ObjectId,
     accounting: &mut KernelAccounting<'_>,
@@ -225,7 +236,8 @@ pub(super) fn probe_slots(
         .ok_or(ObjectStoreError::Corrupt)?;
     let mut index = object_hash(object_id) & mask;
     for _ in 0..slots.len() {
-        let (found, next, vacant) = examine_item(accounting, custody, || match &slots[index] {
+        let slot = slots.get(index).ok_or(ObjectStoreError::Corrupt)?;
+        let (found, next, vacant) = examine_item(accounting, custody, || match slot {
             Some(entry) if entry.object_id == object_id => (
                 Some(ObjectRead {
                     bytes: entry.bytes.clone(),

@@ -362,7 +362,7 @@ fn original_cleanup_wait_late_cancel_waits_for_the_actual_native_terminal()
     assert!(watch.shared.polling.load(Ordering::Acquire));
     let wait = CancellationToken::new();
     // Holding only the test's accounting leaf delays recording a genuine wake/retirement, without inventing a mock native completion.
-    let mut state = original.lock();
+    let state = original.lock();
 
     let stopping = Arc::clone(&watch);
     let caller_wait = wait.clone();

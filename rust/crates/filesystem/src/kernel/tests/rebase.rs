@@ -3,6 +3,36 @@ use crate::kernel::NameEncoding;
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::convert::Infallible;
+impl CheckoutDependencies {
+    fn logical_data(&self) -> (usize, u64, u64) {
+        (
+            Arc::as_ptr(&self.captured) as usize,
+            self.data_generation,
+            self.name_data_bytes,
+        )
+    }
+    fn extend_observations(
+        &mut self,
+        dependencies: Vec<Dependency>,
+        maximum: u32,
+    ) -> Result<(), DependencyError> {
+        let extension = self.prepare_observations(dependencies, maximum)?;
+        self.commit(extension);
+        Ok(())
+    }
+    fn commit(&mut self, extension: super::dependencies::DependencyExtension) {
+        self.commit_with_data_custody::<WorkError>(extension, None, |_, _, _, _| Ok(()))
+            .expect("live dependency data fits the addressable memory space");
+    }
+    fn merged(&self, other: &Self) -> Option<Self> {
+        let cancellation = CancellationToken::new();
+        let mut accounting =
+            super::allocation::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        self.merged_with_accounting(other, None, &mut accounting)
+            .ok()
+            .flatten()
+    }
+}
 
 struct Probe {
     calls: Cell<u64>,

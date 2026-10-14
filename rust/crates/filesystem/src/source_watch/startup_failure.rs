@@ -118,7 +118,7 @@ impl SourceWatchStartupFailure {
         let native = lease
             .owner
             .as_ref()
-            .expect("the original lease retains the native owner");
+            .ok_or(DemandError::NativeWorkUnavailable)?;
         let result = match wait {
             Some(wait) => native.stop_with_cleanup_wait(wait),
             None => native.stop_accepted_cleanup(),
@@ -154,7 +154,7 @@ impl SourceWatchStartupFailure {
         lease
             .owner
             .as_ref()
-            .expect("the lease retains the native owner")
+            .ok_or(DemandError::NativeWorkUnavailable)?
             .stop_with_work(work)
     }
 

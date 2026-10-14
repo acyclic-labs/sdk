@@ -356,6 +356,10 @@ impl MutationPlan {
             .map_err(|error| OperationFailure::new(plan_error(error), accounting.spent()))
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "This state transition keeps admission, effects and resource retirement in one frame."
+    )]
     pub(crate) fn compile_with_accounting(
         operations: Vec<Mutation>,
         limits: VolumeLimits,
@@ -561,6 +565,10 @@ fn path_use_count(operations: &[Mutation]) -> Option<usize> {
     })
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "Classification consumes any owned failure payload before returning."
+)]
 fn plan_error(error: crate::FsError) -> MutationPlanError {
     match error {
         crate::FsError::Mutation(super::GenerationMutationError::Plan(error)) => error,
@@ -719,7 +727,6 @@ mod original_controls {
         let baseline = original.live_allocation_bytes();
         let mut accounting = KernelAccounting::native(&original, &cancellation);
         let (operations, input_guard) = funded_operation(&mut accounting)?;
-        drop(accounting);
         let limited = original.native_volume_work(WorkBudget {
             allocation_operations: 0,
             ..WorkBudget::UNBOUNDED
@@ -742,7 +749,6 @@ mod original_controls {
         assert_eq!(original.receipt(), before);
         drop(error);
         drop(input_guard);
-        drop(accounting);
         drop(limited);
         assert_eq!(original.live_allocation_bytes(), baseline);
         Ok(())

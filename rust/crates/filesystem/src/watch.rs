@@ -1,16 +1,26 @@
 //! Bounded native change notifications for materialized checkouts.
+#![allow(
+    clippy::result_large_err,
+    reason = "Watch admission failures must not allocate another error owner."
+)]
 
 use crate::NativeRootIdentity;
 use crate::cancellation::{CancellationError, CancellationToken};
-use crate::kernel::{LogicalName, NamespacePath, NamespacePathError};
+#[cfg(any(test, not(windows)))]
+use crate::kernel::NamespacePathError;
+use crate::kernel::{LogicalName, NamespacePath};
 use crate::model::{FilesystemProfile, VolumeLimits};
 use crate::performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
 };
 #[cfg(not(windows))]
 use notify::RecursiveMode;
+#[cfg(not(windows))]
+use notify::Watcher;
+#[cfg(any(test, not(windows)))]
 use notify::event::{ModifyKind, RenameMode};
-use notify::{Event, EventKind, Watcher};
+#[cfg(any(test, not(windows)))]
+use notify::{Event, EventKind};
 use std::mem::size_of;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -203,7 +213,7 @@ pub struct NativeWatchOptions {
     pub recursive: bool,
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 fn open_native_root(path: &Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
     let mut options = std::fs::OpenOptions::new();
@@ -211,34 +221,6 @@ fn open_native_root(path: &Path) -> std::io::Result<std::fs::File> {
         .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW);
     options.open(path)
-}
-
-#[cfg(windows)]
-fn open_native_root(path: &Path) -> std::io::Result<std::fs::File> {
-    use std::os::windows::fs::MetadataExt;
-    use std::os::windows::fs::OpenOptionsExt;
-    use windows::Win32::Storage::FileSystem::{
-        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    };
-    let mut options = std::fs::OpenOptions::new();
-    options
-        .read(true)
-        .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0 | FILE_SHARE_DELETE.0)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0);
-    let file = options.open(path)?;
-    if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "watch root is a reparse point",
-        ));
-    }
-    Ok(file)
-}
-
-#[cfg(not(any(unix, windows)))]
-fn open_native_root(path: &Path) -> std::io::Result<std::fs::File> {
-    std::fs::File::open(path)
 }
 
 const fn native_filesystem_profile() -> FilesystemProfile {
@@ -293,6 +275,7 @@ struct SharedState {
 struct PendingRename {
     tracker: usize,
     from: NamespacePath,
+    #[cfg(target_os = "linux")]
     to: Option<NamespacePath>,
     allocation: Option<crate::NativeAllocation>,
 }
@@ -326,6 +309,7 @@ impl SharedState {
 
 struct NativeEventContext {
     root: PathBuf,
+    #[cfg(any(test, not(windows)))]
     root_identity: NativeRootIdentity,
     profile: FilesystemProfile,
     limits: VolumeLimits,
@@ -335,6 +319,7 @@ struct NativeEventContext {
 }
 
 enum NativeWatchDriver {
+    #[cfg(not(windows))]
     Adapter(NativeEventWatcher),
     Source(crate::source_watch::NativeSourceWatch),
     StartupFailure(Arc<crate::source_watch::SourceWatchStartupFailure>),
@@ -566,7 +551,7 @@ impl NativeEventDelivery {
                 let pending = state
                     .pending_rename
                     .take()
-                    .expect("matched native rename cookie");
+                    .ok_or(DemandError::InvalidRequest)?;
                 QueuedWatchChange {
                     change: WatchChange::Renamed {
                         from: pending.from,
@@ -633,6 +618,10 @@ fn namespace_hint_with_work<W: crate::demand::SourceDemandReadWork>(
     )
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "This state transition keeps admission, effects and resource retirement in one frame."
+)]
 fn namespace_hint_names_with_work<'a, W: crate::demand::SourceDemandReadWork>(
     names: impl Iterator<Item = Result<HintName<'a>, crate::demand::DemandError>> + Clone,
     profile: FilesystemProfile,
@@ -834,7 +823,7 @@ impl WindowsDirectorySink {
                 }
                 HostChange::File(_) => {}
                 HostChange::Everything | HostChange::Unconfirmed => {
-                    self.invalidate_measured(work)?
+                    self.invalidate_measured(work)?;
                 }
             }
         }
@@ -873,7 +862,7 @@ impl WindowsDirectorySink {
                 }
                 HostChangeWide::File(_) => {}
                 HostChangeWide::Everything | HostChangeWide::Unconfirmed => {
-                    self.invalidate_measured(work)?
+                    self.invalidate_measured(work)?;
                 }
             }
         }
@@ -894,6 +883,10 @@ impl WindowsDirectorySink {
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "This state transition keeps admission, effects and resource retirement in one frame."
+    )]
     fn deliver_names_measured<'a, W: crate::demand::SourceDemandReadWork>(
         &self,
         names: impl Iterator<Item = Result<HintName<'a>, crate::demand::DemandError>> + Clone,
@@ -967,7 +960,6 @@ impl WindowsDirectorySink {
                     state.pending_rename = Some(PendingRename {
                         tracker: cookie,
                         from: payload.0,
-                        to: None,
                         allocation: payload.2,
                     });
                 }
@@ -1000,7 +992,7 @@ impl WindowsDirectorySink {
                     let pending = state
                         .pending_rename
                         .take()
-                        .expect("matched native rename identity");
+                        .ok_or(DemandError::InvalidRequest)?;
                     QueuedWatchChange {
                         change: WatchChange::Renamed {
                             from: pending.from,
@@ -1048,13 +1040,14 @@ fn namespace_starts_with_host_measured<W: crate::demand::SourceDemandReadWork>(
             return Ok(false);
         };
         if name.encoding() == crate::kernel::NameEncoding::WindowsUtf16Le {
-            let mut bytes = name.as_bytes().chunks_exact(2);
+            let (units, _) = name.as_bytes().as_chunks::<2>();
+            let mut bytes = units.iter();
             for unit in host.encode_wide() {
                 work.started_io(WorkCounters {
                     items_examined: 1,
                     ..WorkCounters::default()
                 })?;
-                if bytes.next() != Some(unit.to_le_bytes().as_slice()) {
+                if bytes.next() != Some(&unit.to_le_bytes()) {
                     return Ok(false);
                 }
             }
@@ -1128,15 +1121,6 @@ struct NativeWatchHeldRoot {
     cleanup: Option<crate::materializer::NativeCleanupWrite>,
 }
 
-impl std::ops::Deref for NativeWatchHeldRoot {
-    type Target = crate::native_host::HostRoot;
-    fn deref(&self) -> &Self::Target {
-        self.root
-            .as_ref()
-            .expect("a settled watcher has no remaining root operations")
-    }
-}
-
 impl NativeWatchHeldRoot {
     fn close_with_native_work(
         &mut self,
@@ -1151,11 +1135,11 @@ impl NativeWatchHeldRoot {
         let cleanup = if birth.is_some_and(|original| original.shares_ledger(work)) {
             self.cleanup
                 .as_mut()
-                .expect("native root close retains its original credit")
+                .ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?
                 .bind_current_work(work)?;
             self.cleanup
                 .take()
-                .expect("native root close was reserved before its open")
+                .ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?
         } else {
             // Admit the current invocation's close before taking custody. The birth reservation remains resident until physical close.
             let cleanup = work.reserve_cleanup_write()?;
@@ -1165,7 +1149,7 @@ impl NativeWatchHeldRoot {
         let root = self
             .root
             .take()
-            .expect("the held directory remains owned until close admission");
+            .ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?;
         let ((), recorded) = cleanup.attempt(|| drop(root));
         drop(superseded_cleanup);
         recorded?;
@@ -1272,6 +1256,7 @@ impl NativeWatch {
                     return Err(NativeWatchError::SourceUnavailable);
                 }
             }
+            #[cfg(not(windows))]
             NativeWatchDriver::Adapter(_) => {
                 return Err(NativeWatchError::BoundedObservationUnavailable);
             }
@@ -1377,6 +1362,10 @@ impl NativeWatch {
         .map_err(demand_watch_error)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "This state transition keeps admission, effects and resource retirement in one frame."
+    )]
     fn open_with_profile_engine<W: crate::demand::SourceDemandReadWork>(
         requested_root: &Path,
         profile: FilesystemProfile,
@@ -1435,7 +1424,11 @@ impl NativeWatch {
             root: Some(held),
             cleanup,
         };
-        let metadata = held_root
+        let held = held_root
+            .root
+            .as_ref()
+            .ok_or(NativeWatchError::SourceUnavailable)?;
+        let metadata = held
             .stat(
                 #[cfg(unix)]
                 Path::new(""),
@@ -1447,14 +1440,13 @@ impl NativeWatch {
         if !metadata.is_dir() {
             return Err(NativeWatchError::RootIsNotDirectory);
         }
-        let root_identity = held_root.identity();
+        let root_identity = held.identity();
         if metadata.identity() != root_identity {
             return Err(NativeWatchError::RootChanged);
         }
         #[cfg(windows)]
-        let complete =
-            crate::native_host::reports_every_change(&held_root.directory_handle(), work)
-                .map_err(demand_watch_error)?;
+        let complete = crate::native_host::reports_every_change(&held.directory_handle(), work)
+            .map_err(demand_watch_error)?;
         #[cfg(not(windows))]
         let complete = true;
         let (root, root_allocation) = Self::copy_startup_path(root_path, work, original)?;
@@ -1493,6 +1485,7 @@ impl NativeWatch {
         #[cfg(windows)]
         let context = NativeEventContext {
             root: context_root,
+            #[cfg(test)]
             root_identity,
             profile,
             limits: options.limits,
@@ -1505,7 +1498,7 @@ impl NativeWatch {
             Self::startup_control(work)?;
             Arc::new(NativeEventDelivery {
                 context,
-                sender: sender.clone(),
+                sender,
                 shared: Arc::clone(&shared),
                 queued: Arc::clone(&queued),
                 fenced: Arc::clone(&fenced),
@@ -1552,7 +1545,7 @@ impl NativeWatch {
         };
         let mut watched_directories = Vec::new();
         if use_adapter {
-            work.claim_allocation(0, u64::from((0) != 0), crate::WorkCounters::UNCHARGED)
+            work.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)
                 .map_err(demand_watch_error)?;
             watched_directories.try_reserve_exact(1).map_err(|error| {
                 NativeWatchError::NativeWork(
@@ -1586,7 +1579,7 @@ impl NativeWatch {
             let sink = Arc::clone(&shared);
             Some(
                 crate::source_watch::NativeSourceWatch::start_with_events_with_work(
-                    &held_root, sink, events, work,
+                    held, sink, events, work,
                 ),
             )
         };
@@ -1602,7 +1595,7 @@ impl NativeWatch {
             });
             Some(
                 crate::source_watch::NativeSourceWatch::start_held_with_sink_with_work(
-                    &held_root,
+                    held,
                     sink,
                     complete,
                     options.recursive,
@@ -1616,7 +1609,7 @@ impl NativeWatch {
         } else {
             let sink = Arc::clone(&shared);
             Some(crate::source_watch::NativeSourceWatch::start(
-                &held_root, sink, work,
+                held, sink, work,
             ))
         };
         #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
@@ -1635,7 +1628,7 @@ impl NativeWatch {
             Self::startup_control(work)?;
             #[cfg(not(windows))]
             let adapter = NativeEventWatcher::new(
-                callback.expect("the legacy adapter owns its callback"),
+                callback.ok_or(NativeWatchError::SourceUnavailable)?,
                 notify::Config::default(),
             )
             .map_err(NativeWatchError::Backend)?;
@@ -1860,7 +1853,7 @@ impl NativeWatch {
                             .map_err(|_| NativeWatchError::UnrepresentablePath)?;
                         watcher.admit_with_work(relative, work)?;
                     }
-                    NativeWatchDriver::Adapter(_) | NativeWatchDriver::StartupFailure(_) => {
+                    _ => {
                         return Err(NativeWatchError::BoundedObservationUnavailable.into());
                     }
                 }
@@ -1896,6 +1889,10 @@ impl NativeWatch {
     }
 
     #[cfg(windows)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "This state transition keeps admission, effects and resource retirement in one frame."
+    )]
     fn watch_directory_wide_with_work<W: crate::demand::SourceDemandReadWork>(
         &mut self,
         directory: &NamespacePath,
@@ -1926,25 +1923,32 @@ impl NativeWatch {
                 .checked_mul(2)
                 .ok_or(WorkError::Overflow)?;
             let result = (|| {
-                let mut held = self.held_root.open_dir_held(&[], work)?;
+                let mut held = self
+                    .held_root
+                    .root
+                    .as_ref()
+                    .ok_or(DemandError::from(NativeWatchError::SourceUnavailable))?
+                    .open_dir_held(&[], work)?;
                 let mut component_start = 0;
                 for index in 0..path.len() {
                     work.started_io(WorkCounters {
                         items_examined: 1,
                         ..WorkCounters::default()
                     })?;
-                    if path[index] != u16::from(b'\\') && index + 1 != path.len() {
+                    let unit = *path.get(index).ok_or(DemandError::InvalidRequest)?;
+                    if unit != u16::from(b'\\') && index + 1 != path.len() {
                         continue;
                     }
-                    let length = if path[index] == u16::from(b'\\') {
+                    let length = if unit == u16::from(b'\\') {
                         index
                     } else {
                         index + 1
                     };
-                    let prefix = &path[..length];
+                    let prefix = path.get(..length).ok_or(DemandError::InvalidRequest)?;
                     let (next, identity) = match crate::native_host::open_windows_directory(
                         &held,
-                        &path[component_start..length],
+                        path.get(component_start..length)
+                            .ok_or(DemandError::InvalidRequest)?,
                         false,
                         work,
                     ) {
@@ -1980,9 +1984,11 @@ impl NativeWatch {
                         }
                     }
                     if let Some(at) = found {
-                        if self.windows_directories[at].identity == identity
-                            && self.windows_directories[at].watcher.is_exact()
-                        {
+                        let observed = self
+                            .windows_directories
+                            .get(at)
+                            .ok_or(DemandError::InvalidRequest)?;
+                        if observed.identity == identity && observed.watcher.is_exact() {
                             continue;
                         }
                         let copied = WorkCounters {
@@ -1992,8 +1998,8 @@ impl NativeWatch {
                             ..WorkCounters::default()
                         };
                         work.admit(copied)?;
-                        self.windows_directories[at].watcher.stop_with_work(work)?;
-                        if !self.windows_directories[at].watcher.is_stopped() {
+                        observed.watcher.stop_with_work(work)?;
+                        if !observed.watcher.is_stopped() {
                             return Err(DemandError::WorkerUnavailable);
                         }
                         work.record(copied)?;
@@ -2183,6 +2189,10 @@ impl NativeWatch {
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "This state transition keeps admission, effects and resource retirement in one frame."
+    )]
     fn forget_removed_directories_with_work<W: crate::demand::SourceDemandReadWork>(
         &mut self,
         changes: &[WatchChange],
@@ -2232,7 +2242,11 @@ impl NativeWatch {
                                     ..WorkCounters::UNCHARGED
                                 })
                                 .map_err(demand_watch_error)?;
-                                let mut registered = self.windows_directories[at].path.0.iter();
+                                let observed = self
+                                    .windows_directories
+                                    .get(at)
+                                    .ok_or(NativeWatchError::UnrepresentablePath)?;
+                                let mut registered = observed.path.0.iter();
                                 let matches = relative
                                     .as_os_str()
                                     .encode_wide()
@@ -2244,11 +2258,11 @@ impl NativeWatch {
                                     at += 1;
                                     continue;
                                 }
-                                self.windows_directories[at]
+                                observed
                                     .watcher
                                     .stop_with_work(work)
                                     .map_err(demand_watch_error)?;
-                                if !self.windows_directories[at].watcher.is_stopped() {
+                                if !observed.watcher.is_stopped() {
                                     return Err(NativeWatchError::WorkerUnavailable);
                                 }
                                 work.started_io(WorkCounters {
@@ -2305,6 +2319,7 @@ impl NativeWatch {
                 .cloned()
                 .collect::<Vec<_>>();
             for watched in stale {
+                #[cfg(not(windows))]
                 if let NativeWatchDriver::Adapter(watcher) = &mut self.watcher {
                     let _ = watcher.unwatch(&watched);
                 }
@@ -2576,6 +2591,10 @@ impl NativeWatch {
         self.exclude_subtrees_with_work(subtrees, &mut source, Some(work))
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "This state transition keeps admission, effects and resource retirement in one frame."
+    )]
     fn exclude_subtrees_with_work<W: crate::demand::SourceDemandReadWork>(
         &mut self,
         subtrees: &[NamespacePath],
@@ -2805,6 +2824,7 @@ impl NativeWatch {
                     crate::demand::DemandError::SourceWatchStartup(Arc::clone(owner)),
                 ));
             }
+            #[cfg(not(windows))]
             NativeWatchDriver::Adapter(_) => {
                 #[cfg(target_os = "macos")]
                 {
@@ -2873,9 +2893,11 @@ impl NativeWatch {
         if let Some(work) = self.original_work.clone() {
             return self.fence_with_native_work(timeout, &work);
         }
-        if !matches!(self.watcher, NativeWatchDriver::Adapter(_))
-            || self.pending_source_watch.is_some()
-        {
+        #[cfg(not(windows))]
+        let adapter = matches!(self.watcher, NativeWatchDriver::Adapter(_));
+        #[cfg(windows)]
+        let adapter = false;
+        if !adapter || self.pending_source_watch.is_some() {
             let mut work =
                 crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
             return self.fence_with_work(timeout, &mut work);
@@ -3000,10 +3022,16 @@ impl NativeWatch {
             self.poll_with_work(maximum_changes, &mut work, Some(original), before_publish)?;
         Ok((
             batch,
-            allocation.expect("original polling retains its actual output buffer"),
+            allocation.ok_or(NativeWatchError::NativeWork(
+                crate::NativeTreeMaterializationError::InvalidLayout,
+            ))?,
         ))
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "This state transition keeps admission, effects and resource retirement in one frame."
+    )]
     fn poll_with_work<W, F>(
         &mut self,
         maximum_changes: u32,
@@ -3401,6 +3429,11 @@ fn watch_host_name_with_work<W: crate::demand::SourceDemandReadWork>(
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "This state transition keeps admission, effects and resource retirement in one frame."
+)]
+#[cfg(any(test, not(windows)))]
 fn accept_native_event(
     event: &notify::Result<Event>,
     context: &NativeEventContext,
@@ -3525,6 +3558,7 @@ fn accept_native_event(
     }
 }
 
+#[cfg(any(test, not(windows)))]
 fn validate_replayed_root_creation(
     event: &Event,
     root: &Path,
@@ -3544,6 +3578,7 @@ fn validate_replayed_root_creation(
     Ok(())
 }
 
+#[cfg(any(test, not(windows)))]
 fn map_event(
     event: &Event,
     root: &Path,
@@ -3627,6 +3662,7 @@ fn map_event(
     Ok(changes)
 }
 
+#[cfg(any(test, not(windows)))]
 fn relative_namespace_path(
     root: &Path,
     path: &Path,
@@ -3818,7 +3854,7 @@ fn demand_watch_error(error: crate::demand::DemandError) -> NativeWatchError {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(windows, target_os = "macos")))]
 mod demand_admission_tests {
     use super::*;
     use crate::demand::{DemandDirectoryObserver, DemandError};

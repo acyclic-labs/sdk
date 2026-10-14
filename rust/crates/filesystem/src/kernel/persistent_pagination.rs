@@ -1,6 +1,8 @@
 //! Shared bounded cursor pagination with field-owned original native custody.
 
-use super::allocation::{AllocationLedger, KernelAccounting, KernelOwnedAllocation, VisitedObjectSet};
+use super::allocation::{
+    AllocationLedger, KernelAccounting, KernelOwnedAllocation, VisitedObjectSet,
+};
 use super::list::{DirectoryReadError as Error, DirectoryReadFailure as Failure};
 use super::persistent_btree::{Child, Format, Page, children_within, leaf_within};
 use super::persistent_io::{self, OwnedPage};
@@ -32,58 +34,121 @@ struct Pending<K> {
 
 impl<K> Pending<K> {
     fn retire(self, accounting: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
-        if let Some(lower) = self.lower { lower.retire(accounting)?; }
-        if let Some(upper) = self.upper { upper.retire(accounting)?; }
+        if let Some(lower) = self.lower {
+            lower.retire(accounting)?;
+        }
+        if let Some(upper) = self.upper {
+            upper.retire(accounting)?;
+        }
         Ok(())
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
+)]
 pub(crate) async fn paginate<S, F>(
-    store: &S, root: ObjectId, bound: Bound<&F::Key>, maximum_values: u32,
-    limits: DecodeLimits, budget: WorkBudget, cancellation: &CancellationToken,
+    store: &S,
+    root: ObjectId,
+    bound: Bound<&F::Key>,
+    maximum_values: u32,
+    limits: DecodeLimits,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
     data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<Receipt<F::Value>, Failure>
-where S: AsyncObjectStore, F: Format {
+where
+    S: AsyncObjectStore,
+    F: Format,
+{
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
     let result = paginate_with_accounting::<S, F>(
-        store, root, bound, maximum_values, limits, &mut accounting, cancellation, data_custody,
-    ).await;
-    result.map(|(receipt, _)| receipt)
+        store,
+        root,
+        bound,
+        maximum_values,
+        limits,
+        &mut accounting,
+        cancellation,
+        data_custody,
+    )
+    .await;
+    result
+        .map(|(receipt, _)| receipt)
         .map_err(|error| failed(project_failure(error), accounting.spent()))
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
+)]
 pub(crate) async fn paginate_with_accounting<S, F>(
-    store: &S, root: ObjectId, bound: Bound<&F::Key>, maximum_values: u32,
-    limits: DecodeLimits, accounting: &mut KernelAccounting<'_>,
-    cancellation: &CancellationToken, data_custody: Option<&super::ProofDataCustody>,
+    store: &S,
+    root: ObjectId,
+    bound: Bound<&F::Key>,
+    maximum_values: u32,
+    limits: DecodeLimits,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+    data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<(Receipt<F::Value>, KernelOwnedAllocation), crate::FsError>
-where S: AsyncObjectStore, F: Format {
+where
+    S: AsyncObjectStore,
+    F: Format,
+{
     accounting.check()?;
     let mut machine = Machine::<F>::new_with_accounting(
-        root, bound, maximum_values, limits, accounting, data_custody,
-    ).map_err(|failure| query_error(failure.error))?;
+        root,
+        bound,
+        maximum_values,
+        limits,
+        accounting,
+        data_custody,
+    )
+    .map_err(|failure| query_error(failure.error))?;
     let result: Result<(), Failure> = async {
         while machine.values.len() < machine.target && !machine.pending.value.is_empty() {
-            cancellation.check().map_err(|error| machine.failure(error.into()))?;
+            cancellation
+                .check()
+                .map_err(|error| machine.failure(error.into()))?;
             let mut pending = Some(machine.pop_pending()?);
-            let page = pending.as_ref().ok_or_else(|| failed(Error::TraversalState, machine.accounting.spent()))?.page;
+            let page = pending
+                .as_ref()
+                .ok_or_else(|| failed(Error::TraversalState, machine.accounting.spent()))?
+                .page;
             let step = async {
                 machine.visit(page)?;
                 let (decoded, allocation) = persistent_io::read_page_with_accounting::<S, F>(
-                    store, page, limits, machine.accounting, cancellation, data_custody,
-                ).await.map_err(|error| machine.failure(error))?;
-                let pending = pending.take().ok_or_else(|| failed(Error::TraversalState, machine.accounting.spent()))?;
+                    store,
+                    page,
+                    limits,
+                    machine.accounting,
+                    cancellation,
+                    data_custody,
+                )
+                .await
+                .map_err(|error| machine.failure(error))?;
+                let pending = pending
+                    .take()
+                    .ok_or_else(|| failed(Error::TraversalState, machine.accounting.spent()))?;
                 machine.accept(decoded, allocation, pending)
-            }.await;
+            }
+            .await;
             if let Some(pending) = pending {
-                pending.retire(machine.accounting).map_err(|error| machine.failure(error))?;
+                pending
+                    .retire(machine.accounting)
+                    .map_err(|error| machine.failure(error))?;
             }
             step?;
         }
         Ok(())
-    }.await;
+    }
+    .await;
     match result {
-        Ok(()) => machine.finish().map_err(|failure| query_error(failure.error)),
+        Ok(()) => machine
+            .finish()
+            .map_err(|failure| query_error(failure.error)),
         Err(failure) => {
             machine.retire().map_err(query_error)?;
             Err(query_error(failure.error))
@@ -108,87 +173,141 @@ struct Machine<'a, 'accounting, F: Format> {
 }
 
 impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The constructor admits and initializes its bounded seek state before exposing it."
+    )]
     fn new_with_accounting(
-        root: ObjectId, bound: Bound<&'a F::Key>,
-        maximum_values: u32, limits: DecodeLimits, mut accounting: &'a mut KernelAccounting<'accounting>,
+        root: ObjectId,
+        bound: Bound<&'a F::Key>,
+        maximum_values: u32,
+        limits: DecodeLimits,
+        accounting: &'a mut KernelAccounting<'accounting>,
         data_custody: Option<&'a super::ProofDataCustody>,
     ) -> Result<Self, Failure> {
         let fail = |error| failed(error, accounting.spent());
-        if root.kind != F::kind() { return Err(fail(Error::WrongRootKind)); }
-        if maximum_values == 0 { return Err(fail(Error::ZeroLimit)); }
-        if !limits.page_limits_valid(1) { return Err(fail(Error::InvalidLimits)); }
-        let cursor = match bound { Bound::Included(key) | Bound::Excluded(key) => Some(key), Bound::Unbounded => None };
-        if let Some(observed) = cursor.map(F::key_nested_bytes)
-            .filter(|&bytes| bytes > u64::from(limits.maximum_name_bytes)) {
+        if root.kind != F::kind() {
+            return Err(fail(Error::WrongRootKind));
+        }
+        if maximum_values == 0 {
+            return Err(fail(Error::ZeroLimit));
+        }
+        if !limits.page_limits_valid(1) {
+            return Err(fail(Error::InvalidLimits));
+        }
+        let cursor = match bound {
+            Bound::Included(key) | Bound::Excluded(key) => Some(key),
+            Bound::Unbounded => None,
+        };
+        if let Some(observed) = cursor
+            .map(F::key_nested_bytes)
+            .filter(|&bytes| bytes > u64::from(limits.maximum_name_bytes))
+        {
             return Err(fail(Error::Decode(CanonicalDecodeError::FieldTooLarge {
-                observed: u32::try_from(observed).unwrap_or(u32::MAX), maximum: limits.maximum_name_bytes,
+                observed: u32::try_from(observed).unwrap_or(u32::MAX),
+                maximum: limits.maximum_name_bytes,
             })));
         }
-        let maximum_values = usize::try_from(maximum_values).map_err(|_| fail(Error::LimitOverflow))?;
-        let target = maximum_values.checked_add(1).ok_or_else(|| fail(Error::LimitOverflow))?;
+        let maximum_values =
+            usize::try_from(maximum_values).map_err(|_| fail(Error::LimitOverflow))?;
+        let target = maximum_values
+            .checked_add(1)
+            .ok_or_else(|| fail(Error::LimitOverflow))?;
         let configured_maximum = usize::try_from(limits.maximum_visited_pages)
             .map_err(|_| fail(Error::InvalidLimits))?;
         // One cursor-exhausted subtree plus each requested value/witness frontier.
-        let maximum_traversal_pages = target.checked_add(1)
+        let maximum_traversal_pages = target
+            .checked_add(1)
             .and_then(|value| value.checked_mul(usize::from(limits.maximum_page_height)))
-            .ok_or_else(|| fail(Error::LimitOverflow))?.min(configured_maximum);
-        accounting.admit(WorkCounters {
-            items_returned: usize_to_u64(maximum_values), ..WorkCounters::default()
-        }).map_err(|error| failed(project_failure(error), accounting.spent()))?;
+            .ok_or_else(|| fail(Error::LimitOverflow))?
+            .min(configured_maximum);
+        accounting
+            .admit(WorkCounters {
+                items_returned: usize_to_u64(maximum_values),
+                ..WorkCounters::default()
+            })
+            .map_err(|error| failed(project_failure(error), accounting.spent()))?;
         let prefix = begin_custody_leaf(accounting, data_custody)
             .map_err(|error| failed(project_failure(error), accounting.spent()))?;
         let values_result = Owned::<Vec<F::Value>>::allocate(target, accounting);
         let completed = finish_custody_leaf(accounting, data_custody, prefix);
-        let values = values_result.map_err(|error| failed(project_failure(error), accounting.spent()))?;
+        let values =
+            values_result.map_err(|error| failed(project_failure(error), accounting.spent()))?;
         if let Err(error) = completed {
-            values.retire(accounting).map_err(|error| failed(project_failure(error), accounting.spent()))?;
+            values
+                .retire(accounting)
+                .map_err(|error| failed(project_failure(error), accounting.spent()))?;
             return Err(failed(project_failure(error), accounting.spent()));
         }
         let prefix = match begin_custody_leaf(accounting, data_custody) {
             Ok(prefix) => prefix,
             Err(error) => {
-                values.retire(accounting).map_err(|error| failed(project_failure(error), accounting.spent()))?;
+                values
+                    .retire(accounting)
+                    .map_err(|error| failed(project_failure(error), accounting.spent()))?;
                 return Err(failed(project_failure(error), accounting.spent()));
             }
         };
-        let visited_result = VisitedObjectSet::new_with_accounting(maximum_traversal_pages, accounting);
+        let visited_result =
+            VisitedObjectSet::new_with_accounting(maximum_traversal_pages, accounting);
         let completed = finish_custody_leaf(accounting, data_custody, prefix);
         let visited = match visited_result {
             Ok(result) => result,
             Err(error) => {
-                values.retire(accounting).map_err(|error| failed(project_failure(error), accounting.spent()))?;
+                values
+                    .retire(accounting)
+                    .map_err(|error| failed(project_failure(error), accounting.spent()))?;
                 return Err(failed(project_failure(error), accounting.spent()));
             }
         };
         if let Err(error) = completed {
-            visited.retire(accounting)
+            visited
+                .retire(accounting)
                 .map_err(|error| failed(project_failure(error), accounting.spent()))?;
-            values.retire(accounting).map_err(|error| failed(project_failure(error), accounting.spent()))?;
+            values
+                .retire(accounting)
+                .map_err(|error| failed(project_failure(error), accounting.spent()))?;
             return Err(failed(project_failure(error), accounting.spent()));
         }
-        let pending_result = accounting.claim_owned(0, 0).map(|allocation| (Vec::new(), allocation));
+        let pending_result = accounting
+            .claim_owned(0, 0)
+            .map(|allocation| (Vec::new(), allocation));
         let (pending, pending_allocation) = match pending_result {
             Ok(result) => result,
             Err(error) => {
-                visited.retire(accounting)
+                visited
+                    .retire(accounting)
                     .map_err(|error| failed(project_failure(error), accounting.spent()))?;
-                values.retire(accounting).map_err(|error| failed(project_failure(error), accounting.spent()))?;
+                values
+                    .retire(accounting)
+                    .map_err(|error| failed(project_failure(error), accounting.spent()))?;
                 return Err(failed(project_failure(error), accounting.spent()));
             }
         };
         let mut machine = Self {
-            bound, target, maximum_traversal_pages, limits,
+            bound,
+            target,
+            maximum_traversal_pages,
+            limits,
             pending: Owned::new(pending, pending_allocation, 0),
             visited: Some(visited),
-            values: values.value, values_allocation: values.allocation,
-            values_container_bytes: values.bytes, values_nested_bytes: 0,
+            values: values.value,
+            values_allocation: values.allocation,
+            values_container_bytes: values.bytes,
+            values_nested_bytes: 0,
             successor_page: None,
-            data_custody, accounting,
+            data_custody,
+            accounting,
         };
         if let Err(failure) = machine.push_pending(Pending {
-            page: root, lower: None, upper: None, height: 1,
+            page: root,
+            lower: None,
+            upper: None,
+            height: 1,
         }) {
-            machine.retire().map_err(|error| failed(error, *failure.work))?;
+            machine
+                .retire()
+                .map_err(|error| failed(error, *failure.work))?;
             return Err(failure);
         }
         Ok(machine)
@@ -202,27 +321,38 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         let prefix = begin_custody_leaf(self.accounting, self.data_custody);
         let result = match prefix {
             Ok(prefix) => {
-                let result = self.pending.ensure_for_push(self.maximum_traversal_pages, self.accounting);
+                let result = self
+                    .pending
+                    .ensure_for_push(self.maximum_traversal_pages, self.accounting);
                 let completed = finish_custody_leaf(self.accounting, self.data_custody, prefix);
                 result.and(completed)
             }
             Err(error) => Err(error),
         };
         if let Err(error) = result {
-            pending.retire(self.accounting).map_err(|error| self.failure(error))?;
+            pending
+                .retire(self.accounting)
+                .map_err(|error| self.failure(error))?;
             return Err(self.failure(error));
         }
-        let copied = WorkCounters { bytes_copied: usize_to_u64(size_of::<Pending<F::Key>>()), ..WorkCounters::default() };
+        let copied = WorkCounters {
+            bytes_copied: usize_to_u64(size_of::<Pending<F::Key>>()),
+            ..WorkCounters::default()
+        };
         let prefix = match begin_custody_leaf(self.accounting, self.data_custody) {
             Ok(prefix) => prefix,
             Err(error) => {
-                pending.retire(self.accounting).map_err(|error| self.failure(error))?;
+                pending
+                    .retire(self.accounting)
+                    .map_err(|error| self.failure(error))?;
                 return Err(self.failure(error));
             }
         };
         if let Err(error) = self.accounting.admit(copied) {
             let completed = finish_custody_leaf(self.accounting, self.data_custody, prefix);
-            pending.retire(self.accounting).map_err(|error| self.failure(error))?;
+            pending
+                .retire(self.accounting)
+                .map_err(|error| self.failure(error))?;
             completed.map_err(|error| self.failure(error))?;
             return Err(self.failure(error));
         }
@@ -233,22 +363,34 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
     }
 
     fn pop_pending(&mut self) -> Result<Pending<F::Key>, Failure> {
-        let pending = self.pending.value.pop().ok_or_else(|| failed(Error::TraversalState, self.accounting.spent()))?;
+        let pending = self
+            .pending
+            .value
+            .pop()
+            .ok_or_else(|| failed(Error::TraversalState, self.accounting.spent()))?;
         if pending.height > self.limits.maximum_page_height {
-            pending.retire(self.accounting).map_err(|error| self.failure(error))?;
+            pending
+                .retire(self.accounting)
+                .map_err(|error| self.failure(error))?;
             return Err(failed(Error::HeightExceeded, self.accounting.spent()));
         }
         Ok(pending)
     }
 
     fn visit(&mut self, page: ObjectId) -> Result<(), Failure> {
-        let prefix = begin_custody_leaf(self.accounting, self.data_custody).map_err(|error| self.failure(error))?;
-        let visited = self.visited.as_mut().ok_or_else(|| failed(Error::TraversalState, self.accounting.spent()))?;
+        let prefix = begin_custody_leaf(self.accounting, self.data_custody)
+            .map_err(|error| self.failure(error))?;
+        let visited = self
+            .visited
+            .as_mut()
+            .ok_or_else(|| failed(Error::TraversalState, self.accounting.spent()))?;
         let result = VisitedObjectSet::insert_with_accounting(visited, page, self.accounting);
         let completed = finish_custody_leaf(self.accounting, self.data_custody, prefix);
         let inserted = result.map_err(|error| self.failure(error))?;
         completed.map_err(|error| self.failure(error))?;
-        if !inserted.inserted { return Err(failed(Error::Cycle, self.accounting.spent())); }
+        if !inserted.inserted {
+            return Err(failed(Error::Cycle, self.accounting.spent()));
+        }
         Ok(())
     }
 
@@ -258,32 +400,65 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
     }
 
     fn examine_value(&mut self, value: &F::Value) -> Result<u64, Failure> {
-        let examined = WorkCounters { items_examined: 1, ..WorkCounters::default() };
-        self.accounting.admit(examined).map_err(|error| self.failure(error))?;
+        let examined = WorkCounters {
+            items_examined: 1,
+            ..WorkCounters::default()
+        };
+        self.accounting
+            .admit(examined)
+            .map_err(|error| self.failure(error))?;
         let bytes = F::value_owned_bytes(value);
         self.completed(examined)?;
         Ok(bytes)
     }
 
-    fn leaf_bounds(&mut self, values: &[F::Value], pending: &Pending<F::Key>) -> Result<bool, Failure> {
-        let examined = WorkCounters { items_examined: if values.is_empty() { 0 } else { 2 }, ..WorkCounters::default() };
-        self.accounting.admit(examined).map_err(|error| self.failure(error))?;
-        let within = leaf_within::<F>(values, pending.lower.as_ref().map(|key| &key.value), pending.upper.as_ref().map(|key| &key.value));
+    fn leaf_bounds(
+        &mut self,
+        values: &[F::Value],
+        pending: &Pending<F::Key>,
+    ) -> Result<bool, Failure> {
+        let examined = WorkCounters {
+            items_examined: if values.is_empty() { 0 } else { 2 },
+            ..WorkCounters::default()
+        };
+        self.accounting
+            .admit(examined)
+            .map_err(|error| self.failure(error))?;
+        let within = leaf_within::<F>(
+            values,
+            pending.lower.as_ref().map(|key| &key.value),
+            pending.upper.as_ref().map(|key| &key.value),
+        );
         self.completed(examined)?;
         Ok(within)
     }
 
-    fn child_bounds(&mut self, children: &[Child<F::Key>], pending: &Pending<F::Key>) -> Result<bool, Failure> {
-        let examined = WorkCounters { items_examined: if children.is_empty() { 0 } else { 2 }, ..WorkCounters::default() };
-        self.accounting.admit(examined).map_err(|error| self.failure(error))?;
-        let within = children_within(children, pending.lower.as_ref().map(|key| &key.value), pending.upper.as_ref().map(|key| &key.value));
+    fn child_bounds(
+        &mut self,
+        children: &[Child<F::Key>],
+        pending: &Pending<F::Key>,
+    ) -> Result<bool, Failure> {
+        let examined = WorkCounters {
+            items_examined: if children.is_empty() { 0 } else { 2 },
+            ..WorkCounters::default()
+        };
+        self.accounting
+            .admit(examined)
+            .map_err(|error| self.failure(error))?;
+        let within = children_within(
+            children,
+            pending.lower.as_ref().map(|key| &key.value),
+            pending.upper.as_ref().map(|key| &key.value),
+        );
         self.completed(examined)?;
         Ok(within)
     }
 
     fn value_start(&mut self, values: &[F::Value]) -> Result<usize, Failure> {
         let bound = self.bound;
-        if matches!(bound, Bound::Unbounded) { return Ok(0); }
+        if matches!(bound, Bound::Unbounded) {
+            return Ok(0);
+        }
         let result = partition_point_with_accounting(values, self.accounting, |value| {
             let key = F::key(value);
             match bound {
@@ -300,12 +475,18 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
             Bound::Included(cursor) | Bound::Excluded(cursor) => cursor,
             Bound::Unbounded => return Ok(0),
         };
-        let result = partition_point_with_accounting(children, self.accounting, |child| child.first <= *cursor);
-        result.map(|index| index.saturating_sub(1)).map_err(|error| self.failure(error))
+        let result = partition_point_with_accounting(children, self.accounting, |child| {
+            child.first <= *cursor
+        });
+        result
+            .map(|index| index.saturating_sub(1))
+            .map_err(|error| self.failure(error))
     }
 
     fn accept(
-        &mut self, decoded: OwnedPage<F>, mut allocation: KernelOwnedAllocation,
+        &mut self,
+        decoded: OwnedPage<F>,
+        mut allocation: KernelOwnedAllocation,
         mut pending: Pending<F::Key>,
     ) -> Result<(), Failure> {
         #[cfg(not(target_arch = "wasm32"))]
@@ -323,7 +504,9 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
                 // Keep the decoded cache's original guard through the entire callback.
                 let result = match page.as_ref() {
                     Page::Leaf(values) => self.accept_shared_leaf(values, &pending),
-                    Page::Internal(children) => self.accept_shared_internal_state(children, &mut pending),
+                    Page::Internal(children) => {
+                        self.accept_shared_internal_state(children, &mut pending)
+                    }
                 };
                 drop(page);
                 result
@@ -332,26 +515,45 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         #[cfg(not(target_arch = "wasm32"))]
         drop(native_custody);
         drop(allocation);
-        pending.retire(self.accounting).map_err(|error| self.failure(error))?;
+        pending
+            .retire(self.accounting)
+            .map_err(|error| self.failure(error))?;
         result?;
         Ok(())
     }
 
-    fn accept_shared_leaf(&mut self, values: &[F::Value], pending: &Pending<F::Key>) -> Result<(), Failure> {
+    fn accept_shared_leaf(
+        &mut self,
+        values: &[F::Value],
+        pending: &Pending<F::Key>,
+    ) -> Result<(), Failure> {
         if !self.leaf_bounds(values, pending)? {
             return Err(failed(Error::ChildBoundsMismatch, self.accounting.spent()));
         }
         let start = self.value_start(values)?;
-        for value in values.iter().skip(start).take(self.target.saturating_sub(self.values.len())) {
+        for value in values
+            .iter()
+            .skip(start)
+            .take(self.target.saturating_sub(self.values.len()))
+        {
             self.examine_value(value)?;
-            let prefix = begin_custody_leaf(self.accounting, self.data_custody).map_err(|error| self.failure(error))?;
-            let result = persistent_io::clone_value::<F>(value, self.limits.maximum_name_bytes, self.accounting, None, 0);
+            let prefix = begin_custody_leaf(self.accounting, self.data_custody)
+                .map_err(|error| self.failure(error))?;
+            let result = persistent_io::clone_value::<F>(
+                value,
+                self.limits.maximum_name_bytes,
+                self.accounting,
+                None,
+                0,
+            );
             let completed = finish_custody_leaf(self.accounting, self.data_custody, prefix);
             let (cloned, allocation) = result.map_err(|error| self.failure(error))?;
             let nested = F::value_owned_bytes(&cloned);
             let cloned = Owned::new(cloned, allocation, nested);
             if let Err(error) = completed {
-                cloned.retire(self.accounting).map_err(|error| self.failure(error))?;
+                cloned
+                    .retire(self.accounting)
+                    .map_err(|error| self.failure(error))?;
                 return Err(self.failure(error));
             }
             self.push_value(cloned)?;
@@ -360,21 +562,35 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
     }
 
     fn accept_shared_internal_state(
-        &mut self, children: &[Child<F::Key>], pending: &mut Pending<F::Key>,
+        &mut self,
+        children: &[Child<F::Key>],
+        pending: &mut Pending<F::Key>,
     ) -> Result<(), Failure> {
         if !self.child_bounds(children, pending)? {
             return Err(failed(Error::ChildBoundsMismatch, self.accounting.spent()));
         }
         let start = self.child_start(children)?;
         let height = self.next_height(pending.height)?;
-        let end = start.saturating_add(self.target.saturating_sub(self.values.len()).saturating_add(1)).min(children.len());
-        if let Some(child) = children.get(end) { self.successor_page = Some(child.page); }
+        let end = start
+            .saturating_add(
+                self.target
+                    .saturating_sub(self.values.len())
+                    .saturating_add(1),
+            )
+            .min(children.len());
+        if let Some(child) = children.get(end) {
+            self.successor_page = Some(child.page);
+        }
         let mut next_lower: Option<Owned<F::Key>> = None;
         let result = (|| {
             for (offset, child) in children.iter().enumerate().take(end).skip(start).rev() {
                 let lower = self.clone_key(&child.first)?;
                 let upper = next_lower.take().or_else(|| pending.upper.take());
-                let previous = if offset == start { Ok(None) } else { self.clone_key(&child.first).map(Some) };
+                let previous = if offset == start {
+                    Ok(None)
+                } else {
+                    self.clone_key(&child.first).map(Some)
+                };
                 let previous = match previous {
                     Ok(previous) => previous,
                     Err(failure) => {
@@ -382,7 +598,12 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
                         return Err(failure);
                     }
                 };
-                if let Err(failure) = self.push_pending(Pending { page: child.page, lower: Some(lower), upper, height }) {
+                if let Err(failure) = self.push_pending(Pending {
+                    page: child.page,
+                    lower: Some(lower),
+                    upper,
+                    height,
+                }) {
                     self.retire_bounds(previous, None)?;
                     return Err(failure);
                 }
@@ -395,19 +616,36 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
     }
 
     fn next_height(&self, height: u16) -> Result<u16, Failure> {
-        height.checked_add(1).filter(|&next| next <= self.limits.maximum_page_height)
+        height
+            .checked_add(1)
+            .filter(|&next| next <= self.limits.maximum_page_height)
             .ok_or_else(|| failed(Error::HeightExceeded, self.accounting.spent()))
     }
 
-    fn retire_bounds(&mut self, lower: Option<Owned<F::Key>>, upper: Option<Owned<F::Key>>) -> Result<(), Failure> {
-        if let Some(lower) = lower { lower.retire(self.accounting).map_err(|error| self.failure(error))?; }
-        if let Some(upper) = upper { upper.retire(self.accounting).map_err(|error| self.failure(error))?; }
+    fn retire_bounds(
+        &mut self,
+        lower: Option<Owned<F::Key>>,
+        upper: Option<Owned<F::Key>>,
+    ) -> Result<(), Failure> {
+        if let Some(lower) = lower {
+            lower
+                .retire(self.accounting)
+                .map_err(|error| self.failure(error))?;
+        }
+        if let Some(upper) = upper {
+            upper
+                .retire(self.accounting)
+                .map_err(|error| self.failure(error))?;
+        }
         Ok(())
     }
 
     fn accept_leaf_owned(
-        &mut self, values: Vec<F::Value>, decoded_bytes: u64,
-        allocation: &mut KernelOwnedAllocation, pending: &Pending<F::Key>,
+        &mut self,
+        values: Vec<F::Value>,
+        decoded_bytes: u64,
+        allocation: &mut KernelOwnedAllocation,
+        pending: &Pending<F::Key>,
     ) -> Result<(), Failure> {
         let mut retained_nested = 0_u64;
         let result = (|| {
@@ -417,16 +655,21 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
             let start = self.value_start(&values)?;
             // Iterator destruction drops every skipped/unselected item and the source buffer.
             for value in values.into_iter().skip(start) {
-                if self.values.len() == self.target { break; }
+                if self.values.len() == self.target {
+                    break;
+                }
                 let nested = self.examine_value(&value)?;
-                let tag = split_allocation(allocation, nested).map_err(|error| self.failure(error))?;
-                retained_nested = retained_nested.checked_add(nested)
+                let tag =
+                    split_allocation(allocation, nested).map_err(|error| self.failure(error))?;
+                retained_nested = retained_nested
+                    .checked_add(nested)
                     .ok_or_else(|| failed(Error::AllocationFailed, self.accounting.spent()))?;
                 self.push_value(Owned::new(value, tag, nested))?;
             }
             Ok(())
         })();
-        let released = decoded_bytes.checked_sub(retained_nested)
+        let released = decoded_bytes
+            .checked_sub(retained_nested)
             .ok_or_else(|| failed(Error::TraversalState, self.accounting.spent()))?;
         if matches!(allocation, KernelOwnedAllocation::Standalone) {
             retire_allocation(KernelOwnedAllocation::Standalone, released, self.accounting)
@@ -436,8 +679,11 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
     }
 
     fn accept_internal_owned(
-        &mut self, children: Vec<Child<F::Key>>, decoded_bytes: u64,
-        allocation: &mut KernelOwnedAllocation, pending: &mut Pending<F::Key>,
+        &mut self,
+        children: Vec<Child<F::Key>>,
+        decoded_bytes: u64,
+        allocation: &mut KernelOwnedAllocation,
+        pending: &mut Pending<F::Key>,
     ) -> Result<(), Failure> {
         let mut moved_nested = 0_u64;
         let mut next_lower: Option<Owned<F::Key>> = None;
@@ -447,13 +693,25 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
             }
             let start = self.child_start(&children)?;
             let height = self.next_height(pending.height)?;
-            let end = start.saturating_add(self.target.saturating_sub(self.values.len()).saturating_add(1)).min(children.len());
-            if let Some(child) = children.get(end) { self.successor_page = Some(child.page); }
+            let end = start
+                .saturating_add(
+                    self.target
+                        .saturating_sub(self.values.len())
+                        .saturating_add(1),
+                )
+                .min(children.len());
+            if let Some(child) = children.get(end) {
+                self.successor_page = Some(child.page);
+            }
             let mut children = children;
             children.truncate(end);
             let mut tail = children.drain(start..);
             while let Some(child) = tail.next_back() {
-                let previous = if tail.len() == 0 { None } else { Some(self.clone_key(&child.first)?) };
+                let previous = if tail.len() == 0 {
+                    None
+                } else {
+                    Some(self.clone_key(&child.first)?)
+                };
                 let bytes = F::key_owned_bytes(&child.first);
                 let tag = match split_allocation(allocation, bytes) {
                     Ok(tag) => tag,
@@ -462,11 +720,17 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
                         return Err(self.failure(error));
                     }
                 };
-                moved_nested = moved_nested.checked_add(bytes)
+                moved_nested = moved_nested
+                    .checked_add(bytes)
                     .ok_or_else(|| failed(Error::AllocationFailed, self.accounting.spent()))?;
                 let lower = Owned::new(child.first, tag, bytes);
                 let upper = next_lower.take().or_else(|| pending.upper.take());
-                if let Err(failure) = self.push_pending(Pending { page: child.page, lower: Some(lower), upper, height }) {
+                if let Err(failure) = self.push_pending(Pending {
+                    page: child.page,
+                    lower: Some(lower),
+                    upper,
+                    height,
+                }) {
                     self.retire_bounds(previous, None)?;
                     return Err(failure);
                 }
@@ -477,7 +741,8 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
             Ok(())
         })();
         self.retire_bounds(next_lower, None)?;
-        let released = decoded_bytes.checked_sub(moved_nested)
+        let released = decoded_bytes
+            .checked_sub(moved_nested)
             .ok_or_else(|| failed(Error::TraversalState, self.accounting.spent()))?;
         if matches!(allocation, KernelOwnedAllocation::Standalone) {
             retire_allocation(KernelOwnedAllocation::Standalone, released, self.accounting)
@@ -487,14 +752,23 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
     }
 
     fn clone_key(&mut self, key: &F::Key) -> Result<Owned<F::Key>, Failure> {
-        let prefix = begin_custody_leaf(self.accounting, self.data_custody).map_err(|error| self.failure(error))?;
-        let result = persistent_io::clone_key::<F>(key, self.limits.maximum_name_bytes, self.accounting, None, 0);
+        let prefix = begin_custody_leaf(self.accounting, self.data_custody)
+            .map_err(|error| self.failure(error))?;
+        let result = persistent_io::clone_key::<F>(
+            key,
+            self.limits.maximum_name_bytes,
+            self.accounting,
+            None,
+            0,
+        );
         let completed = finish_custody_leaf(self.accounting, self.data_custody, prefix);
         let (value, allocation) = result.map_err(|error| self.failure(error))?;
         let bytes = F::key_owned_bytes(&value);
         let owned = Owned::new(value, allocation, bytes);
         if let Err(error) = completed {
-            owned.retire(self.accounting).map_err(|error| self.failure(error))?;
+            owned
+                .retire(self.accounting)
+                .map_err(|error| self.failure(error))?;
             return Err(self.failure(error));
         }
         Ok(owned)
@@ -504,26 +778,39 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         let prefix = match begin_custody_leaf(self.accounting, self.data_custody) {
             Ok(prefix) => prefix,
             Err(error) => {
-                owned.retire(self.accounting).map_err(|error| self.failure(error))?;
+                owned
+                    .retire(self.accounting)
+                    .map_err(|error| self.failure(error))?;
                 return Err(self.failure(error));
             }
         };
-        let copied = WorkCounters { bytes_copied: usize_to_u64(size_of::<F::Value>()), ..WorkCounters::default() };
+        let copied = WorkCounters {
+            bytes_copied: usize_to_u64(size_of::<F::Value>()),
+            ..WorkCounters::default()
+        };
         let admitted = self.accounting.admit(copied);
         let nested = match (admitted, self.values_nested_bytes.checked_add(owned.bytes)) {
             (Ok(()), Some(nested)) => nested,
             (admitted, _) => {
                 let completed = finish_custody_leaf(self.accounting, self.data_custody, prefix);
-                owned.retire(self.accounting).map_err(|error| self.failure(error))?;
+                owned
+                    .retire(self.accounting)
+                    .map_err(|error| self.failure(error))?;
                 completed.map_err(|error| self.failure(error))?;
                 admitted.map_err(|error| self.failure(error))?;
                 return Err(failed(Error::AllocationFailed, self.accounting.spent()));
             }
         };
-        let Owned { value, mut allocation, bytes } = owned;
+        let Owned {
+            value,
+            mut allocation,
+            bytes,
+        } = owned;
         if let Err(error) = self.values_allocation.absorb(&mut allocation) {
             let completed = finish_custody_leaf(self.accounting, self.data_custody, prefix);
-            Owned::new(value, allocation, bytes).retire(self.accounting).map_err(|error| self.failure(error))?;
+            Owned::new(value, allocation, bytes)
+                .retire(self.accounting)
+                .map_err(|error| self.failure(error))?;
             completed.map_err(|error| self.failure(error))?;
             return Err(self.failure(error));
         }
@@ -539,7 +826,10 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
             pending.retire(self.accounting)?;
         }
         let empty_allocation = split_allocation(&mut self.pending.allocation, 0)?;
-        let pending = std::mem::replace(&mut self.pending, Owned::new(Vec::new(), empty_allocation, 0));
+        let pending = std::mem::replace(
+            &mut self.pending,
+            Owned::new(Vec::new(), empty_allocation, 0),
+        );
         pending.retire(self.accounting)?;
         if let Some(visited) = self.visited.take() {
             visited.retire(self.accounting)?;
@@ -550,26 +840,52 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
     fn retire(mut self) -> Result<(), Error> {
         self.retire_traversal().map_err(project_failure)?;
         drop(self.values);
-        retire_allocation(self.values_allocation,
-            self.values_container_bytes.checked_add(self.values_nested_bytes).ok_or(Error::TraversalState)?,
-            self.accounting).map_err(project_failure)
+        retire_allocation(
+            self.values_allocation,
+            self.values_container_bytes
+                .checked_add(self.values_nested_bytes)
+                .ok_or(Error::TraversalState)?,
+            self.accounting,
+        )
+        .map_err(project_failure)
     }
 
     fn finish_state(&mut self) -> Result<(bool, Option<ObjectReadRequest>), Failure> {
         let has_more = self.values.len() >= self.target;
-        let next_request = has_more.then(|| self.pending.value.last().map(|pending| pending.page).or(self.successor_page))
-            .flatten().map(|object_id| ObjectReadRequest { object_id, maximum_bytes: self.limits.maximum_page_object_bytes() });
+        let next_request = has_more
+            .then(|| {
+                self.pending
+                    .value
+                    .last()
+                    .map(|pending| pending.page)
+                    .or(self.successor_page)
+            })
+            .flatten()
+            .map(|object_id| ObjectReadRequest {
+                object_id,
+                maximum_bytes: self.limits.maximum_page_object_bytes(),
+            });
         if has_more {
-            let removed = self.values.pop().ok_or_else(|| failed(Error::TraversalState, self.accounting.spent()))?;
+            let removed = self
+                .values
+                .pop()
+                .ok_or_else(|| failed(Error::TraversalState, self.accounting.spent()))?;
             let bytes = F::value_owned_bytes(&removed);
-            let tag = split_allocation(&mut self.values_allocation, bytes).map_err(|error| self.failure(error))?;
+            let tag = split_allocation(&mut self.values_allocation, bytes)
+                .map_err(|error| self.failure(error))?;
             drop(removed);
             retire_allocation(tag, bytes, self.accounting).map_err(|error| self.failure(error))?;
-            self.values_nested_bytes = self.values_nested_bytes.checked_sub(bytes)
+            self.values_nested_bytes = self
+                .values_nested_bytes
+                .checked_sub(bytes)
                 .ok_or_else(|| failed(Error::TraversalState, self.accounting.spent()))?;
         }
-        self.completed(WorkCounters { items_returned: usize_to_u64(self.values.len()), ..WorkCounters::default() })?;
-        self.retire_traversal().map_err(|error| self.failure(error))?;
+        self.completed(WorkCounters {
+            items_returned: usize_to_u64(self.values.len()),
+            ..WorkCounters::default()
+        })?;
+        self.retire_traversal()
+            .map_err(|error| self.failure(error))?;
         Ok((has_more, next_request))
     }
 
@@ -577,11 +893,17 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         let (has_more, next_request) = match self.finish_state() {
             Ok(result) => result,
             Err(failure) => {
-                self.retire().map_err(|error| failed(error, *failure.work))?;
+                self.retire()
+                    .map_err(|error| failed(error, *failure.work))?;
                 return Err(failure);
             }
         };
-        let receipt = Receipt { values: self.values, has_more, next_request, work: self.accounting.spent() };
+        let receipt = Receipt {
+            values: self.values,
+            has_more,
+            next_request,
+            work: self.accounting.spent(),
+        };
         Ok((receipt, self.values_allocation))
     }
 }
@@ -594,10 +916,24 @@ pub(super) struct CustodyPrefix {
 
 fn standalone_parts<'a>(
     accounting: &'a mut KernelAccounting<'_>,
-) -> Option<(&'a mut AllocationLedger, &'a mut WorkCounters, &'a mut WorkBudget)> {
+) -> Option<(
+    &'a mut AllocationLedger,
+    &'a mut WorkCounters,
+    &'a mut WorkBudget,
+)> {
     match accounting {
-        KernelAccounting::Standalone { allocations, work, budget, .. } => Some((allocations, work, budget)),
-        KernelAccounting::BorrowedStandalone { allocations, work, budget, .. } => Some((allocations, work, budget)),
+        KernelAccounting::Standalone {
+            allocations,
+            work,
+            budget,
+            ..
+        } => Some((allocations, work, budget)),
+        KernelAccounting::BorrowedStandalone {
+            allocations,
+            work,
+            budget,
+            ..
+        } => Some((allocations, work, budget)),
         #[cfg(not(target_arch = "wasm32"))]
         KernelAccounting::NativeOriginal { .. } => None,
     }
@@ -606,36 +942,71 @@ fn standalone_parts<'a>(
 // The standalone proof projection retains its cache-residency adjustment.
 // Original native leaves already charge their own ledger; they never replay work.
 pub(super) fn begin_custody_leaf(
-    accounting: &mut KernelAccounting<'_>, custody: Option<&super::ProofDataCustody>,
+    accounting: &mut KernelAccounting<'_>,
+    custody: Option<&super::ProofDataCustody>,
 ) -> Result<Option<CustodyPrefix>, crate::FsError> {
-    let Some(owner) = custody else { return Ok(None); };
-    let Some((_, work, budget)) = standalone_parts(accounting) else { return Ok(None); };
+    let Some(owner) = custody else {
+        return Ok(None);
+    };
+    let Some((_, work, budget)) = standalone_parts(accounting) else {
+        return Ok(None);
+    };
     let external = owner.operation_cache_bytes();
-    let available = budget.peak_allocation_bytes.checked_sub(external).ok_or(WorkError::BudgetExceeded {
-        counter: "peak_allocation_bytes", observed: external, maximum: budget.peak_allocation_bytes,
-    })?;
-    let prefix = CustodyPrefix { before: *work, maximum_peak: budget.peak_allocation_bytes, external };
+    let available =
+        budget
+            .peak_allocation_bytes
+            .checked_sub(external)
+            .ok_or(WorkError::BudgetExceeded {
+                counter: "peak_allocation_bytes",
+                observed: external,
+                maximum: budget.peak_allocation_bytes,
+            })?;
+    let prefix = CustodyPrefix {
+        before: *work,
+        maximum_peak: budget.peak_allocation_bytes,
+        external,
+    };
     budget.peak_allocation_bytes = available;
     work.peak_allocation_bytes = 0;
     Ok(Some(prefix))
 }
 
 pub(super) fn finish_custody_leaf(
-    accounting: &mut KernelAccounting<'_>, custody: Option<&super::ProofDataCustody>, prefix: Option<CustodyPrefix>,
+    accounting: &mut KernelAccounting<'_>,
+    custody: Option<&super::ProofDataCustody>,
+    prefix: Option<CustodyPrefix>,
 ) -> Result<(), crate::FsError> {
-    let Some(prefix) = prefix else { return Ok(()); };
-    let Some((allocations, work, budget)) = standalone_parts(accounting) else { unreachable!("standalone proof prefix"); };
+    let Some(prefix) = prefix else {
+        return Ok(());
+    };
+    let Some((allocations, work, budget)) = standalone_parts(accounting) else {
+        unreachable!("standalone proof prefix");
+    };
     budget.peak_allocation_bytes = prefix.maximum_peak;
     let peak = work.peak_allocation_bytes.max(allocations.live_bytes());
-    work.peak_allocation_bytes = prefix.before.peak_allocation_bytes.max(peak.checked_add(prefix.external).ok_or(WorkError::Overflow)?);
+    work.peak_allocation_bytes = prefix.before.peak_allocation_bytes.max(
+        peak.checked_add(prefix.external)
+            .ok_or(WorkError::Overflow)?,
+    );
     let completed = WorkCounters {
-        allocation_operations: work.allocation_operations.checked_sub(prefix.before.allocation_operations).ok_or(WorkError::Overflow)?,
-        items_examined: work.items_examined.checked_sub(prefix.before.items_examined).ok_or(WorkError::Overflow)?,
-        bytes_copied: work.bytes_copied.checked_sub(prefix.before.bytes_copied).ok_or(WorkError::Overflow)?,
+        allocation_operations: work
+            .allocation_operations
+            .checked_sub(prefix.before.allocation_operations)
+            .ok_or(WorkError::Overflow)?,
+        items_examined: work
+            .items_examined
+            .checked_sub(prefix.before.items_examined)
+            .ok_or(WorkError::Overflow)?,
+        bytes_copied: work
+            .bytes_copied
+            .checked_sub(prefix.before.bytes_copied)
+            .ok_or(WorkError::Overflow)?,
         peak_allocation_bytes: peak,
         ..WorkCounters::default()
     };
-    custody.ok_or(WorkError::Overflow)?.record_completed_leaf_work(completed)?;
+    custody
+        .ok_or(WorkError::Overflow)?
+        .record_completed_leaf_work(completed)?;
     work.verify(*budget)?;
     Ok(())
 }
@@ -643,7 +1014,9 @@ pub(super) fn finish_custody_leaf(
 fn query_error(error: Error) -> crate::FsError {
     match error {
         #[cfg(not(target_arch = "wasm32"))]
-        Error::Storage(crate::storage::ObjectStoreError::Native(error)) => crate::FsError::NativeKernel(error),
+        Error::Storage(crate::storage::ObjectStoreError::Native(error)) => {
+            crate::FsError::NativeKernel(error)
+        }
         error => crate::FsError::Directory(error),
     }
 }
@@ -657,8 +1030,12 @@ pub(super) fn project_failure(error: crate::FsError) -> Error {
         crate::FsError::Object(error) => Error::Storage(error),
         crate::FsError::PendingMutationAllocationFailed => Error::AllocationFailed,
         #[cfg(not(target_arch = "wasm32"))]
-        crate::FsError::NativeKernel(error) => Error::Storage(crate::storage::ObjectStoreError::Native(error)),
-        _ => unreachable!("pagination leaves return only typed directory, object, decode, cancellation and work errors"),
+        crate::FsError::NativeKernel(error) => {
+            Error::Storage(crate::storage::ObjectStoreError::Native(error))
+        }
+        _ => unreachable!(
+            "pagination leaves return only typed directory, object, decode, cancellation and work errors"
+        ),
     }
 }
 

@@ -118,9 +118,10 @@ pub(crate) async fn build_blob_with_accounting<S: AsyncObjectStore, R: AsyncBlob
 pub(super) fn blob_build_error(error: FsError) -> BlobBuildError {
     match error {
         FsError::BlobBuild(error) => error,
-        FsError::Work(error) => BlobBuildError::Work(error),
+        FsError::Work(error) | FsError::Object(crate::ObjectStoreError::Work(error)) => {
+            BlobBuildError::Work(error)
+        }
         FsError::Cancelled(_) => BlobBuildError::Cancelled,
-        FsError::Object(crate::ObjectStoreError::Work(error)) => BlobBuildError::Work(error),
         FsError::Object(error) => BlobBuildError::Storage(error),
         FsError::Decode(error) => BlobBuildError::Encode(error),
         error => BlobBuildError::Context(Box::new(error)),
@@ -272,6 +273,10 @@ pub(super) fn hashed_blob_object(
     Ok(object)
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
+)]
 pub(super) async fn accept_owned_blob_chunk<S: AsyncObjectStore>(
     batching: &mut BlobBatchStore<'_, S>,
     index: &mut BlobIndexBuilder,

@@ -174,9 +174,7 @@ pub use merge::{
     MergeGenerationOutcome, MergeGenerationRequest, MergeGenerationResult, merge_generation_async,
 };
 #[cfg(test)]
-pub(crate) use merge::{
-    file_table_mutation, merge_directory_record_async, resolve_three, tree_mutation,
-};
+pub(crate) use merge::{merge_directory_record_async, tree_mutation};
 pub use metadata::{
     FileMetadata, MetadataField, decode_file_metadata, encode_file_metadata, file_metadata_id,
 };
@@ -188,19 +186,17 @@ pub use path_access::{
     observe_path_async, observe_paths_async,
 };
 pub(crate) use path_access::{
-    PathQueries, PathBatchMode, lookup_path_async_with_accounting, lookup_paths_with_accounting, observe_path_async_with_accounting,
-    observe_paths_async_with_accounting,
+    PathBatchMode, PathQueries, lookup_path_async_with_accounting, lookup_paths_with_accounting,
+    observe_path_async_with_accounting, observe_paths_async_with_accounting,
 };
 pub(crate) use persistent_point::retire_allocation;
 pub use probe::{
     AuthenticatedGenerationProbe, AuthenticatedProbeError, ProbeLimits, capture_content_range_bytes,
 };
 pub(crate) use publication::contextual_publication_fingerprint;
-#[cfg(test)]
-pub(crate) use publication::encode_publication_payload;
 pub use publication::{
-    PublicationError, PublicationFailure, PublicationIntent, PublicationReceipt, PublishGenerationRequest,
-    PublishedGeneration, decode_published_generation, publish_generation,
+    PublicationError, PublicationFailure, PublicationIntent, PublicationReceipt,
+    PublishGenerationRequest, PublishedGeneration, decode_published_generation, publish_generation,
 };
 pub(crate) use publication::{
     decode_publication_evidence_with_accounting, publish_generation_async_guarded,

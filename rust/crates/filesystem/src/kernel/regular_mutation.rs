@@ -215,6 +215,10 @@ pub(crate) async fn apply_regular_mutation_with_accounting<S: AsyncObjectStore>(
     apply_sparse(store, payload, mutation, config, accounting, cancellation).await
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
+)]
 pub(crate) async fn apply_regular_clone_with_accounting<S: AsyncObjectStore>(
     store: &S,
     source: FilePayload,
@@ -421,6 +425,10 @@ fn validate_mutation(mutation: RegularMutation) -> Result<(), RegularMutationErr
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "Inline mutation validation and writes form one bounded operation."
+)]
 async fn try_inline<S: AsyncObjectStore>(
     store: &S,
     data: InlineFileData,
@@ -505,10 +513,18 @@ async fn try_inline<S: AsyncObjectStore>(
                 bytes_copied: length.checked_mul(2).ok_or(WorkError::Overflow)?,
                 ..WorkCounters::UNCHARGED
             })?;
-            let read = super::blob::read_blob_range_with_accounting(store, content, ByteRange {
+            let read = super::blob::read_blob_range_with_accounting(
+                store,
+                content,
+                ByteRange {
                     offset: content_offset,
                     length,
-                }, DecodeLimits::for_volume(config), accounting, cancellation, false)
+                },
+                DecodeLimits::for_volume(config),
+                accounting,
+                cancellation,
+                false,
+            )
             .await?;
             charge_copy(accounting, length)?;
             let result = data.replace_range(
@@ -544,6 +560,10 @@ async fn sparse_storage<S: AsyncObjectStore>(
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "This state transition keeps admission, effects and resource retirement in one frame."
+)]
 async fn promote_inline<S: AsyncObjectStore>(
     store: &S,
     data: InlineFileData,
@@ -668,6 +688,10 @@ async fn promote_inline<S: AsyncObjectStore>(
     })
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "This state transition keeps admission, effects and resource retirement in one frame."
+)]
 async fn apply_sparse<S: AsyncObjectStore>(
     store: &S,
     payload: FilePayload,
@@ -812,6 +836,11 @@ async fn apply_sparse<S: AsyncObjectStore>(
     })
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "This state transition keeps admission, effects and resource retirement in one frame."
+)]
 async fn apply_sparse_preallocation<S: AsyncObjectStore>(
     store: &S,
     logical_bytes: u64,
@@ -990,10 +1019,18 @@ async fn try_demote_sparse_async<S: AsyncObjectStore>(
             bytes_copied: span.length.checked_mul(2).ok_or(WorkError::Overflow)?,
             ..WorkCounters::UNCHARGED
         })?;
-        let read = super::blob::read_blob_range_with_accounting(store, object, ByteRange {
+        let read = super::blob::read_blob_range_with_accounting(
+            store,
+            object,
+            ByteRange {
                 offset: object_offset,
                 length: span.length,
-            }, DecodeLimits::for_volume(config), accounting, cancellation, false)
+            },
+            DecodeLimits::for_volume(config),
+            accounting,
+            cancellation,
+            false,
+        )
         .await?;
         charge_copy(accounting, span.length)?;
         let copied = data.replace_range(
@@ -1062,6 +1099,7 @@ pub(super) fn project_clone_error(error: FsError) -> ExtentCloneError {
     }
 }
 
+#[derive(Clone, Copy)]
 enum CloneStage {
     Source,
     Compile,
@@ -1085,16 +1123,16 @@ fn clone_stage_error(error: FsError, stage: CloneStage) -> FsError {
         CloneStage::Destination => {
             let error = match error {
                 FsError::DetachedMutation(RegularMutationError::Extent(error)) => error,
-                FsError::Work(error) => error.into(),
-                FsError::Decode(error) => error.into(),
-                FsError::BlobRead(BlobReadError::Storage(error)) => error.into(),
-                FsError::FileRead(super::FileRangeReadError::Extent(ExtentReadError::Decode(
+                FsError::Work(error)
+                | FsError::FileRead(super::FileRangeReadError::Extent(ExtentReadError::Work(
                     error,
                 ))) => error.into(),
-                FsError::FileRead(super::FileRangeReadError::Extent(ExtentReadError::Work(
+                FsError::Decode(error)
+                | FsError::FileRead(super::FileRangeReadError::Extent(ExtentReadError::Decode(
                     error,
                 ))) => error.into(),
-                FsError::FileRead(super::FileRangeReadError::Extent(ExtentReadError::Storage(
+                FsError::BlobRead(BlobReadError::Storage(error))
+                | FsError::FileRead(super::FileRangeReadError::Extent(ExtentReadError::Storage(
                     error,
                 ))) => error.into(),
                 FsError::Cancelled(_) => ObjectStoreError::Cancelled.into(),

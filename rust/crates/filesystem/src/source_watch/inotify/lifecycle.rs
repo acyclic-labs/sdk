@@ -279,6 +279,7 @@ impl NativeSourceWatch {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn admit(&self, directory: &Path) -> bool {
         let cancellation = crate::cancellation::CancellationToken::new();
         self.admit_with_work(
@@ -304,6 +305,7 @@ impl NativeSourceWatch {
         self.shared.unadmit_with_work(directory, work)
     }
 
+    #[cfg(test)]
     pub(crate) fn fence(&self) -> io::Result<()> {
         let mut work = self.shared.delivery.callback_work();
         self.shared

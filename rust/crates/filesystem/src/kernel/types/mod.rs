@@ -8,10 +8,11 @@ use crate::foundation::{Digest, FileId};
 use crate::kernel::Child;
 use crate::model::FilesystemProfile;
 use crate::storage::{ObjectId, ObjectKind};
-use crate::{CancellationToken, WorkBudget, WorkCounters};
+use crate::{CancellationToken, WorkCounters};
 use thiserror::Error;
 
 mod name;
+#[cfg(any(feature = "native-watch", feature = "native-mount"))]
 pub(crate) use name::utf16le_units;
 pub use name::{LogicalName, NameEncoding};
 mod lowercase;

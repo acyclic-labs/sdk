@@ -7,6 +7,7 @@ pub struct OwnedSourceChunk {
     pub bytes: acyclic_stream::OwnedBytes,
     /// Payload capacity retained by these bytes, not their visible length.
     pub logical_owned_bytes: u64,
+    #[cfg(feature = "native-mount")]
     pub(crate) intrinsic: bool,
 }
 
@@ -16,6 +17,7 @@ impl OwnedSourceChunk {
         Self {
             bytes,
             logical_owned_bytes,
+            #[cfg(feature = "native-mount")]
             intrinsic: false,
         }
     }
@@ -26,6 +28,7 @@ impl OwnedSourceChunk {
         Self {
             bytes,
             logical_owned_bytes,
+            #[cfg(feature = "native-mount")]
             intrinsic: true,
         }
     }
@@ -263,6 +266,10 @@ pub(super) async fn read_owned_blob_source<R: AsyncBlobSource>(
     Ok(None)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "This state transition keeps admission, effects and resource retirement in one frame."
+)]
 pub(super) async fn read_blob_chunk<R: AsyncBlobSource>(
     source: &mut R,
     maximum: usize,
@@ -282,7 +289,7 @@ pub(super) async fn read_blob_chunk<R: AsyncBlobSource>(
                 ..WorkCounters::UNCHARGED
             })?;
         }
-        let owned = buffer.as_mut().expect("source storage is prepared once");
+        let owned = buffer.as_mut().ok_or(BlobBuildError::TooLarge)?;
         reserve_blob_vec(owned, maximum, accounting)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = &native {
@@ -299,7 +306,7 @@ pub(super) async fn read_blob_chunk<R: AsyncBlobSource>(
                     ..crate::WorkCounters::UNCHARGED
                 })
             }?;
-            let owned = buffer.take().expect("original source storage");
+            let owned = buffer.take().ok_or(BlobBuildError::TooLarge)?;
             prepared = Some(
                 acyclic_stream::PreparedOwnedBytes::new(
                     owned.value,
@@ -330,10 +337,13 @@ pub(super) async fn read_blob_chunk<R: AsyncBlobSource>(
             accounting.check()?;
             #[cfg(not(target_arch = "wasm32"))]
             let destination = match prepared.as_mut() {
-                Some(prepared) => &mut prepared.writable()[filled..maximum],
+                Some(prepared) => prepared
+                    .writable()
+                    .get_mut(filled..maximum)
+                    .ok_or(BlobBuildError::TooLarge)?,
                 None => buffer
                     .as_mut()
-                    .expect("ordinary source storage")
+                    .ok_or(BlobBuildError::TooLarge)?
                     .value
                     .get_mut(filled..)
                     .ok_or(BlobBuildError::TooLarge)?,
@@ -341,7 +351,7 @@ pub(super) async fn read_blob_chunk<R: AsyncBlobSource>(
             #[cfg(target_arch = "wasm32")]
             let destination = buffer
                 .as_mut()
-                .expect("ordinary source storage")
+                .ok_or(BlobBuildError::TooLarge)?
                 .value
                 .get_mut(filled..)
                 .ok_or(BlobBuildError::TooLarge)?;
@@ -390,7 +400,7 @@ pub(super) async fn read_blob_chunk<R: AsyncBlobSource>(
                     filled,
                 ));
             }
-            let mut buffer = buffer.expect("ordinary source storage");
+            let mut buffer = buffer.ok_or(BlobBuildError::TooLarge)?;
             buffer.value.truncate(filled);
             let logical_owned_bytes = usize_to_u64(buffer.value.capacity());
             let bytes = owned_read_bytes(buffer)?;

@@ -224,6 +224,10 @@ impl LogicalName {
     }
 
     /// Projects a non-lossy Unicode name under the supplied work scope.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "The public operation consumes its work scope and owned controls."
+    )]
     pub fn unicode_text<W: crate::facade::FsWork>(
         &self,
         work: W,
@@ -305,13 +309,10 @@ impl LogicalName {
     pub fn case_fold_key(&self) -> Vec<u8> {
         match self.encoding {
             NameEncoding::Utf8 => {
-                let value = std::str::from_utf8(&self.bytes).expect("UTF-8 names are validated");
-                let cancellation = CancellationToken::new();
-                let mut accounting =
-                    KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-                lowercase_unicode(value, &mut accounting, &cancellation)
-                    .expect("unbounded canonical lowercase allocation succeeds")
-                    .0
+                let Ok(value) = std::str::from_utf8(&self.bytes) else {
+                    return self.bytes.clone();
+                };
+                value.to_lowercase().into_bytes()
             }
             NameEncoding::PosixBytes | NameEncoding::WindowsUtf16Le => self.bytes.clone(),
         }

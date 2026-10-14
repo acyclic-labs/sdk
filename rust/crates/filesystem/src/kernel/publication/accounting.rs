@@ -11,7 +11,7 @@ fn accept_backend(
 ) -> Result<(), crate::FsError> {
     let (allocations, work, budget, _) = accounting
         .standalone_parts()
-        .expect("native producers charge their ledger directly");
+        .ok_or(crate::ObjectStoreError::Corrupt)?;
     *work = work.with_backend(more, allocations.live_bytes())?;
     work.verify(budget)?;
     Ok(())

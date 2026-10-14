@@ -58,6 +58,10 @@ pub async fn read_file_range_async<S: AsyncObjectStore>(
         .map_err(|error| failed(file_error(error), accounting.spent()))
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "This state transition keeps admission, effects and resource retirement in one frame."
+)]
 pub(crate) async fn read_file_range_with_accounting<S: AsyncObjectStore>(
     store: &S,
     request: FileRangeRequest,
@@ -136,10 +140,18 @@ pub(crate) async fn read_file_range_with_accounting<S: AsyncObjectStore>(
                 else {
                     continue;
                 };
-                let nested = super::blob::read_blob_range_with_accounting(store, object, ByteRange {
+                let nested = super::blob::read_blob_range_with_accounting(
+                    store,
+                    object,
+                    ByteRange {
                         offset: object_offset,
                         length: span.length,
-                    }, request.limits, accounting, cancellation, false)
+                    },
+                    request.limits,
+                    accounting,
+                    cancellation,
+                    false,
+                )
                 .await?;
                 let start = usize::try_from(span.offset - request.range.offset)
                     .map_err(|_| FileRangeReadError::InvalidRange)?;
@@ -439,7 +451,13 @@ pub(crate) async fn read_objects_with_accounting<S: AsyncObjectStore>(
             store
                 .read_many(__object_args.0, &mut __object_work)
                 .await
-                .map(|(values, allocation)| (values, allocation.expect("native batch allocation")))
+                .and_then(|(values, allocation)| {
+                    allocation.map(|allocation| (values, allocation)).ok_or(
+                        crate::ObjectStoreError::Native(
+                            crate::NativeTreeMaterializationError::InvalidLayout,
+                        ),
+                    )
+                })
         }
         .map(|batch| {
             let (value, custody) = batch;
@@ -541,14 +559,13 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
                 self.allocation.absorb(&mut allocation)?;
                 self.owned_bytes = next;
             }
-            ReadAllocationStep::ReserveFailed(error) => {
+            ReadAllocationStep::ReserveFailed(_error) => {
                 #[cfg(not(target_arch = "wasm32"))]
                 if self.accounting.native_work().is_some() {
                     return Err(
-                        crate::NativeTreeMaterializationError::AllocationFailed(error).into(),
+                        crate::NativeTreeMaterializationError::AllocationFailed(_error).into(),
                     );
                 }
-                drop(error);
                 return Err(super::CanonicalDecodeError::AllocationFailed.into());
             }
             ReadAllocationStep::Capacity {

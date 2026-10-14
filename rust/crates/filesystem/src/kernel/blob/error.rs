@@ -12,6 +12,10 @@ pub struct BlobDemandFailure {
 
 impl BlobDemandFailure {
     /// Borrows the actual initialized provider cause.
+    #[allow(
+        clippy::expect_used,
+        reason = "Only initialized, prepaid source failures are exposed by this type."
+    )]
     pub fn error(&self) -> &crate::DemandError {
         self.error
             .as_ref()
@@ -20,6 +24,10 @@ impl BlobDemandFailure {
     }
 
     /// Visits owned cause fields without cloning or replacing the prepaid holder.
+    #[allow(
+        clippy::expect_used,
+        reason = "Only initialized, prepaid source failures are exposed by this type."
+    )]
     pub fn error_mut(&mut self) -> &mut crate::DemandError {
         self.error
             .as_mut()
@@ -126,13 +134,13 @@ pub(super) fn build_failed(error: BlobBuildError, work: WorkCounters) -> BlobBui
 pub(super) fn blob_error(error: FsError) -> BlobReadError {
     match error {
         FsError::BlobRead(error) => error,
-        FsError::Work(error) => error.into(),
+        FsError::Work(error)
+        | FsError::FileRead(crate::kernel::FileRangeReadError::Work(error)) => error.into(),
         FsError::Cancelled(_) => BlobReadError::Cancelled,
         FsError::Object(error) => BlobReadError::Storage(error),
         FsError::FileRead(crate::kernel::FileRangeReadError::AllocationFailed) => {
             BlobReadError::AllocationFailed
         }
-        FsError::FileRead(crate::kernel::FileRangeReadError::Work(error)) => error.into(),
         error => BlobReadError::Context(Box::new(error)),
     }
 }

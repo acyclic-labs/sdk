@@ -61,14 +61,16 @@ fn record(extended: bool, action: u32, file: u64, name: &str, last: bool) -> Vec
     let mut bytes = vec![0; if extended { 84 } else { 12 }];
     bytes[4..8].copy_from_slice(&action.to_le_bytes());
     let at = if extended { 80 } else { 8 };
-    bytes[at..at + 4].copy_from_slice(&(name.len() as u32).to_le_bytes());
+    bytes[at..at + 4].copy_from_slice(
+        &(u32::try_from(name.len()).expect("fixture name fits the record")).to_le_bytes(),
+    );
     if extended {
         bytes[64..72].copy_from_slice(&file.to_le_bytes());
     }
     bytes.extend(name);
     bytes.resize(bytes.len().next_multiple_of(8), 0);
     if !last {
-        let length = bytes.len() as u32;
+        let length = u32::try_from(bytes.len()).expect("fixture record fits the header");
         bytes[..4].copy_from_slice(&length.to_le_bytes());
     }
     bytes

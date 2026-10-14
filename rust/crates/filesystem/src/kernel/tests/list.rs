@@ -395,7 +395,7 @@ async fn pagination_rejects_every_invalid_admission_and_authenticated_bound()
 async fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::async_storage::AsyncObjectStore;
-    use crate::storage::{ObjectRead, ObjectReadRequest, ObjectResult};
+    use crate::storage::ObjectReadRequest;
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct PanickingRead {
         inner: MemoryObjectStore,

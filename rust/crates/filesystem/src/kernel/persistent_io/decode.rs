@@ -49,6 +49,10 @@ fn logical_page_bytes<F: Format>(shape: DecodedPageShape) -> Option<u64> {
     container_bytes.checked_add(shape.nested_bytes)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "This state transition keeps admission, effects and resource retirement in one frame."
+)]
 pub(crate) fn decode_read_with_accounting<F: Format>(
     read: &ObjectRead,
     limits: DecodeLimits,
@@ -78,7 +82,7 @@ pub(crate) fn decode_read_with_accounting<F: Format>(
     }
     let (allocations, work, budget, _) = accounting
         .standalone_parts()
-        .expect("native decoding uses the original step engine");
+        .ok_or(crate::ObjectStoreError::Corrupt)?;
     let shape = F::decode_shape(read, limits)?;
     work.charge_items(usize_to_u64(shape.items), &budget)?;
     if let Some(owner) = data_custody {
@@ -98,17 +102,17 @@ pub(crate) fn decode_read_with_accounting<F: Format>(
         data_custody,
         0,
     )?;
-    if let Some(owner) = data_custody {
-        if let Err(error) = owner.record_completed_leaf_work(WorkCounters {
+    if let Some(owner) = data_custody
+        && let Err(error) = owner.record_completed_leaf_work(WorkCounters {
             allocation_operations: u64::from(logical_bytes != 0),
             peak_allocation_bytes: allocations.live_bytes(),
             ..WorkCounters::default()
-        }) {
-            allocations
-                .release(logical_bytes)
-                .map_err(allocation_error)?;
-            return Err(error.into());
-        }
+        })
+    {
+        allocations
+            .release(logical_bytes)
+            .map_err(allocation_error)?;
+        return Err(error.into());
     }
     let copied = match work.checked_add(WorkCounters {
         bytes_copied: shape.nested_bytes,
@@ -129,16 +133,16 @@ pub(crate) fn decode_read_with_accounting<F: Format>(
         return Err(error.into());
     }
     *work = copied;
-    if let Some(owner) = data_custody {
-        if let Err(error) = owner.record_completed_leaf_work(WorkCounters {
+    if let Some(owner) = data_custody
+        && let Err(error) = owner.record_completed_leaf_work(WorkCounters {
             bytes_copied: shape.nested_bytes,
             ..WorkCounters::default()
-        }) {
-            allocations
-                .release(logical_bytes)
-                .map_err(allocation_error)?;
-            return Err(error.into());
-        }
+        })
+    {
+        allocations
+            .release(logical_bytes)
+            .map_err(allocation_error)?;
+        return Err(error.into());
     }
     let decoded = match F::decode(read, limits, &mut |_| Ok::<_, CanonicalDecodeError>(())) {
         Ok(decoded) => decoded,
@@ -205,7 +209,7 @@ fn clone_item<T>(
     }
     let (allocations, work, budget, _) = accounting
         .standalone_parts()
-        .expect("native cloning uses the original step engine");
+        .ok_or(crate::ObjectStoreError::Corrupt)?;
     if nested != 0 {
         admit_clone(
             nested,
@@ -295,16 +299,16 @@ fn admit_clone(
         cached_local_bytes,
     )?;
     next.charge(&copied, &budget)?;
-    if let Some(owner) = data_custody {
-        if let Err(error) = owner.record_operation_clone_work(
+    if let Some(owner) = data_custody
+        && let Err(error) = owner.record_operation_clone_work(
             nested,
             prior_live
                 .checked_sub(cached_local_bytes)
                 .ok_or(WorkError::Overflow)?,
-        ) {
-            allocations.release(nested).map_err(allocation_error)?;
-            return Err(error.into());
-        }
+        )
+    {
+        allocations.release(nested).map_err(allocation_error)?;
+        return Err(error.into());
     }
     *work = next;
     Ok(())

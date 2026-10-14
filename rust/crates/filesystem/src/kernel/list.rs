@@ -35,10 +35,22 @@ pub async fn list_tree_entries<S: AsyncObjectStore>(
     cancellation: &CancellationToken,
 ) -> Result<DirectoryPage, DirectoryReadFailure> {
     list_tree_entries_async_with_custody(
-        store, root, after, maximum_entries, limits, budget, cancellation, None,
-    ).await
+        store,
+        root,
+        after,
+        maximum_entries,
+        limits,
+        budget,
+        cancellation,
+        None,
+    )
+    .await
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
+)]
 pub(crate) async fn list_tree_entries_async_with_custody<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
@@ -63,26 +75,71 @@ pub(crate) async fn list_tree_entries_async_with_custody<S: AsyncObjectStore>(
     .map(to_page)
 }
 
+#[allow(
+    clippy::manual_async_fn,
+    reason = "ProviderTask and explicit captures are part of this future's contract."
+)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
+)]
 pub(crate) fn list_tree_entries_async_with_accounting<'a, 'accounting, S: AsyncObjectStore>(
-    store: &'a S, root: ObjectId, after: Option<&'a LogicalName>, maximum_entries: u32,
-    limits: DecodeLimits, accounting: &'a mut super::allocation::KernelAccounting<'accounting>,
-    cancellation: CancellationToken, data_custody: Option<&'a super::ProofDataCustody>,
-) -> impl std::future::Future<Output = Result<(DirectoryPage, super::allocation::KernelOwnedAllocation), crate::FsError>> + acyclic_stream::ProviderTask + 'a + use<'a, 'accounting, S> {
+    store: &'a S,
+    root: ObjectId,
+    after: Option<&'a LogicalName>,
+    maximum_entries: u32,
+    limits: DecodeLimits,
+    accounting: &'a mut super::allocation::KernelAccounting<'accounting>,
+    cancellation: CancellationToken,
+    data_custody: Option<&'a super::ProofDataCustody>,
+) -> impl std::future::Future<
+    Output = Result<(DirectoryPage, super::allocation::KernelOwnedAllocation), crate::FsError>,
+>
++ acyclic_stream::ProviderTask
++ 'a
++ use<'a, 'accounting, S> {
     async move {
         persistent_pagination::paginate_with_accounting::<S, TreeFormat>(
-            store, root, after.map_or(Bound::Unbounded, Bound::Excluded), maximum_entries, limits, accounting, &cancellation, data_custody,
-        ).await.map(|(receipt, allocation)| (to_page(receipt), allocation))
+            store,
+            root,
+            after.map_or(Bound::Unbounded, Bound::Excluded),
+            maximum_entries,
+            limits,
+            accounting,
+            &cancellation,
+            data_custody,
+        )
+        .await
+        .map(|(receipt, allocation)| (to_page(receipt), allocation))
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
+)]
 pub(crate) async fn list_tree_entries_at_or_after_async_with_accounting<S: AsyncObjectStore>(
-    store: &S, root: ObjectId, at: &LogicalName, maximum_entries: u32,
-    limits: DecodeLimits, accounting: &mut super::allocation::KernelAccounting<'_>,
-    cancellation: &CancellationToken, data_custody: Option<&super::ProofDataCustody>,
+    store: &S,
+    root: ObjectId,
+    at: &LogicalName,
+    maximum_entries: u32,
+    limits: DecodeLimits,
+    accounting: &mut super::allocation::KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+    data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<(DirectoryPage, super::allocation::KernelOwnedAllocation), crate::FsError> {
     persistent_pagination::paginate_with_accounting::<S, TreeFormat>(
-        store, root, Bound::Included(at), maximum_entries, limits, accounting, cancellation, data_custody,
-    ).await.map(|(receipt, allocation)| (to_page(receipt), allocation))
+        store,
+        root,
+        Bound::Included(at),
+        maximum_entries,
+        limits,
+        accounting,
+        cancellation,
+        data_custody,
+    )
+    .await
+    .map(|(receipt, allocation)| (to_page(receipt), allocation))
 }
 
 fn to_page(receipt: persistent_pagination::Receipt<TreeEntry>) -> DirectoryPage {
