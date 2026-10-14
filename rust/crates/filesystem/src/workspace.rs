@@ -3744,6 +3744,41 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
             .await
     }
 
+    /// Reconstructs exact endpoints for recovery under the original retry key.
+    ///
+    /// An already durable operation restores its original authority precondition.
+    /// Otherwise publication retains normal generation and authority CAS checks.
+    pub async fn plan_for_replay_at(
+        self,
+        source: &Generation<A, O>,
+        target: &Generation<A, O>,
+        key: IdempotencyKey,
+    ) -> Result<JoinPlan<A, O>, WorkspaceError> {
+        self.validate_bounds()?;
+        if source.workspace.id != self.source.id || target.workspace.id != self.target.id {
+            return Err(WorkspaceError::ForeignGeneration);
+        }
+        let original = self
+            .target
+            .volume
+            .fs
+            .workspace_operation_head(&self.target.volume, key.operation_id())
+            .await?;
+        let authority_head = match original {
+            Some(head) => head,
+            None => {
+                self.target
+                    .volume
+                    .fs
+                    .workspace_head_state(&self.target.volume)
+                    .await?
+                    .1
+            }
+        };
+        self.plan_generations(source.clone(), target.clone(), authority_head)
+            .await
+    }
+
     /// Plans against caller-pinned immutable source and target generations.
     ///
     /// The target must still be current when planning begins. The source may

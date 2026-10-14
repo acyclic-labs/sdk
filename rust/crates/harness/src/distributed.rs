@@ -8,7 +8,7 @@ use crate::{
     core::{Authority, AuthorityVerifier, Scope},
     runtime,
     scheduler::{
-        AssemblyKind, EntrypointRef, LeaseFence, OperationSpec, OperationState,
+        AssemblyKind, EntrypointRef, LeaseFence, OperationPhase, OperationSpec, OperationState,
         OrchestrationDecision, Reservation, ResourceSnapshot, Scheduler, SchedulerEvent,
         assembly_invocation_digest, reduction_invocation_digest,
     },
@@ -1539,7 +1539,23 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
 
     /// Pulls and atomically admits one dependency- and resource-ready operation.
     pub async fn pull(&mut self, worker: &Worker) -> Result<Option<WorkLease>> {
-        match self.pull_for(worker, None, None).await? {
+        match self.pull_for(worker, None, None, None).await? {
+            WorkPull::Idle => Ok(None),
+            WorkPull::Claimed(lease) => Ok(Some(lease)),
+            WorkPull::Unresolved { error, .. } => Err(error),
+        }
+    }
+
+    /// Pulls with a durable retry identity retained through lost responses.
+    /// Reusing the identity with a different worker declaration is rejected.
+    /// A retired reservation returns no lease and never claims replacement work.
+    /// An idle pull that admits no operation leaves the identity unused.
+    pub async fn pull_with_identity(
+        &mut self,
+        worker: &Worker,
+        identity: IdempotencyKey,
+    ) -> Result<Option<WorkLease>> {
+        match self.pull_for(worker, None, None, Some(identity)).await? {
             WorkPull::Idle => Ok(None),
             WorkPull::Claimed(lease) => Ok(Some(lease)),
             WorkPull::Unresolved { error, .. } => Err(error),
@@ -1592,7 +1608,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 "owned pull requires operation:declare and operation:observe".into(),
             ));
         }
-        self.pull_for(worker, Some((owner, verifier)), operation_id)
+        self.pull_for(worker, Some((owner, verifier)), operation_id, None)
             .await
     }
 
@@ -1616,11 +1632,15 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         worker: &Worker,
         authorization: Option<(&Authority, &AuthorityVerifier)>,
         target: Option<OperationId>,
+        identity: Option<IdempotencyKey>,
     ) -> Result<WorkPull> {
         let owner = authorization.map(|(owner, _)| owner);
         self.refresh().await?;
-        if worker.id.trim().is_empty() {
-            return Err(Error::Invalid("worker identity is empty".into()));
+        let fingerprint = Self::pull_fingerprint(worker, identity.as_ref())?;
+        if let Some(identity) = &identity
+            && let Some((_, event, _, _)) = self.retained_intent(identity.as_str()).await?
+        {
+            return self.replay_pull(worker, fingerprint.as_deref(), event);
         }
         if let Some(target) = target {
             let state = self
@@ -1655,16 +1675,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .await?;
             return Ok(WorkPull::Idle);
         }
-        let available = self.scheduler.available_for(&worker.id, &worker.available);
-        let selected = match target {
-            Some(target) => self
-                .scheduler
-                .operation_ready_for(target, &available, &worker.labels, owner)
-                .then_some(target),
-            None => self
-                .scheduler
-                .next_ready_for(&available, &worker.labels, owner),
-        };
+        let selected = self.ready_operation(worker, target, owner);
         let Some(operation_id) = selected else {
             return Ok(WorkPull::Idle);
         };
@@ -1677,7 +1688,12 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let operation = state.spec.clone();
         let revision = next_revision(self.revision)?;
         let reservation = Reservation {
-            id: format!("{}:{operation_id}:{revision}", worker.id),
+            id: match fingerprint {
+                Some(fingerprint) => {
+                    format!("pull:{fingerprint}:{}:{operation_id}:{revision}", worker.id)
+                }
+                None => format!("{}:{operation_id}:{revision}", worker.id),
+            },
             placement: worker.id.clone(),
             admitted: operation.resources.clone(),
         };
@@ -1693,7 +1709,13 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         if let Err(error) = self
             .apply(
                 operation_id,
-                IdempotencyKey::new(format!("pull:{}:{operation_id}:{}", worker.id, revision))?,
+                match identity {
+                    Some(identity) => identity,
+                    None => IdempotencyKey::new(format!(
+                        "pull:{}:{operation_id}:{}",
+                        worker.id, revision
+                    ))?,
+                },
                 SchedulerEvent::Admitted {
                     operation_id,
                     reservation: reservation.clone(),
@@ -1708,6 +1730,80 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .operation(operation_id)
             .map_or(0, |value| value.revision);
         Ok(WorkPull::Claimed(lease))
+    }
+
+    fn ready_operation(
+        &self,
+        worker: &Worker,
+        target: Option<OperationId>,
+        owner: Option<&Authority>,
+    ) -> Option<OperationId> {
+        let available = self.scheduler.available_for(&worker.id, &worker.available);
+        match target {
+            Some(target) => self
+                .scheduler
+                .operation_ready_for(target, &available, &worker.labels, owner)
+                .then_some(target),
+            None => self
+                .scheduler
+                .next_ready_for(&available, &worker.labels, owner),
+        }
+    }
+
+    fn pull_fingerprint(
+        worker: &Worker,
+        identity: Option<&IdempotencyKey>,
+    ) -> Result<Option<String>> {
+        if worker.id.trim().is_empty() {
+            return Err(Error::Invalid("worker identity is empty".into()));
+        }
+        identity
+            .map(|_| {
+                crate::contract::canonical_json_bytes(worker)
+                    .map(|bytes| blake3::hash(&bytes).to_hex().to_string())
+            })
+            .transpose()
+    }
+
+    fn replay_pull(
+        &self,
+        worker: &Worker,
+        fingerprint: Option<&str>,
+        event: SchedulerEvent,
+    ) -> Result<WorkPull> {
+        let SchedulerEvent::Admitted {
+            operation_id,
+            reservation,
+        } = event
+        else {
+            return Err(Error::Conflict(
+                "pull identity belongs to another scheduler mutation".into(),
+            ));
+        };
+        let prefix = format!("pull:{}:", fingerprint.unwrap_or_default());
+        if reservation.placement != worker.id || !reservation.id.starts_with(&prefix) {
+            return Err(Error::Conflict(
+                "pull retry identity reused with different worker declaration".into(),
+            ));
+        }
+        let state = self
+            .scheduler
+            .operation(operation_id)
+            .ok_or_else(|| Error::NotFound(format!("operation {operation_id}")))?;
+        if state.reservation.as_ref() != Some(&reservation)
+            || !matches!(
+                state.phase,
+                OperationPhase::Admitted | OperationPhase::Running
+            )
+        {
+            return Ok(WorkPull::Idle);
+        }
+        Ok(WorkPull::Claimed(WorkLease {
+            operation: state.spec.clone(),
+            reservation,
+            checkpoint: state.checkpoint.clone(),
+            operation_revision: state.revision,
+        }))
     }
 
     /// Returns a crashed worker's exact lease to admission without losing its checkpoint.
@@ -3772,6 +3868,90 @@ mod tests {
             .ok_or_else(|| Error::NotFound("lease".into()))?;
         assert_eq!(lease.operation.operation_id, operation_id);
         assert!(reopened.pull(&worker).await?.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stable_pull_recovers_lost_responses_without_reusing_other_admissions() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let mut coordinator =
+            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+        let worker = Worker {
+            id: "stable-worker".into(),
+            available: ResourceSnapshot(BTreeMap::from([("cpu".into(), 2)])),
+            labels: BTreeMap::new(),
+        };
+        assert!(
+            coordinator
+                .pull_with_identity(&worker, IdempotencyKey::new("stable-first")?)
+                .await?
+                .is_none()
+        );
+        for index in [71, 72] {
+            declare(
+                &mut coordinator,
+                spec(OperationId::from_bytes([index; 16]), 1)?,
+                &format!("stable-declare-{index}"),
+            )
+            .await?;
+        }
+        let first = coordinator
+            .pull_with_identity(&worker, IdempotencyKey::new("stable-first")?)
+            .await?
+            .ok_or_else(|| Error::NotFound("first stable lease".into()))?;
+        let mut reopened =
+            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+        assert_eq!(
+            reopened
+                .pull_with_identity(&worker, IdempotencyKey::new("stable-first")?)
+                .await?,
+            Some(first.clone())
+        );
+        let second = reopened
+            .pull_with_identity(&worker, IdempotencyKey::new("stable-second")?)
+            .await?
+            .ok_or_else(|| Error::NotFound("second stable lease".into()))?;
+        assert_ne!(first.operation.operation_id, second.operation.operation_id);
+        assert_ne!(first.reservation, second.reservation);
+        for changed in [
+            Worker {
+                id: "another-worker".into(),
+                ..worker.clone()
+            },
+            Worker {
+                available: ResourceSnapshot::default(),
+                ..worker.clone()
+            },
+            Worker {
+                labels: BTreeMap::from([("region".into(), "changed".into())]),
+                ..worker.clone()
+            },
+        ] {
+            assert!(matches!(
+                reopened
+                    .pull_with_identity(&changed, IdempotencyKey::new("stable-first")?)
+                    .await,
+                Err(Error::Conflict(_))
+            ));
+        }
+        reopened
+            .release_lease(&first, IdempotencyKey::new("stable-release")?)
+            .await?;
+        assert!(
+            reopened
+                .pull_with_identity(&worker, IdempotencyKey::new("stable-first")?)
+                .await?
+                .is_none()
+        );
+        let replacement = reopened
+            .pull_with_identity(&worker, IdempotencyKey::new("stable-replacement")?)
+            .await?
+            .ok_or_else(|| Error::NotFound("replacement lease".into()))?;
+        assert_ne!(replacement.reservation, first.reservation);
+        assert_eq!(
+            replacement.operation.operation_id,
+            first.operation.operation_id
+        );
         Ok(())
     }
 

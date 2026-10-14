@@ -1666,6 +1666,34 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         })
     }
 
+    /// Reconstructs an import against exact immutable source and target generations.
+    /// Reuse the original operation ID to recover a committed join after a lost
+    /// response. A new operation still checks the supplied target generation by CAS.
+    pub async fn prepare_project_import_at(
+        &self,
+        source: &VolumeRef,
+        generation: &GenerationRef,
+        expected_target: &GenerationRef,
+        operation_id: crate::OperationId,
+    ) -> Result<ParentMergePlan<A, O>> {
+        self.require(capability::PROJECT_MERGE, VolumeOperation::Write)?;
+        ContentGrant::verify(&self.verifier, &self.scope, source, VolumeOperation::Read)?;
+        Ok(ParentMergePlan {
+            plan: self
+                .host
+                .plan_volume_import_at(
+                    source,
+                    generation,
+                    &self.project,
+                    Some((expected_target, project_join_key(operation_id)?)),
+                )
+                .await?,
+            child_project: source.clone(),
+            parent_project: self.project.clone(),
+            parent_scope: self.scope.clone(),
+        })
+    }
+
     /// Publishes only a plan prepared under this same authenticated parent scope.
     /// The exact inspected target generation is always the Filesystem CAS precondition.
     pub async fn apply_project_merge(
@@ -1930,6 +1958,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         generation: &GenerationRef,
         destination: &VolumeRef,
     ) -> Result<JoinPlan<A, O>> {
+        self.plan_volume_import_at(source, generation, destination, None)
+            .await
+    }
+
+    async fn plan_volume_import_at(
+        &self,
+        source: &VolumeRef,
+        generation: &GenerationRef,
+        destination: &VolumeRef,
+        expected_target: Option<(&GenerationRef, FilesystemKey)>,
+    ) -> Result<JoinPlan<A, O>> {
         source.validate()?;
         destination.validate()?;
         self.validate_provider(source.provider())?;
@@ -1947,12 +1986,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )?)
             .await?;
         let source_generation = self.generation(&source_workspace, generation).await?;
-        let target = destination_workspace.head().await.map_err(map_error)?;
-        source_workspace
-            .join_into(&destination_workspace)
-            .plan_at(&source_generation, &target)
-            .await
-            .map_err(map_error)
+        let target = match expected_target {
+            Some((expected, _)) => self.generation(&destination_workspace, expected).await?,
+            None => destination_workspace.head().await.map_err(map_error)?,
+        };
+        let join = source_workspace.join_into(&destination_workspace);
+        match expected_target {
+            Some((_, key)) => {
+                join.plan_for_replay_at(&source_generation, &target, key)
+                    .await
+            }
+            None => join.plan_at(&source_generation, &target).await,
+        }
+        .map_err(map_error)
     }
 
     async fn prepare_project_import(

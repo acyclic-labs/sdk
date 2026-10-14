@@ -3747,6 +3747,37 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Ok((GenerationId::new(root.digest), head))
     }
 
+    pub(crate) async fn workspace_operation_head(
+        &self,
+        workspace: &Volume<A, O>,
+        operation_id: OperationId,
+    ) -> Result<Option<Head>, crate::workspace::WorkspaceError> {
+        let observed = self
+            .observe_volume_operation(
+                workspace.id,
+                operation_id,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(crate::workspace::WorkspaceError::engine)?;
+        observed
+            .value
+            .map(|commit| {
+                let sequence = commit
+                    .sequence
+                    .get()
+                    .checked_sub(1)
+                    .ok_or(crate::workspace::WorkspaceError::IncompatibleWorkspace)?;
+                Ok(Head {
+                    epoch: commit.epoch,
+                    sequence: Sequence::new(sequence),
+                    digest: commit.previous_digest,
+                })
+            })
+            .transpose()
+    }
+
     pub(crate) async fn workspace_operation_generation(
         &self,
         workspace: &Volume<A, O>,

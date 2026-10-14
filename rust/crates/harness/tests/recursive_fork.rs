@@ -1893,6 +1893,65 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         .apply_project_merge(&first, OperationId::from_bytes([101; 16]))
         .await?;
     assert!(matches!(first_outcome, JoinOutcome::Applied(_)));
+    // Rebuild the opaque plan after its publication has moved the destination.
+    // A lost response must replay the original operation, rather than observing
+    // a new target and invalidating the provider's idempotency witness.
+    let replay = controller
+        .prepare_project_import_at(
+            &siblings[0],
+            &host
+                .resolve(&workspace_ref(
+                    provider.clone(),
+                    &siblings[0].storage_name()?,
+                )?)
+                .await?
+                .generation,
+            &root_head.generation,
+            OperationId::from_bytes([101; 16]),
+        )
+        .await?;
+    let recovered = controller
+        .apply_project_merge(&replay, OperationId::from_bytes([101; 16]))
+        .await?;
+    assert!(matches!(recovered, JoinOutcome::AlreadyApplied(_)));
+    let different_source = host
+        .resolve(&workspace_ref(
+            provider.clone(),
+            &siblings[1].storage_name()?,
+        )?)
+        .await?
+        .generation;
+    let mismatched = controller
+        .prepare_project_import_at(
+            &siblings[1],
+            &different_source,
+            &root_head.generation,
+            OperationId::from_bytes([101; 16]),
+        )
+        .await?;
+    assert!(matches!(
+        controller
+            .apply_project_merge(&mismatched, OperationId::from_bytes([101; 16]))
+            .await?,
+        JoinOutcome::IdempotencyConflict
+    ));
+
+    let fresh_operation = controller
+        .apply_project_merge(&replay, OperationId::from_bytes([108; 16]))
+        .await?;
+    assert!(matches!(fresh_operation, JoinOutcome::StaleTarget(_)));
+    assert!(
+        ungranted_controller
+            .prepare_project_import_at(
+                &siblings[0],
+                &root_head.generation,
+                &root_head.generation,
+                OperationId::from_bytes([101; 16])
+            )
+            .await
+            .is_err()
+    );
+
     let stale_outcome = controller
         .apply_project_merge(&stale, OperationId::from_bytes([102; 16]))
         .await?;
@@ -1996,6 +2055,20 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
     FilesystemProjectMergeVerifier::new(host.clone())
         .verify(&receipt)
         .await?;
+    let recovered_receipt = controller.merge_receipt(
+        &replay,
+        &recovered,
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "wide-child-1".into(),
+        },
+        OperationId::from_bytes([101; 16]),
+        receipt.notice.clone(),
+    )?;
+    FilesystemProjectMergeVerifier::new(host.clone())
+        .verify(&recovered_receipt)
+        .await?;
+
     assert_eq!(
         host.read(&root_head.workspace, None, "/shared.txt", 32)
             .await?,
