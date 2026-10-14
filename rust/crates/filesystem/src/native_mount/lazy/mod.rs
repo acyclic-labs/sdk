@@ -37,8 +37,13 @@ const MAXIMUM_PROMOTION_RETRIES: usize = 3;
 
 const MAXIMUM_INTERRUPTED_LISTINGS: usize = 3;
 
+struct CursorEntry<T> {
+    generation: (u64, u64),
+    cursor: T,
+}
+
 struct CursorTable<T> {
-    entries: Mutex<BTreeMap<u64, ((u64, u64), T)>>,
+    entries: Mutex<BTreeMap<u64, CursorEntry<T>>>,
     next: AtomicU64,
 }
 
@@ -53,15 +58,7 @@ struct MountedRemovals {
     paths: BTreeMap<String, (FileId, crate::NativeAllocation)>,
     records: BTreeMap<FileId, (FileRecord, FileMetadata)>,
     epoch: u64,
-    publication: Option<(
-        crate::OperationId,
-        Option<(
-            crate::LazySnapshotRef,
-            crate::LazySnapshotRef,
-            crate::VolumeConfig,
-            crate::Digest,
-        )>,
-    )>,
+    publication: Option<(crate::OperationId, Option<SelectedImportProof>)>,
 }
 
 impl MountedRemovals {
@@ -86,20 +83,29 @@ struct DetachedIdentity<A, O> {
 
 type DetachedIdentities<A, O> = Arc<Mutex<BTreeMap<FileId, DetachedIdentity<A, O>>>>;
 
-type OpenIdentityHandles = Arc<Mutex<BTreeMap<FileId, Vec<Weak<dyn MountOpenFile>>>>>;
+type WeakOpenFile = Weak<dyn MountOpenFile>;
+type OpenIdentityHandles = Arc<Mutex<BTreeMap<FileId, Vec<WeakOpenFile>>>>;
 
 type DirtyDetachedRecord = (FileRecord, FileMetadata, u64);
+
+struct SourceConstructorInputs<A, O, D, S> {
+    lazy: Arc<LazyWorkspace<A, O, D, S>>,
+    root: String,
+    allocation: Option<crate::NativeAllocation>,
+}
 
 struct SourceChangeRecorder<A, O, D, S> {
     lazy: Weak<LazyWorkspace<A, O, D, S>>,
     authored: Weak<CheckoutMountSource<A, O>>,
-    constructor_inputs: Mutex<
-        Option<(
-            Arc<LazyWorkspace<A, O, D, S>>,
-            String,
-            Option<crate::NativeAllocation>,
-        )>,
-    >,
+    constructor_inputs: Mutex<Option<SourceConstructorInputs<A, O, D, S>>>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct SelectedImportProof {
+    destination: crate::LazySnapshotRef,
+    source: crate::LazySnapshotRef,
+    config: crate::VolumeConfig,
+    input: crate::Digest,
 }
 
 fn linked(node: &SourceNode) -> bool {

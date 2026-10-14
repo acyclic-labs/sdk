@@ -14,7 +14,10 @@ pub(crate) enum JournalWrite {
 
 impl<P: StreamProvider> DistributedCoordinator<P> {
     #[cfg(feature = "filesystem")]
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The existing authority, lease and write-kind inputs authenticate one original journal condition."
+    )]
     pub(crate) async fn journal_condition(
         &mut self,
         owner: &Authority,
@@ -66,6 +69,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     /// Returns the page with the exact deep custody produced by its field copies.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Authority and revision-bound paging inputs stay explicit without a forwarding request type."
+    )]
     pub(crate) async fn observe_children(
         &mut self,
         owner: &Authority,
@@ -157,7 +164,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     /// Cancels with exact retry; a parent fence always cancels the child's subtree.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The scoped cancellation API keeps its idempotency and optional parent fence explicit."
+    )]
     pub async fn cancel_operation(
         &mut self,
         owner: &Authority,
@@ -238,7 +248,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     /// Fills a durable resume slot, optionally guarded by its selected command.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Resume authenticates the supplied owner, workflow revision and waiting command together."
+    )]
     pub async fn resume_workflow(
         &mut self,
         owner: &Authority,
@@ -272,7 +285,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     /// Authenticates the exact durable owner before publishing a declaration.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Declaration retains the existing explicit authority and optional parent-fence API."
+    )]
     pub async fn declare_operation(
         &mut self,
         owner: &Authority,

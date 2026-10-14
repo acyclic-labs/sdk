@@ -35,6 +35,10 @@ impl ProbeWork<'_> {
 }
 
 impl MountProbe {
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "F_GETPATH supplies the terminated prefix; the full appended range is checked before mutation."
+    )]
     pub(super) fn new(destination: &Path, work: &Work) -> Result<Self, NativeMountError> {
         let parent = native_name(
             destination
@@ -85,7 +89,7 @@ impl MountProbe {
         // SAFETY: closes the descriptor opened here on every result path.
         let closed = unsafe { libc::close(fd) };
         match normalized {
-            Ok(value) if closed != 0 => Err(std::io::Error::last_os_error().into()),
+            Ok(_) if closed != 0 => Err(std::io::Error::last_os_error().into()),
             result => result,
         }
     }
@@ -103,8 +107,9 @@ impl MountProbe {
         if count <= 0 || mounts.is_null() {
             return Err(std::io::Error::last_os_error().into());
         }
+        let count = usize::try_from(count).map_err(|_| driver_errno(libc::EOVERFLOW))?;
         // SAFETY: positive count is the initialized table length, retained under MOUNT_TABLE.
-        let mounts = unsafe { std::slice::from_raw_parts(mounts, count as usize) };
+        let mounts = unsafe { std::slice::from_raw_parts(mounts, count) };
         for mount in mounts {
             work.check()?;
             // SAFETY: Darwin terminates f_mntonname.

@@ -43,7 +43,10 @@ pub(crate) async fn observe_declaration<P: StreamProvider>(
 }
 
 #[cfg(feature = "filesystem")]
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "The bounded replay authenticates declaration, admission and start against one original fence."
+)]
 pub(crate) async fn original_reservation_proof<'a, P: StreamProvider>(
     client: &std::sync::Arc<P>,
     owner: &Authority,
@@ -87,7 +90,9 @@ pub(crate) async fn original_reservation_proof<'a, P: StreamProvider>(
     let mut next = 0;
     while next < tail {
         let from = next;
-        let maximum = (tail - from).min(u64::from(READ_PAGE_SIZE)) as u32;
+        let maximum = u32::try_from(tail - from)
+            .unwrap_or(READ_PAGE_SIZE)
+            .min(READ_PAGE_SIZE);
         let mut source = read_records(client, &stream.0, from, maximum, quota.work()).await?;
         while let Some(record) = next_record(
             &mut source,

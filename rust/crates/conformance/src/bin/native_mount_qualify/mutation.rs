@@ -194,7 +194,8 @@ pub(super) async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
     };
     let mount = workspace
         .mount(&mount_path, MountOptions::read_write())
-        .await?;
+        .await
+        .map_err(stop_failed_mount)?;
     watcher.watch(&mount_path)?;
     let child = spawn_captured_child(
         Command::new(std::env::current_exe()?)

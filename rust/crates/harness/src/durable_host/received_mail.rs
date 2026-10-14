@@ -4,6 +4,10 @@ use super::*;
 impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
     /// Resolves one exact retained parcel under its receiver's original lease and sole receive command.
     #[cfg(feature = "filesystem")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The original receive fence and parcel custody remain in one authenticated replay future."
+    )]
     pub async fn read_received_mail_owned(
         self: &Arc<Self>,
         owner: &TaskJournalOwner<P>,

@@ -273,7 +273,11 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .await
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "All optional fences and the event share one conditional commit and its original custody."
+    )]
     pub(super) async fn apply_internal(
         &mut self,
         idempotency_key: IdempotencyKey,

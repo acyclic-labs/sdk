@@ -93,7 +93,7 @@ fn changes_record_their_requesters_origin() -> Result<(), Box<dyn std::error::Er
     let source = source(FilesystemProfile::Portable)?;
     let observer = Arc::new(Origins(StdMutex::new(Vec::new())));
     let weak: Weak<dyn ViewObserver> = Arc::<Origins>::downgrade(&observer);
-    source.observe_view(weak);
+    source.observe_view(weak)?;
     let (requester, applier) = (ViewOrigin::new(), ViewOrigin::new());
     let target = native_test_path("applied");
     let work = capture_meter(BOUNDARY_BUDGET, &source.cancellation)?;

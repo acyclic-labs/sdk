@@ -225,23 +225,32 @@ impl MemoryHarnessStorage {
             )?
             .with_input_verifier(input.clone()),
         );
-        journal
-            .conversation_projection(Limits::default())
-            .await?
-            .execute(
-                Command {
-                    operation_id: OperationId::new(),
-                    idempotency_key: IdempotencyKey::new("local-conversation-bind")?,
-                    expected_revision: 0,
-                    scope: scope.clone(),
-                    causal_parent: None,
-                    action: Action::BindConversation { agent },
-                },
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut None,
-            )
-            .await?;
+        crate::store::StreamAggregate::open(
+            &stream,
+            conversation.clone(),
+            verifier.clone(),
+            SchemaRegistry::new(),
+            None,
+            crate::store::default_projection_read_limits(),
+            crate::store::DEFAULT_TERMINAL_EFFECTS,
+            None,
+            &mut None,
+        )
+        .await?
+        .execute(
+            Command {
+                operation_id: OperationId::new(),
+                idempotency_key: IdempotencyKey::new("local-conversation-bind")?,
+                expected_revision: 0,
+                scope: scope.clone(),
+                causal_parent: None,
+                action: Action::BindConversation { agent },
+            },
+            #[cfg(feature = "filesystem")]
+            None,
+            &mut None,
+        )
+        .await?;
         let publisher = Arc::new(MemoryContentPublisher {
             files: FilesystemContentPublisher::new(
                 Arc::clone(&host),

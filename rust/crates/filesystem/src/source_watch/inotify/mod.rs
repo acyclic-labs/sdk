@@ -20,10 +20,7 @@ mod events;
 mod lifecycle;
 mod registration;
 use cleanup::{clear_records, close, close_component, stop_custody};
-use lifecycle::run_reader;
-use registration::{
-    contains_path_with_work, owned, prepare_insert_with_work, proc_fd_path, watch_ancestors,
-};
+use registration::{owned, proc_fd_path, watch_ancestors};
 
 const READ: WorkCounters = WorkCounters {
     backend_read_operations: 1,

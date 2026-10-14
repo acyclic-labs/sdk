@@ -90,7 +90,7 @@ async fn written_zeros_in_a_sparse_file_capture_as_holes() -> std::io::Result<()
         native_positional_file(file.into_std(), &file_work).map_err(std::io::Error::other)?,
     );
     let scan = |budget: WorkBudget, cancellation: CancellationToken| {
-        let (native, metadata) = (std::sync::Arc::clone(&native), metadata.clone());
+        let (native, metadata) = (std::sync::Arc::clone(&native), metadata);
         async move {
             let reported = whole();
             let original = crate::NativeMaterializationWork::new(budget, &cancellation)

@@ -54,7 +54,8 @@ pub(super) fn fork_command_key_with_work(
         text.try_reserve_exact(capacity)
             .map_err(|_| Error::Invalid("fork command identity allocation failed".into()))?;
     }
-    write!(&mut text, "{prefix}{operation}").expect("fixed-width operation formatting");
+    write!(&mut text, "{prefix}{operation}")
+        .map_err(|_| Error::Invalid("fork command identity formatting failed".into()))?;
     let key = IdempotencyKey::new(text)?;
     let held = quota.retained();
     quota.transfer();

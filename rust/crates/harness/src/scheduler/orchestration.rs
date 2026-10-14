@@ -156,7 +156,9 @@ impl Scheduler {
                     for (index, file) in self.successful_completions(parent).take(count).enumerate()
                     {
                         let mut digits = [0; 20];
-                        let slot = text_copy(decimal_slot(index, &mut digits), quota.work())?;
+                        let slot = decimal_slot(index, &mut digits)
+                            .map_err(|message| Error::Invalid(message.into()))?;
+                        let slot = text_copy(slot, quota.work())?;
                         quota.adopt(slot.capacity() as u64)?;
                         let file = file.clone_in_quota(&mut quota)?;
                         push(&mut values, (slot, file), &mut value_slots, quota.work())?;
@@ -421,8 +423,8 @@ impl Scheduler {
             if recursive {
                 let owner = self.operation(id).map(|state| state.spec.owner.authority());
                 let mut index = 0;
-                while index < frontier.len() {
-                    for (_, child) in self.children(frontier[index]) {
+                while let Some(parent) = frontier.get(index).copied() {
+                    for (_, child) in self.children(parent) {
                         observe(work)?;
                         if owner == Some(child.spec.owner.authority())
                             && !frontier.contains(&child.spec.operation_id)
@@ -459,7 +461,12 @@ impl Serialize for Values<'_> {
         use serde::ser::SerializeSeq;
         let mut sequence = serializer.serialize_seq(Some(self.count))?;
         if matches!(
-            self.scheduler.operations[&self.parent].spec.orchestration,
+            self.scheduler
+                .operations
+                .get(&self.parent)
+                .ok_or_else(|| serde::ser::Error::custom("scheduler parent operation is missing"))?
+                .spec
+                .orchestration,
             Orchestration::Quorum { .. }
         ) {
             for (index, file) in self
@@ -469,7 +476,10 @@ impl Serialize for Values<'_> {
                 .enumerate()
             {
                 let mut digits = [0; 20];
-                sequence.serialize_element(&(decimal_slot(index, &mut digits), file))?;
+                sequence.serialize_element(&(
+                    decimal_slot(index, &mut digits).map_err(serde::ser::Error::custom)?,
+                    file,
+                ))?;
             }
         } else {
             for (slot, child) in self.scheduler.children(self.parent) {
@@ -481,18 +491,23 @@ impl Serialize for Values<'_> {
         sequence.end()
     }
 }
-fn decimal_slot(mut index: usize, digits: &mut [u8; 20]) -> &str {
+fn decimal_slot(
+    mut index: usize,
+    digits: &mut [u8; 20],
+) -> std::result::Result<&str, &'static str> {
     let mut start = digits.len();
-    loop {
+    for digit in digits.iter_mut().rev() {
         start -= 1;
-        digits[start] = b'0' + (index % 10) as u8;
+        *digit = b'0' + u8::try_from(index % 10).map_err(|_| "slot digit is invalid")?;
         index /= 10;
         if index == 0 {
-            break;
+            let bytes = digits.get(start..).ok_or("slot buffer is invalid")?;
+            return std::str::from_utf8(bytes).map_err(|_| "slot digits are invalid");
         }
     }
-    std::str::from_utf8(&digits[start..]).expect("decimal ASCII digits")
+    Err("slot exceeds its decimal buffer")
 }
+
 fn text_copy(text: &str, work: &mut Option<&mut dyn HistoryIo>) -> Result<String> {
     match work.as_deref_mut() {
         Some(io) => io.clone_text(text),

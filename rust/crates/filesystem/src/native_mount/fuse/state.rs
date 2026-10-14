@@ -6,6 +6,10 @@ pub(super) struct Resolved {
     pub(super) through: Option<FuseOwned<MountPath>>,
 }
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Resolved facts stay inline; boxing would add an allocation before callback admission."
+)]
 pub(super) enum NodeFacts {
     Current(Resolved),
     Handle(FuseOpenFile),
@@ -112,6 +116,14 @@ impl ProjectionState {
         self.writable.then_some(()).ok_or(libc::EROFS)
     }
 
+    #[allow(
+        clippy::mutable_key_type,
+        reason = "FuseOwned hashes and compares only its immutable path, never its accounting owner."
+    )]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The admitted lookup facts and their existing work owner are passed directly."
+    )]
     pub(super) fn intern(
         &mut self,
         source: &dyn MountFilesystem,

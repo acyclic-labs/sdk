@@ -122,16 +122,10 @@ pub(crate) fn owned_bytes_from_retained_vec(
 ) -> Result<(OwnedBytes, u64)> {
     let capacity = bytes.capacity() as u64;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(original) = work
-        .as_deref()
-        .and_then(|observer| observer.original_native_work())
-        .cloned()
+    if let Some(observer) = work.as_deref_mut()
+        && let Some(original) = observer.original_native_work().cloned()
     {
-        let custody = match work
-            .as_deref_mut()
-            .expect("original native observer")
-            .take_native_custody(capacity)
-        {
+        let custody = match observer.take_native_custody(capacity) {
             Ok(custody) => custody,
             Err(error) => {
                 drop(bytes);

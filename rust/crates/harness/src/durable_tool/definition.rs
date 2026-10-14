@@ -103,12 +103,13 @@ impl ResumableTool {
             )
         })?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let (identity, state) = if let Some(work) = native {
+        let (identity, state) = if let Some(io) = io
+            && let Some(work) = native
+        {
             let identity = self.machine.identity_with_native_work(work)?;
             let (state, custody) = self
                 .machine
                 .initialize_with_native_work(&invocation.arguments, work)?;
-            let io = io.expect("original funding");
             io.absorb_native_custody(custody)?;
             io.retain_owned(
                 (std::mem::size_of::<WorkflowAdmission>() - std::mem::size_of::<Value>()) as u64,

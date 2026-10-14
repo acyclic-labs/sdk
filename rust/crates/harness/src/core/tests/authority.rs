@@ -19,7 +19,7 @@ fn committed_events_attest_admission_without_persisting_bearer_scopes() -> Resul
     let ApplyResult::Applied { event } = reducer.plan(&command)? else {
         panic!("fresh event replayed")
     };
-    let wire = serde_json::to_value(&event).unwrap();
+    let wire = serde_json::to_value(&event).map_err(|error| Error::Invalid(error.to_string()))?;
     assert!(wire["scope"].get("proof").is_none());
     assert!(wire["scope"].get("parent_proof").is_none());
     assert!(serde_json::from_value::<Scope>(wire["scope"].clone()).is_err());

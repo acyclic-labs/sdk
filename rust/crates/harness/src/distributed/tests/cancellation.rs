@@ -90,8 +90,7 @@ async fn cancellation_is_owner_fenced_durable_and_exactly_replayable() -> Result
                 &mut None,
             )
             .await
-            .err()
-            .expect("denied cancellation");
+            .expect_err("denied cancellation");
         assert_eq!(error.code(), code);
     }
     assert_eq!(coordinator.revision(), before);

@@ -72,7 +72,7 @@ fn owned_merge_copy_uses_physical_fields_and_finite_inspection() -> Result<()> {
     assert!(retained > 0);
     drop(copied);
     io.release_owned(retained)?;
-    let observed = io.finish(Ok(())).expect("physical owned receipt");
+    let observed = io.finish(Ok(())).map_err(|failure| failure.error)?;
     assert!(observed.work.bytes_copied > 0);
     let mut denied = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
         acyclic_fs::WorkBudget {
@@ -106,10 +106,9 @@ fn native_merge_copy_transfers_original_custody_and_static_malformed_failures() 
     let receipt = field_copy_receipt()?;
     let cancellation = CancellationToken::new();
     let native = NativeMaterializationWork::new(field_copy_budget(), &cancellation)
-        .expect("original merge ledger");
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let mut io = crate::store::HistoryWork::new(
-        crate::filesystem::PreparationIo::from_native_work(&native)
-            .expect("original merge observer"),
+        crate::filesystem::PreparationIo::from_native_work(&native)?,
     );
     let (copied, retained) =
         crate::wire_codec::CodecQuota::produce(&mut Some(&mut io), |quota| receipt.copy(quota))?;
@@ -120,7 +119,7 @@ fn native_merge_copy_transfers_original_custody_and_static_malformed_failures() 
     drop(copied);
     drop(guard);
     let mut io = crate::store::HistoryWork::new(
-        crate::filesystem::PreparationIo::from_native_work(&native).expect("same merge observer"),
+        crate::filesystem::PreparationIo::from_native_work(&native)?,
     );
     let mut malformed = receipt.clone();
     malformed.source_project = malformed.target_project.clone();
@@ -150,9 +149,9 @@ fn native_partial_merge_copy_retires_new_fields_without_releasing_existing_custo
     let receipt = field_copy_receipt()?;
     let baseline_token = CancellationToken::new();
     let baseline = NativeMaterializationWork::new(field_copy_budget(), &baseline_token)
-        .expect("validation-only original ledger");
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let mut baseline_io = crate::store::HistoryWork::new(
-        crate::filesystem::PreparationIo::from_native_work(&baseline).expect("validation observer"),
+        crate::filesystem::PreparationIo::from_native_work(&baseline)?,
     );
     receipt.validate_shape(&mut Some(&mut baseline_io))?;
     let validation_copies = baseline.receipt().bytes_copied;
@@ -163,10 +162,9 @@ fn native_partial_merge_copy_retires_new_fields_without_releasing_existing_custo
         ..field_copy_budget()
     };
     let native = NativeMaterializationWork::new(budget, &cancellation)
-        .expect("partial merge original ledger");
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let mut io = crate::store::HistoryWork::new(
-        crate::filesystem::PreparationIo::from_native_work(&native)
-            .expect("partial merge observer"),
+        crate::filesystem::PreparationIo::from_native_work(&native)?,
     );
     let held = io.clone_text("held")?;
     assert!(matches!(

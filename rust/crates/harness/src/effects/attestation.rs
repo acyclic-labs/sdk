@@ -147,7 +147,13 @@ impl EffectRegistry {
             .await;
         match result {
             Ok(attestation) => {
-                let io = work.as_deref_mut().expect("original observer");
+                let Some(io) = work.as_deref_mut() else {
+                    drop(attestation);
+                    return Err(Error::NativeWork {
+                        cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
+                        custody: Some(custody),
+                    });
+                };
                 io.absorb_native_custody(custody)?;
                 io.release_owned(provider_bytes)?;
                 Ok(attestation)

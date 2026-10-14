@@ -573,7 +573,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         )
         .await?;
         self.checkout.view_gate.begin_transition();
-        checkout.record(&ViewChange::Effect(&installed));
+        checkout.record(&ViewChange::Effect(&installed))?;
         self.checkout.view_gate.finish_transition();
         Ok(())
     }

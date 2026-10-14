@@ -2,6 +2,10 @@ use super::*;
 
 const _: () = assert!(matches!(char::UNICODE_VERSION, (17, 0, 0)));
 
+#[allow(
+    clippy::expect_used,
+    reason = "A nonempty Chars remainder guarantees the next scalar without consuming it before admission."
+)]
 pub(crate) fn lowercase_unicode(
     text: &str,
     accounting: &mut KernelAccounting<'_>,
@@ -84,6 +88,10 @@ fn lowercase_sigma(
     cancellation: &CancellationToken,
     owned: &mut OriginalReadAccounting<'_, '_>,
 ) -> Result<char, crate::FsError> {
+    #[allow(
+        clippy::expect_used,
+        reason = "A nonempty Chars remainder guarantees the next scalar without consuming it before admission."
+    )]
     fn non_ignorable_is_cased(
         mut scalars: std::str::Chars<'_>,
         reverse: bool,
@@ -109,14 +117,10 @@ fn lowercase_sigma(
         }
         Ok(false)
     }
-    let preceded_by_cased =
-        non_ignorable_is_cased(text[..offset].chars(), true, cancellation, owned)?;
-    let final_sigma = preceded_by_cased
-        && !non_ignorable_is_cased(
-            text[offset + 'Σ'.len_utf8()..].chars(),
-            false,
-            cancellation,
-            owned,
-        )?;
+    let (before, rest) = text.split_at(offset);
+    let (_, after) = rest.split_at('Σ'.len_utf8());
+    let preceded_by_cased = non_ignorable_is_cased(before.chars(), true, cancellation, owned)?;
+    let final_sigma =
+        preceded_by_cased && !non_ignorable_is_cased(after.chars(), false, cancellation, owned)?;
     Ok(if final_sigma { 'ς' } else { 'σ' })
 }

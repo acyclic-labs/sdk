@@ -64,8 +64,8 @@ fn native_typed_request_error_keeps_original_serde_source_and_custody() -> Resul
     };
     let original = serde_json::from_slice::<Interaction>(bytes).expect_err("fixed digest");
     let cancellation = CancellationToken::new();
-    let native =
-        NativeMaterializationWork::new(native_budget(), &cancellation).expect("original ledger");
+    let native = NativeMaterializationWork::new(native_budget(), &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let mut io = crate::store::HistoryWork::new(
         crate::filesystem::PreparationIo::from_native_work(&native)?,
     );
@@ -122,8 +122,8 @@ fn native_request_preserves_original_raw_value_schema_semantics() -> Result<()> 
     };
     assert_eq!(response_schema, schema);
     let cancellation = CancellationToken::new();
-    let native =
-        NativeMaterializationWork::new(native_budget(), &cancellation).expect("original ledger");
+    let native = NativeMaterializationWork::new(native_budget(), &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let mut io = crate::store::HistoryWork::new(
         crate::filesystem::PreparationIo::from_native_work(&native)?,
     );
@@ -148,8 +148,8 @@ fn native_answer_error_retains_original_response_cause_after_request_drop() -> R
     let answer = file("native-answer.json", bytes)?;
     let original = serde_json::from_slice::<InteractionResponse>(bytes).expect_err("string ids");
     let cancellation = CancellationToken::new();
-    let native =
-        NativeMaterializationWork::new(native_budget(), &cancellation).expect("original ledger");
+    let native = NativeMaterializationWork::new(native_budget(), &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let mut io = crate::store::HistoryWork::new(
         crate::filesystem::PreparationIo::from_native_work(&native)?,
     );
@@ -201,8 +201,8 @@ fn native_decision_artifact_keeps_exact_original_outcome_binding() -> Result<()>
     let bytes = br#"{"type":"approval","approved":false,"reason":"Declined"}"#;
     let detail = file("native-approval-decision.json", bytes)?;
     let cancellation = CancellationToken::new();
-    let native =
-        NativeMaterializationWork::new(native_budget(), &cancellation).expect("original ledger");
+    let native = NativeMaterializationWork::new(native_budget(), &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let mut io = crate::store::HistoryWork::new(
         crate::filesystem::PreparationIo::from_native_work(&native)?,
     );

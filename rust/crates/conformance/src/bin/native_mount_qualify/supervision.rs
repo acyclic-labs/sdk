@@ -1,5 +1,16 @@
 use super::*;
 
+pub(super) fn stop_failed_mount(mut failure: acyclic_fs::MountLifecycleError) -> Failure {
+    if let acyclic_fs::MountLifecycleError::Native(acyclic_fs::NativeMountError::StartupFailed(
+        startup,
+    )) = &mut failure
+        && let Err(cleanup) = startup.owner_mut().stop()
+    {
+        return format!("{failure}; failed startup cleanup also failed: {cleanup}").into();
+    }
+    failure.into()
+}
+
 pub(super) fn qualification_case_worker(case: &str) -> Result<(), Failure> {
     match case {
         "real-mount-mutation-matrix" => {

@@ -85,7 +85,10 @@ impl ModelEventAdmission {
         while left < right {
             inspect()?;
             let middle = left + (right - left) / 2;
-            let stored = &self.calls[middle];
+            let stored = self
+                .calls
+                .get(middle)
+                .ok_or_else(|| stock_boundary(io, Invalid, "model call index is invalid"))?;
             let mut ordering = std::cmp::Ordering::Equal;
             for (stored_byte, call_byte) in stored.bytes().zip(call_id.bytes()) {
                 inspect()?;
@@ -116,7 +119,9 @@ impl ModelEventAdmission {
         let position = self.validate_next(event, limits, io)?;
         match event {
             ModelEvent::ToolCall { call_id, .. } => {
-                let position = position.expect("validated call has an insertion position");
+                let position = position.ok_or_else(|| {
+                    stock_boundary(io, Invalid, "model call insertion position is missing")
+                })?;
                 let bytes =
                     (self.calls.len() - position) as u64 * std::mem::size_of::<String>() as u64;
                 with_history_io(io, |work| {
@@ -125,7 +130,12 @@ impl ModelEventAdmission {
                     }
                     let call = stock_string_copy(call_id, io)?;
                     stock_vec_push(&mut self.calls, call, io)?;
-                    self.calls[position..].rotate_right(1);
+                    self.calls
+                        .get_mut(position..)
+                        .ok_or_else(|| {
+                            stock_boundary(io, Invalid, "model call insertion position is invalid")
+                        })?
+                        .rotate_right(1);
                     if let Some(work) = work.as_deref_mut() {
                         work.copy_bytes(bytes)?;
                     }

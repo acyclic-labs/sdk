@@ -148,6 +148,10 @@ pub async fn capture_subtree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     Ok(receipt)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "The funded capture frame retains scan inputs through worker completion and candidate commit."
+)]
 pub(crate) async fn capture_subtrees_with_native_work<
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,

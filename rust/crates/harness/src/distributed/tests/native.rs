@@ -219,7 +219,6 @@ async fn native_publication_phase_survives_receiver_denial_and_original_ack_reco
                 "preserve the original typed first cause"
             );
         }
-        drop(work);
         assert_eq!(
             io.into_custody().expect("original custody").bytes(),
             0,

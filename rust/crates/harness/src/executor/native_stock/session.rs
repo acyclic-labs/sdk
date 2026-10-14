@@ -149,7 +149,13 @@ pub(in crate::executor) async fn native_result<T>(
     let output = operation.await?;
     let retained = owned_bytes(&output)?;
     io.original_native_work()
-        .expect("native result ledger")
+        .ok_or_else(|| {
+            stock_boundary(
+                Some(io),
+                crate::wire::ErrorCode::Storage,
+                "native result has no ledger",
+            )
+        })?
         .remaining()?;
     let owned = io.owned_bytes()?;
     if retained > owned {

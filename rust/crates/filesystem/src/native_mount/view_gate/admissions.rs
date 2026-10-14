@@ -16,7 +16,7 @@ impl ReadAdmission {
                 .state
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            match &state.reader_slots[index] {
+            match state.reader_slots.get(index).and_then(Option::as_ref) {
                 Some(ReadSlot::Meter {
                     payload_finished, ..
                 }) => *payload_finished,
@@ -34,19 +34,24 @@ impl Drop for ReadAdmission {
                 .state
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            if let Some(ReadSlot::Meter {
-                readers,
-                proof_alive,
-                ..
-            }) = &mut state.reader_slots[index]
+            assert!(
+                index < state.reader_slots.len(),
+                "owned read admission slot"
+            );
+            if let Some(slot) = state.reader_slots.get_mut(index)
+                && let Some(ReadSlot::Meter {
+                    readers,
+                    proof_alive,
+                    ..
+                }) = slot
             {
                 *proof_alive = false;
                 if *readers == 0 {
-                    state.reader_slots[index] = None;
-                    state.occupied_slots = state
-                        .occupied_slots
-                        .checked_sub(1)
-                        .expect("owned read admission slot");
+                    *slot = None;
+                    state.occupied_slots = {
+                        assert!(state.occupied_slots > 0, "owned read admission slot");
+                        state.occupied_slots - 1
+                    };
                 }
             }
             state.release_empty_registry(&self.gate);
@@ -75,14 +80,22 @@ impl ViewGateReadAdmissions {
                     *generation != entry.gate.reader_generation.load(Ordering::Acquire)
                 })
                 .map_or(0, |(_, bytes)| bytes);
-            let payload = entry
-                .finished_payload()
-                .checked_sub(entry.payload_finished)
-                .expect("original binding payload progress");
-            freed
-                .checked_add(registry)
-                .and_then(|freed| freed.checked_add(payload))
-                .expect("owned original read allocations")
+            let finished = entry.finished_payload();
+            assert!(
+                finished >= entry.payload_finished,
+                "original binding payload progress"
+            );
+            let payload = finished - entry.payload_finished;
+            assert!(
+                freed <= u64::MAX - registry,
+                "owned original read allocations"
+            );
+            let freed = freed + registry;
+            assert!(
+                freed <= u64::MAX - payload,
+                "owned original read allocations"
+            );
+            freed + payload
         })
     }
 
@@ -244,7 +257,9 @@ impl ViewGateReadAdmissions {
 pub(super) fn gate_allocation_error(
     error: crate::kernel::allocation::AllocationError,
 ) -> MountSourceError {
-    super::super::lazy::mount_engine_error(error.into_work_or(crate::FsError::HandleAllocationFailed))
+    super::super::lazy::mount_engine_error(
+        error.into_work_or(crate::FsError::HandleAllocationFailed),
+    )
 }
 
 pub(super) fn reconcile_reader_registry(

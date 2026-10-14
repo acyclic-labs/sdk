@@ -214,9 +214,7 @@ pub(super) fn installed_write_denial_preserves_reads_and_post_effect_prefix()
     );
     guard.writable.store(true, Ordering::Release);
     let removed = projection.source_write(&work, || {
-        source
-            .remove(&path, Some(created.node.file_id), &work)
-            .map_err(crate::NativeMountError::from)?;
+        source.remove(&path, Some(created.node.file_id), &work)?;
         guard.writable.store(false, Ordering::Release);
         Ok(())
     });
@@ -406,8 +404,7 @@ pub(super) fn measured_write_copy_refusal_precedes_the_real_source_write()
     let mut budget = FINITE_HANDLER_POLICY;
     budget.bytes_copied = 0;
     let failure = crate::native_mount::run_native_mount_handler(budget, &cancellation, |work| {
-        let bytes = crate::native_mount::fuse::fuse_source_chunk(b"replacement", work)
-            .map_err(crate::NativeMountError::from)?;
+        let bytes = crate::native_mount::fuse::fuse_source_chunk(b"replacement", work)?;
         opened
             .write_range_with_meter(0, bytes, work)
             .map_err(crate::NativeMountError::Source)
@@ -433,8 +430,7 @@ pub(super) fn measured_deferred_open_refuses_an_actual_rebound_file_identity()
         FINITE_HANDLER_POLICY,
         &cancellation,
         |work| {
-            let path = crate::native_mount::fuse::fuse_clone_path(&path, work)
-                .map_err(crate::NativeMountError::from)?;
+            let path = crate::native_mount::fuse::fuse_clone_path(&path, work)?;
             let allocation = work.claim(
                 std::mem::size_of::<crate::native_mount::fuse::DeferredOpenFile>() as u64,
                 1,
