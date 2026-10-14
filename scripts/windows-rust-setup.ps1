@@ -1,7 +1,10 @@
 param(
     [Parameter(Mandatory = $true)]
     [ValidateSet('start', 'dependencies', 'finish')]
-    [string] $Phase
+    [string] $Phase,
+    [Parameter(Mandatory = $true)]
+    [ValidateSet('windows', 'windows-napi', 'windows-arm64', 'windows-clippy', 'windows-rust', 'windows-fork-join')]
+    [string] $Lane
 )
 
 # Installs the pinned Rust toolchain and unpacks locked crates on Windows.
@@ -27,9 +30,11 @@ $restored = Join-Path $env:RUNNER_TEMP 'rust-setup.dependencies'
 $install = @"
 rustup toolchain install $toolchain --profile minimal --no-self-update --component clippy --component rustfmt
 rustup default $toolchain
-rustup target add aarch64-pc-windows-msvc --toolchain $toolchain
-rustup target add wasm32-unknown-unknown --toolchain $toolchain
 "@
+switch ($Lane) {
+    'windows' { $install += "`nrustup target add wasm32-unknown-unknown --toolchain $toolchain" }
+    'windows-arm64' { $install += "`nrustup target add aarch64-pc-windows-msvc --toolchain $toolchain" }
+}
 $unpack = 'cargo fetch --locked'
 
 switch ($Phase) {

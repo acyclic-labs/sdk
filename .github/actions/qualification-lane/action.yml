@@ -19,7 +19,7 @@ runs:
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        .\scripts\windows-rust-setup.ps1 -Phase start
+        .\scripts\windows-rust-setup.ps1 -Phase start -Lane '${{ inputs.lane }}'
 
     # Core and full runs compile different invocations (tests, packaging,
     # release builds), so each keeps its own compiler cache, sized to one
@@ -58,7 +58,7 @@ runs:
     - name: Unpack Windows crates
       if: runner.os == 'Windows'
       shell: pwsh
-      run: .\scripts\windows-rust-setup.ps1 -Phase dependencies
+      run: .\scripts\windows-rust-setup.ps1 -Phase dependencies -Lane '${{ inputs.lane }}'
 
     - name: Install exact Rust toolchain
       if: runner.os != 'Windows'
@@ -135,7 +135,7 @@ runs:
     - name: Finish Windows Rust setup
       if: runner.os == 'Windows'
       shell: pwsh
-      run: .\scripts\windows-rust-setup.ps1 -Phase finish
+      run: .\scripts\windows-rust-setup.ps1 -Phase finish -Lane '${{ inputs.lane }}'
 
     - name: Install Windows nextest
       if: inputs.lane == 'windows-rust'

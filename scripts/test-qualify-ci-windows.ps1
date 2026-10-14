@@ -166,4 +166,29 @@ try {
     if ($null -eq $priorGithubPath) { Remove-Item Env:GITHUB_PATH -ErrorAction SilentlyContinue }
     else { $env:GITHUB_PATH = $priorGithubPath }
 }
-Write-Host 'Windows qualification audit dispatch, failure propagation and nextest version checks passed.'
+$setupSource = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'windows-rust-setup.ps1')
+$setupAst = [System.Management.Automation.Language.Parser]::ParseInput($setupSource, [ref]$tokens, [ref]$errors)
+if ($errors.Count) { throw ($errors.Message -join "`n") }
+$setupInstall = $setupAst.Find({ param($node)
+    $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -eq '$install'
+}, $true)
+$setupTargets = $setupAst.Find({ param($node)
+    $node -is [System.Management.Automation.Language.SwitchStatementAst] -and $node.Condition.Extent.Text -eq '$Lane'
+}, $true)
+if ($null -eq $setupInstall -or $null -eq $setupTargets) { throw 'missing lane-specific Rust target selection' }
+$toolchain = 'fixture-toolchain'
+foreach ($Lane in 'windows', 'windows-arm64', 'windows-rust', 'windows-fork-join', 'windows-napi', 'windows-clippy') {
+    $script:Calls.Clear()
+    $script:FailCall = 0
+    Invoke-Expression $setupInstall.Extent.Text
+    Invoke-Expression $setupTargets.Extent.Text
+    & ([scriptblock]::Create($install))
+    $expectedSetup = @(
+        'rustup toolchain install fixture-toolchain --profile minimal --no-self-update --component clippy --component rustfmt',
+        'rustup default fixture-toolchain'
+    )
+    if ($Lane -eq 'windows') { $expectedSetup += 'rustup target add wasm32-unknown-unknown --toolchain fixture-toolchain' }
+    if ($Lane -eq 'windows-arm64') { $expectedSetup += 'rustup target add aarch64-pc-windows-msvc --toolchain fixture-toolchain' }
+    if (($script:Calls -join "`n") -ne ($expectedSetup -join "`n")) { throw "incorrect Rust targets for $Lane" }
+}
+Write-Host 'Windows qualification audit dispatch, failure propagation, nextest version and required targets passed.'

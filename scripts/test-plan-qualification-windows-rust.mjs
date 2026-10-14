@@ -4,6 +4,17 @@ import test from "node:test";
 
 const lanes = JSON.parse(readFileSync(".github/qualification-lanes.json", "utf8"));
 
+test("Windows setup forwards the lane to every phase and retains its detached join", () => {
+  const action = readFileSync(".github/actions/qualification-lane/action.yml", "utf8");
+  for (const phase of ["start", "dependencies", "finish"])
+    assert.ok(action.includes(`windows-rust-setup.ps1 -Phase ${phase} -Lane '\${{ inputs.lane }}'`));
+  const setup = readFileSync("scripts/windows-rust-setup.ps1", "utf8");
+  assert.ok(setup.includes("switch ($Lane)"));
+  assert.ok(setup.includes("Invoke-CimMethod -ClassName Win32_Process -MethodName Create"));
+  assert.ok(setup.includes("Invoke-Expression $install"));
+  assert.ok(setup.includes('cargo fetch --locked --offline'));
+});
+
 test("Windows Rust tests run independently without changing workspace or ignored-test selection", () => {
   const matrix = lanes;
   const rust = matrix.find(lane => lane.lane === "windows-rust");
