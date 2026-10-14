@@ -21,7 +21,6 @@ dependencies = [
  "acyclic-contract-derive",
  "acyclic-grpc-observability",
  "acyclic-tonic-web-wasm-client",
- "acyclic-workers",
  "http-body",
  "prost",
  "prost-reflect",
@@ -620,6 +619,7 @@ dependencies = [
 name = "acyclic-workers"
 version = "0.2.0"
 dependencies = [
+ "acyclic-actors",
  "acyclic-objects",
  "axum",
  "bytes",
