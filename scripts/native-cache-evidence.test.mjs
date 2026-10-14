@@ -71,8 +71,8 @@ test("native restore summaries use matched-key outputs and post-build saves pres
       assert.equal(save.with.path, cached.with.path);
       assert.equal(save.with.key, `\${{ steps.rust-cache.outputs.${id}-key }}`);
       assert.equal(save.if, id === "compiler"
-        ? "github.ref == 'refs/heads/main' && steps.rust-cache.outputs.compiler-key != '' && steps.compiler-cache.outputs.save == 'true'"
-        : "github.ref == 'refs/heads/main' && steps.rust-cache.outputs.downloads-key != '' && steps.rust-cache.outputs.downloads-hit != 'true'");
+        ? "github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && steps.rust-cache.outputs.compiler-key != '' && steps.compiler-cache.outputs.save == 'true'"
+        : "github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && steps.rust-cache.outputs.downloads-key != '' && steps.rust-cache.outputs.downloads-hit != 'true'");
       assert.ok(steps.indexOf(save) > steps.findLastIndex(step => step.run));
       assert.ok(steps.indexOf(save) > steps.findLastIndex(step => step.uses?.startsWith("actions/upload-artifact@")));
     }

@@ -23,6 +23,18 @@ test('only expiry cleanup is scheduled',()=>{
 });
 
 test('every cache save is main-only, with no per-run keys or automatic branch saves',()=>{
+ const mainOnly=(condition,label)=>{
+  const expression=condition.replace(/^\$\{\{\s*|\s*\}\}$/g,'')
+   .replace(/steps\.([\w-]+)\.outputs\.([\w-]+)/g,(_,step,output)=>`steps[${JSON.stringify(step)}].outputs[${JSON.stringify(output)}]`);
+  for(const ref of ['refs/heads/topic','refs/pull/451/merge','refs/heads/main'])for(const event of ['workflow_dispatch','push','pull_request','pull_request_target']){
+   if(ref==='refs/heads/main'&&!event.startsWith('pull_request'))continue;
+   for(const hit of ['true','false'])for(const save of ['true','false'])for(const key of ['', 'key']){
+    const steps=new Proxy({}, {get:()=>({outputs:new Proxy({}, {get:(_,name)=>
+     name==='save'?save:name==='cache-hit'||name==='downloads-hit'?hit:key})})});
+    assert.equal(runInNewContext(expression,{github:{ref,event_name:event},steps,cancelled:()=>false},{timeout:1000}),false,label+': off-main or PR save');
+   }
+  }
+ };
  const files=workflows.map(name=>'.github/workflows/'+name).concat([
   '.github/actions/qualification-lane/action.yml',
   '.github/actions/rust-build-cache/action.yml',
@@ -34,9 +46,9 @@ test('every cache save is main-only, with no per-run keys or automatic branch sa
    assert.doesNotMatch(step.uses??'',/^actions\/cache@/,file+': automatic post-save');
    assert.doesNotMatch(step.with?.key??'',/run_id|run_attempt/,file+': per-run snapshot');
    if(step.uses?.startsWith('actions/cache/save@'))
-    assert.ok(step.if.startsWith("github.ref == 'refs/heads/main' &&"),file+': '+step.name);
+    mainOnly(step.if,file+': '+step.name);
    if(step.uses?.startsWith('Swatinem/rust-cache@'))
-    assert.ok(step.with['save-if'].startsWith("${{ github.ref == 'refs/heads/main' &&"),file);
+    mainOnly(step.with['save-if'],file);
   }
  }
  const lane=YAML.parse(fs.readFileSync('.github/actions/qualification-lane/action.yml','utf8'));
@@ -44,6 +56,26 @@ test('every cache save is main-only, with no per-run keys or automatic branch sa
  for(const steps of [lane.runs.steps,hosts.jobs.qualify.steps]){
   for(const step of steps.filter(step=>step.uses?.startsWith('actions/cache/')))
    assert.doesNotMatch(step.with.path,/sccache/,'off-critical compiler snapshot');
+ }
+ for(const condition of [
+  "github.ref == 'refs/heads/main' && steps.tools.outputs.cache-hit != 'true' || true",
+  "${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' || true }}",
+ ])assert.throws(()=>mainOnly(condition,'mutation'),/off-main or PR save/);
+});
+
+test('main qualification saves completed downloads and tools after failure, but not cancellation or incomplete restore',()=>{
+ const action=YAML.parse(fs.readFileSync('.github/actions/qualification-lane/action.yml','utf8'));
+ const saves=action.runs.steps.filter(step=>step.uses?.startsWith('actions/cache/save@'));
+ assert.equal(saves.length,3);
+ for(const step of saves){
+  assert.ok(step.if.includes('!cancelled()'),step.name);
+  const expression=step.if.replace(/^\$\{\{\s*|\s*\}\}$/g,'')
+   .replace(/steps\.([\w-]+)\.outputs\.([\w-]+)/g,(_,id,output)=>`steps[${JSON.stringify(id)}].outputs[${JSON.stringify(output)}]`);
+  for(const cancelled of [false,true])for(const key of ['', 'key'])for(const hit of ['true','false']){
+   const steps=new Proxy({}, {get:()=>({outputs:{'cache-primary-key':key,'cache-hit':hit}})});
+   const saved=runInNewContext(expression,{github:{ref:'refs/heads/main',event_name:'workflow_dispatch'},steps,cancelled:()=>cancelled,success:()=>false},{timeout:1000});
+   assert.equal(saved,!cancelled&&key!==''&&hit!=='true',step.name);
+  }
  }
 });
 

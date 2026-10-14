@@ -194,7 +194,7 @@ jobs:
           retention-days: ${{ contains(github.workflow, 'Release') && 30 || 3 }}
 
       - name: Save Cargo downloads
-        if: github.ref == 'refs/heads/main' && steps.downloads.outputs.cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && steps.downloads.outputs.cache-hit != 'true'
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: |
@@ -203,7 +203,7 @@ jobs:
             ~/.cargo/git/db
           key: ${{ steps.downloads.outputs.cache-primary-key }}
       - name: Save host npm downloads
-        if: github.ref == 'refs/heads/main' && steps.npm-cache.outputs.cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && steps.npm-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/npm-cache

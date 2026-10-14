@@ -85,7 +85,7 @@ jobs:
         run: node scripts/plan-qualification.mjs select
 
       - name: Save preflight tools
-        if: github.ref == 'refs/heads/main' && steps.preflight-tools.outputs.cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && steps.preflight-tools.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/tools
