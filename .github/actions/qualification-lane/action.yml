@@ -148,7 +148,7 @@ runs:
         CARGO_TARGET_DIR: ${{ format('{0}/target-{1}', github.workspace, inputs.lane) }}
         RUSTC_WRAPPER: ''
       with:
-        shared-key: sdk-windows-rust-v1
+        shared-key: sdk-windows-rust-v2-${{ inputs.lane }}
         workspaces: . -> target-${{ inputs.lane }}
         cache-bin: false
         save-if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' }}

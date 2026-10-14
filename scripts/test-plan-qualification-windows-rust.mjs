@@ -34,7 +34,10 @@ test("Windows Rust tests run independently without changing workspace or ignored
     const row = matrix.find(row => row.lane === lane) ?? assert.fail(lane);
     assert.equal(row.runner, "blacksmith-16vcpu-windows-2025");
     assert.equal(row.workers, 16);
-    assert.ok(script.includes("Invoke-WindowsRustTests " + shard));
+    const caseStart = script.indexOf(`    '${lane}' {`, script.indexOf("switch ($Lane)"));
+    const caseEnd = script.indexOf("\n    }", caseStart);
+    assert.ok(caseStart >= 0 && caseEnd > caseStart, "missing lane case: " + lane);
+    assert.ok(script.slice(caseStart, caseEnd).includes("Invoke-WindowsRustTests " + shard));
   }
   assert.ok(body.includes('Copy-Item -LiteralPath $junit -Destination "$env:SDK_TEMP_DIR/observability/rust.xml"'));
   assert.doesNotMatch(body, /--no-default-features|--exclude|--skip|--ignored|--retries|-E /);
@@ -71,7 +74,7 @@ test("Windows Rust restores dependency builds after toolchain setup and skips un
   assert.ok(finishSetup >= 0 && restoreBuilds > finishSetup);
   assert.ok(cache.includes("if: startsWith(inputs.lane, 'windows-rust')"));
   assert.ok(cache.includes("Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6"));
-  assert.ok(cache.includes("shared-key: sdk-windows-rust-v1"));
+  assert.ok(cache.includes("shared-key: sdk-windows-rust-v2-${{ inputs.lane }}"));
   assert.ok(cache.includes("workspaces: . -> target"));
   assert.ok(cache.includes("CARGO_TARGET_DIR: ${{ format('{0}/target-{1}', github.workspace, inputs.lane) }}"));
   const windowsLane = action.split("    - name: Run Windows qualification lane")[1]?.split("    - name:")[0] ?? assert.fail("missing Windows dispatch");
