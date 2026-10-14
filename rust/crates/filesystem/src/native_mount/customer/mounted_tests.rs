@@ -52,15 +52,14 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
     assert_eq!(std::fs::read_dir(destination.path())?.count(), 0);
 
     let startup_work = new_work(WorkBudget::UNBOUNDED)?;
-    let mut startup = match lazy
+    let Err(MountLifecycleError::Native(NativeMountError::StartupFailed(mut startup))) = lazy
         .mount(
             "relative-invalid-mount",
             options.clone().native_context(&startup_work, None, None),
         )
         .await
-    {
-        Err(MountLifecycleError::Native(NativeMountError::StartupFailed(failure))) => failure,
-        _ => return Err("invalid destination lost its cleanup owner".into()),
+    else {
+        return Err("invalid destination lost its cleanup owner".into());
     };
     assert!(startup.owner().cleanup_state().source_retained);
     let cancelled = CancellationToken::new();

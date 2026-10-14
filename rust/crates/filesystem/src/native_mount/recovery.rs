@@ -168,20 +168,7 @@ impl NativeMountRecoveryOwner {
             },
         )?;
         drop(std::thread::Builder::new().spawn(move || {
-            let (shared, receiver, _closure) = worker;
-            let _ = receiver.recv();
-            let mut state = shared
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(state) = state.as_mut() {
-                state.retire(shared._custody.work());
-            }
-            drop(state.take());
-            shared.wake.notify_all();
-            drop(state);
-            drop((receiver, shared));
-            drop(_closure);
+            retire_recovery(worker);
         })?);
         let owner = Self { shared, retirement };
         let result = {
@@ -463,4 +450,26 @@ pub(super) fn remove_empty_recovery_destination(
         }
         Err(error) => Err(error.into()),
     }
+}
+
+fn retire_recovery(
+    (shared, receiver, _closure): (
+        Arc<NativeRecoveryShared>,
+        std::sync::mpsc::Receiver<()>,
+        crate::NativeAllocation,
+    ),
+) {
+    let _ = receiver.recv();
+    let mut state = shared
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(state) = state.as_mut() {
+        state.retire(shared._custody.work());
+    }
+    drop(state.take());
+    shared.wake.notify_all();
+    drop(state);
+    drop((receiver, shared));
+    drop(_closure);
 }

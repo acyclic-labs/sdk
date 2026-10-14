@@ -15,8 +15,8 @@ pub(crate) fn directory_identity<W: NativeHostWork>(
             .into());
         }
         Ok(NativeRootIdentity {
-            device: stat.st_dev as u64,
-            object: stat.st_ino as u64,
+            device: device_id(stat.st_dev),
+            object: stat.st_ino,
         })
     }
     #[cfg(windows)]
@@ -51,8 +51,8 @@ pub(crate) fn file_identity_and_length<W: NativeHostWork>(
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "negative file length"))?;
         Ok((
             NativeRootIdentity {
-                device: stat.st_dev as u64,
-                object: stat.st_ino as u64,
+                device: device_id(stat.st_dev),
+                object: stat.st_ino,
             },
             length,
         ))
@@ -80,8 +80,8 @@ pub(crate) fn entry_identity<W: NativeHostWork>(
     let result = unix_name(name.as_os_str(), work, |name, work| {
         let stat = fstat(parent.as_raw_fd(), name, work)?;
         Ok(NativeRootIdentity {
-            device: stat.st_dev as u64,
-            object: stat.st_ino as u64,
+            device: device_id(stat.st_dev),
+            object: stat.st_ino,
         })
     });
     #[cfg(windows)]
@@ -140,4 +140,14 @@ pub(crate) fn directory_has_ancestor<W: NativeHostWork>(
         identity = next;
         current = Some(parent);
     }
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn device_id(device: libc::dev_t) -> u64 {
+    device
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn device_id(device: libc::dev_t) -> u64 {
+    i64::from(device).cast_unsigned()
 }

@@ -298,7 +298,6 @@ async fn remembered_resolutions_follow_every_change_to_the_view()
     let source_root = tempfile::tempdir()?;
     std::fs::write(source_root.path().join("a"), b"source")?;
     let view = mounted_view(source_root.path(), "mounted-resolutions").await?;
-    let lazy = Arc::clone(&view.lazy);
     let (a, b) = (mounted(&["a"]), mounted(&["b"]));
 
     // Remembered answers: a source node, and an absence.
@@ -360,7 +359,6 @@ async fn promotion_and_attribute_reads_leave_cached_lookups_current()
     std::fs::write(source_root.path().join("d").join("f"), b"source")?;
     std::fs::write(source_root.path().join("g"), b"other")?;
     let view = mounted_view(source_root.path(), "mounted-promotion-effect").await?;
-    let lazy = Arc::clone(&view.lazy);
     let directory = mounted(&["d"]);
     let file = mounted(&["d", "f"]);
     let other = mounted(&["g"]);

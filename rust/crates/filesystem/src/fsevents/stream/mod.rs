@@ -268,7 +268,9 @@ impl Drop for EventStream {
         }
         let cancellation = crate::cancellation::CancellationToken::new();
         let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        self.stop_with_work(&mut work)
-            .expect("ordinary unbounded FSEvents cleanup is admissible");
+        if let Err(error) = self.stop_with_work(&mut work) {
+            work.record_native_io_failure(error);
+            work.poison_native_original_work();
+        }
     }
 }

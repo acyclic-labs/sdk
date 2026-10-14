@@ -25,7 +25,7 @@ pub(crate) fn unix_name<W: NativeHostWork, T>(
         owned.extend_from_slice(bytes);
         owned.push(0);
         operation(
-            std::ffi::CStr::from_bytes_with_nul(&owned).expect("validated terminated name"),
+            std::ffi::CStr::from_bytes_with_nul(&owned).map_err(|_| W::invalid_request())?,
             work,
         )
     })();

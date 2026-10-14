@@ -248,6 +248,27 @@ fn publication_error(error: crate::FsError) -> MountSourceError {
     }
 }
 
+async fn rebase_conflicted<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    original: &crate::NativeMaterializationWork,
+    cancellation: &CancellationToken,
+) -> Result<bool, crate::FsError> {
+    let (decision, allocation) = checkout
+        .rebase_head(
+            checkout
+                .volume_config()
+                .limits
+                .maximum_checkout_dependencies,
+            original,
+            cancellation,
+        )
+        .await?;
+    let conflicted = matches!(decision, RebaseDecision::Conflicted { .. });
+    drop(decision);
+    drop(allocation);
+    Ok(conflicted)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,7 +338,7 @@ mod tests {
             checkout
                 .create(
                     crate::AuthoredMutation::CreateFile {
-                        path: path,
+                        path,
                         bytes: (Bytes::from_static(b"data")).into(),
                         metadata: crate::kernel::FileMetadata::default(),
                     },
@@ -642,15 +663,13 @@ mod tests {
             );
             let mut __authority_work =
                 crate::AuthorityWork::native(__authority_args.2, __authority_args.3);
-            let __authority_result = fs
-                .authority()
+            fs.authority()
                 .find_operation(
                     __authority_args.0,
                     __authority_args.1,
                     &mut __authority_work,
                 )
-                .await;
-            __authority_result
+                .await
         }
         .await)?;
         let durable = durable.ok_or("original append disappeared")?;
@@ -665,25 +684,4 @@ mod tests {
         drop(durable);
         Ok(())
     }
-}
-
-async fn rebase_conflicted<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    checkout: &mut Checkout<A, O>,
-    original: &crate::NativeMaterializationWork,
-    cancellation: &CancellationToken,
-) -> Result<bool, crate::FsError> {
-    let (decision, allocation) = checkout
-        .rebase_head(
-            checkout
-                .volume_config()
-                .limits
-                .maximum_checkout_dependencies,
-            original,
-            cancellation,
-        )
-        .await?;
-    let conflicted = matches!(decision, RebaseDecision::Conflicted { .. });
-    drop(decision);
-    drop(allocation);
-    Ok(conflicted)
 }

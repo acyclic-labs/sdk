@@ -163,7 +163,7 @@ pub(crate) fn canonical_directory_path_held<W: NativeHostWork>(
                 work.release(allocation)?;
                 return Err(error);
             }
-            output.extend_from_slice(&path[..length]);
+            output.extend_from_slice(path.get(..length).ok_or_else(|| W::invalid_request())?);
             return Ok((OsString::from_vec(output).into(), allocation));
         }
     }

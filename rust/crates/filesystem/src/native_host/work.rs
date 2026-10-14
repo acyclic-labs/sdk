@@ -141,8 +141,12 @@ impl NativeHostWork for DemandWork {
     }
     #[cfg(any(windows, target_os = "linux", test))]
     fn cancel_cleanup_write(&mut self, reservation: u64) {
-        self.refund(crate::materializer::NativeResourceCredit::WriteOperations.delta(reservation))
-            .expect("original reservation is balanced");
+        if let Err(error) = self
+            .refund(crate::materializer::NativeResourceCredit::WriteOperations.delta(reservation))
+        {
+            self.record_native_io_failure(error);
+            self.poison_native_original_work();
+        }
     }
     #[cfg(any(windows, target_os = "linux", test))]
     fn attempt_cleanup_write<T>(

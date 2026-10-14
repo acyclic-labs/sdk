@@ -57,9 +57,9 @@ pub(super) extern "C" fn terminal_suffix(info: *mut c_void) {
     // Arc reference. No callback can still be accessing its queue-local slot.
     let context = unsafe { Arc::from_raw(info.cast::<StreamContext>()) };
     // SAFETY: this terminal suffix is the serial queue's sole remaining slot consumer.
-    let owner = unsafe { &mut *context.terminal.get() }
-        .take()
-        .expect("the original stream's sole terminal owner is present");
+    let Some(owner) = unsafe { &mut *context.terminal.get() }.take() else {
+        std::process::abort();
+    };
     if let Some(birth) = owner.birth.clone() {
         let mut work = crate::NativeMaterializationWork::clone(&birth);
         owner.finish_deferred(context, &mut work);
