@@ -98,9 +98,13 @@ pub(crate) fn decode_source_fact(
     bytes: &[u8],
     maximum_payload_bytes: u64,
 ) -> Result<SourceFact, SourceFactError> {
-    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, maximum_payload_bytes, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, maximum_payload_bytes, &mut |_| {
+        Ok::<_, crate::kernel::CanonicalDecodeError>(())
+    })?;
     let value = SourceFact {
-        volume_id: VolumeId::from_bytes(decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?),
+        volume_id: VolumeId::from_bytes(
+            decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+        ),
         root_identity: decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
         mode: match decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? {
             1 => DurableSourceMode::Pinned,
@@ -108,18 +112,26 @@ pub(crate) fn decode_source_fact(
             _ => return Err(invariant("unknown source mode").into()),
         },
         maximum_paths: decoder.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-        maximum_extent_spans: decoder.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-        maximum_queued_changes: decoder.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-        capture_policy: Digest::from_bytes(decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?),
+        maximum_extent_spans: decoder
+            .u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+        maximum_queued_changes: decoder
+            .u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+        capture_policy: Digest::from_bytes(
+            decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+        ),
         state: match decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? {
             1 => DurableSourceState::Clean,
             2 => DurableSourceState::PendingCapture,
-            3 => DurableSourceState::NeedsRescan(reason_from_tag(decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?)?),
+            3 => DurableSourceState::NeedsRescan(reason_from_tag(
+                decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+            )?),
             4 => DurableSourceState::Conflict,
             5 => DurableSourceState::Sealed,
             _ => return Err(invariant("unknown source state").into()),
         },
-        generation_id: GenerationId::new(Digest::from_bytes(decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?)),
+        generation_id: GenerationId::new(Digest::from_bytes(
+            decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+        )),
     };
     decoder.finish()?;
     validate(value)?;

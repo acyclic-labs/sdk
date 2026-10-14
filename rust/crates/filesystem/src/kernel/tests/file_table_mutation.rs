@@ -17,17 +17,37 @@ async fn original_table_encoding_denial_precedes_native_payload_and_backend_writ
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = put(&store, &FileTablePage::Leaf(vec![record(1, 1)]), 8).await?;
-    let mutations = [FileTableMutation::Replace { expected: record(1, 1), replacement: record(1, 2) }];
+    let mutations = [FileTableMutation::Replace {
+        expected: record(1, 1),
+        replacement: record(1, 2),
+    }];
     let cancellation = crate::CancellationToken::new();
     let work = crate::NativeMaterializationWork::new(
-        WorkBudget { bytes_encoded: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
-    ).map_err(|(error, _)| error)?;
+        WorkBudget {
+            bytes_encoded: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    )
+    .map_err(|(error, _)| error)?;
     let live = work.live_allocation_bytes();
     let mut accounting = super::super::allocation::KernelAccounting::native(&work, &cancellation);
     let error = apply_file_table_mutations_with_accounting(
-        &store, root, &mutations, 1, DecodeLimits::default(), &mut accounting, &cancellation,
-    ).await.expect_err("original canonical encoder must refuse before producing payload bytes");
-    assert!(matches!(error, crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_)) | crate::FsError::Work(_)));
+        &store,
+        root,
+        &mutations,
+        1,
+        DecodeLimits::default(),
+        &mut accounting,
+        &cancellation,
+    )
+    .await
+    .expect_err("original canonical encoder must refuse before producing payload bytes");
+    assert!(matches!(
+        error,
+        crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_))
+            | crate::FsError::Work(_)
+    ));
     assert_eq!(work.receipt().bytes_encoded, 0);
     assert_eq!(work.receipt().page_writes, 0);
     assert_eq!(work.receipt().backend_write_operations, 0);
@@ -55,9 +75,16 @@ async fn put(
     let id = file_table_page_id(page, maximum_items)?;
     {
         let __object_args = (
-        id,
-        OwnedBytes::from(encode_file_table_page(page, maximum_items, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+            id,
+            OwnedBytes::from(encode_file_table_page(
+                page,
+                maximum_items,
+                |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+                |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+            )?),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
         let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
         let __object_result = store
             .put(__object_args.0, __object_args.1, &mut __object_work)
@@ -76,7 +103,8 @@ async fn three_leaf_table(
             store,
             &FileTablePage::Leaf(vec![record(3, 3), record(4, 4)]),
             8,
-        ).await?,
+        )
+        .await?,
         put(store, &FileTablePage::Leaf(vec![record(6, 6)]), 8).await?,
     ];
     let root = put(
@@ -96,7 +124,8 @@ async fn three_leaf_table(
             },
         ]),
         8,
-    ).await?;
+    )
+    .await?;
     Ok((root, leaves))
 }
 
@@ -122,7 +151,8 @@ async fn multiple_record_changes_rewrite_one_leaf_and_shared_root()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 2);
     let bytes = {
@@ -218,7 +248,8 @@ async fn record_noop_preserves_root_with_zero_writes() -> Result<(), Box<dyn std
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(receipt.value, root);
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 0);
@@ -350,8 +381,7 @@ async fn item_larger_than_page_bound_rejects_before_writes()
     let failure = apply_file_table_mutations(
         &store,
         root,
-        vec![
-            FileTableMutation::Insert(record(1, 1))],
+        vec![FileTableMutation::Insert(record(1, 1))],
         1,
         DecodeLimits {
             maximum_page_bytes: 72,
@@ -359,7 +389,8 @@ async fn item_larger_than_page_bound_rejects_before_writes()
         },
         WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
-    ).await
+    )
+    .await
     .err()
     .ok_or("oversized file-table item unexpectedly succeeded")?;
     assert!(matches!(
@@ -371,7 +402,8 @@ async fn item_larger_than_page_bound_rejects_before_writes()
 }
 
 #[test]
-fn mutation_validation_and_current_state_matrix_is_total() -> Result<(), Box<dyn std::error::Error>> {
+fn mutation_validation_and_current_state_matrix_is_total() -> Result<(), Box<dyn std::error::Error>>
+{
     let invalid = FileRecord {
         link_count: 0,
         ..record(1, 1)
@@ -415,7 +447,10 @@ fn mutation_validation_and_current_state_matrix_is_total() -> Result<(), Box<dyn
     ));
     current = None;
     assert!(insert.replacement(current.as_ref()).is_ok());
-    assert_eq!(insert.replacement(current.as_ref())?.cloned(), Some(record(1, 1)));
+    assert_eq!(
+        insert.replacement(current.as_ref())?.cloned(),
+        Some(record(1, 1))
+    );
 
     let remove = FileTableMutation::Remove {
         file_id: FileId::from_bytes([1; 16]),
@@ -450,6 +485,9 @@ fn mutation_validation_and_current_state_matrix_is_total() -> Result<(), Box<dyn
         Err(FileTableMutationError::StateConflict)
     ));
     current = Some(record(1, 1));
-    assert_eq!(replace.replacement(current.as_ref())?.cloned(), Some(record(1, 2)));
+    assert_eq!(
+        replace.replacement(current.as_ref())?.cloned(),
+        Some(record(1, 2))
+    );
     Ok(())
 }

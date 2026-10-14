@@ -1,9 +1,6 @@
 use super::*;
 use crate::{
-    core::{
-        copy_boxed, copy_text,
-        copy_vector,
-    },
+    core::{copy_boxed, copy_text, copy_vector},
     wire_codec::CodecQuota,
 };
 
@@ -204,8 +201,8 @@ pub(crate) fn clone_value(value: &Value, io: Option<&PreparationIo>) -> Result<V
     with_history_io(io, |work| {
         let mut quota = CodecQuota::new(work, 0)?;
         let value = crate::core::copy(value, &mut quota, |value: &serde_json::Value, _| {
-    crate::executor::json::json_value_logical_owned_bytes(value)
-})?;
+            crate::executor::json::json_value_logical_owned_bytes(value)
+        })?;
         quota.transfer();
         Ok(value)
     })
@@ -236,11 +233,21 @@ impl FileProjectionPolicy {
                         .map(|binding| -> Result<_> {
                             history_step(quota.work(), 1)?;
                             Ok(NativeConfigurationBinding {
-                                source: crate::core::copy(&binding.source, quota, |value: &crate::core::EventReference, _| Ok(value.authority.id.capacity() as u64))?,
-                                configuration: crate::core::copy(&binding.configuration, quota, |value: &crate::core::ExtensionConfiguration, work| {
-        value.content.validate(work)?;
-        crate::core::owned_bytes(value)
-    })?,
+                                source: crate::core::copy(
+                                    &binding.source,
+                                    quota,
+                                    |value: &crate::core::EventReference, _| {
+                                        Ok(value.authority.id.capacity() as u64)
+                                    },
+                                )?,
+                                configuration: crate::core::copy(
+                                    &binding.configuration,
+                                    quota,
+                                    |value: &crate::core::ExtensionConfiguration, work| {
+                                        value.content.validate(work)?;
+                                        crate::core::owned_bytes(value)
+                                    },
+                                )?,
                                 implementation_digest: binding.implementation_digest,
                             })
                         })
@@ -262,8 +269,8 @@ impl ToolResultContent {
         Ok(match self {
             Self::Json { value } => Self::Json {
                 value: crate::core::copy(value, quota, |value: &serde_json::Value, _| {
-    crate::executor::json::json_value_logical_owned_bytes(value)
-})?,
+                    crate::executor::json::json_value_logical_owned_bytes(value)
+                })?,
             },
             Self::Parts { parts } => Self::Parts {
                 parts: copy_vector(parts, quota, |part, quota| {
@@ -301,8 +308,8 @@ impl ModelContentPart {
                 call_id: copy_text(call_id, quota)?,
                 name: copy_text(name, quota)?,
                 arguments: crate::core::copy(arguments, quota, |value: &serde_json::Value, _| {
-    crate::executor::json::json_value_logical_owned_bytes(value)
-})?,
+                    crate::executor::json::json_value_logical_owned_bytes(value)
+                })?,
             },
             Self::ToolResult {
                 call_id,

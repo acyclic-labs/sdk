@@ -197,8 +197,10 @@ pub(super) async fn namespace_records_to_file_root_with_accounting<
                 let paths = cached.value.take().ok_or(FsError::InvalidDiff)?;
                 let vector_bytes = workspace_vec_bytes(&paths);
                 for ((_, path), entry) in paths.into_iter().zip(&lookup.0.entries) {
-                    let allocation =
-                        crate::kernel::split_allocation(&mut cached.allocation, path.retained_bytes())?;
+                    let allocation = crate::kernel::split_allocation(
+                        &mut cached.allocation,
+                        path.retained_bytes(),
+                    )?;
                     let path = (path, allocation);
                     let record = entry.record.ok_or(FsError::NotFound)?;
                     reverse_insert(
@@ -234,19 +236,20 @@ pub(super) async fn namespace_records_to_file_root_with_accounting<
     )
     .await?
     .record
-        && binary_search_with_accounting(ids, accounting, |id| id.cmp(&record.file_id))?.is_ok() {
-            let allocation = accounting.claim_owned(0, 0)?;
-            reverse_insert(
-                &mut matches.0.records,
-                &mut matches.1,
-                (
-                    NamespacePath::new(Vec::new(), limits).map_err(FsError::from)?,
-                    allocation,
-                ),
-                record,
-                accounting,
-            )?;
-        }
+        && binary_search_with_accounting(ids, accounting, |id| id.cmp(&record.file_id))?.is_ok()
+    {
+        let allocation = accounting.claim_owned(0, 0)?;
+        reverse_insert(
+            &mut matches.0.records,
+            &mut matches.1,
+            (
+                NamespacePath::new(Vec::new(), limits).map_err(FsError::from)?,
+                allocation,
+            ),
+            record,
+            accounting,
+        )?;
+    }
     let allocation = accounting.claim_owned(0, 0)?;
     let mut pending = (Vec::new(), allocation);
     reverse_grow(&mut pending.0, &mut pending.1, accounting)?;

@@ -192,9 +192,7 @@ impl PiControlHost<'_> {
         let source_display = self
             .native()?
             .project_mount(input.source, &source.volume)
-            .map(|(mount, _)| {
-                work.display(&mount.path().display()).map_err(Error::from)
-            })
+            .map(|(mount, _)| work.display(&mount.path().display()).map_err(Error::from))
             .transpose()?;
         let descriptor = crate::pi_operator::PiPreparedApproval {
             version: 1,

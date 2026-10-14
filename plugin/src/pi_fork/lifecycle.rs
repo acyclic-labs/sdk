@@ -528,9 +528,7 @@ impl<'a> PiForkCoordinator<'a> {
             io.preflight()?;
             let aggregate = StreamAggregate::open(
                 &self.stream,
-                (authority.0.0,
-                verifier.0,
-                SchemaRegistry::new()),
+                (authority.0.0, verifier.0, SchemaRegistry::new()),
                 None,
                 acyclic_harness::store::default_projection_read_limits(),
                 acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
@@ -584,9 +582,7 @@ impl<'a> PiForkCoordinator<'a> {
             io.preflight()?;
             let aggregate = StreamAggregate::open(
                 &self.stream,
-                (child_authority.0.0,
-                child_verifier.0,
-                SchemaRegistry::new()),
+                (child_authority.0.0, child_verifier.0, SchemaRegistry::new()),
                 None,
                 acyclic_harness::store::default_projection_read_limits(),
                 acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,

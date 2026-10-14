@@ -65,13 +65,13 @@ impl AsyncObjectStore for OwnedNativeStore {
         let prepared =
             acyclic_stream::PreparedOwnedBytes::new(bytes, allocation, &original.runtime_meter())
                 .map_err(|failure| match failure.into_error() {
-                    acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
-                        original.runtime_error(error).into()
-                    }
-                    acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
-                        ObjectStoreError::Corrupt
-                    }
-                })?;
+                acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
+                    original.runtime_error(error).into()
+                }
+                acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
+                    ObjectStoreError::Corrupt
+                }
+            })?;
         let bytes = prepared
             .freeze(source.bytes.len())
             .map_err(|_| ObjectStoreError::Corrupt)?;

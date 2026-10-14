@@ -56,12 +56,16 @@ impl StreamsDurableRecord {
         Self::encode_with(commit, maximum_record_bytes, |domain, fields| {
             let capacity = domain.len() + fields.iter().map(|field| field.len()).sum::<usize>();
             let mut encoded = Vec::new();
-            encoded.try_reserve_exact(capacity)
+            encoded
+                .try_reserve_exact(capacity)
                 .map_err(|_| StreamsAuthorityRecordError::AllocationFailed)?;
             encoded.extend_from_slice(domain);
-            for field in fields { encoded.extend_from_slice(field); }
+            for field in fields {
+                encoded.extend_from_slice(field);
+            }
             Ok(Bytes::from(encoded))
-        }).and_then(std::convert::identity)
+        })
+        .and_then(std::convert::identity)
     }
 
     /// Uses the canonical field writer with caller-owned allocation admission.
@@ -71,9 +75,13 @@ impl StreamsDurableRecord {
         write: impl FnOnce(&[u8], &[&[u8]]) -> Result<Bytes, E>,
     ) -> Result<Result<Bytes, E>, StreamsAuthorityRecordError> {
         let borrowed = BorrowedStreamsDurableRecord {
-            epoch: commit.epoch, sequence: commit.sequence, operation_id: commit.operation_id,
-            fingerprint: commit.fingerprint, previous_digest: commit.previous_digest,
-            digest: commit.digest, payload: &commit.payload,
+            epoch: commit.epoch,
+            sequence: commit.sequence,
+            operation_id: commit.operation_id,
+            fingerprint: commit.fingerprint,
+            previous_digest: commit.previous_digest,
+            digest: commit.digest,
+            payload: &commit.payload,
         };
         Self::encode_borrowed_with(&borrowed, maximum_record_bytes, write)
     }
@@ -86,15 +94,24 @@ impl StreamsDurableRecord {
     ) -> Result<Result<T, E>, StreamsAuthorityRecordError> {
         let payload_bytes = u64::try_from(commit.payload.len())
             .map_err(|_| StreamsAuthorityRecordError::LengthOverflow)?;
-        let encoded_bytes = (DURABLE_HEADER_BYTES as u64).checked_add(payload_bytes)
+        let encoded_bytes = (DURABLE_HEADER_BYTES as u64)
+            .checked_add(payload_bytes)
             .ok_or(StreamsAuthorityRecordError::LengthOverflow)?;
         validate_limit(maximum_record_bytes, encoded_bytes)?;
-        Ok(write(DURABLE_DOMAIN, &[
-            &VERSION.to_le_bytes(), &commit.epoch.get().to_le_bytes(),
-            &commit.sequence.get().to_le_bytes(), &commit.operation_id.into_bytes(),
-            commit.fingerprint.as_bytes(), commit.previous_digest.as_bytes(),
-            commit.digest.as_bytes(), &payload_bytes.to_le_bytes(), commit.payload,
-        ]))
+        Ok(write(
+            DURABLE_DOMAIN,
+            &[
+                &VERSION.to_le_bytes(),
+                &commit.epoch.get().to_le_bytes(),
+                &commit.sequence.get().to_le_bytes(),
+                &commit.operation_id.into_bytes(),
+                commit.fingerprint.as_bytes(),
+                commit.previous_digest.as_bytes(),
+                commit.digest.as_bytes(),
+                &payload_bytes.to_le_bytes(),
+                commit.payload,
+            ],
+        ))
     }
 
     /// Decodes one complete durable record under a hard allocation bound.
@@ -104,14 +121,18 @@ impl StreamsDurableRecord {
     ) -> Result<Self, StreamsAuthorityRecordError> {
         let borrowed = Self::decode_borrowed(encoded, maximum_record_bytes)?;
         let mut payload = Vec::new();
-        payload.try_reserve_exact(borrowed.payload.len())
+        payload
+            .try_reserve_exact(borrowed.payload.len())
             .map_err(|_| StreamsAuthorityRecordError::AllocationFailed)?;
         payload.extend_from_slice(borrowed.payload);
         Ok(Self(DurableCommit {
             settled_at_micros: None,
-            epoch: borrowed.epoch, sequence: borrowed.sequence,
-            operation_id: borrowed.operation_id, fingerprint: borrowed.fingerprint,
-            previous_digest: borrowed.previous_digest, digest: borrowed.digest,
+            epoch: borrowed.epoch,
+            sequence: borrowed.sequence,
+            operation_id: borrowed.operation_id,
+            fingerprint: borrowed.fingerprint,
+            previous_digest: borrowed.previous_digest,
+            digest: borrowed.digest,
             payload: Bytes::from(payload),
         }))
     }
@@ -121,9 +142,11 @@ impl StreamsDurableRecord {
         encoded: &[u8],
         maximum_record_bytes: u64,
     ) -> Result<BorrowedStreamsDurableRecord<'_>, StreamsAuthorityRecordError> {
-        match Self::decode_borrowed_engine::<std::convert::Infallible, fn(ReadAllocationStep) -> Result<(), std::convert::Infallible>>(
-            encoded, maximum_record_bytes, None,
-        ) {
+        match Self::decode_borrowed_engine::<
+            std::convert::Infallible,
+            fn(ReadAllocationStep) -> Result<(), std::convert::Infallible>,
+        >(encoded, maximum_record_bytes, None)
+        {
             Ok(record) => Ok(record),
             Err(ObservedDecodeFailure::Codec(error)) => Err(error),
             Err(ObservedDecodeFailure::Observer(error)) => match error {},
@@ -166,21 +189,39 @@ impl StreamsDurableRecord {
         if take(encoded, &mut cursor, DURABLE_DOMAIN.len()) != DURABLE_DOMAIN {
             return Err(StreamsAuthorityRecordError::InvalidDomain.into());
         }
-        let version = u16::from_le_bytes(read_array_observed::<2, _, _>(encoded, &mut cursor, &mut copy)?);
+        let version = u16::from_le_bytes(read_array_observed::<2, _, _>(
+            encoded,
+            &mut cursor,
+            &mut copy,
+        )?);
         if version != VERSION {
             return Err(StreamsAuthorityRecordError::UnsupportedVersion(version).into());
         }
-        let epoch = Epoch::new(u64::from_le_bytes(read_array_observed::<8, _, _>(encoded, &mut cursor, &mut copy)?))
-            .map_err(|_| StreamsAuthorityRecordError::ZeroEpoch)?;
-        let sequence = Sequence::new(u64::from_le_bytes(read_array_observed::<8, _, _>(encoded, &mut cursor, &mut copy)?));
+        let epoch = Epoch::new(u64::from_le_bytes(read_array_observed::<8, _, _>(
+            encoded,
+            &mut cursor,
+            &mut copy,
+        )?))
+        .map_err(|_| StreamsAuthorityRecordError::ZeroEpoch)?;
+        let sequence = Sequence::new(u64::from_le_bytes(read_array_observed::<8, _, _>(
+            encoded,
+            &mut cursor,
+            &mut copy,
+        )?));
         if sequence == Sequence::GENESIS {
             return Err(StreamsAuthorityRecordError::ZeroSequence.into());
         }
-        let operation_id = OperationId::from_bytes(read_array_observed(encoded, &mut cursor, &mut copy)?);
+        let operation_id =
+            OperationId::from_bytes(read_array_observed(encoded, &mut cursor, &mut copy)?);
         let fingerprint = Digest::from_bytes(read_array_observed(encoded, &mut cursor, &mut copy)?);
-        let previous_digest = Digest::from_bytes(read_array_observed(encoded, &mut cursor, &mut copy)?);
+        let previous_digest =
+            Digest::from_bytes(read_array_observed(encoded, &mut cursor, &mut copy)?);
         let digest = Digest::from_bytes(read_array_observed(encoded, &mut cursor, &mut copy)?);
-        let payload_bytes = u64::from_le_bytes(read_array_observed::<8, _, _>(encoded, &mut cursor, &mut copy)?);
+        let payload_bytes = u64::from_le_bytes(read_array_observed::<8, _, _>(
+            encoded,
+            &mut cursor,
+            &mut copy,
+        )?);
         let payload_len = usize::try_from(payload_bytes)
             .map_err(|_| StreamsAuthorityRecordError::LengthOverflow)?;
         let expected_end = cursor
@@ -191,13 +232,19 @@ impl StreamsDurableRecord {
                 StreamsAuthorityRecordError::Truncated
             } else {
                 StreamsAuthorityRecordError::TrailingBytes
-            }.into());
+            }
+            .into());
         }
         let body = encoded
             .get(cursor..expected_end)
             .ok_or(StreamsAuthorityRecordError::Truncated)?;
         Ok(BorrowedStreamsDurableRecord {
-            epoch, sequence, operation_id, fingerprint, previous_digest, digest,
+            epoch,
+            sequence,
+            operation_id,
+            fingerprint,
+            previous_digest,
+            digest,
             payload: body,
         })
     }
@@ -380,9 +427,12 @@ fn read_array<const N: usize>(
     encoded: &[u8],
     cursor: &mut usize,
 ) -> Result<[u8; N], StreamsAuthorityRecordError> {
-    match read_array_observed::<N, std::convert::Infallible, fn(ReadAllocationStep) -> Result<(), std::convert::Infallible>>(
-        encoded, cursor, &mut None,
-    ) {
+    match read_array_observed::<
+        N,
+        std::convert::Infallible,
+        fn(ReadAllocationStep) -> Result<(), std::convert::Infallible>,
+    >(encoded, cursor, &mut None)
+    {
         Ok(bytes) => Ok(bytes),
         Err(ObservedDecodeFailure::Codec(error)) => Err(error),
         Err(ObservedDecodeFailure::Observer(error)) => match error {},
@@ -395,7 +445,9 @@ enum ObservedDecodeFailure<E> {
 }
 
 impl<E> From<StreamsAuthorityRecordError> for ObservedDecodeFailure<E> {
-    fn from(error: StreamsAuthorityRecordError) -> Self { Self::Codec(error) }
+    fn from(error: StreamsAuthorityRecordError) -> Self {
+        Self::Codec(error)
+    }
 }
 
 fn read_array_observed<const N: usize, E, F>(
@@ -429,16 +481,24 @@ mod tests {
     fn durable_size_rejection_precedes_the_shared_writer() {
         let original = proposal();
         let durable = DurableCommit {
-            epoch: Epoch::GENESIS, sequence: Sequence::new(1),
-            operation_id: original.operation_id, fingerprint: original.fingerprint,
-            previous_digest: Digest::ZERO, digest: Digest::from_bytes([4; 32]), payload: original.payload, settled_at_micros: None,
+            epoch: Epoch::GENESIS,
+            sequence: Sequence::new(1),
+            operation_id: original.operation_id,
+            fingerprint: original.fingerprint,
+            previous_digest: Digest::ZERO,
+            digest: Digest::from_bytes([4; 32]),
+            payload: original.payload,
+            settled_at_micros: None,
         };
         let called = std::cell::Cell::new(false);
         let result = StreamsDurableRecord::encode_with(&durable, 1, |_, _| {
             called.set(true);
             Ok::<Bytes, StreamsAuthorityRecordError>(Bytes::new())
         });
-        assert!(matches!(result, Err(StreamsAuthorityRecordError::RecordTooLarge { .. })));
+        assert!(matches!(
+            result,
+            Err(StreamsAuthorityRecordError::RecordTooLarge { .. })
+        ));
         assert!(!called.get());
     }
 
@@ -446,39 +506,60 @@ mod tests {
     fn borrowed_observer_preserves_canonical_bytes_and_genuine_failed_copy_prefix() {
         let original = proposal();
         let durable = DurableCommit {
-            epoch: Epoch::GENESIS, sequence: Sequence::new(1),
-            operation_id: original.operation_id, fingerprint: original.fingerprint,
-            previous_digest: Digest::ZERO, digest: Digest::from_bytes([4; 32]), payload: original.payload, settled_at_micros: None,
+            epoch: Epoch::GENESIS,
+            sequence: Sequence::new(1),
+            operation_id: original.operation_id,
+            fingerprint: original.fingerprint,
+            previous_digest: Digest::ZERO,
+            digest: Digest::from_bytes([4; 32]),
+            payload: original.payload,
+            settled_at_micros: None,
         };
-        let encoded = StreamsDurableRecord::encode(&durable, 4096).expect("canonical bounded record");
+        let encoded =
+            StreamsDurableRecord::encode(&durable, 4096).expect("canonical bounded record");
         let mut copied = 0;
         let observed = StreamsDurableRecord::decode_borrowed_with(&encoded, 4096, |step| {
-            if let ReadAllocationStep::Copied(bytes) = step { copied += bytes; }
+            if let ReadAllocationStep::Copied(bytes) = step {
+                copied += bytes;
+            }
             Ok::<(), ()>(())
-        }).expect("observer accepts").expect("canonical record");
+        })
+        .expect("observer accepts")
+        .expect("canonical record");
         assert_eq!(observed.payload, durable.payload.as_ref());
         assert_eq!(observed.digest, durable.digest);
         assert_eq!(observed.operation_id, durable.operation_id);
         assert_eq!(copied, 138);
-        assert_eq!(observed.payload.as_ptr(), encoded[DURABLE_HEADER_BYTES..].as_ptr());
+        assert_eq!(
+            observed.payload.as_ptr(),
+            encoded[DURABLE_HEADER_BYTES..].as_ptr()
+        );
         let mut copied = 0;
-        let refused = StreamsDurableRecord::decode_borrowed_with(&encoded, 4096, |step| {
-            match step {
+        let refused =
+            StreamsDurableRecord::decode_borrowed_with(&encoded, 4096, |step| match step {
                 ReadAllocationStep::BeforeCopy(bytes) if copied + bytes > 18 => Err("field denied"),
-                ReadAllocationStep::Copied(bytes) => { copied += bytes; Ok(()) }
+                ReadAllocationStep::Copied(bytes) => {
+                    copied += bytes;
+                    Ok(())
+                }
                 _ => Ok(()),
-            }
-        });
+            });
         assert!(matches!(refused, Err("field denied")));
         assert_eq!(copied, 18);
         let mut invalid_version = encoded.to_vec();
         invalid_version[DURABLE_DOMAIN.len()] = 0xff;
         let mut copied = 0;
         let rejected = StreamsDurableRecord::decode_borrowed_with(&invalid_version, 4096, |step| {
-            if let ReadAllocationStep::Copied(bytes) = step { copied += bytes; }
+            if let ReadAllocationStep::Copied(bytes) = step {
+                copied += bytes;
+            }
             Ok::<(), ()>(())
-        }).expect("observer accepts malformed input");
-        assert!(matches!(rejected, Err(StreamsAuthorityRecordError::UnsupportedVersion(_))));
+        })
+        .expect("observer accepts malformed input");
+        assert!(matches!(
+            rejected,
+            Err(StreamsAuthorityRecordError::UnsupportedVersion(_))
+        ));
         assert_eq!(copied, 2);
     }
 

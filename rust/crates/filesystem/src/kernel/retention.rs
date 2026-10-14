@@ -1,9 +1,9 @@
 //! Canonical independently addressable generation-retention facts.
 
-use super::codec::{CanonicalDecodeError, Decoder, Encoder, EncodeWorkStep};
+use super::codec::{CanonicalDecodeError, Decoder, EncodeWorkStep, Encoder};
 
-use crate::{WorkCounters};
 use super::volume::{CONFIG_ENCODED_BYTES, decode_config, encode_config};
+use crate::WorkCounters;
 use crate::foundation::{AuthorityId, Digest, VolumeId, usize_to_u64};
 use crate::model::{VolumeConfig, VolumeConfigError};
 use crate::storage::{ObjectId, ObjectKind};
@@ -109,13 +109,19 @@ pub fn encode_retention_created<E: From<CanonicalDecodeError> + From<RetentionCr
 ) -> Result<Vec<u8>, E> {
     observe(EncodeWorkStep::Check)?;
     validate(value)?;
-    let item = WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED };
+    let item = WorkCounters {
+        items_examined: 1,
+        ..WorkCounters::UNCHARGED
+    };
     observe(EncodeWorkStep::Admit(item))?;
     observe(EncodeWorkStep::Completed(item))?;
     let length = DOMAIN.len() + 2 + 16 + 1 + 4 + value.label.len() + 1 + 32 + CONFIG_ENCODED_BYTES;
     let mut encoder = Encoder::with_exact_capacity(
-        DOMAIN, VERSION, length,
-        |step| observe(EncodeWorkStep::Allocation(step)), allocation_error,
+        DOMAIN,
+        VERSION,
+        length,
+        |step| observe(EncodeWorkStep::Allocation(step)),
+        allocation_error,
     )?;
     let fields = WorkCounters {
         bytes_encoded: (16 + 1 + 4 + value.label.len() + 1 + 32) as u64,
@@ -130,7 +136,8 @@ pub fn encode_retention_created<E: From<CanonicalDecodeError> + From<RetentionCr
     encoder.fixed(value.generation_root.digest.as_bytes());
     observe(EncodeWorkStep::Completed(fields))?;
     let config = WorkCounters {
-        bytes_encoded: CONFIG_ENCODED_BYTES as u64, ..WorkCounters::UNCHARGED
+        bytes_encoded: CONFIG_ENCODED_BYTES as u64,
+        ..WorkCounters::UNCHARGED
     };
     observe(EncodeWorkStep::Admit(config))?;
     encode_config(&mut encoder, value.config);
@@ -143,18 +150,33 @@ pub fn decode_retention_created(
     bytes: &[u8],
     maximum_payload_bytes: u64,
 ) -> Result<RetentionCreated, RetentionCreatedError> {
-    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, maximum_payload_bytes, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
-    let volume_id = VolumeId::from_bytes(decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?);
-    let kind = RetentionKind::from_tag(decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?)?;
-    let label = String::from_utf8(decoder.bounded_bytes(MAXIMUM_LABEL_BYTES, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?)
-        .map_err(|_| RetentionCreatedError::InvalidLabel)?;
-    let object_kind = ObjectKind::from_canonical_tag(decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?)
-        .map_err(|_| RetentionCreatedError::WrongObjectKind)?;
+    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, maximum_payload_bytes, &mut |_| {
+        Ok::<_, crate::kernel::CanonicalDecodeError>(())
+    })?;
+    let volume_id = VolumeId::from_bytes(
+        decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+    );
+    let kind = RetentionKind::from_tag(
+        decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+    )?;
+    let label = String::from_utf8(decoder.bounded_bytes(MAXIMUM_LABEL_BYTES, &mut |_| {
+        Ok::<_, crate::kernel::CanonicalDecodeError>(())
+    })?)
+    .map_err(|_| RetentionCreatedError::InvalidLabel)?;
+    let object_kind = ObjectKind::from_canonical_tag(
+        decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+    )
+    .map_err(|_| RetentionCreatedError::WrongObjectKind)?;
     let generation_root = ObjectId {
         kind: object_kind,
-        digest: Digest::from_bytes(decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?),
+        digest: Digest::from_bytes(
+            decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+        ),
     };
-    let config = decode_config(&mut decoder, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?.validate()?;
+    let config = decode_config(&mut decoder, &mut |_| {
+        Ok::<_, crate::kernel::CanonicalDecodeError>(())
+    })?
+    .validate()?;
     decoder.finish()?;
     let value = RetentionCreated {
         volume_id,
@@ -172,8 +194,16 @@ pub fn decode_workspace_deleted(
     bytes: &[u8],
     maximum_payload_bytes: u64,
 ) -> Result<VolumeId, CanonicalDecodeError> {
-    let mut decoder = Decoder::new(bytes, DELETED_DOMAIN, VERSION, maximum_payload_bytes, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
-    let volume_id = VolumeId::from_bytes(decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?);
+    let mut decoder = Decoder::new(
+        bytes,
+        DELETED_DOMAIN,
+        VERSION,
+        maximum_payload_bytes,
+        &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+    )?;
+    let volume_id = VolumeId::from_bytes(
+        decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+    );
     decoder.finish()?;
     Ok(volume_id)
 }
@@ -210,19 +240,31 @@ pub fn encode_workspace_deleted<E: From<CanonicalDecodeError>>(
     allocation_error: impl FnOnce(std::collections::TryReserveError) -> E,
 ) -> Result<Vec<u8>, E> {
     observe(EncodeWorkStep::Check)?;
-    let item = WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED };
+    let item = WorkCounters {
+        items_examined: 1,
+        ..WorkCounters::UNCHARGED
+    };
     observe(EncodeWorkStep::Admit(item))?;
     observe(EncodeWorkStep::Completed(item))?;
     let length = DELETED_DOMAIN.len() + 2 + 16;
     observe(EncodeWorkStep::Admit(WorkCounters {
-        bytes_encoded: length as u64, bytes_copied: 16, ..WorkCounters::UNCHARGED
+        bytes_encoded: length as u64,
+        bytes_copied: 16,
+        ..WorkCounters::UNCHARGED
     }))?;
-    let mut encoder = Encoder::with_exact_capacity(DELETED_DOMAIN, VERSION, length,
-        |step| observe(EncodeWorkStep::Allocation(step)), allocation_error)?;
+    let mut encoder = Encoder::with_exact_capacity(
+        DELETED_DOMAIN,
+        VERSION,
+        length,
+        |step| observe(EncodeWorkStep::Allocation(step)),
+        allocation_error,
+    )?;
     observe(EncodeWorkStep::Check)?;
     encoder.fixed(&volume_id.into_bytes());
     observe(EncodeWorkStep::Completed(WorkCounters {
-        bytes_encoded: 16, bytes_copied: 16, ..WorkCounters::UNCHARGED
+        bytes_encoded: 16,
+        bytes_copied: 16,
+        ..WorkCounters::UNCHARGED
     }))?;
     Ok(encoder.finish())
 }

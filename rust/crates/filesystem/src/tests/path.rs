@@ -116,12 +116,28 @@ fn every_portable_path_boundary_and_accessor_is_explicit() -> Result<(), PathErr
 #[test]
 fn borrowed_path_validation_is_the_same_canonical_parser() {
     let limits = VolumeLimits {
-        maximum_path_bytes: 8, maximum_component_bytes: 3, maximum_path_depth: 2,
+        maximum_path_bytes: 8,
+        maximum_component_bytes: 3,
+        maximum_path_depth: 2,
         ..VolumeLimits::default()
     };
-    for value in ["/", "/ab/c", "relative", "/a/", "/.", "/..", "/a//b", "/a\0", "/abcd", "/a/b/c", "/12345678"] {
-        assert_eq!(PortablePath::validate(value, limits),
-            PortablePath::parse(value, limits).map(|path| path.depth()));
+    for value in [
+        "/",
+        "/ab/c",
+        "relative",
+        "/a/",
+        "/.",
+        "/..",
+        "/a//b",
+        "/a\0",
+        "/abcd",
+        "/a/b/c",
+        "/12345678",
+    ] {
+        assert_eq!(
+            PortablePath::validate(value, limits),
+            PortablePath::parse(value, limits).map(|path| path.depth())
+        );
     }
 }
 

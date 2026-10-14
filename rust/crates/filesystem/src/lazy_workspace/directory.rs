@@ -516,7 +516,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                         && index >= offset
                         && index < offset + chunk.len()
                     {
-                        *hidden |= lookup.entries.get(index - offset).ok_or(LazyWorkspaceError::Concurrent)?.record.is_some();
+                        *hidden |= lookup
+                            .entries
+                            .get(index - offset)
+                            .ok_or(LazyWorkspaceError::Concurrent)?
+                            .record
+                            .is_some();
                     }
                 }
                 offset += chunk.len();

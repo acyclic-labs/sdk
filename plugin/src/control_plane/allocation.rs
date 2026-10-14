@@ -37,37 +37,35 @@ pub(crate) struct RootCreation {
 
 impl RootCreation {
     pub(crate) fn validate(&self) -> Result<(), String> {
-            if [
-                self.repository_workspace_id,
-                self.source_identity,
-                self.native_root_identity,
-            ]
-            .contains(&[0; 16])
-            {
-                return Err("physical root creation has an empty identity".to_owned());
-            }
-            Ok(())
+        if [
+            self.repository_workspace_id,
+            self.source_identity,
+            self.native_root_identity,
+        ]
+        .contains(&[0; 16])
+        {
+            return Err("physical root creation has an empty identity".to_owned());
         }
-
+        Ok(())
+    }
 }
 
 impl RootBinding {
     pub(crate) fn created(&self) -> Result<&RootCreation, String> {
-            match &self.allocation {
-                RootAllocation::Created(creation) => Ok(creation),
-                RootAllocation::Preparing => {
-                    Err("physical root allocation is still preparing".to_owned())
-                }
+        match &self.allocation {
+            RootAllocation::Created(creation) => Ok(creation),
+            RootAllocation::Preparing => {
+                Err("physical root allocation is still preparing".to_owned())
             }
         }
+    }
 
     pub(crate) fn created_mut(&mut self) -> Result<&mut RootCreation, String> {
-            match &mut self.allocation {
-                RootAllocation::Created(creation) => Ok(creation),
-                RootAllocation::Preparing => {
-                    Err("physical root allocation is still preparing".to_owned())
-                }
+        match &mut self.allocation {
+            RootAllocation::Created(creation) => Ok(creation),
+            RootAllocation::Preparing => {
+                Err("physical root allocation is still preparing".to_owned())
             }
         }
-
+    }
 }

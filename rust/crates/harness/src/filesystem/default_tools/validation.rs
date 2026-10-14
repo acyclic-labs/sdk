@@ -171,7 +171,9 @@ pub(super) async fn validate_fork_binding<
         io,
     )?;
     let ordinary;
-    let observer = if let Some(io) = io { io } else {
+    let observer = if let Some(io) = io {
+        io
+    } else {
         ordinary = PreparationIo::from_budget(
             acyclic_fs::performance::work_budget(binding.limits.work, binding.limits.bytes),
             cancellation,

@@ -11,7 +11,8 @@ use acyclic_harness::{
 };
 use serde_json::json;
 fn text(bytes: &[u8]) -> Result<String> {
-    std::str::from_utf8(bytes).map(str::to_owned)
+    std::str::from_utf8(bytes)
+        .map(str::to_owned)
         .map_err(|error| Error::Invalid(error.to_string()))
 }
 fn main() -> Result<()> {

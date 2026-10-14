@@ -31,7 +31,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             return Err(LazyWorkspaceError::NativeLedgerMismatch.into());
         }
         before_publication(work).await?;
-        self.publish_selected_import(destination, &input.0, operation, permit, work, before_publication).await
+        self.publish_selected_import(
+            destination,
+            &input.0,
+            operation,
+            permit,
+            work,
+            before_publication,
+        )
+        .await
     }
     async fn publish_selected_import<F, Fut, E>(
         &self,
@@ -48,35 +56,81 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         E: From<LazyWorkspaceError> + From<WorkspaceError> + From<crate::FsError> + Send + 'static,
     {
         let key = IdempotencyKey::from_bytes(operation.into_bytes());
-        let mut ctx = KernelAccounting::NativeOriginal { work, cancellation: work.cancellation() };
+        let mut ctx = KernelAccounting::NativeOriginal {
+            work,
+            cancellation: work.cancellation(),
+        };
         let input = plan.input_digest(destination, &mut ctx)?;
         if let Some(generation) = self.operation_generation(key, &mut ctx).await? {
-            return self.finish_selected_import(operation, generation, destination, plan.source,
-                plan.source_config, input, &mut ctx).await.map_err(E::from);
+            return self
+                .finish_selected_import(
+                    operation,
+                    generation,
+                    destination,
+                    plan.source,
+                    plan.source_config,
+                    input,
+                    &mut ctx,
+                )
+                .await
+                .map_err(E::from);
         }
         self.recover_pending_remove(&mut ctx).await?;
-        let mut checkout = self.workspace.checkout_accounted(
-            crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(),
-            &mut ctx, work.cancellation(),
-        ).await?;
-        let effects = self.prepare_selected_import_into_checkout(
-            destination, plan, &mut checkout, operation, &mut ctx,
-        ).await?;
-        self.prepare_mount_removals(&[], &effects.paths, &effects.records, key, &mut ctx).await?;
+        let mut checkout = self
+            .workspace
+            .checkout_accounted(
+                crate::model::GenerationSelector::Head,
+                crate::model::CheckoutMode::tracking_transaction(),
+                &mut ctx,
+                work.cancellation(),
+            )
+            .await?;
+        let effects = self
+            .prepare_selected_import_into_checkout(
+                destination,
+                plan,
+                &mut checkout,
+                operation,
+                &mut ctx,
+            )
+            .await?;
+        self.prepare_mount_removals(&[], &effects.paths, &effects.records, key, &mut ctx)
+            .await?;
         let cut = self.publication_cut(Some(operation), &mut ctx).await?;
         let (context, evidence) = publication_evidence(
-            NativeSnapshotContext::Selected { cut, input }, operation, permit, &mut ctx,
+            NativeSnapshotContext::Selected { cut, input },
+            operation,
+            permit,
+            &mut ctx,
         )?;
-        let mut transaction = crate::Transaction::from_checkout(&self.workspace, checkout, key, false);
-        let committed = transaction.commit_with_native_work(
-            Some((context, evidence, permit)), permit, work, work.cancellation(), &mut before_publication,
-        ).await?;
-        let (TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation)) = committed else {
+        let mut transaction =
+            crate::Transaction::from_checkout(&self.workspace, checkout, key, false);
+        let committed = transaction
+            .commit_with_native_work(
+                Some((context, evidence, permit)),
+                permit,
+                work,
+                work.cancellation(),
+                &mut before_publication,
+            )
+            .await?;
+        let (TransactionCommit::Committed(generation)
+        | TransactionCommit::AlreadyCommitted(generation)) = committed
+        else {
             return Err(LazyWorkspaceError::Concurrent.into());
         };
         before_publication(work).await?;
-        self.finish_selected_import(operation, generation.id(), destination, plan.source,
-            plan.source_config, input, &mut ctx).await.map_err(E::from)
+        self.finish_selected_import(
+            operation,
+            generation.id(),
+            destination,
+            plan.source,
+            plan.source_config,
+            input,
+            &mut ctx,
+        )
+        .await
+        .map_err(E::from)
     }
     pub(crate) async fn prepare_selected_import_into_checkout(
         &self,

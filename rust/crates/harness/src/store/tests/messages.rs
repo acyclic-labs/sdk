@@ -167,9 +167,7 @@ async fn indexed_conversation_lookup_is_atomic_bounded_and_pinned_after_eviction
     client.forbid_writes.store(false, Ordering::SeqCst);
     let selection = crate::conversation::ModelContextSelection {
         conversation_revision: 10_000,
-        message_ids: [1, 5_000, 10_000]
-            .map(uuid::Uuid::from_u128)
-            .into(),
+        message_ids: [1, 5_000, 10_000].map(uuid::Uuid::from_u128).into(),
         checkpoint: None,
     };
     writer

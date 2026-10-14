@@ -40,13 +40,13 @@ impl NativePreparationCompletionTemplate {
         let output =
             acyclic_stream::PreparedOwnedBytes::new(output, output_custody, &work.runtime_meter())
                 .map_err(|failure| match failure.into_error() {
-                acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
-                    Error::from(work.runtime_error(error))
-                }
-                acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
-                    acyclic_fs::NativeTreeMaterializationError::InvalidLayout.into()
-                }
-            })?;
+                    acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
+                        Error::from(work.runtime_error(error))
+                    }
+                    acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
+                        acyclic_fs::NativeTreeMaterializationError::InvalidLayout.into()
+                    }
+                })?;
         Self::set_work(&mut value, journal.revision, journal.work)?;
         let path = super::journal::path(owner.task_binding().0, work)?;
         io.retain_owned(std::mem::size_of::<Self>() as u64)?;

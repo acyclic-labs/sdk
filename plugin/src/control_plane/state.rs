@@ -47,61 +47,59 @@ pub(crate) struct AdapterState {
 
 impl AdapterState {
     pub(crate) fn require_created_roots(&self) -> Result<(), String> {
-            for root in self.roots.values() {
-                root.created()?;
-            }
-            Ok(())
+        for root in self.roots.values() {
+            root.created()?;
         }
-
+        Ok(())
+    }
 }
 
 impl ControlPlane {
     pub(crate) fn persist(&mut self) -> Result<(), String> {
-            // A save that survives a power loss survives it with every authority
-            // write it may rest on.
-            self.fs.flush_deferred_authority().map_err(display)?;
-            self.slots
-                .save(&self.data, &self.state, Survives::PowerLoss)?;
-            // A flushed save is a whole snapshot, so it covers any unflushed one.
-            self.unflushed = false;
-            Ok(())
-        }
+        // A save that survives a power loss survives it with every authority
+        // write it may rest on.
+        self.fs.flush_deferred_authority().map_err(display)?;
+        self.slots
+            .save(&self.data, &self.state, Survives::PowerLoss)?;
+        // A flushed save is a whole snapshot, so it covers any unflushed one.
+        self.unflushed = false;
+        Ok(())
+    }
 
     /// Saves the last transition of a request without flushing it; see
-        /// [`Survives::ServiceCrash`].
-        pub(crate) fn persist_unflushed(&mut self) -> Result<(), String> {
-            self.slots
-                .save(&self.data, &self.state, Survives::ServiceCrash)?;
-            self.unflushed = true;
-            Ok(())
-        }
+    /// [`Survives::ServiceCrash`].
+    pub(crate) fn persist_unflushed(&mut self) -> Result<(), String> {
+        self.slots
+            .save(&self.data, &self.state, Survives::ServiceCrash)?;
+        self.unflushed = true;
+        Ok(())
+    }
 
     /// Flushes an unflushed save and the authority writes of the requests
-        /// before it. Every request starts here, so nothing ever acts on a
-        /// transition that a power loss could still undo.
-        pub(crate) async fn make_durable(&mut self) -> Result<(), String> {
-            let fs = self.fs.clone();
-            tokio::task::spawn_blocking(move || fs.flush_deferred_authority())
-                .await
-                .map_err(display)?
-                .map_err(display)?;
-            if !self.unflushed {
-                return Ok(());
-            }
-            #[cfg(test)]
-            if std::mem::take(&mut self.fail_next_flush) {
-                return Err("injected adapter-state flush failure".to_owned());
-            }
-            let data = self.data.clone();
-            let mut slots = self.slots;
-            self.slots = tokio::task::spawn_blocking(move || {
-                slots.flush_unflushed(&data)?;
-                Ok::<_, String>(slots)
-            })
+    /// before it. Every request starts here, so nothing ever acts on a
+    /// transition that a power loss could still undo.
+    pub(crate) async fn make_durable(&mut self) -> Result<(), String> {
+        let fs = self.fs.clone();
+        tokio::task::spawn_blocking(move || fs.flush_deferred_authority())
             .await
-            .map_err(display)??;
-            self.unflushed = false;
-            Ok(())
+            .map_err(display)?
+            .map_err(display)?;
+        if !self.unflushed {
+            return Ok(());
         }
-
+        #[cfg(test)]
+        if std::mem::take(&mut self.fail_next_flush) {
+            return Err("injected adapter-state flush failure".to_owned());
+        }
+        let data = self.data.clone();
+        let mut slots = self.slots;
+        self.slots = tokio::task::spawn_blocking(move || {
+            slots.flush_unflushed(&data)?;
+            Ok::<_, String>(slots)
+        })
+        .await
+        .map_err(display)??;
+        self.unflushed = false;
+        Ok(())
+    }
 }

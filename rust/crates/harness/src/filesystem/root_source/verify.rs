@@ -23,13 +23,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         if io.is_some() {
             check()?;
         }
-        if context.owner != &self.owner || context.graph_root != self.graph_root || !context.created_project_authenticated {
+        if context.owner != &self.owner
+            || context.graph_root != self.graph_root
+            || !context.created_project_authenticated
+        {
             return Err(denied("project source belongs to another service graph"));
         }
         if snapshot.native_snapshot.is_some() {
-            return Err(denied(
-                "native source has no original provider binding",
-            ));
+            return Err(denied("native source has no original provider binding"));
         }
         if io.is_none() {
             snapshot.project.validate(&mut None)?;
@@ -51,7 +52,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             )
         })?;
         let ordinary;
-        let io = if let Some(io) = io { io } else {
+        let io = if let Some(io) = io {
+            io
+        } else {
             ordinary = PreparationIo::from_budget(budget, context.cancellation)?;
             &ordinary
         };
@@ -68,8 +71,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         if io.original_native_work().is_none() {
             io.retain_owned(opened.name().as_str().len() as u64)?;
         }
-        let selected =
-            self.host.generation(&opened, &snapshot.generation, Some(io)).await?;
+        let selected = self
+            .host
+            .generation(&opened, &snapshot.generation, Some(io))
+            .await?;
         drop(selected);
         check()?;
         io.remaining()?;

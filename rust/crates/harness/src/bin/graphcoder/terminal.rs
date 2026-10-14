@@ -25,11 +25,17 @@ pub struct Scrollback {
 impl Scrollback {
     pub fn push(&mut self, page: String) -> Result<()> {
         if page.len() > MAX_DISPLAY_BYTES {
-            return Err(Error::Invalid("rendered page exceeds display bounds".into()));
+            return Err(Error::Invalid(
+                "rendered page exceeds display bounds".into(),
+            ));
         }
         let mut bytes = self.pages.iter().map(String::len).sum::<usize>() + page.len();
         while self.pages.len() >= MAX_DISPLAY_PAGES || bytes > MAX_DISPLAY_BYTES {
-            bytes -= self.pages.pop_front().expect("admitted page fits an empty scrollback").len();
+            bytes -= self
+                .pages
+                .pop_front()
+                .expect("admitted page fits an empty scrollback")
+                .len();
         }
         self.pages.push_back(page);
         Ok(())
@@ -133,7 +139,8 @@ pub fn render(frame: &wire::ServerFrame) -> Result<String> {
                 text(&delivery.generation),
             );
             for event in &delivery.events {
-                let presentation = render_payload(&event.event_type, &event.canonical_payload_json)?;
+                let presentation =
+                    render_payload(&event.event_type, &event.canonical_payload_json)?;
                 writeln!(
                     output,
                     "#{} {} operation={}\n{}",
@@ -150,7 +157,9 @@ pub fn render(frame: &wire::ServerFrame) -> Result<String> {
         frame => format!("{frame:?}\n"),
     };
     if output.len() > MAX_DISPLAY_BYTES {
-        return Err(Error::Invalid("rendered response exceeds display bounds".into()));
+        return Err(Error::Invalid(
+            "rendered response exceeds display bounds".into(),
+        ));
     }
     Ok(output)
 }
@@ -158,18 +167,24 @@ pub fn render(frame: &wire::ServerFrame) -> Result<String> {
 /// Layout the existing semantic event types without resolving any referenced content, interpreting grants, or conflating task and operation identities.
 fn render_payload(event_type: &str, bytes: &[u8]) -> Result<String> {
     use acyclic_harness::core::EventPayload;
-    let decoded = acyclic_harness::wire_codec::decode_event_payload(event_type, bytes, &mut None)?.0;
+    let decoded =
+        acyclic_harness::wire_codec::decode_event_payload(event_type, bytes, &mut None)?.0;
     let rendered = match decoded {
         EventPayload::ConversationMessageAppended { message } => format!(
             "transcript {:?} message={} sequence={}\ncontent {}\n",
-            message.kind, message.id, message.sequence,
+            message.kind,
+            message.id,
+            message.sequence,
             serde_json::to_string(&message.content)
                 .map_err(|error| Error::Invalid(error.to_string()))?,
         ),
         EventPayload::InteractionOpened { ticket } => format!(
             "interaction {:?} id={} approval={:?} deadline={:?}\nrequest {}\n\
              Decision requires an exact scoped response; displaying is not approval.\n",
-            ticket.kind, ticket.id, ticket.approval, ticket.deadline_unix_ms,
+            ticket.kind,
+            ticket.id,
+            ticket.approval,
+            ticket.deadline_unix_ms,
             serde_json::to_string(&ticket.request)
                 .map_err(|error| Error::Invalid(error.to_string()))?,
         ),
@@ -182,14 +197,20 @@ fn render_payload(event_type: &str, bytes: &[u8]) -> Result<String> {
         EventPayload::ProjectMergePublished { receipt } => format!(
             "merge publication={} child={:?}\nsource={:?} target={:?}\n\
              expected={:?} result={:?}\nnotice {}\n",
-            receipt.operation_id, receipt.child,
-            receipt.source_generation, receipt.target_project,
-            receipt.expected_target_generation, receipt.result_generation,
+            receipt.operation_id,
+            receipt.child,
+            receipt.source_generation,
+            receipt.target_project,
+            receipt.expected_target_generation,
+            receipt.result_generation,
             serde_json::to_string(&receipt.notice.content)
                 .map_err(|error| Error::Invalid(error.to_string()))?,
         ),
-        _ => return Ok(text(std::str::from_utf8(bytes)
-            .map_err(|_| Error::Invalid("event payload is not UTF-8".into()))?)),
+        _ => {
+            return Ok(text(std::str::from_utf8(bytes).map_err(|_| {
+                Error::Invalid("event payload is not UTF-8".into())
+            })?));
+        }
     };
     Ok(text(&rendered))
 }

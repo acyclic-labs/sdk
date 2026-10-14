@@ -1,4 +1,4 @@
-use super::{CanonicalDecodeError, Decoder, Encoder, EncodeAllocationStep};
+use super::{CanonicalDecodeError, Decoder, EncodeAllocationStep, Encoder};
 
 #[test]
 fn exact_capacity_accepts_only_the_complete_header_boundary() {
@@ -6,12 +6,25 @@ fn exact_capacity_accepts_only_the_complete_header_boundary() {
     let minimum = domain.len() + 2;
 
     assert_eq!(
-        Encoder::with_exact_capacity(domain, 7, minimum, |_| Ok::<_, CanonicalDecodeError>(()), |_| CanonicalDecodeError::AllocationFailed).map(Encoder::finish),
+        Encoder::with_exact_capacity(
+            domain,
+            7,
+            minimum,
+            |_| Ok::<_, CanonicalDecodeError>(()),
+            |_| CanonicalDecodeError::AllocationFailed
+        )
+        .map(Encoder::finish),
         Ok([domain.as_slice(), &7_u16.to_le_bytes()].concat())
     );
 
     assert!(matches!(
-        Encoder::with_exact_capacity(domain, 7, minimum - 1, |_| Ok::<_, CanonicalDecodeError>(()), |_| CanonicalDecodeError::AllocationFailed),
+        Encoder::with_exact_capacity(
+            domain,
+            7,
+            minimum - 1,
+            |_| Ok::<_, CanonicalDecodeError>(()),
+            |_| CanonicalDecodeError::AllocationFailed
+        ),
         Err(CanonicalDecodeError::LengthOverflow)
     ));
 }
@@ -21,7 +34,9 @@ fn exact_capacity_accepts_only_the_complete_header_boundary() {
 fn original_reservation_failure_keeps_actual_typed_reserve_cause() {
     let mut reserved = false;
     let result = Encoder::with_exact_capacity(
-        b"domain", 7, usize::MAX,
+        b"domain",
+        7,
+        usize::MAX,
         |step| {
             match step {
                 EncodeAllocationStep::Reserve { .. } => reserved = true,
@@ -29,10 +44,19 @@ fn original_reservation_failure_keeps_actual_typed_reserve_cause() {
             }
             Ok::<_, crate::FsError>(())
         },
-        |error| crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(error)),
+        |error| {
+            crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(
+                error,
+            ))
+        },
     );
     assert!(reserved);
-    assert!(matches!(result, Err(crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(_)))));
+    assert!(matches!(
+        result,
+        Err(crate::FsError::NativeKernel(
+            crate::NativeTreeMaterializationError::AllocationFailed(_)
+        ))
+    ));
 }
 
 #[test]
@@ -42,7 +66,13 @@ fn decoder_rejects_version_and_bounded_field_overclaims_before_allocation()
     let mut wrong_version = Encoder::new(domain, 8);
     wrong_version.u8(0);
     assert_eq!(
-        Decoder::new(&wrong_version.finish(), domain, 7, u64::MAX, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).err(),
+        Decoder::new(&wrong_version.finish(), domain, 7, u64::MAX, &mut |_| Ok::<
+            _,
+            crate::kernel::CanonicalDecodeError,
+        >(
+            ()
+        ))
+        .err(),
         Some(CanonicalDecodeError::UnsupportedVersion(8))
     );
 
@@ -50,7 +80,9 @@ fn decoder_rejects_version_and_bounded_field_overclaims_before_allocation()
     oversized.u32(5);
     oversized.fixed(b"value");
     let encoded = oversized.finish();
-    let mut copying = Decoder::new(&encoded, domain, 7, u64::MAX, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+    let mut copying = Decoder::new(&encoded, domain, 7, u64::MAX, &mut |_| {
+        Ok::<_, crate::kernel::CanonicalDecodeError>(())
+    })?;
     assert_eq!(
         copying.bounded_bytes(4, &mut |_| Ok::<_, CanonicalDecodeError>(())),
         Err(CanonicalDecodeError::FieldTooLarge {
@@ -58,7 +90,9 @@ fn decoder_rejects_version_and_bounded_field_overclaims_before_allocation()
             maximum: 4,
         })
     );
-    let mut skipping = Decoder::new(&encoded, domain, 7, u64::MAX, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+    let mut skipping = Decoder::new(&encoded, domain, 7, u64::MAX, &mut |_| {
+        Ok::<_, crate::kernel::CanonicalDecodeError>(())
+    })?;
     assert_eq!(
         skipping.skip_bounded_bytes(4),
         Err(CanonicalDecodeError::FieldTooLarge {
@@ -116,15 +150,29 @@ mod properties {
     }
 
     fn decode(bytes: &[u8], schema: &[Field]) -> Result<Vec<Field>, CanonicalDecodeError> {
-        let mut decoder = Decoder::new(bytes, DOMAIN, 3, 256, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+        let mut decoder = Decoder::new(bytes, DOMAIN, 3, 256, &mut |_| {
+            Ok::<_, crate::kernel::CanonicalDecodeError>(())
+        })?;
         let mut fields = Vec::new();
         for field in schema {
             fields.push(match field {
-                Field::U8(_) => Field::U8(decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?),
-                Field::U32(_) => Field::U32(decoder.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?),
-                Field::U64(_) => Field::U64(decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?),
-                Field::I64(_) => Field::I64(decoder.i64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?),
-                Field::OwnedBytes(_) => Field::OwnedBytes(decoder.bounded_bytes(12, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?),
+                Field::U8(_) => Field::U8(
+                    decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+                ),
+                Field::U32(_) => Field::U32(
+                    decoder.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+                ),
+                Field::U64(_) => Field::U64(
+                    decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+                ),
+                Field::I64(_) => Field::I64(
+                    decoder.i64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+                ),
+                Field::OwnedBytes(_) => {
+                    Field::OwnedBytes(decoder.bounded_bytes(12, &mut |_| {
+                        Ok::<_, crate::kernel::CanonicalDecodeError>(())
+                    })?)
+                }
             });
         }
         decoder.finish()?;

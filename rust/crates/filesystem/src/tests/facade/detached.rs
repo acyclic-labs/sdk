@@ -286,9 +286,12 @@ async fn original_detached_content_stream_keeps_atomic_metadata_transition() -> 
         .record
         .unwrap();
     let original = crate::NativeMaterializationWork::new(B, &cancel).map_err(|(cause, _)| cause)?;
-    let reader = checkout.private_candidate(
-        &mut crate::kernel::KernelAccounting::native(&original, &cancel), &cancel,
-    )?.into_pinned_reader_with_native_work(&original, &cancel)?;
+    let reader = checkout
+        .private_candidate(
+            &mut crate::kernel::KernelAccounting::native(&original, &cancel),
+            &cancel,
+        )?
+        .into_pinned_reader_with_native_work(&original, &cancel)?;
     let bytes = reader
         .read_record_range(
             source,

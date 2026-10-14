@@ -82,7 +82,10 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
         &self.marked
     }
 
-    async fn visit(&mut self, object: ObjectId) -> Result<Option<acyclic_stream::OwnedBytes>, MarkError> {
+    async fn visit(
+        &mut self,
+        object: ObjectId,
+    ) -> Result<Option<acyclic_stream::OwnedBytes>, MarkError> {
         if !self.marked.insert(object) {
             return Ok(None);
         }
@@ -144,7 +147,11 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
             __object_work.receipt(__object_result)
         }
         .map_err(|failure| MarkError::Storage(failure.error))?;
-        decode(decode_generation_root(&read.value.bytes, self.limits, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())))
+        decode(decode_generation_root(
+            &read.value.bytes,
+            self.limits,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+        ))
     }
 
     pub(crate) async fn working(&mut self, root: &GenerationRoot) -> Result<(), MarkError> {
@@ -208,9 +215,11 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
             let Some(bytes) = self.visit(page).await? else {
                 continue;
             };
-            if let TreePage::Internal(children) = decode(decode_tree_page(&bytes, self.limits, &mut |_| {
+            if let TreePage::Internal(children) =
+                decode(decode_tree_page(&bytes, self.limits, &mut |_| {
                     Ok::<_, crate::kernel::CanonicalDecodeError>(())
-                }))? {
+                }))?
+            {
                 pending.extend(children.into_iter().map(|child| child.page));
             }
         }
@@ -249,7 +258,9 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
             };
             match decode(decode_blob_page(&bytes, self.limits, &mut |_| {
                 Ok::<_, crate::kernel::CanonicalDecodeError>(())
-            }))?.node {
+            }))?
+            .node
+            {
                 BlobNode::Internal(children) => {
                     pending.extend(children.into_iter().map(|child| child.page));
                 }

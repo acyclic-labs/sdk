@@ -42,7 +42,10 @@ pub(super) async fn accepted_builtin_io(
                 let (leaf, candidate) = if index == 0 {
                     (leaf, request.path.as_str())
                 } else {
-                    (leaves[index - 1].expect("validated variant"), variants[index - 1].as_str())
+                    (
+                        leaves[index - 1].expect("validated variant"),
+                        variants[index - 1].as_str(),
+                    )
                 };
                 let operation = if matches!(request.io, PiBuiltinIo::EditRead { .. }) {
                     VolumeOperation::Write
@@ -50,17 +53,26 @@ pub(super) async fn accepted_builtin_io(
                     VolumeOperation::Read
                 };
                 match view
-                    .file_io(owner, &mapping.volume, operation, leaf, false, false, work, |file, work| {
-                        read_file(
-                            file,
-                            usize::try_from(*maximum_bytes).map_err(|_| {
-                                acyclic_fs::NativeTreeMaterializationError::from(
-                                    acyclic_fs::WorkError::Overflow,
-                                )
-                            })?,
-                            work,
-                        )
-                    })
+                    .file_io(
+                        owner,
+                        &mapping.volume,
+                        operation,
+                        leaf,
+                        false,
+                        false,
+                        work,
+                        |file, work| {
+                            read_file(
+                                file,
+                                usize::try_from(*maximum_bytes).map_err(|_| {
+                                    acyclic_fs::NativeTreeMaterializationError::from(
+                                        acyclic_fs::WorkError::Overflow,
+                                    )
+                                })?,
+                                work,
+                            )
+                        },
+                    )
                     .await
                 {
                     Ok((bytes, _bytes_custody)) => {
@@ -86,18 +98,17 @@ pub(super) async fn accepted_builtin_io(
                 } => Some(expected_digest(expected_sha256)?),
                 _ => None,
             };
-            view
-                .file_io(
-                    owner,
-                    &mapping.volume,
-                    VolumeOperation::Write,
-                    leaf,
-                    true,
-                    matches!(request.io, PiBuiltinIo::Write { .. }),
-                    work,
-                    |file, work| write_file(file, content.as_bytes(), expected, work),
-                )
-                .await?;
+            view.file_io(
+                owner,
+                &mapping.volume,
+                VolumeOperation::Write,
+                leaf,
+                true,
+                matches!(request.io, PiBuiltinIo::Write { .. }),
+                work,
+                |file, work| write_file(file, content.as_bytes(), expected, work),
+            )
+            .await?;
             authorize_owner(context, owner, request.caller, work).await?;
             #[derive(Serialize)]
             struct Response<'a> {

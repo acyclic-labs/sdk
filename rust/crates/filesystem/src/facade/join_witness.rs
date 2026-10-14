@@ -268,10 +268,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             };
             let mut unbounded;
             let fingerprint_accounting = if standalone {
-                unbounded = crate::kernel::allocation::KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation);
+                unbounded = crate::kernel::allocation::KernelAccounting::standalone(
+                    WorkBudget::UNBOUNDED,
+                    cancellation,
+                );
                 &mut unbounded
-            } else { &mut accounting };
-            let expected = contextual_publication_fingerprint(request, context, fingerprint_accounting)?;
+            } else {
+                &mut accounting
+            };
+            let expected =
+                contextual_publication_fingerprint(request, context, fingerprint_accounting)?;
             Ok(commit.fingerprint == expected)
         }
         .await;

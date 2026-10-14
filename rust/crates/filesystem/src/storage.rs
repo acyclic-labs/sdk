@@ -134,7 +134,6 @@ pub enum FenceOutcome {
     },
 }
 
-
 /// One failed authority operation retaining exact spent work.
 pub type AuthorityFailure = OperationFailure<AuthorityStoreError>;
 
@@ -219,7 +218,9 @@ pub enum AuthorityStoreError {
     #[error("authority sequence exhausted")]
     SequenceExhausted,
     /// A surviving reservation identity lacks authenticated original head evidence.
-    #[error("original publication reservation head is unavailable for authority {authority_id:?}, operation {operation_id:?}, gate {gate_tail}")]
+    #[error(
+        "original publication reservation head is unavailable for authority {authority_id:?}, operation {operation_id:?}, gate {gate_tail}"
+    )]
     ReservationOriginalHeadUnavailable {
         /// Original authority selected by the reservation.
         authority_id: AuthorityId,
@@ -380,7 +381,6 @@ pub struct HashedObject {
     bytes: acyclic_stream::OwnedBytes,
 }
 
-
 impl HashedObject {
     /// Hashes `bytes` as one object of `kind`.
     #[must_use]
@@ -402,18 +402,26 @@ impl HashedObject {
         work: &crate::materializer::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<Self, ObjectStoreError> {
-        cancellation.check().map_err(|_| ObjectStoreError::Cancelled)?;
+        cancellation
+            .check()
+            .map_err(|_| ObjectStoreError::Cancelled)?;
         let hash = crate::WorkCounters {
-            bytes_hashed: u64::try_from(bytes.len()).map_err(|_| crate::WorkError::Overflow)?
+            bytes_hashed: u64::try_from(bytes.len())
+                .map_err(|_| crate::WorkError::Overflow)?
                 .checked_add(OBJECT_DIGEST_ENVELOPE_BYTES)
                 .ok_or(crate::WorkError::Overflow)?,
             ..crate::WorkCounters::default()
         };
         work.admit(hash)?;
-        let object_id = ObjectId { kind, digest: object_digest(kind, &bytes) };
+        let object_id = ObjectId {
+            kind,
+            digest: object_digest(kind, &bytes),
+        };
         work.record_admitted(hash)?;
         work.admit(crate::WorkCounters::default())?;
-        cancellation.check().map_err(|_| ObjectStoreError::Cancelled)?;
+        cancellation
+            .check()
+            .map_err(|_| ObjectStoreError::Cancelled)?;
         Ok(Self { object_id, bytes })
     }
 
@@ -426,30 +434,42 @@ impl HashedObject {
         work: &crate::materializer::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<Self, ObjectStoreError> {
-        cancellation.check().map_err(|_| ObjectStoreError::Cancelled)?;
+        cancellation
+            .check()
+            .map_err(|_| ObjectStoreError::Cancelled)?;
         let capacity = u64::try_from(bytes.capacity()).map_err(|_| crate::WorkError::Overflow)?;
         if !work.shares_ledger(allocation.work()) || allocation.bytes() < capacity {
             return Err(crate::materializer::NativeTreeMaterializationError::InvalidLayout.into());
         }
         let hash = crate::WorkCounters {
-            bytes_hashed: u64::try_from(bytes.len()).map_err(|_| crate::WorkError::Overflow)?
+            bytes_hashed: u64::try_from(bytes.len())
+                .map_err(|_| crate::WorkError::Overflow)?
                 .checked_add(OBJECT_DIGEST_ENVELOPE_BYTES)
                 .ok_or(crate::WorkError::Overflow)?,
             ..crate::WorkCounters::default()
         };
         work.admit(hash)?;
-        let object_id = ObjectId { kind, digest: object_digest(kind, bytes) };
+        let object_id = ObjectId {
+            kind,
+            digest: object_digest(kind, bytes),
+        };
         work.record_admitted(hash)?;
         work.admit(crate::WorkCounters::default())?;
-        cancellation.check().map_err(|_| ObjectStoreError::Cancelled)?;
+        cancellation
+            .check()
+            .map_err(|_| ObjectStoreError::Cancelled)?;
         let payload_allocation = allocation.split_off(capacity)?;
         let payload_original = payload_allocation.work().clone();
         let bytes = acyclic_stream::OwnedBytes::from_vec_with_guard(
-            std::mem::take(bytes), payload_allocation, payload_original.runtime_meter(),
-        ).map_err(|failure| match failure.into_error() {
-            acyclic_stream::PreparedOwnedBytesError::Admission(error) => payload_original.runtime_error(error).into(),
-            acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-            => {
+            std::mem::take(bytes),
+            payload_allocation,
+            payload_original.runtime_meter(),
+        )
+        .map_err(|failure| match failure.into_error() {
+            acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
+                payload_original.runtime_error(error).into()
+            }
+            acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
                 ObjectStoreError::Native(crate::NativeTreeMaterializationError::InvalidLayout)
             }
         })?;
@@ -549,7 +569,6 @@ pub type ObjectFailure = OperationFailure<ObjectStoreError>;
 
 /// Receipt-bearing immutable-object result. Failure never erases spent work.
 pub type ObjectResult<T> = MeasuredResult<crate::OperationReceipt<T>, ObjectStoreError>;
-
 
 /// Typed immutable-object failures.
 #[derive(Debug, Error, strum::IntoStaticStr)]

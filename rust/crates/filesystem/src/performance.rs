@@ -73,7 +73,10 @@ impl<E> OperationFailure<E> {
 
     /// Changes only the error domain, retaining the original work allocation.
     pub fn map_error<T>(self, map_error: impl FnOnce(E) -> T) -> OperationFailure<T> {
-        OperationFailure { error: map_error(self.error), work: self.work }
+        OperationFailure {
+            error: map_error(self.error),
+            work: self.work,
+        }
     }
 
     /// Prepends exact work performed by a containing operation while mapping the nested error into the containing error domain.

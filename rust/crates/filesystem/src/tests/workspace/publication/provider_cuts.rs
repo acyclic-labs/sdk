@@ -15,9 +15,7 @@ async fn workspace_creation_recovers_at_every_provider_cut() -> Result<(), Box<d
             cutting.arm(fail_at, cut);
             let attempt = unbounded!(fs, create_workspace("repo"));
             let fired = cutting.disarm();
-            let volume =
-                fs.workspace_id("repo")?
-                    .volume_id();
+            let volume = fs.workspace_id("repo")?.volume_id();
             let created =
                 first_fork_record(&stream, crate::kernel::volume_authority_id(volume)).await?;
             if let Some(created) = &created {

@@ -1,5 +1,4 @@
 use super::*;
-use crate::{filesystem::{MODEL_TASK_COMMAND_KIND, MAIL_RECEIVE_TASK_COMMAND_KIND}, workflow::WorkflowCommand};
 use crate::{
     AgentId, IdempotencyKey, OperationId,
     conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
@@ -9,6 +8,10 @@ use crate::{
         WorkflowAdmission, WorkflowJournal,
     },
 };
+use crate::{
+    filesystem::{MAIL_RECEIVE_TASK_COMMAND_KIND, MODEL_TASK_COMMAND_KIND},
+    workflow::WorkflowCommand,
+};
 
 fn command() -> Result<WorkflowCommand> {
     Ok(WorkflowCommand {
@@ -16,16 +19,23 @@ fn command() -> Result<WorkflowCommand> {
         kind: MODEL_TASK_COMMAND_KIND.into(),
         payload: FileRef::new(
             VolumeRef::new(
-                ProviderRef::new("stock-turn-test".into(), "filesystem".into(), "2".into(), &mut None)?,
+                ProviderRef::new(
+                    "stock-turn-test".into(),
+                    "filesystem".into(),
+                    "2".into(),
+                    &mut None,
+                )?,
                 "private".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([4; 16])),
-             &mut None)?,
+                &mut None,
+            )?,
             "commands/model.json".into(),
             "immutable-command".into(),
             FileDescriptor::from_bytes(b"{}", "application/json", &mut None)?,
             "model.json".into(),
-         &mut None)?,
+            &mut None,
+        )?,
     })
 }
 
@@ -62,14 +72,15 @@ async fn stock_turn_outbox_survives_reopen_and_rejects_foreign_or_uncertain_resu
     let mut registry = MachineRegistry::default();
     registry.register(machine.clone(), &mut None)?;
     let command = command()?;
-    let receive = WorkflowCommand { operation_id: OperationId::from_bytes([10;16]),
-        kind: MAIL_RECEIVE_TASK_COMMAND_KIND.into(), payload: command.payload.clone() };
+    let receive = WorkflowCommand {
+        operation_id: OperationId::from_bytes([10; 16]),
+        kind: MAIL_RECEIVE_TASK_COMMAND_KIND.into(),
+        payload: command.payload.clone(),
+    };
     let initial = MachineCheckpoint {
         machine: machine.identity().clone(),
         revision: 0,
-        state: machine.initialize(
-            &json!({"receive":receive,"model":command}),
-        )?,
+        state: machine.initialize(&json!({"receive":receive,"model":command}))?,
     };
     let journal = Arc::new(MemoryWorkflowJournal::default());
     journal
@@ -85,7 +96,8 @@ async fn stock_turn_outbox_survives_reopen_and_rejects_foreign_or_uncertain_resu
         .step(
             OperationId::from_bytes([2; 16]),
             IdempotencyKey::new("emit")?,
-            Value::Null, |_| Ok(())
+            Value::Null,
+            |_| Ok(()),
         )
         .await?;
     assert_eq!(emitted.commands, vec![receive.clone()]);
@@ -98,16 +110,24 @@ async fn stock_turn_outbox_survives_reopen_and_rejects_foreign_or_uncertain_resu
         host.step(
             OperationId::from_bytes([2; 16]),
             IdempotencyKey::new("emit")?,
-            Value::Null, |_| Ok(())
+            Value::Null,
+            |_| Ok(())
         )
         .await?,
         emitted
     );
-    let selected = host.step(OperationId::from_bytes([11;16]), IdempotencyKey::new("select")?,
-        json!({"commands":[{"operation_id":receive.operation_id,"value":{"Succeeded":null}}]}), |_| Ok(())).await?;
+    let selected = host
+        .step(
+            OperationId::from_bytes([11; 16]),
+            IdempotencyKey::new("select")?,
+            json!({"commands":[{"operation_id":receive.operation_id,"value":{"Succeeded":null}}]}),
+            |_| Ok(()),
+        )
+        .await?;
     assert_eq!(selected.commands, vec![command.clone()]);
     drop(host);
-    let mut host = DurableWorkflowHost::open(registry.clone(), initial.clone(), journal.clone()).await?;
+    let mut host =
+        DurableWorkflowHost::open(registry.clone(), initial.clone(), journal.clone()).await?;
     assert_eq!(host.latest_transition().await?, Some(selected));
     let output = TurnOutput {
         text: "original answer".into(),
@@ -132,7 +152,8 @@ async fn stock_turn_outbox_survives_reopen_and_rejects_foreign_or_uncertain_resu
             host.step(
                 OperationId::new(),
                 IdempotencyKey::new("invalid-result")?,
-                input, |_| Ok(())
+                input,
+                |_| Ok(())
             )
             .await
             .is_err()
@@ -144,7 +165,8 @@ async fn stock_turn_outbox_survives_reopen_and_rejects_foreign_or_uncertain_resu
         .step(
             OperationId::from_bytes([3; 16]),
             IdempotencyKey::new("settle")?,
-            json!({"commands":[result]}), |_| Ok(())
+            json!({"commands":[result]}),
+            |_| Ok(()),
         )
         .await?;
     assert!(completed.commands.is_empty());
@@ -166,10 +188,17 @@ async fn stock_turn_outbox_survives_reopen_and_rejects_foreign_or_uncertain_resu
 fn stock_turn_preserves_failure_and_rejects_another_command_kind() -> Result<()> {
     let machine = StockTurnMachine::new();
     let mut command = command()?;
-    let receive = WorkflowCommand { operation_id: OperationId::from_bytes([10;16]),
-        kind: MAIL_RECEIVE_TASK_COMMAND_KIND.into(), payload: command.payload.clone() };
+    let receive = WorkflowCommand {
+        operation_id: OperationId::from_bytes([10; 16]),
+        kind: MAIL_RECEIVE_TASK_COMMAND_KIND.into(),
+        payload: command.payload.clone(),
+    };
     command.kind = super::super::TOOL_TASK_COMMAND_KIND.into();
-    assert!(machine.initialize(&json!({"receive":receive,"model":command})).is_err());
+    assert!(
+        machine
+            .initialize(&json!({"receive":receive,"model":command}))
+            .is_err()
+    );
     command.kind = MODEL_TASK_COMMAND_KIND.into();
     let initial = machine.initialize(&json!({"receive":receive,"model":command}))?;
     assert!(
@@ -178,9 +207,12 @@ fn stock_turn_preserves_failure_and_rejects_another_command_kind() -> Result<()>
             .is_err()
     );
     let receiving = machine.transition(&initial, &Value::Null)?;
-    let waiting = machine.transition(&receiving.state, &json!({"commands":[{
-        "operation_id":receive.operation_id,"value":{"Succeeded":null}
-    }]}))?;
+    let waiting = machine.transition(
+        &receiving.state,
+        &json!({"commands":[{
+            "operation_id":receive.operation_id,"value":{"Succeeded":null}
+        }]}),
+    )?;
     let failed = machine.transition(&waiting.state, &json!({"commands":[{
         "operation_id":command.operation_id,"value":{"Failed":{"message":"denied by original policy"}}
     }]}))?;

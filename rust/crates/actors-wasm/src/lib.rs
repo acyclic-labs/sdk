@@ -108,7 +108,11 @@ impl AbortRegistration {
             &JsValue::from_str("abort"),
             callback.as_ref().unchecked_ref(),
         )?;
-        let registration = Self { signal, callback, token };
+        let registration = Self {
+            signal,
+            callback,
+            token,
+        };
         let aborted = Reflect::get(&registration.signal, &JsValue::from_str("aborted"))?
             .as_bool()
             .unwrap_or(false);
@@ -117,7 +121,6 @@ impl AbortRegistration {
         }
         Ok(Some(registration))
     }
-
 }
 
 impl Drop for AbortRegistration {
@@ -150,9 +153,12 @@ impl ActorsClient {
         signal: Option<JsValue>,
     ) -> Result<ActorsClient, JsValue> {
         let registration = AbortRegistration::new(signal)?;
-        let cancellation = registration.as_ref().map(|registration| registration.token.clone());
+        let cancellation = registration
+            .as_ref()
+            .map(|registration| registration.token.clone());
         let result =
-            client::run_with_cancellation(client::connect(&endpoint, &token, None), cancellation).await;
+            client::run_with_cancellation(client::connect(&endpoint, &token, None), cancellation)
+                .await;
         drop(registration);
         result.map(|inner| Self { inner }).map_err(map_error)
     }
@@ -162,7 +168,9 @@ impl ActorsClient {
         F: std::future::Future<Output = Result<T, client::Error>>,
     {
         let registration = AbortRegistration::new(signal)?;
-        let cancellation = registration.as_ref().map(|registration| registration.token.clone());
+        let cancellation = registration
+            .as_ref()
+            .map(|registration| registration.token.clone());
         let result = client::run_with_cancellation(operation, cancellation).await;
         drop(registration);
         result.map_err(map_error)
@@ -180,7 +188,8 @@ impl ActorsClient {
         request: &[u8],
         signal: Option<JsValue>,
     ) -> Result<Vec<u8>, JsValue> {
-        self.run(signal, self.inner.call("CreateActor", request)).await
+        self.run(signal, self.inner.call("CreateActor", request))
+            .await
     }
 
     /// Execute `UpdateActor` with an encoded protobuf request.
@@ -189,7 +198,8 @@ impl ActorsClient {
         request: &[u8],
         signal: Option<JsValue>,
     ) -> Result<Vec<u8>, JsValue> {
-        self.run(signal, self.inner.call("UpdateActor", request)).await
+        self.run(signal, self.inner.call("UpdateActor", request))
+            .await
     }
 
     /// Execute `InspectActor` with an encoded protobuf request.
@@ -198,7 +208,8 @@ impl ActorsClient {
         request: &[u8],
         signal: Option<JsValue>,
     ) -> Result<Vec<u8>, JsValue> {
-        self.run(signal, self.inner.call("InspectActor", request)).await
+        self.run(signal, self.inner.call("InspectActor", request))
+            .await
     }
 
     /// Execute `AddSubscription` with an encoded protobuf request.
@@ -207,7 +218,8 @@ impl ActorsClient {
         request: &[u8],
         signal: Option<JsValue>,
     ) -> Result<Vec<u8>, JsValue> {
-        self.run(signal, self.inner.call("AddSubscription", request)).await
+        self.run(signal, self.inner.call("AddSubscription", request))
+            .await
     }
 
     /// Execute `RemoveSubscription` with an encoded protobuf request.
@@ -216,7 +228,8 @@ impl ActorsClient {
         request: &[u8],
         signal: Option<JsValue>,
     ) -> Result<Vec<u8>, JsValue> {
-        self.run(signal, self.inner.call("RemoveSubscription", request)).await
+        self.run(signal, self.inner.call("RemoveSubscription", request))
+            .await
     }
 
     /// Execute `ResumeSubscription` with an encoded protobuf request.
@@ -225,7 +238,8 @@ impl ActorsClient {
         request: &[u8],
         signal: Option<JsValue>,
     ) -> Result<Vec<u8>, JsValue> {
-        self.run(signal, self.inner.call("ResumeSubscription", request)).await
+        self.run(signal, self.inner.call("ResumeSubscription", request))
+            .await
     }
 
     /// Execute `CheckpointActor` with an encoded protobuf request.
@@ -234,7 +248,8 @@ impl ActorsClient {
         request: &[u8],
         signal: Option<JsValue>,
     ) -> Result<Vec<u8>, JsValue> {
-        self.run(signal, self.inner.call("CheckpointActor", request)).await
+        self.run(signal, self.inner.call("CheckpointActor", request))
+            .await
     }
 
     /// Execute `InvokeActor` with an encoded protobuf request.
@@ -243,7 +258,8 @@ impl ActorsClient {
         request: &[u8],
         signal: Option<JsValue>,
     ) -> Result<Vec<u8>, JsValue> {
-        self.run(signal, self.inner.call("InvokeActor", request)).await
+        self.run(signal, self.inner.call("InvokeActor", request))
+            .await
     }
 
     /// Execute `DeleteActor` with an encoded protobuf request.
@@ -252,6 +268,7 @@ impl ActorsClient {
         request: &[u8],
         signal: Option<JsValue>,
     ) -> Result<Vec<u8>, JsValue> {
-        self.run(signal, self.inner.call("DeleteActor", request)).await
+        self.run(signal, self.inner.call("DeleteActor", request))
+            .await
     }
 }

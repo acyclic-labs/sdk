@@ -247,9 +247,11 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
     )?;
     *parent = crate::store::StreamAggregate::open(
         &storage.stream,
-        (storage.conversation.clone(),
-        storage.verifier(),
-        crate::core::SchemaRegistry::new()),
+        (
+            storage.conversation.clone(),
+            storage.verifier(),
+            crate::core::SchemaRegistry::new(),
+        ),
         None,
         crate::store::default_projection_read_limits(),
         crate::store::DEFAULT_TERMINAL_EFFECTS,
@@ -274,9 +276,11 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
     drop(parent);
     let mut reopened = crate::store::StreamAggregate::open(
         &storage.stream,
-        (storage.conversation.clone(),
-        storage.verifier(),
-        crate::core::SchemaRegistry::new()),
+        (
+            storage.conversation.clone(),
+            storage.verifier(),
+            crate::core::SchemaRegistry::new(),
+        ),
         None,
         crate::store::default_projection_read_limits(),
         crate::store::DEFAULT_TERMINAL_EFFECTS,

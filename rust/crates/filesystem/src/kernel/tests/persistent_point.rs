@@ -5,8 +5,8 @@ use crate::kernel::file_table_mutation::FileTableFormat;
 use crate::kernel::persistent_btree::Child;
 use crate::kernel::tree_mutation::TreeFormat;
 use crate::kernel::{
-    FileKind, FilePayload, FileRecord, FileTablePage, LogicalName, NameEncoding,
-    TreeEntry, encode_file_table_page, file_table_page_id,
+    FileKind, FilePayload, FileRecord, FileTablePage, LogicalName, NameEncoding, TreeEntry,
+    encode_file_table_page, file_table_page_id,
 };
 use crate::memory::MemoryObjectStore;
 use crate::storage::ObjectKind;
@@ -33,8 +33,15 @@ async fn put(
     {
         let __object_args = (
             id,
-        OwnedBytes::from(encode_file_table_page(page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+            OwnedBytes::from(encode_file_table_page(
+                page,
+                8,
+                |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+                |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+            )?),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
         let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
         let __object_result =
             AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
@@ -126,9 +133,15 @@ async fn native_point_uses_the_original_counters_and_retires_scratch()
     let baseline = original.live_allocation_bytes();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let (value, allocation) = lookup_async_with_accounting::<_, FileTableFormat>(
-            &store, root, &record(2).file_id, DecodeLimits::default(),
-            &mut accounting, &cancellation, None,
-        ).await?;
+        &store,
+        root,
+        &record(2).file_id,
+        DecodeLimits::default(),
+        &mut accounting,
+        &cancellation,
+        None,
+    )
+    .await?;
     assert_eq!(value, Some(record(2)));
     assert_eq!(original.receipt().page_reads, 1);
     assert!(original.receipt().backend_read_operations > 0);
@@ -139,20 +152,31 @@ async fn native_point_uses_the_original_counters_and_retires_scratch()
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
-async fn native_point_denies_scratch_before_provider_work()
--> Result<(), Box<dyn std::error::Error>> {
+async fn native_point_denies_scratch_before_provider_work() -> Result<(), Box<dyn std::error::Error>>
+{
     let store = MemoryObjectStore::default();
     let root = put(&store, &FileTablePage::Leaf(vec![record(1)])).await?;
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(
-        WorkBudget { allocation_operations: 1, ..WorkBudget::UNBOUNDED }, &cancellation,
-    ).map_err(|(error, _)| error)?;
+        WorkBudget {
+            allocation_operations: 1,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    )
+    .map_err(|(error, _)| error)?;
     let before = original.receipt();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let result = lookup_async_with_accounting::<_, FileTableFormat>(
-            &store, root, &record(1).file_id, DecodeLimits::default(),
-            &mut accounting, &cancellation, None,
-        ).await;
+        &store,
+        root,
+        &record(1).file_id,
+        DecodeLimits::default(),
+        &mut accounting,
+        &cancellation,
+        None,
+    )
+    .await;
     assert!(result.is_err());
     assert_eq!(original.receipt(), before);
     assert_eq!(original.receipt().backend_read_operations, 0);
@@ -169,7 +193,8 @@ fn native_owned_reserve_preserves_the_actual_allocator_error()
     let baseline = original.live_allocation_bytes();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let result = crate::kernel::persistent_point::Owned::<Vec<u8>>::allocate(
-        isize::MAX as usize + 1, &mut accounting,
+        isize::MAX as usize + 1,
+        &mut accounting,
     );
     assert!(matches!(
         result,
@@ -186,7 +211,8 @@ fn owned_push_respects_the_logical_limit_with_spare_capacity()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
     let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-    let mut values = crate::kernel::persistent_point::Owned::<Vec<u8>>::allocate(2, &mut accounting)?;
+    let mut values =
+        crate::kernel::persistent_point::Owned::<Vec<u8>>::allocate(2, &mut accounting)?;
     values.value.push(1);
     assert!(values.ensure_for_push(1, &mut accounting).is_err());
     values.retire(&mut accounting)?;

@@ -56,8 +56,6 @@ impl ModelProvider for MockModel {
             metadata: Value::Null,
         })]))
     }
-
-
 }
 
 fn main() -> Result<()> {

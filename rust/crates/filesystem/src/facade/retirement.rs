@@ -7,7 +7,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         name: impl AsRef<str>,
         idempotency_key: crate::IdempotencyKey,
     ) -> Result<crate::workspace::WorkspaceDelete, WorkspaceError> {
-
         (async move {
             let (_, id) = self
                 .workspace_name_identity(name, WorkBudget::UNBOUNDED, &CancellationToken::new())

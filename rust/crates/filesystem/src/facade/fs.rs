@@ -47,7 +47,8 @@ impl<A, O> Fs<A, O> {
         name: impl AsRef<str>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> MeasuredResult<OperationReceipt<(crate::WorkspaceName, crate::WorkspaceId)>, WorkspaceError> {
+    ) -> MeasuredResult<OperationReceipt<(crate::WorkspaceName, crate::WorkspaceId)>, WorkspaceError>
+    {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         let result = self.workspace_name(name.as_ref(), &mut accounting, cancellation);
         measured(result, &accounting)

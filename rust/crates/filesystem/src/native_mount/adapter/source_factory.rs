@@ -57,10 +57,13 @@ impl<A, O> CheckoutMountSource<A, O> {
             })
             .map_err(MountSourceError::NativeWork)?;
         let final_credit = cleanup_credit
-            .partition_work(crate::WorkCounters {
-                items_examined: 1,
-                ..crate::WorkCounters::UNCHARGED
-            }, None)
+            .partition_work(
+                crate::WorkCounters {
+                    items_examined: 1,
+                    ..crate::WorkCounters::UNCHARGED
+                },
+                None,
+            )
             .map_err(MountSourceError::NativeWork)?;
         Ok(Self {
             checkout,

@@ -519,10 +519,15 @@ async fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
     let cancellation = CancellationToken::new();
     let owner = crate::kernel::ProofDataCustody::default();
     let result = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(async {
-        let mut accounting = crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        let mut accounting =
+            crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
         persistent_pagination::paginate_with_accounting::<_, TreeFormat>(
-            &store, (root, Bound::Unbounded, 2), DecodeLimits::default(),
-            &mut accounting, &cancellation, Some(&owner),
+            &store,
+            (root, Bound::Unbounded, 2),
+            DecodeLimits::default(),
+            &mut accounting,
+            &cancellation,
+            Some(&owner),
         )
         .await
     }))

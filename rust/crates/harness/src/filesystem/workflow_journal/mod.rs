@@ -333,11 +333,13 @@ where
             return crate::NativeFutureBundle::new(work, || async move {
                 let io = PreparationIo::from_native_work(work)?;
                 if let Some(owner) = &self.owner {
-                    self.verify_observation_owner(owner, true, Some(&io)).await?;
+                    self.verify_observation_owner(owner, true, Some(&io))
+                        .await?;
                 }
                 let admission = self.read_admission(Some(&io)).await?;
                 if let Some(owner) = &self.owner {
-                    self.verify_observation_owner(owner, true, Some(&io)).await?;
+                    self.verify_observation_owner(owner, true, Some(&io))
+                        .await?;
                 }
                 let retained = io.owned_bytes()?;
                 Ok((admission, Some(io.into_native_custody(retained)?)))
@@ -378,13 +380,15 @@ where
             return crate::NativeFutureBundle::new(work, || async move {
                 let io = PreparationIo::from_native_work(work)?;
                 if let Some(owner) = &self.owner {
-                    self.verify_observation_owner(owner, true, Some(&io)).await?;
+                    self.verify_observation_owner(owner, true, Some(&io))
+                        .await?;
                 }
                 let records = self
                     .replay_records(after, maximum, true, true, Some(&io))
                     .await?;
                 if let Some(owner) = &self.owner {
-                    self.verify_observation_owner(owner, true, Some(&io)).await?;
+                    self.verify_observation_owner(owner, true, Some(&io))
+                        .await?;
                 }
                 let retained = io.owned_bytes()?;
                 Ok((records, Some(io.into_native_custody(retained)?)))

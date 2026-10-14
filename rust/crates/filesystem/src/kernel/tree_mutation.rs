@@ -4,9 +4,7 @@ use super::allocation::AllocationError;
 use super::codec::DecodedPageShape;
 use super::persistent_btree::{self, Format, Page, PageRef};
 use super::tree::tree_page_decode_shape;
-use super::{
-    CanonicalDecodeError, DecodeLimits, LogicalName, TreeEntry,
-};
+use super::{CanonicalDecodeError, DecodeLimits, LogicalName, TreeEntry};
 use crate::foundation::{FileId, usize_to_u64};
 use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkError};
 use crate::storage::{ObjectId, ObjectKind, ObjectStoreError};
@@ -31,10 +29,12 @@ impl Format for TreeFormat {
         limits: DecodeLimits,
         observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Page<Self>, E> {
-        Ok(match super::tree::decode_tree_page(bytes, limits, observe)? {
-            super::TreePage::Leaf(values) => Page::Leaf(values),
-            super::TreePage::Internal(children) => Page::Internal(children),
-        })
+        Ok(
+            match super::tree::decode_tree_page(bytes, limits, observe)? {
+                super::TreePage::Leaf(values) => Page::Leaf(values),
+                super::TreePage::Internal(children) => Page::Internal(children),
+            },
+        )
     }
 
     fn decode_shape(
@@ -45,12 +45,33 @@ impl Format for TreeFormat {
     }
 
     fn encode_with_accounting(
-        page: &PageRef<'_, Self>, maximum_items: u32,
+        page: &PageRef<'_, Self>,
+        maximum_items: u32,
         accounting: &mut super::allocation::KernelAccounting<'_>,
     ) -> Result<(Vec<u8>, super::allocation::KernelOwnedAllocation), crate::FsError> {
         match page {
-            PageRef::Leaf(entries) => crate::kernel::codec::encode_owned(accounting, |observe, _reserve| super::tree::encode_tree_leaf_entries(entries, maximum_items, None, None, observe, crate::FsError::EncodedAllocationFailed)),
-            PageRef::Internal(children) => crate::kernel::codec::encode_owned(accounting, |observe, _reserve| super::tree::encode_tree_internal_children(children.iter().map(|child| (&child.first, child.page)), maximum_items, observe, crate::FsError::EncodedAllocationFailed)),
+            PageRef::Leaf(entries) => {
+                crate::kernel::codec::encode_owned(accounting, |observe, _reserve| {
+                    super::tree::encode_tree_leaf_entries(
+                        entries,
+                        maximum_items,
+                        None,
+                        None,
+                        observe,
+                        crate::FsError::EncodedAllocationFailed,
+                    )
+                })
+            }
+            PageRef::Internal(children) => {
+                crate::kernel::codec::encode_owned(accounting, |observe, _reserve| {
+                    super::tree::encode_tree_internal_children(
+                        children.iter().map(|child| (&child.first, child.page)),
+                        maximum_items,
+                        observe,
+                        crate::FsError::EncodedAllocationFailed,
+                    )
+                })
+            }
         }
     }
 
@@ -173,27 +194,41 @@ impl persistent_btree::Mutation<TreeFormat> for TreeMutation {
         matches!(self, Self::Insert(_) | Self::Remove { .. })
     }
 
-    fn replacement<'a>(&'a self, current: Option<&TreeEntry>) -> Result<Option<&'a TreeEntry>, Self::Error> {
+    fn replacement<'a>(
+        &'a self,
+        current: Option<&TreeEntry>,
+    ) -> Result<Option<&'a TreeEntry>, Self::Error> {
         match self {
             Self::Insert(_) if current.is_some() => Err(TreeMutationError::AlreadyExists),
             Self::Insert(entry) => Ok(Some(entry)),
-            Self::Remove { .. } | Self::Replace { .. } if current.is_none() => Err(TreeMutationError::Missing),
-            Self::Remove { expected_file_id, .. } => {
+            Self::Remove { .. } | Self::Replace { .. } if current.is_none() => {
+                Err(TreeMutationError::Missing)
+            }
+            Self::Remove {
+                expected_file_id, ..
+            } => {
                 let existing = current.ok_or(TreeMutationError::Missing)?;
                 if expected_file_id.is_some_and(|expected| existing.file_id != expected) {
                     return Err(TreeMutationError::FileIdentityConflict);
                 }
                 Ok(None)
             }
-            Self::Replace { entry, expected_file_id } => {
+            Self::Replace {
+                entry,
+                expected_file_id,
+            } => {
                 let existing = current.ok_or(TreeMutationError::Missing)?;
-                if existing.file_id != *expected_file_id { return Err(TreeMutationError::FileIdentityConflict); }
+                if existing.file_id != *expected_file_id {
+                    return Err(TreeMutationError::FileIdentityConflict);
+                }
                 Ok(Some(entry))
             }
         }
     }
 
-    fn map_error(error: persistent_btree::Error<Self::Error>) -> crate::FsError { map_error(error).into() }
+    fn map_error(error: persistent_btree::Error<Self::Error>) -> crate::FsError {
+        map_error(error).into()
+    }
 }
 
 /// Sparse tree mutation failure preserving all work and orphan writes.
@@ -210,18 +245,38 @@ pub async fn apply_tree_mutations<S: crate::AsyncObjectStore>(
     cancellation: &crate::CancellationToken,
 ) -> Result<OperationReceipt<ObjectId>, TreeMutationFailure> {
     let mut accounting = super::allocation::KernelAccounting::standalone(budget, cancellation);
-    apply_tree_mutations_with_accounting(store, root, &mutations, maximum_mutations, limits, &mut accounting, cancellation)
-        .await.map_err(|error| OperationFailure::new(project_tree_error(error), accounting.spent()))
+    apply_tree_mutations_with_accounting(
+        store,
+        root,
+        &mutations,
+        maximum_mutations,
+        limits,
+        &mut accounting,
+        cancellation,
+    )
+    .await
+    .map_err(|error| OperationFailure::new(project_tree_error(error), accounting.spent()))
 }
 
 pub(crate) async fn apply_tree_mutations_with_accounting<S: crate::AsyncObjectStore>(
-    store: &S, root: ObjectId, mutations: &[TreeMutation], maximum_mutations: u32,
-    limits: DecodeLimits, accounting: &mut super::allocation::KernelAccounting<'_>,
+    store: &S,
+    root: ObjectId,
+    mutations: &[TreeMutation],
+    maximum_mutations: u32,
+    limits: DecodeLimits,
+    accounting: &mut super::allocation::KernelAccounting<'_>,
     cancellation: &crate::CancellationToken,
 ) -> Result<OperationReceipt<ObjectId>, crate::FsError> {
     persistent_btree::apply_with_accounting::<S, TreeFormat, TreeMutation>(
-        store, root, mutations, maximum_mutations, limits, accounting, cancellation,
-    ).await
+        store,
+        root,
+        mutations,
+        maximum_mutations,
+        limits,
+        accounting,
+        cancellation,
+    )
+    .await
 }
 
 pub(super) fn project_tree_error(error: crate::FsError) -> TreeMutationError {
@@ -229,12 +284,17 @@ pub(super) fn project_tree_error(error: crate::FsError) -> TreeMutationError {
         crate::FsError::MergeTree(error) => error,
         crate::FsError::Work(error) => TreeMutationError::Work(error),
         crate::FsError::Object(error) => TreeMutationError::Storage(error),
-        crate::FsError::PendingMutationAllocationFailed | crate::FsError::HandleAllocationFailed
-        | crate::FsError::Decode(CanonicalDecodeError::AllocationFailed) => TreeMutationError::AllocationFailed,
+        crate::FsError::PendingMutationAllocationFailed
+        | crate::FsError::HandleAllocationFailed
+        | crate::FsError::Decode(CanonicalDecodeError::AllocationFailed) => {
+            TreeMutationError::AllocationFailed
+        }
         crate::FsError::Decode(error) => TreeMutationError::Decode(error),
         crate::FsError::Cancelled(_) => TreeMutationError::Storage(ObjectStoreError::Cancelled),
         #[cfg(not(target_arch = "wasm32"))]
-        crate::FsError::NativeKernel(error) => TreeMutationError::Storage(ObjectStoreError::Native(error)),
+        crate::FsError::NativeKernel(error) => {
+            TreeMutationError::Storage(ObjectStoreError::Native(error))
+        }
         _ => unreachable!("tree mutation engine returns only its typed kernel errors"),
     }
 }

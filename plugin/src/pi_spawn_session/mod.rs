@@ -141,11 +141,11 @@ impl PiSession {
         };
         let (key, _key_custody) = work.display(
             commit
-            .child
-            .project_volumes
-            .keys()
-            .next()
-            .ok_or_else(|| invalid("Pi child has no selected project"))?
+                .child
+                .project_volumes
+                .keys()
+                .next()
+                .ok_or_else(|| invalid("Pi child has no selected project"))?,
         )?;
         let root_source = if commit.source_task != owner.policy().root_task {
             None
@@ -220,11 +220,11 @@ impl PiSession {
         let commit = &payload.commit;
         let (key, _key_custody) = work.display(
             commit
-            .child
-            .project_volumes
-            .keys()
-            .next()
-            .ok_or_else(|| invalid("Pi child has no project"))?
+                .child
+                .project_volumes
+                .keys()
+                .next()
+                .ok_or_else(|| invalid("Pi child has no project"))?,
         )?;
         let command = self
             .spawn_command(
@@ -287,7 +287,14 @@ impl PiSession {
         if newly_saved || (saved_pending && acknowledgement.is_none()) {
             drop(acknowledgement.take());
             let result = self
-                .spawn_step(&native, live.as_ref(), command.0.clone(), &payload, true, &work)
+                .spawn_step(
+                    &native,
+                    live.as_ref(),
+                    command.0.clone(),
+                    &payload,
+                    true,
+                    &work,
+                )
                 .await?;
             acknowledgement = result.0;
             self.spawn_save_pending(result.1, commit, operations, &work)?;
@@ -414,8 +421,7 @@ impl PiSession {
                 TaskCommandProgress::Pending | TaskCommandProgress::Indeterminate => None,
             }
         } else {
-            host.control_step_with_native_work(command, retry)
-                .await?
+            host.control_step_with_native_work(command, retry).await?
         };
         Ok((reply, host.pending_to_save()?))
     }

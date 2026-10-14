@@ -56,7 +56,6 @@ pub(crate) fn descriptor_digest() -> String {
     blake3::hash(FILE_DESCRIPTOR_SET).to_hex().to_string()
 }
 
-
 #[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) fn initialize_test_native_io() {
     static INITIALIZED: std::sync::Once = std::sync::Once::new();

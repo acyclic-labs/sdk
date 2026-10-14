@@ -24,9 +24,16 @@ fn metadata() -> FileMetadata {
 #[test]
 fn unavailable_zero_and_negative_remain_distinct() -> Result<(), Box<dyn std::error::Error>> {
     let value = metadata();
-    let encoded = encode_file_metadata(value, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
+    let encoded = encode_file_metadata(
+        value,
+        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+        |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+    )?;
     assert_eq!(
-        decode_file_metadata(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+        decode_file_metadata(&encoded, DecodeLimits::default(), &mut |_| Ok::<
+            _,
+            crate::kernel::CanonicalDecodeError,
+        >(()))?,
         value
     );
     assert_eq!(
@@ -70,9 +77,16 @@ fn every_metadata_field_round_trips_and_identity_is_exact() -> Result<(), Box<dy
         acl: MetadataField::Value(blob(5)),
         security_descriptor: MetadataField::Value(blob(6)),
     };
-    let encoded = encode_file_metadata(value, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
+    let encoded = encode_file_metadata(
+        value,
+        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+        |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+    )?;
     assert_eq!(
-        decode_file_metadata(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+        decode_file_metadata(&encoded, DecodeLimits::default(), &mut |_| Ok::<
+            _,
+            crate::kernel::CanonicalDecodeError,
+        >(()))?,
         value
     );
     assert_eq!(
@@ -88,29 +102,33 @@ fn every_metadata_field_round_trips_and_identity_is_exact() -> Result<(), Box<dy
 #[test]
 fn every_metadata_presence_tag_fails_closed_when_noncanonical()
 -> Result<(), Box<dyn std::error::Error>> {
-    let encoded = encode_file_metadata(FileMetadata {
-        posix_mode: MetadataField::Value(1),
-        posix_uid: MetadataField::Value(1),
-        posix_gid: MetadataField::Value(1),
-        posix_flags: MetadataField::Value(1),
-        windows_attributes: MetadataField::Value(1),
-        created_ns: MetadataField::Value(1),
-        modified_ns: MetadataField::Value(1),
-        accessed_ns: MetadataField::Value(1),
-        changed_ns: MetadataField::Value(1),
-        named_attributes: MetadataField::Value(ObjectId {
-            kind: ObjectKind::AttributePage,
-            digest: Digest::ZERO,
-        }),
-        acl: MetadataField::Value(ObjectId {
-            kind: ObjectKind::Blob,
-            digest: Digest::ZERO,
-        }),
-        security_descriptor: MetadataField::Value(ObjectId {
-            kind: ObjectKind::Blob,
-            digest: Digest::ZERO,
-        }),
-    }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
+    let encoded = encode_file_metadata(
+        FileMetadata {
+            posix_mode: MetadataField::Value(1),
+            posix_uid: MetadataField::Value(1),
+            posix_gid: MetadataField::Value(1),
+            posix_flags: MetadataField::Value(1),
+            windows_attributes: MetadataField::Value(1),
+            created_ns: MetadataField::Value(1),
+            modified_ns: MetadataField::Value(1),
+            accessed_ns: MetadataField::Value(1),
+            changed_ns: MetadataField::Value(1),
+            named_attributes: MetadataField::Value(ObjectId {
+                kind: ObjectKind::AttributePage,
+                digest: Digest::ZERO,
+            }),
+            acl: MetadataField::Value(ObjectId {
+                kind: ObjectKind::Blob,
+                digest: Digest::ZERO,
+            }),
+            security_descriptor: MetadataField::Value(ObjectId {
+                kind: ObjectKind::Blob,
+                digest: Digest::ZERO,
+            }),
+        },
+        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+        |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+    )?;
     for (offset, field) in [
         (10, "posix_mode"),
         (15, "posix_uid"),

@@ -3,10 +3,7 @@ use super::*;
 use crate::filesystem::{FilesystemContentPublisher, FilesystemContentVerifier};
 use crate::{
     Capabilities,
-    conversation::{
-        FileRef,
-        VolumeClass,
-    },
+    conversation::{FileRef, VolumeClass},
     core::AuthorityIssuer,
     resource_preparation::{
         CreatedContentBinding, CreatedResourceReceipt, ResourceCreationProofRef,

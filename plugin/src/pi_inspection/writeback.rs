@@ -37,7 +37,8 @@ pub(crate) async fn prepare_writeback(
             budget: native_work.remaining()?,
             cancellation: native_work.cancellation(),
         },
-    ).await;
+    )
+    .await;
     let journal = match prepared {
         Ok(receipt) => {
             native_work.spent(receipt.work)?;
@@ -45,7 +46,10 @@ pub(crate) async fn prepare_writeback(
         }
         Err((source, spent)) => {
             native_work.spent(spent)?;
-            return Err(Error::NativeWorkspacePublication { source: Box::new(source), custody: None });
+            return Err(Error::NativeWorkspacePublication {
+                source: Box::new(source),
+                custody: None,
+            });
         }
     };
     if journal.root_identity != Some(root.identity.to_bytes())

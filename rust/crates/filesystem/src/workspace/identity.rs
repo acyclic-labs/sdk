@@ -93,7 +93,9 @@ impl WorkspaceName {
                 break;
             };
             let end = length + character.len_utf8();
-            let slot = output.get_mut(length..end).ok_or(WorkspaceNameError::TooLong)?;
+            let slot = output
+                .get_mut(length..end)
+                .ok_or(WorkspaceNameError::TooLong)?;
             let copied = copy_work(character.len_utf8() as u64);
             accounting.admit(copied)?;
             character.encode_utf8(slot);
@@ -102,7 +104,9 @@ impl WorkspaceName {
         }
         drop(normalized);
         accounting.charge(item_work(length as u64))?;
-        let canonical = std::str::from_utf8(output.get(..length).ok_or(WorkspaceNameError::TooLong)?).map_err(WorkspaceError::engine)?;
+        let canonical =
+            std::str::from_utf8(output.get(..length).ok_or(WorkspaceNameError::TooLong)?)
+                .map_err(WorkspaceError::engine)?;
         if canonical.is_empty() {
             return Err(WorkspaceNameError::Empty.into());
         }

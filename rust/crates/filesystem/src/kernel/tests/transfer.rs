@@ -10,8 +10,6 @@ use crate::memory::MemoryObjectStore;
 use crate::model::{FilesystemProfile, Lifecycle, VolumeConfig};
 use crate::storage::{ObjectKind, object_digest};
 
-
-
 fn fixture() -> (GenerationExportManifest, [acyclic_stream::OwnedBytes; 2]) {
     let chunk = acyclic_stream::OwnedBytes::from_static(b"transfer-chunk");
     let root_body = acyclic_stream::OwnedBytes::from_static(b"transfer-root");
@@ -85,36 +83,58 @@ async fn minimal_generation(
     let metadata = put(
         store,
         ObjectKind::Metadata,
-        encode_file_metadata(empty_metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+        encode_file_metadata(
+            empty_metadata(),
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     let entries = put(
         store,
         ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Leaf(Vec::new()), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+        encode_tree_page(
+            &TreePage::Leaf(Vec::new()),
+            8,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     let root_file_id = FileId::from_bytes([41; 16]);
     let table = put(
         store,
         ObjectKind::FileTablePage,
-        encode_file_table_page(&FileTablePage::Leaf(vec![FileRecord {
+        encode_file_table_page(
+            &FileTablePage::Leaf(vec![FileRecord {
                 file_id: root_file_id,
                 kind: FileKind::Directory,
                 link_count: 1,
                 metadata,
                 payload: FilePayload::Directory { entries },
-            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await?;
+            }]),
+            8,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await?;
     put(
         store,
         ObjectKind::GenerationRoot,
-        encode_generation_root(&GenerationRoot {
-            volume_id,
-            root_file_id,
-            file_table: table,
-            parents: Vec::new(),
-            required_features: 0,
-        }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    ).await
+        encode_generation_root(
+            &GenerationRoot {
+                volume_id,
+                root_file_id,
+                file_table: table,
+                parents: Vec::new(),
+                required_features: 0,
+            },
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?,
+    )
+    .await
 }
 
 fn closure_limits() -> ClosureLimits {
@@ -142,14 +162,15 @@ async fn resumable_batches_preserve_manifest_order_and_idempotent_import()
             let __object_args = (object_id, body, WorkBudget::UNBOUNDED, &cancellation);
             let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
             let __object_result = AsyncObjectStore::put(
-            &source,
+                &source,
                 __object_args.0,
                 __object_args.1,
                 &mut __object_work,
             )
             .await;
             __object_work.receipt(__object_result)
-        }).await?;
+        })
+        .await?;
     }
 
     let first = (export_generation_batch_async(
@@ -160,7 +181,8 @@ async fn resumable_batches_preserve_manifest_order_and_idempotent_import()
         manifest.config.limits.maximum_object_bytes,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert_eq!(first.value.first_object, TransferCursor::START);
     assert_eq!(first.value.next, Some(TransferCursor::new(1)));
     assert_eq!(first.value.objects.len(), 1);
@@ -176,7 +198,8 @@ async fn resumable_batches_preserve_manifest_order_and_idempotent_import()
         1,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert_eq!(imported.value, TransferCursor::new(1));
     let repeated = (import_generation_batch_async(
         &destination,
@@ -186,7 +209,8 @@ async fn resumable_batches_preserve_manifest_order_and_idempotent_import()
         1,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert_eq!(repeated.value, TransferCursor::new(1));
 
     let second = (export_generation_batch_async(
@@ -197,7 +221,8 @@ async fn resumable_batches_preserve_manifest_order_and_idempotent_import()
         manifest.config.limits.maximum_object_bytes,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert_eq!(second.value.next, None);
     assert_eq!(second.value.objects[0].bytes.as_ref(), bodies[1].as_ref());
     (import_generation_batch_async(
@@ -208,7 +233,8 @@ async fn resumable_batches_preserve_manifest_order_and_idempotent_import()
         8,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     for (object_id, body) in manifest.objects.iter().copied().zip(bodies) {
         let read = {
             let __object_args = (
@@ -219,7 +245,7 @@ async fn resumable_batches_preserve_manifest_order_and_idempotent_import()
             );
             let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
             let __object_result = AsyncObjectStore::read(
-            &destination,
+                &destination,
                 __object_args.0,
                 __object_args.1,
                 &mut __object_work,
@@ -246,7 +272,8 @@ async fn terminal_invalid_and_cancelled_batches_do_no_backend_work()
         manifest.config.limits.maximum_object_bytes,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert!(terminal.value.objects.is_empty());
     assert_eq!(terminal.work, WorkCounters::default());
 
@@ -258,7 +285,8 @@ async fn terminal_invalid_and_cancelled_batches_do_no_backend_work()
         manifest.config.limits.maximum_object_bytes,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("invalid transfer cursor unexpectedly succeeded")?;
     assert!(matches!(
@@ -276,7 +304,8 @@ async fn terminal_invalid_and_cancelled_batches_do_no_backend_work()
         1,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("cancelled transfer unexpectedly succeeded")?;
     assert!(matches!(
@@ -305,7 +334,8 @@ async fn transfer_page_bounds_are_total_and_terminal_import_is_idempotent()
             maximum_object_bytes,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await
+        ))
+        .await
         .err()
         .ok_or("zero export bound was accepted")?;
         assert!(matches!(failure.error, GenerationTransferError::EmptyBatch));
@@ -320,7 +350,8 @@ async fn transfer_page_bounds_are_total_and_terminal_import_is_idempotent()
         1,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert_eq!(terminal.value, TransferCursor::new(2));
     assert_eq!(terminal.work, WorkCounters::default());
 
@@ -336,7 +367,8 @@ async fn transfer_page_bounds_are_total_and_terminal_import_is_idempotent()
         manifest.config.limits.maximum_object_bytes,
         tiny_budget,
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("transfer request-vector copy escaped its work budget")?;
     assert!(matches!(
@@ -355,7 +387,8 @@ async fn transfer_page_bounds_are_total_and_terminal_import_is_idempotent()
         manifest.config.limits.maximum_object_bytes,
         WorkBudget::UNBOUNDED,
         &cancelled,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("cancelled export succeeded")?;
     assert!(matches!(
@@ -412,7 +445,8 @@ async fn import_rejects_every_noncanonical_page_before_backend_work()
             maximum_objects,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await
+        ))
+        .await
         .err()
         .ok_or("invalid import page was accepted")?;
         assert_eq!(
@@ -441,7 +475,8 @@ async fn manifest_construction_rejects_foreign_volume_after_complete_authenticat
         closure_limits(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("foreign-volume generation unexpectedly produced a manifest")?;
     assert!(matches!(
@@ -459,7 +494,8 @@ async fn manifest_construction_rejects_foreign_volume_after_complete_authenticat
         closure_limits(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert_eq!(manifest.value.volume_id, actual_volume);
     assert_eq!(manifest.value.generation_root, generation);
     assert_eq!(manifest.value.file_count, 1);

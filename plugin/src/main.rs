@@ -5,7 +5,6 @@
     clippy::too_many_lines,
     reason = "the CLI entry points dispatch every subcommand in one place"
 )]
-
 #![allow(
     clippy::manual_async_fn,
     reason = "explicit Send future bounds avoid higher-ranked lifetime errors in native commands"
@@ -29,8 +28,8 @@ mod pi_caller;
 mod pi_conversation;
 mod pi_fork;
 mod pi_fork_host;
-mod pi_inspection;
 mod pi_host;
+mod pi_inspection;
 mod pi_mail;
 mod pi_native;
 mod pi_native_host;
@@ -58,9 +57,7 @@ mod tool_input;
 mod util;
 
 use acyclic_fs::demand::native::NativeDemandSource;
-use acyclic_fs::demand::{
-    DemandDirectoryObserver, DemandSource, SourceReference,
-};
+use acyclic_fs::demand::{DemandDirectoryObserver, DemandSource, SourceReference};
 use acyclic_fs::kernel::{FileKind, NamespacePath};
 use acyclic_fs::model::{
     CheckoutMode, FilesystemProfile, GenerationSelector, Lifecycle, VolumeConfig, VolumeLimits,
@@ -69,11 +66,10 @@ use acyclic_fs::path::PortablePath;
 use acyclic_fs::{
     ApplyOptions, CancellationToken, CaptureOptions, CapturePolicy, DefaultTextMergeDriver,
     Generation, GitCommand, GitCommandOutput, GitCompatRepository, GitDirtyState,
-    GitFilesystemAction, GitFilesystemExecutor, GitFilesystemResult,
-    GitIgnorePolicy, GitPublicationRecord, GitTreeRef, IdempotencyKey, JoinOutcome, LazyMount,
-    LazyWorkspace, LineageMultiRootPublicationAuthorizer,
-    LocalAuthorityBackend, LocalCoreStateStore, LocalFs, LocalObjectBackend, LocalOptions,
-    MaterializeOptions, MaterializingWorkspaceMultiRootPublisher,
+    GitFilesystemAction, GitFilesystemExecutor, GitFilesystemResult, GitIgnorePolicy,
+    GitPublicationRecord, GitTreeRef, IdempotencyKey, JoinOutcome, LazyMount, LazyWorkspace,
+    LineageMultiRootPublicationAuthorizer, LocalAuthorityBackend, LocalCoreStateStore, LocalFs,
+    LocalObjectBackend, LocalOptions, MaterializeOptions, MaterializingWorkspaceMultiRootPublisher,
     MaterializingWorkspaceMultiRootPublisherError, MemoryMergeResolutionCache, MergeConflict,
     MergeDriverRegistry, MountOptions, MultiRootMaterializer, MultiRootMergeCandidate,
     MultiRootMergePlan, MultiRootMergeRoot, MultiRootPublication, MultiRootPublicationCoordinator,

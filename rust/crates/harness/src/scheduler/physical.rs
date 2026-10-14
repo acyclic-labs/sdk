@@ -74,9 +74,7 @@ pub(super) fn push<T>(
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<()> {
     if values.len() == values.capacity() {
-        let target = values
-            .capacity().saturating_mul(2)
-            .max(4);
+        let target = values.capacity().saturating_mul(2).max(4);
         let bytes = target
             .checked_mul(size_of::<T>())
             .ok_or_else(|| diagnostic(work, Invalid, "scheduler vector slots overflow"))?

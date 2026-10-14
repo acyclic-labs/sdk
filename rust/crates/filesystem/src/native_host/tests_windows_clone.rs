@@ -175,7 +175,8 @@ fn held_windows_metadata_rejects_unrepresentable_fields_and_path_escape() -> std
     let root = test_root(&root_path)?;
     assert!(matches!(
         apply_metadata(
-            &root.open_windows_metadata_target(&test_path("file"), &mut work)
+            &root
+                .open_windows_metadata_target(&test_path("file"), &mut work)
                 .map_err(std::io::Error::other)?,
             FileMetadata {
                 windows_attributes: MetadataField::Value(REPARSE_POINT),
@@ -187,7 +188,8 @@ fn held_windows_metadata_rejects_unrepresentable_fields_and_path_escape() -> std
     ));
     assert!(matches!(
         apply_metadata(
-            &root.open_windows_metadata_target(&test_path("file"), &mut work)
+            &root
+                .open_windows_metadata_target(&test_path("file"), &mut work)
                 .map_err(std::io::Error::other)?,
             FileMetadata {
                 named_attributes: MetadataField::Value(crate::ObjectId {

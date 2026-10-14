@@ -72,16 +72,26 @@ where
         };
         #[cfg(windows)]
         {
-            let work = self.source.native_original_work()?
+            let work = self
+                .source
+                .native_original_work()?
                 .ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?;
             session.flush_callbacks(&work)?;
-            let identity = session.native_root_identity().ok_or(NativeMountError::ControlPending)?;
+            let identity = session
+                .native_root_identity()
+                .ok_or(NativeMountError::ControlPending)?;
             super::super::projfs::detach_projection(
-                &self.destination, identity, self.source.as_ref(), &work, || {
+                &self.destination,
+                identity,
+                self.source.as_ref(),
+                &work,
+                || {
                     session.stop()?;
-                    if let Some((cause, _)) = session.namespace_outcome.as_mut()
-                        .and_then(super::super::projfs::ProjFsNamespaceOutcome::take_capture_failures)
-                    { return Err(cause); }
+                    if let Some((cause, _)) = session.namespace_outcome.as_mut().and_then(
+                        super::super::projfs::ProjFsNamespaceOutcome::take_capture_failures,
+                    ) {
+                        return Err(cause);
+                    }
                     Ok(())
                 },
             )?;

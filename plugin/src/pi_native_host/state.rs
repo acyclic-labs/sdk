@@ -255,9 +255,7 @@ impl PiNativeCommandHost {
         let ((audience, issuer, scope), custody) = authorization;
         let effects = Effects::new(
             self.stream.clone(),
-            (audience,
-            issuer,
-            scope),
+            (audience, issuer, scope),
             SchemaRegistry::new(),
             content,
             registry,

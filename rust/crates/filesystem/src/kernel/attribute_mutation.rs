@@ -8,9 +8,7 @@ use super::attribute::{
 };
 use super::codec::DecodedPageShape;
 use super::persistent_btree::{self, Format, Page, PageRef};
-use super::{
-    AttributeEntry, AttributeName, CanonicalDecodeError, DecodeLimits,
-};
+use super::{AttributeEntry, AttributeName, CanonicalDecodeError, DecodeLimits};
 use crate::foundation::usize_to_u64;
 use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkError};
 use crate::storage::{ObjectId, ObjectKind, ObjectStoreError};
@@ -35,10 +33,12 @@ impl Format for AttributeFormat {
         limits: DecodeLimits,
         observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Page<Self>, E> {
-        Ok(match super::attribute::decode_attribute_page(bytes, limits, observe)? {
-            super::AttributePage::Leaf(values) => Page::Leaf(values),
-            super::AttributePage::Internal(children) => Page::Internal(children),
-        })
+        Ok(
+            match super::attribute::decode_attribute_page(bytes, limits, observe)? {
+                super::AttributePage::Leaf(values) => Page::Leaf(values),
+                super::AttributePage::Internal(children) => Page::Internal(children),
+            },
+        )
     }
 
     fn decode_shape(
@@ -49,12 +49,31 @@ impl Format for AttributeFormat {
     }
 
     fn encode_with_accounting(
-        page: &PageRef<'_, Self>, maximum_items: u32,
+        page: &PageRef<'_, Self>,
+        maximum_items: u32,
         accounting: &mut super::allocation::KernelAccounting<'_>,
     ) -> Result<(Vec<u8>, super::allocation::KernelOwnedAllocation), crate::FsError> {
         match page {
-            PageRef::Leaf(entries) => crate::kernel::codec::encode_owned(accounting, |observe, reserve| super::attribute::encode_attribute_leaf_entries(entries, maximum_items, observe, reserve)),
-            PageRef::Internal(children) => crate::kernel::codec::encode_owned(accounting, |observe, reserve| super::attribute::encode_attribute_internal_children(children.iter().map(|child| (&child.first, child.page)), maximum_items, observe, reserve)),
+            PageRef::Leaf(entries) => {
+                crate::kernel::codec::encode_owned(accounting, |observe, reserve| {
+                    super::attribute::encode_attribute_leaf_entries(
+                        entries,
+                        maximum_items,
+                        observe,
+                        reserve,
+                    )
+                })
+            }
+            PageRef::Internal(children) => {
+                crate::kernel::codec::encode_owned(accounting, |observe, reserve| {
+                    super::attribute::encode_attribute_internal_children(
+                        children.iter().map(|child| (&child.first, child.page)),
+                        maximum_items,
+                        observe,
+                        reserve,
+                    )
+                })
+            }
         }
     }
 
@@ -189,25 +208,40 @@ impl persistent_btree::Mutation<AttributeFormat> for AttributeMutation {
         matches!(self, Self::Insert(_) | Self::Remove { .. })
     }
 
-    fn replacement<'a>(&'a self, current: Option<&AttributeEntry>) -> Result<Option<&'a AttributeEntry>, Self::Error> {
+    fn replacement<'a>(
+        &'a self,
+        current: Option<&AttributeEntry>,
+    ) -> Result<Option<&'a AttributeEntry>, Self::Error> {
         match self {
             Self::Insert(_) if current.is_some() => Err(AttributeMutationError::AlreadyExists),
             Self::Insert(entry) => Ok(Some(entry)),
-            Self::Remove { .. } | Self::Replace { .. } if current.is_none() => Err(AttributeMutationError::Missing),
+            Self::Remove { .. } | Self::Replace { .. } if current.is_none() => {
+                Err(AttributeMutationError::Missing)
+            }
             Self::Remove { expected, .. } => {
-                if expected.as_ref().is_some_and(|expected| current != Some(expected)) {
+                if expected
+                    .as_ref()
+                    .is_some_and(|expected| current != Some(expected))
+                {
                     return Err(AttributeMutationError::StateConflict);
                 }
                 Ok(None)
             }
-            Self::Replace { expected, replacement } => {
-                if current != Some(expected) { return Err(AttributeMutationError::StateConflict); }
+            Self::Replace {
+                expected,
+                replacement,
+            } => {
+                if current != Some(expected) {
+                    return Err(AttributeMutationError::StateConflict);
+                }
                 Ok(Some(replacement))
             }
         }
     }
 
-    fn map_error(error: persistent_btree::Error<Self::Error>) -> crate::FsError { map_error(error).into() }
+    fn map_error(error: persistent_btree::Error<Self::Error>) -> crate::FsError {
+        map_error(error).into()
+    }
 }
 
 /// Attribute mutation failure retaining work and safe orphan writes.
@@ -224,20 +258,42 @@ pub async fn apply_attribute_mutations<S: crate::AsyncObjectStore>(
     cancellation: &crate::CancellationToken,
 ) -> Result<OperationReceipt<ObjectId>, AttributeMutationFailure> {
     let mut accounting = super::allocation::KernelAccounting::standalone(budget, cancellation);
-    apply_attribute_mutations_with_accounting(store, root, &mutations, maximum_mutations, limits, &mut accounting, cancellation)
-        .await.map_err(|error| OperationFailure::new(standalone_error(error), accounting.spent()))
+    apply_attribute_mutations_with_accounting(
+        store,
+        root,
+        &mutations,
+        maximum_mutations,
+        limits,
+        &mut accounting,
+        cancellation,
+    )
+    .await
+    .map_err(|error| OperationFailure::new(standalone_error(error), accounting.spent()))
 }
 
 pub(crate) async fn apply_attribute_mutations_with_accounting<S: crate::AsyncObjectStore>(
-    store: &S, root: ObjectId, mutations: &[AttributeMutation], maximum_mutations: u32,
-    limits: DecodeLimits, accounting: &mut super::allocation::KernelAccounting<'_>,
+    store: &S,
+    root: ObjectId,
+    mutations: &[AttributeMutation],
+    maximum_mutations: u32,
+    limits: DecodeLimits,
+    accounting: &mut super::allocation::KernelAccounting<'_>,
     cancellation: &crate::CancellationToken,
 ) -> Result<OperationReceipt<ObjectId>, crate::FsError> {
     accounting.check()?;
-    for mutation in mutations { mutation.validate().map_err(crate::FsError::from)?; }
+    for mutation in mutations {
+        mutation.validate().map_err(crate::FsError::from)?;
+    }
     persistent_btree::apply_with_accounting::<S, AttributeFormat, AttributeMutation>(
-        store, root, mutations, maximum_mutations, limits, accounting, cancellation,
-    ).await
+        store,
+        root,
+        mutations,
+        maximum_mutations,
+        limits,
+        accounting,
+        cancellation,
+    )
+    .await
 }
 
 fn standalone_error(error: crate::FsError) -> AttributeMutationError {
@@ -245,12 +301,19 @@ fn standalone_error(error: crate::FsError) -> AttributeMutationError {
         crate::FsError::AttributeMutation(error) => error,
         crate::FsError::Work(error) => AttributeMutationError::Work(error),
         crate::FsError::Object(error) => AttributeMutationError::Storage(error),
-        crate::FsError::PendingMutationAllocationFailed | crate::FsError::HandleAllocationFailed
-        | crate::FsError::Decode(CanonicalDecodeError::AllocationFailed) => AttributeMutationError::AllocationFailed,
+        crate::FsError::PendingMutationAllocationFailed
+        | crate::FsError::HandleAllocationFailed
+        | crate::FsError::Decode(CanonicalDecodeError::AllocationFailed) => {
+            AttributeMutationError::AllocationFailed
+        }
         crate::FsError::Decode(error) => AttributeMutationError::Decode(error),
-        crate::FsError::Cancelled(_) => AttributeMutationError::Storage(ObjectStoreError::Cancelled),
+        crate::FsError::Cancelled(_) => {
+            AttributeMutationError::Storage(ObjectStoreError::Cancelled)
+        }
         #[cfg(not(target_arch = "wasm32"))]
-        crate::FsError::NativeKernel(error) => AttributeMutationError::Storage(ObjectStoreError::Native(error)),
+        crate::FsError::NativeKernel(error) => {
+            AttributeMutationError::Storage(ObjectStoreError::Native(error))
+        }
         _ => unreachable!("attribute mutation engine returns only its typed kernel errors"),
     }
 }

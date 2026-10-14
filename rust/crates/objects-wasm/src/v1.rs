@@ -147,7 +147,9 @@ impl ObjectsV1Memory {
                     .await
                     .map_err(error)?;
                 let result = frames(&wire::GetObjectResponse {
-                    frame: Some(wire::get_object_response::Frame::Header(object.header().clone())),
+                    frame: Some(wire::get_object_response::Frame::Header(
+                        object.header().clone(),
+                    )),
                 });
                 for chunk in object.body().chunks(65_536) {
                     let value = wire::GetObjectResponse {

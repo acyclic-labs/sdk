@@ -182,13 +182,12 @@ async fn platform_roots_and_exclusive_ca() -> Result<(), Box<dyn std::error::Err
     let incoming = tonic::transport::server::TcpIncoming::bind(([127, 0, 0, 1], 0).into())?;
     let endpoint = format!("https://localhost:{}", incoming.local_addr()?.port());
     let (shutdown, stopped) = tokio::sync::oneshot::channel();
-    let server = tokio::spawn(
-        server
-            .add_service(TlsService)
-            .serve_with_incoming_shutdown(incoming, async {
-                let _ = stopped.await;
-            }),
-    );
+    let server = tokio::spawn(server.add_service(TlsService).serve_with_incoming_shutdown(
+        incoming,
+        async {
+            let _ = stopped.await;
+        },
+    ));
     let log = Capture::default();
     let result = async {
         let platform = connect(&endpoint, "private-token", None).await;

@@ -120,34 +120,45 @@ impl ImageConversion {
 }
 
 impl ToolExecutor for ImageConversion {
-    fn authorize(&self, scope: Option<&acyclic_harness::runtime::RuntimeScope>, context: Option<&acyclic_harness::runtime::ToolContext>, invocation: &acyclic_harness::tool::ToolInvocation, work: acyclic_harness::NativeWork<'_>) -> acyclic_harness::Result<()> {
-let _ = (scope, context, invocation, work);
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-if work.is_some() {
- return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unsupported, reason: "tool executor has no native authorization producer" });
-}
-if let Some(context) = context { return {
-        let input = Self::input(invocation)?;
-        if input.source.descriptor().media_type() != MIME
-            || input.source.descriptor().byte_length() > MAXIMUM_BYTES
-        {
-            return Err(Error::Invalid(
-                "conversion requires bounded fixture bytes".into(),
-            ));
+    fn authorize(
+        &self,
+        scope: Option<&acyclic_harness::runtime::RuntimeScope>,
+        context: Option<&acyclic_harness::runtime::ToolContext>,
+        invocation: &acyclic_harness::tool::ToolInvocation,
+        work: acyclic_harness::NativeWork<'_>,
+    ) -> acyclic_harness::Result<()> {
+        let _ = (scope, context, invocation, work);
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if work.is_some() {
+            return Err(acyclic_harness::Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Unsupported,
+                reason: "tool executor has no native authorization producer",
+            });
         }
-        let read = ToolInvocation {
-            arguments: json!({"file":input.source}),
-            ..invocation.clone()
-        };
-        let write = ToolInvocation {
-            arguments: json!({"path":input.destination,"text":"","media_type":MIME,"display_name":"converted.img1"}),
-            ..invocation.clone()
-        };
-        self.read.authorize(None, Some(context), &read, None)?;
-        self.write.authorize(None, Some(context), &write, None)
-    }; }
-Ok(())
-}
+        if let Some(context) = context {
+            return {
+                let input = Self::input(invocation)?;
+                if input.source.descriptor().media_type() != MIME
+                    || input.source.descriptor().byte_length() > MAXIMUM_BYTES
+                {
+                    return Err(Error::Invalid(
+                        "conversion requires bounded fixture bytes".into(),
+                    ));
+                }
+                let read = ToolInvocation {
+                    arguments: json!({"file":input.source}),
+                    ..invocation.clone()
+                };
+                let write = ToolInvocation {
+                    arguments: json!({"path":input.destination,"text":"","media_type":MIME,"display_name":"converted.img1"}),
+                    ..invocation.clone()
+                };
+                self.read.authorize(None, Some(context), &read, None)?;
+                self.write.authorize(None, Some(context), &write, None)
+            };
+        }
+        Ok(())
+    }
 
     fn execute<'a>(
         &'a self,

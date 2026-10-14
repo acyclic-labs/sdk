@@ -30,21 +30,21 @@ where
             });
         }
         crate::executor::NativeStockExecutor::new(
-            (model,
-            provider),
+            (model, provider),
             pipeline,
             &self.tools,
-            (Arc::clone(context),
-            operation,
-            self.host.clone(),
-            task,
-            fence),
+            (
+                Arc::clone(context),
+                operation,
+                self.host.clone(),
+                task,
+                fence,
+            ),
             self.policy.clone(),
             self.interaction_owner
                 .as_ref()
                 .map(|_| journal.clone() as Arc<dyn crate::runtime::InteractionRouter>),
-            (compaction,
-            max_output_tokens),
+            (compaction, max_output_tokens),
         )
     }
 

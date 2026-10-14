@@ -263,9 +263,7 @@ async fn initial_state_must_reside_before_declaration_is_published() -> Result<(
     ));
     assert!(coordinator.scheduler().operation(operation_id).is_none());
 
-    assert!(
-        declare(&mut coordinator, spec(operation_id, 0)?, "valid-state").await?
-    );
+    assert!(declare(&mut coordinator, spec(operation_id, 0)?, "valid-state").await?);
     assert!(matches!(
         DistributedCoordinator::open(&client, unbound_content, None, &mut None).await,
         Err(Error::Unsupported(_))

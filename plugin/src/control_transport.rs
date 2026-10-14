@@ -166,10 +166,7 @@ pub(crate) async fn start_control_endpoint(
             shutdown.clone(),
             receiver,
         ));
-        Ok(ControlEndpoint {
-            shutdown,
-            task,
-        })
+        Ok(ControlEndpoint { shutdown, task })
     }
 }
 

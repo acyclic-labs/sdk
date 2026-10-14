@@ -86,11 +86,20 @@ pub fn decode_generation_export_manifest(
     maximum_bytes: u64,
     maximum_objects: u64,
 ) -> Result<GenerationExportManifest, GenerationExportManifestError> {
-    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, maximum_bytes, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
-    let volume_id = VolumeId::from_bytes(decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?);
-    let config = decode_config(&mut decoder, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?.validate()?;
+    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, maximum_bytes, &mut |_| {
+        Ok::<_, crate::kernel::CanonicalDecodeError>(())
+    })?;
+    let volume_id = VolumeId::from_bytes(
+        decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+    );
+    let config = decode_config(&mut decoder, &mut |_| {
+        Ok::<_, crate::kernel::CanonicalDecodeError>(())
+    })?
+    .validate()?;
     let generation_root = decode_object_id(&mut decoder)?;
-    let generation_id = GenerationId::new(Digest::from_bytes(decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?));
+    let generation_id = GenerationId::new(Digest::from_bytes(
+        decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+    ));
     let file_count = decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
     let count = decoder.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
     let admitted = maximum_objects.min(config.limits.maximum_objects_per_generation);
@@ -166,11 +175,16 @@ fn encode_object_id(encoder: &mut Encoder, object: ObjectId) {
 
 fn decode_object_id(decoder: &mut Decoder<'_>) -> Result<ObjectId, CanonicalDecodeError> {
     let tag = decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
-    let kind = ObjectKind::from_canonical_tag(tag)
-        .map_err(|_| CanonicalDecodeError::UnknownTag { field: "object kind", tag })?;
+    let kind =
+        ObjectKind::from_canonical_tag(tag).map_err(|_| CanonicalDecodeError::UnknownTag {
+            field: "object kind",
+            tag,
+        })?;
     Ok(ObjectId {
         kind,
-        digest: Digest::from_bytes(decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?),
+        digest: Digest::from_bytes(
+            decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+        ),
     })
 }
 

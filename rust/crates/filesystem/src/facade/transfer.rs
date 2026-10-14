@@ -47,7 +47,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<GenerationTransferBatch> {
-
         (export_generation_batch_async(
             &self.inner.objects,
             manifest,
@@ -71,7 +70,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<TransferCursor> {
-
         (import_generation_batch_async(
             &self.inner.objects,
             manifest,

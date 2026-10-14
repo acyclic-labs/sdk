@@ -6,8 +6,7 @@ use crate::cancellation::CancellationToken;
 use crate::foundation::{GenerationId, OperationId, VolumeId};
 use crate::performance::{WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
-    ObjectFailure, ObjectId, ObjectReadRequest, ObjectReadRetention, ObjectResult,
-    ObjectStoreError,
+    ObjectFailure, ObjectId, ObjectReadRequest, ObjectReadRetention, ObjectResult, ObjectStoreError,
 };
 use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;

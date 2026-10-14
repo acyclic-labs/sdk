@@ -1,12 +1,11 @@
 //! Capability-rooted native filesystem access.
 #![allow(unsafe_code, reason = "isolates native filesystem calls")]
+use crate::NativeRootIdentity;
 #[cfg(feature = "local")]
 use crate::NativeWorkReservation;
-use crate::NativeRootIdentity;
 use crate::demand::{DemandError, DemandWork, SourceDemandReadWork};
 use crate::materializer::{
-    NativeAllocation, NativeCleanupWrite, NativeMaterializationWork,
-    NativeTreeMaterializationError,
+    NativeAllocation, NativeCleanupWrite, NativeMaterializationWork, NativeTreeMaterializationError,
 };
 use crate::performance::{WorkBudget, WorkCounters};
 use cap_std::fs::Dir;

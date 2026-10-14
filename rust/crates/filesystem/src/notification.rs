@@ -90,7 +90,9 @@ impl AsyncNotificationStore for MemoryNotificationStore {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> NotificationResult<()> {
-        cancellation.check().map_err(|_| OperationFailure::before_work(NotificationError::Cancelled))?;
+        cancellation
+            .check()
+            .map_err(|_| OperationFailure::before_work(NotificationError::Cancelled))?;
         let work = WorkCounters {
             backend_write_operations: 1,
             items_examined: 1,
@@ -118,7 +120,9 @@ impl AsyncNotificationStore for MemoryNotificationStore {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> NotificationResult<NotificationPoll> {
-        cancellation.check().map_err(|_| OperationFailure::before_work(NotificationError::Cancelled))?;
+        cancellation
+            .check()
+            .map_err(|_| OperationFailure::before_work(NotificationError::Cancelled))?;
         let work = WorkCounters {
             backend_read_operations: 1,
             items_examined: 1,

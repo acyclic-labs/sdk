@@ -8,12 +8,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         operation: crate::OperationId,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<LazySnapshotRef>, LazyWorkspaceError> {
-        let Some(generation) = self.operation_generation(
-            IdempotencyKey::from_bytes(operation.into_bytes()), ctx,
-        ).await? else {
+        let Some(generation) = self
+            .operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()), ctx)
+            .await?
+        else {
             return Ok(None);
         };
-        self.selected_snapshot(operation, generation, ctx).await.map(|(snapshot, _)| Some(snapshot))
+        self.selected_snapshot(operation, generation, ctx)
+            .await
+            .map(|(snapshot, _)| Some(snapshot))
     }
 
     pub(crate) async fn selected_snapshot(

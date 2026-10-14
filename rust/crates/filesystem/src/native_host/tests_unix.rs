@@ -253,9 +253,7 @@ fn bound_unix_socket_rejects_paths_beyond_sun_path() -> std::io::Result<()> {
     let temporary = tempfile::tempdir()?;
     let root = test_root(temporary.path())?;
     let name = format!("{}.sock", "n".repeat(128));
-    match root
-        .bind_unix_socket(Path::new(&name), &mut ordinary_work())
-    {
+    match root.bind_unix_socket(Path::new(&name), &mut ordinary_work()) {
         Err(error) => assert!(matches!(error, DemandError::InvalidRequest)),
         Ok(()) => return Err(std::io::Error::other("over-long socket path was admitted")),
     }

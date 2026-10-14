@@ -249,9 +249,10 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
         altered_read(&mut read, fault, work)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = work.original
-            && matches!(read.retention, ObjectReadRetention::Owned { .. }) {
-                return crate::async_storage::owned_read(read, original);
-            }
+            && matches!(read.retention, ObjectReadRetention::Owned { .. })
+        {
+            return crate::async_storage::owned_read(read, original);
+        }
         Ok(read)
     }
 

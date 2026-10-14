@@ -78,28 +78,22 @@ async fn stock_native_lineage_preserves_original_resource_and_durable_restart() 
     let store = LocalCoreStateStore::open_owned(directory.path()).unwrap();
     for expected in [true, false] {
         assert_eq!(
-            store.compare_lineage(id,
-                0,
-                paid_lineage(&value, &work, &cxl),
-                &work,
-                &cxl,
-            )
-            .await
-            .unwrap(),
+            store
+                .compare_lineage(id, 0, paid_lineage(&value, &work, &cxl), &work, &cxl,)
+                .await
+                .unwrap(),
             expected,
         );
         if expected {
-            let loaded = store.load_lineage(id, &work, &cxl)
-                .await
-                .unwrap()
-                .unwrap();
+            let loaded = store.load_lineage(id, &work, &cxl).await.unwrap().unwrap();
             assert_eq!(loaded.0, value);
             assert!(loaded.1.work().shares_allocation_context(&work));
         }
     }
     drop(store);
     let reopened = LocalCoreStateStore::new(directory.path());
-    let loaded = reopened.load_lineage(id, &work, &cxl)
+    let loaded = reopened
+        .load_lineage(id, &work, &cxl)
         .await
         .unwrap()
         .unwrap();
@@ -122,10 +116,10 @@ async fn stock_native_input_forgeries_and_cancellation_fail_before_exchange() {
     let store = LocalCoreStateStore::new(directory.path().join("not-created"));
     let foreign = paid_lineage(&lineage(id), &other, &cxl);
     let before = work.receipt();
-    let error = store.compare_lineage(id, 0, foreign, &work, &cxl,
-    )
-    .await
-    .unwrap_err();
+    let error = store
+        .compare_lineage(id, 0, foreign, &work, &cxl)
+        .await
+        .unwrap_err();
     assert!(matches!(
         error.0,
         crate::lineage::WorkspaceLineageError::Store(LocalCoreStateStoreError::LazyWork(
@@ -137,10 +131,10 @@ async fn stock_native_input_forgeries_and_cancellation_fail_before_exchange() {
         lineage(id),
         work.claim(0, 0, crate::WorkCounters::UNCHARGED).unwrap(),
     );
-    let error = store.compare_lineage(id, 0, forged, &work, &cxl,
-    )
-    .await
-    .unwrap_err();
+    let error = store
+        .compare_lineage(id, 0, forged, &work, &cxl)
+        .await
+        .unwrap_err();
     assert!(matches!(
         error.0,
         crate::lineage::WorkspaceLineageError::Store(LocalCoreStateStoreError::Integrity)
@@ -148,9 +142,7 @@ async fn stock_native_input_forgeries_and_cancellation_fail_before_exchange() {
     assert!(!store.root().exists());
     cxl.cancel();
     let before = work.receipt();
-    let error = store.load_lineage(id, &work, &cxl)
-        .await
-        .unwrap_err();
+    let error = store.load_lineage(id, &work, &cxl).await.unwrap_err();
     assert!(matches!(
         error.0,
         crate::lineage::WorkspaceLineageError::Store(LocalCoreStateStoreError::LazyWork(
@@ -180,9 +172,7 @@ async fn stock_native_context_projects_deep_payload_and_stops_at_exact_source_li
             ..finite_budget()
         })
         .unwrap();
-    let error = store.load_context(id, &tight, &cxl)
-        .await
-        .unwrap_err();
+    let error = store.load_context(id, &tight, &cxl).await.unwrap_err();
     assert!(matches!(
         error.0,
         crate::workspace_context::WorkspaceContextError::Store(LocalCoreStateStoreError::LazyWork(
@@ -192,10 +182,7 @@ async fn stock_native_context_projects_deep_payload_and_stops_at_exact_source_li
     assert_eq!(tight.receipt().source_bytes_read, 7);
     let original = NativeMaterializationWork::new(finite_budget(), &cxl).unwrap();
     let work = original.native_volume_work(finite_budget()).unwrap();
-    let mut loaded = store.load_context(id, &work, &cxl)
-        .await
-        .unwrap()
-        .unwrap();
+    let mut loaded = store.load_context(id, &work, &cxl).await.unwrap().unwrap();
     assert_eq!(loaded.0, value);
     assert!(loaded.1.work().shares_allocation_context(&work));
     assert_eq!(
@@ -205,14 +192,15 @@ async fn stock_native_context_projects_deep_payload_and_stops_at_exact_source_li
     loaded.0.revision += 1;
     loaded.0.state = WorkspaceContextState::Frozen;
     assert!(
-        store.compare_context(id, 1, loaded, &work, &cxl,
-        )
-        .await
-        .unwrap()
+        store
+            .compare_context(id, 1, loaded, &work, &cxl,)
+            .await
+            .unwrap()
     );
     drop(store);
     let reopened = LocalCoreStateStore::new(directory.path());
-    let loaded = reopened.load_context(id, &work, &cxl)
+    let loaded = reopened
+        .load_context(id, &work, &cxl)
         .await
         .unwrap()
         .unwrap();
@@ -250,12 +238,10 @@ async fn intact_corrupt_native_log_retains_exact_error_path_custody() {
     let cxl = crate::CancellationToken::new();
     let original = NativeMaterializationWork::new(finite_budget(), &cxl).unwrap();
     let work = original.native_volume_work(finite_budget()).unwrap();
-    let error = store.load_lineage(WorkspaceId::from_bytes([0xd5; 16]),
-        &work,
-        &cxl,
-    )
-    .await
-    .unwrap_err();
+    let error = store
+        .load_lineage(WorkspaceId::from_bytes([0xd5; 16]), &work, &cxl)
+        .await
+        .unwrap_err();
     let crate::lineage::WorkspaceLineageError::Store(LocalCoreStateStoreError::LazyWork(
         crate::LazyWorkspaceError::NativeRecordCorrupt(path, Some(allocation)),
     )) = error.0

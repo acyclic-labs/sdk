@@ -207,7 +207,9 @@ pub(crate) fn write_service_drain_completion(
     // borrowed Root error retains its cause and custody through the write.
     let error = match result {
         Err(error) => Some(error.to_string()),
-        Ok(SessionCloseState::Failed) => Some("Acyclic service retained a failed session shutdown".to_owned()),
+        Ok(SessionCloseState::Failed) => {
+            Some("Acyclic service retained a failed session shutdown".to_owned())
+        }
         Ok(SessionCloseState::Closed) => None,
     };
     let value = json!({

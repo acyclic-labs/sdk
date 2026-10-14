@@ -84,13 +84,13 @@ pub(super) async fn admission(
             .1
             .as_ref()
             .is_none_or(|custody| !work.shares_ledger(custody.work()))
-        {
-            drop(observed.0);
-            return Err(Error::NativeWork {
-                cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
-                custody: observed.1,
-            });
-        }
+    {
+        drop(observed.0);
+        return Err(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
+            custody: observed.1,
+        });
+    }
     Ok(observed)
 }
 
@@ -114,12 +114,12 @@ pub(super) async fn page(
             .1
             .as_ref()
             .is_none_or(|custody| !work.shares_ledger(custody.work()))
-        {
-            drop(observed.0);
-            return Err(Error::NativeWork {
-                cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
-                custody: observed.1,
-            });
-        }
+    {
+        drop(observed.0);
+        return Err(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
+            custody: observed.1,
+        });
+    }
     Ok(observed)
 }

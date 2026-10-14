@@ -410,7 +410,6 @@ pub(crate) fn reject_original_root_references(
     }
 }
 
-
 /// Host subtrees owned by version control or SDK state, never workspace
 /// content. The order is the watcher fence placement preference: an existing
 /// `.git` hosts fence cookies, and only a root without one gains `.acyclic-sdk`.
@@ -437,7 +436,6 @@ pub(crate) fn reserved_ignore_rules() -> String {
         .map(|name| format!("{name}/\n"))
         .collect()
 }
-
 
 pub(crate) const fn native_filesystem_profile() -> FilesystemProfile {
     if cfg!(windows) {
@@ -471,13 +469,19 @@ pub(crate) fn verify_native_root_identity(
 pub(crate) async fn merge_drivers_for(
     workspace: &LocalLazyWorkspace,
 ) -> Result<Arc<MergeDriverRegistry>, String> {
-    let attributes = match workspace.read("/.gitattributes", 1024 * 1024,
-        &mut acyclic_fs::kernel::KernelAccounting::Standalone {
-            allocations: Default::default(),
-            work: acyclic_fs::WorkCounters::UNCHARGED,
-            budget: WorkBudget::UNBOUNDED,
-            cancellation: &CancellationToken::new(),
-        }).await {
+    let attributes = match workspace
+        .read(
+            "/.gitattributes",
+            1024 * 1024,
+            &mut acyclic_fs::kernel::KernelAccounting::Standalone {
+                allocations: Default::default(),
+                work: acyclic_fs::WorkCounters::UNCHARGED,
+                budget: WorkBudget::UNBOUNDED,
+                cancellation: &CancellationToken::new(),
+            },
+        )
+        .await
+    {
         Ok(chunk) => String::from_utf8(chunk.bytes.to_vec())
             .map_err(|_| ".gitattributes must be UTF-8".to_owned())?,
         Err(acyclic_fs::LazyWorkspaceError::NotFound) => String::new(),
@@ -540,8 +544,13 @@ pub(crate) fn namespace_path_text(path: &NamespacePath) -> Result<String, String
         .components()
         .iter()
         .map(|name| {
-            name.unicode_text(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).ok().map(|receipt| receipt.value)
-                .ok_or_else(|| "non-Unicode path cannot be presented to an agent".to_owned())
+            name.unicode_text(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .ok()
+            .map(|receipt| receipt.value)
+            .ok_or_else(|| "non-Unicode path cannot be presented to an agent".to_owned())
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(format!("/{}", components.join("/")))

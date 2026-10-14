@@ -83,12 +83,17 @@ pub fn decode_event_payload(
     event_type: String,
     canonical_payload_json: Vec<u8>,
 ) -> Result<JsValue, JsValue> {
-    to_js(&decode_payload_wire(&event_type, &canonical_payload_json, &mut None).map_err(js_error)?.0)
+    to_js(
+        &decode_payload_wire(&event_type, &canonical_payload_json, &mut None)
+            .map_err(js_error)?
+            .0,
+    )
 }
 
 #[wasm_bindgen(js_name = decodeAggregateKind)]
 pub fn decode_aggregate_kind_wasm(value: i32) -> Result<JsValue, JsValue> {
     let kind =
-        crate::wire_codec::decode_aggregate_kind(value, crate::wire::ErrorCode::Invalid, &None).map_err(js_error)?;
+        crate::wire_codec::decode_aggregate_kind(value, crate::wire::ErrorCode::Invalid, &None)
+            .map_err(js_error)?;
     to_js(&kind)
 }

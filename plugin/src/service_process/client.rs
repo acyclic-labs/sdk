@@ -45,7 +45,6 @@ pub(crate) async fn send_control_envelope(
         .await
 }
 
-
 pub(crate) fn control_request_wait(request: &ControlRequest) -> std::time::Duration {
     match request.command {
         ControlCommand::Ping => CONTROL_PROBE_WAIT,
@@ -72,7 +71,6 @@ pub(crate) async fn send_control_envelope_once(
     send_control_envelope_with_attempts(data, envelope, 1, control_request_wait(&envelope.request))
         .await
 }
-
 
 pub(crate) async fn send_control_envelope_with_attempts(
     data: &Path,

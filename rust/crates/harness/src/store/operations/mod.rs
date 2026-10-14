@@ -14,7 +14,6 @@ use acyclic_stream::{
     StreamProvider,
 };
 
-
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 

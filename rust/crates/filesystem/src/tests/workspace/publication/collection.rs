@@ -39,7 +39,10 @@ async fn a_deleted_local_fork_releases_its_authority_and_content() -> Result<(),
         assert!(collected.removed >= 1, "{collected:?}");
         let again = fs.collect_local_garbage(None, &cancellation).await?;
         assert_eq!(again.removed, 0);
-        assert_eq!(unbounded!(main, read("/base.txt", 64))?, OwnedBytes::from_static(b"base"));
+        assert_eq!(
+            unbounded!(main, read("/base.txt", 64))?,
+            OwnedBytes::from_static(b"base")
+        );
         drop((main, agent));
         close_local(fs).await?;
     }
@@ -51,7 +54,10 @@ async fn a_deleted_local_fork_releases_its_authority_and_content() -> Result<(),
         "the fork base went with its fork"
     );
     let main = unbounded!(fs, open_workspace("repo"))?;
-    assert_eq!(unbounded!(main, read("/base.txt", 64))?, OwnedBytes::from_static(b"base"));
+    assert_eq!(
+        unbounded!(main, read("/base.txt", 64))?,
+        OwnedBytes::from_static(b"base")
+    );
     let content = "only the agent ".repeat(8_192);
     main.write_text("/again.txt", &content).await?;
     drop(main);

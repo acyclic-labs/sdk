@@ -753,9 +753,20 @@ mod model {
         let mut values = Vec::new();
         let mut after = None;
         for _ in 0..=256 {
-            let receipt = paginate::<_, TreeFormat>(store, (root, after
-                    .as_ref()
-                    .map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded), page), LIMITS, WorkBudget::UNBOUNDED, &CancellationToken::new(), None,)
+            let receipt = paginate::<_, TreeFormat>(
+                store,
+                (
+                    root,
+                    after
+                        .as_ref()
+                        .map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
+                    page,
+                ),
+                LIMITS,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+                None,
+            )
             .await?;
             if receipt.values.len() > usize::try_from(page)? {
                 return Err("page exceeded its bound".into());

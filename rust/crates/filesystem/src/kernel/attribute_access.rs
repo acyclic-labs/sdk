@@ -2,10 +2,8 @@
 
 use super::allocation::{KernelAccounting, KernelOwnedAllocation};
 use super::attribute_mutation::AttributeFormat;
+use super::{AttributeEntry, AttributeName, CanonicalDecodeError, DecodeLimits};
 use super::{persistent_batch, persistent_point};
-use super::{
-    AttributeEntry, AttributeName, CanonicalDecodeError, DecodeLimits,
-};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
@@ -76,7 +74,10 @@ pub async fn lookup_attribute<S: AsyncObjectStore>(
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
     lookup_attribute_async_with_accounting(store, root, name, limits, &mut accounting, cancellation)
         .await
-        .map(|(value, _)| OperationReceipt { value, work: accounting.spent() })
+        .map(|(value, _)| OperationReceipt {
+            value,
+            work: accounting.spent(),
+        })
         .map_err(|error| failed(project_scalar_error(error), accounting.spent()))
 }
 
@@ -89,21 +90,38 @@ pub(crate) async fn lookup_attribute_async_with_accounting<S: AsyncObjectStore>(
     cancellation: &CancellationToken,
 ) -> Result<(Option<AttributeEntry>, KernelOwnedAllocation), crate::FsError> {
     let (value, allocation) = persistent_point::lookup_async_with_accounting::<S, AttributeFormat>(
-        store, root, name, limits, accounting, cancellation, None,
-    ).await.map_err(|error| match error {
-        crate::FsError::FileRecord(error) => map_batch_error(super::file_table::unmap_batch_error(error)).into(),
-        crate::FsError::PendingMutationAllocationFailed => AttributeLookupError::AllocationFailed.into(),
+        store,
+        root,
+        name,
+        limits,
+        accounting,
+        cancellation,
+        None,
+    )
+    .await
+    .map_err(|error| match error {
+        crate::FsError::FileRecord(error) => {
+            map_batch_error(super::file_table::unmap_batch_error(error)).into()
+        }
+        crate::FsError::PendingMutationAllocationFailed => {
+            AttributeLookupError::AllocationFailed.into()
+        }
         error => error,
     })?;
-    let bytes = value.as_ref().map_or(0, |entry| usize_to_u64(entry.name.retained_bytes()));
+    let bytes = value
+        .as_ref()
+        .map_or(0, |entry| usize_to_u64(entry.name.retained_bytes()));
     let owned = persistent_point::Owned::new(value, allocation, bytes);
     if let Err(error) = accounting.charge(WorkCounters {
-        items_returned: u64::from(owned.value.is_some()), ..WorkCounters::UNCHARGED
+        items_returned: u64::from(owned.value.is_some()),
+        ..WorkCounters::UNCHARGED
     }) {
         owned.retire(accounting)?;
         return Err(error);
     }
-    let persistent_point::Owned { value, allocation, .. } = owned;
+    let persistent_point::Owned {
+        value, allocation, ..
+    } = owned;
     Ok((value, allocation))
 }
 
@@ -115,8 +133,12 @@ fn project_scalar_error(error: crate::FsError) -> AttributeLookupError {
         crate::FsError::Object(error) => map_storage(error),
         crate::FsError::Decode(error) => AttributeLookupError::Decode(error),
         #[cfg(not(target_arch = "wasm32"))]
-        crate::FsError::NativeKernel(error) => AttributeLookupError::Storage(ObjectStoreError::Native(error)),
-        _ => unreachable!("scalar attribute leaves return only typed attribute, object, decode, work or cancellation errors"),
+        crate::FsError::NativeKernel(error) => {
+            AttributeLookupError::Storage(ObjectStoreError::Native(error))
+        }
+        _ => unreachable!(
+            "scalar attribute leaves return only typed attribute, object, decode, work or cancellation errors"
+        ),
     }
 }
 

@@ -21,12 +21,14 @@ fn bounded_candidate_selection_rejects_orphan_results_before_mutating_history() 
             "history-selection".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(agent),
-         &mut None)?,
+            &mut None,
+        )?,
         "message.json".into(),
         "1".into(),
         FileDescriptor::from_bytes(b"{}", "application/json", &mut None)?,
         "message.json".into(),
-     &mut None)?;
+        &mut None,
+    )?;
     let call = Uuid::new_v4();
     let result = Uuid::new_v4();
     let mut history = ConversationState::default();
@@ -35,16 +37,19 @@ fn bounded_candidate_selection_rejects_orphan_results_before_mutating_history() 
         (call, 1, MessageKind::ToolCall, None),
         (result, 2, MessageKind::ToolResult, Some(call)),
     ] {
-        history.append(ConversationMessage {
-            id,
-            sequence,
-            kind,
-            content: content.clone(),
-            attachments: ReferencedAttachments::Inline { items: Vec::new() },
-            reply_to,
-            tool_call_id: Some("call".into()),
-            extensions: Default::default(),
-        }, &mut None)?;
+        history.append(
+            ConversationMessage {
+                id,
+                sequence,
+                kind,
+                content: content.clone(),
+                attachments: ReferencedAttachments::Inline { items: Vec::new() },
+                reply_to,
+                tool_call_id: Some("call".into()),
+                extensions: Default::default(),
+            },
+            &mut None,
+        )?;
     }
     let wire = serde_json::to_vec(&history)
         .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
@@ -91,9 +96,12 @@ fn bounded_candidate_selection_rejects_orphan_results_before_mutating_history() 
     assert!(selected.append_user);
     let mut candidate: ConversationState = serde_json::from_slice(&wire)
         .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
-    candidate.append(selected.user_message.clone().ok_or_else(|| {
-        acyclic_harness::Error::Invalid("new turn omitted its user message".into())
-    })?, &mut None)?;
+    candidate.append(
+        selected.user_message.clone().ok_or_else(|| {
+            acyclic_harness::Error::Invalid("new turn omitted its user message".into())
+        })?,
+        &mut None,
+    )?;
     bounded_model_context_selection(&candidate, selected.user_id, 2)
         .expect_err("explicit suffix admitted an orphan tool result");
     assert_eq!(

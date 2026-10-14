@@ -180,10 +180,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             volume_id, config, ..
         } = creation;
         accounting.check()?;
-        let operation_id = if let Some(id) = operation_id { id } else {
+        let operation_id = if let Some(id) = operation_id {
+            id
+        } else {
             accounting.charge(identity_hash_work(CREATION_OPERATION_DOMAIN))?;
             let mut identity = [0; 16];
-            identity.copy_from_slice(&derived_digest(CREATION_OPERATION_DOMAIN, volume_id).as_bytes()[..16]);
+            identity.copy_from_slice(
+                &derived_digest(CREATION_OPERATION_DOMAIN, volume_id).as_bytes()[..16],
+            );
             OperationId::from_bytes(identity)
         };
         let encoded =

@@ -321,9 +321,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         self.apply_authored_transaction(vec![authored], budget, cancellation)
             .await
             .and_then(|receipt| {
-                let value = receipt.value.created_file_ids.into_iter().next().flatten()
+                let value = receipt
+                    .value
+                    .created_file_ids
+                    .into_iter()
+                    .next()
+                    .flatten()
                     .ok_or_else(|| OperationFailure::new(FsError::InvalidDiff, receipt.work))?;
-                Ok(OperationReceipt { value, work: receipt.work })
+                Ok(OperationReceipt {
+                    value,
+                    work: receipt.work,
+                })
             })
     }
 }

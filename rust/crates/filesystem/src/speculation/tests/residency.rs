@@ -11,7 +11,10 @@ fn generation(byte: u8) -> GenerationId {
     GenerationId::new(Digest::from_bytes([byte; 32]))
 }
 
-async fn object(store: &MemoryObjectStore, byte: u8) -> Result<ObjectId, Box<dyn std::error::Error>> {
+async fn object(
+    store: &MemoryObjectStore,
+    byte: u8,
+) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let bytes = OwnedBytes::from(vec![byte; 64]);
     let object_id = ObjectId {
         kind: ObjectKind::Blob,
@@ -19,7 +22,11 @@ async fn object(store: &MemoryObjectStore, byte: u8) -> Result<ObjectId, Box<dyn
     };
     {
         let __object_args = (
-            object_id, bytes, WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+            object_id,
+            bytes,
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
         let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
         let __object_result =
             AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
@@ -48,8 +55,8 @@ fn candidate(
 }
 
 #[tokio::test]
-async fn option_validation_and_all_rejection_classes_are_total() -> Result<(), Box<dyn std::error::Error>>
-{
+async fn option_validation_and_all_rejection_classes_are_total()
+-> Result<(), Box<dyn std::error::Error>> {
     let defaults = ResidencySpeculatorOptions::default();
     for invalid in [
         ResidencySpeculatorOptions {
@@ -143,8 +150,8 @@ async fn option_validation_and_all_rejection_classes_are_total() -> Result<(), B
 }
 
 #[tokio::test]
-async fn bounded_feedback_windows_discard_only_oldest_samples() -> Result<(), Box<dyn std::error::Error>>
-{
+async fn bounded_feedback_windows_discard_only_oldest_samples()
+-> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let first = object(&store, 50).await?;
     let second = object(&store, 51).await?;
@@ -342,7 +349,8 @@ async fn execution_warms_the_same_authenticated_cache_without_retaining_a_second
         permit,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert_eq!(first.value, 64);
     assert_eq!(first.work.backend_read_operations, 1);
     engine.finish(permit.candidate().operation_id, true)?;
@@ -353,7 +361,8 @@ async fn execution_warms_the_same_authenticated_cache_without_retaining_a_second
         permit,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("stale speculation executed")?;
     assert!(matches!(
@@ -363,18 +372,14 @@ async fn execution_warms_the_same_authenticated_cache_without_retaining_a_second
     assert_eq!(*stale.work, WorkCounters::default());
 
     let warm = (async {
-        let __object_args = (
-        object_id,
-        64,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    );
+        let __object_args = (object_id, 64, WorkBudget::UNBOUNDED, &cancellation);
         let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
         let __object_result = store
             .read(__object_args.0, __object_args.1, &mut __object_work)
             .await;
         __object_work.receipt(__object_result)
-    }).await?;
+    })
+    .await?;
     assert_eq!(warm.work.backend_read_operations, 0);
     assert_eq!(warm.work.object_bytes_read, 0);
     assert_eq!(store.stats()?.hits, 1);
@@ -475,7 +480,8 @@ async fn cancelled_residency_execution_is_inert_until_explicit_terminal_feedback
         permit,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("cancelled residency executed")?;
     assert!(matches!(
@@ -522,12 +528,8 @@ async fn embedded_fs_executes_residency_against_its_one_shared_object_backend()
         Some(permit)
     );
     let cancellation = CancellationToken::new();
-    let receipt = (fs.execute_residency(
-        &engine,
-        permit,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
+    let receipt =
+        (fs.execute_residency(&engine, permit, WorkBudget::UNBOUNDED, &cancellation)).await?;
     assert_eq!(receipt.value, 64);
     assert_eq!(store.stats()?.resident_entries, 1);
     Ok(())

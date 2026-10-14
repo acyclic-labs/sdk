@@ -148,10 +148,7 @@ impl NativeCheckout {
             .as_ref()
             .map(|value| bigint_u64(value, "logicalBytes"))
             .transpose()?;
-        let receipt = checkout_mutation!(
-            self,
-            set_attributes(file_id, metadata, logical_bytes,)
-        )?;
+        let receipt = checkout_mutation!(self, set_attributes(file_id, metadata, logical_bytes,))?;
         mutation_result(receipt.work)
     }
 

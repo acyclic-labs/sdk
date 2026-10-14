@@ -294,7 +294,9 @@ async fn missing_and_corrupt_gates_fail_authority_reopen() -> TestResult {
         }
         if let Some(gate) = gate {
             let path = stream_path(id, "/publication-gate")?;
-            request.conditions.push(CommitCondition::Absent { path: path.clone() });
+            request
+                .conditions
+                .push(CommitCondition::Absent { path: path.clone() });
             request.mutations.push(CommitMutation::Append {
                 path,
                 records: vec![

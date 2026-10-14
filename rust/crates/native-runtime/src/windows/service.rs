@@ -1,17 +1,23 @@
 //! Detached service startup with one inherited readiness pipe.
+use std::os::windows::{
+    ffi::OsStrExt as _,
+    io::{AsRawHandle, FromRawHandle},
+};
 use std::{fs::File, io, mem::zeroed, path::Path};
-use std::os::windows::{ffi::OsStrExt as _, io::{AsRawHandle, FromRawHandle}};
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation},
+    Foundation::{
+        CloseHandle, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
+    },
     Security::SECURITY_ATTRIBUTES,
     System::{
         Console::{GetStdHandle, STD_OUTPUT_HANDLE, SetStdHandle},
         Pipes::CreatePipe,
         Threading::{
             CREATE_NEW_PROCESS_GROUP, CreateProcessW, DETACHED_PROCESS,
-            DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, InitializeProcThreadAttributeList,
-            LPPROC_THREAD_ATTRIBUTE_LIST, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION,
-            STARTF_USESTDHANDLES, STARTUPINFOEXW, UpdateProcThreadAttribute,
+            DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+            InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
+            PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, STARTF_USESTDHANDLES,
+            STARTUPINFOEXW, UpdateProcThreadAttribute,
         },
     },
 };

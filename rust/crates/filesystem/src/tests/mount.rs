@@ -11,7 +11,8 @@ async fn checkout() -> Result<crate::facade::MemoryCheckout, Box<dyn std::error:
         VolumeConfig::portable(Lifecycle::Ephemeral),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     Ok((volume.checkout(
         GenerationSelector::Head,
@@ -22,7 +23,8 @@ async fn checkout() -> Result<crate::facade::MemoryCheckout, Box<dyn std::error:
         },
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value)
 }
 
@@ -35,26 +37,33 @@ async fn same_volume_checkouts(
         VolumeConfig::portable(Lifecycle::Ephemeral),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let mut checkouts = Vec::new();
     for _ in 0..count {
-        checkouts.push(volume.checkout(
-            GenerationSelector::Head,
-            CheckoutMode {
-                access: AccessMode::ReadWrite,
-                consistency: ConsistencyMode::Pinned,
-                mutations: MutationMode::PrivateOverlay,
-            },
-            WorkBudget::UNBOUNDED, &cancellation,
-        ).await?.value);
+        checkouts.push(
+            volume
+                .checkout(
+                    GenerationSelector::Head,
+                    CheckoutMode {
+                        access: AccessMode::ReadWrite,
+                        consistency: ConsistencyMode::Pinned,
+                        mutations: MutationMode::PrivateOverlay,
+                    },
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await?
+                .value,
+        );
     }
     Ok(checkouts)
 }
 
 #[tokio::test]
-async fn routing_owns_checkouts_and_translates_relative_paths() -> Result<(), Box<dyn std::error::Error>>
-{
+async fn routing_owns_checkouts_and_translates_relative_paths()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = checkout().await?;
     let scratch = checkout().await?;
     let root_volume = root.volume_id();
@@ -105,7 +114,8 @@ async fn duplicate_and_missing_root_paths_are_rejected() -> Result<(), Box<dyn s
 }
 
 #[tokio::test]
-async fn mounted_checkout_accessors_and_snapshot_are_exact() -> Result<(), Box<dyn std::error::Error>> {
+async fn mounted_checkout_accessors_and_snapshot_are_exact()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = checkout().await?;
     let expected_volume = root.volume_id();
     let expected_generation = root.generation_id();
@@ -152,7 +162,8 @@ async fn mounted_checkout_accessors_and_snapshot_are_exact() -> Result<(), Box<d
 }
 
 #[tokio::test]
-async fn mount_routing_failures_are_typed_and_non_mutating() -> Result<(), Box<dyn std::error::Error>> {
+async fn mount_routing_failures_are_typed_and_non_mutating()
+-> Result<(), Box<dyn std::error::Error>> {
     let path = PortablePath::parse("/unmapped", crate::model::VolumeLimits::default())?;
     let mut empty: MountedView<crate::MemoryAuthorityStore, crate::MemoryObjectStore> =
         MountedView {

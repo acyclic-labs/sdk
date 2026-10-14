@@ -214,9 +214,13 @@ impl EntrypointRef {
         )
     }
     pub(super) fn copy_fields(&self, quota: &mut CodecQuota<'_, '_>) -> Result<Self> {
-        let result_schema = crate::core::copy(&self.result_schema, quota, |value: &serde_json::Value, _| {
-    crate::executor::json::json_value_logical_owned_bytes(value)
-})?;
+        let result_schema = crate::core::copy(
+            &self.result_schema,
+            quota,
+            |value: &serde_json::Value, _| {
+                crate::executor::json::json_value_logical_owned_bytes(value)
+            },
+        )?;
         Ok(Self {
             name: copy_text(&self.name, quota)?,
             version: copy_text(&self.version, quota)?,

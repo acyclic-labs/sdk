@@ -92,7 +92,10 @@ pub fn validate_authority_path_segment(
         kind: AggregateKind::Agent,
         id: value.clone(),
     };
-    authority.stream_path(&mut None).map(|_| value).map_err(js_error)
+    authority
+        .stream_path(&mut None)
+        .map(|_| value)
+        .map_err(js_error)
 }
 
 /// Validates one component name with the canonical Rust byte and character

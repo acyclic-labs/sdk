@@ -9,22 +9,39 @@ pub struct FilesystemProjectMergeVerifier<A, O> {
 
 impl<A, O> FilesystemProjectMergeVerifier<A, O> {
     /// Binds the provider and optionally authenticates and funds its shared allocation.
-    pub fn new(host: Arc<FilesystemHost<A, O>>,
+    pub fn new(
+        host: Arc<FilesystemHost<A, O>>,
         original: Option<(&AuthorityVerifier, &Scope, &PreparationIo)>,
     ) -> Result<Arc<Self>> {
         #[cfg(not(target_arch = "wasm32"))]
-        let allocation = original.map(|(verifier, scope, io)| {
-            crate::executor::with_history_io(Some(io), |work| {
-                host.provider.validate(work)?;
-                verifier.verify(scope, work)
-            })?;
-            let work = io.original_native_work().ok_or_else(|| io.invalid("merge verifier requires original native work"))?;
-            work.claim(std::mem::size_of::<Self>() as u64, 1, WorkCounters::UNCHARGED).map_err(Error::from)
-        }).transpose()?;
+        let allocation = original
+            .map(|(verifier, scope, io)| {
+                crate::executor::with_history_io(Some(io), |work| {
+                    host.provider.validate(work)?;
+                    verifier.verify(scope, work)
+                })?;
+                let work = io
+                    .original_native_work()
+                    .ok_or_else(|| io.invalid("merge verifier requires original native work"))?;
+                work.claim(
+                    std::mem::size_of::<Self>() as u64,
+                    1,
+                    WorkCounters::UNCHARGED,
+                )
+                .map_err(Error::from)
+            })
+            .transpose()?;
         #[cfg(target_arch = "wasm32")]
-        if original.is_some() { return Err(Error::Unsupported("native merge verification is unavailable".into())); }
-        Ok(Arc::new(Self { host,
-            #[cfg(not(target_arch = "wasm32"))] _allocation: allocation }))
+        if original.is_some() {
+            return Err(Error::Unsupported(
+                "native merge verification is unavailable".into(),
+            ));
+        }
+        Ok(Arc::new(Self {
+            host,
+            #[cfg(not(target_arch = "wasm32"))]
+            _allocation: allocation,
+        }))
     }
 }
 
@@ -99,7 +116,11 @@ where
                     != receipt.provider_operation_id.as_slice()
                 || witness.history != JoinHistory::Merge
                 || !target_workspace
-                    .verify_join_commit(&witness, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+                    .verify_join_commit(
+                        &witness,
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
                     .await
                     .map(|receipt| receipt.value)
                     .map_err(|failure| map_error(failure.error))?
@@ -109,11 +130,23 @@ where
                 ));
             }
             let normalized_source = source_generation
-                .normalized_join_parent_for(&expected, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+                .normalized_join_parent_for(
+                    &expected,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
                 .await
                 .map(|receipt| receipt.value)
                 .map_err(|failure| map_error(failure.error))?;
-            let parents = result.parents(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(map_error)?;
+            let parents = result
+                .parents(
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+                .map_err(map_error)?;
             if parents.as_slice() != [expected.id(), normalized_source] {
                 return Err(Error::Invalid(
                     "merge result does not bind the inspected child and target generations".into(),

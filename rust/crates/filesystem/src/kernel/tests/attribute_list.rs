@@ -37,8 +37,15 @@ async fn put(
     {
         let __object_args = (
             id,
-        OwnedBytes::from(encode_attribute_page(page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+            OwnedBytes::from(encode_attribute_page(
+                page,
+                8,
+                |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+                |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+            )?),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
         let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
         let __object_result =
             AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
@@ -52,15 +59,18 @@ async fn tree(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn std::error:
     let a = put(
         store,
         &AttributePage::Leaf(vec![entry("a", 1)?, entry("b", 2)?]),
-    ).await?;
+    )
+    .await?;
     let c = put(
         store,
         &AttributePage::Leaf(vec![entry("c", 3)?, entry("d", 4)?]),
-    ).await?;
+    )
+    .await?;
     let e = put(
         store,
         &AttributePage::Leaf(vec![entry("e", 5)?, entry("f", 6)?]),
-    ).await?;
+    )
+    .await?;
     put(
         store,
         &AttributePage::Internal(vec![
@@ -77,7 +87,8 @@ async fn tree(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn std::error:
                 page: e,
             },
         ]),
-    ).await
+    )
+    .await
 }
 
 async fn four_leaf_tree(
@@ -92,7 +103,8 @@ async fn four_leaf_tree(
                 value,
                 u8::try_from(index + 1).map_err(|_| "fixture index overflow")?,
             )?]),
-        ).await?;
+        )
+        .await?;
         if index == 2 {
             third = Some(page);
         }
@@ -113,7 +125,16 @@ async fn bounded_attribute_listing_exposes_one_authenticated_metadata_successor(
     let store = MemoryObjectStore::default();
     let (root, expected) = four_leaf_tree(&store).await?;
     let limits = DecodeLimits::default();
-    let page = list_attributes(&store, root, None, 1, limits, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
+    let page = list_attributes(
+        &store,
+        root,
+        None,
+        1,
+        limits,
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await?;
     assert_eq!(
         page.entries
             .iter()
@@ -148,7 +169,8 @@ async fn attributes_share_the_bounded_cursor_engine() -> Result<(), Box<dyn std:
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(
         page.entries
             .iter()
@@ -185,7 +207,8 @@ async fn cached_attribute_pagination_reuses_shared_internal_and_leaf_pages()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ).await?;
+    )
+    .await?;
     assert_eq!(
         cold.entries
             .iter()
@@ -209,7 +232,8 @@ async fn cached_attribute_pagination_reuses_shared_internal_and_leaf_pages()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ).await?;
+    )
+    .await?;
     assert_eq!(warm.entries, cold.entries);
     assert_eq!(warm.work.backend_read_operations, 0);
     assert_eq!(warm.work.object_bytes_read, 0);
@@ -218,7 +242,8 @@ async fn cached_attribute_pagination_reuses_shared_internal_and_leaf_pages()
 }
 
 #[tokio::test]
-async fn pre_cancel_and_output_admission_do_no_backend_work() -> Result<(), Box<dyn std::error::Error>> {
+async fn pre_cancel_and_output_admission_do_no_backend_work()
+-> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = tree(&store).await?;
     let cancelled = CancellationToken::new();
@@ -240,10 +265,18 @@ async fn pre_cancel_and_output_admission_do_no_backend_work() -> Result<(), Box<
 
     let mut budget = WorkBudget::UNBOUNDED;
     budget.items_returned = 1;
-    let failure = list_attributes(&store, root, None, 2, DecodeLimits::default(), budget, &CancellationToken::new())
-        .await
-        .err()
-        .ok_or("unadmitted listing succeeded")?;
+    let failure = list_attributes(
+        &store,
+        root,
+        None,
+        2,
+        DecodeLimits::default(),
+        budget,
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("unadmitted listing succeeded")?;
     assert!(matches!(
         failure.error,
         DirectoryReadError::Work(crate::performance::WorkError::BudgetExceeded {
@@ -261,14 +294,16 @@ async fn forged_child_bounds_fail_closed() -> Result<(), Box<dyn std::error::Err
     let leaf = put(
         &store,
         &AttributePage::Leaf(vec![entry("c", 3)?, entry("d", 4)?]),
-    ).await?;
+    )
+    .await?;
     let root = put(
         &store,
         &AttributePage::Internal(vec![Child {
             first: name("a")?,
             page: leaf,
         }]),
-    ).await?;
+    )
+    .await?;
     let failure = list_attributes(
         &store,
         root,
@@ -290,7 +325,8 @@ async fn forged_child_bounds_fail_closed() -> Result<(), Box<dyn std::error::Err
 }
 
 #[tokio::test]
-async fn one_byte_short_peak_budget_rejects_the_same_plan() -> Result<(), Box<dyn std::error::Error>> {
+async fn one_byte_short_peak_budget_rejects_the_same_plan() -> Result<(), Box<dyn std::error::Error>>
+{
     let store = MemoryObjectStore::default();
     let root = tree(&store).await?;
     let cursor = name("c")?;
@@ -302,7 +338,8 @@ async fn one_byte_short_peak_budget_rejects_the_same_plan() -> Result<(), Box<dy
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     let mut budget = WorkBudget::UNBOUNDED;
     budget.peak_allocation_bytes = baseline
         .work
@@ -350,7 +387,8 @@ async fn cursors_before_inside_and_after_the_tree_are_exact_and_bounded()
             DecodeLimits::default(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        ).await?;
+        )
+        .await?;
         assert_eq!(
             page.entries
                 .iter()
@@ -448,7 +486,8 @@ async fn pagination_admission_height_and_alias_guards_are_fail_closed()
     let leaf = put(
         &store,
         &AttributePage::Leaf(vec![entry("a", 1)?, entry("b", 2)?]),
-    ).await?;
+    )
+    .await?;
     let alias_root = put(
         &store,
         &AttributePage::Internal(vec![
@@ -461,7 +500,8 @@ async fn pagination_admission_height_and_alias_guards_are_fail_closed()
                 page: leaf,
             },
         ]),
-    ).await?;
+    )
+    .await?;
     let alias = list_attributes(
         &store,
         alias_root,

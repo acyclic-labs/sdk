@@ -15,7 +15,9 @@ pub(crate) async fn timeout_until<T>(deadline: u64, future: impl Future<Output =
         Either::Right((result, _)) => {
             if acyclic_stream::SystemUnixMillisClock.now_unix_millis() >= deadline {
                 Err(Error::Invalid("task deadline has expired".into()))
-            } else { Ok(result) }
+            } else {
+                Ok(result)
+            }
         }
     }
 }
@@ -23,7 +25,9 @@ pub(crate) async fn timeout_until<T>(deadline: u64, future: impl Future<Output =
 async fn wait_until(deadline: u64) -> Result<()> {
     loop {
         let now = acyclic_stream::SystemUnixMillisClock.now_unix_millis();
-        if now >= deadline { return Ok(()); }
+        if now >= deadline {
+            return Ok(());
+        }
         sleep_millis(deadline.saturating_sub(now).min(1_000)).await?;
     }
 }
@@ -40,25 +44,47 @@ pub(crate) async fn sleep_millis(milliseconds: u64) -> Result<()> {
                 .map_err(|_| Error::Invalid("task timer interval is not representable".into()))?;
             {
                 use wasm_bindgen::{JsCast as _, JsValue};
-                struct Timeout { global: JsValue, clear: js_sys::Function, handle: JsValue }
-                impl Drop for Timeout {
-                    fn drop(&mut self) { let _ = self.clear.call1(&self.global, &self.handle); }
+                struct Timeout {
+                    global: JsValue,
+                    clear: js_sys::Function,
+                    handle: JsValue,
                 }
-                let timer_error = |error: JsValue| Error::Storage(format!("task deadline timer failed: {error:?}"));
+                impl Drop for Timeout {
+                    fn drop(&mut self) {
+                        let _ = self.clear.call1(&self.global, &self.handle);
+                    }
+                }
+                let timer_error = |error: JsValue| {
+                    Error::Storage(format!("task deadline timer failed: {error:?}"))
+                };
                 let global = js_sys::global();
                 let set = js_sys::Reflect::get(&global, &JsValue::from_str("setTimeout"))
-                    .map_err(timer_error)?.dyn_into::<js_sys::Function>().map_err(timer_error)?;
+                    .map_err(timer_error)?
+                    .dyn_into::<js_sys::Function>()
+                    .map_err(timer_error)?;
                 let clear = js_sys::Reflect::get(&global, &JsValue::from_str("clearTimeout"))
-                    .map_err(timer_error)?.dyn_into::<js_sys::Function>().map_err(timer_error)?;
+                    .map_err(timer_error)?
+                    .dyn_into::<js_sys::Function>()
+                    .map_err(timer_error)?;
                 let mut handle = JsValue::UNDEFINED;
-                let promise = js_sys::Promise::new(&mut |resolve, reject| {
-                    match set.call2(&global, &resolve, &JsValue::from_f64(f64::from(bounded))) {
-                        Ok(value) => handle = value,
-                        Err(error) => { let _ = reject.call1(&JsValue::UNDEFINED, &error); }
+                let promise = js_sys::Promise::new(&mut |resolve, reject| match set.call2(
+                    &global,
+                    &resolve,
+                    &JsValue::from_f64(f64::from(bounded)),
+                ) {
+                    Ok(value) => handle = value,
+                    Err(error) => {
+                        let _ = reject.call1(&JsValue::UNDEFINED, &error);
                     }
                 });
-                let _timeout = Timeout { global: global.into(), clear, handle };
-                wasm_bindgen_futures::JsFuture::from(promise).await.map_err(timer_error)?;
+                let _timeout = Timeout {
+                    global: global.into(),
+                    clear,
+                    handle,
+                };
+                wasm_bindgen_futures::JsFuture::from(promise)
+                    .await
+                    .map_err(timer_error)?;
             }
             remaining -= interval;
         }

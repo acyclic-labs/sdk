@@ -62,10 +62,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
         .await?;
     let head = lazy
         .workspace()
-        .head(
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?

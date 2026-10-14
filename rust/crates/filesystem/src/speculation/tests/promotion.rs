@@ -35,7 +35,8 @@ impl AsyncObjectStore for UnderreportedOwnedStore {
             {
                 let __object_args = (object_id, bytes, budget, cancellation);
                 let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-                let __object_result = AsyncObjectStore::put(&self.inner,
+                let __object_result = AsyncObjectStore::put(
+                    &self.inner,
                     __object_args.0,
                     __object_args.1,
                     &mut __object_work,
@@ -64,7 +65,8 @@ impl AsyncObjectStore for UnderreportedOwnedStore {
             let mut receipt = {
                 let __object_args = (object_id, maximum_bytes, budget, cancellation);
                 let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-                let __object_result = AsyncObjectStore::read(&self.inner,
+                let __object_result = AsyncObjectStore::read(
+                    &self.inner,
                     __object_args.0,
                     __object_args.1,
                     &mut __object_work,
@@ -73,7 +75,7 @@ impl AsyncObjectStore for UnderreportedOwnedStore {
                 __object_work.receipt(__object_result)
             }?;
             receipt.value.retention = ObjectReadRetention::Owned { logical_bytes: 65 };
-        Ok(receipt)
+            Ok(receipt)
         }
         .await;
         context.accept(result)
@@ -469,7 +471,8 @@ async fn planning_is_deterministic_bounded_generation_fenced_and_idempotent()
         &plan,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("stale promotion executed")?;
     assert!(matches!(stale.error, ObjectStoreError::Rejected(_)));
@@ -623,7 +626,8 @@ async fn canonical_store_executor_authenticates_moves_and_retries_without_a_seco
             &crate::CancellationToken::new(),
         );
         let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result = AsyncObjectStore::put(&source,
+        let __object_result = AsyncObjectStore::put(
+            &source,
             __object_args.0,
             __object_args.1,
             &mut __object_work,
@@ -652,9 +656,13 @@ async fn canonical_store_executor_authenticates_moves_and_retries_without_a_seco
             &plan,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await?;
+        ))
+        .await?;
         assert_eq!(receipt.work.object_bytes_read, 64);
-        assert_eq!(receipt.work.object_bytes_written, if attempt == 0 { 64 } else { 0 });
+        assert_eq!(
+            receipt.work.object_bytes_written,
+            if attempt == 0 { 64 } else { 0 }
+        );
     }
     let admitted = {
         let __object_args = (
@@ -664,7 +672,8 @@ async fn canonical_store_executor_authenticates_moves_and_retries_without_a_seco
             &crate::CancellationToken::new(),
         );
         let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result = AsyncObjectStore::read(executor.destination(),
+        let __object_result = AsyncObjectStore::read(
+            executor.destination(),
             __object_args.0,
             __object_args.1,
             &mut __object_work,
@@ -680,15 +689,10 @@ async fn canonical_store_executor_authenticates_moves_and_retries_without_a_seco
         StorageLocationId::from_bytes([8; 16]),
         MemoryObjectStore::default(),
     )?;
-    let failure = (execute_promotion(
-        &engine,
-        &wrong,
-        &plan,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await
-    .err()
-    .ok_or("mismatched promotion executed")?;
+    let failure = (execute_promotion(&engine, &wrong, &plan, WorkBudget::UNBOUNDED, &cancellation))
+        .await
+        .err()
+        .ok_or("mismatched promotion executed")?;
     assert!(matches!(failure.error, ObjectStoreError::Rejected(_)));
     assert_eq!(*failure.work, WorkCounters::default());
     Ok(())
@@ -712,7 +716,7 @@ async fn promotion_rejects_owned_retention_that_exceeds_the_admitted_live_peak()
         );
         let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
         let __object_result = AsyncObjectStore::put(
-        &source.inner,
+            &source.inner,
             __object_args.0,
             __object_args.1,
             &mut __object_work,
@@ -741,7 +745,8 @@ async fn promotion_rejects_owned_retention_that_exceeds_the_admitted_live_peak()
             ..WorkBudget::UNBOUNDED
         },
         &CancellationToken::new(),
-    )).await
+    ))
+    .await
     .err()
     .ok_or("underreported owned retention was accepted")?;
     assert!(matches!(
@@ -772,7 +777,7 @@ async fn simulated_remote_promotion_fails_exactly_and_retries_idempotently()
         );
         let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
         let __object_result = AsyncObjectStore::put(
-        &source_inner,
+            &source_inner,
             __object_args.0,
             __object_args.1,
             &mut __object_work,
@@ -827,7 +832,13 @@ async fn simulated_remote_promotion_fails_exactly_and_retries_idempotently()
         &cancellation,
     ))
     .await?;
-    let contains = executor.destination().contains(object_id, &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation)).await?;
+    let contains = executor
+        .destination()
+        .contains(
+            object_id,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await?;
     assert!(contains);
     Ok(())
 }
@@ -888,7 +899,7 @@ async fn cancelled_promotion_execution_writes_nothing_until_explicit_feedback()
         );
         let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
         let __object_result = AsyncObjectStore::put(
-        &source,
+            &source,
             __object_args.0,
             __object_args.1,
             &mut __object_work,
@@ -917,7 +928,8 @@ async fn cancelled_promotion_execution_writes_nothing_until_explicit_feedback()
         &plan,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("cancelled promotion executed")?;
     assert!(matches!(failure.error, ObjectStoreError::Cancelled));
@@ -930,13 +942,15 @@ async fn cancelled_promotion_execution_writes_nothing_until_explicit_feedback()
                 &crate::CancellationToken::new(),
             );
             let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
-            let __object_result = AsyncObjectStore::contains(executor.destination(),
+            let __object_result = AsyncObjectStore::contains(
+                executor.destination(),
                 __object_args.0,
                 &mut __object_work,
             )
             .await;
             __object_work.receipt(__object_result)
-        }?.value
+        }?
+        .value
     );
     assert_eq!(engine.metrics().active, 1);
     engine.finish(plan.candidate.operation_id, false)?;

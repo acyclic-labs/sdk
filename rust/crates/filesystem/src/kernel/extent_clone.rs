@@ -52,10 +52,19 @@ pub async fn clone_extent_range<S: crate::AsyncObjectStore>(
 ) -> Result<ExtentCloneReceipt, ExtentCloneFailure> {
     let mut accounting = super::allocation::KernelAccounting::standalone(budget, cancellation);
     super::regular_mutation::clone_extent_range_with_accounting(
-        store, request, limits, &mut accounting, cancellation,
-    ).await.map_err(|error| OperationFailure::new(
-        super::regular_mutation::project_clone_error(error), accounting.spent(),
-    ))
+        store,
+        request,
+        limits,
+        &mut accounting,
+        cancellation,
+    )
+    .await
+    .map_err(|error| {
+        OperationFailure::new(
+            super::regular_mutation::project_clone_error(error),
+            accounting.spent(),
+        )
+    })
 }
 
 pub(super) fn validate_request(

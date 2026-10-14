@@ -108,7 +108,4 @@ pub(crate) use approval::{
 };
 pub(crate) use inspection::{inspect_operator, stage_operator_command, validate_approval_request};
 pub(crate) use status::passive_status;
-use status::{
-    PiInspectionResponse, PiPendingResponse, observe_writeback,
-    status_response,
-};
+use status::{PiInspectionResponse, PiPendingResponse, observe_writeback, status_response};

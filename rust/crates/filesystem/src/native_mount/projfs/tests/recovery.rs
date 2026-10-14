@@ -18,8 +18,13 @@ async fn detach_removes_projection_and_preserves_non_provider_content()
     let checkout = tempfile::tempdir()?;
     std::fs::write(checkout.path().join("keep.txt"), b"checkout")?;
     super::detach_projection(
-        &destination, session.native_root_identity().ok_or("missing root identity")?,
-        source.as_ref(), &work, || {
+        &destination,
+        session
+            .native_root_identity()
+            .ok_or("missing root identity")?,
+        source.as_ref(),
+        &work,
+        || {
             session.stop()?;
             std::fs::write(destination.join("keep.txt"), b"unrelated")?;
             std::fs::write(destination.join("nested/keep.txt"), b"nested unrelated")?;
@@ -29,8 +34,14 @@ async fn detach_removes_projection_and_preserves_non_provider_content()
     )?;
     assert!(!projected.exists());
     assert_eq!(std::fs::read(destination.join("keep.txt"))?, b"unrelated");
-    assert_eq!(std::fs::read(destination.join("nested/keep.txt"))?, b"nested unrelated");
-    assert_eq!(std::fs::read(checkout.path().join("keep.txt"))?, b"checkout");
+    assert_eq!(
+        std::fs::read(destination.join("nested/keep.txt"))?,
+        b"nested unrelated"
+    );
+    assert_eq!(
+        std::fs::read(checkout.path().join("keep.txt"))?,
+        b"checkout"
+    );
     assert_eq!(super::reparse_tag(&destination)?.0, None);
     Ok(())
 }

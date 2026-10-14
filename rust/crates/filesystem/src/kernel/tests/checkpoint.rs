@@ -17,13 +17,17 @@ async fn put_root(
     root_file_byte: u8,
     table_byte: u8,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let encoded = encode_generation_root(&GenerationRoot {
-        volume_id: VolumeId::from_bytes([volume_byte; 16]),
-        root_file_id: FileId::from_bytes([root_file_byte; 16]),
-        file_table: table(table_byte),
-        parents: Vec::new(),
-        required_features: 0,
-    }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
+    let encoded = encode_generation_root(
+        &GenerationRoot {
+            volume_id: VolumeId::from_bytes([volume_byte; 16]),
+            root_file_id: FileId::from_bytes([root_file_byte; 16]),
+            file_table: table(table_byte),
+            parents: Vec::new(),
+            required_features: 0,
+        },
+        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+        |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+    )?;
     let object = ObjectId {
         kind: ObjectKind::GenerationRoot,
         digest: crate::storage::object_digest(ObjectKind::GenerationRoot, &encoded),
@@ -45,7 +49,8 @@ async fn put_root(
 }
 
 #[tokio::test]
-async fn unchanged_checkpoint_reuses_base_without_a_write() -> Result<(), Box<dyn std::error::Error>> {
+async fn unchanged_checkpoint_reuses_base_without_a_write() -> Result<(), Box<dyn std::error::Error>>
+{
     let store = MemoryObjectStore::default();
     let base = put_root(&store, 1, 2, 3).await?;
     let receipt = build_checkpoint(
@@ -58,7 +63,8 @@ async fn unchanged_checkpoint_reuses_base_without_a_write() -> Result<(), Box<dy
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(receipt.value, base);
     assert_eq!(receipt.work.backend_read_operations, 1);
     assert_eq!(receipt.work.backend_write_operations, 0);
@@ -80,7 +86,8 @@ async fn changed_checkpoint_has_exact_parent_and_one_immutable_write()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_ne!(receipt.value, base);
     assert_eq!(receipt.work.backend_write_operations, 1);
     let bytes = {
@@ -96,7 +103,7 @@ async fn changed_checkpoint_has_exact_parent_and_one_immutable_write()
             .await;
         __object_work.receipt(__object_result)
     }?
-        .value;
+    .value;
     let root = decode_generation_root(&bytes, DecodeLimits::default(), |_| {
         Ok::<_, crate::kernel::CanonicalDecodeError>(())
     })?;
@@ -106,7 +113,8 @@ async fn changed_checkpoint_has_exact_parent_and_one_immutable_write()
 }
 
 #[tokio::test]
-async fn cross_volume_merge_fails_before_any_candidate_write() -> Result<(), Box<dyn std::error::Error>> {
+async fn cross_volume_merge_fails_before_any_candidate_write()
+-> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let base = put_root(&store, 8, 9, 10).await?;
     let other = put_root(&store, 11, 9, 12).await?;
@@ -264,7 +272,8 @@ async fn valid_merge_checkpoint_preserves_both_exact_parent_identities()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_ne!(receipt.value, base);
     assert_eq!(receipt.work.backend_read_operations, 2);
     assert_eq!(receipt.work.backend_write_operations, 1);
@@ -281,7 +290,7 @@ async fn valid_merge_checkpoint_preserves_both_exact_parent_identities()
             .await;
         __object_work.receipt(__object_result)
     }?
-        .value;
+    .value;
     let root = decode_generation_root(&encoded, DecodeLimits::default(), |_| {
         Ok::<_, crate::kernel::CanonicalDecodeError>(())
     })?;

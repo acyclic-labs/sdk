@@ -49,7 +49,8 @@ impl ServiceResources {
         private_state_root: PathBuf,
         original_bootstrap_work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(Self, BTreeMap<String, SessionController>)> {
-        fs::create_dir_all(data.join("sessions")).map_err(|error| Error::Storage(display(error)))?;
+        fs::create_dir_all(data.join("sessions"))
+            .map_err(|error| Error::Storage(display(error)))?;
         let (fs, store, binary_identity, instance_id) = configured;
         let resources = Self {
             store,
@@ -77,12 +78,16 @@ impl ServiceResources {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| Error::Storage(display(error)))?;
         let state_modified = |path: &PathBuf| {
-            ADAPTER_STATE_SLOTS.iter()
+            ADAPTER_STATE_SLOTS
+                .iter()
                 .filter_map(|slot| fs::metadata(path.join(slot)).ok()?.modified().ok())
-                .max().unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+                .max()
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
         };
         entries.sort_by(|left, right| {
-            state_modified(right).cmp(&state_modified(left)).then_with(|| right.cmp(left))
+            state_modified(right)
+                .cmp(&state_modified(left))
+                .then_with(|| right.cmp(left))
         });
         let mut sessions = BTreeMap::new();
         let mut retained_sources = BTreeMap::<PathBuf, ([u8; 16], [u8; 16])>::new();
@@ -93,8 +98,8 @@ impl ServiceResources {
                 continue;
             }
             if matches!(state.task_binding, PluginTaskBinding::Pi(_)) {
-                let control = SessionController::open(entry, &resources, original_bootstrap_work)
-                    .await?;
+                let control =
+                    SessionController::open(entry, &resources, original_bootstrap_work).await?;
                 let (session_id, key_custody) =
                     original_bootstrap_work.display(&state.root_session_id)?;
                 let control = control.retain_original_input(key_custody)?;

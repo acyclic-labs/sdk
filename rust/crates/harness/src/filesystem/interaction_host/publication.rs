@@ -140,9 +140,7 @@ where
         )?;
         let aggregate = StreamAggregate::open(
             &self.stream,
-            (authority,
-            verifier,
-            schemas),
+            (authority, verifier, schemas),
             None,
             crate::store::default_projection_read_limits(),
             crate::store::DEFAULT_TERMINAL_EFFECTS,

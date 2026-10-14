@@ -8,7 +8,10 @@ pub(crate) fn binary_search_with_accounting<T>(
     mut compare: impl FnMut(&T) -> Ordering,
 ) -> Result<Result<usize, usize>, crate::FsError> {
     let (mut base, mut rest) = (0_usize, items);
-    let delta = crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED };
+    let delta = crate::WorkCounters {
+        items_examined: 1,
+        ..crate::WorkCounters::UNCHARGED
+    };
     while let Some((lower, upper)) = rest.split_at_checked(rest.len() / 2)
         && let Some((middle, higher)) = upper.split_first()
     {
@@ -33,7 +36,11 @@ pub(crate) fn partition_point_with_accounting<T>(
     mut before: impl FnMut(&T) -> bool,
 ) -> Result<usize, crate::FsError> {
     let (Ok(index) | Err(index)) = binary_search_with_accounting(items, accounting, |item| {
-        if before(item) { Ordering::Less } else { Ordering::Greater }
+        if before(item) {
+            Ordering::Less
+        } else {
+            Ordering::Greater
+        }
     })?;
     Ok(index)
 }

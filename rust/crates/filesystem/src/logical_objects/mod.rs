@@ -135,9 +135,10 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
         )?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = context.original
-            && matches!(read.retention, ObjectReadRetention::Owned { .. }) {
-                return crate::async_storage::owned_read(read, original);
-            }
+            && matches!(read.retention, ObjectReadRetention::Owned { .. })
+        {
+            return crate::async_storage::owned_read(read, original);
+        }
         Ok(read)
     }
     async fn read_many(

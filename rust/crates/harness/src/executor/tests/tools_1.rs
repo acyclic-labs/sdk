@@ -115,18 +115,26 @@ async fn stock_approval_wait_distinguishes_pending_and_known_rejection() -> Resu
             _: &'a ToolInvocation,
             _: &'a RuntimeScope,
             _io: Option<&'a crate::executor::PreparationIo>,
-        ) -> Result<crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>> {
+        ) -> Result<
+            crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>,
+        > {
             Ok(crate::store::HistoryContentFuture::Ordinary {
                 future: Box::pin(async {
-                    Ok((ToolPolicyDecision::RequireApproval {
-                        prompt: "Approve echo".into(),
-                    }, None))
+                    Ok((
+                        ToolPolicyDecision::RequireApproval {
+                            prompt: "Approve echo".into(),
+                        },
+                        None,
+                    ))
                 }),
                 frame_bytes: 0,
             })
         }
     }
-    for outcome in [InteractionOutcome::Approved {}, InteractionOutcome::Denied {}] {
+    for outcome in [
+        InteractionOutcome::Approved {},
+        InteractionOutcome::Denied {},
+    ] {
         let model = Arc::new(ScriptedModel::default());
         let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
         let tools = echo_tools(

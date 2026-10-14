@@ -15,7 +15,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         let result = async {
             let namespace = self.namespace_path(path, ctx)?;
             if node.kind == SourceNodeKind::RegularFile {
-                if node.logical_bytes.ok_or(LazyWorkspaceError::NotRegularFile)? > maximum {
+                if node
+                    .logical_bytes
+                    .ok_or(LazyWorkspaceError::NotRegularFile)?
+                    > maximum
+                {
                     namespace.retire(ctx)?;
                     return Err(LazyWorkspaceError::TooLarge);
                 }
@@ -26,19 +30,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                         return Err(error);
                     }
                 };
-                match accounted!(ctx, |work, cancel| transaction.checkout.read_file_record_by_id(id, work, cancel)) {
+                match accounted!(ctx, |work, cancel| transaction
+                    .checkout
+                    .read_file_record_by_id(id, work, cancel))
+                {
                     Ok(record) => {
                         let mut links = Owned::allocate(1, ctx)?;
                         crate::Transaction::<A, O>::push_mutation(
                             &mut links,
                             Owned::new(
-                                crate::kernel::Mutation::Restore { path: namespace.value, record },
+                                crate::kernel::Mutation::Restore {
+                                    path: namespace.value,
+                                    record,
+                                },
                                 namespace.allocation,
                                 namespace.bytes,
                             ),
                             ctx,
                         )?;
-                        transaction.checkout.apply_mutations(links, ctx, cancellation(ctx)).await?;
+                        transaction
+                            .checkout
+                            .apply_mutations(links, ctx, cancellation(ctx))
+                            .await?;
                         return Ok(());
                     }
                     Err(LazyWorkspaceError::Filesystem(crate::FsError::NotFound)) => {}

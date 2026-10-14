@@ -46,7 +46,11 @@ impl HostRoot {
     ) -> Result<HostStat, W::Error> {
         #[cfg(windows)]
         if path.is_empty() || path == [46] {
-            return stat_windows_file(&self.directory, u32::try_from(self.identity.device).map_err(|_| W::invalid_request())?, work);
+            return stat_windows_file(
+                &self.directory,
+                u32::try_from(self.identity.device).map_err(|_| W::invalid_request())?,
+                work,
+            );
         }
         #[cfg(unix)]
         if path.as_os_str().is_empty() {
@@ -63,7 +67,11 @@ impl HostRoot {
                     nt::FILE_SYNCHRONOUS_IO_NONALERT,
                     work,
                 )?;
-                stat_windows_file(&file, u32::try_from(self.identity.device).map_err(|_| W::invalid_request())?, work)
+                stat_windows_file(
+                    &file,
+                    u32::try_from(self.identity.device).map_err(|_| W::invalid_request())?,
+                    work,
+                )
             }
             #[cfg(unix)]
             {
@@ -82,7 +90,11 @@ impl HostRoot {
         }
         #[cfg(windows)]
         {
-            stat_windows_file(file, u32::try_from(self.identity.device).map_err(|_| W::invalid_request())?, work)
+            stat_windows_file(
+                file,
+                u32::try_from(self.identity.device).map_err(|_| W::invalid_request())?,
+                work,
+            )
         }
     }
     pub(crate) fn open_file<W: NativeHostWork>(

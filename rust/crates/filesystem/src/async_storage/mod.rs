@@ -35,8 +35,8 @@ pub use authority::AsyncAuthorityStore;
 mod objects;
 pub use objects::{AsyncObjectStore, PublicationScope};
 mod read_batch;
-pub use read_batch::read_many_sequential;
 pub(crate) use read_batch::object_error;
+pub use read_batch::read_many_sequential;
 
 #[cfg(all(test, feature = "memory"))]
 #[path = "../tests/async_storage.rs"]

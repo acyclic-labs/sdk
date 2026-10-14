@@ -23,8 +23,9 @@ pub fn decode_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
 /// Admits one canonical ref-only execution journal observation through Rust.
 #[wasm_bindgen(js_name = decodeExecutionEventJson, unchecked_return_type = "ExecutionEvent")]
 pub fn decode_execution_event_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
-    let event: crate::executor::ExecutionEvent =
-        crate::executor::decode_json(bytes, None).map_err(js_error)?.0;
+    let event: crate::executor::ExecutionEvent = crate::executor::decode_json(bytes, None)
+        .map_err(js_error)?
+        .0;
     to_js_admitted(&event)
 }
 
@@ -310,7 +311,10 @@ pub(super) fn set_js_field(js: &JsValue, key: &str, value: &JsValue) -> Result<(
     Ok(())
 }
 
-pub(super) fn normalize_descriptor_lengths(js: &JsValue, value: &serde_json::Value) -> Result<(), JsValue> {
+pub(super) fn normalize_descriptor_lengths(
+    js: &JsValue,
+    value: &serde_json::Value,
+) -> Result<(), JsValue> {
     match value {
         serde_json::Value::Object(fields) => {
             if fields.len() == 3

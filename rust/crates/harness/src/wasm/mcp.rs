@@ -21,7 +21,10 @@ pub fn validate_mcp_stdio_request(
 pub fn validate_mcp_callback_request(
     #[wasm_bindgen(unchecked_param_type = "McpCallbackRequest")] request: JsValue,
 ) -> Result<(), JsValue> {
-    from_js::<crate::mcp::callbacks::McpCallbackRequest>(request)?.validate().map(|_| ()).map_err(js_error)
+    from_js::<crate::mcp::callbacks::McpCallbackRequest>(request)?
+        .validate()
+        .map(|_| ())
+        .map_err(js_error)
 }
 
 /// Returns the same stable callback identity used by recorded runtime admission.
@@ -30,7 +33,10 @@ pub fn mcp_callback_operation(
     #[wasm_bindgen(unchecked_param_type = "McpCallbackRequest")] request: JsValue,
 ) -> Result<String, JsValue> {
     let request: crate::mcp::callbacks::McpCallbackRequest = from_js(request)?;
-    request.validate().map(|(operation, _)| operation.to_string()).map_err(js_error)
+    request
+        .validate()
+        .map(|(operation, _)| operation.to_string())
+        .map_err(js_error)
 }
 
 /// Validates the complete bounded replacement before the host selects it.
@@ -87,6 +93,7 @@ pub fn search_mcp_catalog(
 }
 
 fn definitions_to_js(definitions: Vec<crate::tool::ToolDefinition>) -> Result<JsValue, JsValue> {
-    definitions.serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+    definitions
+        .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }

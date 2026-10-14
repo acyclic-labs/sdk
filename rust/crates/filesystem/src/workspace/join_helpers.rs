@@ -75,10 +75,14 @@ fn canonical_name_key(name: &LogicalName) -> Vec<u8> {
     key
 }
 
-pub(super) fn logical_name_text(
-    name: &LogicalName,
-) -> Result<String, WorkspaceError> {
-    name.unicode_text(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).ok().map(|receipt| receipt.value).ok_or_else(|| {
+pub(super) fn logical_name_text(name: &LogicalName) -> Result<String, WorkspaceError> {
+    name.unicode_text(
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )
+    .ok()
+    .map(|receipt| receipt.value)
+    .ok_or_else(|| {
         WorkspaceError::path("non-Unicode path cannot be projected as a portable string")
     })
 }

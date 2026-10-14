@@ -280,19 +280,23 @@ impl SharedPhysicalRoot {
                 reason: "physical root reference state is poisoned",
             },
             |prior_source, reference| {
-                let mut watcher = self.watcher.lock().map_err(|_| {
-                    acyclic_harness::Error::NativeBoundary {
-                        code: acyclic_harness::wire::ErrorCode::Storage,
-                        reason: "physical root watcher state is poisoned",
-                    }
-                })?;
-                watcher.fence_with_native_work(WATCH_FENCE_TIMEOUT, work)
+                let mut watcher =
+                    self.watcher
+                        .lock()
+                        .map_err(|_| acyclic_harness::Error::NativeBoundary {
+                            code: acyclic_harness::wire::ErrorCode::Storage,
+                            reason: "physical root watcher state is poisoned",
+                        })?;
+                watcher
+                    .fence_with_native_work(WATCH_FENCE_TIMEOUT, work)
                     .map_err(native_watch_error)?;
                 let mut source = prior_source;
                 let (batch, allocation) = watcher
                     .poll_with_native_work_guarded(65_536, work, |batch| {
                         if observation_consumes_changes(batch) {
-                            work.cancellation().check().map_err(|_| acyclic_fs::DemandError::Cancelled)?;
+                            work.cancellation()
+                                .check()
+                                .map_err(|_| acyclic_fs::DemandError::Cancelled)?;
                             source = self.source.invalidate();
                             // The SDK source epoch has really advanced. Keep
                             // shared state aligned even if later publication
@@ -302,9 +306,14 @@ impl SharedPhysicalRoot {
                         Ok(())
                     })
                     .map_err(native_watch_error)?;
-                Ok((SharedRootObservation {
-                    batch, prior_source, source,
-                }, allocation))
+                Ok((
+                    SharedRootObservation {
+                        batch,
+                        prior_source,
+                        source,
+                    },
+                    allocation,
+                ))
             },
         )
     }
@@ -490,7 +499,10 @@ impl LocalMount {
 
     pub(crate) fn abandon(&self) -> Result<(), String> {
         for mount in self.routes.values() {
-            mount.retire(&CancellationToken::new()).map(drop).map_err(display)?;
+            mount
+                .retire(&CancellationToken::new())
+                .map(drop)
+                .map_err(display)?;
         }
         Ok(())
     }

@@ -47,10 +47,12 @@ pub async fn build_checkpoint<S: crate::async_storage::AsyncObjectStore>(
     let mut accounting = super::allocation::KernelAccounting::standalone(budget, cancellation);
     let result = crate::obs::in_span(&span, async {
         build_checkpoint_with_accounting(store, request, limits, &mut accounting, cancellation)
-            .await.map(|value| OperationReceipt { value, work: accounting.spent() })
-            .map_err(|error| OperationFailure::new(
-                checkpoint_error(error), accounting.spent(),
-            ))
+            .await
+            .map(|value| OperationReceipt {
+                value,
+                work: accounting.spent(),
+            })
+            .map_err(|error| OperationFailure::new(checkpoint_error(error), accounting.spent()))
     })
     .await;
     crate::obs::measured_on(&span, result, |receipt| &receipt.work)
@@ -63,24 +65,35 @@ fn checkpoint_error(error: crate::FsError) -> CheckpointError {
         crate::FsError::Decode(error) => error.into(),
         crate::FsError::Object(error) => error.into(),
         crate::FsError::Cancelled(_) => ObjectStoreError::Cancelled.into(),
-        _ => unreachable!("standalone checkpoint returns only checkpoint, codec, storage, cancellation, or work errors"),
+        _ => unreachable!(
+            "standalone checkpoint returns only checkpoint, codec, storage, cancellation, or work errors"
+        ),
     }
 }
 
 async fn checkpoint_parent<S: crate::AsyncObjectStore>(
-    store: &S, object: ObjectId, limits: DecodeLimits,
+    store: &S,
+    object: ObjectId,
+    limits: DecodeLimits,
     accounting: &mut super::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<Owned<GenerationRoot>, crate::FsError> {
     let (root, allocation) = super::generation::read_generation_root_with_limits_and_accounting(
-        store, object, limits, accounting, cancellation,
-    ).await?;
+        store,
+        object,
+        limits,
+        accounting,
+        cancellation,
+    )
+    .await?;
     let bytes = usize_to_u64(root.parents.capacity() * size_of::<GenerationId>());
     Ok(Owned::new(root, allocation, bytes))
 }
 
 pub(crate) async fn build_checkpoint_with_accounting<S: crate::AsyncObjectStore>(
-    store: &S, request: CheckpointRequest, limits: DecodeLimits,
+    store: &S,
+    request: CheckpointRequest,
+    limits: DecodeLimits,
     accounting: &mut super::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<ObjectId, crate::FsError> {
@@ -89,7 +102,8 @@ pub(crate) async fn build_checkpoint_with_accounting<S: crate::AsyncObjectStore>
     let base = checkpoint_parent(store, request.base, limits, accounting, cancellation).await?;
     let result = async {
         if let Some(parent_id) = request.merge_parent {
-            let parent = checkpoint_parent(store, parent_id, limits, accounting, cancellation).await?;
+            let parent =
+                checkpoint_parent(store, parent_id, limits, accounting, cancellation).await?;
             let valid = validate_merge_parents(&base.value, &parent.value);
             parent.retire(accounting)?;
             valid?;
@@ -97,15 +111,30 @@ pub(crate) async fn build_checkpoint_with_accounting<S: crate::AsyncObjectStore>
         if request.merge_parent.is_none() && request.file_table == base.value.file_table {
             return Ok(request.base);
         }
-        let mut parents = Owned::<Vec<GenerationId>>::allocate(1 + usize::from(request.merge_parent.is_some()), accounting)?;
+        let mut parents = Owned::<Vec<GenerationId>>::allocate(
+            1 + usize::from(request.merge_parent.is_some()),
+            accounting,
+        )?;
         parents.value.push(GenerationId::new(request.base.digest));
-        if let Some(parent) = request.merge_parent { parents.value.push(GenerationId::new(parent.digest)); }
-        let Owned { value: parents, allocation, bytes } = parents;
-        let root = Owned::new(GenerationRoot {
-            volume_id: base.value.volume_id, root_file_id: base.value.root_file_id,
-            file_table: request.file_table, parents,
-            required_features: base.value.continuation_features(),
-        }, allocation, bytes);
+        if let Some(parent) = request.merge_parent {
+            parents.value.push(GenerationId::new(parent.digest));
+        }
+        let Owned {
+            value: parents,
+            allocation,
+            bytes,
+        } = parents;
+        let root = Owned::new(
+            GenerationRoot {
+                volume_id: base.value.volume_id,
+                root_file_id: base.value.root_file_id,
+                file_table: request.file_table,
+                parents,
+                required_features: base.value.continuation_features(),
+            },
+            allocation,
+            bytes,
+        );
         let encoded = super::codec::encode_owned(accounting, |observe, reserve| {
             encode_generation_root(&root.value, observe, reserve)
         });
@@ -120,8 +149,13 @@ pub(crate) async fn build_checkpoint_with_accounting<S: crate::AsyncObjectStore>
                     return Err(WorkError::Overflow.into());
                 };
                 let hashed = HashedObject::from_native_vec(
-                    ObjectKind::GenerationRoot, &mut encoded.value, guard, original, cancellation,
-                ).map_err(checkpoint_storage_error)?;
+                    ObjectKind::GenerationRoot,
+                    &mut encoded.value,
+                    guard,
+                    original,
+                    cancellation,
+                )
+                .map_err(checkpoint_storage_error)?;
                 let object = hashed.object_id();
                 {
                     let __object_args = (hashed, original, cancellation);
@@ -134,11 +168,16 @@ pub(crate) async fn build_checkpoint_with_accounting<S: crate::AsyncObjectStore>
                 return Ok(object);
             }
             let hashing = WorkCounters {
-                bytes_hashed: usize_to_u64(encoded.value.len()).checked_add(OBJECT_DIGEST_ENVELOPE_BYTES)
-                    .ok_or(WorkError::Overflow)?, ..WorkCounters::UNCHARGED
+                bytes_hashed: usize_to_u64(encoded.value.len())
+                    .checked_add(OBJECT_DIGEST_ENVELOPE_BYTES)
+                    .ok_or(WorkError::Overflow)?,
+                ..WorkCounters::UNCHARGED
             };
             accounting.admit(hashing)?;
-            let hashed = HashedObject::new(ObjectKind::GenerationRoot, std::mem::take(&mut encoded.value).into());
+            let hashed = HashedObject::new(
+                ObjectKind::GenerationRoot,
+                std::mem::take(&mut encoded.value).into(),
+            );
             accounting.record_completed(hashing)?;
             let object = hashed.object_id();
             let receipt = {
@@ -147,14 +186,19 @@ pub(crate) async fn build_checkpoint_with_accounting<S: crate::AsyncObjectStore>
                 let __object_result = store.put_hashed(__object_args.0, &mut __object_work).await;
                 __object_work.receipt(__object_result)
             };
-            let spent = match &receipt { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
+            let spent = match &receipt {
+                Ok(receipt) => receipt.work,
+                Err(failure) => *failure.work,
+            };
             super::file_read::complete_standalone_backend(accounting, spent, 0)?;
             receipt.map_err(|failure| checkpoint_storage_error(failure.error))?;
             Ok(object)
-        }.await;
+        }
+        .await;
         encoded.retire(accounting)?;
         written
-    }.await;
+    }
+    .await;
     base.retire(accounting)?;
     result
 }

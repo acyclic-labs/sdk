@@ -7,13 +7,10 @@ use acyclic_harness::{
     resources::ProviderRef,
     tool::{
         Tool, ToolInvocation, ToolProjection, ToolResult,
-        files::{self, FileResult, FileProjection, ReadFileInput},
+        files::{self, FileProjection, FileResult, ReadFileInput},
         schema::ProjectionMode,
         text::{self, ReadOptions, SearchOptions, TextRange},
-        text_files::{
-            self, ReadInput, ReadResult, SearchInput,
-            SearchResult,
-        },
+        text_files::{self, ReadInput, ReadResult, SearchInput, SearchResult},
     },
 };
 use serde::Serialize;

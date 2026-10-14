@@ -64,7 +64,9 @@ impl CaptureTransientCustody {
     }
 }
 pub(crate) fn native_demand_error(error: std::io::Error) -> DemandError {
-    error.downcast::<DemandError>().unwrap_or_else(DemandError::Io)
+    error
+        .downcast::<DemandError>()
+        .unwrap_or_else(DemandError::Io)
 }
 
 #[cfg(target_os = "macos")]

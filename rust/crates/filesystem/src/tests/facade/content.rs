@@ -271,9 +271,12 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
         .await?;
     let original =
         crate::NativeMaterializationWork::new(B, &cancellation).map_err(|(cause, _)| cause)?;
-    let reader = checkout.private_candidate(
-        &mut crate::kernel::KernelAccounting::native(&original, &cancellation), &cancellation,
-    )?.into_pinned_reader_with_native_work(&original, &cancellation)?;
+    let reader = checkout
+        .private_candidate(
+            &mut crate::kernel::KernelAccounting::native(&original, &cancellation),
+            &cancellation,
+        )?
+        .into_pinned_reader_with_native_work(&original, &cancellation)?;
     let bytes = reader
         .read_record_range(
             source,
@@ -287,7 +290,10 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
         .await?
         .bytes;
     assert_eq!(bytes.as_ref(), b"authenticated source bytes");
-    let mut candidate = checkout.private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation), &cancellation)?;
+    let mut candidate = checkout.private_candidate(
+        &mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation),
+        &cancellation,
+    )?;
     candidate
         .change_content(
             destination.file_id,

@@ -73,7 +73,7 @@ async fn v2_batches_preserve_filesystem_content_identity_and_backend_accounting(
         __object_work.receipt(__object_result)
     }
     .err()
-        .ok_or("zero backend budget admitted a batch")?;
+    .ok_or("zero backend budget admitted a batch")?;
     assert_eq!(denied.work.backend_read_operations, 0);
     assert!(matches!(denied.error, ObjectStoreError::Work(_)));
     assert_eq!(
@@ -106,10 +106,7 @@ async fn v2_batches_preserve_filesystem_content_identity_and_backend_accounting(
         (1, 5, 5)
     );
     let replay = {
-        let __object_args = (&writes,
-            WorkBudget::UNBOUNDED,
-            &cancel,
-        );
+        let __object_args = (&writes, WorkBudget::UNBOUNDED, &cancel);
         let mut __object_work = acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
         let __object_result = store.put_many(__object_args.0, &mut __object_work).await;
         __object_work.receipt(__object_result)
@@ -156,11 +153,15 @@ async fn v2_fs_rejects_invalid_digest_oversize_and_cancellation_before_publicati
         __object_work.receipt(__object_result)
     }
     .err()
-        .ok_or("oversized put succeeded")?;
+    .ok_or("oversized put succeeded")?;
     assert_eq!(failure.work.backend_write_operations, 0);
-    assert!(matches!(failure.error, ObjectStoreError::TooLarge {
-        observed: 9, maximum: 4,
-    }));
+    assert!(matches!(
+        failure.error,
+        ObjectStoreError::TooLarge {
+            observed: 9,
+            maximum: 4,
+        }
+    ));
     assert!(
         {
             let __object_args = (&[oversized], WorkBudget::UNBOUNDED, &cancel);
@@ -182,7 +183,7 @@ async fn v2_fs_rejects_invalid_digest_oversize_and_cancellation_before_publicati
             __object_work.receipt(__object_result)
         }
         .err()
-            .map(|failure| failure.error),
+        .map(|failure| failure.error),
         Some(ObjectStoreError::DigestMismatch)
     ));
     cancel.cancel();
@@ -198,7 +199,7 @@ async fn v2_fs_rejects_invalid_digest_oversize_and_cancellation_before_publicati
             __object_work.receipt(__object_result)
         }
         .err()
-            .map(|failure| failure.error),
+        .map(|failure| failure.error),
         Some(ObjectStoreError::Cancelled)
     ));
     let listed = provider
@@ -270,17 +271,14 @@ async fn v2_fs_never_accepts_substituted_content_or_replays_collected_bytes()
     ));
     assert!(matches!(
         {
-            let __object_args = (wanted.object_id,
-                WorkBudget::UNBOUNDED,
-                &cancel
-            );
+            let __object_args = (wanted.object_id, WorkBudget::UNBOUNDED, &cancel);
             let mut __object_work =
                 acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
             let __object_result = store.contains(__object_args.0, &mut __object_work).await;
             __object_work.receipt(__object_result)
         }
         .err()
-            .map(|failure| failure.error),
+        .map(|failure| failure.error),
         Some(ObjectStoreError::Corrupt)
     ));
     provider

@@ -27,9 +27,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use support::{
-    FakeUpstream, Journal, RecordingMeter, function_call_turn, message_turn, sse,
-};
+use support::{FakeUpstream, Journal, RecordingMeter, function_call_turn, message_turn, sse};
 
 fn codex() -> PathBuf {
     let path = std::env::var_os("ACYCLIC_CODEX_BIN")

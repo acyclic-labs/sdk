@@ -149,10 +149,7 @@ impl BrowserCheckout {
             &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
         )
         .map_err(js_error)?;
-        let receipt = browser_call!(
-            self,
-            set_attributes(file_id, metadata, logical_bytes,)
-        )?;
+        let receipt = browser_call!(self, set_attributes(file_id, metadata, logical_bytes,))?;
         mutation_value(receipt.work)
     }
 

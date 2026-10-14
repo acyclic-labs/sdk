@@ -290,10 +290,11 @@ impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedStore<A> {
                 }
                 #[cfg(not(target_arch = "wasm32"))]
                 if let (Some(held), Some(new)) = (&mut allocation, &mut _replacement_allocation)
-                    && let Err(error) = held.release(_old_bytes).and_then(|()| held.absorb(new)) {
-                        drop(replacement);
-                        return Err(error.into());
-                    }
+                    && let Err(error) = held.release(_old_bytes).and_then(|()| held.absorb(new))
+                {
+                    drop(replacement);
+                    return Err(error.into());
+                }
                 records = replacement;
             }
             let last = records

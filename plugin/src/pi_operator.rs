@@ -206,8 +206,12 @@ pub(crate) fn body_hash(
             "operator requires its bounded original session and SDK operation",
         ));
     }
-    work.display(&pi_root_provider::digest_pi_value(body, crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64, work)?)
-        .map_err(Error::from)
+    work.display(&pi_root_provider::digest_pi_value(
+        body,
+        crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
+        work,
+    )?)
+    .map_err(Error::from)
 }
 fn capability(body: &PiOperatorBody, hash: &str) -> String {
     format!("pi:operator:{}:{hash}", body.session())
@@ -555,10 +559,7 @@ pub(crate) async fn run_cli(
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = NativeMaterializationWork::new(pi_root_provider::allocation_budget(), &cancellation)
         .map_err(|(cause, work)| {
-            ControlRequestError::NativeWork(Error::NativeConstruction {
-                cause,
-                work,
-            })
+            ControlRequestError::NativeWork(Error::NativeConstruction { cause, work })
         })?;
     let cli = parse_cli(args).map_err(ControlRequestError::Response)?;
     let directory = crate::service::session_directory(data, &cli.session);

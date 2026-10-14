@@ -208,7 +208,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             }
         }
         let loaded;
-        let state = if let Some(state) = basis.state { state } else {
+        let state = if let Some(state) = basis.state {
+            state
+        } else {
             loaded = self.state(ctx).await?;
             &loaded
         };
@@ -226,16 +228,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             {
                 (source, Some(node), false)
             }
-            _ => if let Some(node) = basis.listed { (state.source, Some(node), false) } else {
-                if frozen.is_some() && state.source != self.source.reference() {
-                    return Err(LazyWorkspaceError::StaleSource);
+            _ => {
+                if let Some(node) = basis.listed {
+                    (state.source, Some(node), false)
+                } else {
+                    if frozen.is_some() && state.source != self.source.reference() {
+                        return Err(LazyWorkspaceError::StaleSource);
+                    }
+                    (
+                        state.source,
+                        self.source_lookup(state.source, path, ctx).await?,
+                        true,
+                    )
                 }
-                (
-                    state.source,
-                    self.source_lookup(state.source, path, ctx).await?,
-                    true,
-                )
-            },
+            }
         };
         let Some(node) = node else {
             return Ok((None, used, ctx.claim_owned(0, 0)?));
@@ -249,11 +255,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                     record,
                     crate::WorkspaceMetadata::from_engine(
                         checkout
-                            .read_metadata_with_accounting(
-                                record.file_id,
-                                ctx,
-                                cancellation(ctx),
-                            )
+                            .read_metadata_with_accounting(record.file_id, ctx, cancellation(ctx))
                             .await?,
                     ),
                 )),

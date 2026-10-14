@@ -23,7 +23,9 @@ pub(crate) fn create_directories<W: NativeHostWork>(
                 return Err(W::invalid_request());
             }
         }
-        base = path.parent().filter(|parent| !parent.as_os_str().is_empty())
+        base = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or(if path.is_absolute() { path } else { base });
         loop {
             // Ambient parents may be aliases; the requested leaf stays no-follow.
@@ -35,8 +37,12 @@ pub(crate) fn create_directories<W: NativeHostWork>(
             });
             match opened {
                 Ok(directory) => break directory,
-                Err(error) if matches!(W::io_error_kind(&error),
-                    Some(io::ErrorKind::NotFound | io::ErrorKind::InvalidFilename)) => {
+                Err(error)
+                    if matches!(
+                        W::io_error_kind(&error),
+                        Some(io::ErrorKind::NotFound | io::ErrorKind::InvalidFilename)
+                    ) =>
+                {
                     base = match base.parent() {
                         Some(parent) if !parent.as_os_str().is_empty() => parent,
                         Some(_) if base != Path::new(".") => Path::new("."),
@@ -269,7 +275,10 @@ pub(crate) fn prepare_ascii_leaf<const N: usize>(
     let credit = work.reserve_work(WorkCounters {
         items_examined: prefix.len() as u64,
         #[cfg(windows)]
-        bytes_encoded: prefix.len().checked_mul(2).ok_or(crate::WorkError::Overflow)? as u64,
+        bytes_encoded: prefix
+            .len()
+            .checked_mul(2)
+            .ok_or(crate::WorkError::Overflow)? as u64,
         ..WorkCounters::UNCHARGED
     })?;
     let mut name = [0; N];

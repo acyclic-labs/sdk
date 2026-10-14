@@ -160,7 +160,8 @@ fn preflight_context_composition(
         current_input_index: Option<u32>,
     }
     crate::executor::with_history_io(io, |work| {
-        crate::executor::json::json_byte_length(&JoinedContext {
+        crate::executor::json::json_byte_length(
+            &JoinedContext {
                 messages: ContextMessages {
                     first,
                     user: None,
@@ -168,7 +169,11 @@ fn preflight_context_composition(
                 },
                 metadata: JoinedMetadata(&context.metadata, &contribution.metadata),
                 current_input_index,
-            }, limits.render_bytes, work).map(|_| ())
+            },
+            limits.render_bytes,
+            work,
+        )
+        .map(|_| ())
     })?;
     Ok(current_input_index)
 }

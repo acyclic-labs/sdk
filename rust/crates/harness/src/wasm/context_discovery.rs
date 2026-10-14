@@ -7,8 +7,8 @@ use crate::{
         ContextDiscovery, ContextReloadPolicy, ContextRoot, DiscoveredContext, PinnedContextPath,
     },
     conversation::{
-        BoundedContentFuture, ContentHold, ContentIo, ContentResidencyVerifier, FileRef, PrivateDirectoryEntry,
-        PrivateDirectoryPage, VolumeRef,
+        BoundedContentFuture, ContentHold, ContentIo, ContentResidencyVerifier, FileRef,
+        PrivateDirectoryEntry, PrivateDirectoryPage, VolumeRef,
     },
     resources::GenerationRef,
 };
@@ -112,9 +112,15 @@ impl BrowserReader {
 }
 
 impl ContentResidencyVerifier for BrowserReader {
-    fn verify<'a>(&'a self, _: &'a FileRef, _maximum_bytes: u64, _io: Option<&'a ContentIo>)
-        -> Result<BoundedContentFuture<'a, ()>> {
-        Err(Error::Unsupported("bind the owner file verifier for direct refs".into()))
+    fn verify<'a>(
+        &'a self,
+        _: &'a FileRef,
+        _maximum_bytes: u64,
+        _io: Option<&'a ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, ()>> {
+        Err(Error::Unsupported(
+            "bind the owner file verifier for direct refs".into(),
+        ))
     }
 
     fn list_private_directory<'a>(
@@ -124,7 +130,8 @@ impl ContentResidencyVerifier for BrowserReader {
         path: &'a str,
         generation: Option<&'a GenerationRef>,
         after: Option<&'a str>,
-        maximum_entries: u32, io: Option<&'a ContentIo>,
+        maximum_entries: u32,
+        io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, PrivateDirectoryPage>> {
         BoundedContentFuture::new(io, || async move {
             let query = ContextDirectoryQuery {
@@ -170,7 +177,8 @@ impl ContentResidencyVerifier for BrowserReader {
         prefix: &'a str,
         path: &'a str,
         generation: &'a GenerationRef,
-        maximum_bytes: u64, io: Option<&'a ContentIo>,
+        maximum_bytes: u64,
+        io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         BoundedContentFuture::new(io, || async move {
             let query = ContextReadQuery {
@@ -194,8 +202,22 @@ impl ContentResidencyVerifier for BrowserReader {
         volume: &'a VolumeRef,
         prefix: &'a str,
         path: &'a str,
-        generation: Option<&'a GenerationRef>, maximum_bytes: u64, io: Option<&'io ContentIo>,
-    ) -> Result<BoundedContentFuture<'a, (FileRef, acyclic_stream::OwnedBytes, Option<ContentHold<'io>>)>> where 'io: 'a {
+        generation: Option<&'a GenerationRef>,
+        maximum_bytes: u64,
+        io: Option<&'io ContentIo>,
+    ) -> Result<
+        BoundedContentFuture<
+            'a,
+            (
+                FileRef,
+                acyclic_stream::OwnedBytes,
+                Option<ContentHold<'io>>,
+            ),
+        >,
+    >
+    where
+        'io: 'a,
+    {
         BoundedContentFuture::new(io, || async move {
             let maximum_bytes = maximum_bytes.min(self.maximum_bytes);
             let generation = generation.ok_or_else(|| {

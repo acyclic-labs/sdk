@@ -18,10 +18,10 @@ pub use measured::HistoryWork;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native;
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) use native::{adopt_native_sdk_output, native_sdk_result};
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub(crate) use native::AcceptedCompletionIo;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) use native::{adopt_native_sdk_output, native_sdk_result};
 
 /// The native branch owns its original pre-funded frame outside the boxed future.
 pub enum HistoryContentFuture<'a, T> {

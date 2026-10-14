@@ -69,7 +69,6 @@ mod materialize;
 mod resolve;
 mod restore;
 pub(crate) use commands::{
-    git_apply_patch, git_ignore_policy, git_policy,
-    git_workspace_tree, run_git_command,
+    git_apply_patch, git_ignore_policy, git_policy, git_workspace_tree, run_git_command,
 };
 pub(crate) use materialize::RootMaterializingGitExecutor;

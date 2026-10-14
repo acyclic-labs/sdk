@@ -52,7 +52,15 @@ async fn read_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         if length > volume.config.limits.maximum_read_bytes {
             return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
         }
-        let read = read_blob_range_with_accounting(&volume.fs.inner.objects, value, ByteRange { offset: 0, length }, DecodeLimits::for_volume(volume.config), accounting, cancellation, true)
+        let read = read_blob_range_with_accounting(
+            &volume.fs.inner.objects,
+            value,
+            ByteRange { offset: 0, length },
+            DecodeLimits::for_volume(volume.config),
+            accounting,
+            cancellation,
+            true,
+        )
         .await?;
         let bytes = read.logical_owned_bytes();
         #[cfg(not(target_arch = "wasm32"))]
@@ -278,10 +286,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                         return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
                     }
                     attributes.ensure_for_push(usize::MAX, &mut accounting)?;
-                    let read = read_blob_range_with_accounting(&self.volume.fs.inner.objects, entry.value, ByteRange {
+                    let read = read_blob_range_with_accounting(
+                        &self.volume.fs.inner.objects,
+                        entry.value,
+                        ByteRange {
                             offset: 0,
                             length: entry.value_bytes,
-                        }, DecodeLimits::for_volume(self.volume.config), &mut accounting, cancellation, true)
+                        },
+                        DecodeLimits::for_volume(self.volume.config),
+                        &mut accounting,
+                        cancellation,
+                        true,
+                    )
                     .await?;
                     let copied = WorkCounters {
                         items_examined: 1,

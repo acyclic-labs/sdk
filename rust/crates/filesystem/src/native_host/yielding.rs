@@ -195,7 +195,9 @@ impl YieldingFile {
                 NativeOperationReservation::new(meter, NativeOperationKind::Read, 2)
                     .map_err(crate::demand::native_demand_error)?;
             let length = destination.len().min(u32::MAX as usize);
-            let destination = destination.get_mut(..length).ok_or(DemandError::InvalidRequest)?;
+            let destination = destination
+                .get_mut(..length)
+                .ok_or(DemandError::InvalidRequest)?;
             let mut bytes = NativeByteReservation::new(meter, NativeOperationKind::Read, length)
                 .map_err(crate::demand::native_demand_error)?;
             let held = self

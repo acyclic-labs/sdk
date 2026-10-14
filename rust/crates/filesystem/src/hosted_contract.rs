@@ -6,13 +6,13 @@
 //! derives the protobuf names with `as_str_name()`, so a renamed or removed
 //! protobuf variant cannot silently leave a stale string table behind.
 
-use crate::kernel::{FileKind as EngineFileKind, FilePayloadKind, NameEncoding, DependencyUse, ExtentSeekTarget};
+use crate::kernel::{
+    DependencyUse, ExtentSeekTarget, FileKind as EngineFileKind, FilePayloadKind, NameEncoding,
+};
 use crate::model::FilesystemProfile as EngineProfile;
 use crate::performance::WorkCounters;
 use crate::wire::filesystem::v2 as wire;
-use crate::workspace::{
-    JoinHistory, WorkspaceExtentKind,
-};
+use crate::workspace::{JoinHistory, WorkspaceExtentKind};
 use serde_json::{Value, json};
 use strum::IntoEnumIterator;
 
@@ -319,9 +319,7 @@ pub const fn conflict_use(value: DependencyUse) -> wire::ConflictUse {
     match value {
         DependencyUse::Observation => wire::ConflictUse::Observation,
         DependencyUse::Mutation => wire::ConflictUse::Mutation,
-        DependencyUse::ObservationAndMutation => {
-            wire::ConflictUse::ObservationAndMutation
-        }
+        DependencyUse::ObservationAndMutation => wire::ConflictUse::ObservationAndMutation,
     }
 }
 
@@ -429,10 +427,7 @@ mod tests {
         assert_eq!(profile(EngineProfile::Portable), FILESYSTEM_PROFILE[1].wire);
         assert_eq!(file_kind(EngineFileKind::MountBoundary), FILE_KIND[9].wire);
         assert_eq!(name_encoding(NameEncoding::Utf8), NAME_ENCODING[1].wire);
-        assert_eq!(
-            sparse_target(ExtentSeekTarget::Hole),
-            SPARSE_TARGET[2].wire
-        );
+        assert_eq!(sparse_target(ExtentSeekTarget::Hole), SPARSE_TARGET[2].wire);
         assert_eq!(
             conflict_use(DependencyUse::ObservationAndMutation),
             CONFLICT_USE[3].wire

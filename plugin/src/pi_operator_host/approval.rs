@@ -197,18 +197,17 @@ pub(crate) async fn read_prepared_approval(
         .harness()
         .durable_context(root, OperationId::from_bytes(root.into_bytes()), Some(&io))
         .await?;
-    let descriptor: Option<(PiPreparedApproval, _)> =
-        crate::pi_root_provider::read_pi_input(
-            protected,
-            filesystem,
-            operation,
-            "operator-approval",
-            crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8,
-            pi_operator::PREPARED_LABEL_BYTES,
-            &context,
-            work,
-        )
-        .await?;
+    let descriptor: Option<(PiPreparedApproval, _)> = crate::pi_root_provider::read_pi_input(
+        protected,
+        filesystem,
+        operation,
+        "operator-approval",
+        crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64 * 8,
+        pi_operator::PREPARED_LABEL_BYTES,
+        &context,
+        work,
+    )
+    .await?;
     if let Some((descriptor, _)) = &descriptor {
         validate_descriptor(protected, &descriptor.into(), work)?;
     }

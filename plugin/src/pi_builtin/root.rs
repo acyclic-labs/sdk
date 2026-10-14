@@ -85,7 +85,10 @@ impl crate::pi_host::PiControlHost<'_> {
             let (path, candidate) = if index == 0 {
                 (relative, request.path.as_str())
             } else {
-                (relatives[index - 1].expect("validated variant"), variants[index - 1].as_str())
+                (
+                    relatives[index - 1].expect("validated variant"),
+                    variants[index - 1].as_str(),
+                )
             };
             let path = logical_path(path, work)?;
             match selection.read(&path.0, *maximum_bytes, work).await {

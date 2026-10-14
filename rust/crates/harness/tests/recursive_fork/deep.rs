@@ -165,61 +165,67 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             .await?;
             assert!(
                 controller
-                    .materialize_inherited_conversation(aggregate.reducer(),
-&dirty_private,
-&dirty.generation,
-child_agent,
-&[],
-2,
-2,
-64 * 1_024,
-4_096,
-parent_resolver.as_ref(),
-&IdempotencyKey::new("dirty-private-prefix")?,
-&[],
-None,
-None,
-None)
+                    .materialize_inherited_conversation(
+                        aggregate.reducer(),
+                        &dirty_private,
+                        &dirty.generation,
+                        child_agent,
+                        &[],
+                        2,
+                        2,
+                        64 * 1_024,
+                        4_096,
+                        parent_resolver.as_ref(),
+                        &IdempotencyKey::new("dirty-private-prefix")?,
+                        &[],
+                        None,
+                        None,
+                        None
+                    )
                     .await
                     .is_err(),
                 "parent cannot adopt an already-used child private volume"
             );
         }
         let captured = controller
-            .materialize_inherited_conversation(aggregate.reducer(),
-&child_private,
-&private_fork.generation,
-child_agent,
-&attached_agents,
-if level == 1 { 2 } else { 1 },
-2,
-64 * 1_024,
-4_096,
-parent_resolver.as_ref(),
-&IdempotencyKey::new(format!("inherited-{level}"))?,
-&[],
-None,
-None,
-None)
+            .materialize_inherited_conversation(
+                aggregate.reducer(),
+                &child_private,
+                &private_fork.generation,
+                child_agent,
+                &attached_agents,
+                if level == 1 { 2 } else { 1 },
+                2,
+                64 * 1_024,
+                4_096,
+                parent_resolver.as_ref(),
+                &IdempotencyKey::new(format!("inherited-{level}"))?,
+                &[],
+                None,
+                None,
+                None,
+            )
             .await?;
         if level == 1 {
             assert!(
                 controller
-                    .materialize_inherited_conversation(aggregate.reducer(),
-&child_private,
-&private_fork.generation,
-child_agent,
-&[],
-2,
-2,
-64 * 1_024,
-4_096,
-parent_resolver.as_ref(),
-&IdempotencyKey::new("inherited-1")?,
-&[],
-None,
-None,
-None)
+                    .materialize_inherited_conversation(
+                        aggregate.reducer(),
+                        &child_private,
+                        &private_fork.generation,
+                        child_agent,
+                        &[],
+                        2,
+                        2,
+                        64 * 1_024,
+                        4_096,
+                        parent_resolver.as_ref(),
+                        &IdempotencyKey::new("inherited-1")?,
+                        &[],
+                        None,
+                        None,
+                        None
+                    )
                     .await
                     .is_err(),
                 "one retry identity cannot change attached readers"

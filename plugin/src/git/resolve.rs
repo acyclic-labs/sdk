@@ -81,9 +81,12 @@ impl PluginGitExecutor<'_> {
         if workspace_id == self.current.id() {
             return Ok(self.current.clone());
         }
-        acyclic_fs::WorkspaceResolver::resolve(&((*self.fs).clone(), WorkspaceGraph::new(self.store.clone())), workspace_id)
-            .await
-            .map_err(display)
-            .map_err(PluginGitError)
+        acyclic_fs::WorkspaceResolver::resolve(
+            &((*self.fs).clone(), WorkspaceGraph::new(self.store.clone())),
+            workspace_id,
+        )
+        .await
+        .map_err(display)
+        .map_err(PluginGitError)
     }
 }

@@ -155,7 +155,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             }
             let candidate = checkout.private_candidate(ctx, cancellation(ctx))?;
             let mut transaction = accounted!(ctx, |work, cancel| async {
-                crate::Transaction::for_checkout_candidate(&self.workspace, candidate, &work, cancel)
+                crate::Transaction::for_checkout_candidate(
+                    &self.workspace,
+                    candidate,
+                    &work,
+                    cancel,
+                )
             })?;
             if let Some(parent) = parent_path(path) {
                 accounted!(ctx, |work, cancel| transaction

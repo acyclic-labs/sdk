@@ -34,7 +34,10 @@ impl Fixture {
             .provider
             .observe_allocation_with_native_work(
                 acyclic_harness::EffectAttemptId::from_bytes(
-                    root.provider.effect_id_with_native_work(&root.startup).unwrap().into_bytes(),
+                    root.provider
+                        .effect_id_with_native_work(&root.startup)
+                        .unwrap()
+                        .into_bytes(),
                 ),
                 &root.startup,
             )

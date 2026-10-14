@@ -42,9 +42,11 @@ where
             *cached = Some(
                 StreamAggregate::open(
                     &self.stream,
-                    (self.verifier.audience().clone(),
-                    self.verifier.clone(),
-                    self.schemas.clone()),
+                    (
+                        self.verifier.audience().clone(),
+                        self.verifier.clone(),
+                        self.schemas.clone(),
+                    ),
                     None,
                     crate::store::default_projection_read_limits(),
                     crate::store::DEFAULT_TERMINAL_EFFECTS,
@@ -64,9 +66,11 @@ where
         {
             *aggregate = StreamAggregate::open(
                 &self.stream,
-                (self.verifier.audience().clone(),
-                self.verifier.clone(),
-                self.schemas.clone()),
+                (
+                    self.verifier.audience().clone(),
+                    self.verifier.clone(),
+                    self.schemas.clone(),
+                ),
                 None,
                 crate::store::default_projection_read_limits(),
                 crate::store::DEFAULT_TERMINAL_EFFECTS,

@@ -58,7 +58,9 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
         "resolution_receipt" => admit(value, |v: &ResolutionReceipt| v.validate()),
         "conversation_message" => {
             let limits: Limits = from_js(context)?;
-            admit(value, |v: &ConversationMessage| limits.validate_message(v, &mut None))
+            admit(value, |v: &ConversationMessage| {
+                limits.validate_message(v, &mut None)
+            })
         }
         "interaction_resolution" => {
             let ticket: InteractionTicket = from_js(context)?;

@@ -20,7 +20,12 @@ async fn exact_generation_restore_is_fenced_and_idempotent() -> Result<(), Box<d
     ));
     assert!(matches!(
         workspace
-            .restore_generation(&second, first.id(), key, crate::PublicationPermit::Unrestricted)
+            .restore_generation(
+                &second,
+                first.id(),
+                key,
+                crate::PublicationPermit::Unrestricted
+            )
             .await?,
         WorkspaceRestore::IdempotencyConflict
     ));

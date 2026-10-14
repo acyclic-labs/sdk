@@ -112,28 +112,94 @@ fn visited_set_is_deterministic_bounded_and_detects_aliases() -> Result<(), crat
     let cancellation = crate::CancellationToken::new();
     let mut ledger = AllocationLedger::default();
     let mut work = WorkCounters::default();
-    let mut visited = VisitedObjectSet::new_with_accounting(2, &mut KernelAccounting::borrowed_standalone(&mut ledger, &mut work, WorkBudget::UNBOUNDED, &cancellation))?;
-    let first = VisitedObjectSet::insert_with_accounting(&mut visited, object(1), &mut KernelAccounting::borrowed_standalone(&mut ledger, &mut work, WorkBudget::UNBOUNDED, &cancellation))?;
-    let collision = VisitedObjectSet::insert_with_accounting(&mut visited, object(2), &mut KernelAccounting::borrowed_standalone(&mut ledger, &mut work, WorkBudget::UNBOUNDED, &cancellation))?;
-    let alias = VisitedObjectSet::insert_with_accounting(&mut visited, object(1), &mut KernelAccounting::borrowed_standalone(&mut ledger, &mut work, WorkBudget::UNBOUNDED, &cancellation))?;
+    let mut visited = VisitedObjectSet::new_with_accounting(
+        2,
+        &mut KernelAccounting::borrowed_standalone(
+            &mut ledger,
+            &mut work,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ),
+    )?;
+    let first = VisitedObjectSet::insert_with_accounting(
+        &mut visited,
+        object(1),
+        &mut KernelAccounting::borrowed_standalone(
+            &mut ledger,
+            &mut work,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ),
+    )?;
+    let collision = VisitedObjectSet::insert_with_accounting(
+        &mut visited,
+        object(2),
+        &mut KernelAccounting::borrowed_standalone(
+            &mut ledger,
+            &mut work,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ),
+    )?;
+    let alias = VisitedObjectSet::insert_with_accounting(
+        &mut visited,
+        object(1),
+        &mut KernelAccounting::borrowed_standalone(
+            &mut ledger,
+            &mut work,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ),
+    )?;
     assert!(first.inserted);
     assert!(collision.inserted);
     assert!(!alias.inserted);
     assert!(matches!(
-        VisitedObjectSet::insert_with_accounting(&mut visited, object(3), &mut KernelAccounting::borrowed_standalone(&mut ledger, &mut work, WorkBudget::UNBOUNDED, &cancellation)),
+        VisitedObjectSet::insert_with_accounting(
+            &mut visited,
+            object(3),
+            &mut KernelAccounting::borrowed_standalone(
+                &mut ledger,
+                &mut work,
+                WorkBudget::UNBOUNDED,
+                &cancellation
+            )
+        ),
         Err(crate::FsError::PendingMutationAllocationFailed)
     ));
-    visited.retire(&mut KernelAccounting::borrowed_standalone(&mut ledger, &mut work, WorkBudget::UNBOUNDED, &cancellation))?;
+    visited.retire(&mut KernelAccounting::borrowed_standalone(
+        &mut ledger,
+        &mut work,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))?;
     assert_eq!(ledger.live_bytes(), 0);
 
     let mut scalable_ledger = AllocationLedger::default();
     let mut scalable_work = WorkCounters::default();
-    let mut scalable = VisitedObjectSet::new_with_accounting(1_024, &mut KernelAccounting::borrowed_standalone(&mut scalable_ledger, &mut scalable_work, WorkBudget::UNBOUNDED, &cancellation))?;
+    let mut scalable = VisitedObjectSet::new_with_accounting(
+        1_024,
+        &mut KernelAccounting::borrowed_standalone(
+            &mut scalable_ledger,
+            &mut scalable_work,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ),
+    )?;
     let initial_peak = scalable_work.peak_allocation_bytes;
     for suffix in 0..32 {
         assert!(
-            VisitedObjectSet::insert_with_accounting(&mut scalable, object(suffix), &mut KernelAccounting::borrowed_standalone(&mut scalable_ledger, &mut scalable_work, WorkBudget::UNBOUNDED, &cancellation))?
-                .inserted
+            VisitedObjectSet::insert_with_accounting(
+                &mut scalable,
+                object(suffix),
+                &mut KernelAccounting::borrowed_standalone(
+                    &mut scalable_ledger,
+                    &mut scalable_work,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation
+                )
+            )?
+            .inserted
         );
     }
     let eager_maximum_bytes = 2_u64
@@ -144,7 +210,12 @@ fn visited_set_is_deterministic_bounded_and_detects_aliases() -> Result<(), crat
     assert!(scalable_work.peak_allocation_bytes < eager_maximum_bytes);
     assert!(scalable_work.allocation_operations > 1);
     assert!(scalable_work.bytes_copied > 0);
-    scalable.retire(&mut KernelAccounting::borrowed_standalone(&mut scalable_ledger, &mut scalable_work, WorkBudget::UNBOUNDED, &cancellation))?;
+    scalable.retire(&mut KernelAccounting::borrowed_standalone(
+        &mut scalable_ledger,
+        &mut scalable_work,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))?;
     assert_eq!(scalable_ledger.live_bytes(), 0);
     Ok(())
 }
@@ -156,7 +227,15 @@ fn visited_growth_failures_release_candidate_storage_and_preserve_the_old_table(
     let mut empty_ledger = AllocationLedger::default();
     let mut empty_work = WorkCounters::default();
     assert!(matches!(
-        VisitedObjectSet::new_with_accounting(0, &mut KernelAccounting::borrowed_standalone(&mut empty_ledger, &mut empty_work, WorkBudget::UNBOUNDED, &cancellation)),
+        VisitedObjectSet::new_with_accounting(
+            0,
+            &mut KernelAccounting::borrowed_standalone(
+                &mut empty_ledger,
+                &mut empty_work,
+                WorkBudget::UNBOUNDED,
+                &cancellation
+            )
+        ),
         Err(crate::FsError::PendingMutationAllocationFailed)
     ));
     assert_eq!(empty_ledger.live_bytes(), 0);
@@ -164,11 +243,28 @@ fn visited_growth_failures_release_candidate_storage_and_preserve_the_old_table(
     for fail_on_copy in [false, true] {
         let mut ledger = AllocationLedger::default();
         let mut work = WorkCounters::default();
-        let mut visited = VisitedObjectSet::new_with_accounting(16, &mut KernelAccounting::borrowed_standalone(&mut ledger, &mut work, WorkBudget::UNBOUNDED, &cancellation))?;
+        let mut visited = VisitedObjectSet::new_with_accounting(
+            16,
+            &mut KernelAccounting::borrowed_standalone(
+                &mut ledger,
+                &mut work,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            ),
+        )?;
         for suffix in 0..8 {
             assert!(
-                VisitedObjectSet::insert_with_accounting(&mut visited, object(suffix), &mut KernelAccounting::borrowed_standalone(&mut ledger, &mut work, WorkBudget::UNBOUNDED, &cancellation))?
-                    .inserted
+                VisitedObjectSet::insert_with_accounting(
+                    &mut visited,
+                    object(suffix),
+                    &mut KernelAccounting::borrowed_standalone(
+                        &mut ledger,
+                        &mut work,
+                        WorkBudget::UNBOUNDED,
+                        &cancellation
+                    )
+                )?
+                .inserted
             );
         }
         let stable_bytes = ledger.live_bytes();
@@ -178,16 +274,39 @@ fn visited_growth_failures_release_candidate_storage_and_preserve_the_old_table(
         } else {
             budget.items_examined = work.items_examined.saturating_add(1);
         }
-        let failure = VisitedObjectSet::insert_with_accounting(&mut visited, object(9), &mut KernelAccounting::borrowed_standalone(&mut ledger, &mut work, budget, &cancellation))
-            .err()
-            .ok_or(crate::FsError::PendingMutationAllocationFailed)?;
+        let failure = VisitedObjectSet::insert_with_accounting(
+            &mut visited,
+            object(9),
+            &mut KernelAccounting::borrowed_standalone(
+                &mut ledger,
+                &mut work,
+                budget,
+                &cancellation,
+            ),
+        )
+        .err()
+        .ok_or(crate::FsError::PendingMutationAllocationFailed)?;
         assert!(matches!(failure, crate::FsError::Work(_)));
         assert_eq!(ledger.live_bytes(), stable_bytes);
         assert!(
-            !VisitedObjectSet::insert_with_accounting(&mut visited, object(0), &mut KernelAccounting::borrowed_standalone(&mut ledger, &mut work, WorkBudget::UNBOUNDED, &cancellation))?
-                .inserted
+            !VisitedObjectSet::insert_with_accounting(
+                &mut visited,
+                object(0),
+                &mut KernelAccounting::borrowed_standalone(
+                    &mut ledger,
+                    &mut work,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation
+                )
+            )?
+            .inserted
         );
-        visited.retire(&mut KernelAccounting::borrowed_standalone(&mut ledger, &mut work, WorkBudget::UNBOUNDED, &cancellation))?;
+        visited.retire(&mut KernelAccounting::borrowed_standalone(
+            &mut ledger,
+            &mut work,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))?;
         assert_eq!(ledger.live_bytes(), 0);
     }
     Ok(())
@@ -199,22 +318,32 @@ fn vector_completed_growth_survives_a_late_budget_error() -> Result<(), Allocati
     let mut capacity = LogicalVecCapacity::default();
     let mut ledger = AllocationLedger::default();
     let mut work = WorkCounters::UNCHARGED;
-    let result = capacity.ensure_for_push_using(&mut values, 1, |error| error, |step| {
-        match step {
-            LogicalVecAllocationStep::Claim { bytes } =>
-                ledger.claim_bytes(bytes, 1, &mut work, WorkBudget::UNBOUNDED),
+    let result = capacity.ensure_for_push_using(
+        &mut values,
+        1,
+        |error| error,
+        |step| match step {
+            LogicalVecAllocationStep::Claim { bytes } => {
+                ledger.claim_bytes(bytes, 1, &mut work, WorkBudget::UNBOUNDED)
+            }
             LogicalVecAllocationStep::ReserveFailed { bytes, .. } => {
                 ledger.release(bytes)?;
                 Err(AllocationError::AllocationFailed)
             }
             LogicalVecAllocationStep::Capacity { requested, actual } => {
                 ledger.record_owned_bytes(actual - requested, &mut work)?;
-                work.verify(WorkBudget { peak_allocation_bytes: 0, ..WorkBudget::UNBOUNDED })?;
+                work.verify(WorkBudget {
+                    peak_allocation_bytes: 0,
+                    ..WorkBudget::UNBOUNDED
+                })?;
                 Ok(())
             }
-        }
-    });
-    assert!(matches!(result, Err(AllocationError::Work(WorkError::BudgetExceeded { .. }))));
+        },
+    );
+    assert!(matches!(
+        result,
+        Err(AllocationError::Work(WorkError::BudgetExceeded { .. }))
+    ));
     let actual_bytes = usize_to_u64(values.capacity() * size_of::<u64>());
     assert_eq!(capacity.elements, 1);
     assert_eq!(capacity.logical_bytes(), actual_bytes);

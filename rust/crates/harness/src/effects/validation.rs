@@ -21,7 +21,9 @@ fn decode_schema(
             bytes,
             crate::wire::ErrorCode::Storage,
         )?;
-        drop(crate::executor::with_history_io(Some(io), |work| crate::executor::compile_json_schema(&schema.0, "effect result", work))?);
+        drop(crate::executor::with_history_io(Some(io), |work| {
+            crate::executor::compile_json_schema(&schema.0, "effect result", work)
+        })?);
         return crate::filesystem::retain_decoded(schema);
     }
     let schema: Value = crate::contract::json_from_slice(bytes)
@@ -72,7 +74,12 @@ pub(crate) fn validate_result_bytes(
         result.descriptor().verify(bytes, work)?;
         let value: Value = crate::contract::json_from_slice(bytes)
             .map_err(|error| Error::Invalid(format!("effect result is not JSON: {error}")))?;
-        return crate::executor::validate_json_schema_value(&schema, &value, "effect result", &mut None);
+        return crate::executor::validate_json_schema_value(
+            &schema,
+            &value,
+            "effect result",
+            &mut None,
+        );
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     {
@@ -97,7 +104,9 @@ pub(crate) fn validate_result_bytes(
             bytes,
             crate::wire::ErrorCode::Storage,
         )?;
-        crate::executor::with_history_io(Some(&decode), |work| crate::executor::validate_json_schema_value(&schema, &value.0, "effect result", work))
+        crate::executor::with_history_io(Some(&decode), |work| {
+            crate::executor::validate_json_schema_value(&schema, &value.0, "effect result", work)
+        })
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     Err(Error::Unsupported(

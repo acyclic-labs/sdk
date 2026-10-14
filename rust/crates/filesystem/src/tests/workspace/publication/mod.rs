@@ -294,8 +294,7 @@ async fn fork_through_every_cut(
             cutting.arm(fail_at, cut);
             let attempt = fork_workspace(&main, "agent", options()).await;
             let fired = cutting.disarm();
-            let destination =
-                fs.workspace_id("agent")?;
+            let destination = fs.workspace_id("agent")?;
             let complete =
                 assert_fork_state_exact(&stream, &source, main.id().volume_id(), destination)
                     .await?;

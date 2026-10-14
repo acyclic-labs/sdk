@@ -108,9 +108,11 @@ async fn fixture() -> Result<Fixture> {
     let stream = Arc::new(MemoryStream::default());
     let mut parent = StreamAggregate::open(
         &stream,
-        (authority,
-        issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new()),
+        (
+            authority,
+            issuer.verifier(&mut None).expect("verifier copy"),
+            SchemaRegistry::new(),
+        ),
         None,
         crate::store::default_projection_read_limits(),
         crate::store::DEFAULT_TERMINAL_EFFECTS,

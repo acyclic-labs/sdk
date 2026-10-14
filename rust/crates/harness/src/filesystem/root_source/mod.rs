@@ -10,8 +10,7 @@ use crate::{
     },
 };
 use acyclic_fs::{
-    AsyncAuthorityStore, AsyncObjectStore, LazySnapshotRef,
-    WorkBudget, WorkCounters,
+    AsyncAuthorityStore, AsyncObjectStore, LazySnapshotRef, WorkBudget, WorkCounters,
 };
 use std::sync::Arc;
 

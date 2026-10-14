@@ -180,10 +180,7 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
             .write_text("/later.txt", "later authored head")
             .await?;
         let head = workspace
-            .head(
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
+            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)?

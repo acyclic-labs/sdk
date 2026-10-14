@@ -57,9 +57,14 @@ async fn post(proxy: &ResponsesProxy, body: &Value) -> reqwest::Response {
 #[tokio::test]
 async fn only_the_turns_codex_can_spend_the_key() {
     let fake = FakeUpstream::message("hello").await;
-    let proxy = ResponsesProxy::start(upstream(&fake), Arc::new(RecordingMeter::default()), 8, None)
-        .await
-        .expect("proxy starts");
+    let proxy = ResponsesProxy::start(
+        upstream(&fake),
+        Arc::new(RecordingMeter::default()),
+        8,
+        None,
+    )
+    .await
+    .expect("proxy starts");
     for key in [None, Some("guessed")] {
         let mut request = reqwest::Client::new()
             .post(format!("{}/responses", proxy.base_url()))
@@ -123,9 +128,14 @@ async fn sse_frames_are_passed_through_as_they_arrive() {
         gap: Duration::from_millis(400),
     })
     .await;
-    let proxy = ResponsesProxy::start(upstream(&fake), Arc::new(RecordingMeter::default()), 8, None)
-        .await
-        .expect(PENDING);
+    let proxy = ResponsesProxy::start(
+        upstream(&fake),
+        Arc::new(RecordingMeter::default()),
+        8,
+        None,
+    )
+    .await
+    .expect(PENDING);
     let started = Instant::now();
     let mut response = post(&proxy, &codex_request()).await;
     let first = response
@@ -175,9 +185,14 @@ async fn a_stopping_meter_refuses_the_next_call_the_way_codex_stops_on() {
 #[tokio::test]
 async fn the_step_cap_refuses_the_call_after_the_last_step() {
     let fake = FakeUpstream::message("hello").await;
-    let proxy = ResponsesProxy::start(upstream(&fake), Arc::new(RecordingMeter::default()), 2, None)
-        .await
-        .expect(PENDING);
+    let proxy = ResponsesProxy::start(
+        upstream(&fake),
+        Arc::new(RecordingMeter::default()),
+        2,
+        None,
+    )
+    .await
+    .expect(PENDING);
     for _ in 0..2 {
         assert_eq!(post(&proxy, &codex_request()).await.status(), 200);
     }
@@ -189,9 +204,14 @@ async fn the_step_cap_refuses_the_call_after_the_last_step() {
 #[tokio::test]
 async fn other_paths_are_a_visible_404() {
     let fake = FakeUpstream::message("hello").await;
-    let proxy = ResponsesProxy::start(upstream(&fake), Arc::new(RecordingMeter::default()), 8, None)
-        .await
-        .expect(PENDING);
+    let proxy = ResponsesProxy::start(
+        upstream(&fake),
+        Arc::new(RecordingMeter::default()),
+        8,
+        None,
+    )
+    .await
+    .expect(PENDING);
     let models = reqwest::get(format!("{}/models", proxy.base_url()))
         .await
         .expect("reachable");

@@ -90,7 +90,10 @@ pub(crate) fn open_windows_at<W: NativeHostWork>(
         windows_leaf_name(path, work)?
     };
     let attributes = windows::Wdk::Foundation::OBJECT_ATTRIBUTES {
-        Length: u32::try_from(std::mem::size_of::<windows::Wdk::Foundation::OBJECT_ATTRIBUTES>()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?,
+        Length: u32::try_from(std::mem::size_of::<
+            windows::Wdk::Foundation::OBJECT_ATTRIBUTES,
+        >())
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?,
         RootDirectory: win::HANDLE(parent.as_raw_handle()),
         ObjectName: &name,
         Attributes: win::OBJ_CASE_INSENSITIVE,
@@ -143,7 +146,8 @@ pub(super) fn windows_stat_information<W: NativeHostWork>(
                 win::HANDLE(file.as_handle().as_raw_handle()),
                 &mut block,
                 (&raw mut information).cast(),
-                u32::try_from(std::mem::size_of_val(&information)).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?,
+                u32::try_from(std::mem::size_of_val(&information))
+                    .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?,
                 nt::FileStatInformation,
             )
         };
@@ -172,7 +176,10 @@ pub(super) fn stat_windows_name<W: NativeHostWork>(
     work: &mut W,
 ) -> Result<Option<HostStat>, W::Error> {
     let attributes = windows::Wdk::Foundation::OBJECT_ATTRIBUTES {
-        Length: u32::try_from(std::mem::size_of::<windows::Wdk::Foundation::OBJECT_ATTRIBUTES>()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?,
+        Length: u32::try_from(std::mem::size_of::<
+            windows::Wdk::Foundation::OBJECT_ATTRIBUTES,
+        >())
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?,
         RootDirectory: win::HANDLE(directory.as_raw_handle()),
         ObjectName: std::ptr::from_ref(name),
         Attributes: win::OBJ_CASE_INSENSITIVE | win::OBJ_DONT_REPARSE,
@@ -187,7 +194,8 @@ pub(super) fn stat_windows_name<W: NativeHostWork>(
             &attributes,
             &mut block,
             (&raw mut information).cast(),
-            u32::try_from(std::mem::size_of_val(&information)).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?,
+            u32::try_from(std::mem::size_of_val(&information))
+                .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?,
             nt::FileStatInformation,
         )
     };
@@ -256,7 +264,8 @@ pub(super) fn windows_set_information<T: ?Sized>(
             win::HANDLE(file.as_raw_handle()),
             &mut block,
             std::ptr::from_ref(information).cast(),
-            u32::try_from(std::mem::size_of_val(information)).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?,
+            u32::try_from(std::mem::size_of_val(information))
+                .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?,
             class,
         )
     };
@@ -296,9 +305,10 @@ pub(crate) fn remove_windows_leaf<W: NativeHostWork>(
         work,
     )?;
     if let Some(expected) = expected
-        && file_identity_and_length(&file, work)?.0 != expected {
-            return Err(io::Error::other("held deletion target identity changed").into());
-        }
+        && file_identity_and_length(&file, work)?.0 != expected
+    {
+        return Err(io::Error::other("held deletion target identity changed").into());
+    }
     work.attempt_io(WRITE, || {
         windows_set_information(
             &file,

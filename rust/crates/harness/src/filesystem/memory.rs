@@ -229,7 +229,11 @@ impl MemoryHarnessStorage {
         );
         crate::store::StreamAggregate::open(
             &stream,
-            (conversation.clone(), verifier.clone(), SchemaRegistry::new()),
+            (
+                conversation.clone(),
+                verifier.clone(),
+                SchemaRegistry::new(),
+            ),
             None,
             crate::store::default_projection_read_limits(),
             crate::store::DEFAULT_TERMINAL_EFFECTS,

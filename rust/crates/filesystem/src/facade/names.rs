@@ -507,7 +507,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         accounting: &'a mut KernelAccounting<'accounting>,
         cancellation: &'a CancellationToken,
         allowed_file_ids: &'a [FileId],
-    ) -> impl std::future::Future<Output = Result<Option<(LogicalName, KernelOwnedAllocation)>, FsError>> + ProviderTask + 'a {
+    ) -> impl std::future::Future<
+        Output = Result<Option<(LogicalName, KernelOwnedAllocation)>, FsError>,
+    > + ProviderTask
+    + 'a {
         async move {
             let mut frame_custody = None;
             let (future, frame_bytes) = crate::heap_future::in_heap_admitted(

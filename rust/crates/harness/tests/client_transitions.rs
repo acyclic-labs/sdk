@@ -26,9 +26,8 @@ fn bounded_restore_orders_watermarks_time_and_work_preserve_unrelated_facts() {
     let child = source
         .begin(request(1, 0, 10, 12, Some(10), vec![parent]))
         .unwrap();
-    let encoded = [parent, child].map(|id| {
-        serde_json::to_vec(source.hypothesis(id).unwrap()).unwrap()
-    });
+    let encoded =
+        [parent, child].map(|id| serde_json::to_vec(source.hypothesis(id).unwrap()).unwrap());
     let mut explored = 0;
     for order in [[0, 1], [1, 0]] {
         for watermark in [0, 1, 2] {

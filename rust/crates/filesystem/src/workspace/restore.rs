@@ -174,9 +174,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             .await
             .map_err(E::from)?;
         let mut accounting = KernelAccounting::native(original, cancellation);
-        transaction
-            .checkout
-            .validate_native_work(original)?;
+        transaction.checkout.validate_native_work(original)?;
         let source_root = source
             .workspace
             .open_checkout(

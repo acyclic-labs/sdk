@@ -65,9 +65,7 @@ where
         let mut history = io.map(PreparationIo::history_io);
         StreamAggregate::open(
             &self.stream,
-            (authority,
-            verifier,
-            SchemaRegistry::default()),
+            (authority, verifier, SchemaRegistry::default()),
             None,
             self.config.history_limits,
             crate::store::DEFAULT_TERMINAL_EFFECTS,

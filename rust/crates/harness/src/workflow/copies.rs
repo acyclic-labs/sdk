@@ -52,7 +52,9 @@ copy!(
     Ok(Self {
         machine: self.machine.copy_fields(quota)?,
         revision: self.revision,
-        state: crate::core::copy(&self.state, quota, |value, _| crate::executor::json::json_value_logical_owned_bytes(value))?,
+        state: crate::core::copy(&self.state, quota, |value, _| {
+            crate::executor::json::json_value_logical_owned_bytes(value)
+        })?,
     })
 );
 copy!(
@@ -60,7 +62,9 @@ copy!(
     self,
     quota,
     Ok(Self {
-        state: crate::core::copy(&self.state, quota, |value, _| crate::executor::json::json_value_logical_owned_bytes(value))?,
+        state: crate::core::copy(&self.state, quota, |value, _| {
+            crate::executor::json::json_value_logical_owned_bytes(value)
+        })?,
         commands: copy_vector(&self.commands, quota, |command, quota| Ok(
             WorkflowCommand {
                 operation_id: command.operation_id,
@@ -71,7 +75,9 @@ copy!(
         status: match &self.status {
             MachineStatus::Suspended => MachineStatus::Suspended,
             MachineStatus::Completed { value } => MachineStatus::Completed {
-                value: crate::core::copy(value, quota, |value, _| crate::executor::json::json_value_logical_owned_bytes(value))?
+                value: crate::core::copy(value, quota, |value, _| {
+                    crate::executor::json::json_value_logical_owned_bytes(value)
+                })?
             },
             MachineStatus::Failed { message } => MachineStatus::Failed {
                 message: copy_text(message, quota)?
@@ -87,7 +93,9 @@ copy!(
         operation_id: self.operation_id,
         idempotency_key: IdempotencyKey(copy_text(&self.idempotency_key.0, quota)?),
         prior: self.prior.copy_fields(quota)?,
-        input: crate::core::copy(&self.input, quota, |value, _| crate::executor::json::json_value_logical_owned_bytes(value))?,
+        input: crate::core::copy(&self.input, quota, |value, _| {
+            crate::executor::json::json_value_logical_owned_bytes(value)
+        })?,
         transition: self.transition.copy_fields(quota)?,
     })
 );

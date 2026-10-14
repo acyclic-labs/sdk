@@ -41,9 +41,16 @@ async fn put(
     let id = attribute_page_id(page, maximum_items)?;
     {
         let __object_args = (
-        id,
-        OwnedBytes::from(encode_attribute_page(page, maximum_items, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+            id,
+            OwnedBytes::from(encode_attribute_page(
+                page,
+                maximum_items,
+                |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+                |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+            )?),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
         let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
         let __object_result = store
             .put(__object_args.0, __object_args.1, &mut __object_work)
@@ -62,7 +69,8 @@ async fn three_leaf_tree(
             store,
             &AttributePage::Leaf(vec![entry(3, 1, 3)?, entry(4, 1, 4)?]),
             8,
-        ).await?,
+        )
+        .await?,
         put(store, &AttributePage::Leaf(vec![entry(6, 1, 6)?]), 8).await?,
     ];
     let root = put(
@@ -82,7 +90,8 @@ async fn three_leaf_tree(
             },
         ]),
         8,
-    ).await?;
+    )
+    .await?;
     Ok((root, leaves))
 }
 
@@ -103,7 +112,8 @@ async fn sparse_attribute_changes_rewrite_only_one_leaf_and_root()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 2);
     let bytes = {
@@ -155,14 +165,18 @@ async fn unordered_attribute_mutations_are_sorted_once_and_persist_canonically()
     .await?;
     let bytes = {
         let __object_args = (
-            receipt.value, u64::MAX, WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+            receipt.value,
+            u64::MAX,
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
         let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
         let __object_result = store
             .read(__object_args.0, __object_args.1, &mut __object_work)
             .await;
         __object_work.receipt(__object_result)
     }?
-        .value;
+    .value;
     let AttributePage::Leaf(entries) =
         decode_attribute_page(&bytes, DecodeLimits::default(), &mut |_| {
             Ok::<_, crate::kernel::CanonicalDecodeError>(())
@@ -181,8 +195,8 @@ async fn unordered_attribute_mutations_are_sorted_once_and_persist_canonically()
 }
 
 #[tokio::test]
-async fn no_op_attribute_replace_preserves_root_without_writes() -> Result<(), Box<dyn std::error::Error>>
-{
+async fn no_op_attribute_replace_preserves_root_without_writes()
+-> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (root, _) = three_leaf_tree(&store).await?;
     let same = entry(3, 1, 3)?;
@@ -197,7 +211,8 @@ async fn no_op_attribute_replace_preserves_root_without_writes() -> Result<(), B
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(receipt.value, root);
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 0);
@@ -206,8 +221,8 @@ async fn no_op_attribute_replace_preserves_root_without_writes() -> Result<(), B
 }
 
 #[tokio::test]
-async fn pre_cancelled_attribute_mutation_accesses_no_backend() -> Result<(), Box<dyn std::error::Error>>
-{
+async fn pre_cancelled_attribute_mutation_accesses_no_backend()
+-> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = put(&store, &AttributePage::Leaf(vec![entry(1, 1, 1)?]), 8).await?;
     let cancellation = CancellationToken::new();
@@ -220,7 +235,8 @@ async fn pre_cancelled_attribute_mutation_accesses_no_backend() -> Result<(), Bo
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ).await
+    )
+    .await
     .err()
     .ok_or("cancelled attribute mutation unexpectedly succeeded")?;
     assert!(matches!(
@@ -269,7 +285,8 @@ async fn attribute_pages_split_on_bytes_before_item_count() -> Result<(), Box<dy
     }?
     .value;
     assert!(root_bytes.len() <= 175);
-    let AttributePage::Internal(children) = decode_attribute_page(&root_bytes, limits, &mut |_| {
+    let AttributePage::Internal(children) =
+        decode_attribute_page(&root_bytes, limits, &mut |_| {
             Ok::<_, crate::kernel::CanonicalDecodeError>(())
         })?
     else {
@@ -300,15 +317,14 @@ async fn attribute_pages_split_on_bytes_before_item_count() -> Result<(), Box<dy
 }
 
 #[tokio::test]
-async fn oversized_attribute_item_rejects_before_writes()
--> Result<(), Box<dyn std::error::Error>> {
+async fn oversized_attribute_item_rejects_before_writes() -> Result<(), Box<dyn std::error::Error>>
+{
     let store = MemoryObjectStore::default();
     let root = put(&store, &AttributePage::Leaf(Vec::new()), 8).await?;
     let failure = apply_attribute_mutations(
         &store,
         root,
-        vec![
-            AttributeMutation::Insert(entry(1, 40, 1)?)],
+        vec![AttributeMutation::Insert(entry(1, 40, 1)?)],
         1,
         DecodeLimits {
             maximum_page_bytes: 99,
@@ -317,7 +333,8 @@ async fn oversized_attribute_item_rejects_before_writes()
         },
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await
+    )
+    .await
     .err()
     .ok_or("oversized attribute item unexpectedly succeeded")?;
     assert!(matches!(
@@ -411,6 +428,9 @@ fn mutation_validation_and_current_state_matrix_is_total() -> Result<(), Box<dyn
         Err(AttributeMutationError::StateConflict)
     ));
     current = Some(entry(1, 1, 1)?);
-    assert_eq!(replace.replacement(current.as_ref())?.cloned(), Some(entry(1, 1, 2)?));
+    assert_eq!(
+        replace.replacement(current.as_ref())?.cloned(),
+        Some(entry(1, 1, 2)?)
+    );
     Ok(())
 }

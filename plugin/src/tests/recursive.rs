@@ -86,13 +86,28 @@ fn recursive_publication_is_direct_parent_only() {
             .await
             .unwrap();
         assert_eq!(
-            grandchild.read("/base.txt", 32, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.unwrap().value.as_ref(),
+            grandchild
+                .read(
+                    "/base.txt",
+                    32,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new()
+                )
+                .await
+                .unwrap()
+                .value
+                .as_ref(),
             b"late parent"
         );
         let mut transaction = grandchild
-            .begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .begin_transaction(
+                IdempotencyKey::new(),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
             .await
-            .unwrap().value;
+            .unwrap()
+            .value;
         transaction
             .write_text("/nested.txt", "nested")
             .await
@@ -232,9 +247,14 @@ fn multi_root_publication_reopens_the_same_routes() {
                 .await
                 .unwrap();
             let mut transaction = workspace
-                .begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .begin_transaction(
+                    IdempotencyKey::new(),
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
                 .await
-                .unwrap().value;
+                .unwrap()
+                .value;
             transaction
                 .write_text("/child.txt", &root.mount_name())
                 .await

@@ -91,15 +91,15 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                         })?;
                     }
                     if let Some(staged) = index.objects.get(&id)
-                        && !index.drained.contains(&id) {
-                            if count != 0
-                                && bytes.saturating_add(staged.length()) > MAXIMUM_DRAIN_BYTES
-                            {
-                                break;
-                            }
-                            bytes = bytes.saturating_add(staged.length());
-                            count += 1;
+                        && !index.drained.contains(&id)
+                    {
+                        if count != 0 && bytes.saturating_add(staged.length()) > MAXIMUM_DRAIN_BYTES
+                        {
+                            break;
                         }
+                        bytes = bytes.saturating_add(staged.length());
+                        count += 1;
+                    }
                     end += 1;
                 }
             }

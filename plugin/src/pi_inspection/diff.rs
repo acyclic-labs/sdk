@@ -74,9 +74,7 @@ pub(crate) async fn diff_native(
         .into_iter()
         .flat_map(|(page, _)| &page.entries)
     {
-        let (name, mut name_custody) = entry
-            .name
-            .unicode_text(work, cancellation)?;
+        let (name, mut name_custody) = entry.name.unicode_text(work, cancellation)?;
         let path = if directory.is_empty() {
             work.display(&format_args!("{name}"))?
         } else {

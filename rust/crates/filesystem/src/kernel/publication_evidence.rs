@@ -72,7 +72,9 @@ pub fn encode_generation_publication_evidence(
         return Err(PublicationEvidenceError::TooLarge);
     }
     let (root_id, generation_id) = generation_root_id(&proof.root)?;
-    let published = decode_published_generation(&append.commit.payload, maximum_bytes, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+    let published = decode_published_generation(&append.commit.payload, maximum_bytes, |_| {
+        Ok::<_, crate::kernel::CanonicalDecodeError>(())
+    })?;
     if request.authority_id != super::volume_authority_id(request.volume_id)
         || request.authority_id != append.authority_id
         || request.epoch != append.epoch
@@ -94,9 +96,18 @@ pub fn encode_generation_publication_evidence(
         objects: proof.objects.clone(),
         file_count: proof.file_count,
     })?;
-    let root = encode_generation_root(&proof.root, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
+    let root = encode_generation_root(
+        &proof.root,
+        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+        |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+    )?;
     encode_original_fields(
-        request, append, &manifest, &root, proof.logical_file_bytes, maximum_bytes,
+        request,
+        append,
+        &manifest,
+        &root,
+        proof.logical_file_bytes,
+        maximum_bytes,
     )
 }
 
@@ -138,7 +149,13 @@ fn encode_original_fields(
     if capacity > maximum {
         return Err(PublicationEvidenceError::TooLarge);
     }
-    let mut encoder = Encoder::with_exact_capacity(DOMAIN, 1, capacity, |_| Ok::<_, CanonicalDecodeError>(()), |_| CanonicalDecodeError::AllocationFailed)?;
+    let mut encoder = Encoder::with_exact_capacity(
+        DOMAIN,
+        1,
+        capacity,
+        |_| Ok::<_, CanonicalDecodeError>(()),
+        |_| CanonicalDecodeError::AllocationFailed,
+    )?;
     encoder.fixed(&request.authority_id.into_bytes());
     encoder.u64(request.epoch.get());
     encoder.u64(request.expected.epoch.get());
@@ -174,30 +191,63 @@ pub fn decode_generation_publication_evidence(
     if <[u8; 32]>::from(Sha256::digest(bytes)) != *expected_sha256 {
         return Err(PublicationEvidenceError::Mismatch);
     }
-    let mut decoder = Decoder::new(bytes, b"acyclic-fs-generation-publication-evidence-v1\0", 1, maximum_bytes, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+    let mut decoder = Decoder::new(
+        bytes,
+        b"acyclic-fs-generation-publication-evidence-v1\0",
+        1,
+        maximum_bytes,
+        &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+    )?;
     let epoch = |value| Epoch::new(value).map_err(|_| PublicationEvidenceError::Mismatch);
-    let authority_id = AuthorityId::from_bytes(decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?);
-    let writer_epoch = epoch(decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?)?;
+    let authority_id = AuthorityId::from_bytes(
+        decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+    );
+    let writer_epoch =
+        epoch(decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?)?;
     let expected = Head {
         epoch: epoch(decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?)?,
-        sequence: Sequence::new(decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?),
-        digest: Digest::from_bytes(decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?),
+        sequence: Sequence::new(
+            decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+        ),
+        digest: Digest::from_bytes(
+            decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+        ),
     };
-    let operation_id = OperationId::from_bytes(decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?);
-    let fingerprint = Digest::from_bytes(decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?);
-    let volume_id = VolumeId::from_bytes(decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?);
-    let logical_file_bytes = u128::from_le_bytes(decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?);
+    let operation_id = OperationId::from_bytes(
+        decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+    );
+    let fingerprint = Digest::from_bytes(
+        decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+    );
+    let volume_id = VolumeId::from_bytes(
+        decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+    );
+    let logical_file_bytes = u128::from_le_bytes(
+        decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+    );
     let field_bound = u32::try_from(maximum_bytes).unwrap_or(u32::MAX);
-    let manifest_bytes = decoder.bounded_slice(field_bound, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+    let manifest_bytes = decoder.bounded_slice(field_bound, &mut |_| {
+        Ok::<_, crate::kernel::CanonicalDecodeError>(())
+    })?;
     let manifest =
         super::decode_generation_export_manifest(manifest_bytes, maximum_bytes, maximum_objects)?;
-    let root_bytes = decoder.bounded_slice(field_bound, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
-    let root = super::decode_generation_root(root_bytes, super::DecodeLimits {
+    let root_bytes = decoder.bounded_slice(field_bound, &mut |_| {
+        Ok::<_, crate::kernel::CanonicalDecodeError>(())
+    })?;
+    let root = super::decode_generation_root(
+        root_bytes,
+        super::DecodeLimits {
             maximum_object_bytes: maximum_bytes,
             ..super::DecodeLimits::default()
-        }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
-    let payload = Bytes::copy_from_slice(decoder.bounded_slice(field_bound, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?);
-    let permit_bytes = decoder.bounded_slice(field_bound, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+        },
+        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+    )?;
+    let payload = Bytes::copy_from_slice(decoder.bounded_slice(field_bound, &mut |_| {
+        Ok::<_, crate::kernel::CanonicalDecodeError>(())
+    })?);
+    let permit_bytes = decoder.bounded_slice(field_bound, &mut |_| {
+        Ok::<_, crate::kernel::CanonicalDecodeError>(())
+    })?;
     decoder.finish()?;
     let permit = decode_publication_permit(permit_bytes, maximum_bytes)?;
     let request = PublishGenerationRequest {
@@ -220,7 +270,9 @@ pub fn decode_generation_publication_evidence(
         permit,
     };
     let (root_id, generation_id) = generation_root_id(&root)?;
-    let published = decode_published_generation(&append.commit.payload, maximum_bytes, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+    let published = decode_published_generation(&append.commit.payload, maximum_bytes, |_| {
+        Ok::<_, crate::kernel::CanonicalDecodeError>(())
+    })?;
     if request.authority_id != super::volume_authority_id(volume_id)
         || root.volume_id != volume_id
         || manifest.volume_id != volume_id
@@ -232,10 +284,18 @@ pub fn decode_generation_publication_evidence(
         return Err(PublicationEvidenceError::Mismatch);
     }
     let canonical_manifest = encode_generation_export_manifest(&manifest)?;
-    let canonical_root = encode_generation_root(&root, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
+    let canonical_root = encode_generation_root(
+        &root,
+        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+        |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+    )?;
     let canonical = encode_original_fields(
-        &request, &append, &canonical_manifest, &canonical_root,
-        logical_file_bytes, maximum_bytes,
+        &request,
+        &append,
+        &canonical_manifest,
+        &canonical_root,
+        logical_file_bytes,
+        maximum_bytes,
     )?;
     if canonical.bytes.as_ref() != bytes {
         return Err(PublicationEvidenceError::Mismatch);
@@ -288,22 +348,39 @@ pub(super) fn decode_publication_permit(
     use super::codec::Decoder;
     use crate::foundation::{Digest, Epoch, Head, Sequence};
     let epoch = |value| Epoch::new(value).map_err(|_| PublicationEvidenceError::Mismatch);
-    let mut permission = Decoder::new(permit_bytes, b"acyclic-fs-publication-permit-v1\0", 1, maximum_bytes, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+    let mut permission = Decoder::new(
+        permit_bytes,
+        b"acyclic-fs-publication-permit-v1\0",
+        1,
+        maximum_bytes,
+        &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+    )?;
     let permit = match permission.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? {
         0 => PublicationPermit::Unrestricted,
         1 => PublicationPermit::Lease {
-            authority_id: permission.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-            workspace_id: permission.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-            lease_id: permission.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-            expires_at_millis: permission.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+            authority_id: permission
+                .fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+            workspace_id: permission
+                .fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+            lease_id: permission
+                .fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+            expires_at_millis: permission
+                .u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
         },
         2 => PublicationPermit::Reservation {
-            operation_id: permission.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+            operation_id: permission
+                .fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
             gate_tail: permission.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
             expected: Head {
-                epoch: epoch(permission.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?)?,
-                sequence: Sequence::new(permission.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?),
-                digest: Digest::from_bytes(permission.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?),
+                epoch: epoch(
+                    permission.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+                )?,
+                sequence: Sequence::new(
+                    permission.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+                ),
+                digest: Digest::from_bytes(
+                    permission.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+                ),
             },
         },
         _ => return Err(PublicationEvidenceError::Mismatch),

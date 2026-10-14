@@ -266,10 +266,7 @@ fn compatibility_in(value: CompatibilityIn) -> Result<CompatibilityPolicy, JsVal
     match value {
         CompatibilityIn::BestEffort {} => Ok(CompatibilityPolicy::BestEffort),
         CompatibilityIn::Require { capabilities } => {
-            let values = capabilities
-                .iter()
-                .map(capability)
-                .collect::<BTreeSet<_>>();
+            let values = capabilities.iter().map(capability).collect::<BTreeSet<_>>();
             if values.len() != capabilities.len() {
                 return Err(err("capability set contains duplicates"));
             }
@@ -1060,7 +1057,9 @@ mod tests {
     fn public_digest_is_strict_and_lowercase() {
         let value = "AB".repeat(32);
         assert!(digest(&value, "digestHex").is_ok());
-        let ImageOut::ManagedOci { digest_hex } = image_out(&Image::managed([0xab; 32]).expect("valid digest")) else {
+        let ImageOut::ManagedOci { digest_hex } =
+            image_out(&Image::managed([0xab; 32]).expect("valid digest"))
+        else {
             unreachable!()
         };
         assert_eq!(digest_hex, "ab".repeat(32));

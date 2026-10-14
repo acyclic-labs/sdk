@@ -65,10 +65,7 @@ pub trait ResourceCreationProvider: acyclic_stream::ProviderPlatform {
     fn root_bootstrap_sources(
         &self,
         _operation: OperationId,
-    ) -> [Option<(
-        &TaskVolumeSnapshot,
-        &crate::store::VerifiedRootBinding,
-    )>; 2] {
+    ) -> [Option<(&TaskVolumeSnapshot, &crate::store::VerifiedRootBinding)>; 2] {
         [None, None]
     }
     /// Authenticates original ROOT content on the original native ledger.

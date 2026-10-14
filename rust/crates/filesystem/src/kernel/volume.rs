@@ -1,12 +1,13 @@
 //! Canonical volume-creation facts and deterministic authority ownership.
 
-use super::codec::{CanonicalDecodeError, Decoder, Encoder, ReadAllocationStep, EncodeWorkStep};
+use super::codec::{CanonicalDecodeError, Decoder, EncodeWorkStep, Encoder, ReadAllocationStep};
 
-use crate::{WorkCounters};
+use crate::WorkCounters;
 use crate::foundation::{AuthorityId, Digest, VolumeId};
 use crate::model::{
     CaseSensitivity, ConcurrencyMode, FilesystemProfile, Lifecycle, UnicodePolicy, VolumeConfig,
-    VolumeConfigError, VolumeLimits};
+    VolumeConfigError, VolumeLimits,
+};
 use crate::storage::{ObjectId, ObjectKind};
 use thiserror::Error;
 
@@ -67,34 +68,47 @@ where
 {
     observe(EncodeWorkStep::Check)?;
     validate_volume_created(value).map_err(E::from)?;
-    let item = WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED };
+    let item = WorkCounters {
+        items_examined: 1,
+        ..WorkCounters::UNCHARGED
+    };
     observe(EncodeWorkStep::Admit(item))?;
     observe(EncodeWorkStep::Completed(item))?;
     let length = DOMAIN.len() + 2 + 16 + CONFIG_ENCODED_BYTES + 1 + 32;
     observe(EncodeWorkStep::Admit(WorkCounters {
-        bytes_encoded: length as u64, bytes_copied: 48, ..WorkCounters::UNCHARGED
+        bytes_encoded: length as u64,
+        bytes_copied: 48,
+        ..WorkCounters::UNCHARGED
     }))?;
     observe(EncodeWorkStep::Check)?;
     let mut encoder = Encoder::with_exact_capacity(
-        DOMAIN, VERSION, length,
+        DOMAIN,
+        VERSION,
+        length,
         |step| observe(EncodeWorkStep::Allocation(step)),
         allocation_error,
     )?;
     encoder.fixed(&value.volume_id.into_bytes());
     observe(EncodeWorkStep::Completed(WorkCounters {
-        bytes_encoded: 16, bytes_copied: 16, ..WorkCounters::UNCHARGED
+        bytes_encoded: 16,
+        bytes_copied: 16,
+        ..WorkCounters::UNCHARGED
     }))?;
     encode_config(&mut encoder, value.config);
     observe(EncodeWorkStep::Completed(WorkCounters {
-        bytes_encoded: CONFIG_ENCODED_BYTES as u64, ..WorkCounters::UNCHARGED
+        bytes_encoded: CONFIG_ENCODED_BYTES as u64,
+        ..WorkCounters::UNCHARGED
     }))?;
     encoder.u8(value.initial_generation_root.kind.canonical_tag());
     observe(EncodeWorkStep::Completed(WorkCounters {
-        bytes_encoded: 1, ..WorkCounters::UNCHARGED
+        bytes_encoded: 1,
+        ..WorkCounters::UNCHARGED
     }))?;
     encoder.fixed(value.initial_generation_root.digest.as_bytes());
     observe(EncodeWorkStep::Completed(WorkCounters {
-        bytes_encoded: 32, bytes_copied: 32, ..WorkCounters::UNCHARGED
+        bytes_encoded: 32,
+        bytes_copied: 32,
+        ..WorkCounters::UNCHARGED
     }))?;
     Ok(encoder.finish())
 }
@@ -110,8 +124,10 @@ where
 {
     let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, maximum_payload_bytes, observe)?;
     let volume_id = VolumeId::from_bytes(decoder.fixed::<16, E>(observe)?);
-    let config = decode_config(&mut decoder, observe)?.validate()
-        .map_err(VolumeCreatedError::from).map_err(E::from)?;
+    let config = decode_config(&mut decoder, observe)?
+        .validate()
+        .map_err(VolumeCreatedError::from)
+        .map_err(E::from)?;
     let kind = ObjectKind::from_canonical_tag(decoder.u8(observe)?)
         .map_err(|_| invariant("unknown initial-generation object kind"))?;
     if kind != ObjectKind::GenerationRoot {
@@ -208,8 +224,8 @@ pub(crate) fn decode_config<E: From<CanonicalDecodeError>>(
     let sparse_files = decode_bool(decoder.u8(observe)?)?;
     let maximum_path_bytes = decoder.u32(observe)?;
     let maximum_component_bytes = decoder.u32(observe)?;
-    let maximum_path_depth =
-        u16::try_from(decoder.u32(observe)?).map_err(|_| invariant("maximum path depth exceeds u16"))?;
+    let maximum_path_depth = u16::try_from(decoder.u32(observe)?)
+        .map_err(|_| invariant("maximum path depth exceeds u16"))?;
     Ok(VolumeConfig {
         profile,
         concurrency,

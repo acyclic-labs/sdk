@@ -82,10 +82,8 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore + 'static, O: AsyncObject
         .authorized_source
         .as_ref()
         .map(|authorization| {
-            crate::executor::with_history_io(io, |work| {
-                authorization.copy(work)
-            })
-            .map(|(authorization, _)| authorization)
+            crate::executor::with_history_io(io, |work| authorization.copy(work))
+                .map(|(authorization, _)| authorization)
         })
         .transpose()?;
     let request = ResourcePreparationRequest {

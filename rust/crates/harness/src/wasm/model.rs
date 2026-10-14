@@ -84,8 +84,8 @@ pub fn encode_model_prefix(
 pub fn prepare_model_request(request: JsValue, limits: JsValue) -> Result<Vec<u8>, JsValue> {
     let input: WasmModelRequestInput = from_js(request)?;
     let request = input.into();
-    let prepared =
-        crate::model::PreparedModelRequest::prepare(request, from_js(limits)?, None).map_err(js_error)?;
+    let prepared = crate::model::PreparedModelRequest::prepare(request, from_js(limits)?, None)
+        .map_err(js_error)?;
     Ok(prepared.bytes().to_vec())
 }
 
@@ -121,8 +121,8 @@ pub fn validate_model_token_count(
     limits: JsValue,
 ) -> Result<u64, JsValue> {
     let request: crate::model::ModelRequest = from_js(request)?;
-    let prepared =
-        crate::model::PreparedModelRequest::prepare(request, from_js(limits)?, None).map_err(js_error)?;
+    let prepared = crate::model::PreparedModelRequest::prepare(request, from_js(limits)?, None)
+        .map_err(js_error)?;
     let count: crate::context::ModelTokenCount = from_js(count)?;
     count.validate(&prepared, &mut None).map_err(js_error)
 }
@@ -155,7 +155,10 @@ pub fn validate_model_messages(
         return Err(JsValue::from_str("model context count is invalid"));
     }
     for message in messages {
-        message.content.validate_limits(limits, &mut None).map_err(js_error)?;
+        message
+            .content
+            .validate_limits(limits, &mut None)
+            .map_err(js_error)?;
     }
     Ok(())
 }
@@ -254,10 +257,7 @@ pub fn admit_model_event(
         completed: admission.completed,
         text_bytes,
     };
-    let output = WasmModelEventAdmission {
-        event,
-        state,
-    };
+    let output = WasmModelEventAdmission { event, state };
     let js = to_js(&output)?;
     let js_state = js_sys::Reflect::get(&js, &JsValue::from_str("state"))?;
     set_js_field(

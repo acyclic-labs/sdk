@@ -84,7 +84,12 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             }
             for held in collection.held() {
                 match held {
-                    crate::collection::Held::Checkout { base, working, config, .. } => {
+                    crate::collection::Held::Checkout {
+                        base,
+                        working,
+                        config,
+                        ..
+                    } => {
                         marker.set_limits(DecodeLimits::for_volume(config));
                         marker
                             .generation(GenerationId::new(base.digest))
