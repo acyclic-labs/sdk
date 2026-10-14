@@ -604,10 +604,9 @@ async fn every_lost_ack_reconciles_original_resources_or_cancellation() {
                     .cancel(fixture.request.binding.task_id)
                     .await
                     .unwrap();
-                reopened.cancel();
             }
             let observed = reopened
-                .reconcile_native(dispatch.attempt_id, &fixture.startup)
+                .reconcile_with_native_work(dispatch.attempt_id, &fixture.startup).unwrap()
                 .await
                 .unwrap();
             assert_eq!(observed.is_some(), !cancelled || matches!(boundary, 2 | 4));
@@ -627,7 +626,7 @@ async fn every_lost_ack_reconciles_original_resources_or_cancellation() {
                 }
                 assert_eq!(
                     reopened
-                        .reconcile_native(dispatch.attempt_id, &fixture.startup)
+                        .reconcile_with_native_work(dispatch.attempt_id, &fixture.startup).unwrap()
                         .await
                         .unwrap()
                         .unwrap()
@@ -645,7 +644,7 @@ async fn every_lost_ack_reconciles_original_resources_or_cancellation() {
                 );
                 assert!(
                     reopened
-                        .dispatch_native(dispatch.clone(), &fixture.startup)
+                        .dispatch_with_native_work(dispatch.clone(), &fixture.startup).unwrap()
                         .await
                         .is_err()
                 );
@@ -680,7 +679,7 @@ async fn recovery_rejects_foreign_dispatch_and_replaced_native_identity() {
         assert!(
             fixture
                 .provider
-                .dispatch_native(forged, &fixture.startup)
+                .dispatch_with_native_work(forged, &fixture.startup).unwrap()
                 .await
                 .is_err()
         );
@@ -688,7 +687,7 @@ async fn recovery_rejects_foreign_dispatch_and_replaced_native_identity() {
     assert!(
         fixture
             .provider
-            .reconcile_native(EffectAttemptId::from_bytes([119; 16]), &fixture.startup)
+            .reconcile_with_native_work(EffectAttemptId::from_bytes([119; 16]), &fixture.startup).unwrap()
             .await
             .is_err()
     );
@@ -698,7 +697,7 @@ async fn recovery_rejects_foreign_dispatch_and_replaced_native_identity() {
     assert!(
         fixture
             .provider
-            .reconcile_native(original.attempt_id, &fixture.startup)
+            .reconcile_with_native_work(original.attempt_id, &fixture.startup).unwrap()
             .await
             .is_err()
     );
@@ -750,7 +749,7 @@ async fn partial_creation_requires_original_source_intent_and_operation() {
             .unwrap();
         let reopened = fixture.reopen().await;
         let recovered = reopened
-            .reconcile_native(dispatch.attempt_id, &fixture.startup)
+            .reconcile_with_native_work(dispatch.attempt_id, &fixture.startup).unwrap()
             .await;
         if boundary == 3 {
             assert!(recovered.is_err());
@@ -824,7 +823,7 @@ async fn partial_creation_requires_original_source_intent_and_operation() {
     assert!(
         fixture
             .provider
-            .reconcile_native(dispatch.attempt_id, &fixture.startup)
+            .reconcile_with_native_work(dispatch.attempt_id, &fixture.startup).unwrap()
             .await
             .is_err()
     );
@@ -924,7 +923,7 @@ async fn root_proofs_reject_foreign_resources_and_exhausted_work() {
     assert!(
         substituted
             .provider
-            .reconcile_native(dispatch.attempt_id, &substituted.startup)
+            .reconcile_with_native_work(dispatch.attempt_id, &substituted.startup).unwrap()
             .await
             .is_err()
     );
@@ -972,7 +971,7 @@ async fn conversation_and_unsettled_scratch_cannot_authorize_creation() {
             assert!(
                 fixture
                     .provider
-                    .reconcile_native(dispatch.attempt_id, &fixture.startup)
+                    .reconcile_with_native_work(dispatch.attempt_id, &fixture.startup).unwrap()
                     .await
                     .is_err()
             );
@@ -1076,7 +1075,13 @@ async fn exhausted_or_cancelled_allocation_never_creates_selected_workspaces() {
             payload.resize(usize::try_from(bytes).unwrap(), 0);
         } else {
             custody = None;
-            fixture.provider.cancel();
+            fixture
+                .runtime
+                .runtime
+                .task_host()
+                .cancel(fixture.owner.policy().root_task)
+                .await
+                .unwrap();
         }
         let result = fixture.execute().await;
         assert!(result.is_err() || matches!(result.unwrap().0, EffectStatus::Indeterminate));
@@ -1167,7 +1172,7 @@ async fn output_replay_uses_original_content_after_mutable_path_replacement() {
         .unwrap();
     let reopened = fixture.reopen().await;
     let result = reopened
-        .reconcile_native(dispatch.attempt_id, &fixture.startup)
+        .reconcile_with_native_work(dispatch.attempt_id, &fixture.startup).unwrap()
         .await
         .unwrap()
         .unwrap();
@@ -1179,7 +1184,7 @@ async fn output_replay_uses_original_content_after_mutable_path_replacement() {
     );
     assert_eq!(
         reopened
-            .dispatch_native(dispatch.clone(), &fixture.startup)
+            .dispatch_with_native_work(dispatch.clone(), &fixture.startup).unwrap()
             .await
             .unwrap()
             .0
@@ -1189,7 +1194,7 @@ async fn output_replay_uses_original_content_after_mutable_path_replacement() {
     assert_eq!(
         fixture
             .provider
-            .dispatch_native(dispatch, &fixture.startup)
+            .dispatch_with_native_work(dispatch, &fixture.startup).unwrap()
             .await
             .unwrap()
             .0

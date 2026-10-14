@@ -1,196 +1,13 @@
-//! Dispatch and reconciliation of the original allocation effect.
+//! Original root effect authentication, dispatch and reconciliation.
 use super::*;
 use acyclic_harness::filesystem::PreparationIo;
 
-pub(crate) async fn root_effect(
-    owner: &PiOwnerConfig,
-    stream: &Arc<LocalStream>,
-    effect: EffectId,
-    work: &NativeMaterializationWork,
-) -> Result<Option<(EffectState, NativeAllocation)>> {
-    let verifier = owner.effect_verifier_with_native_work(work)?;
-    let mut reader_io =
-        acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
-    let reader = HistoryReader::new(
-        stream,
-        verifier.0.audience(),
-        &verifier.0,
-        &mut Some(&mut reader_io),
-    )?;
-    let cursor = reader.pin(0, Some(&mut reader_io)).await?;
-    let mut io = acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
-    let value = reader
-        .effect(
-            &cursor,
-            effect,
-            HistoryReadLimits {
-                maximum_events: owner.policy().limits.context_messages.try_into().map_err(
-                    |_| {
-                        PiRootProvider::native_failure(
-                            "root history event limit exceeds the SDK count",
-                        )
-                    },
-                )?,
-                maximum_bytes: owner
-                    .policy()
-                    .maximum_payload_bytes
-                    .min(crate::MAXIMUM_ADAPTER_STATE_BYTES),
-            },
-            Some(&mut io),
-        )
-        .await?;
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    Ok(Some((value.0, io.into_custody()?)))
-}
-
 impl PiRootProvider {
-    pub(crate) async fn dispatch_native(
-        &self,
-        request: EffectDispatch,
-        work: &NativeMaterializationWork,
-    ) -> Result<(EffectObservation, NativeAllocation)> {
-        self.check_native_ledger(work)?;
-        self.require_native_creation()?;
-        let mut state = self.state.lock().await;
-        let original = self
-            .authenticate_with_native_work(request.attempt_id, work)
-            .await?
-            .ok_or_else(|| Self::native_failure("original root effect is absent"))?;
-        let effect = self.effect_id_with_native_work(work)?;
-        if request.effect_id != effect
-            || request.provider != original.0.provider
-            || request.effect_kind != original.0.effect_kind
-            || request.request != original.0.request
-            || request.guarantee != original.0.guarantee
-            || request.request_digest != original.0.request_digest
-        {
-            return Err(Self::native_failure(
-                "root dispatch differs from original durable attempt",
-            ));
-        }
-        self.execution_owner()?
-            .verify(
-                false,
-                &mut Some(&mut &PreparationIo::from_native_work(work)?),
-            )
-            .await?;
-        if let Some(observation) = self
-            .observe_result_with_native_work(effect, request.attempt_id, &original.0, false, work)
-            .await?
-        {
-            state.dispatched = true;
-            return Ok(observation);
-        }
-        if state.dispatched {
-            return Err(Self::native_failure(
-                "original root dispatch remains indeterminate",
-            ));
-        }
-        state.dispatched = true;
-        self.allocate_with_native_work(effect, request.attempt_id, &original.0, &mut state, work)
-            .await
-    }
-
-    pub(crate) async fn reconcile_native(
-        &self,
-        attempt: EffectAttemptId,
-        work: &NativeMaterializationWork,
-    ) -> Result<Option<(EffectObservation, NativeAllocation)>> {
-        self.check_native_ledger(work)?;
-        let mut state = self.state.lock().await;
-        self.execution_owner()?
-            .verify(
-                true,
-                &mut Some(&mut &PreparationIo::from_native_work(work)?),
-            )
-            .await?;
-        let original = self
-            .authenticate_with_native_work(attempt, work)
-            .await?
-            .ok_or_else(|| Self::native_failure("original root effect is absent"))?;
-        let effect = self.effect_id_with_native_work(work)?;
-        if let Some(observation) = self
-            .observe_result_with_native_work(effect, attempt, &original.0, true, work)
-            .await?
-        {
-            return Ok(Some(observation));
-        }
-        if self
-            .creation_cancelled
-            .load(std::sync::atomic::Ordering::SeqCst)
-        {
-            return Ok(None);
-        }
-        match self
-            .execution_owner()?
-            .verify(
-                false,
-                &mut Some(&mut &PreparationIo::from_native_work(work)?),
-            )
-            .await
-        {
-            Ok(()) => {
-                state.dispatched = true;
-                self.allocate_with_native_work(effect, attempt, &original.0, &mut state, work)
-                    .await
-                    .map(Some)
-            }
-            Err(
-                Error::Conflict(_)
-                | Error::NativeBoundary {
-                    code: ErrorCode::Conflict,
-                    ..
-                },
-            ) => Ok(None),
-            Err(error) => Err(error),
-        }
-    }
-
-    #[cfg(test)]
-    pub(super) fn test_fault_native(&self, phase: &'static str) -> Result<()> {
-        let code = match phase {
-            "after-root-creation" => 1,
-            "before-result-stage" => 2,
-            "before-attachments-stage" => 3,
-            "after-result-stage" => 4,
-            "after-conversation-bind" => 5,
-            _ => unreachable!(),
-        };
-        if self
-            .fault
-            .compare_exchange(
-                code,
-                0,
-                std::sync::atomic::Ordering::SeqCst,
-                std::sync::atomic::Ordering::SeqCst,
-            )
-            .is_ok()
-        {
-            return Err(Error::NativeBoundary {
-                code: ErrorCode::Storage,
-                reason: phase,
-            });
-        }
-        Ok(())
-    }
-
     pub(super) fn native_failure(reason: &'static str) -> Error {
         Error::NativeBoundary {
             code: ErrorCode::Unauthorized,
             reason,
         }
-    }
-
-    pub(super) fn require_native_creation(&self) -> Result<()> {
-        if self
-            .creation_cancelled
-            .load(std::sync::atomic::Ordering::SeqCst)
-        {
-            return Err(Self::native_failure("original root creator is cancelled"));
-        }
-        Ok(())
     }
 
     pub(super) fn validate_attachment(&self, input: &(SourceReference, [u8; 16])) -> Result<()> {
@@ -204,13 +21,11 @@ impl PiRootProvider {
 
     pub(super) fn check_native_ledger(&self, work: &NativeMaterializationWork) -> Result<()> {
         if !self.original.shares_ledger(work) {
-            return Err(Error::NativeBoundary {
-                code: ErrorCode::Unauthorized,
-                reason: "root allocation must use its original request ledger",
-            });
+            return Err(Self::native_failure(
+                "root allocation must use its original request ledger",
+            ));
         }
-        work.admit(WorkCounters::UNCHARGED)
-            .map_err(acyclic_harness::Error::from)
+        work.admit(WorkCounters::UNCHARGED).map_err(Error::from)
     }
 
     pub(super) fn artifact_with_native_work(
@@ -231,16 +46,15 @@ impl PiRootProvider {
                 reason: "root allocation artifact exceeds original path limit",
             });
         }
-        let (value, custody) = work.display(&format_args!(
+        let (key, custody) = work.display(&format_args!(
             "acyclic.pi/root-allocation/{}/{}/{effect}/{attempt}/{name}",
             self.owner.policy().root_task,
             self.preparation.command.operation_id
         ))?;
-        let key = (IdempotencyKey::new(value)?, custody);
         Ok(NativeInputCoordinates {
             path,
             display_name,
-            key,
+            key: (IdempotencyKey::new(key)?, custody),
         })
     }
 
@@ -251,13 +65,10 @@ impl PiRootProvider {
         name: &str,
         work: &NativeMaterializationWork,
     ) -> Result<Option<(FileRef, NativeAllocation)>> {
-        let coordinates = self.artifact_with_native_work(effect, attempt, name, work)?;
-        let grant = inputs::pi_input_write_grant_with_native_work(&self.owner, work)?;
         observe_pi_input_at(
             &self.owner,
             &self.filesystem,
-            &grant.0,
-            coordinates,
+            self.artifact_with_native_work(effect, attempt, name, work)?,
             "application/json",
             work,
         )
@@ -272,13 +83,12 @@ impl PiRootProvider {
         value: &(impl Serialize + Sync),
         work: &NativeMaterializationWork,
     ) -> Result<(FileRef, NativeAllocation)> {
-        let coordinates = self.artifact_with_native_work(effect, attempt, name, work)?;
         publish_pi_input_with_native_coordinates(
             &self.owner,
             &self.filesystem,
             value,
             "application/json",
-            coordinates,
+            self.artifact_with_native_work(effect, attempt, name, work)?,
             work,
         )
         .await
@@ -289,25 +99,52 @@ impl PiRootProvider {
         reference: &FileRef,
         work: &NativeMaterializationWork,
     ) -> Result<(T, NativeAllocation)> {
-        read_root_artifact_with_native_work(
-            &self.owner,
-            self.preparation.context.as_ref(),
-            reference,
-            work,
-        )
-        .await
+        read_root_artifact_with_native_work(&self.owner, &self.preparation.context, reference, work)
+            .await
     }
 
     pub(super) async fn authenticate_with_native_work(
         &self,
         attempt: EffectAttemptId,
+        require_success: bool,
         work: &NativeMaterializationWork,
-    ) -> Result<Option<(EffectState, NativeAllocation)>> {
+    ) -> Result<(EffectState, NativeAllocation)> {
         self.check_native_ledger(work)?;
         let effect = self.effect_id_with_native_work(work)?;
-        let Some(state) = root_effect(&self.owner, &self.stream, effect, work).await? else {
-            return Ok(None);
-        };
+        let verifier = self.owner.effect_verifier_with_native_work(work)?;
+        let mut reader_io =
+            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
+        let reader = HistoryReader::new(
+            &self.stream,
+            verifier.0.audience(),
+            &verifier.0,
+            &mut Some(&mut reader_io),
+        )?;
+        let cursor = reader.pin(0, Some(&mut reader_io)).await?;
+        let mut io =
+            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
+        let state = reader
+            .effect(
+                &cursor,
+                effect,
+                HistoryReadLimits {
+                    maximum_events: self
+                        .owner
+                        .policy()
+                        .limits
+                        .context_messages
+                        .try_into()
+                        .map_err(|_| {
+                            Self::native_failure("root history event limit exceeds the SDK count")
+                        })?,
+                    maximum_bytes: self.maximum(),
+                },
+                Some(&mut io),
+            )
+            .await?
+            .ok_or_else(|| Self::native_failure("original root effect is absent"))?
+            .0;
+        let state = (state, io.into_custody()?);
         let plan = &self.preparation.plan;
         if state.0.provider != ROOT_ALLOCATION_PROVIDER
             || state.0.effect_kind != ROOT_ALLOCATION_EFFECT
@@ -321,36 +158,29 @@ impl PiRootProvider {
                     | EffectStatus::Indeterminate
                     | EffectStatus::Succeeded { .. }
             )
+            || (require_success && !matches!(state.0.status, EffectStatus::Succeeded { .. }))
         {
-            return Err(Error::NativeBoundary {
-                code: ErrorCode::Unauthorized,
-                reason: "root effect differs from its original request, schema, provider or attempt",
-            });
+            return Err(Self::native_failure(
+                "root effect differs from its original request, schema, provider or attempt",
+            ));
         }
+        // The preparation loader authenticates its immutable plan, request and schema once.
         if let EffectStatus::Succeeded { result } = &state.0.status {
             let canonical = self
                 .original_artifact_with_native_work(effect, attempt, "result", work)
                 .await?;
             if canonical.as_ref().map(|reference| &reference.0) != Some(result) {
-                return Err(Error::NativeBoundary {
-                    code: ErrorCode::Unauthorized,
-                    reason: "root success differs from its original immutable output operation",
-                });
+                return Err(Self::native_failure(
+                    "root success differs from its original immutable output operation",
+                ));
             }
         }
-        Ok(Some(state))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn cancel(&self) {
-        self.creation_cancelled
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(state)
     }
 
     pub(super) fn execution_owner(&self) -> Result<&TaskJournalOwner<LocalStream>> {
-        self.journal_owner.as_deref().ok_or(Error::NativeBoundary {
-            code: ErrorCode::Unauthorized,
-            reason: "archived root observer cannot dispatch or resume creation",
+        self.journal_owner.as_deref().ok_or_else(|| {
+            Self::native_failure("archived root observer cannot dispatch or resume creation")
         })
     }
 
@@ -381,9 +211,9 @@ impl PiRootProvider {
         effect: EffectId,
         attempt: EffectAttemptId,
         resource: &str,
-        original: &NativeMaterializationWork,
+        work: &NativeMaterializationWork,
     ) -> Result<acyclic_fs::OperationId> {
-        let (bytes, custody) = guarded_pi_bytes(
+        let digest = digest_pi_value(
             &(
                 "acyclic.pi/root-resource/v1",
                 self.owner.policy().root_task,
@@ -393,19 +223,42 @@ impl PiRootProvider {
                 resource,
             ),
             self.maximum(),
-            original,
+            work,
         )?;
-        let bytes = (bytes, custody);
-        original.charge(WorkCounters {
-            bytes_hashed: bytes.0.len() as u64,
-            ..WorkCounters::default()
-        })?;
         let mut id = [0; 16];
-        id.copy_from_slice(&blake3::hash(&bytes.0).as_bytes()[..16]);
-        drop(bytes);
+        id.copy_from_slice(&digest.as_bytes()[..16]);
         Ok(acyclic_fs::OperationId::from_bytes(id))
     }
+
+    #[cfg(test)]
+    pub(super) fn test_fault_native(&self, phase: &'static str) -> Result<()> {
+        let code = match phase {
+            "after-root-creation" => 1,
+            "before-result-stage" => 2,
+            "before-attachments-stage" => 3,
+            "after-result-stage" => 4,
+            "after-conversation-bind" => 5,
+            _ => unreachable!(),
+        };
+        if self
+            .fault
+            .compare_exchange(
+                code,
+                0,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .is_ok()
+        {
+            return Err(Error::NativeBoundary {
+                code: ErrorCode::Storage,
+                reason: phase,
+            });
+        }
+        Ok(())
+    }
 }
+
 impl EffectProvider for PiRootProvider {
     fn id(&self) -> &str {
         ROOT_ALLOCATION_PROVIDER
@@ -450,7 +303,55 @@ impl EffectProvider for PiRootProvider {
     {
         self.check_native_ledger(work)?;
         acyclic_harness::NativeFutureBundle::new(work, || async move {
-            self.dispatch_native(request, work).await
+            let mut state = self.state.lock().await;
+            let original = self
+                .authenticate_with_native_work(request.attempt_id, false, work)
+                .await?;
+            let effect = self.effect_id_with_native_work(work)?;
+            if request.effect_id != effect
+                || request.provider != original.0.provider
+                || request.effect_kind != original.0.effect_kind
+                || request.request != original.0.request
+                || request.guarantee != original.0.guarantee
+                || request.request_digest != original.0.request_digest
+            {
+                return Err(Self::native_failure(
+                    "root dispatch differs from original durable attempt",
+                ));
+            }
+            self.execution_owner()?
+                .verify(
+                    false,
+                    &mut Some(&mut &PreparationIo::from_native_work(work)?),
+                )
+                .await?;
+            if let Some(observation) = self
+                .observe_result_with_native_work(
+                    effect,
+                    request.attempt_id,
+                    &original.0,
+                    false,
+                    work,
+                )
+                .await?
+            {
+                state.dispatched = true;
+                return Ok(observation);
+            }
+            if state.dispatched {
+                return Err(Self::native_failure(
+                    "original root dispatch remains indeterminate",
+                ));
+            }
+            state.dispatched = true;
+            self.allocate_with_native_work(
+                effect,
+                request.attempt_id,
+                &original.0,
+                &mut state,
+                work,
+            )
+            .await
         })
     }
     fn reconcile_with_native_work<'a>(
@@ -462,7 +363,46 @@ impl EffectProvider for PiRootProvider {
     > {
         self.check_native_ledger(work)?;
         acyclic_harness::NativeFutureBundle::new(work, || async move {
-            self.reconcile_native(attempt, work).await
+            let mut state = self.state.lock().await;
+            self.execution_owner()?
+                .verify(
+                    true,
+                    &mut Some(&mut &PreparationIo::from_native_work(work)?),
+                )
+                .await?;
+            let original = self
+                .authenticate_with_native_work(attempt, false, work)
+                .await?;
+            let effect = self.effect_id_with_native_work(work)?;
+            if let Some(observation) = self
+                .observe_result_with_native_work(effect, attempt, &original.0, true, work)
+                .await?
+            {
+                return Ok(Some(observation));
+            }
+            match self
+                .execution_owner()?
+                .verify(
+                    false,
+                    &mut Some(&mut &PreparationIo::from_native_work(work)?),
+                )
+                .await
+            {
+                Ok(()) => {
+                    state.dispatched = true;
+                    self.allocate_with_native_work(effect, attempt, &original.0, &mut state, work)
+                        .await
+                        .map(Some)
+                }
+                Err(
+                    Error::Conflict(_)
+                    | Error::NativeBoundary {
+                        code: ErrorCode::Conflict,
+                        ..
+                    },
+                ) => Ok(None),
+                Err(error) => Err(error),
+            }
         })
     }
     fn supports_guarantee_with_native_work(

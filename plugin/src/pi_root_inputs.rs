@@ -6,7 +6,6 @@ use super::{
 };
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
 use acyclic_harness::filesystem::PreparationIo;
-use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::{
     Error, OperationId, Result, TaskId, conversation::FileRef, core::EffectGuarantee,
     effect_host::TaskEffectPlan, filesystem::EFFECT_TASK_COMMAND_KIND, workflow::WorkflowCommand,
@@ -37,97 +36,71 @@ pub(crate) struct PiRootPreparation {
 
 impl PiRootPreparation {
     /// Authenticates the borrowed service state without reminting root metadata.
-    pub(crate) fn load<'a>(
-        private_root_session: (&'a Path, &'a Path),
-        runtime: &'a super::pi_runtime::PiTaskRuntime,
-        filesystem: &'a crate::pi_native_host::PiNativeFilesystem,
-        binding: &'a PiTaskBinding,
-        origin: super::pi_recovery::PiTaskOrigin<'a>,
+    pub(crate) async fn load(
+        private_root_session: (&Path, &Path),
+        runtime: &super::pi_runtime::PiTaskRuntime,
+        filesystem: &crate::pi_native_host::PiNativeFilesystem,
+        binding: &PiTaskBinding,
+        origin: super::pi_recovery::PiTaskOrigin<'_>,
         context: Option<std::sync::Arc<acyclic_harness::runtime::TaskContext>>,
-        work: &'a NativeMaterializationWork,
-    ) -> impl std::future::Future<Output = Result<Self>> + Send + 'a {
-        async move {
-            let (private_root, session) = private_root_session;
-            work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
-            let owner = PiOwnerConfig::load(private_root, session, work)?;
-            runtime.verify_owner_with_native_work(&owner, work)?;
-            owner.validate_root(binding, work)?;
-            let admitted = {
-                let observed;
-                let original = context
-                    .as_ref()
-                    .map(|context| context.admission(work))
-                    .transpose()?
-                    .flatten();
-                let admission = if let Some(original) = original {
-                    original
-                } else {
-                    observed = runtime
-                        .runtime
-                        .task_host()
-                        .observe_admission_with_native_work(binding.task_id, work)?
-                        .await?;
-                    &observed.0
-                };
-                super::pi_recovery::authenticate_pi_task(
-                    admission,
-                    binding,
-                    origin,
-                    work,
-                    runtime.definition.identity(),
-                )?
-            };
-            let admitted = (admitted.0.0, admitted.1);
-            let context = if let Some(context) = context {
-                context
-            } else {
-                let io = PreparationIo::from_native_work(work)?;
-                runtime
-                    .runtime
-                    .harness()
-                    .durable_context(
-                        binding.task_id,
-                        OperationId::from_bytes(binding.task_id.into_bytes()),
-                        Some(&io),
-                    )
-                    .await?
-            };
-            if context.durable_task_id() != Some(admitted.0.binding.task_id) {
-                return Err(Error::NativeBoundary {
-                    code: acyclic_harness::wire::ErrorCode::Unauthorized,
-                    reason: "Pi root preparation context belongs to another original task",
-                });
-            }
-            let super::pi_task::PiTaskExecution::Host { root, preparation } = &admitted.0.execution
-            else {
-                return Err(invalid(
-                    "Pi root preparation requires its original host admission",
-                ));
-            };
-            preparation.validate(&mut Some(&mut &PreparationIo::from_native_work(work)?))?;
-            if preparation.kind != EFFECT_TASK_COMMAND_KIND
-                || preparation.operation_id
-                    != preparation_operation(owner.policy().root_task, work)?
-            {
-                return Err(invalid("Pi root preparation command identity differs"));
-            }
-            let loaded = super::pi_root_provider::load_original_preparation_with_native_work(
-                &owner,
-                filesystem,
-                &admitted.0.binding,
-                root,
-                context,
-                work,
-            )
-            .await?;
-            validate_request(&owner, &loaded.request, work)?;
-            if &loaded.command != preparation {
-                return Err(invalid(
-                    "Pi root preparation command differs from its original admission",
-                ));
-            }
-            Ok(loaded)
+        work: &NativeMaterializationWork,
+    ) -> Result<Self> {
+        let (private_root, session) = private_root_session;
+        work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
+        let owner = PiOwnerConfig::load(private_root, session, work)?;
+        runtime.verify_owner_with_native_work(&owner, work)?;
+        owner.validate_root(binding)?;
+        let admitted =
+            super::pi_recovery::authenticate_pi_task(&runtime.runtime, binding, origin, work)
+                .await?;
+        let context = if let Some(context) = context {
+            context
+        } else {
+            let io = PreparationIo::from_native_work(work)?;
+            runtime
+                .runtime
+                .harness()
+                .durable_context(
+                    binding.task_id,
+                    OperationId::from_bytes(binding.task_id.into_bytes()),
+                    Some(&io),
+                )
+                .await?
+        };
+        if context.durable_task_id() != Some(admitted.0.binding.task_id) {
+            return Err(Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Unauthorized,
+                reason: "Pi root preparation context belongs to another original task",
+            });
         }
+        let super::pi_task::PiTaskExecution::Host { root, preparation } = &admitted.0.execution
+        else {
+            return Err(invalid(
+                "Pi root preparation requires its original host admission",
+            ));
+        };
+        preparation.validate(&mut Some(&mut &PreparationIo::from_native_work(work)?))?;
+        if preparation.kind != EFFECT_TASK_COMMAND_KIND
+            || preparation.operation_id != preparation_operation(owner.policy().root_task, work)?
+        {
+            return Err(invalid("Pi root preparation command identity differs"));
+        }
+        let loaded = super::pi_root_provider::load_original_preparation_with_native_work(
+            &owner,
+            filesystem,
+            &admitted.0.binding,
+            root,
+            context,
+            work,
+        )
+        .await?;
+        validate_request(&owner, &loaded.request, work)?;
+        if &loaded.command != preparation {
+            return Err(invalid(
+                "Pi root preparation command differs from its original admission",
+            ));
+        }
+        Ok(loaded)
     }
 }
 
@@ -219,7 +192,7 @@ fn validate_request(
     request: &PiRootRequest,
     work: &NativeMaterializationWork,
 ) -> Result<()> {
-    owner.validate_root(&request.binding, work)?;
+    owner.validate_root(&request.binding)?;
     let mut io = acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
     let read = owner
         .policy()

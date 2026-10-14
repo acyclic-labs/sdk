@@ -1,14 +1,26 @@
-//! Immutable uploads and their original task bindings.
+//! Immutable inputs on the original task's private volume.
 use super::*;
+use acyclic_harness::filesystem::PreparationIo;
 
-pub(super) fn pi_input_write_grant_with_native_work(
+pub(super) struct NativeInputCoordinates {
+    pub(super) path: (String, NativeAllocation),
+    pub(super) display_name: (String, NativeAllocation),
+    pub(super) key: (IdempotencyKey, NativeAllocation),
+}
+
+fn maximum(owner: &PiOwnerConfig) -> u64 {
+    owner
+        .policy()
+        .maximum_payload_bytes
+        .min(crate::MAXIMUM_ADAPTER_STATE_BYTES)
+}
+
+fn write_grant(
     owner: &PiOwnerConfig,
     work: &NativeMaterializationWork,
 ) -> Result<(ContentGrant, NativeAllocation)> {
     let authority = owner.authority(work)?;
-    let mut io = acyclic_harness::store::HistoryWork::new(
-        acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-    );
+    let mut io = acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
     let grant = ContentGrant::verify(
         &authority.verifier,
         &authority.signed,
@@ -20,23 +32,18 @@ pub(super) fn pi_input_write_grant_with_native_work(
     Ok((grant, io.into_custody()?))
 }
 
-fn validate_pi_input_media(
+fn validate_input(
     owner: &PiOwnerConfig,
     file: &FileRef,
-    path: &str,
-    display_name: &str,
-    media_type: &str,
+    coordinates: &NativeInputCoordinates,
+    media: &str,
 ) -> Result<()> {
     owner.policy().limits.validate_file(file, &mut None)?;
     if file.volume() != &owner.policy().journal
-        || file.path() != path
-        || file.display_name() != display_name
-        || file.descriptor().media_type() != media_type
-        || file.descriptor().byte_length()
-            > owner
-                .policy()
-                .maximum_payload_bytes
-                .min(crate::MAXIMUM_ADAPTER_STATE_BYTES)
+        || file.path() != coordinates.path.0
+        || file.display_name() != coordinates.display_name.0
+        || file.descriptor().media_type() != media
+        || file.descriptor().byte_length() > maximum(owner)
     {
         return Err(Error::Invalid(
             "Pi original input operation returned another immutable file".into(),
@@ -45,7 +52,47 @@ fn validate_pi_input_media(
     Ok(())
 }
 
-/// Same original upload key and protected bootstrap grant as `stage_pi_input`, with the caller's original native ledger owning both codec and publication.
+fn coordinates(
+    owner: &PiOwnerConfig,
+    operation: OperationId,
+    label: &str,
+    directory: &'static str,
+    purpose: &'static str,
+    work: &NativeMaterializationWork,
+) -> Result<NativeInputCoordinates> {
+    work.cancellation()
+        .check()
+        .map_err(|_| NativeTreeMaterializationError::Cancelled)?;
+    if label.is_empty()
+        || label.len() > 64
+        || !label
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(Error::NativeBoundary {
+            code: ErrorCode::Invalid,
+            reason: "Pi input label must be one bounded path component",
+        });
+    }
+    let display_name = work.display(&format_args!("{label}.json"))?;
+    let path = work.display(&format_args!("{directory}/{operation}/{}", display_name.0))?;
+    if path.0.len() > owner.policy().limits.path_bytes {
+        return Err(Error::NativeBoundary {
+            code: ErrorCode::Invalid,
+            reason: "Pi input path exceeds its original owner limit",
+        });
+    }
+    let key = work.display(&format_args!(
+        "acyclic.pi/{purpose}/{}/{operation}/{label}",
+        owner.policy().root_task
+    ))?;
+    Ok(NativeInputCoordinates {
+        path,
+        display_name,
+        key: (IdempotencyKey::new(key.0)?, key.1),
+    })
+}
+
 pub(crate) fn stage_pi_input<'a, T: Serialize + Sync>(
     owner: &'a PiOwnerConfig,
     filesystem: &'a Host,
@@ -54,16 +101,15 @@ pub(crate) fn stage_pi_input<'a, T: Serialize + Sync>(
     value: &'a T,
     work: &'a NativeMaterializationWork,
 ) -> impl std::future::Future<Output = Result<(FileRef, NativeAllocation)>> + Send + 'a {
+    let coordinates = coordinates(owner, operation, label, ROOT_INPUT_DIRECTORY, "input", work);
     async move {
-        stage_pi_input_namespace_with_native_work(
+        publish_pi_input_with_native_coordinates(
             owner,
             filesystem,
-            operation,
-            label,
             value,
+            "application/json",
+            coordinates?,
             work,
-            ROOT_INPUT_DIRECTORY,
-            "input",
         )
         .await
     }
@@ -77,20 +123,25 @@ pub(crate) async fn stage_pi_operator_input<T: Serialize + Sync>(
     value: &T,
     work: &NativeMaterializationWork,
 ) -> Result<(FileRef, NativeAllocation)> {
-    stage_pi_input_namespace_with_native_work(
+    let coordinates = coordinates(
         owner,
-        filesystem,
         operation,
         label,
-        value,
-        work,
         OPERATOR_INPUT_DIRECTORY,
         "operator-input",
+        work,
+    )?;
+    publish_pi_input_with_native_coordinates(
+        owner,
+        filesystem,
+        value,
+        "application/json",
+        coordinates,
+        work,
     )
     .await
 }
 
-/// Readonly original operation metadata, never a mutable path or new upload.
 pub(crate) async fn observe_pi_input(
     owner: &PiOwnerConfig,
     filesystem: &Host,
@@ -98,79 +149,11 @@ pub(crate) async fn observe_pi_input(
     label: &str,
     work: &NativeMaterializationWork,
 ) -> Result<Option<(FileRef, NativeAllocation)>> {
-    let coordinates = pi_input_coordinates_with_native_work(
-        owner,
-        operation,
-        label,
-        ROOT_INPUT_DIRECTORY,
-        "input",
-        work,
-    )?;
-    let grant = pi_input_write_grant_with_native_work(owner, work)?;
-    observe_pi_input_at(
-        owner,
-        filesystem,
-        &grant.0,
-        coordinates,
-        "application/json",
-        work,
-    )
-    .await
+    let coordinates = coordinates(owner, operation, label, ROOT_INPUT_DIRECTORY, "input", work)?;
+    observe_pi_input_at(owner, filesystem, coordinates, "application/json", work).await
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "fixed trusted namespace shares the original publisher engine"
-)]
-fn stage_pi_input_namespace_with_native_work<'a, T: Serialize + Sync>(
-    owner: &'a PiOwnerConfig,
-    filesystem: &'a Host,
-    operation: OperationId,
-    label: &str,
-    value: &'a T,
-    work: &'a NativeMaterializationWork,
-    directory: &'static str,
-    purpose: &'static str,
-) -> impl std::future::Future<Output = Result<(FileRef, NativeAllocation)>> + Send + 'a + use<'a, T>
-{
-    let coordinates =
-        pi_input_coordinates_with_native_work(owner, operation, label, directory, purpose, work);
-    async move {
-        let coordinates = coordinates?;
-        publish_pi_input_with_native_coordinates(
-            owner,
-            filesystem,
-            value,
-            "application/json",
-            coordinates,
-            work,
-        )
-        .await
-    }
-}
-
-/// Fixed original root artifact coordinates, including the original schema media type; this is not an operation/label input alias or a new upload key.
-pub(crate) async fn stage_pi_root_input_with_native_work<T: Serialize + Sync>(
-    owner: &PiOwnerConfig,
-    filesystem: &Host,
-    name: &str,
-    value: &T,
-    work: &NativeMaterializationWork,
-) -> Result<(FileRef, NativeAllocation)> {
-    let media_type = root_input_media(name)?;
-    let coordinates = root_input_coordinates_with_native_work(owner, name, work)?;
-    publish_pi_input_with_native_coordinates(
-        owner,
-        filesystem,
-        value,
-        media_type,
-        coordinates,
-        work,
-    )
-    .await
-}
-
-fn root_input_media(name: &str) -> Result<&'static str> {
+fn root_media(name: &str) -> Result<&'static str> {
     match name {
         "root" | "preparation" => Ok("application/json"),
         "allocation-schema" => Ok("application/schema+json"),
@@ -181,165 +164,134 @@ fn root_input_media(name: &str) -> Result<&'static str> {
     }
 }
 
-fn root_input_coordinates_with_native_work(
+fn root_coordinates(
     owner: &PiOwnerConfig,
     name: &str,
     work: &NativeMaterializationWork,
 ) -> Result<NativeInputCoordinates> {
-    root_input_media(name)?;
-    let (display_name, custody) = work.display(&format_args!("{name}.json"))?;
-    let display_name = (display_name, custody);
-    let (path, custody) =
-        work.display(&format_args!("{ROOT_INPUT_DIRECTORY}/{}", display_name.0))?;
-    let path = (path, custody);
+    root_media(name)?;
+    let display_name = work.display(&format_args!("{name}.json"))?;
+    let path = work.display(&format_args!("{ROOT_INPUT_DIRECTORY}/{}", display_name.0))?;
     if path.0.len() > owner.policy().limits.path_bytes {
         return Err(Error::NativeBoundary {
             code: ErrorCode::Invalid,
             reason: "original Pi root artifact path exceeds owner limit",
         });
     }
-    let (key, custody) = work.display(&format_args!(
+    let key = work.display(&format_args!(
         "acyclic.pi/{name}-input/{}",
         owner.policy().root_task
     ))?;
-    let key = IdempotencyKey::new(key)?;
-    let key = (key, custody);
     Ok(NativeInputCoordinates {
         path,
         display_name,
-        key,
+        key: (IdempotencyKey::new(key.0)?, key.1),
     })
 }
 
-/// Same fixed canonical root upload operation as staging, without creating or trusting the current file at its path.
-pub(crate) async fn observe_pi_root_input_with_native_work(
+pub(crate) async fn stage_pi_root_input_with_native_work<T: Serialize + Sync>(
     owner: &PiOwnerConfig,
     filesystem: &Host,
     name: &str,
-    grant: &ContentGrant,
+    value: &T,
+    work: &NativeMaterializationWork,
+) -> Result<(FileRef, NativeAllocation)> {
+    publish_pi_input_with_native_coordinates(
+        owner,
+        filesystem,
+        value,
+        root_media(name)?,
+        root_coordinates(owner, name, work)?,
+        work,
+    )
+    .await
+}
+
+async fn observe_pi_root_input_with_native_work(
+    owner: &PiOwnerConfig,
+    filesystem: &Host,
+    name: &str,
     work: &NativeMaterializationWork,
 ) -> Result<Option<(FileRef, NativeAllocation)>> {
-    let media_type = root_input_media(name)?;
-    let coordinates = root_input_coordinates_with_native_work(owner, name, work)?;
-    observe_pi_input_at(owner, filesystem, grant, coordinates, media_type, work).await
+    observe_pi_input_at(
+        owner,
+        filesystem,
+        root_coordinates(owner, name, work)?,
+        root_media(name)?,
+        work,
+    )
+    .await
 }
 
 pub(super) async fn observe_pi_input_at(
     owner: &PiOwnerConfig,
     filesystem: &Host,
-    grant: &ContentGrant,
     coordinates: NativeInputCoordinates,
-    media_type: &str,
+    media: &str,
     work: &NativeMaterializationWork,
 ) -> Result<Option<(FileRef, NativeAllocation)>> {
-    let maximum = owner
-        .policy()
-        .maximum_payload_bytes
-        .min(crate::MAXIMUM_ADAPTER_STATE_BYTES);
-    let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
-    let result = filesystem
+    let grant = write_grant(owner, work)?;
+    let io = PreparationIo::from_native_work(work)?;
+    let Some(reference) = filesystem
         .content_for_operation(
             &owner.policy().journal,
-            grant,
+            &grant.0,
             &coordinates.key.0,
             &coordinates.path.0,
-            maximum,
+            maximum(owner),
             Some(&io),
         )
-        .await;
-    match result {
-        Ok(Some(reference)) => {
-            let custody = acyclic_harness::store::HistoryWork::new(io).into_custody()?;
-            if let Err(error) = validate_pi_input_media(
-                owner,
-                &reference,
-                &coordinates.path.0,
-                &coordinates.display_name.0,
-                media_type,
-            ) {
-                drop(reference);
-                drop(custody);
-                Err(error)
-            } else {
-                Ok(Some((reference, custody)))
-            }
-        }
-        Ok(None) => Ok(None),
-        Err(error) => Err(error),
-    }
+        .await?
+    else {
+        return Ok(None);
+    };
+    validate_input(owner, &reference, &coordinates, media)?;
+    Ok(Some((
+        reference,
+        acyclic_harness::store::HistoryWork::new(io).into_custody()?,
+    )))
 }
 
 pub(super) fn publish_pi_input_with_native_coordinates<'a, T: Serialize + Sync>(
     owner: &'a PiOwnerConfig,
     filesystem: &'a Host,
     value: &'a T,
-    media_type: &'a str,
+    media: &'a str,
     coordinates: NativeInputCoordinates,
     work: &'a NativeMaterializationWork,
 ) -> impl std::future::Future<Output = Result<(FileRef, NativeAllocation)>> + Send + 'a {
     async move {
-        let grant = pi_input_write_grant_with_native_work(owner, work)?;
-        let maximum = owner
-            .policy()
-            .maximum_payload_bytes
-            .min(crate::MAXIMUM_ADAPTER_STATE_BYTES);
-        let (bytes, bytes_custody) = guarded_pi_bytes(value, maximum, work)?;
-        let encoded = (bytes, bytes_custody);
+        let grant = write_grant(owner, work)?;
+        let encoded = guarded_pi_bytes(value, maximum(owner), work)?;
         let length = encoded.0.len() as u64;
-        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+        let io = PreparationIo::from_native_work(work)?;
         let result = filesystem
             .put_content(
                 &owner.policy().journal,
                 &grant.0,
                 &coordinates.path.0,
                 &encoded.0,
-                media_type,
+                media,
                 &coordinates.display_name.0,
-                maximum,
+                maximum(owner),
                 &coordinates.key.0,
                 None,
                 Some(&io),
             )
-            .await
-            .and_then(|reference| {
-                Ok((
-                    reference,
-                    acyclic_harness::store::HistoryWork::new(io).into_custody()?,
-                ))
-            });
+            .await;
         drop(encoded);
-        let result = match result {
-            Ok((reference, custody)) => {
-                let validation = validate_pi_input_media(
-                    owner,
-                    &reference,
-                    &coordinates.path.0,
-                    &coordinates.display_name.0,
-                    media_type,
-                )
-                .and_then(|()| {
-                    if reference.descriptor().byte_length() == length {
-                        Ok(())
-                    } else {
-                        Err(Error::NativeBoundary {
-                            code: ErrorCode::Storage,
-                            reason: "Pi input original body length differs",
-                        })
-                    }
-                });
-                match validation {
-                    Ok(()) => Ok((reference, custody)),
-                    Err(error) => {
-                        drop(reference);
-                        drop(custody);
-                        Err(error)
-                    }
-                }
-            }
-            result => result,
-        };
-        drop(coordinates);
-        result
+        let reference = result?;
+        validate_input(owner, &reference, &coordinates, media)?;
+        if reference.descriptor().byte_length() != length {
+            return Err(Error::NativeBoundary {
+                code: ErrorCode::Storage,
+                reason: "Pi input original body length differs",
+            });
+        }
+        Ok((
+            reference,
+            acyclic_harness::store::HistoryWork::new(io).into_custody()?,
+        ))
     }
 }
 
@@ -349,11 +301,7 @@ pub(super) async fn read_root_artifact_with_native_work<T: DeserializeOwned + Se
     reference: &FileRef,
     work: &NativeMaterializationWork,
 ) -> Result<(T, NativeAllocation)> {
-    let maximum = owner
-        .policy()
-        .maximum_payload_bytes
-        .min(crate::MAXIMUM_ADAPTER_STATE_BYTES);
-    if reference.descriptor().byte_length() > maximum
+    if reference.descriptor().byte_length() > maximum(owner)
         || reference.path().len() > owner.policy().limits.path_bytes
         || !matches!(
             reference.descriptor().media_type(),
@@ -365,28 +313,27 @@ pub(super) async fn read_root_artifact_with_native_work<T: DeserializeOwned + Se
             reason: "root artifact exceeds original header bounds or media type",
         });
     }
-    let bytes = context
-        .read_file(
-            reference,
-            Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
-        )
-        .await?;
-    let maximum_owned = std::mem::size_of::<T>() as u64;
+    let io = PreparationIo::from_native_work(work)?;
+    let bytes = context.read_file(reference, Some(&io)).await?;
+    let schema = if reference.descriptor().media_type() == "application/schema+json" {
+        JsonValueSchema::Root
+    } else {
+        JsonValueSchema::None
+    };
     let decoded = guarded_pi_decode(
         bytes.as_ref(),
-        maximum,
-        maximum_owned,
-        acyclic_harness::wire::ErrorCode::Invalid,
-        if reference.descriptor().media_type() == "application/schema+json" {
-            JsonValueSchema::Root
-        } else {
-            JsonValueSchema::None
-        },
+        maximum(owner),
+        std::mem::size_of::<T>() as u64,
+        ErrorCode::Invalid,
+        schema,
         ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES,
         work,
     )?;
-    let encoded = guarded_pi_bytes(&decoded.0, maximum, work)?;
-    if encoded.0.as_slice() != bytes.as_ref() {
+    if guarded_pi_bytes(&decoded.0, maximum(owner), work)?
+        .0
+        .as_slice()
+        != bytes.as_ref()
+    {
         return Err(Error::NativeBoundary {
             code: ErrorCode::Invalid,
             reason: "root artifact is not its immutable first-party encoding",
@@ -395,156 +342,82 @@ pub(super) async fn read_root_artifact_with_native_work<T: DeserializeOwned + Se
     Ok(decoded)
 }
 
-pub(crate) fn load_original_preparation_with_native_work<'a>(
-    owner: &'a PiOwnerConfig,
-    filesystem: &'a Host,
-    expected_binding: &'a crate::PiTaskBinding,
-    expected_root: &'a PiRootIntent,
-    context: Arc<acyclic_harness::runtime::TaskContext>,
-    work: &'a NativeMaterializationWork,
-) -> impl std::future::Future<Output = Result<PiRootPreparation>> + Send + 'a {
-    async move {
-        let missing = || Error::NativeBoundary {
-            code: ErrorCode::Unauthorized,
-            reason: "original root preparation upload operation is absent",
-        };
-        let grant = pi_input_write_grant_with_native_work(owner, work)?;
-        let mut payload = observe_pi_root_input_with_native_work(
-            owner,
-            filesystem,
-            "preparation",
-            &grant.0,
-            work,
-        )
-        .await?
-        .ok_or_else(missing)?;
-        let plan = read_root_artifact_with_native_work::<
-            acyclic_harness::effect_host::TaskEffectPlan,
-        >(owner, context.as_ref(), &payload.0, work)
-        .await?;
-        let root =
-            observe_pi_root_input_with_native_work(owner, filesystem, "root", &grant.0, work)
-                .await?
-                .ok_or_else(missing)?;
-        let schema_reference = observe_pi_root_input_with_native_work(
-            owner,
-            filesystem,
-            "allocation-schema",
-            &grant.0,
-            work,
-        )
-        .await?
-        .ok_or_else(missing)?;
-        if plan.0.provider != ROOT_ALLOCATION_PROVIDER
-            || plan.0.effect_kind != ROOT_ALLOCATION_EFFECT
-            || plan.0.guarantee != EffectGuarantee::AtMostOnce
-            || plan.0.request != root.0
-            || plan.0.result_schema != schema_reference.0
-        {
-            return Err(Error::NativeBoundary {
-                code: ErrorCode::Unauthorized,
-                reason: "original root plan differs from canonical input operations",
-            });
-        }
-        let request = read_root_artifact_with_native_work::<PiRootRequest>(
-            owner,
-            context.as_ref(),
-            &root.0,
-            work,
-        )
-        .await?;
-        if &request.0.binding != expected_binding || &request.0.root != expected_root {
-            return Err(Error::NativeBoundary {
-                code: ErrorCode::Unauthorized,
-                reason: "root request differs from original canonical input",
-            });
-        }
-        let schema = read_root_artifact_with_native_work::<serde_json::Value>(
-            owner,
-            context.as_ref(),
-            &schema_reference.0,
-            work,
-        )
-        .await?;
-        let expected_schema = PiRootAllocation::schema(&request.0.binding, work)?;
-        if schema.0 != expected_schema.0 {
-            return Err(Error::NativeBoundary {
-                code: ErrorCode::Unauthorized,
-                reason: "original root allocation schema differs",
-            });
-        }
-        let mut kind = work.display(acyclic_harness::filesystem::EFFECT_TASK_COMMAND_KIND)?;
-        payload.1.absorb(&mut kind.1)?;
-        let mut plan_custody = plan.1;
-        let mut request_custody = request.1;
-        let mut preparation = PiRootPreparation {
-            command: acyclic_harness::workflow::WorkflowCommand {
-                operation_id: crate::pi_root_inputs::preparation_operation(
-                    owner.policy().root_task,
-                    work,
-                )?,
-                kind: kind.0,
-                payload: payload.0,
-            },
-            plan: plan.0,
-            request: request.0,
-            context,
-            custody: payload.1,
-        };
-        preparation.custody.absorb(&mut plan_custody)?;
-        preparation.custody.absorb(&mut request_custody)?;
-        Ok(preparation)
-    }
-}
-
-pub(super) struct NativeInputCoordinates {
-    pub(super) path: (String, NativeAllocation),
-    pub(super) display_name: (String, NativeAllocation),
-    pub(super) key: (IdempotencyKey, NativeAllocation),
-}
-
-fn pi_input_coordinates_with_native_work(
+pub(crate) async fn load_original_preparation_with_native_work(
     owner: &PiOwnerConfig,
-    operation: OperationId,
-    label: &str,
-    directory: &'static str,
-    purpose: &'static str,
+    filesystem: &Host,
+    expected_binding: &crate::PiTaskBinding,
+    expected_root: &PiRootIntent,
+    context: Arc<TaskContext>,
     work: &NativeMaterializationWork,
-) -> Result<NativeInputCoordinates> {
-    work.cancellation()
-        .check()
-        .map_err(|_| acyclic_harness::Error::from(NativeTreeMaterializationError::Cancelled))?;
-    if label.is_empty()
-        || label.len() > 64
-        || !label
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+) -> Result<PiRootPreparation> {
+    let missing = || Error::NativeBoundary {
+        code: ErrorCode::Unauthorized,
+        reason: "original root preparation upload operation is absent",
+    };
+    let mut payload =
+        observe_pi_root_input_with_native_work(owner, filesystem, "preparation", work)
+            .await?
+            .ok_or_else(missing)?;
+    let mut plan = read_root_artifact_with_native_work::<
+        acyclic_harness::effect_host::TaskEffectPlan,
+    >(owner, &context, &payload.0, work)
+    .await?;
+    let root = observe_pi_root_input_with_native_work(owner, filesystem, "root", work)
+        .await?
+        .ok_or_else(missing)?;
+    let schema_reference =
+        observe_pi_root_input_with_native_work(owner, filesystem, "allocation-schema", work)
+            .await?
+            .ok_or_else(missing)?;
+    if plan.0.provider != ROOT_ALLOCATION_PROVIDER
+        || plan.0.effect_kind != ROOT_ALLOCATION_EFFECT
+        || plan.0.guarantee != EffectGuarantee::AtMostOnce
+        || plan.0.request != root.0
+        || plan.0.result_schema != schema_reference.0
     {
         return Err(Error::NativeBoundary {
-            code: ErrorCode::Invalid,
-            reason: "Pi input label must be one bounded path component",
+            code: ErrorCode::Unauthorized,
+            reason: "original root plan differs from canonical input operations",
         });
     }
-    let (display_name, custody) = work.display(&format_args!("{label}.json"))?;
-    let display_name = (display_name, custody);
-    let (path, custody) =
-        work.display(&format_args!("{directory}/{operation}/{}", display_name.0))?;
-    let path = (path, custody);
-    if path.0.len() > owner.policy().limits.path_bytes {
+    let mut request =
+        read_root_artifact_with_native_work::<PiRootRequest>(owner, &context, &root.0, work)
+            .await?;
+    if &request.0.binding != expected_binding || &request.0.root != expected_root {
         return Err(Error::NativeBoundary {
-            code: ErrorCode::Invalid,
-            reason: "Pi input path exceeds its original owner limit",
+            code: ErrorCode::Unauthorized,
+            reason: "root request differs from original canonical input",
         });
     }
-    let (key, custody) = work.display(&format_args!(
-        "acyclic.pi/{purpose}/{}/{operation}/{label}",
-        owner.policy().root_task
-    ))?;
-    let key = IdempotencyKey::new(key)?;
-    let key = (key, custody);
-    Ok(NativeInputCoordinates {
-        path,
-        display_name,
-        key,
+    let schema = read_root_artifact_with_native_work::<serde_json::Value>(
+        owner,
+        &context,
+        &schema_reference.0,
+        work,
+    )
+    .await?;
+    if schema.0 != PiRootAllocation::schema(&request.0.binding, work)?.0 {
+        return Err(Error::NativeBoundary {
+            code: ErrorCode::Unauthorized,
+            reason: "original root allocation schema differs",
+        });
+    }
+    let mut kind = work.display(acyclic_harness::filesystem::EFFECT_TASK_COMMAND_KIND)?;
+    for incoming in [&mut kind.1, &mut plan.1, &mut request.1] {
+        payload.1.absorb(incoming)?;
+    }
+    Ok(PiRootPreparation {
+        command: acyclic_harness::workflow::WorkflowCommand {
+            operation_id: crate::pi_root_inputs::preparation_operation(
+                owner.policy().root_task,
+                work,
+            )?,
+            kind: kind.0,
+            payload: payload.0,
+        },
+        plan: plan.0,
+        request: request.0,
+        context,
+        custody: payload.1,
     })
 }

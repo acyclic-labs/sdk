@@ -1,7 +1,7 @@
 //! Service recovery over original task admissions and retained reservations.
 
 use super::pi_root::PiRootIntent;
-use super::pi_task::{PiTaskExecution, PiTaskInput};
+use super::pi_task::{PiTaskExecution, PiTaskInput, PiTaskMachine};
 use super::{AdapterState, PiTaskBinding, PluginTaskBinding};
 use acyclic_fs::{
     NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError, WorkError,
@@ -195,19 +195,23 @@ fn serialize_lease_task<S: serde::Serializer>(
 }
 
 /// The same complete graph observer, supplied the caller's ORIGINAL native work.
-pub(crate) async fn observe_pi_session(
-    registered: &super::pi_runtime::PiTaskRuntime,
+pub(crate) async fn observe_pi_session<P, A, O>(
+    runtime: &FilesystemTaskRuntime<P, A, O>,
     state: &AdapterState,
     work: &NativeMaterializationWork,
-) -> Result<(Vec<PiTaskObservation>, NativeAllocation)> {
-    let runtime = &registered.runtime;
+) -> Result<(Vec<PiTaskObservation>, NativeAllocation)>
+where
+    P: acyclic_stream::StreamProvider + 'static,
+    A: acyclic_fs::AsyncAuthorityStore + 'static,
+    O: acyclic_fs::AsyncObjectStore + 'static,
+{
     let mut custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
     let mut tasks = session_tasks(state, work)?;
+    let pi_definition = PiTaskMachine::new(work)?.definition(work)?;
     let preparation_definition = if tasks.0.iter().any(|task| task.preparation.is_some()) {
         Some(
             std::sync::Arc::new(acyclic_harness::filesystem::ForkPreparationMachine::new())
-                .definition::<serde_json::Value, serde_json::Value>()?
-                .publish(work)?,
+                .definition::<serde_json::Value, serde_json::Value>()?,
         )
     } else {
         None
@@ -221,16 +225,14 @@ pub(crate) async fn observe_pi_session(
             let mut request = decode_recovery_value::<
                 acyclic_harness::resource_preparation::ResourcePreparationRequest,
             >(
-                std::borrow::Cow::Owned(std::mem::take(&mut admission.0.input)),
+                std::mem::take(&mut admission.0.input),
                 acyclic_harness::JsonValueSchema::ResourcePreparationRequest,
-                super::MAXIMUM_ADAPTER_STATE_BYTES,
                 work,
             )?;
             request.0.validate(&mut None)?;
             let child = decode_recovery_value::<PiTaskInput>(
-                std::borrow::Cow::Owned(std::mem::take(&mut request.0.child.input)),
+                std::mem::take(&mut request.0.child.input),
                 acyclic_harness::JsonValueSchema::None,
-                super::MAXIMUM_ADAPTER_STATE_BYTES,
                 work,
             )?;
             if admission.0.task
@@ -273,18 +275,14 @@ pub(crate) async fn observe_pi_session(
             None => PiTaskOrigin::RootState(state),
             Some(parent) => PiTaskOrigin::Child(parent),
         };
-        let admission = runtime
-            .task_host()
-            .observe_admission_with_native_work(task.binding.task_id, work)?
-            .await?;
-        let input = authenticate_pi_task(
-            &admission.0,
+        let input = authenticate_pi_task_inner(
+            runtime,
             task.binding,
             origin,
             work,
-            registered.definition.identity(),
-        )?;
-        drop(admission);
+            pi_definition.identity(),
+        )
+        .await?;
         authenticate_original_alias(
             runtime,
             task.binding.task_id,
@@ -371,9 +369,8 @@ pub(crate) async fn observe_pi_session(
                         outcome: match outcome {
                             Outcome::Succeeded(value) => {
                                 let mut decoded = decode_recovery_value::<FileRef>(
-                                    std::borrow::Cow::Owned(value),
+                                    value,
                                     acyclic_harness::JsonValueSchema::None,
-                                    super::MAXIMUM_ADAPTER_STATE_BYTES,
                                     work,
                                 )?;
                                 custody.absorb(&mut decoded.1)?;
@@ -452,8 +449,26 @@ where
     Ok(())
 }
 
-pub(crate) fn authenticate_pi_task(
-    admission: &acyclic_harness::runtime::TaskAdmissionRecord,
+/// Transient authenticated references, never another persisted lease registry.
+pub(crate) async fn authenticate_pi_task<P, A, O>(
+    runtime: &FilesystemTaskRuntime<P, A, O>,
+    binding: &PiTaskBinding,
+    origin: PiTaskOrigin<'_>,
+    work: &NativeMaterializationWork,
+) -> Result<(PiTaskInput, NativeAllocation)>
+where
+    P: acyclic_stream::StreamProvider + 'static,
+    A: acyclic_fs::AsyncAuthorityStore + 'static,
+    O: acyclic_fs::AsyncObjectStore + 'static,
+{
+    let definition = PiTaskMachine::new(work)?.definition(work)?;
+    let admitted =
+        authenticate_pi_task_inner(runtime, binding, origin, work, definition.identity()).await?;
+    Ok((admitted.0.0, admitted.1))
+}
+
+async fn authenticate_pi_task_inner<P, A, O>(
+    runtime: &FilesystemTaskRuntime<P, A, O>,
     binding: &PiTaskBinding,
     origin: PiTaskOrigin<'_>,
     work: &NativeMaterializationWork,
@@ -461,22 +476,28 @@ pub(crate) fn authenticate_pi_task(
 ) -> Result<(
     (PiTaskInput, acyclic_harness::OperationId),
     NativeAllocation,
-)> {
-    binding.validate_with_native_work(
+)>
+where
+    P: acyclic_stream::StreamProvider + 'static,
+    A: acyclic_fs::AsyncAuthorityStore + 'static,
+    O: acyclic_fs::AsyncObjectStore + 'static,
+{
+    binding.validate(
         None,
-        binding.project_volumes.keys().map(String::as_str),
+        binding.project_volumes.keys().map(|key| key.as_str()),
         true,
-        work,
     )?;
-    let admitted = decode_recovery_value::<PiTaskInput>(
-        std::borrow::Cow::Borrowed(&admission.input),
+    let mut admission = runtime
+        .task_host()
+        .observe_admission_with_native_work(binding.task_id, work)?
+        .await?;
+    let mut admitted = decode_recovery_value::<PiTaskInput>(
+        std::mem::take(&mut admission.0.input),
         acyclic_harness::JsonValueSchema::None,
-        super::MAXIMUM_ADAPTER_STATE_BYTES,
         work,
     )?;
-    if admission.operation_id.into_bytes() != binding.task_id.into_bytes()
-        || admission.task != *identity
-        || admission.parent != origin.parent()
+    if admission.0.task != *identity
+        || admission.0.parent != origin.parent()
         || admitted.0.binding.native_session_id != binding.native_session_id
         || admitted.0.binding.task_id != binding.task_id
         || admitted.0.binding.agent_id != binding.agent_id
@@ -529,7 +550,7 @@ pub(crate) fn authenticate_pi_task(
             )?;
             (value, io.into_custody()?)
         };
-        if !admission.grants.contains(&read.0) {
+        if !admission.0.grants.contains(&read.0) {
             return Err(invalid("Pi selection lacks its original read grant"));
         }
     }
@@ -543,7 +564,7 @@ pub(crate) fn authenticate_pi_task(
         )?;
         (value, io.into_custody()?)
     };
-    if !admission.grants.contains(&scratch_write.0) {
+    if !admission.0.grants.contains(&scratch_write.0) {
         return Err(invalid("Pi scratch lacks its original write grant"));
     }
     if let Some(result) = &binding.results {
@@ -557,13 +578,14 @@ pub(crate) fn authenticate_pi_task(
             )?;
             (value, io.into_custody()?)
         };
-        if !admission.grants.contains(&write.0) {
+        if !admission.0.grants.contains(&write.0) {
             return Err(invalid(
                 "Pi result storage lacks its original created write grant",
             ));
         }
     }
-    let operation = admission.operation_id;
+    let operation = admission.0.operation_id;
+    admitted.1.absorb(&mut admission.1)?;
     Ok(((admitted.0, operation), admitted.1))
 }
 
@@ -597,24 +619,22 @@ fn invalid(message: &'static str) -> Error {
     Error::Invalid(message.to_owned())
 }
 
-/// Decodes closed Pi DTOs directly from their original Value.
-pub(crate) fn decode_recovery_value<T: serde::de::DeserializeOwned>(
-    value: std::borrow::Cow<'_, serde_json::Value>,
+/// Closed first-party recovery DTOs consume their owned Value rather than cloning it.
+fn decode_recovery_value<T: serde::de::DeserializeOwned>(
+    value: serde_json::Value,
     schema: &'static acyclic_harness::JsonValueSchema,
-    maximum_bytes: u64,
     work: &NativeMaterializationWork,
 ) -> Result<(T, NativeAllocation)> {
-    let borrowed = matches!(value, std::borrow::Cow::Borrowed(_));
     let mut custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
     let mut retained_owned = 0;
     let remaining = work.remaining()?;
     let bounds = acyclic_harness::JsonBounds {
-        maximum_bytes,
+        maximum_bytes: super::MAXIMUM_ADAPTER_STATE_BYTES,
         maximum_items: remaining.items_examined,
         maximum_depth: 64,
     };
     let result = acyclic_harness::json_from_value_bounded::<T, _>(
-        value,
+        std::borrow::Cow::Owned(value),
         bounds,
         std::mem::size_of::<T>() as u64,
         Some(acyclic_harness::wire::ErrorCode::Invalid),
@@ -625,14 +645,13 @@ pub(crate) fn decode_recovery_value<T: serde::de::DeserializeOwned>(
                 value_shape,
             } = charge
             {
-                let (additional, diagnostics) =
-                    recovery_conversion_quota::<T>(value_shape, borrowed)?;
+                let (additional, diagnostics) = recovery_conversion_quota(value_shape)?;
                 retained_owned = checked_quota(maximum_owned_bytes, additional)?;
                 custody
                     .resize(checked_quota(retained_owned, diagnostics)?)
                     .map_err(acyclic_harness::Error::from)
             } else {
-                super::pi_root_provider::native_buffer_codec_charge(work, &mut custody, charge)
+                super::pi_root_provider::native_buffer_codec_charge(&mut custody, charge)
             }
         },
     );
@@ -660,10 +679,7 @@ pub(crate) fn decode_recovery_value<T: serde::de::DeserializeOwned>(
     }
 }
 
-fn recovery_conversion_quota<T>(
-    shape: acyclic_harness::JsonValueShape,
-    borrowed: bool,
-) -> Result<(u64, u64)> {
+fn recovery_conversion_quota(shape: acyclic_harness::JsonValueShape) -> Result<(u64, u64)> {
     let slot = [
         std::mem::size_of::<acyclic_harness::resource_preparation::ResourcePreparationRequest>(),
         std::mem::size_of::<acyclic_harness::runtime::TaskAdmissionRecord>(),
@@ -679,27 +695,15 @@ fn recovery_conversion_quota<T>(
     ]
     .into_iter()
     .fold(0, usize::max) as u64;
-    let nodes = checked_quota(shape.lexical_items(), shape.virtual_items())?;
-    let typed = if borrowed {
-        super::pi_task::native_metadata_quota::<T>(
-            shape.input_bytes(),
-            checked_quota(nodes, nodes)?,
-        )?
-    } else {
-        nodes
-            .checked_mul(8)
-            .and_then(|nodes| nodes.checked_mul(slot))
-            .ok_or_else(|| {
-                acyclic_harness::Error::from(NativeTreeMaterializationError::Work(
-                    WorkError::Overflow,
-                ))
-            })?
-    };
-    let additional = if borrowed {
-        acyclic_harness::json_value_decode_owned_bytes(shape)?
-    } else {
-        acyclic_harness::json_owned_value_conversion_additional_bytes(shape)?
-    };
+    let typed = shape
+        .lexical_items()
+        .checked_add(shape.virtual_items())
+        .and_then(|nodes| nodes.checked_mul(8))
+        .and_then(|nodes| nodes.checked_mul(slot))
+        .ok_or_else(|| {
+            acyclic_harness::Error::from(NativeTreeMaterializationError::Work(WorkError::Overflow))
+        })?;
+    let additional = acyclic_harness::json_owned_value_conversion_additional_bytes(shape)?;
     let labels = super::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES;
     let diagnostics = acyclic_harness::json_typed_diagnostic_owned_bytes(
         shape,

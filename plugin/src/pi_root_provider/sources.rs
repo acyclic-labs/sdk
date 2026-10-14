@@ -1,59 +1,40 @@
-//! Original physical source identity and selected project proofs.
+//! Physical roots checked against the canonical allocation observer.
 use super::*;
 use acyclic_harness::filesystem::PreparationIo;
 
-/// Fresh creator's source gate.
 pub(crate) async fn guard_root_preparation_source_with_native_work(
     context: &TaskContext,
-    current_owner: &TaskJournalOwner<LocalStream>,
+    owner: &TaskJournalOwner<LocalStream>,
     preparation: &PiRootPreparation,
-    root_key: &str,
+    key: &str,
     expected: Option<acyclic_fs::NativeRootIdentity>,
     work: &NativeMaterializationWork,
 ) -> Result<acyclic_fs::NativeRootIdentity> {
     let request = &preparation.request;
+    let invalid =
+        || PiRootProvider::native_failure("root source differs from its admitted creator");
     let project = request
         .binding
         .project_volumes
-        .get(root_key)
-        .ok_or(Error::NativeBoundary {
-            code: ErrorCode::Unauthorized,
-            reason: "root source is not selected by its original admission",
-        })?;
-    current_owner.require_volume_grant(
-        project,
-        VolumeOperation::Read,
-        &mut Some(&mut &PreparationIo::from_native_work(work)?),
-    )?;
+        .get(key)
+        .ok_or_else(invalid)?;
+    let io = PreparationIo::from_native_work(work)?;
+    owner.require_volume_grant(project, VolumeOperation::Read, &mut Some(&mut &io))?;
     if context.durable_task_id() != Some(request.binding.task_id)
-        || current_owner.task_id() != request.binding.task_id
+        || owner.task_id() != request.binding.task_id
         || preparation.command.operation_id
             != crate::pi_root_inputs::preparation_operation(request.binding.task_id, work)?
         || preparation.plan.provider != ROOT_ALLOCATION_PROVIDER
         || preparation.plan.effect_kind != ROOT_ALLOCATION_EFFECT
         || preparation.plan.guarantee != EffectGuarantee::AtMostOnce
     {
-        return Err(Error::NativeBoundary {
-            code: ErrorCode::Unauthorized,
-            reason: "root source differs from its original admitted creator operation",
-        });
+        return Err(invalid());
     }
     let PiRootIntent::Project { paths, .. } = &request.root else {
-        return Err(Error::NativeBoundary {
-            code: ErrorCode::Unauthorized,
-            reason: "scratch-only admission has no native project source",
-        });
+        return Err(invalid());
     };
-    let path = paths.get(root_key).ok_or(Error::NativeBoundary {
-        code: ErrorCode::Unauthorized,
-        reason: "root source has no original configured binding",
-    })?;
-    current_owner
-        .verify(
-            false,
-            &mut Some(&mut &PreparationIo::from_native_work(work)?),
-        )
-        .await?;
+    let path = paths.get(key).ok_or_else(invalid)?;
+    owner.verify(false, &mut Some(&mut &io)).await?;
     let identity = work.root_identity(Path::new(path))?;
     if let Some(expected) = expected
         && identity != expected
@@ -66,81 +47,56 @@ pub(crate) async fn guard_root_preparation_source_with_native_work(
             custody: None,
         });
     }
-    current_owner
-        .verify(
-            false,
-            &mut Some(&mut &PreparationIo::from_native_work(work)?),
-        )
-        .await?;
+    owner.verify(false, &mut Some(&mut &io)).await?;
     Ok(identity)
 }
 
 impl PiRootProvider {
-    /// Verifies a created root against its original output and current readonly owner.
     pub(crate) async fn verify_created_source(
         &self,
         key: &str,
-        expected_allocation: &PiRootAllocation,
+        expected: &PiRootAllocation,
         work: &NativeMaterializationWork,
     ) -> Result<acyclic_fs::NativeRootIdentity> {
-        work.admit(WorkCounters::UNCHARGED)?;
-        let context = &self.preparation.context;
         let request = &self.preparation.request;
+        let invalid =
+            || Self::native_failure("created source differs from its original allocation");
+        let context = &self.preparation.context;
         if context.durable_task_id() != Some(request.binding.task_id) {
-            return Err(Error::NativeBoundary {
-                code: ErrorCode::Unauthorized,
-                reason: "created root source differs from the original readonly task",
-            });
+            return Err(invalid());
         }
-        let volume = request
-            .binding
-            .project_volumes
-            .get(key)
-            .ok_or(Error::NativeBoundary {
-                code: ErrorCode::Unauthorized,
-                reason: "created source is not an originally selected root",
-            })?;
-        let mut io =
-            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
-        let read = volume.capability(VolumeOperation::Read, &mut Some(&mut io))?;
-        if !context.scope().grants().contains(&read) {
-            return Err(Error::NativeBoundary {
-                code: ErrorCode::Unauthorized,
-                reason: "created source is outside the original task read scope",
-            });
-        }
-        expected_allocation.validate(&request.binding)?;
+        require_read(
+            context,
+            request
+                .binding
+                .project_volumes
+                .get(key)
+                .ok_or_else(invalid)?,
+            work,
+        )?;
+        expected.validate(&request.binding)?;
         let effect = self.effect_id_with_native_work(work)?;
-        let attempt = EffectAttemptId::from_bytes(effect.into_bytes());
-        let observed = self
-            .observe_allocation_with_native_work(attempt, work)
+        let allocation = self
+            .observe_allocation_with_native_work(
+                EffectAttemptId::from_bytes(effect.into_bytes()),
+                work,
+            )
             .await?
-            .ok_or_else(|| {
-                PiRootProvider::native_failure("created root lacks its original successful output")
-            })?;
-        if !same_allocation(expected_allocation, &observed.0.1) {
-            return Err(PiRootProvider::native_failure(
-                "created root substitutes original allocation evidence",
-            ));
+            .ok_or_else(invalid)?;
+        if !same_allocation(expected, &allocation.0.1) {
+            return Err(invalid());
         }
         let PiRootIntent::Project { paths, .. } = &request.root else {
-            return Err(PiRootProvider::native_failure(
-                "scratch-only allocation has no created native source",
-            ));
+            return Err(invalid());
         };
-        let path = paths.get(key).ok_or_else(|| {
-            PiRootProvider::native_failure("created source has no original native selection")
-        })?;
-        let identity = work.root_identity(Path::new(path))?;
+        let identity = work.root_identity(Path::new(paths.get(key).ok_or_else(invalid)?))?;
         let expected = acyclic_fs::NativeRootIdentity::from_bytes(
-            observed
+            allocation
                 .0
                 .1
                 .roots
                 .get(key)
-                .ok_or_else(|| {
-                    PiRootProvider::native_failure("created source has no original root allocation")
-                })?
+                .ok_or_else(invalid)?
                 .native_root_identity,
         );
         if identity != expected {
@@ -154,13 +110,31 @@ impl PiRootProvider {
         }
         Ok(identity)
     }
+
+    pub(super) async fn acquire_original_source_with_native_work(
+        &self,
+        key: &str,
+        path: &str,
+        admission: SharedRootAdmission,
+        expected: Option<acyclic_fs::NativeRootIdentity>,
+        work: &NativeMaterializationWork,
+    ) -> Result<Arc<SharedPhysicalRoot>> {
+        let owner = self.execution_owner()?;
+        self.shared_roots
+            .acquire_with_native_work(Path::new(path), admission, work, || {
+                guard_root_preparation_source_with_native_work(
+                    &self.preparation.context,
+                    owner,
+                    &self.preparation,
+                    key,
+                    expected,
+                    work,
+                )
+            })
+            .await
+    }
 }
 
-/// Selected original-root source evidence under the caller's remaining quota.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "independent original source and bounded observer arguments"
-)]
 pub(crate) async fn prove_root_project_source_with_native_work(
     owner: Arc<PiOwnerConfig>,
     resources: &ServiceResources,
@@ -170,23 +144,16 @@ pub(crate) async fn prove_root_project_source_with_native_work(
     intent: &PiRootIntent,
     project: &VolumeRef,
     snapshot: acyclic_fs::LazySnapshotRef,
-    context: Arc<acyclic_harness::runtime::TaskContext>,
+    context: Arc<TaskContext>,
     work: &NativeMaterializationWork,
 ) -> Result<()> {
-    let mut io = acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
-    let read = project.capability(VolumeOperation::Read, &mut Some(&mut io))?;
-    if !context.scope().grants().contains(&read) {
-        return Err(Error::NativeBoundary {
-            code: ErrorCode::Unauthorized,
-            reason: "root source is outside the original task read scope",
-        });
-    }
+    require_read(&context, project, work)?;
     let preparation = load_original_preparation_with_native_work(
         &owner,
         &filesystem,
         binding,
         intent,
-        Arc::clone(&context),
+        context,
         work,
     )
     .await?;
@@ -199,149 +166,40 @@ pub(crate) async fn prove_root_project_source_with_native_work(
         None,
         work.clone(),
     )?;
-    let effect = provider.effect_id_with_native_work(work)?;
-    let attempt = EffectAttemptId::from_bytes(effect.into_bytes());
-    let original = provider
-        .authenticate_with_native_work(attempt, work)
-        .await?
-        .ok_or_else(|| PiRootProvider::native_failure("original root effect is absent"))?;
-    if !matches!(original.0.status, EffectStatus::Succeeded { .. }) {
-        return Err(PiRootProvider::native_failure(
-            "original root effect is not successful",
-        ));
-    }
-    let reference = provider
-        .original_artifact_with_native_work(effect, attempt, "result", work)
-        .await?
-        .ok_or_else(|| {
-            PiRootProvider::native_failure(
-                "root source has no canonical successful allocation output",
-            )
-        })?;
-    let recorded = provider
-        .read_with_native_work::<PiRootAllocation>(&reference.0, work)
-        .await?;
-    recorded.0.validate(binding)?;
+    let invalid =
+        || PiRootProvider::native_failure("snapshot differs from its original root allocation");
     let key = binding
         .project_volumes
         .iter()
         .find_map(|(key, volume)| (volume == project).then_some(key))
-        .ok_or_else(|| {
-            PiRootProvider::native_failure("project is not an originally selected root source")
-        })?;
-    let root = recorded
-        .0
-        .roots
-        .get(key)
-        .ok_or_else(|| PiRootProvider::native_failure("root allocation is missing"))?;
+        .ok_or_else(invalid)?;
+    let effect = provider.effect_id_with_native_work(work)?;
+    let allocation = provider
+        .observe_allocation_with_native_work(EffectAttemptId::from_bytes(effect.into_bytes()), work)
+        .await?
+        .ok_or_else(invalid)?;
+    allocation.0.1.validate(binding)?;
+    let root = allocation.0.1.roots.get(key).ok_or_else(invalid)?;
     if snapshot.workspace_id.into_bytes() != root.repository_workspace_id
         || snapshot.source.identity != root.source_identity
         || snapshot.source.epoch < root.source_epoch
     {
-        return Err(PiRootProvider::native_failure(
-            "snapshot substitutes original root workspace or source",
-        ));
-    }
-    let inputs_reference = provider
-        .original_artifact_with_native_work(effect, attempt, "attachments", work)
-        .await?
-        .ok_or_else(|| {
-            PiRootProvider::native_failure("root source has no original attachment input")
-        })?;
-    let inputs = provider
-        .read_with_native_work::<BTreeMap<String, (SourceReference, [u8; 16])>>(
-            &inputs_reference.0,
-            work,
-        )
-        .await?;
-    let PiRootIntent::Project { paths, .. } = intent else {
-        return Err(PiRootProvider::native_failure(
-            "scratch-only root has no native project source",
-        ));
-    };
-    if !inputs.0.keys().eq(paths.keys()) {
-        return Err(PiRootProvider::native_failure(
-            "root source selection differs from original attachment",
-        ));
-    }
-    let input = inputs
-        .0
-        .get(key)
-        .ok_or_else(|| PiRootProvider::native_failure("root attachment input is missing"))?;
-    provider.validate_attachment(input)?;
-    if input.0.identity != root.source_identity
-        || input.0.epoch != root.source_epoch
-        || input.1 != root.native_root_identity
-    {
-        return Err(PiRootProvider::native_failure(
-            "root source allocation differs from original attachment",
-        ));
-    }
-    let generation = provider
-        .creation_with_native_work(
-            effect,
-            attempt,
-            key,
-            project,
-            VolumeConfig::native(Lifecycle::Durable),
-            work,
-        )
-        .await?
-        .ok_or_else(|| {
-            PiRootProvider::native_failure("root source filesystem creation is absent")
-        })?;
-    if generation.workspace().id() != snapshot.workspace_id {
-        return Err(PiRootProvider::native_failure(
-            "root source snapshot substitutes actual creation",
-        ));
-    }
-    let state = provider
-        .store
-        .load_lazy_workspace(
-            snapshot.workspace_id,
-            &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-                work,
-                cancellation: work.cancellation(),
-            },
-        )
-        .await?
-        .ok_or_else(|| PiRootProvider::native_failure("root source lazy binding is absent"))?;
-    state.validate_root_binding(snapshot.workspace_id, input.0)?;
-    let identity = work.root_identity(Path::new(&paths[key]))?;
-    if identity.to_bytes() != root.native_root_identity
-        || !provider
-            .observe_conversation_with_native_work(effect, attempt, work)
-            .await?
-    {
-        return Err(PiRootProvider::native_failure(
-            "root source native identity or canonical binding differs",
-        ));
+        return Err(invalid());
     }
     Ok(())
 }
-impl PiRootProvider {
-    pub(super) fn acquire_original_source_with_native_work<'a>(
-        &'a self,
-        key: &'a str,
-        path: &'a str,
-        admission: SharedRootAdmission,
-        expected: Option<acyclic_fs::NativeRootIdentity>,
-        work: &'a NativeMaterializationWork,
-    ) -> impl std::future::Future<Output = Result<Arc<SharedPhysicalRoot>>> + Send + 'a {
-        async move {
-            let owner = self.execution_owner()?;
-            self.shared_roots
-                .acquire_with_native_work(Path::new(path), admission, work, || {
-                    guard_root_preparation_source_with_native_work(
-                        self.preparation.context.as_ref(),
-                        owner,
-                        &self.preparation,
-                        key,
-                        expected,
-                        work,
-                    )
-                })
-                .await
-        }
+
+fn require_read(
+    context: &TaskContext,
+    project: &VolumeRef,
+    work: &NativeMaterializationWork,
+) -> Result<()> {
+    let mut io = acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
+    let read = project.capability(VolumeOperation::Read, &mut Some(&mut io))?;
+    if !context.scope().grants().contains(&read) {
+        return Err(PiRootProvider::native_failure(
+            "root source is outside the original task read scope",
+        ));
     }
+    Ok(())
 }

@@ -364,16 +364,11 @@ impl PiOwnerConfig {
         ))
     }
 
-    pub(crate) fn validate_root(
-        &self,
-        binding: &super::PiTaskBinding,
-        work: &NativeMaterializationWork,
-    ) -> Result<()> {
-        binding.validate_with_native_work(
+    pub(crate) fn validate_root(&self, binding: &super::PiTaskBinding) -> Result<()> {
+        binding.validate(
             None,
-            binding.project_volumes.keys().map(String::as_str),
+            binding.project_volumes.keys().map(|key| key.as_str()),
             true,
-            work,
         )?;
         if binding.task_id != self.policy.root_task
             || binding.agent_id != self.policy.agent

@@ -22,6 +22,56 @@ pub struct NativeMountSession {
 }
 
 impl NativeMountSession {
+    /// Recognizes only entries still owned by this mount's held parent resources.
+    pub fn owns_parent_entry(
+        &self,
+        entry: &crate::native_host::HostListedEntry,
+        work: &NativeMaterializationWork,
+    ) -> Result<bool, crate::NativeTreeMaterializationError> {
+        let Some(stat) = &entry.stat else {
+            return Ok(false);
+        };
+        let guard = self.destination_guard.as_ref();
+        #[cfg(windows)]
+        let guard = guard.or_else(|| {
+            self.driver
+                .as_ref()?
+                .retirement
+                .as_ref()?
+                .destination_guard
+                .as_ref()
+        });
+        if let Some(guard) = guard {
+            for (name, file) in [
+                (
+                    guard
+                        .fence_name
+                        .as_ref()
+                        .and_then(|name| std::str::from_utf8(name).ok()),
+                    guard.file.as_ref(),
+                ),
+                (Some(NATIVE_REGISTRY_NAME), guard.registry_file.as_ref()),
+            ] {
+                if let (Some(name), Some(file)) = (name, file) {
+                    work.charge(
+                        crate::materializer::NativeResourceCredit::Items.delta(name.len() as u64),
+                    )?;
+                    if entry.is_named(name)
+                        && stat.identity()
+                            == crate::native_host::stat_file(file, &mut &*work)?.identity()
+                    {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        #[cfg(windows)]
+        if let Some(driver) = &self.driver {
+            return driver.owns_parent_entry(entry, work);
+        }
+        Ok(false)
+    }
+
     pub(super) fn new(
         request: NativeMountRequest,
         retained_source: Option<Arc<dyn MountFilesystem>>,

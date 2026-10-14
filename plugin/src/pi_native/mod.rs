@@ -1,6 +1,7 @@
 //! Pi's pinned native command over the existing task/effect and namespace owners.
 
 use super::{PiScratchAllocation, PiTaskBinding, pi_caller};
+use crate::pi_root_provider::digest_pi_value;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget, WorkCounters};
 use acyclic_harness::JsonValueSchema;
 use acyclic_harness::{
@@ -53,17 +54,6 @@ pub(crate) use root::*;
 
 fn result_schema() -> Result<&'static serde_json::value::RawValue> {
     serde_json::from_str(r#"{"type":"object","additionalProperties":false,"required":["success","exit_code","stdout","stderr","stop"],"properties":{"success":{"type":"boolean"},"exit_code":{"type":["integer","null"]},"stdout":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255}},"stderr":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255}},"stop":{"oneOf":[{"type":"null"},{"type":"object","additionalProperties":false,"required":["kind","message","cleanup_completed"],"properties":{"kind":{"enum":["output_limit","timeout","control_stopped","capture_failed"]},"message":{"type":"string"},"cleanup_completed":{"type":"boolean"}}}]}}}"#).map_err(|error| invalid(&error.to_string()))
-}
-
-fn pi_native_string(
-    value: &str,
-    work: &NativeMaterializationWork,
-) -> Result<(String, acyclic_fs::NativeAllocation)> {
-    let (bytes, custody) = work.copy_bytes(value.as_bytes())?;
-    Ok((
-        String::from_utf8(bytes).map_err(|_| invalid("SDK copy is not UTF-8"))?,
-        custody,
-    ))
 }
 
 /// Funds vector backing before allocation and retains its actual capacity.

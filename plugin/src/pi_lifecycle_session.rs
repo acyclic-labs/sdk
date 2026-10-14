@@ -63,7 +63,7 @@ impl PiSession {
                 "Pi native lifetime has no original root binding".to_owned(),
             ));
         };
-        protected.validate_root(root, work)?;
+        protected.validate_root(root)?;
         self.runtime
             .verify_owner_with_native_work(&protected, work)?;
         let host = pi_native_host::PiNativeCommandHost::new(
@@ -86,7 +86,7 @@ impl PiSession {
     ) -> RootResult<()> {
         let work = query_work;
         let _graph_receipt =
-            pi_recovery::observe_pi_session(&self.runtime, &self.state, query_work).await?;
+            pi_recovery::observe_pi_session(&self.runtime.runtime, &self.state, query_work).await?;
         self.binding(caller)?;
         self.authorize_subtree(caller, target)?;
         let caller_admission = self
@@ -236,172 +236,169 @@ impl PiSession {
         finish_native_drain(failure)
     }
 
-    pub(super) fn recover_native_children<'a>(
-        &'a mut self,
-        query_work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> impl std::future::Future<Output = RootResult<()>> + Send + 'a {
-        async move {
-            let cancellation = query_work.cancellation().clone();
-            let _graph_receipt =
-                pi_recovery::observe_pi_session(&self.runtime, &self.state, query_work).await?;
-            if self.state.routes.is_empty() {
-                return Ok(());
-            }
-            let native = self.native_host_with_native_work(query_work)?;
-            let protected = std::sync::Arc::clone(&native.protected);
-            self.runtime
-                .verify_owner_with_native_work(&protected, query_work)?;
-            let root_task = protected.policy().root_task;
-            let coordinator = pi_fork::PiForkCoordinator::new(
-                self.runtime.clone(),
-                self.filesystem.clone(),
-                self.stream.clone(),
-                &self.resources,
-                protected.clone(),
-                query_work,
-            )?;
-            let mut plans = BTreeMap::new();
-            for route in self.state.routes.values() {
-                let parent = self.alias_task(&route.parent_agent_id)?;
-                let original =
-                    pi_fork::original_operation(root_task, parent, &route.turn_id, query_work)?;
-                let plan = coordinator
-                    .load_original_plan(original)
+    pub(super) async fn recover_native_children(
+        &mut self,
+        query_work: &acyclic_fs::NativeMaterializationWork,
+    ) -> RootResult<()> {
+        let cancellation = query_work.cancellation().clone();
+        let _graph_receipt =
+            pi_recovery::observe_pi_session(&self.runtime.runtime, &self.state, query_work).await?;
+        if self.state.routes.is_empty() {
+            return Ok(());
+        }
+        let native = self.native_host_with_native_work(query_work)?;
+        let protected = std::sync::Arc::clone(&native.protected);
+        self.runtime
+            .verify_owner_with_native_work(&protected, query_work)?;
+        let root_task = protected.policy().root_task;
+        let coordinator = pi_fork::PiForkCoordinator::new(
+            self.runtime.clone(),
+            self.filesystem.clone(),
+            self.stream.clone(),
+            &self.resources,
+            protected.clone(),
+            query_work,
+        )?;
+        let mut plans = BTreeMap::new();
+        for route in self.state.routes.values() {
+            let parent = self.alias_task(&route.parent_agent_id)?;
+            let original =
+                pi_fork::original_operation(root_task, parent, &route.turn_id, query_work)?;
+            let plan = coordinator
+                .load_original_plan(original)
+                .await?
+                .ok_or_else(|| {
+                    Error::Invalid(
+                        "Pi Created route has no original immutable fork plan".to_owned(),
+                    )
+                })?;
+            validate_created_native_route(route, parent, &plan, query_work)?;
+            plans.insert(plan.commit.child.task_id, (route, parent, plan));
+        }
+
+        let allocated = pi_native::pi_native_vec(plans.len(), query_work)?;
+        let mut remaining = allocated.0;
+        remaining.extend(plans.keys().copied());
+        let mut child_sources = BTreeMap::new();
+        while !remaining.is_empty() {
+            let before = remaining.len();
+            let mut index = 0;
+            while let Some(&task) = remaining.get(index) {
+                let (route, parent, plan) = plans
+                    .get(&task)
+                    .ok_or_else(|| invalid("Pi recovery task lost its original fork plan"))?;
+                let root_key = self
+                    .roots
+                    .keys()
+                    .find(|key| pi_root::root_identity_key_matches(key, &route.root_id))
+                    .ok_or_else(|| {
+                        Error::Invalid(
+                            "Pi original selected Root was not restored before child recovery"
+                                .to_owned(),
+                        )
+                    })?
+                    .as_str();
+                let source = if plan.commit.source_task == root_task {
+                    Arc::clone(
+                        &self
+                            .roots
+                            .get(root_key)
+                            .ok_or_else(|| invalid("Pi original Root was not restored"))?
+                            .workspace,
+                    )
+                } else if let Some(source) = child_sources.get(&plan.commit.source_task) {
+                    Arc::clone(source)
+                } else {
+                    index += 1;
+                    continue;
+                };
+                let observed = coordinator
+                    .observe_prepared(plan, source.clone(), cancellation.clone())
                     .await?
                     .ok_or_else(|| {
                         Error::Invalid(
-                            "Pi Created route has no original immutable fork plan".to_owned(),
+                            "Pi Created route has no authenticated successful original creator"
+                                .to_owned(),
                         )
                     })?;
-                validate_created_native_route(route, parent, &plan, query_work)?;
-                plans.insert(plan.commit.child.task_id, (route, parent, plan));
+                validate_created_native_report(route, &observed)?;
+                native.register_prepared(observed)?;
+                let workspace = native.live_workspace(task).ok_or_else(|| {
+                    Error::Invalid("Pi observed child lost its actual creator workspace".to_owned())
+                })?;
+                child_sources.insert(task, workspace);
+                native
+                    .register_cold_locator_with_native_work(
+                        task,
+                        *parent,
+                        &route.turn_id,
+                        root_key,
+                        source,
+                        query_work,
+                    )
+                    .await?;
+                remaining.swap_remove(index);
             }
-
-            let allocated = pi_native::pi_native_vec(plans.len(), query_work)?;
-            let mut remaining = allocated.0;
-            remaining.extend(plans.keys().copied());
-            let mut child_sources = BTreeMap::new();
-            while !remaining.is_empty() {
-                let before = remaining.len();
-                let mut index = 0;
-                while let Some(task) = remaining.get(index).copied() {
-                    let (route, parent, plan) = plans
-                        .get(&task)
-                        .ok_or_else(|| invalid("Pi recovery task lost its original fork plan"))?;
-                    let root_key = self
-                        .roots
-                        .keys()
-                        .find(|key| pi_root::root_identity_key_matches(key, &route.root_id))
-                        .ok_or_else(|| {
-                            Error::Invalid(
-                                "Pi original selected Root was not restored before child recovery"
-                                    .to_owned(),
-                            )
-                        })?
-                        .as_str();
-                    let source = if plan.commit.source_task == root_task {
-                        Arc::clone(
-                            &self
-                                .roots
-                                .get(root_key)
-                                .ok_or_else(|| invalid("Pi original Root was not restored"))?
-                                .workspace,
-                        )
-                    } else if let Some(source) = child_sources.get(&plan.commit.source_task) {
-                        Arc::clone(source)
-                    } else {
-                        index += 1;
-                        continue;
-                    };
-                    let observed = coordinator
-                        .observe_prepared(plan, source.clone(), cancellation.clone())
-                        .await?
-                        .ok_or_else(|| {
-                            Error::Invalid(
-                                "Pi Created route has no authenticated successful original creator"
-                                    .to_owned(),
-                            )
-                        })?;
-                    validate_created_native_report(route, &observed)?;
-                    native.register_prepared(observed).await?;
-                    let workspace = native.live_workspace(task).ok_or_else(|| {
-                        Error::Invalid(
-                            "Pi observed child lost its actual creator workspace".to_owned(),
-                        )
-                    })?;
-                    child_sources.insert(task, workspace);
-                    native
-                        .register_cold_locator_with_native_work(
-                            task,
-                            *parent,
-                            &route.turn_id,
-                            root_key,
-                            source,
-                            query_work,
-                        )
-                        .await?;
-                    remaining.swap_remove(index);
-                }
-                if remaining.len() == before {
-                    return Err(Error::Invalid(
-                        "Pi original selected-source graph is incomplete or cyclic".to_owned(),
-                    ));
-                }
+            if remaining.len() == before {
+                return Err(Error::Invalid(
+                    "Pi original selected-source graph is incomplete or cyclic".to_owned(),
+                ));
             }
-
-            for (task, (route, _, plan)) in &plans {
-                if route.lifecycle.is_frozen() || self.native_jobs.contains_key(task) {
-                    continue;
-                }
-                let observed = {
-                    let mut io = acyclic_harness::store::HistoryWork::new(
-                        PreparationIo::from_native_work(query_work)?,
-                    );
-                    HistoryIo::retain_owned(
-                        &mut io,
-                        std::mem::size_of::<WorkPull>()
-                            .max(std::mem::size_of::<TaskWorkerAttempt>())
-                            as u64,
-                    )?;
-                    let value = self
-                        .runtime
-                        .runtime
-                        .task_host()
-                        .recover_work(*task, &mut Some(&mut io))
-                        .await?;
-                    (value, io.into_custody()?)
-                };
-                match &observed.0 {
-                    WorkPull::Claimed(_) | WorkPull::Unresolved { .. } => {
-                        let native = native.clone();
-                        let task = *task;
-                        let job = spawn_native_job(query_work, || async move {
-                            native.recover_child(task).await
-                        })?;
-                        self.native_jobs.insert(task, job);
-                    }
-                    WorkPull::Idle
-                        if original_native_first_dispatch_pending(
-                            &self.runtime,
-                            &self.stream,
-                            &protected,
-                            plan,
-                            query_work,
-                        )
-                        .await? =>
-                    {
-                        let native = native.clone();
-                        let task = *task;
-                        let job = spawn_native_job(query_work, || async move {
-                            native.run_child(task).await
-                        })?;
-                        self.native_jobs.insert(task, job);
-                    }
-                    WorkPull::Idle => {}
-                }
-            }
-            Ok(())
         }
+
+        for (task, (route, _, plan)) in &plans {
+            if route.lifecycle.is_frozen() || self.native_jobs.contains_key(task) {
+                continue;
+            }
+            let observed = {
+                let mut io = acyclic_harness::store::HistoryWork::new(
+                    PreparationIo::from_native_work(query_work)?,
+                );
+                HistoryIo::retain_owned(
+                    &mut io,
+                    std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>())
+                        as u64,
+                )?;
+                let value = self
+                    .runtime
+                    .runtime
+                    .task_host()
+                    .recover_work(*task, &mut Some(&mut io))
+                    .await?;
+                (value, io.into_custody()?)
+            };
+            match &observed.0 {
+                WorkPull::Claimed(_) | WorkPull::Unresolved { .. } => {
+                    let native = native.clone();
+                    let task = *task;
+                    let job = spawn_native_job(query_work, || async move {
+                        native.recover_child(task).await
+                    })?;
+                    self.native_jobs.insert(task, job);
+                }
+                WorkPull::Idle
+                    if original_native_first_dispatch_pending(
+                        &self.runtime,
+                        &self.stream,
+                        &protected,
+                        plan,
+                        query_work,
+                    )
+                    .await? =>
+                {
+                    let native = native.clone();
+                    let task = *task;
+                    let job =
+                        spawn_native_job(
+                            query_work,
+                            || async move { native.run_child(task).await },
+                        )?;
+                    self.native_jobs.insert(task, job);
+                }
+                WorkPull::Idle => {}
+            }
+        }
+        Ok(())
     }
 
     pub(super) async fn drain_native(
@@ -410,7 +407,7 @@ impl PiSession {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> RootResult<()> {
         let mut failure = None;
-        let graph = pi_recovery::observe_pi_session(&self.runtime, &self.state, work).await;
+        let graph = pi_recovery::observe_pi_session(&self.runtime.runtime, &self.state, work).await;
         let authenticated = graph.is_ok();
         let _graph_receipt = match graph {
             Ok(receipt) => Some(receipt),

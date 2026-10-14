@@ -156,11 +156,7 @@ impl<'a> PiForkCoordinator<'a> {
         )
         .await;
     }
-    pub(super) async fn authenticate_launch(
-        &self,
-        context: &acyclic_harness::runtime::TaskContext,
-        plan: &PiForkPlan,
-    ) -> Result<()> {
+    pub(super) async fn authenticate_launch(&self, plan: &PiForkPlan) -> Result<()> {
         let child_input: (PiTaskInput, acyclic_fs::NativeAllocation) = self.decode_input_value(
             &plan.request.child.input,
             acyclic_harness::JsonValueSchema::None,
@@ -190,7 +186,6 @@ impl<'a> PiForkCoordinator<'a> {
                 reason: "Pi native launch changed its original immutable input locator",
             });
         }
-        self.require_input_read(context)?;
         let bytes = self.read_original_input(&reference.0).await?;
         let actual: (PiNativeLaunchIntent, acyclic_fs::NativeAllocation) = self
             .decode_original_input(
@@ -205,25 +200,6 @@ impl<'a> PiForkCoordinator<'a> {
             });
         }
         Ok(())
-    }
-
-    pub(super) fn native_copy<T: serde::de::DeserializeOwned, S: Serialize>(
-        &self,
-        value: &S,
-        schema: &'static acyclic_harness::JsonValueSchema,
-        work: &NativeMaterializationWork,
-    ) -> Result<(T, acyclic_fs::NativeAllocation)> {
-        let maximum = self.owner.policy().maximum_payload_bytes;
-        let bytes = crate::pi_root_provider::canonical_pi_value(value, maximum, work)?;
-        crate::pi_root_provider::guarded_pi_decode(
-            &bytes.0,
-            maximum,
-            maximum,
-            acyclic_harness::wire::ErrorCode::Invalid,
-            schema,
-            FORK_PLAN_DIAGNOSTIC_LABEL_BYTES,
-            work,
-        )
     }
 
     pub(super) async fn native_generation(
@@ -255,28 +231,19 @@ impl<'a> PiForkCoordinator<'a> {
                 reason: "generation is outside the original task read scope",
             });
         }
-        let name = {
-            let mut io =
-                acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
-            let value = volume.storage_name(&mut Some(&mut io))?;
-            (value, io.into_custody()?)
-        };
+        let name = volume.storage_name(&mut Some(&mut io))?;
         let workspace = self
             .resources
             .fs
-            .open_workspace(&name.0, work, work.cancellation())
-            .await
-            .map_err(|error| native_workspace_error((error, None)))?;
+            .open_workspace(&name, work, work.cancellation())
+            .await?;
         (owner)
             .verify(
                 false,
                 &mut Some(&mut &PreparationIo::from_native_work(&self.work)?),
             )
             .await?;
-        let head = workspace
-            .head(work, work.cancellation())
-            .await
-            .map_err(|error| native_workspace_error((error, None)))?;
+        let head = workspace.head(work, work.cancellation()).await?;
         (owner)
             .verify(
                 false,

@@ -88,7 +88,7 @@ async fn open(
 ) -> acyclic_harness::Result<(PiTaskRuntime, acyclic_fs::NativeMaterializationWork)> {
     let work = work();
     let owner = PiOwnerConfig::load(path, Path::new(""), &work)?;
-    owner.validate_root(binding, &work)?;
+    owner.validate_root(binding)?;
     let (filesystem, stream) = storage(path, owner.policy().journal.provider()).await;
     let runtime = PiTaskRuntime::open_with_native_work(
         stream,
