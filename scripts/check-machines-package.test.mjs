@@ -38,7 +38,8 @@ git() {
 clean_head() {
   [[ "$2" == "$head" && -f "$work/checkout-verified" ]]
   [[ "$1" == "$root" || "$1" == "$package_root" ]]
-  [[ ! -f "$package_root/Cargo.toml.dirty" ]]
+  printf '%s\\n' "$1" >> "$work/clean-calls"
+  [[ ! -f "$1/Cargo.toml.dirty" ]]
 }
 cargo() {
   [[ -f "$work/checkout-verified" ]]
@@ -69,6 +70,8 @@ echo packaged-verified-source
       assert.equal(result.status, mutate ? 1 : 0, result.stderr);
       assert.equal(result.stdout.includes("packaged-verified-source"), !mutate);
       assert.equal(readFileSync(join(directory, "cargo-calls"), "utf8"), mutate ? "metadata\ntest\n" : "metadata\ntest\npackage\n");
+      assert.deepEqual(readFileSync(join(directory, "clean-calls"), "utf8").trim().split("\n"),
+        ["package-source", "original", "package-source"].map(name => `${directory.replaceAll("\\", "/")}/${name}`));
     } finally {
       assert.ok(resolve(directory).startsWith(resolve(".tools") + sep));
       rmSync(directory, { recursive: true, force: true });
