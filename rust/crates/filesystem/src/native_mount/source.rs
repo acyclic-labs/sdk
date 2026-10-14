@@ -645,6 +645,7 @@ pub(super) fn native_workspace_errno(error: &crate::WorkspaceError) -> i32 {
     }
 }
 
+#[cfg(target_os = "macos")]
 pub(crate) fn native_workspace_failure_is_fatal(error: &crate::WorkspaceError) -> bool {
     if let crate::WorkspaceError::Filesystem(crate::FsError::NativeKernel(error)) = error {
         return native_materialization_failure_is_fatal(error);
@@ -659,6 +660,7 @@ pub(crate) fn native_workspace_failure_is_fatal(error: &crate::WorkspaceError) -
     )
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn native_materialization_failure_is_fatal(
     error: &crate::NativeTreeMaterializationError,
 ) -> bool {

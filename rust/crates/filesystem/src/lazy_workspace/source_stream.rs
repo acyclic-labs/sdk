@@ -21,7 +21,10 @@ impl<D: DemandSource> DemandBlobSource<'_, D> {
         if bytes.is_empty() || bytes.len() as u64 > self.wanted(destination) {
             return Err(DemandError::StaleVersion);
         }
-        destination[..bytes.len()].copy_from_slice(bytes);
+        destination
+            .get_mut(..bytes.len())
+            .ok_or(DemandError::StaleVersion)?
+            .copy_from_slice(bytes);
         self.offset += bytes.len() as u64;
         Ok(bytes.len())
     }

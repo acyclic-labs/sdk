@@ -38,16 +38,7 @@ pub(super) async fn list_directory_to_file_root_with_accounting<
         if record.kind != FileKind::Directory {
             return Err(FsError::NotDirectory);
         }
-        crate::kernel::list_tree_entries_async_with_accounting(
-            &volume.fs.inner.objects,
-            entries,
-            after,
-            maximum_entries,
-            DecodeLimits::for_volume(volume.config),
-            accounting,
-            cancellation.clone(),
-            None,
-        )
+        crate::kernel::list_tree_entries_async_with_accounting(&volume.fs.inner.objects, entries, ((after).map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded), maximum_entries), DecodeLimits::for_volume(volume.config), accounting, cancellation, None,)
         .await
     }
     .await;
@@ -157,34 +148,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 if record.kind != FileKind::Directory {
                     return Err(FsError::NotDirectory);
                 }
-                let (page, allocation) = if let std::ops::Bound::Included(at) = after {
-                    crate::kernel::list_tree_entries_at_or_after_async_with_accounting(
-                        &this.volume.fs.inner.objects,
-                        entries,
-                        at,
-                        maximum_entries,
-                        DecodeLimits::for_volume(this.volume.config),
-                        accounting,
-                        cancellation,
-                        Some(&this.dependencies.data_custody),
-                    )
-                    .await?
-                } else {
-                    crate::kernel::list_tree_entries_async_with_accounting(
-                        &this.volume.fs.inner.objects,
-                        entries,
-                        match after {
-                            std::ops::Bound::Excluded(name) => Some(name),
-                            _ => None,
-                        },
-                        maximum_entries,
-                        DecodeLimits::for_volume(this.volume.config),
-                        accounting,
-                        cancellation.clone(),
-                        Some(&this.dependencies.data_custody),
-                    )
-                    .await?
-                };
+                let (page, allocation) = crate::kernel::list_tree_entries_async_with_accounting(
+                    &this.volume.fs.inner.objects,
+                    entries,
+                    (after, maximum_entries),
+                    DecodeLimits::for_volume(this.volume.config),
+                    accounting,
+                    cancellation,
+                    Some(&this.dependencies.data_custody),
+                ).await?;
                 let page = (page, allocation);
                 if this.tracks_observations() {
                     let (cursor, allocation) = match after {

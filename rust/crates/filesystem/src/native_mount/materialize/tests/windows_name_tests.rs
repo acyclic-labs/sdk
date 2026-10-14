@@ -9,7 +9,7 @@ async fn overlapped_sparse_control_finishes_before_native_writes()
         super::restore_recovery_tests::FINITE_MATERIALIZATION_BUDGET,
         &cancellation,
     )
-    .map_err(|failure| failure.0)?;
+    .map_err(|failure| failure.error)?;
     let root = HostRoot::open(directory.path(), &mut receipt.custody.work().clone())?;
     let root = receipt.owned_arc(root, 0)?;
     let limits = crate::model::VolumeLimits::default();
@@ -71,7 +71,7 @@ fn posix_profile_names_materialize_through_utf8_on_windows()
         super::restore_recovery_tests::FINITE_MATERIALIZATION_BUDGET,
         &CancellationToken::new(),
     )
-    .map_err(|failure| failure.0)?;
+    .map_err(|failure| failure.error)?;
     let namespace = NamespacePath::new(vec![valid], limits)?;
     let path = materialize_host_path(None, namespace.components(), &mut receipt)?;
     assert_eq!(path.0, "uni-é中.txt".encode_utf16().collect::<Vec<_>>());

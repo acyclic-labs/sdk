@@ -150,7 +150,6 @@ mod index;
 use index::*;
 mod range;
 pub(crate) use range::read_blob_range_with_accounting;
-use range::*;
 pub use range::{BlobRead, read_blob_range};
 mod error;
 use error::*;

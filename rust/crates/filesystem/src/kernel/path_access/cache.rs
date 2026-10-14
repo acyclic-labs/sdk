@@ -5,7 +5,8 @@ struct CachedObject {
     bytes: OwnedBytes,
 }
 pub(super) struct CacheState {
-    pub(super) slots: ReadOwned<Vec<Option<CachedObject>>>,
+    slots: ReadOwned<Vec<Option<CachedObject>>>,
+
     entry_count: usize,
     pub(super) retained_owned_bytes: u64,
     /// Standalone slots already present in the caller's allocation ledger.
@@ -213,7 +214,7 @@ impl<S> Drop for OperationReadCache<'_, S> {
         }
     }
 }
-pub(super) fn probe_slots(
+fn probe_slots(
     slots: &[Option<CachedObject>],
     object_id: ObjectId,
     accounting: &mut KernelAccounting<'_>,

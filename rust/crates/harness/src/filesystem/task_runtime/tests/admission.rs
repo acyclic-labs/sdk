@@ -17,7 +17,7 @@ async fn native_admission_failure_precedes_post_dispatch_verification_and_deadli
     )
     .map_err(|(cause, work)| Error::NativeConstruction {
         cause,
-        work: Box::new(work),
+        work: work,
     })?;
     let commands = NativeAdmissionFailure {
         clock: fixture.clock.clone(),
@@ -108,7 +108,7 @@ async fn native_machine_without_callback_rejects_before_owner_deadline_or_provid
     )
     .map_err(|(cause, work)| Error::NativeConstruction {
         cause,
-        work: Box::new(work),
+        work: work,
     })?;
     let custody = work
         .claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)
@@ -168,7 +168,7 @@ fn native_step_identity_denial_precedes_string_growth() -> Result<()> {
     )
     .map_err(|(cause, work)| Error::NativeConstruction {
         cause,
-        work: Box::new(work),
+        work: work,
     })?;
     let prefix = work.receipt();
     assert!(matches!(
@@ -201,7 +201,7 @@ async fn original_native_worker_precancel_and_metadata_denial_preserve_exact_lea
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).map_err(
             |(cause, work)| Error::NativeConstruction {
                 cause,
-                work: Box::new(work),
+                work: work,
             },
         )?;
         let (lease, recovery_custody) = fixture.native_lease(&runtime, &work).await?;

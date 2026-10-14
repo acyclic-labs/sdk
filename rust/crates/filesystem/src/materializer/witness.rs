@@ -9,14 +9,24 @@ pub(super) fn encode_native_witness(
     work: &NativeMaterializationWork,
 ) -> Result<(Vec<u8>, NativeAllocation), NativeTreeMaterializationError> {
     let mut header = [0; 67];
-    header[0] = NATIVE_WITNESS_VERSION;
-    for (field, fingerprint) in header[1..].chunks_exact_mut(33).zip([before, after]) {
-        field[0] = u8::from(fingerprint.is_some());
-        field[1..].copy_from_slice(&fingerprint.unwrap_or([0; 32]));
+    let [version, fields @ ..] = &mut header;
+    *version = NATIVE_WITNESS_VERSION;
+    for ([present, data @ ..], fingerprint) in fields
+        .as_chunks_mut::<33>()
+        .0
+        .iter_mut()
+        .zip([before, after])
+    {
+        *present = u8::from(fingerprint.is_some());
+        data.copy_from_slice(&fingerprint.unwrap_or([0; 32]));
     }
     let mut writer = ImageWriter::new(work)?;
-    std::io::Write::write_all(&mut writer, &header)
-        .map_err(|_| writer.failure.take().expect("native encoding failure"))?;
+    std::io::Write::write_all(&mut writer, &header).map_err(|_| {
+        writer
+            .failure
+            .take()
+            .unwrap_or(NativeTreeMaterializationError::InvalidLayout)
+    })?;
     if let Some(metadata) = metadata {
         serde_json::to_writer(&mut writer, &metadata).map_err(|_| {
             writer
@@ -30,24 +40,25 @@ pub(super) fn encode_native_witness(
 
 pub(super) fn decode_native_witness(
     image: &[u8],
-) -> Result<(Option<[u8; 32]>, Option<[u8; 32]>), NativeTreeMaterializationError> {
+) -> Result<[Option<[u8; 32]>; 2], NativeTreeMaterializationError> {
     let header = image
         .get(..67)
         .ok_or(NativeTreeMaterializationError::InvalidLayout)?;
-    if header[0] != NATIVE_WITNESS_VERSION {
+    let (version, fields) = header
+        .split_first()
+        .ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+    if *version != NATIVE_WITNESS_VERSION {
         return Err(NativeTreeMaterializationError::InvalidLayout);
     }
-    let decode = |field: &[u8]| {
-        let fingerprint: [u8; 32] = field[1..]
-            .try_into()
-            .map_err(|_| NativeTreeMaterializationError::InvalidLayout)?;
-        match field[0] {
-            0 if fingerprint == [0; 32] => Ok(None),
-            1 => Ok(Some(fingerprint)),
-            _ => Err(NativeTreeMaterializationError::InvalidLayout),
-        }
+    let decode = |[present, fingerprint @ ..]: &[u8; 33]| match *present {
+        0 if *fingerprint == [0; 32] => Ok(None),
+        1 => Ok(Some(*fingerprint)),
+        _ => Err(NativeTreeMaterializationError::InvalidLayout),
     };
-    Ok((decode(&header[1..34])?, decode(&header[34..67])?))
+    let [before, after] = fields.as_chunks::<33>().0 else {
+        return Err(NativeTreeMaterializationError::InvalidLayout);
+    };
+    Ok([decode(before)?, decode(after)?])
 }
 
 pub(super) fn decode_native_preimage_metadata(

@@ -52,9 +52,9 @@ where E: From<CanonicalDecodeError> + From<crate::WorkError> {
         DOMAIN, VERSION, length, |step| emit(EncodeWorkStep::Allocation(step)), allocation_error,
     )?;
     encoder.u8(LEAF_TAG);
-    encoder.u32(entries.len() as u32);
+    encoder.u32(u32::try_from(entries.len()).map_err(|_| CanonicalDecodeError::LengthOverflow)?);
     for entry in entries {
-        encode_name(&mut encoder, &entry.name);
+        encode_name(&mut encoder, &entry.name)?;
         encoder.fixed(&entry.file_id.into_bytes());
         encoder.u8(entry.kind.tag());
     }
@@ -87,9 +87,9 @@ where
         DOMAIN, VERSION, length, |step| observe(EncodeWorkStep::Allocation(step)), allocation_error,
     )?;
     encoder.u8(INTERNAL_TAG);
-    encoder.u32(children.len() as u32);
+    encoder.u32(u32::try_from(children.len()).map_err(|_| CanonicalDecodeError::LengthOverflow)?);
     for (name, page) in children {
-        encode_name(&mut encoder, name);
+        encode_name(&mut encoder, name)?;
         encoder.fixed(page.digest.as_bytes());
     }
     observe(EncodeWorkStep::Completed(WorkCounters {
@@ -311,10 +311,11 @@ pub fn tree_page_id(page: &TreePage, maximum_items: u32) -> Result<ObjectId, Can
     })
 }
 
-fn encode_name(encoder: &mut Encoder, name: &LogicalName) {
+fn encode_name(encoder: &mut Encoder, name: &LogicalName) -> Result<(), CanonicalDecodeError> {
     encoder.u8(name.encoding().tag());
-    encoder.u32(name.as_bytes().len() as u32);
+    encoder.u32(u32::try_from(name.as_bytes().len()).map_err(|_| CanonicalDecodeError::LengthOverflow)?);
     encoder.fixed(name.as_bytes());
+    Ok(())
 }
 
 fn decode_name<E: From<CanonicalDecodeError>>(

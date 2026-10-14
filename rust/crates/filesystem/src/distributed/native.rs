@@ -59,8 +59,13 @@ impl<'a> AuthorityWork<'a> {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn native_meter(&self) -> Arc<dyn acyclic_native_runtime::NativeReadMeter> {
-        self.original.expect("native SDK funding").state.clone()
+    pub(super) fn native_meter(
+        &self,
+    ) -> Result<Arc<dyn acyclic_native_runtime::NativeReadMeter>, AuthorityStoreError> {
+        self.original
+            .expect("native SDK funding")
+            .authority_read_meter()
+            .map_err(Into::into)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -125,7 +130,7 @@ impl<'a> AuthorityWork<'a> {
             return acyclic_stream::OwnedBytes::from_vec_with_guard_in_place(
                 &mut buffer.0,
                 &mut buffer.1,
-                &self.native_meter(),
+                &self.native_meter()?,
             )
             .map_err(|error| self.native_io_failure(error));
         }
@@ -194,7 +199,7 @@ impl<'a> AuthorityWork<'a> {
     pub(super) fn own_path(&mut self, text: &str) -> Result<StreamPath, AuthorityStoreError> {
         #[cfg(not(target_arch = "wasm32"))]
         if self.is_native() {
-            return StreamPath::new_native(text, &self.native_meter())
+            return StreamPath::new_native(text, &self.native_meter()?)
                 .map_err(|error| self.native_io_failure(error))?
                 .map_err(AuthorityStoreError::NativeStream);
         }
