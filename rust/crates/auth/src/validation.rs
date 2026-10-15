@@ -1,4 +1,5 @@
 use crate::{Error, contract::*, valid_action, valid_resource};
+use std::{collections::HashSet, hash::Hash};
 
 fn require(valid: bool) -> Result<(), Error> {
     if valid { Ok(()) } else { Err(Error::Invalid) }
@@ -108,14 +109,13 @@ pub(crate) fn key_certificate(v: &KeyCertificate) -> Result<(), Error> {
 }
 pub(crate) fn certificates(v: &CertificateChain) -> Result<(), Error> {
     require(!v.keys.is_empty())?;
+    let mut key_ids = HashSet::with_capacity(v.keys.len());
     for (i, cert) in v.keys.iter().enumerate() {
         require(
             cert.key.account_id == v.birth.birth.account_id
                 && cert.key.parent_key_id.as_deref()
                     == i.checked_sub(1).map(|p| v.keys[p].key.key_id.as_str())
-                && !v.keys[..i]
-                    .iter()
-                    .any(|old| old.key.key_id == cert.key.key_id),
+                && key_ids.insert(cert.key.key_id.as_str()),
         )?;
         if i > 0 {
             let parent = &v.keys[i - 1].key;
@@ -125,10 +125,10 @@ pub(crate) fn certificates(v: &CertificateChain) -> Result<(), Error> {
                         >= parent.validity.not_before_unix_seconds
                     && cert.key.validity.expires_at_unix_seconds
                         <= parent.validity.expires_at_unix_seconds
-                    && parent
-                        .parent_revocation_ids
-                        .iter()
-                        .all(|id| cert.key.parent_revocation_ids.contains(id)),
+                    && subset(
+                        cert.key.parent_revocation_ids.iter().map(Vec::as_slice),
+                        parent.parent_revocation_ids.iter().map(Vec::as_slice),
+                    ),
             )?;
         }
     }
@@ -150,7 +150,7 @@ pub(crate) fn signed_snapshot(v: &SignedKeyringSnapshot) -> Result<(), Error> {
 }
 
 fn unique_attributes(values: &[Attribute]) -> bool {
-    let mut names = std::collections::HashSet::with_capacity(values.len());
+    let mut names = HashSet::with_capacity(values.len());
     values.iter().all(|value| names.insert(value.name.as_str()))
 }
 pub(crate) fn attributes(value: &RecordAttributes) -> Result<(), Error> {
@@ -164,17 +164,38 @@ fn principal_narrows(parent: &Principal, child: &Principal) -> bool {
     child.kind == parent.kind
         && child.id == parent.id
         && child.lineage.starts_with(&parent.lineage)
-        && child
-            .groups
-            .iter()
-            .all(|claim| parent.groups.contains(claim))
-        && child.roles.iter().all(|claim| parent.roles.contains(claim))
-        && child
-            .attributes
-            .iter()
-            .all(|claim| parent.attributes.contains(claim))
+        && subset(
+            parent.groups.iter().map(String::as_str),
+            child.groups.iter().map(String::as_str),
+        )
+        && subset(
+            parent.roles.iter().map(String::as_str),
+            child.roles.iter().map(String::as_str),
+        )
+        && subset(
+            parent
+                .attributes
+                .iter()
+                .map(|claim| (claim.name.as_str(), claim.value.as_slice())),
+            child
+                .attributes
+                .iter()
+                .map(|claim| (claim.name.as_str(), claim.value.as_slice())),
+        )
+}
+
+// Callers supply borrowed strings/bytes: admission hashes claims without copying them.
+fn subset<T: Eq + Hash>(
+    parent: impl IntoIterator<Item = T>,
+    child: impl IntoIterator<Item = T>,
+) -> bool {
+    let parent: HashSet<T> = parent.into_iter().collect();
+    child.into_iter().all(|claim| parent.contains(&claim))
 }
 
 pub(crate) fn audit(value: &AuditRecord) -> Result<(), Error> {
     require(value.decision != AuditDecision::Unspecified)
 }
+
+#[cfg(test)]
+mod tests;

@@ -26,6 +26,7 @@ members = [
   "rust/crates/proto-codegen",
   "rust/crates/stream",
   "rust/crates/stream-napi",
+  "rust/crates/harness-tui",
   "rust/crates/workers",
   "rust/crates/manifest",
   "plugin",

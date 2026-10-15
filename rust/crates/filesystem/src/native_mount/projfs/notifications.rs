@@ -303,21 +303,31 @@ pub(super) unsafe fn notification(
                 defer_host_capture(operation_failures.as_ref(), capture_path);
                 return Ok(());
             }
-            let cached_binding = lock_recover(projection).get(&capture_path).copied();
             let metadata_changed = metadata_changed_since_open(baseline, host);
             if metadata_changed {
                 *retry_path.borrow_mut() = Some(capture_path.clone());
             }
             if !metadata_changed
                 && !has_pending_capture(operation_failures.as_ref(), &capture_path)
-                && let Some(binding) = cached_binding
-                && binding.host == host
-                && host.links == Some(1)
-                && let Ok(_view_lease) = source.acquire_view_lease()
-                && binding.basis.still_describes(
-                    source.as_ref(),
-                    &capture_path,
-                    Some(binding.file_id),
+                && crate::native_mount::cached_binding::cached_binding_matches(
+                    || {
+                        lock_recover(projection)
+                            .get(&capture_path)
+                            .copied()
+                            .filter(|binding| binding.host == host && host.links == Some(1))
+                    },
+                    || source.acquire_view_lease(),
+                    |binding| {
+                        source.reports_changes_to(binding.file_id)
+                            && ReadBasis::sample(source.as_ref()) == Some(binding.basis)
+                    },
+                    |binding| {
+                        binding.basis.still_describes(
+                            source.as_ref(),
+                            &capture_path,
+                            Some(binding.file_id),
+                        )
+                    },
                 )
             {
                 return Ok(());

@@ -89,11 +89,16 @@ impl OperationSpan {
 }
 impl Clone for OperationSpan {
     fn clone(&self) -> Self {
-        tracing::dispatcher::with_default(&self.dispatch, || Self {
+        let clone = || Self {
             span: self.span.clone(),
             context: self.context.clone(),
             dispatch: self.dispatch.clone(),
-        })
+        };
+        if self.span.is_none() && self.context.is_none() {
+            clone()
+        } else {
+            tracing::dispatcher::with_default(&self.dispatch, clone)
+        }
     }
 }
 impl std::ops::Deref for OperationSpan {
@@ -104,6 +109,9 @@ impl std::ops::Deref for OperationSpan {
 }
 impl Drop for OperationSpan {
     fn drop(&mut self) {
+        if self.span.is_none() && self.context.is_none() {
+            return;
+        }
         tracing::dispatcher::with_default(&self.dispatch, || {
             self.span = Span::none();
             self.context = Span::none();

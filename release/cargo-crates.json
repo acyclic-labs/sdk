@@ -12,6 +12,7 @@
   "acyclic-manifest",
   "acyclic-workers",
   "acyclic-fs",
+  "acyclic-harness-tui",
   "acyclic-harness",
   "acyclic-plugin"
 ]

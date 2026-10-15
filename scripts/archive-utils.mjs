@@ -16,6 +16,22 @@ export function readBoundedGzip(path, maxArchiveBytes, maxExpandedBytes) {
   return { compressed, expanded };
 }
 
+// Package readers admit canonical paths and exact digest inventories before loading archive bytes.
+export function readDeclaredTarGzip(path, expectedDigest, files, maxExpandedBytes) {
+  const { compressed, expanded } = readBoundedGzip(path, 16 * 1024 * 1024, maxExpandedBytes);
+  if (sha256(compressed) !== expectedDigest) throw new Error("archive digest differs");
+  const payload = new Map();
+  for (const entry of tarEntries(expanded)) {
+    if (entry.type !== "0" || payload.has(entry.path) || !Object.hasOwn(files, entry.path)) {
+      throw new Error("unsafe, duplicate or unexpected archive member");
+    }
+    if (sha256(entry.body) !== files[entry.path]) throw new Error("archive payload digest differs");
+    payload.set(entry.path, entry.body);
+  }
+  if (payload.size !== Object.keys(files).length) throw new Error("archive payload inventory differs");
+  return { compressed, payload };
+}
+
 function field(block, offset, length) {
   const end = block.indexOf(0, offset);
   return block.subarray(offset, end === -1 || end > offset + length ? offset + length : end).toString("utf8");
