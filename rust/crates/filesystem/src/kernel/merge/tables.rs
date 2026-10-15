@@ -1,3 +1,12 @@
+#[derive(Clone, Copy)]
+pub(crate) struct MergeFileTableRequest<'a> {
+    pub(crate) base: &'a GenerationRoot,
+    pub(crate) ours: &'a GenerationRoot,
+    pub(crate) theirs: &'a GenerationRoot,
+    pub(crate) maximum_changes: u32,
+    pub(crate) maximum_conflicts: u32,
+}
+
 enum MergeFileTableOutcome {
     Prepared(ObjectId),
     Conflicted {
@@ -9,7 +18,7 @@ enum MergeFileTableOutcome {
 #[cfg(feature = "native-mount")]
 pub(crate) async fn merge_file_tables_with_accounting<S: AsyncObjectStore>(
     store: &S,
-    request: MergeGenerationBorrowedRequest<'_>,
+    request: MergeFileTableRequest<'_>,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -49,7 +58,7 @@ pub(crate) async fn merge_file_tables_with_accounting<S: AsyncObjectStore>(
 )]
 fn merge_file_tables_core<'a, 'accounting, S: AsyncObjectStore>(
     store: &'a S,
-    request: MergeGenerationBorrowedRequest<'a>,
+    request: MergeFileTableRequest<'a>,
     resolutions: ResolutionView<'a>,
     limits: DecodeLimits,
     accounting: &'a mut KernelAccounting<'accounting>,

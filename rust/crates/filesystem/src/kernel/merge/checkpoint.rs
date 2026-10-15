@@ -6,15 +6,16 @@ async fn merge_generation_core<'a, 'accounting, S: AsyncObjectStore>(
     accounting: &'a mut KernelAccounting<'accounting>,
     cancellation: &'a CancellationToken,
 ) -> Result<(MergeGenerationOutcome, KernelOwnedAllocation), FsError> {
-    let (outcome, allocation) = merge_file_tables_core(
-        store,
-        request,
-        resolutions,
-        limits,
-        accounting,
-        cancellation,
-    )
-    .await?;
+    let tables = MergeFileTableRequest {
+        base: request.base,
+        ours: request.ours,
+        theirs: request.theirs,
+        maximum_changes: request.maximum_changes,
+        maximum_conflicts: request.maximum_conflicts,
+    };
+    let (outcome, allocation) =
+        merge_file_tables_core(store, tables, resolutions, limits, accounting, cancellation)
+            .await?;
     let merged_table = match outcome {
         MergeFileTableOutcome::Prepared(table) => table,
         MergeFileTableOutcome::Conflicted {

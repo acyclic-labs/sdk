@@ -43,14 +43,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         };
         let table = crate::kernel::merge_file_tables_with_accounting(
             &self.volume.fs.inner.objects,
-            crate::kernel::MergeGenerationBorrowedRequest {
-                base_generation: base.generation_root,
+            crate::kernel::MergeFileTableRequest {
                 base: &base.root,
-                ours_generation: None,
                 ours: &self.root,
-                theirs_generation: candidate.generation_root,
                 theirs: &candidate.root,
-                retain_theirs_parent: false,
                 maximum_changes,
                 maximum_conflicts: 1,
             },
