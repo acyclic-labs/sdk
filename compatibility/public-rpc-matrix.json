@@ -210,6 +210,20 @@
     "typescriptPackageExported": true
   },
   {
+    "rpc": "acyclic.stream.v1.StreamService/AcknowledgeDelivery",
+    "kind": "unary",
+    "request": "acyclic.stream.v1.AcknowledgeDeliveryRequest",
+    "response": "acyclic.stream.v1.AcknowledgeDeliveryResponse",
+    "contractStatus": "target",
+    "httpOperation": "v1/stream/delivery/acknowledge",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptGrpcWeb": false,
+    "typescriptPackageExported": true
+  },
+  {
     "rpc": "acyclic.stream.v1.StreamService/Children",
     "kind": "server_streaming",
     "request": "acyclic.stream.v1.ChildrenRequest",
