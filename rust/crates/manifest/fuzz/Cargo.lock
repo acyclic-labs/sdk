@@ -83,6 +83,7 @@ dependencies = [
 name = "acyclic-manifest-fuzz"
 version = "0.0.0"
 dependencies = [
+ "acyclic-auth",
  "acyclic-manifest",
  "libfuzzer-sys",
  "serde_json",
