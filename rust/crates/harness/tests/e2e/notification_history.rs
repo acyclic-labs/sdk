@@ -91,7 +91,9 @@ pub(super) fn verify(
             assert_eq!(view.pop().as_deref(), pending.pop_front().as_ref());
         }
     }
-    let latest = serde_json::to_value(&view).unwrap()["latest"].clone();
+    let state = serde_json::to_value(&view).unwrap();
+    assert_eq!(state["pending"], serde_json::to_value(&pending).unwrap());
+    let latest = state["latest"].clone();
     let expected: String = pending
         .iter()
         .map(|record| encode(record, (mode, protocol, focused)))
