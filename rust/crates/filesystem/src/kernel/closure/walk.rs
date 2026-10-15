@@ -51,7 +51,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
     pub(crate) async fn prove(
         &mut self,
         generation_root: ObjectId,
-        cache: Option<&Mutex<Option<Arc<CachedProof>>>>,
+        cache: Option<&Mutex<CachedProofs>>,
     ) -> Result<(GenerationProof, ProofGuard), crate::FsError> {
         Self::require_kind(generation_root, ObjectKind::GenerationRoot)?;
         let root_bytes = self.read_object(generation_root, false).await?;
@@ -67,20 +67,20 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         let root_object_bytes = self.object_bytes;
         // Collected stores must continue to enumerate the exact live closure.
         let cache = cache.filter(|_| self.store.collection().is_none());
-        let previous = cache
-            .and_then(|cache| {
-                cache
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone()
-            })
-            .filter(|cached| {
-                cached.limits == self.limits
-                    && root.0.volume_id == cached.root.volume_id
-                    && root.0.root_file_id == cached.root.root_file_id
-                    && root.0.required_features == cached.root.required_features
-                    && root.0.parents.as_slice() == [cached.generation_id]
-            });
+        let previous = match cache {
+            Some(cache) => cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(root.0.volume_id, &self.meter)?,
+            None => None,
+        }
+        .filter(|cached| {
+            cached.limits == self.limits
+                && root.0.volume_id == cached.root.volume_id
+                && root.0.root_file_id == cached.root.root_file_id
+                && root.0.required_features == cached.root.required_features
+                && root.0.parents.as_slice() == [cached.generation_id]
+        });
         if let Some(previous) = previous {
             let increment = match self.prove_increment(&root.0, &previous).await {
                 Err(crate::FsError::Closure(

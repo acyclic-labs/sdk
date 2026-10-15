@@ -137,3 +137,80 @@ fn incremental_namespace_rejects_duplicate_orphan_and_cyclic_bindings() -> TestR
     assert!(!validate(&diff, budget)?.0);
     Ok(())
 }
+
+#[test]
+fn ordered_child_matching_is_metered_and_linear() -> TestResult<()> {
+    use crate::kernel::Child;
+    let store = crate::memory::MemoryObjectStore::default();
+    let cancellation = CancellationToken::new();
+    let mut small = 0;
+    for count in [256_u64, 1024] {
+        let old = (0..count)
+            .map(|index| Child {
+                first: index * 2,
+                page: ObjectId {
+                    kind: ObjectKind::FileTablePage,
+                    digest: crate::storage::object_digest(
+                        ObjectKind::FileTablePage,
+                        &index.to_be_bytes(),
+                    ),
+                },
+            })
+            .collect::<Vec<_>>();
+        let limits = ClosureLimits {
+            decode: crate::kernel::DecodeLimits::default(),
+            maximum_objects: 4096,
+            maximum_files: 4096,
+            maximum_object_bytes: 1_000_000,
+            profile: FilesystemProfile::Portable,
+            symbolic_links: false,
+            hard_links: false,
+            sparse_files: false,
+        };
+        let meter = ProofMeter::standalone(WorkBudget::UNBOUNDED, &cancellation)?;
+        let context = ProofContext::new(&store, limits, meter.clone());
+        let mut cursor = old.len();
+        for first in (0..2 * count).rev() {
+            let child = Child {
+                first,
+                page: old.first().ok_or("missing child")?.page,
+            };
+            let matched = context
+                .match_child(&old, &mut cursor, &child)?
+                .ok_or("missing predecessor")?;
+            assert_eq!(
+                matched,
+                old.get((first / 2) as usize).ok_or("missing predecessor")?
+            );
+        }
+        let examined = meter.work().items_examined;
+        assert!(
+            examined >= 2 * count,
+            "child matching must charge its probes"
+        );
+        assert!(
+            examined <= 3 * count,
+            "ordered matching must visit each list linearly"
+        );
+        if count == 256 {
+            small = examined;
+        } else {
+            assert!(examined <= 5 * small, "{small} -> {examined}");
+        }
+        let budget = WorkBudget {
+            items_examined: 0,
+            ..WorkBudget::UNBOUNDED
+        };
+        let denied = ProofContext::new(
+            &store,
+            limits,
+            ProofMeter::standalone(budget, &cancellation)?,
+        );
+        assert!(
+            denied
+                .match_child(&old, &mut old.len(), old.first().ok_or("missing child")?)
+                .is_err()
+        );
+    }
+    Ok(())
+}

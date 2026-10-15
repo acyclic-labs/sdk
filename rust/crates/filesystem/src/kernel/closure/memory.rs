@@ -311,6 +311,73 @@ pub(super) struct ProofVec<'a, T> {
     meter: ProofMeter<'a>,
 }
 
+#[derive(Default)]
+pub(crate) struct CachedProofs {
+    entries: Vec<Arc<CachedProof>>,
+    guard: Option<ProofGuard>,
+}
+
+impl CachedProofs {
+    fn position(
+        &self,
+        volume: crate::VolumeId,
+        meter: &ProofMeter<'_>,
+    ) -> Result<Result<usize, usize>, crate::FsError> {
+        let (mut low, mut high) = (0, self.entries.len());
+        while low < high {
+            meter.charge(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+            let middle = low + (high - low) / 2;
+            let entry = self.entries.get(middle).ok_or(ObjectStoreError::Corrupt)?;
+            match entry.root.volume_id.cmp(&volume) {
+                std::cmp::Ordering::Equal => return Ok(Ok(middle)),
+                std::cmp::Ordering::Less => low = middle + 1,
+                std::cmp::Ordering::Greater => high = middle,
+            }
+        }
+        Ok(Err(low))
+    }
+
+    pub(super) fn get(
+        &self,
+        volume: crate::VolumeId,
+        meter: &ProofMeter<'_>,
+    ) -> Result<Option<Arc<CachedProof>>, crate::FsError> {
+        Ok(self
+            .position(volume, meter)?
+            .ok()
+            .and_then(|index| self.entries.get(index).cloned()))
+    }
+
+    pub(super) fn insert(
+        &mut self,
+        proof: Arc<CachedProof>,
+        meter: &ProofMeter<'_>,
+    ) -> Result<(), crate::FsError> {
+        let index = match self.position(proof.root.volume_id, meter)? {
+            Ok(index) => {
+                *self
+                    .entries
+                    .get_mut(index)
+                    .ok_or(ObjectStoreError::Corrupt)? = proof;
+                return Ok(());
+            }
+            Err(index) => index,
+        };
+        let mut entries = ProofVec {
+            values: std::mem::take(&mut self.entries),
+            guard: self.guard.take(),
+            meter: meter.clone(),
+        };
+        let result = entries.insert(index, proof);
+        self.entries = std::mem::take(&mut entries.values);
+        self.guard = entries.guard.take();
+        result
+    }
+}
+
 impl<'a, T> ProofVec<'a, T> {
     pub(super) fn new(meter: &ProofMeter<'a>) -> Self {
         Self {

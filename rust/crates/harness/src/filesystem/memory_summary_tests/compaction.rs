@@ -1,6 +1,16 @@
 use super::*;
 
 async fn continuation_storage(turns: usize) -> Result<MemoryHarnessStorage> {
+    let (filesystem, stream) = continuation_providers(turns)?;
+    MemoryHarnessStorage::from_providers(AgentId::new(), 262_144, filesystem, stream).await
+}
+
+fn continuation_providers(
+    turns: usize,
+) -> Result<(
+    Fs<MemoryAuthorityBackend, MemoryObjectBackend>,
+    Arc<MemoryStream>,
+)> {
     // Immutable payloads and journal facts survive compaction.
     let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_bucket(
         "continuation",
@@ -20,44 +30,68 @@ async fn continuation_storage(turns: usize) -> Result<MemoryHarnessStorage> {
         idempotency_results: retained,
     }));
     let filesystem = Fs::from_memory_providers(stream.clone(), Arc::new(objects), bucket);
-    MemoryHarnessStorage::from_providers(AgentId::new(), 262_144, filesystem, stream).await
+    Ok((filesystem, stream))
 }
 
 #[tokio::test]
 async fn payload_staging_work_grows_linearly_with_retained_history() -> Result<()> {
+    let storage = continuation_storage(192 + 256).await?;
+    staging_growth(&[storage]).await
+}
+
+#[tokio::test]
+async fn alternating_volumes_preserve_linear_payload_staging_work() -> Result<()> {
+    let (filesystem, stream) = continuation_providers(2 * (192 + 256))?;
+    let mut storages = Vec::new();
+    for _ in 0..2 {
+        storages.push(
+            MemoryHarnessStorage::from_providers(
+                AgentId::new(),
+                262_144,
+                filesystem.clone(),
+                stream.clone(),
+            )
+            .await?,
+        );
+    }
+    staging_growth(&storages).await
+}
+
+async fn staging_growth(storages: &[MemoryHarnessStorage]) -> Result<()> {
     const WARMUP: usize = 192;
     const SMALL: usize = 64;
     const LARGE: usize = 256;
-    let storage = continuation_storage(WARMUP + LARGE).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let mut small = acyclic_fs::WorkCounters::default();
     let mut total = small;
     for index in 0..WARMUP + LARGE {
-        let path = format!("turns/{index:04}/input.txt");
-        let io = crate::filesystem::PreparationIo::from_budget(
-            acyclic_fs::performance::work_budget(100_000, 16_000_000),
-            &cancellation,
-        )?;
-        let (_file, _hold) = storage
-            .publisher
-            .stage_once(
-                OperationId::new(),
-                &path,
-                b"small input",
-                "text/plain",
-                "input.txt",
-                Some(&io),
-            )?
-            .await?;
-        // Compare steady-state work after the initially shallow trees have filled.
-        if index < WARMUP {
-            continue;
-        }
-        total = total
-            .checked_add(io.receipt())
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        if index + 1 == WARMUP + SMALL {
-            small = total;
+        for storage in storages {
+            let path = format!("turns/{index:04}/input.txt");
+            let io = crate::filesystem::PreparationIo::from_budget(
+                acyclic_fs::performance::work_budget(100_000, 16_000_000),
+                &cancellation,
+            )?;
+            let (_file, _hold) = storage
+                .publisher
+                .stage_once(
+                    OperationId::new(),
+                    &path,
+                    b"small input",
+                    "text/plain",
+                    "input.txt",
+                    Some(&io),
+                )?
+                .await?;
+            // Compare steady-state work after the initially shallow trees have filled.
+            if index < WARMUP {
+                continue;
+            }
+            total = total
+                .checked_add(io.receipt())
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            if index + 1 == WARMUP + SMALL {
+                small = total;
+            }
         }
     }
     for (counter, first, last) in [

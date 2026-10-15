@@ -329,9 +329,16 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
                 Page::Internal(children) => Some(children.as_slice()),
                 Page::Leaf(_) => None,
             });
-            let reused = before == Some(id)
-                || old_children
-                    .is_some_and(|children| children.iter().any(|child| child.page == id));
+            let mut reused = before == Some(id);
+            if !reused {
+                for child in old_children.unwrap_or_default() {
+                    self.examine(1)?;
+                    if child.page == id {
+                        reused = true;
+                        break;
+                    }
+                }
+            }
             let lower = lower.as_ref().map(|key| &key.0);
             let upper = upper.as_ref().map(|key| &key.0);
             match &page.0 {
@@ -344,6 +351,8 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
                         lower,
                         upper,
                     )?;
+                    let old_children = old_children.unwrap_or_default();
+                    let mut old_index = old_children.len();
                     for (index, child) in children.iter().enumerate().rev() {
                         // A proven subtree needs only its boundary checked against its new parent.
                         if reused && index + 1 != children.len() {
@@ -351,13 +360,12 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
                         }
                         let upper_key = children.get(index + 1).map(|next| &next.first).or(upper);
                         // Equal immutable pages under equal bounds retain their parent proof.
-                        if old_children.is_some_and(|old| {
-                            old.iter().zip(old.iter().skip(1)).any(|(old, next)| {
-                                old.page == child.page
-                                    && old.first == child.first
-                                    && upper_key == Some(&next.first)
-                            })
-                        }) {
+                        let old = self.match_child(old_children, &mut old_index, child)?;
+                        if old.is_some_and(|old| old.page == child.page && old.first == child.first)
+                            && old_children
+                                .get(old_index)
+                                .is_some_and(|next| upper_key == Some(&next.first))
+                        {
                             continue;
                         }
                         let lower = self
@@ -371,14 +379,8 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
                             .transpose()?;
                         let prior = if reused || before == Some(child.page) {
                             Some(child.page)
-                        } else if let Some(children) = old_children {
-                            children
-                                .iter()
-                                .find(|old| old.page == child.page)
-                                .or_else(|| {
-                                    children.iter().rev().find(|old| old.first <= child.first)
-                                })
-                                .map(|old| old.page)
+                        } else if !old_children.is_empty() {
+                            old.map(|old| old.page)
                         } else {
                             before
                         };
@@ -390,9 +392,26 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
         Ok(())
     }
 
+    fn match_child<'c, K: Ord>(
+        &self,
+        old: &'c [crate::kernel::Child<K>],
+        cursor: &mut usize,
+        child: &crate::kernel::Child<K>,
+    ) -> Result<Option<&'c crate::kernel::Child<K>>, crate::FsError> {
+        while let Some(index) = cursor.checked_sub(1) {
+            self.examine(1)?;
+            let candidate = old.get(index).ok_or(ObjectStoreError::Corrupt)?;
+            if candidate.first <= child.first {
+                return Ok(Some(candidate));
+            }
+            *cursor = index;
+        }
+        Ok(None)
+    }
+
     pub(super) fn remember(
         &self,
-        cache: Option<&Mutex<Option<Arc<CachedProof>>>>,
+        cache: Option<&Mutex<CachedProofs>>,
         proof: &GenerationProof,
         object_count: u64,
     ) -> Result<(), crate::FsError> {
@@ -419,10 +438,10 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
             _guard: root.1,
             object_bytes: self.object_bytes,
         };
-        *cache
+        cache
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(cached));
-        Ok(())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(Arc::new(cached), &self.meter)
     }
 }
 

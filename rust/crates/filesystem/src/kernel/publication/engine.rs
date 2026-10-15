@@ -10,7 +10,7 @@ pub(super) async fn publish_generation_async_inner<O, E, F, Fut, G, Dispatch, R>
     request: PublishGenerationRequest,
     intent: PublicationIntent,
     closure_limits: ClosureLimits,
-    cache: Option<&Mutex<Option<Arc<CachedProof>>>>,
+    cache: Option<&Mutex<CachedProofs>>,
     cancellation: &CancellationToken,
     accounting: &mut KernelAccounting<'_>,
     before_publication: &mut F,
