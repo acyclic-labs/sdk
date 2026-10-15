@@ -139,7 +139,7 @@ impl FuseSession {
 }
 
 impl ProjectionCore {
-    fn wait_for_invalidation(
+    pub(super) fn wait_for_invalidation(
         &self,
         mut state: StateGuard<'_>,
         target: Option<ViewStamp>,
@@ -257,7 +257,23 @@ impl ProjectionState {
     }
 }
 
-pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &Notifier) {
+/// The kernel cache notifications the invalidator sends.
+pub(super) trait KernelCacheNotifier {
+    fn inval_inode(&self, inode: u64) -> std::io::Result<()>;
+    fn inval_entry(&self, parent: u64, name: &[u8]) -> std::io::Result<()>;
+}
+
+impl KernelCacheNotifier for Notifier {
+    fn inval_inode(&self, inode: u64) -> std::io::Result<()> {
+        Notifier::inval_inode(self, INodeNo(inode), 0, 0)
+    }
+
+    fn inval_entry(&self, parent: u64, name: &[u8]) -> std::io::Result<()> {
+        Notifier::inval_entry(self, INodeNo(parent), OsStr::from_bytes(name))
+    }
+}
+
+pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &impl KernelCacheNotifier) {
     let mut blocked = None;
     loop {
         let mut state = core.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -304,7 +320,9 @@ pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &Notifier) {
                     .invalidation
                     .retain_pending_tail(items);
                 dropped?;
-                if through.is_some() {
+                // A refused notification stays queued, so this pass settles
+                // nothing past it and the next pass starts with it.
+                if through.is_some() || sdk_failure.is_some() {
                     break;
                 }
                 let mut state = core.state_to_finish();
@@ -350,7 +368,7 @@ pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &Notifier) {
 }
 
 fn drop_kernel_caches(
-    notifier: &Notifier,
+    notifier: &impl KernelCacheNotifier,
     items: &mut FuseOwned<std::vec::IntoIter<KernelCacheItem>>,
     work: &Work,
     first_sdk_failure: &mut Option<NativeMountError>,
@@ -363,18 +381,18 @@ fn drop_kernel_caches(
                 ..WorkCounters::UNCHARGED
             })?;
             let dropped = match item {
-                KernelCacheItem::Inode(inode) => notifier.inval_inode(INodeNo(*inode), 0, 0),
-                KernelCacheItem::Entry { parent, name } => {
-                    notifier.inval_entry(INodeNo(*parent), OsStr::from_bytes(name))
-                }
+                KernelCacheItem::Inode(inode) => notifier.inval_inode(*inode),
+                KernelCacheItem::Entry { parent, name } => notifier.inval_entry(*parent, name),
             };
-            // Retire only notifications actually attempted.
-            drop(items.next());
+            // Retire only notifications the kernel accepted, or for which it
+            // holds nothing. A refused one and all after it stay queued.
             if let Err(error) = dropped
                 && error.kind() != std::io::ErrorKind::NotFound
             {
                 first_sdk_failure.get_or_insert(NativeMountError::Io(error));
+                break;
             }
+            drop(items.next());
         }
         Ok(())
     })
