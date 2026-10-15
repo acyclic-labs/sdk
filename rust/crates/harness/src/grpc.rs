@@ -102,7 +102,7 @@ impl transport::harness_service_server::HarnessService for HarnessGrpcService {
                 validate_resume_protocol(request.get_ref()).map_err(status)?;
                 let stream = self
                     .api
-                    .replay(request.into_inner())
+                    .replay(request.into_inner(), crate::wire_api::ReplayMode::Follow)
                     .await
                     .map_err(status)?
                     .map(|item| item.map_err(wire_status));
@@ -284,6 +284,7 @@ mod tests {
         fn replay<'a>(
             &'a self,
             _: wire::ResumeRequest,
+            _: crate::wire_api::ReplayMode,
         ) -> futures::future::BoxFuture<
             'a,
             Result<futures::stream::BoxStream<'static, Result<wire::Delivery>>>,

@@ -190,7 +190,11 @@ async fn follow_verifies_authority_and_attestation() -> Result<()> {
 
 #[tokio::test]
 async fn client_replay_follows_owner_changes_without_a_scheduler() -> Result<()> {
-    use acyclic_harness::{wire, wire_api::follow_history, wire_codec::encode_authority};
+    use acyclic_harness::{
+        wire,
+        wire_api::{ReplayMode, replay_history},
+        wire_codec::encode_authority,
+    };
     let client = Arc::new(MemoryStream::default());
     let verifier = issuer().verifier(&mut None)?;
     let cursor = |revision| wire::ReplayCursor {
@@ -198,10 +202,11 @@ async fn client_replay_follows_owner_changes_without_a_scheduler() -> Result<()>
         generation: "generation".into(),
         revision,
     };
-    let mut absent = follow_history(&client, &verifier, cursor(0), 65_536).await?;
+    let mut absent =
+        replay_history(&client, &verifier, cursor(0), 65_536, ReplayMode::Follow).await?;
     assert!(absent.next().await.is_none());
     assert!(
-        follow_history(&client, &verifier, cursor(1), 65_536)
+        replay_history(&client, &verifier, cursor(1), 65_536, ReplayMode::Follow)
             .await
             .is_err()
     );
@@ -214,7 +219,8 @@ async fn client_replay_follows_owner_changes_without_a_scheduler() -> Result<()>
             &mut None,
         )
         .await?;
-    let mut replay = follow_history(&client, &verifier, cursor(0), 65_536).await?;
+    let mut replay =
+        replay_history(&client, &verifier, cursor(0), 65_536, ReplayMode::Follow).await?;
     let active = replay
         .next()
         .now_or_never()
@@ -242,21 +248,122 @@ async fn client_replay_follows_owner_changes_without_a_scheduler() -> Result<()>
     assert_eq!((waiting.from_revision, waiting.through_revision), (1, 2));
     assert_eq!(waiting.events.len(), 1);
     assert!(waiting.live);
-    let mut resumed = follow_history(&client, &verifier, cursor(1), 65_536).await?;
+    let mut resumed =
+        replay_history(&client, &verifier, cursor(1), 65_536, ReplayMode::Follow).await?;
     assert_eq!(resumed.next().await.transpose()?, Some(waiting));
     let mut wrong = cursor(0);
     wrong.authority.as_mut().expect("owner").id = "another-owner".into();
     assert!(
-        follow_history(&client, &verifier, wrong, 65_536)
+        replay_history(&client, &verifier, wrong, 65_536, ReplayMode::Follow)
             .await
             .is_err()
     );
     let mut wrong = cursor(0);
     wrong.generation.clear();
     assert!(
-        follow_history(&client, &verifier, wrong, 65_536)
+        replay_history(&client, &verifier, wrong, 65_536, ReplayMode::Follow)
             .await
             .is_err()
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn finite_inspection_stops_at_its_opening_cut_while_follow_remains_live() -> Result<()> {
+    use acyclic_harness::{
+        wire,
+        wire_api::{ReplayMode, replay_history},
+        wire_codec::encode_authority,
+    };
+    for append_before_read in [false, true] {
+        let client = Arc::new(MemoryStream::default());
+        let verifier = issuer().verifier(&mut None)?;
+        let cursor = |revision| wire::ReplayCursor {
+            authority: Some(encode_authority(&authority())),
+            generation: "generation".into(),
+            revision,
+        };
+        let mut absent =
+            replay_history(&client, &verifier, cursor(0), 65_536, ReplayMode::Snapshot).await?;
+        assert!(matches!(absent.next().now_or_never(), Some(None)));
+        let mut writer = writer(&client).await?;
+        writer
+            .execute(
+                transition(0, LifecycleState::Active)?,
+                #[cfg(feature = "filesystem")]
+                None,
+                &mut None,
+            )
+            .await?;
+        let mut empty =
+            replay_history(&client, &verifier, cursor(1), 65_536, ReplayMode::Snapshot).await?;
+        assert!(
+            matches!(empty.next().now_or_never(), Some(None)),
+            "an up-to-date /next must finish"
+        );
+        let mut page =
+            replay_history(&client, &verifier, cursor(0), 65_536, ReplayMode::Snapshot).await?;
+        let mut live =
+            replay_history(&client, &verifier, cursor(1), 65_536, ReplayMode::Follow).await?;
+        assert!(live.next().now_or_never().is_none());
+        if !append_before_read {
+            let first = page
+                .next()
+                .await
+                .transpose()?
+                .expect("opening snapshot event");
+            assert_eq!(first.through_revision, 1);
+            assert!(!first.live);
+        }
+        writer
+            .execute(
+                transition(1, LifecycleState::Waiting)?,
+                #[cfg(feature = "filesystem")]
+                None,
+                &mut None,
+            )
+            .await?;
+        if append_before_read {
+            let first = page
+                .next()
+                .await
+                .transpose()?
+                .expect("opening snapshot event");
+            assert_eq!(first.through_revision, 1);
+            assert!(!first.live);
+        }
+        assert!(
+            matches!(page.next().now_or_never(), Some(None)),
+            "later appends cannot extend a pinned inspection"
+        );
+        let later = live
+            .next()
+            .now_or_never()
+            .expect("follow must wake")
+            .expect("later event")?;
+        assert_eq!(later.through_revision, 2);
+        assert!(later.live);
+        let mut next =
+            replay_history(&client, &verifier, cursor(1), 65_536, ReplayMode::Snapshot).await?;
+        assert_eq!(
+            next.next()
+                .await
+                .transpose()?
+                .expect("next page")
+                .through_revision,
+            2
+        );
+        assert!(matches!(next.next().now_or_never(), Some(None)));
+        assert!(
+            replay_history(&client, &verifier, cursor(3), 65_536, ReplayMode::Snapshot)
+                .await
+                .is_err()
+        );
+        assert!(
+            replay_history(&client, &verifier, cursor(2), 0, ReplayMode::Snapshot)
+                .await
+                .is_err()
+        );
+    }
     Ok(())
 }

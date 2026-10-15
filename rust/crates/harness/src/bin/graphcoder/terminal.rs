@@ -75,7 +75,7 @@ pub async fn dispatch(
             validate_resume_protocol(&request)?;
             // One delivery per user request.
             Ok(api
-                .replay(request)
+                .replay(request, acyclic_harness::wire_api::ReplayMode::Snapshot)
                 .await?
                 .next()
                 .await

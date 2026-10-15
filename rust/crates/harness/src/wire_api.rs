@@ -16,7 +16,16 @@ use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::BoxProviderStream as BoxStream;
 
 mod history;
-pub use history::follow_history;
+pub use history::replay_history;
+
+/// Whether a replay stops at its opening cut or remains subscribed to appends.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReplayMode {
+    /// Finite inspection of events committed when replay opens.
+    Snapshot,
+    /// Replay followed by every later accepted event.
+    Follow,
+}
 
 /// Complete application-facing wire API.
 pub trait HarnessWireApi: acyclic_stream::ProviderPlatform + 'static {
@@ -32,10 +41,11 @@ pub trait HarnessWireApi: acyclic_stream::ProviderPlatform + 'static {
         command: wire::CommandEnvelope,
     ) -> BoxFuture<'a, Result<wire::Admission>>;
 
-    /// Replays validated gapless deliveries and then follows live events.
+    /// Replays validated gapless deliveries through an explicit end boundary.
     fn replay<'a>(
         &'a self,
         request: wire::ResumeRequest,
+        mode: ReplayMode,
     ) -> BoxFuture<'a, Result<BoxStream<'static, Result<wire::Delivery>>>>;
 
     /// Sends `ClientFrame::Acknowledge` after the client's durable replay commit.

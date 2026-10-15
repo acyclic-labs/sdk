@@ -2,7 +2,7 @@ use super::*;
 use acyclic_harness::{
     wire,
     wire_api::{
-        HarnessWireApi, OperationControlRequest, follow_history, negotiate, operation_status,
+        HarnessWireApi, OperationControlRequest, negotiate, operation_status, replay_history,
         validate_cancel_request, validate_observe_request, validate_resume_protocol,
     },
     wire_codec::{decode_command_envelope, encode_authority},
@@ -151,11 +151,12 @@ impl HarnessWireApi for NativeSession {
     fn replay<'a>(
         &'a self,
         request: wire::ResumeRequest,
+        mode: acyclic_harness::wire_api::ReplayMode,
     ) -> BoxProviderFuture<'a, Result<BoxProviderStream<'static, Result<wire::Delivery>>>> {
         Box::pin(async move {
             validate_resume_protocol(&request)?;
             let [cursor] = <[_; 1]>::try_from(request.cursors).map_err(|_| {
-                Error::Invalid("terminal inspection requires one explicit aggregate cursor".into())
+                Error::Invalid("native replay requires one explicit aggregate cursor".into())
             })?;
             if cursor.generation != self.config.generation {
                 return Err(Error::Conflict("native replay generation changed".into()));
@@ -165,11 +166,12 @@ impl HarnessWireApi for NativeSession {
                 .as_ref()
                 .ok_or_else(|| Error::Invalid("cursor authority missing".into()))?;
             let binding = self.binding(authority)?;
-            follow_history(
+            replay_history(
                 &self.stream,
                 &binding.verifier()?,
                 cursor,
                 (MAX_FRAME_BYTES - 8192) as u64,
+                mode,
             )
             .await
         })

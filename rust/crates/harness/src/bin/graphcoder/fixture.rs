@@ -76,6 +76,7 @@ impl HarnessWireApi for WireFixture {
     fn replay<'a>(
         &'a self,
         request: wire::ResumeRequest,
+        _mode: acyclic_harness::wire_api::ReplayMode,
     ) -> BoxProviderFuture<'a, Result<BoxProviderStream<'static, Result<wire::Delivery>>>> {
         async move {
             validate_resume_protocol(&request)?;

@@ -365,6 +365,7 @@ impl HarnessWireApi for Host {
     fn replay(
         &self,
         request: wire::ResumeRequest,
+        _: acyclic_harness::wire_api::ReplayMode,
     ) -> BoxProviderFuture<'_, Result<BoxProviderStream<'static, Result<wire::Delivery>>>> {
         Box::pin(async move {
             let after = request.cursors[0].revision;

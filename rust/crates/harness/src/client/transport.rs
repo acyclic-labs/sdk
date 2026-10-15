@@ -144,7 +144,11 @@ impl<S: ClientStateStore> HarnessClient<S> {
 
     /// Opens a replay/follow stream at the durable cut. No sleeps or polling.
     pub async fn replay(&mut self) -> Result<()> {
-        self.deliveries = Some(self.api.replay(self.session.resume()).await?);
+        self.deliveries = Some(
+            self.api
+                .replay(self.session.resume(), crate::wire_api::ReplayMode::Follow)
+                .await?,
+        );
         Ok(())
     }
 
