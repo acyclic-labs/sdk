@@ -7,6 +7,7 @@ const BOUNDS: JsonBounds = JsonBounds {
     maximum_depth: 32,
 };
 
+#[cfg(not(target_arch = "wasm32"))]
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(64))]
     // Every source byte is funded before lexical inspection; denial never

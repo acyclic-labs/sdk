@@ -82,6 +82,7 @@ impl File {
             "__{}_members",
             crate::options::identifier(name).to_snake_case()
         );
+        let validation = include_str!("../proto/validation/v1/options.proto");
         let checks = messages
             .iter()
             .chain(services.iter())
@@ -121,6 +122,12 @@ impl File {
                             text.push('\n');
                         }
                     }
+                    if text.contains("(acyclic.validation.v1.auth)") {
+                        text = text.replacen("\n\noption go_package", "\n\nimport \"validation/v1/options.proto\";\n\noption go_package", 1);
+                        let options = root.join("validation/v1/options.proto");
+                        ::std::fs::create_dir_all(options.parent().ok_or_else(|| ::std::io::Error::other("missing options directory"))?)?;
+                        ::std::fs::write(options, #validation)?;
+                    }
                     let path = root.join(#path);
                     if let Some(parent) = path.parent() { ::std::fs::create_dir_all(parent)?; }
                     ::std::fs::write(path, text)
@@ -150,6 +157,7 @@ pub fn service(mut input: ItemEnum, file: &Path) -> syn::Result<TokenStream> {
         }
         let mut client_stream = "";
         let mut server_stream = "";
+        let mut authorization = Vec::<String>::new();
         let mut seen = std::collections::BTreeSet::new();
         for attr in variant
             .attrs
@@ -157,6 +165,13 @@ pub fn service(mut input: ItemEnum, file: &Path) -> syn::Result<TokenStream> {
             .filter(|attr| attr.path().is_ident("wire"))
         {
             attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("auth") {
+                    let fields = crate::authorization::fields(meta)?;
+                    authorization.push(format!(
+                        "    option (acyclic.validation.v1.auth) = {{ {fields} }};\n"
+                    ));
+                    return Ok(());
+                }
                 if !seen.insert(meta.path.get_ident().map(ToString::to_string)) {
                     return Err(meta.error("duplicate streaming option"));
                 }
@@ -206,7 +221,12 @@ pub fn service(mut input: ItemEnum, file: &Path) -> syn::Result<TokenStream> {
         checks.push(crate::options::owner_check(file, &quote!(#request), true));
         checks.push(crate::options::owner_check(file, &quote!(#response), true));
         let method = crate::options::identifier(&variant.ident);
-        methods.push(quote!(schema.push_str(&format!("  rpc {}({}{}) returns ({}{});\n", #method, #client_stream, <#request as ::prost::Name>::NAME, #server_stream, <#response as ::prost::Name>::NAME));));
+        let suffix = if authorization.is_empty() {
+            ";\n".to_owned()
+        } else {
+            format!(" {{\n{}  }}\n", authorization.join(""))
+        };
+        methods.push(quote!(schema.push_str(&format!("  rpc {}({}{}) returns ({}{}){}", #method, #client_stream, <#request as ::prost::Name>::NAME, #server_stream, <#response as ::prost::Name>::NAME, #suffix));));
     }
     if methods.is_empty() {
         return Err(syn::Error::new_spanned(

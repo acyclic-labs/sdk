@@ -17,6 +17,10 @@ name = "main"
 path = "tests/main.rs"
 
 [[test]]
+name = "mcp-loom"
+path = "tests/mcp_loom.rs"
+
+[[test]]
 name = "goal-files"
 path = "tests/goal_files.rs"
 required-features = ["filesystem"]

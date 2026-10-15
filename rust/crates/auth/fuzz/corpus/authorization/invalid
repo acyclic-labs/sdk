@@ -1,0 +1,1 @@
+auth(resource = "fs:/x", extractor = "fs.paths")
