@@ -4,7 +4,7 @@
 
 import type { GenExtension, GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
-import type { EnumValueOptions, FieldOptions, MethodOptions, OneofOptions } from "@bufbuild/protobuf/wkt";
+import type { EnumValueOptions, FieldOptions, FileOptions, MethodOptions, OneofOptions } from "@bufbuild/protobuf/wkt";
 
 /**
  * Describes the file validation/v1/options.proto.
@@ -21,9 +21,9 @@ export declare type Authorization = Message<"acyclic.validation.v1.Authorization
   /**
    * Semantic action, e.g. fs/read or streams/append, never an RPC name.
    *
-   * @generated from field: optional string action = 1;
+   * @generated from field: repeated string action = 1;
    */
-  action: string;
+  action: string[];
 
   /**
    * Literal template with scalar or repeated substitutions, e.g.
@@ -35,8 +35,9 @@ export declare type Authorization = Message<"acyclic.validation.v1.Authorization
 
   /**
    * Product-owned extractor for oneofs, references, and multi-path operations.
-   * Resolves to (semantic action, canonical resource) pairs; all must pass.
-   * Required instead of action/resource when generic extraction is insufficient.
+   * Static extractors return resources only; action is declared alongside them.
+   * Dynamic extractors return action/resource pairs, constrained by the registered
+   * possible_actions. Unknown extractors/actions and empty results fail closed.
    *
    * @generated from field: optional string extractor = 3;
    */
@@ -48,6 +49,98 @@ export declare type Authorization = Message<"acyclic.validation.v1.Authorization
  * Use `create(AuthorizationSchema)` to create a new message.
  */
 export declare const AuthorizationSchema: GenMessage<Authorization>;
+
+/**
+ * @generated from message acyclic.validation.v1.Product
+ */
+export declare type Product = Message<"acyclic.validation.v1.Product"> & {
+  /**
+   * @generated from field: optional string name = 1;
+   */
+  name: string;
+
+  /**
+   * percent-components: canonical bytes in uppercase %HH components; only
+   * [A-Za-z0-9_~-] are literal. Dot is escaped. Never decode before prefix match.
+   * objects-bucket-key: same encoding, exactly bucket / entire opaque key.
+   *
+   * @generated from field: optional string resource_encoding = 2;
+   */
+  resourceEncoding: string;
+
+  /**
+   * fs folds according to volume policy BEFORE encoding; opaque Objects keys
+   * never normalize, case-fold, collapse slashes or resolve dot segments.
+   *
+   * @generated from field: optional bool canonicalize_at_owner = 3;
+   */
+  canonicalizeAtOwner: boolean;
+
+  /**
+   * @generated from field: repeated string actions = 4;
+   */
+  actions: string[];
+};
+
+/**
+ * Describes the message acyclic.validation.v1.Product.
+ * Use `create(ProductSchema)` to create a new message.
+ */
+export declare const ProductSchema: GenMessage<Product>;
+
+/**
+ * @generated from message acyclic.validation.v1.Extractor
+ */
+export declare type Extractor = Message<"acyclic.validation.v1.Extractor"> & {
+  /**
+   * @generated from field: optional string name = 1;
+   */
+  name: string;
+
+  /**
+   * @generated from field: optional bool resources_only = 2;
+   */
+  resourcesOnly: boolean;
+
+  /**
+   * Complete allowable output vocabulary, also for dynamic oneof operations.
+   *
+   * @generated from field: repeated string possible_actions = 3;
+   */
+  possibleActions: string[];
+};
+
+/**
+ * Describes the message acyclic.validation.v1.Extractor.
+ * Use `create(ExtractorSchema)` to create a new message.
+ */
+export declare const ExtractorSchema: GenMessage<Extractor>;
+
+/**
+ * @generated from message acyclic.validation.v1.HttpRoute
+ */
+export declare type HttpRoute = Message<"acyclic.validation.v1.HttpRoute"> & {
+  /**
+   * @generated from field: optional string method = 1;
+   */
+  method: string;
+
+  /**
+   * @generated from field: optional string path = 2;
+   */
+  path: string;
+
+  /**
+   * @generated from field: repeated acyclic.validation.v1.Authorization auth = 3;
+   */
+  auth: Authorization[];
+};
+
+/**
+ * Describes the message acyclic.validation.v1.HttpRoute.
+ * Use `create(HttpRouteSchema)` to create a new message.
+ */
+export declare const HttpRouteSchema: GenMessage<HttpRoute>;
 
 /**
  * @generated from extension: optional uint32 nonzero_fixed_bytes = 51001;
@@ -120,3 +213,18 @@ export declare const http_path: GenExtension<MethodOptions, string>;
  * @generated from extension: repeated acyclic.validation.v1.Authorization auth = 51013;
  */
 export declare const auth: GenExtension<MethodOptions, Authorization[]>;
+
+/**
+ * @generated from extension: repeated acyclic.validation.v1.Product products = 51014;
+ */
+export declare const products: GenExtension<FileOptions, Product[]>;
+
+/**
+ * @generated from extension: repeated acyclic.validation.v1.Extractor extractors = 51015;
+ */
+export declare const extractors: GenExtension<FileOptions, Extractor[]>;
+
+/**
+ * @generated from extension: repeated acyclic.validation.v1.HttpRoute http_routes = 51016;
+ */
+export declare const http_routes: GenExtension<FileOptions, HttpRoute[]>;

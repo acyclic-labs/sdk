@@ -405,25 +405,25 @@ message MachineOutput {
 }
 
 service MachinesService {
-  rpc Exec(ExecRequest) returns (stream ExecOutput) { option (acyclic.validation.v1.auth) = { extractor: "machines.exec" }; }
-  rpc ReadOutput(ReadOutputRequest) returns (MachineOutput) { option (acyclic.validation.v1.auth) = { extractor: "machines.read-output" }; }
-  rpc QualifyImage(QualifyImageRequest) returns (ImageQualification) { option (acyclic.validation.v1.auth) = { extractor: "machines.qualify-image" }; }
-  rpc Create(CreateMachineRequest) returns (MachineAdmission) { option (acyclic.validation.v1.auth) = { extractor: "machines.create" }; }
-  rpc Checkpoint(CheckpointMachineRequest) returns (CheckpointAdmission) { option (acyclic.validation.v1.auth) = { extractor: "machines.checkpoint" }; }
+  rpc Exec(ExecRequest) returns (stream ExecOutput) { option (acyclic.validation.v1.auth) = { action: "machines/exec" extractor: "machines.exec" }; }
+  rpc ReadOutput(ReadOutputRequest) returns (MachineOutput) { option (acyclic.validation.v1.auth) = { action: "machines/read-output" extractor: "machines.read-output" }; }
+  rpc QualifyImage(QualifyImageRequest) returns (ImageQualification) { option (acyclic.validation.v1.auth) = { action: "machines/qualify" extractor: "machines.qualify-image" }; }
+  rpc Create(CreateMachineRequest) returns (MachineAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/create" extractor: "machines.create" }; }
+  rpc Checkpoint(CheckpointMachineRequest) returns (CheckpointAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/checkpoint" extractor: "machines.checkpoint" }; }
   rpc Fork(ForkCheckpointRequest) returns (ForkAdmission) { option (acyclic.validation.v1.auth) = { extractor: "machines.fork-checkpoint" }; }
   rpc ForkMachine(ForkMachineRequest) returns (ForkMachineAdmission) { option (acyclic.validation.v1.auth) = { extractor: "machines.fork-machine" }; }
-  rpc Suspend(MachineMutationRequest) returns (MutationAdmission) { option (acyclic.validation.v1.auth) = { extractor: "machines.update" }; }
-  rpc Wake(MachineMutationRequest) returns (MutationAdmission) { option (acyclic.validation.v1.auth) = { extractor: "machines.update" }; }
-  rpc SetSuspensionPolicy(SetSuspensionPolicyRequest) returns (PolicyAdmission) { option (acyclic.validation.v1.auth) = { extractor: "machines.update" }; }
-  rpc DestroyMachine(MachineMutationRequest) returns (MutationAdmission) { option (acyclic.validation.v1.auth) = { extractor: "machines.delete" }; }
-  rpc DestroyCheckpoint(CheckpointMutationRequest) returns (MutationAdmission) { option (acyclic.validation.v1.auth) = { extractor: "machines.delete-checkpoint" }; }
-  rpc Recover(RecoverRequest) returns (RecoveredAdmission) { option (acyclic.validation.v1.auth) = { extractor: "machines.recover" }; }
-  rpc InspectMachine(InspectMachineRequest) returns (MachineState) { option (acyclic.validation.v1.auth) = { extractor: "machines.read" }; }
-  rpc InspectCheckpoint(InspectCheckpointRequest) returns (CheckpointState) { option (acyclic.validation.v1.auth) = { extractor: "machines.read-checkpoint" }; }
-  rpc ListMachines(ListMachinesRequest) returns (MachinePage) { option (acyclic.validation.v1.auth) = { extractor: "machines.list-visible" }; }
-  rpc Events(EventsRequest) returns (EventPage) { option (acyclic.validation.v1.auth) = { extractor: "machines.follow" }; }
-  rpc Usage(UsageRequest) returns (UsageReceipt) { option (acyclic.validation.v1.auth) = { extractor: "machines.read-usage" }; }
-  rpc Cancel(OperationRequest) returns (OperationState) { option (acyclic.validation.v1.auth) = { extractor: "machines.cancel-operation" }; }
-  rpc InspectOperation(OperationRequest) returns (OperationState) { option (acyclic.validation.v1.auth) = { extractor: "machines.read-operation" }; }
-  rpc WatchOperation(OperationRequest) returns (stream OperationState) { option (acyclic.validation.v1.auth) = { extractor: "machines.read-operation" }; }
+  rpc Suspend(MachineMutationRequest) returns (MutationAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/update" extractor: "machines.update" }; }
+  rpc Wake(MachineMutationRequest) returns (MutationAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/update" extractor: "machines.update" }; }
+  rpc SetSuspensionPolicy(SetSuspensionPolicyRequest) returns (PolicyAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/update" extractor: "machines.update" }; }
+  rpc DestroyMachine(MachineMutationRequest) returns (MutationAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/delete" extractor: "machines.delete" }; }
+  rpc DestroyCheckpoint(CheckpointMutationRequest) returns (MutationAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/delete-checkpoint" extractor: "machines.delete-checkpoint" }; }
+  rpc Recover(RecoverRequest) returns (RecoveredAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/recover" extractor: "machines.recover" }; }
+  rpc InspectMachine(InspectMachineRequest) returns (MachineState) { option (acyclic.validation.v1.auth) = { action: "machines/read" extractor: "machines.read" }; }
+  rpc InspectCheckpoint(InspectCheckpointRequest) returns (CheckpointState) { option (acyclic.validation.v1.auth) = { action: "machines/read-checkpoint" extractor: "machines.read-checkpoint" }; }
+  rpc ListMachines(ListMachinesRequest) returns (MachinePage) { option (acyclic.validation.v1.auth) = { action: "machines/list" extractor: "machines.list-visible" }; }
+  rpc Events(EventsRequest) returns (EventPage) { option (acyclic.validation.v1.auth) = { action: "machines/follow" extractor: "machines.follow" }; }
+  rpc Usage(UsageRequest) returns (UsageReceipt) { option (acyclic.validation.v1.auth) = { action: "machines/read-usage" extractor: "machines.read-usage" }; }
+  rpc Cancel(OperationRequest) returns (OperationState) { option (acyclic.validation.v1.auth) = { action: "machines/cancel" extractor: "machines.cancel-operation" }; }
+  rpc InspectOperation(OperationRequest) returns (OperationState) { option (acyclic.validation.v1.auth) = { action: "machines/read" extractor: "machines.read-operation" }; }
+  rpc WatchOperation(OperationRequest) returns (stream OperationState) { option (acyclic.validation.v1.auth) = { action: "machines/read" extractor: "machines.read-operation" }; }
 }

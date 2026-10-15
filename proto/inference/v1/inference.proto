@@ -8,7 +8,7 @@ option go_package = "github.com/acyclic-labs/sdk/go/gen/inference/v1;inferencev1
 service ModelsService {
   rpc List(ListModelsRequest) returns (ListModelsResponse) {
     option (acyclic.validation.v1.http_path) = "models/list";
-    option (acyclic.validation.v1.auth) = { extractor: "infer.models-list" };
+    option (acyclic.validation.v1.auth) = { action: "infer/list-models" extractor: "infer.models-list" };
   }
 }
 
@@ -45,15 +45,15 @@ message RetentionProfile {
 service ContextsService {
   rpc Create(CreateContextRequest) returns (MutationReceipt) {
     option (acyclic.validation.v1.http_path) = "contexts/create";
-    option (acyclic.validation.v1.auth) = { extractor: "infer.contexts-create" };
+    option (acyclic.validation.v1.auth) = { action: "infer/create-context" extractor: "infer.contexts-create" };
   }
   rpc Inspect(InspectContextRequest) returns (ContextView) {
     option (acyclic.validation.v1.http_path) = "contexts/inspect";
-    option (acyclic.validation.v1.auth) = { extractor: "infer.contexts-inspect" };
+    option (acyclic.validation.v1.auth) = { action: "infer/read-context" extractor: "infer.contexts-inspect" };
   }
   rpc Mutate(MutateContextRequest) returns (MutationReceipt) {
     option (acyclic.validation.v1.http_path) = "contexts/mutate";
-    option (acyclic.validation.v1.auth) = { extractor: "infer.contexts-mutate" };
+    option (acyclic.validation.v1.auth) = { action: "infer/write-context" extractor: "infer.contexts-mutate" };
   }
 }
 
@@ -62,19 +62,19 @@ service ContextsService {
 service WarmContextsService {
   rpc Retain(RetainWarmRequest) returns (WarmView) {
     option (acyclic.validation.v1.http_path) = "warm/retain";
-    option (acyclic.validation.v1.auth) = { extractor: "infer.warm-retain" };
+    option (acyclic.validation.v1.auth) = { action: "infer/retain-context" extractor: "infer.warm-retain" };
   }
   rpc Inspect(InspectWarmRequest) returns (WarmView) {
     option (acyclic.validation.v1.http_path) = "warm/inspect";
-    option (acyclic.validation.v1.auth) = { extractor: "infer.warm-inspect" };
+    option (acyclic.validation.v1.auth) = { action: "infer/read-retention" extractor: "infer.warm-inspect" };
   }
   rpc Renew(RenewWarmRequest) returns (WarmView) {
     option (acyclic.validation.v1.http_path) = "warm/renew";
-    option (acyclic.validation.v1.auth) = { extractor: "infer.warm-renew" };
+    option (acyclic.validation.v1.auth) = { action: "infer/renew-retention" extractor: "infer.warm-renew" };
   }
   rpc Release(ReleaseWarmRequest) returns (WarmView) {
     option (acyclic.validation.v1.http_path) = "warm/release";
-    option (acyclic.validation.v1.auth) = { extractor: "infer.warm-release" };
+    option (acyclic.validation.v1.auth) = { action: "infer/release-retention" extractor: "infer.warm-release" };
   }
 }
 
@@ -154,19 +154,19 @@ message WarmView {
 service RunsService {
   rpc Generate(GenerateRunRequest) returns (GenerateRunResponse) {
     option (acyclic.validation.v1.http_path) = "runs/generate";
-    option (acyclic.validation.v1.auth) = { extractor: "infer.runs-generate" };
+    option (acyclic.validation.v1.auth) = { action: "infer/generate" extractor: "infer.runs-generate" };
   }
   rpc Inspect(InspectRunRequest) returns (RunView) {
     option (acyclic.validation.v1.http_path) = "runs/inspect";
-    option (acyclic.validation.v1.auth) = { extractor: "infer.runs-inspect" };
+    option (acyclic.validation.v1.auth) = { action: "infer/read-run" extractor: "infer.runs-inspect" };
   }
   rpc Watch(WatchRunRequest) returns (stream RunEvent) {
     option (acyclic.validation.v1.http_path) = "runs/watch";
-    option (acyclic.validation.v1.auth) = { extractor: "infer.runs-watch" };
+    option (acyclic.validation.v1.auth) = { action: "infer/follow-run" extractor: "infer.runs-watch" };
   }
   rpc Cancel(InspectRunRequest) returns (RunView) {
     option (acyclic.validation.v1.http_path) = "runs/cancel";
-    option (acyclic.validation.v1.auth) = { extractor: "infer.runs-cancel" };
+    option (acyclic.validation.v1.auth) = { action: "infer/cancel-run" extractor: "infer.runs-cancel" };
   }
 }
 
@@ -176,11 +176,11 @@ service RunsService {
 service EvaluationsService {
   rpc Create(CreateEvaluationRequest) returns (EvaluationView) {
     option (acyclic.validation.v1.http_path) = "evaluations/create";
-    option (acyclic.validation.v1.auth) = { extractor: "infer.evaluations-create" };
+    option (acyclic.validation.v1.auth) = { action: "infer/create-evaluation" extractor: "infer.evaluations-create" };
   }
   rpc Inspect(InspectEvaluationRequest) returns (EvaluationView) {
     option (acyclic.validation.v1.http_path) = "evaluations/inspect";
-    option (acyclic.validation.v1.auth) = { extractor: "infer.evaluations-inspect" };
+    option (acyclic.validation.v1.auth) = { action: "infer/read-evaluation" extractor: "infer.evaluations-inspect" };
   }
 }
 

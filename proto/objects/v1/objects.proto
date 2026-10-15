@@ -188,7 +188,7 @@ service ObjectsService {
   rpc GetObject(GetObjectRequest) returns (stream GetObjectResponse) { option (acyclic.validation.v1.auth) = { action: "objects/get" resource: "objects:/{bucket.name}/{object_key}" }; }
   rpc HeadObject(HeadObjectRequest) returns (HeadObjectResponse) { option (acyclic.validation.v1.auth) = { action: "objects/head" resource: "objects:/{bucket.name}/{object_key}" }; }
   rpc DeleteObject(DeleteObjectRequest) returns (DeleteObjectResponse) { option (acyclic.validation.v1.auth) = { action: "objects/delete" resource: "objects:/{bucket.name}/{object_key}" }; }
-  rpc ListObjects(ListObjectsRequest) returns (ListObjectsResponse) { option (acyclic.validation.v1.auth) = { extractor: "objects.list-visible-prefix" }; }
+  rpc ListObjects(ListObjectsRequest) returns (ListObjectsResponse) { option (acyclic.validation.v1.auth) = { action: "objects/list" extractor: "objects.list-visible-prefix" }; }
 }
 
 message CreateMultipartRequest {
@@ -253,10 +253,10 @@ message AbortMultipartResponse {
 }
 service MultipartService {
   rpc CreateMultipart(CreateMultipartRequest) returns (MultipartUpload) { option (acyclic.validation.v1.auth) = { action: "objects/put" resource: "objects:/{bucket.name}/{object_key}" }; }
-  rpc UploadPart(stream UploadPartRequest) returns (UploadedPart) { option (acyclic.validation.v1.auth) = { extractor: "objects.multipart-put" }; }
-  rpc ListParts(ListPartsRequest) returns (ListPartsResponse) { option (acyclic.validation.v1.auth) = { extractor: "objects.multipart-list" }; }
-  rpc CompleteMultipart(CompleteMultipartRequest) returns (ObjectInfo) { option (acyclic.validation.v1.auth) = { extractor: "objects.multipart-put" }; }
-  rpc AbortMultipart(AbortMultipartRequest) returns (AbortMultipartResponse) { option (acyclic.validation.v1.auth) = { extractor: "objects.multipart-delete" }; }
+  rpc UploadPart(stream UploadPartRequest) returns (UploadedPart) { option (acyclic.validation.v1.auth) = { action: "objects/put" extractor: "objects.multipart-put" }; }
+  rpc ListParts(ListPartsRequest) returns (ListPartsResponse) { option (acyclic.validation.v1.auth) = { action: "objects/list-parts" extractor: "objects.multipart-list" }; }
+  rpc CompleteMultipart(CompleteMultipartRequest) returns (ObjectInfo) { option (acyclic.validation.v1.auth) = { action: "objects/put" extractor: "objects.multipart-put" }; }
+  rpc AbortMultipart(AbortMultipartRequest) returns (AbortMultipartResponse) { option (acyclic.validation.v1.auth) = { action: "objects/delete" extractor: "objects.multipart-delete" }; }
 }
 enum ErrorCode {
   ERROR_CODE_UNSPECIFIED = 0;

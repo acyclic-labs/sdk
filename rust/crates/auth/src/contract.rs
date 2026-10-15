@@ -1,6 +1,8 @@
 //! Compiler-linked acyclic.auth.v1 declarations.
 use crate::Error;
 use ts_rs::TS;
+mod identity;
+pub use identity::*;
 
 /// Attested principal category.
 #[acyclic_contract_derive::enumeration(error = Error, unknown = Error::UnknownEnum)]
@@ -134,7 +136,7 @@ pub struct Attribute {
     pub value: Vec<u8>,
 }
 
-/// Attested identity. Later subjects preserve kind/id and append lineage.
+/// Issuer-attested identity; only certified keys carry roles and groups.
 #[acyclic_contract_derive::message(error = Error, file = AuthFile, post = crate::validation::principal)]
 #[derive(Clone, Debug, PartialEq, TS)]
 pub struct Principal {
@@ -180,12 +182,9 @@ pub struct AttributeMatch {
     /// Literal alternatives.
     #[wire(tag = 2, bytes)]
     pub any_of: Vec<Vec<u8>>,
-    /// Also admit UTF-8 subject.id.
-    #[wire(tag = 3, bool)]
-    pub subject_id: bool,
-    /// Also admit UTF-8 entries from subject.lineage.
-    #[wire(tag = 4, bool)]
-    pub subject_lineage: bool,
+    /// Structured alternatives resolved at the declaring block, never at the tip.
+    #[wire(tag = 3, message)]
+    pub subjects: Vec<SubjectReference>,
 }
 
 /// Ranges are OR; attribute clauses are AND. Caveat filters intersect.
@@ -208,11 +207,14 @@ pub struct Pin {
     #[wire(tag = 1, string)]
     pub name: String,
     /// Required attribute value.
-    #[wire(oneof = "2, 3, 4")]
+    #[wire(oneof = "2, 3")]
     pub value: PinValue,
 }
 
-/// Per-chain ceilings. Absent means unbounded; zero denies use.
+/// Ceilings keyed by chain root, shared by all descendants. Rates and concurrency
+/// are enforced at admission; totals are lifetime cumulative at the metering
+/// owner/billing ledger, globally per root, never reset by delegation or renewal.
+/// Absent means unbounded; zero denies use.
 #[acyclic_contract_derive::message(error = Error, file = AuthFile)]
 #[derive(Clone, Debug, PartialEq, TS)]
 pub struct Limits {
@@ -252,22 +254,22 @@ pub struct Holder {
 }
 
 /// Every caveat in every block must hold. Unknown cases fail closed.
-#[acyclic_contract_derive::message(error = Error, file = AuthFile)]
+#[acyclic_contract_derive::message(error = Error, file = AuthFile, post = crate::validation::caveat)]
 #[derive(Clone, Debug, PartialEq, TS)]
 pub struct Caveat {
     /// Fixed caveat vocabulary.
-    #[wire(oneof = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10")]
+    #[wire(oneof = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11")]
     pub kind: CaveatKind,
 }
 
-/// Signed payload. Block zero alone carries the certified account bearer.
+/// Signed payload. Only block zero carries public certificates, never a bearer.
 #[acyclic_contract_derive::message(error = Error, file = AuthFile, post = crate::validation::block)]
 #[derive(Clone, Debug, PartialEq, TS)]
 pub struct Block {
-    /// Existing certified account-key JWS; required only in block zero.
-    #[wire(tag = 1, string)]
-    pub account_bearer: Option<String>,
-    /// Conjunctive restrictions; root must establish grants, subject and expiry.
+    /// Public issuer-signed chain, required at index zero and forbidden later.
+    #[wire(tag = 1, message)]
+    pub certificates: Option<CertificateChain>,
+    /// Conjunctive restrictions; issuer certificates establish grants, subject and expiry.
     #[wire(tag = 2, message)]
     pub caveats: Vec<Caveat>,
     /// 32-byte Ed25519 key authorized to append the next block.
@@ -297,6 +299,9 @@ pub struct Capability {
     /// Possession of the tip secret or a final sealing signature.
     #[wire(oneof = "2, 3")]
     pub proof: TipProof,
+    /// Exactly 1; also included in every signature transcript.
+    #[wire(tag = 4, uint32)]
+    pub version: u32,
 }
 
 /// Typed GrantKind cases. Unknown wire cases are rejected.
@@ -325,11 +330,8 @@ pub enum PinValue {
     #[wire(tag = 2, bytes)]
     Literal(Vec<u8>),
     /// SubjectId payload.
-    #[wire(tag = 3, bool)]
-    SubjectId(bool),
-    /// SubjectLineage payload.
-    #[wire(tag = 4, bool)]
-    SubjectLineage(bool),
+    #[wire(tag = 3, message)]
+    SubjectId(SubjectId),
 }
 
 /// Typed CaveatKind cases. Unknown wire cases are rejected.
@@ -341,19 +343,19 @@ pub enum CaveatKind {
     Grants(GrantSet),
     /// ExpiresAt payload.
     #[wire(tag = 2, uint64)]
-    ExpiresAt(u64),
+    ExpiresAtUnixSeconds(u64),
     /// NotBefore payload.
     #[wire(tag = 3, uint64)]
-    NotBefore(u64),
+    NotBeforeUnixSeconds(u64),
     /// Audience payload.
-    #[wire(tag = 4, string)]
-    Audience(String),
+    #[wire(tag = 4, message)]
+    Audience(ResourcePattern),
     /// Holder payload.
     #[wire(tag = 5, message)]
     Holder(Holder),
-    /// Subject payload.
+    /// Adds acting identities only; cannot assert roles, groups or attributes.
     #[wire(tag = 6, message)]
-    Subject(Principal),
+    LineageAppend(LineageAppend),
     /// Filter payload.
     #[wire(tag = 7, message)]
     Filter(Filter),
@@ -363,9 +365,13 @@ pub enum CaveatKind {
     /// Limits payload.
     #[wire(tag = 9, message)]
     Limits(Limits),
-    /// MaxDepth payload.
+    /// Absolute maximum terminal block index (root = 0). All minima apply.
+    /// Sealing adds no block and consumes no depth.
     #[wire(tag = 10, uint32)]
     MaxDepth(u32),
+    /// Advisory label scoped to this block revocation id; never authority.
+    #[wire(tag = 11, string)]
+    Label(String),
 }
 
 /// Typed TipProof cases. Unknown wire cases are rejected.
@@ -384,6 +390,20 @@ pub enum TipProof {
 #[acyclic_contract_derive::file(
     family = "auth",
     messages(
+        SubjectIdProto,
+        SubjectLineageProto,
+        SubjectReferenceProto,
+        LineageAppendProto,
+        ValidityProto,
+        BirthProto,
+        BirthCertificateProto,
+        CertifiedKeyProto,
+        KeyCertificateProto,
+        CertificateChainProto,
+        RevocationProto,
+        KeyringDeltaProto,
+        SignedKeyringDeltaProto,
+        AuditRecordProto,
         ResourcePatternProto,
         ResourceGrantProto,
         ExecutionGrantProto,
@@ -409,3 +429,14 @@ pub enum TipProof {
     enums(PrincipalKind)
 )]
 pub struct AuthFile;
+
+/// Render the contract and its normative wire rules together.
+pub fn render(root: &std::path::Path) -> std::io::Result<()> {
+    AuthFile::render(root)?;
+    let path = root.join("auth/v1/auth.proto");
+    let schema = std::fs::read_to_string(&path)?;
+    std::fs::write(
+        path,
+        format!("{}{}", include_str!("wire-rules.proto.inc"), schema),
+    )
+}

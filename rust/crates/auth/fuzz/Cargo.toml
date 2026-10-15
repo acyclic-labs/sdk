@@ -8,6 +8,7 @@ edition = "2024"
 cargo-fuzz = true
 
 [dependencies]
+syn = { version = "3", features = ["full"] }
 libfuzzer-sys = "0.4"
 prost = "0.14.4"
 acyclic-auth = { path = ".." }
@@ -15,6 +16,13 @@ acyclic-auth = { path = ".." }
 [[bin]]
 name = "capability"
 path = "fuzz_targets/capability.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "authorization"
+path = "fuzz_targets/authorization.rs"
 test = false
 doc = false
 bench = false

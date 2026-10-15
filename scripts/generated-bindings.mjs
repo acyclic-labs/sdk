@@ -115,9 +115,15 @@ export const normalizeGeneratedRust = (relative, source) => {
 };
 
 export const normalizeGeneratedTypeScript = source => {
-  const normalized = `${source.trimEnd()}\n`;
-  // Large runtime descriptors carry one blank separator per message. Compact
-  // those separators to keep generated source within the source-file bound.
-  return normalized.includes("fileDesc(") && normalized.split("\n").length > 800
-    ? normalized.replaceAll("\n\n", "\n") : normalized;
+  let normalized = `${source.trimEnd()}\n`;
+  // Preserve documentation while keeping large generated projections within
+  // the source-file bound. Repeated normalization is byte-idempotent.
+  if ((normalized.includes("fileDesc(") || normalized.includes("from file auth/v1/auth.proto")) && normalized.split("\n").length > 800) {
+    normalized = normalized.replaceAll("\n\n", "\n");
+    if (normalized.split("\n").length > 800) {
+      normalized = normalized.replace(/\/\*\*([\s\S]*?)\*\//g, (_, body) =>
+        `/** ${body.split("\n").map(line => line.trim().replace(/^\* ?/, "")).filter(Boolean).join(" ")} */`);
+    }
+  }
+  return normalized;
 };

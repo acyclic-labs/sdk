@@ -6,14 +6,14 @@
     "auth": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:7aa56c9316947ff7bbd794b0ac1862a54542cb495207ad037dda9eacbde293c3",
-      "descriptorDigest": "sha256:2a607890dd277714bd822170b775871afbb7a13c668b6c76937c7f9d1e9b75d3"
+      "schemaDigest": "sha256:19f13b9f6b1a2e4182d7751779e9a6f1c1724df75bb9e2f544a084314da839b0",
+      "descriptorDigest": "sha256:b6e186501010a8f21153977f33de1b2c6668a58a04ea153f8f66e7c8de684065"
     },
     "actors": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:7c754305129b7861362efcca2640ea7a107f30dd73443f776368b1a5d83ef2fb",
-      "descriptorDigest": "sha256:a947ade22804ef0a47ff5196efd87044e96763bfc72319b5b976320ea7430b2b"
+      "schemaDigest": "sha256:2d08418e98a1cc083950928ab1fadd8d6455b57bda2efadeddf66ea6e52f3409",
+      "descriptorDigest": "sha256:14c794d904d7b20f6b3d864904b3a334a0bae97bd813aacf6c5d1094fc359a60"
     },
     "harness": {
       "version": "0.2.0",
@@ -23,34 +23,34 @@
     "filesystem": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:e8e8b3cab2ed838288755078feb71253b7363e16d8d6c12e0fdf90dcd5d43c1b",
-      "descriptorDigest": "sha256:c14af97f8d3e4d105c373764e71f6e14d3ae48bfbaad13aa68eab5df75ff426d",
+      "schemaDigest": "sha256:71f9a4f28a070d97172412af4c689994174f5a8bce1bc4258014bf4c4cdf0460",
+      "descriptorDigest": "sha256:03a21ba931d9a9e63024cc124f82c3e0f1f0cc6defa478953dc4af4fffa4ba52",
       "conformanceDigest": "sha256:0587f37b90fb7080a54410e806dd01d4097025a24c3284fc742250546f745e8b"
     },
     "stream": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:13a6f6e51e49b6ee851a1da2e85b91a6b804640b54c71a919fc30a208563e2be",
-      "descriptorDigest": "sha256:19c2d9937dcaa478a91c1b6499dd6e135d745e6be5d055649031a87fed7f7365",
+      "schemaDigest": "sha256:c1d3ac84a6b28cc3d1f61e466847d81ff4ec29bd9876bd608bdd6c226ac6c3e1",
+      "descriptorDigest": "sha256:0094767d7ba0d6f92792116470c08c58f7f80ec250259ec598a5f763c963aab2",
       "conformanceDigest": "sha256:230c14bfd9afde7f9ab6e9f8b69769c8b2a06cc7dc3ec6a51dc8964321984d08"
     },
     "objects": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:7bfdab9409a5bbafd8d3a6f6ef37ac854c7438977ca0a0f3d62492601c1a3ba2",
-      "descriptorDigest": "sha256:3f7426c1e9a19a479c23fb5f4c0cc8fb98c4708f29a5017ff2eb283c9f65713e",
+      "schemaDigest": "sha256:44be268c005c0cfbe96292606912ec44d8935826251660a4f7bbcfcbcc7d8589",
+      "descriptorDigest": "sha256:bf115ba1f0dc2716da0c43cf2e271c715952e1071f0bcf6fbc340962faaebc98",
       "conformanceDigest": "sha256:c5b54fd1254c19c966ab3765962ca9e633a786abf91cf6af2cca5bb0183e5fb6"
     },
     "machines": {
       "version": "0.2.0",
-      "schemaDigest": "sha256:cdedcd4353020cede9b5ef3c492343e982e9c8bff7f6a273f6b34dd5e1ffed5f",
-      "descriptorDigest": "sha256:3250938e07fd9bdb97e2ae5012edf84f82802fc8f7e553daf138c0cf4935b25e",
+      "schemaDigest": "sha256:4204fa198e96e690eb12547b757edd317159b43897eb4172ad7f0355f4791077",
+      "descriptorDigest": "sha256:d03958b4b57772cfc8a0f878dec9799b36960cd1daf9af2e4b6981dc6d46bcda",
       "conformanceDigest": "sha256:78ce0d6b9c5226aad67d96de4a4a4f9c9723a144ce58c5dcad63590b88d5d682"
     },
     "inference": {
       "version": "0.2.0",
-      "schemaDigest": "sha256:85967fc5b2df779f3878ac7ad796787440ef98216cfcf9908dc2e31ad5df2710",
-      "descriptorDigest": "sha256:1bfa2a9d564696d136cf783fa9574f2f218e38e1fa1eb8282080f8819c46d30f",
+      "schemaDigest": "sha256:e3cfe892678ae33b6df0c93b6aab4acb575f6dc6b28dc960d5462e33e7a59a32",
+      "descriptorDigest": "sha256:8a4201af6ab6f8b3ab0e5c50515cd1c97090ef11afa4e323f2ae601259934431",
       "conformanceDigest": "sha256:9eb850dd6cbd5fa53745a00fe19800fc3a2773ed4fa5f70c5d7be84a33b9948c"
     }
   }

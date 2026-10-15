@@ -166,36 +166,7 @@ pub fn service(mut input: ItemEnum, file: &Path) -> syn::Result<TokenStream> {
         {
             attr.parse_nested_meta(|meta| {
                 if meta.path.is_ident("auth") {
-                    let mut fields = std::collections::BTreeMap::new();
-                    meta.parse_nested_meta(|field| {
-                        let key = field
-                            .path
-                            .get_ident()
-                            .ok_or_else(|| field.error("expected authorization field"))?
-                            .to_string();
-                        if !matches!(key.as_str(), "action" | "resource" | "extractor") {
-                            return Err(field.error("unknown authorization field"));
-                        }
-                        let value = field.value()?.parse::<LitStr>()?;
-                        if value.value().is_empty() || fields.insert(key, value.value()).is_some() {
-                            return Err(field.error("empty or duplicate authorization field"));
-                        }
-                        Ok(())
-                    })?;
-                    if !(fields.len() == 1 && fields.contains_key("extractor")
-                        || fields.len() == 2
-                            && fields.contains_key("action")
-                            && fields.contains_key("resource"))
-                    {
-                        return Err(
-                            meta.error("authorization requires action/resource or extractor")
-                        );
-                    }
-                    let fields = fields
-                        .into_iter()
-                        .map(|(key, value)| format!("{key}: {value:?}"))
-                        .collect::<Vec<_>>()
-                        .join(" ");
+                    let fields = crate::authorization::fields(meta)?;
                     authorization.push(format!(
                         "    option (acyclic.validation.v1.auth) = {{ {fields} }};\n"
                     ));

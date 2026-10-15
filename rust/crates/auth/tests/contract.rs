@@ -19,8 +19,7 @@ fn repeated_scalar_fields_and_required_caveats_round_trip() -> Result<(), Box<dy
     let filter = AttributeMatch {
         name: "author".into(),
         any_of: vec![vec![0, 1], vec![2]],
-        subject_id: false,
-        subject_lineage: false,
+        subjects: vec![],
     };
     let wire: AttributeMatchProto = filter.clone().into();
     assert_eq!(
@@ -50,19 +49,19 @@ fn resources_and_actions_use_the_shared_grammar() {
         "fs:/v/secret?",
         "fs:/v\\secret",
         "fs://v",
-        "bad:/x",
+        "BAD:/x",
     ] {
         assert!(!valid_resource(name), "{name}");
     }
     assert!(valid_action("fs/merge-into"));
     assert!(!valid_action("fs/ApplyTransaction"));
-    assert!(!valid_action("fs/invoke"));
+    assert!(valid_action("new-product/invoke"));
 }
 
 #[test]
 fn rendered_contract_compiles_and_preserves_presence() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
-    AuthFile::render(root.path())?;
+    render(root.path())?;
     let checked_in =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../proto/auth/v1/auth.proto");
     assert_eq!(
@@ -91,4 +90,44 @@ fn rendered_contract_compiles_and_preserves_presence() -> Result<(), Box<dyn std
             .all(|field| field.proto3_optional == Some(true))
     );
     Ok(())
+}
+
+#[test]
+fn objects_opaque_key_examples() {
+    for key in [
+        "dir/../secret",
+        "report?.txt",
+        "a//b",
+        "/x",
+        "time:12:00",
+        "%2F",
+    ] {
+        let name = acyclic_auth::objects_resource(b"bucket", key.as_bytes());
+        assert!(valid_resource(&name));
+        assert_eq!(
+            acyclic_auth::decode_component(name.rsplit('/').next().unwrap()).unwrap(),
+            key.as_bytes()
+        );
+    }
+}
+#[test]
+fn packaged_options_are_identical() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let canonical = std::fs::read(root.join("proto/validation/v1/options.proto")).unwrap();
+    for copy in [
+        "rust/crates/contract-derive/proto/validation/v1/options.proto",
+        "rust/crates/stream/proto/validation/v1/options.proto",
+    ] {
+        assert_eq!(canonical, std::fs::read(root.join(copy)).unwrap());
+    }
+}
+
+#[test]
+fn public_certificate_fuzz_seeds_are_admitted() {
+    for seed in [
+        include_bytes!("../fuzz/corpus/capability/public-certificates").as_slice(),
+        include_bytes!("../fuzz/corpus/capability/lineage-chain").as_slice(),
+    ] {
+        assert!(acyclic_auth::authority::decode_capability(seed).is_ok());
+    }
 }

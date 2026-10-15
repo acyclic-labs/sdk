@@ -5,9 +5,12 @@ use ts_rs::TS;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = PathBuf::from(std::env::args_os().nth(1).ok_or("expected output root")?);
-    AuthFile::render(&root.join("proto"))?;
+    render(&root.join("proto"))?;
     let mut typescript =
         String::from("// Generated from acyclic-auth contract-derive declarations.\n");
+    typescript.push_str("export ");
+    typescript.push_str(&PrincipalKind::decl(&ts_rs::Config::default()));
+    typescript.push('\n');
     typescript.push_str("export ");
     typescript.push_str(&ResourcePattern::decl(&ts_rs::Config::default()));
     typescript.push('\n');
@@ -72,9 +75,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     typescript.push_str(&Capability::decl(&ts_rs::Config::default()));
     typescript.push('\n');
     typescript.push_str("export ");
-    typescript.push_str(&PrincipalKind::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
     typescript.push_str(&GrantKind::decl(&ts_rs::Config::default()));
     typescript.push('\n');
     typescript.push_str("export ");
@@ -86,8 +86,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     typescript.push_str("export ");
     typescript.push_str(&TipProof::decl(&ts_rs::Config::default()));
     typescript.push('\n');
+    typescript.push_str("export ");
+    typescript.push_str(&SubjectId::decl(&ts_rs::Config::default()));
+    typescript.push('\n');
+    typescript.push_str("export ");
+    typescript.push_str(&SubjectLineage::decl(&ts_rs::Config::default()));
+    typescript.push('\n');
+    typescript.push_str("export ");
+    typescript.push_str(&SubjectReference::decl(&ts_rs::Config::default()));
+    typescript.push('\n');
+    typescript.push_str("export ");
+    typescript.push_str(&SubjectReferenceKind::decl(&ts_rs::Config::default()));
+    typescript.push('\n');
+    typescript.push_str("export ");
+    typescript.push_str(&LineageAppend::decl(&ts_rs::Config::default()));
+    typescript.push('\n');
+    typescript.push_str("export ");
+    typescript.push_str(&Validity::decl(&ts_rs::Config::default()));
+    typescript.push('\n');
+    typescript.push_str("export ");
+    typescript.push_str(&Birth::decl(&ts_rs::Config::default()));
+    typescript.push('\n');
+    typescript.push_str("export ");
+    typescript.push_str(&BirthCertificate::decl(&ts_rs::Config::default()));
+    typescript.push('\n');
+    typescript.push_str("export ");
+    typescript.push_str(&CertifiedKey::decl(&ts_rs::Config::default()));
+    typescript.push('\n');
+    typescript.push_str("export ");
+    typescript.push_str(&KeyCertificate::decl(&ts_rs::Config::default()));
+    typescript.push('\n');
+    typescript.push_str("export ");
+    typescript.push_str(&CertificateChain::decl(&ts_rs::Config::default()));
+    typescript.push('\n');
+    typescript.push_str("export ");
+    typescript.push_str(&Revocation::decl(&ts_rs::Config::default()));
+    typescript.push('\n');
+    typescript.push_str("export ");
+    typescript.push_str(&KeyringDelta::decl(&ts_rs::Config::default()));
+    typescript.push('\n');
+    typescript.push_str("export ");
+    typescript.push_str(&SignedKeyringDelta::decl(&ts_rs::Config::default()));
+    typescript.push('\n');
+    typescript.push_str("export ");
+    typescript.push_str(&AuditRecord::decl(&ts_rs::Config::default()));
+    typescript.push('\n');
     let path = root.join("typescript/packages/auth/src/contract.ts");
     fs::create_dir_all(path.parent().ok_or("missing output parent")?)?;
+    let typescript = typescript
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
     fs::write(path, typescript)?;
     Ok(())
 }

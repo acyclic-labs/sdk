@@ -14,6 +14,7 @@ thiserror.workspace = true
 ts-rs = "=12.0.1"
 
 [dev-dependencies]
+syn = { version = "3", features = ["full"] }
 proptest.workspace = true
 prost-reflect.workspace = true
 tempfile = "3.27.0"

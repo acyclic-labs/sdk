@@ -1,23 +1,31 @@
 #![no_main]
-use acyclic_auth::contract::{Block, BlockProto, Capability, CapabilityProto};
+use acyclic_auth::{
+    authority::{decode_block, decode_capability},
+    contract::{BlockProto, CapabilityProto},
+    decode_component, encode_component,
+};
 use libfuzzer_sys::fuzz_target;
 use prost::Message;
-
 fuzz_target!(|bytes: &[u8]| {
-    if let Ok(wire) = CapabilityProto::decode(bytes)
-        && let Ok(value) = Capability::try_from(wire)
-    {
-        for block in &value.blocks {
-            if let Ok(wire) = BlockProto::decode(block.payload.as_slice())
-                && let Ok(block) = Block::try_from(wire)
-            {
-                let wire: BlockProto = block.clone().into();
-                assert!(BlockProto::decode(wire.encode_to_vec().as_slice())
-                    .is_ok_and(|wire| Block::try_from(wire) == Ok(block)));
-            }
+    if let Ok(value) = decode_capability(bytes) {
+        assert_eq!(
+            decode_capability(&CapabilityProto::from(value.clone()).encode_to_vec()),
+            Ok(value)
+        );
+    }
+    if let Ok(value) = decode_block(bytes) {
+        assert_eq!(
+            decode_block(&BlockProto::from(value.clone()).encode_to_vec()),
+            Ok(value)
+        );
+    }
+    assert_eq!(
+        decode_component(&encode_component(bytes)),
+        Ok(bytes.to_vec())
+    );
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        if let Ok(decoded) = decode_component(text) {
+            assert_eq!(encode_component(&decoded), text);
         }
-        let wire: CapabilityProto = value.clone().into();
-        let decoded = CapabilityProto::decode(wire.encode_to_vec().as_slice());
-        assert!(decoded.is_ok_and(|wire| Capability::try_from(wire) == Ok(value)));
     }
 });
