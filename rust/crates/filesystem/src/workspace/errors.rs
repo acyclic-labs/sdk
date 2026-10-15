@@ -76,6 +76,14 @@ pub enum WorkspaceError {
     /// An operation required a directory.
     #[error("workspace path is not a directory")]
     NotDirectory,
+    /// An operation required a non-directory, as a rename of a
+    /// non-directory over a directory does (`EISDIR`).
+    #[error("workspace path is a directory")]
+    IsDirectory,
+    /// A rename or removal would drop a directory that is not empty
+    /// (`ENOTEMPTY`).
+    #[error("workspace directory is not empty")]
+    DirectoryNotEmpty,
     /// A bounded whole-file helper encountered a larger file.
     #[error("workspace file exceeds the caller's read bound")]
     ReadLimitExceeded,
@@ -281,6 +289,12 @@ impl From<FsError> for WorkspaceError {
             FsError::NotDirectory
             | FsError::Mutation(crate::kernel::GenerationMutationError::NotDirectory) => {
                 Self::NotDirectory
+            }
+            FsError::Mutation(crate::kernel::GenerationMutationError::IsDirectory) => {
+                Self::IsDirectory
+            }
+            FsError::Mutation(crate::kernel::GenerationMutationError::DirectoryNotEmpty) => {
+                Self::DirectoryNotEmpty
             }
             FsError::FileRead(crate::kernel::FileRangeReadError::NotRegular) => {
                 Self::NotRegularFile
