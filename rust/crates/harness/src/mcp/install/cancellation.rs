@@ -1,43 +1,39 @@
-use crate::{Error, Result};
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use crate::{
+    Error, Result,
+    mcp::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
-// No locks: the parent publishes cancellation, then awaits the worker's physical completion.
-// The flag trait lets Loom execute the same guard/check path with instrumented atomics.
-pub(super) trait CancelFlag {
-    fn cancel(&self);
-    fn cancelled(&self) -> bool;
-}
+// No locks: the parent publishes cancellation, then awaits physical completion.
+pub(super) struct CancelOnDrop(pub(super) Arc<AtomicBool>);
 
-impl CancelFlag for AtomicBool {
-    fn cancel(&self) {
-        self.store(true, Ordering::Release);
-    }
-    fn cancelled(&self) -> bool {
-        self.load(Ordering::Acquire)
+impl CancelOnDrop {
+    pub(super) fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
     }
 }
 
-pub(super) struct CancelOnDrop<F: CancelFlag = AtomicBool>(pub(super) Arc<F>);
-
-impl<F: CancelFlag> Drop for CancelOnDrop<F> {
+impl Drop for CancelOnDrop {
     fn drop(&mut self) {
-        self.0.cancel();
+        self.cancel();
     }
 }
 
-pub(super) fn check_cancelled(flag: &impl CancelFlag) -> Result<()> {
-    if flag.cancelled() {
-        Err(Error::process_io(std::io::ErrorKind::Interrupted.into()))
+pub(super) fn check_cancelled(flag: &AtomicBool) -> Result<()> {
+    if flag.load(Ordering::Acquire) {
+        Err(Error::Process {
+            kind: "cancelled",
+            message: "MCP registration cancelled".into(),
+        })
     } else {
         Ok(())
     }
 }
 
 pub(super) fn run<T>(
-    flag: Arc<impl CancelFlag>,
+    flag: Arc<AtomicBool>,
     register: impl FnOnce(&dyn Fn() -> Result<()>) -> Result<T>,
 ) -> Result<T> {
     let check = || check_cancelled(flag.as_ref());
@@ -47,28 +43,16 @@ pub(super) fn run<T>(
     result
 }
 
-#[cfg(test)]
+#[cfg(all(test, loom))]
 mod tests {
     use super::*;
-    use loom::sync::{
-        atomic::{AtomicBool as ModelBool, AtomicUsize},
-        mpsc,
-    };
+    use loom::sync::{atomic::AtomicUsize, mpsc};
 
-    impl CancelFlag for ModelBool {
-        fn cancel(&self) {
-            self.store(true, Ordering::Release);
-        }
-        fn cancelled(&self) -> bool {
-            self.load(Ordering::Acquire)
-        }
-    }
-
-    #[test]
-    fn cancellation_and_completion_always_retire_the_worker_and_connection() {
-        loom::model(|| {
-            let flag = Arc::new(ModelBool::new(false));
-            let guard = CancelOnDrop(Arc::clone(&flag));
+    fn cancellation_model(omit_guard: bool) {
+        loom::model(move || {
+            let flag = Arc::new(AtomicBool::new(false));
+            // Negative control removes the production cancellation guard.
+            let guard = (!omit_guard).then(|| CancelOnDrop(Arc::clone(&flag)));
             let active = Arc::new(AtomicUsize::new(0));
             struct Connection(Arc<AtomicUsize>);
             impl Drop for Connection {
@@ -93,9 +77,23 @@ mod tests {
             drop(guard);
             drop(receive.recv().unwrap());
             worker.join().unwrap();
-            assert!(check_cancelled(flag.as_ref()).is_err());
+            assert!(
+                check_cancelled(flag.as_ref()).is_err(),
+                "cancellation must be visible"
+            );
             assert_eq!(active.load(Ordering::Acquire), 0);
             assert_eq!(connections.load(Ordering::Acquire), 0);
         });
+    }
+
+    #[test]
+    fn cancellation_and_completion_always_retire_the_worker_and_connection() {
+        cancellation_model(false);
+    }
+
+    #[test]
+    #[should_panic(expected = "cancellation must be visible")]
+    fn negative_control_missing_guard_is_detected() {
+        cancellation_model(true);
     }
 }

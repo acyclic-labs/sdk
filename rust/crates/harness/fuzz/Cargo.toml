@@ -9,6 +9,9 @@ cargo-fuzz = true
 
 [workspace]
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }
+
 [dependencies]
 libfuzzer-sys = "0.4"
 bytes = "1"

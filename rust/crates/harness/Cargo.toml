@@ -17,6 +17,10 @@ name = "main"
 path = "tests/main.rs"
 
 [[test]]
+name = "mcp-loom"
+path = "tests/mcp_loom.rs"
+
+[[test]]
 name = "local-recursive-fork"
 path = "tests/local_recursive_fork.rs"
 required-features = ["filesystem-local"]
