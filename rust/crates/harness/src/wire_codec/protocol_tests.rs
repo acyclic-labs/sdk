@@ -114,7 +114,7 @@ fn event_identity_cost(observing: bool, accounted: bool) -> Result<()> {
             allocation.bytes_total,
             allocation.bytes_max,
         ));
-        let envelope = result.expect("encoder ran")?;
+        let envelope = result.ok_or_else(|| Error::Invalid("encoder did not run".into()))??;
         assert_eq!(envelope, reference);
         if accounted {
             let actual = io.receipt();
