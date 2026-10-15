@@ -641,7 +641,7 @@ proptest::proptest! {
         let checks = AtomicUsize::new(0);
         let check = || {
             if checks.fetch_add(1, Ordering::SeqCst) >= cancel_at {
-                Err(Error::Storage("registration cancelled".into()))
+                Err(Error::Invalid("test cancellation".into()))
             } else { Ok(()) }
         };
         let result = catalog("1", &["a","b"]).install_checked(
