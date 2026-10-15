@@ -6,6 +6,136 @@ const BOUNDS: JsonBounds = JsonBounds {
     maximum_items: 4_096,
     maximum_depth: 32,
 };
+
+#[cfg(not(target_arch = "wasm32"))]
+fn assert_encoding_needs_no_heap(value: &Value) -> Result<()> {
+    let bytes = crate::contract::canonical_json_bytes(value)?;
+    assert!(bytes.len() > 8 * 4096);
+    let expected = *blake3::hash(&bytes).as_bytes();
+    let mut converted = Ok(Value::Null);
+    let conversion = allocation_counter::measure(|| {
+        converted = serde_json::to_value(value);
+        if let Ok(value) = &mut converted {
+            value.sort_all_objects();
+        }
+    });
+    drop(std::hint::black_box(
+        converted.map_err(|error| Error::Invalid(error.to_string()))?,
+    ));
+    let mut digest = Ok([0; 32]);
+    let encoding = allocation_counter::measure(|| {
+        digest = canonical_json_digest(value, u64::MAX, &mut None);
+    });
+    assert_eq!(digest?, expected);
+    assert_eq!(encoding.count_total, conversion.count_total);
+    assert_eq!(encoding.bytes_total, conversion.bytes_total);
+    assert_eq!(encoding.bytes_max, conversion.bytes_max);
+    assert_eq!(encoding.count_current, 0);
+    assert_eq!(encoding.bytes_current, 0);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn large_string_digest_has_no_encoding_heap() -> Result<()> {
+    for text in ["x".repeat(1024 * 1024), "\0\n\"\\é".repeat(65_536)] {
+        assert_encoding_needs_no_heap(&Value::String(text))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn nested_digest_has_no_encoding_heap() -> Result<()> {
+    let rows: Vec<_> = (0..256)
+        .map(|index| serde_json::json!({"z": [index, "\0\n\"\\é".repeat(64)], "a": {"id": index}}))
+        .collect();
+    assert_encoding_needs_no_heap(&serde_json::json!({"z": rows, "a": [true, null]}))
+}
+
+#[cfg(feature = "filesystem")]
+#[test]
+fn canonical_digest_preserves_hash_admission_and_charge() -> Result<()> {
+    let value = serde_json::json!({"z": [0, 1, 255], "a": "\0\n\"é"});
+    let bytes = crate::contract::canonical_json_bytes(&value)?;
+    let length = bytes.len() as u64;
+    for allowance in [length, 0] {
+        let io = crate::filesystem::PreparationIo::from_budget(
+            acyclic_fs::WorkBudget {
+                allocation_operations: 1_000_000,
+                peak_allocation_bytes: 64 * 1024 * 1024,
+                bytes_copied: 64 * 1024 * 1024,
+                bytes_encoded: 64 * 1024 * 1024,
+                bytes_hashed: allowance,
+                items_examined: 1_000_000,
+                ..Default::default()
+            },
+            &acyclic_fs::CancellationToken::default(),
+        )?;
+        let mut work = crate::store::HistoryWork::new(io);
+        let result = canonical_json_digest(&value, length, &mut Some(&mut work));
+        if allowance == 0 {
+            assert!(result.is_err());
+        } else {
+            assert_eq!(result?, *blake3::hash(&bytes).as_bytes());
+            assert_eq!(work.receipt().bytes_hashed, length);
+            println!("canonical digest charges: {:?}", work.receipt());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn streamed_identity_matches_canonical_bytes() -> Result<()> {
+    #[derive(Serialize)]
+    struct Record<'a> {
+        z: f32,
+        a: &'a serde_json::value::RawValue,
+        text: String,
+    }
+    struct Counted<'a, T>(&'a std::cell::Cell<usize>, &'a T);
+    impl<T: Serialize> Serialize for Counted<'_, T> {
+        fn serialize<S: serde::Serializer>(
+            &self,
+            serializer: S,
+        ) -> std::result::Result<S::Ok, S::Error> {
+            self.0.set(self.0.get() + 1);
+            self.1.serialize(serializer)
+        }
+    }
+    let raw = serde_json::value::RawValue::from_string(
+        r#"{"z":[0.1,-0.0],"a":18446744073709551615,"z":[2]}"#.into(),
+    )
+    .map_err(|error| Error::Invalid(error.to_string()))?;
+    for length in [0, 1, 4095, 4096, 4097, 65536] {
+        for text in ["\0\n\"\\é".repeat(length), "x".repeat(length)] {
+            let record = Record {
+                z: 0.1,
+                a: &raw,
+                text,
+            };
+            let bytes = crate::contract::canonical_json_bytes(&record)?;
+            let calls = std::cell::Cell::new(0);
+            assert_eq!(
+                canonical_json_digest(&Counted(&calls, &record), u64::MAX, &mut None)?,
+                *blake3::hash(&bytes).as_bytes(),
+            );
+            assert_eq!(calls.get(), 1);
+        }
+    }
+    for encoded_length in [4095, 4096, 4097] {
+        let text = "x".repeat(encoded_length - 2);
+        let bytes = crate::contract::canonical_json_bytes(&text)?;
+        assert_eq!(bytes.len(), encoded_length);
+        assert_eq!(
+            canonical_json_digest(&text, u64::MAX, &mut None)?,
+            *blake3::hash(&bytes).as_bytes(),
+        );
+    }
+    assert!(canonical_json_digest(&u128::MAX, u64::MAX, &mut None).is_err());
+    Ok(())
+}
+
 #[test]
 fn exact_byte_item_depth_and_escape_admission() -> Result<()> {
     let value = serde_json::json!({"z": ["\u{0}\"\\\n", u64::MAX], "a": i64::MIN});
