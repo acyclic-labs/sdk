@@ -726,22 +726,6 @@ impl crate::conversation::ContentResidencyVerifier for Journal {
     }
 }
 
-#[derive(Default)]
-struct PrefixBoundaryModel(Mutex<Vec<Vec<u8>>>);
-
-impl ModelProvider for PrefixBoundaryModel {
-    fn generate<'a>(
-        &'a self,
-        request: crate::model::PreparedModelRequest,
-        _dispatch: crate::model::ModelDispatch,
-    ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
-        self.0.lock().unwrap().push(request.bytes().to_vec());
-        Box::pin(stream::iter([Ok(ModelEvent::Completed {
-            metadata: Value::Null,
-        })]))
-    }
-}
-
 struct OnceStage(AtomicUsize);
 
 impl crate::context::ContextStage for OnceStage {
