@@ -118,14 +118,7 @@ pub(super) async fn stock_restart_with_publication_fault(
         labels: BTreeMap::new(),
     };
     let mut previous_lease: Option<acyclic_harness::distributed::WorkLease> = None;
-    let model = Arc::new(InterruptedModel {
-        requests: Mutex::new(Vec::new()),
-        approval_tool: false,
-        observed_events: usize::from(fault != Some(ExecutionFaultMode::Before)),
-        output_tokens: AtomicU64::new(0),
-        generated: AtomicUsize::new(0),
-        reconciled: AtomicUsize::new(0),
-    });
+    let model = interrupted_model(usize::from(fault != Some(ExecutionFaultMode::Before)));
     let session_limits = SessionLimits {
         active_tasks: 1,
         total_tasks: 2,
@@ -384,8 +377,8 @@ pub(super) async fn stock_restart_with_publication_fault(
                     Err(Error::Conflict(message))
                         if message == "execution identity is bound to another request or configuration"
                 ));
-                assert_eq!(model.generated.load(Ordering::SeqCst), 1);
-                assert_eq!(model.reconciled.load(Ordering::SeqCst), 0);
+                assert_eq!(model.dispatches().len(), 1);
+                assert_eq!(model.reconciliations().len(), 0);
             }
             let restored = execution.execute(turn.clone()).await?;
             assert_eq!(
@@ -397,10 +390,16 @@ pub(super) async fn stock_restart_with_publication_fault(
                 }
             );
             assert_eq!(execution.execute(turn).await?, restored);
-            assert_eq!(model.generated.load(Ordering::SeqCst), 1);
-            assert_eq!(model.reconciled.load(Ordering::SeqCst), 1);
+            assert_eq!(model.dispatches().len(), 1);
+            assert_eq!(model.reconciliations().len(), 1);
             if fault.is_none() {
-                assert_eq!(model.output_tokens.load(Ordering::SeqCst), 8_192);
+                assert_eq!(
+                    model
+                        .requests()
+                        .last()
+                        .and_then(|request| request.max_output_tokens),
+                    Some(8_192)
+                );
             }
             let another = runtime
                 .stock_execution(
@@ -431,8 +430,8 @@ pub(super) async fn stock_restart_with_publication_fault(
             } else {
                 assert!(rejected.is_err());
             }
-            assert_eq!(model.generated.load(Ordering::SeqCst), 1);
-            assert_eq!(model.reconciled.load(Ordering::SeqCst), 1);
+            assert_eq!(model.dispatches().len(), 1);
+            assert_eq!(model.reconciliations().len(), 1);
         } else {
             if let Some(mode) = fault {
                 stream_provider.arm_execution(3, mode);
@@ -479,8 +478,8 @@ pub(super) async fn stock_restart_with_publication_fault(
                 stream_provider.execution_faults.load(Ordering::SeqCst),
                 usize::from(fault.is_some())
             );
-            assert_eq!(model.generated.load(Ordering::SeqCst), 1);
-            assert_eq!(model.reconciled.load(Ordering::SeqCst), 0);
+            assert_eq!(model.dispatches().len(), 1);
+            assert_eq!(model.reconciliations().len(), 0);
             coordinator.refresh(&mut None).await?;
             let retained = coordinator
                 .scheduler()

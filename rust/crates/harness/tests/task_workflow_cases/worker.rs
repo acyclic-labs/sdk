@@ -197,14 +197,14 @@ pub(super) async fn worker_restart_with_options(
     };
     let mut old_lease: Option<acyclic_harness::distributed::WorkLease> = None;
     let mut discovery_cursor = None;
-    let model = Arc::new(InterruptedModel {
-        requests: Mutex::new(Vec::new()),
-        approval_tool: with_model_approval,
-        observed_events: 1,
-        output_tokens: AtomicU64::new(0),
-        generated: AtomicUsize::new(0),
-        reconciled: AtomicUsize::new(0),
-    });
+    let mut model = if with_model_approval {
+        None
+    } else if matches!(command, WorkerCommand::Model | WorkerCommand::PolicyModel) {
+        Some(interrupted_model(1))
+    } else {
+        Some(Arc::new(task_model([])))
+    };
+    let mut approval_file = None;
     let tool = Arc::new(InterruptedTool {
         model_call: with_model_approval,
         executed: AtomicUsize::new(0),
@@ -225,7 +225,7 @@ pub(super) async fn worker_restart_with_options(
                     ),
                 },
                 executor: tool.clone(),
-                projection: tool.clone(),
+                projection: Arc::new(acyclic_harness::tool::JsonToolProjection),
             },
             None,
         ),
@@ -436,8 +436,19 @@ pub(super) async fn worker_restart_with_options(
                 } else {
                     serde_json::to_value(ModelTaskCommand {
                         input: if with_model_approval {
+                            let file = payloads.stage(operation, "model-input", b"hello", None)?.await?;
+                            let mut turns = vec![ScriptedTurn::Events(vec![
+                                ScriptedEvent::Event(ModelEvent::ToolCall {
+                                    call_id: "provider-call".into(), name: "test.restore".into(),
+                                    arguments: json!({"file":file,"approval":true}),
+                                }),
+                                ScriptedEvent::Event(ModelEvent::Completed { metadata: Value::Null }),
+                            ])];
+                            if !declined { turns.push(ScriptedTurn::Text("partial-restored".into())); }
+                            model = Some(Arc::new(task_model(turns)));
+                            approval_file = Some(file.clone());
                             ModelContent::Part(acyclic_harness::model::ModelContentPart::File {
-                                file: payloads.stage(operation, "model-input", b"hello", None)?.await?,
+                                file,
                                 policy: acyclic_harness::model::FileProjectionPolicy::Reference,
                             })
                         } else {
@@ -468,6 +479,9 @@ pub(super) async fn worker_restart_with_options(
         }
         Ok::<_, Error>(())
         }).await?;
+        let model = model
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("missing worker model script".into()))?;
         let mut coordinator = DistributedCoordinator::open(
             &stream,
             reader.clone(),
@@ -612,15 +626,15 @@ pub(super) async fn worker_restart_with_options(
             );
             if with_timer || with_mail_receive || with_child || with_approval_wait {
                 let evaluations = policy.evaluated.load(Ordering::SeqCst);
-                let generated = model.generated.load(Ordering::SeqCst);
-                let reconciled = model.reconciled.load(Ordering::SeqCst);
+                            let generated = model.dispatches().len();
+                let reconciled = model.reconciliations().len();
                 let executed = tool.executed.load(Ordering::SeqCst);
                 assert_eq!(discover_wakes(&runtime, None).await?, vec![task]);
                 assert!(discover_wakes(&runtime, None).await?.is_empty());
                 assert!(!runtime.poll_task_wake(task, None).await?);
                 assert_eq!(policy.evaluated.load(Ordering::SeqCst), evaluations);
-                assert_eq!(model.generated.load(Ordering::SeqCst), generated);
-                assert_eq!(model.reconciled.load(Ordering::SeqCst), reconciled);
+                assert_eq!(model.dispatches().len(), generated);
+                assert_eq!(model.reconciliations().len(), reconciled);
                 assert_eq!(tool.executed.load(Ordering::SeqCst), executed);
                 if with_two_waits {
                     let first_wake = coordinator
@@ -764,7 +778,7 @@ pub(super) async fn worker_restart_with_options(
                         .await
                         .is_err()
                 );
-                assert_eq!(model.generated.load(Ordering::SeqCst), 0);
+                assert_eq!(model.dispatches().len(), 0);
                 coordinator.refresh(&mut None).await?;
                 let retained = coordinator
                     .scheduler()
@@ -1115,7 +1129,7 @@ pub(super) async fn worker_restart_with_options(
         }
         if !reopened && (with_timer || with_mail_receive || with_child || with_approval_wait) {
             let evaluations = policy.evaluated.load(Ordering::SeqCst);
-            let generated = model.generated.load(Ordering::SeqCst);
+            let generated = model.dispatches().len();
             let first = runtime.poll_task_wake_page(None, 1).await?;
             assert_eq!(first.events_read, 1);
             assert!(first.woken.is_empty());
@@ -1126,10 +1140,10 @@ pub(super) async fn worker_restart_with_options(
                 serde_json::to_vec(&cursor).map_err(|error| Error::Invalid(error.to_string()))?,
             );
             assert_eq!(policy.evaluated.load(Ordering::SeqCst), evaluations);
-            assert_eq!(model.generated.load(Ordering::SeqCst), generated);
+            assert_eq!(model.dispatches().len(), generated);
             if with_model_approval {
                 assert_eq!(generated, 1);
-                assert_eq!(model.reconciled.load(Ordering::SeqCst), 0);
+                assert_eq!(model.reconciliations().len(), 0);
                 assert_eq!(tool.executed.load(Ordering::SeqCst), 0);
                 assert_eq!(tool.reconciled.load(Ordering::SeqCst), 0);
             }
@@ -1155,6 +1169,23 @@ pub(super) async fn worker_restart_with_options(
             mail::assert_mail(&runtime, task, reader.as_ref(), with_mail_send, &lease).await?;
         }
     }
+    let model = model
+        .as_ref()
+        .ok_or_else(|| Error::Invalid("missing worker model script".into()))?;
+    if let Some(expected) = &approval_file {
+        for request in model.requests() {
+            assert_eq!(
+                request
+                    .messages
+                    .iter()
+                    .flat_map(|message| message.content.file_refs())
+                    .next(),
+                Some(expected)
+            );
+        }
+    }
+    assert_eq!(model.remaining(), 0);
+    assert!(model.recoveries().is_empty());
     if with_policy && with_tool {
         assert_policy_dispatches(&policy, &tool, declined);
     }
