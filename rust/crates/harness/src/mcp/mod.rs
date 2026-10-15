@@ -1,6 +1,16 @@
 //! MCP clients over the ordinary tool, execution and interaction owners.
 pub mod callbacks;
 mod catalog;
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
+))]
+pub(crate) mod config;
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
+))]
+pub use config::{McpConfig, McpServer, McpTransport};
 pub mod http;
 #[cfg(all(feature = "mcp-oauth", not(target_arch = "wasm32")))]
 pub mod oauth;
@@ -38,5 +48,17 @@ fn charge(work: NativeWork<'_>, items: u64, read: u64, copied: u64) -> Result<()
         })?;
     }
     let _ = (work, items, read, copied);
+    Ok(())
+}
+
+fn validate_operation_context(
+    operation: crate::OperationId,
+    context: Option<&crate::runtime::ToolContext>,
+) -> Result<()> {
+    if context.is_some_and(|context| context.operation_id() != operation) {
+        return Err(Error::Unauthorized(
+            "MCP task context operation mismatch".into(),
+        ));
+    }
     Ok(())
 }

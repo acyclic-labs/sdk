@@ -160,6 +160,11 @@ async fn sealed_summary_preparation(
             grants.push(volume.capability(VolumeOperation::Read, &mut None)?);
         }
     }
+    for grant in preparer.required_reference_grants(fork, None).await? {
+        if grant.reader == fork.child_agent {
+            grants.push(grant.file.read_capability(&mut None)?);
+        }
+    }
     let grants = Capabilities::new(grants);
     let signed = issuer
         .issue("summary-preparation", &grants, Some(agent), None, &mut None)
@@ -207,10 +212,11 @@ async fn sealed_summary_preparation(
     tasks.register(definition)?;
     let mut machines = MachineRegistry::default();
     machines.register(implementation, &mut None)?;
+    let task_stream = Arc::new(MemoryStream::default());
     let host = Arc::new(
         CoordinatorTaskHost::new(
-            DistributedCoordinator::open(&storage.stream, reader.clone(), None, &mut None).await?,
-            storage.stream.clone(),
+            DistributedCoordinator::open(&task_stream, reader.clone(), None, &mut None).await?,
+            task_stream,
             payloads.clone(),
             reader,
             authority,
@@ -417,12 +423,11 @@ async fn append_later_summary_parent_messages(
     count: usize,
 ) -> Result<()> {
     let content = parent
-        .reducer()
-        .conversation()
-        .and_then(|state| state.messages().last())
+        .history_reader()?
+        .latest_conversation_message(262_144)
+        .await?
         .ok_or_else(|| Error::Invalid("missing parent message".into()))?
-        .content
-        .clone();
+        .content;
     let mut writer = StreamAggregate::open(
         &storage.stream,
         (
@@ -443,8 +448,7 @@ async fn append_later_summary_parent_messages(
             .reducer()
             .conversation()
             .ok_or_else(|| Error::Invalid("missing conversation".into()))?
-            .messages()
-            .len() as u64
+            .logical_revision()
             + 1;
         writer
             .execute(

@@ -43,7 +43,7 @@ impl DigestWriter {
 
 // Keep the encoding buffer out of accounting-enabled stack frames.
 #[inline(never)]
-fn canonical_value_digest(value: &serde_json::Value) -> Result<[u8; 32]> {
+pub(crate) fn serialized_json_digest<T: Serialize + ?Sized>(value: &T) -> Result<[u8; 32]> {
     let mut writer = DigestWriter {
         buffer: arrayvec::ArrayVec::new(),
         hasher: None,
@@ -145,7 +145,7 @@ pub(crate) fn canonical_json_digest<T: Serialize + ?Sized>(
         let mut value =
             serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
         value.sort_all_objects();
-        return canonical_value_digest(&value);
+        return serialized_json_digest(&value);
     }
     let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
     let bytes =

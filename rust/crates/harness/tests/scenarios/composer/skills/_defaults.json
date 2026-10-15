@@ -1,0 +1,5 @@
+{
+  "skills": ["skills"],
+  "seed":{"skills/audit/SKILL.md":
+    "---\nname: audit\ndescription: Audit code\nallowed-tools: [read]\n---\nInspect $ARGUMENTS","a.txt":"file"}
+}

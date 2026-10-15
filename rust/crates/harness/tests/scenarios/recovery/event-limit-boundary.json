@@ -1,0 +1,4 @@
+{"prompt":"Allow a continuation exactly at the event boundary.","limits":{"model_events_per_step":2},
+  "turns":[[{"type":"event","kind":"content","delta":"answer"},{"type":"error","error":"offline"}]],
+  "recoveries":[{"observed":[{"kind":"content","delta":"answer"}],"continuation":[{"kind":"completed",
+  "metadata":null}]}],"expect":{"text":"answer"}}

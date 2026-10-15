@@ -1,0 +1,4 @@
+{
+  "prompt": "hello /model",
+  "expect": {"result":{"kind":"prompt","text":"hello /model","mentions":[],"source":null}}
+}

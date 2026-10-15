@@ -1,0 +1,7 @@
+{
+  "prompt": "Test ordering",
+  "turns": ["Order test"],
+  "replay": true,
+  "expect": {"text":"Order test", "requests":[{"messages":[{"content":"Test ordering"}]}],
+    "events":[{"kind":"started"},{"kind":"context_prepared"},{"kind":"model_started"},{"kind":"model","event":{"kind":"content","delta":"Order test"}},{"kind":"model","event":{"kind":"completed"}}]}
+}

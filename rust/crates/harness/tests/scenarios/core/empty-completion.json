@@ -1,0 +1,5 @@
+{
+  "prompt":"Return an empty answer.",
+  "turns":[[{"type":"event","kind":"completed","metadata":null}]],
+  "expect":{"text":"","result":{"steps":1,"metadata":null},"events":[{"kind":"model","event":{"kind":"completed","metadata":null}}]}
+}

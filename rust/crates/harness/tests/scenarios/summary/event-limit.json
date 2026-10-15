@@ -1,0 +1,2 @@
+{"max_output_tokens":10,"turns":["summary"],"expect":{"error":"model event limit exceeded"},
+  "limits":{"model_events_per_step":1}}

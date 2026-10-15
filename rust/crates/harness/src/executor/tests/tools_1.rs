@@ -903,6 +903,7 @@ async fn stock_tool_validation_failure_replays_as_terminal_without_redispatch() 
         tools.register(
             (
                 crate::tool::Tool {
+                    hook_names: &[],
                     definition: crate::tool::ToolDefinition {
                         name: "example.echo".into(),
                         revision: "1".into(),

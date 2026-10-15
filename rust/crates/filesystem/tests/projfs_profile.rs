@@ -67,6 +67,12 @@ async fn profile_enumeration_hydration_write_capture() -> Result<(), Box<dyn std
         .map_err(|failure| failure.error)?;
     let destination = root.path().join("mount");
     std::fs::create_dir(&destination)?;
+    if std::env::var_os("ACYCLIC_PROJFS_PROFILE_START_GATE").is_some() {
+        use std::io::Read as _;
+        let mut signal = [0];
+        std::io::stdin().read_exact(&mut signal)?;
+        assert_eq!(signal, *b"g");
+    }
     phase("mount")?;
     let started = Instant::now();
     let mount = workspace
@@ -79,42 +85,17 @@ async fn profile_enumeration_hydration_write_capture() -> Result<(), Box<dyn std
 
     phase("client-start")?;
     let started = Instant::now();
-    let script = "$ErrorActionPreference = 'Stop'; \
-        $root = $env:ACYCLIC_PROJFS_PROFILE_ROOT; \
-        function Set-Phase([string]$name) { \
-            Write-Output ('PROJFS_PHASE ' + $name); \
-            if ($env:ACYCLIC_PROJFS_PROFILE_PHASE) { \
-                [IO.File]::WriteAllText($env:ACYCLIC_PROJFS_PROFILE_PHASE, $name); \
-            }; \
-        }; \
-        Set-Phase 'enumerate'; $timer = [Diagnostics.Stopwatch]::StartNew(); \
-        for ($round = 0; $round -lt 8; $round++) { \
-            $files = [IO.Directory]::GetFiles($root); \
-            if ($files.Length -ne 256) { throw 'enumeration count' }; \
-        }; \
-        Write-Output ('PROJFS_TIME enumerate ' + $timer.Elapsed.TotalMilliseconds + ' ms'); \
-        Set-Phase 'read'; $timer.Restart(); \
-        for ($round = 0; $round -lt 8; $round++) { \
-            foreach ($file in $files) { \
-                $bytes = [IO.File]::ReadAllBytes($file); \
-                if ($bytes.Length -ne 65536) { throw 'read length' }; \
-            }; \
-        }; \
-        Write-Output ('PROJFS_TIME read ' + $timer.Elapsed.TotalMilliseconds + ' ms'); \
-        Set-Phase 'write'; $timer.Restart(); \
-        for ($round = 0; $round -lt 8; $round++) { \
-            for ($index = 0; $index -lt 32; $index++) { \
-                $path = Join-Path $root ('entry{0:D3}' -f $index); \
-                [IO.File]::WriteAllBytes($path, [byte[]]::new(65536)); \
-            }; \
-        }; \
-        Write-Output ('PROJFS_TIME write ' + $timer.Elapsed.TotalMilliseconds + ' ms')";
-    let mut command = std::process::Command::new("powershell.exe");
+    let mut command = std::process::Command::new(std::env::current_exe()?);
     command
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .args([
+            "--ignored",
+            "--exact",
+            "profile_external_client",
+            "--nocapture",
+        ])
         .env("ACYCLIC_PROJFS_PROFILE_ROOT", &destination);
     let mut child = acyclic_native_runtime::ProcessTree::spawn(&mut command)?;
-    let result = child.wait(std::time::Duration::from_secs(120));
+    let result = child.wait(std::time::Duration::from_secs(45));
     child.terminate(None)?;
     assert!(result?.success());
     eprintln!("PROJFS_TIME client-total {:?}", started.elapsed());
@@ -158,5 +139,44 @@ fn phase(name: &str) -> std::io::Result<()> {
     if let Some(path) = std::env::var_os("ACYCLIC_PROJFS_PROFILE_PHASE") {
         std::fs::write(path, name)?;
     }
+    Ok(())
+}
+
+#[test]
+#[ignore = "contained external client for the ProjFS workload"]
+fn profile_external_client() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(root) = std::env::var_os("ACYCLIC_PROJFS_PROFILE_ROOT") else {
+        return Ok(());
+    };
+    let root = std::path::PathBuf::from(root);
+    phase("enumerate")?;
+    let started = Instant::now();
+    let mut files = Vec::new();
+    for _ in 0..8 {
+        files = std::fs::read_dir(&root)?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        assert_eq!(files.len(), 256);
+    }
+    eprintln!("PROJFS_TIME enumerate {:?}", started.elapsed());
+    phase("read")?;
+    let started = Instant::now();
+    for _ in 0..8 {
+        for file in &files {
+            let bytes = std::fs::read(file)?;
+            assert_eq!(bytes.len(), 65_536);
+            assert!(bytes.iter().all(|byte| *byte == 0x5a));
+        }
+    }
+    eprintln!("PROJFS_TIME read {:?}", started.elapsed());
+    phase("write")?;
+    let started = Instant::now();
+    let bytes = [0; 65_536];
+    for _ in 0..8 {
+        for index in 0..32 {
+            std::fs::write(root.join(format!("entry{index:03}")), &bytes)?;
+        }
+    }
+    eprintln!("PROJFS_TIME write {:?}", started.elapsed());
     Ok(())
 }

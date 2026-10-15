@@ -1,0 +1,5 @@
+{"prompt":"Reconcile the same prefix when recovery becomes available.","turns":[[{"type":"event","kind":"content",
+  "delta":"one"},{"type":"error","error":"offline"}]],"recoveries":[{"observed":[{"kind":"content","delta":"one"}],
+  "continuation":null},{"observed":[{"kind":"content","delta":"one"}],"continuation":[{"kind":"content","delta":"two"},
+  {"kind":"completed","metadata":null}]}],"resume":["offline","operation outcome is indeterminate"],
+  "expect":{"text":"onetwo","reconciliation_count":2}}

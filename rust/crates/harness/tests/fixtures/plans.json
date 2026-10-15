@@ -1,0 +1,10 @@
+[
+  {"name":"empty","updates":[{"plan":[]}],"markdown":["# Plan\n\n"]},
+  {"name":"lifecycle","updates":[
+    {"explanation":"Start work","plan":[{"step":"Inspect","status":"in_progress"},{"step":"Verify","status":"pending"}]},
+    {"plan":[{"step":"Inspect","status":"completed"},{"step":"Verify","status":"in_progress"}]},
+    {"plan":[{"step":"Inspect","status":"completed"},{"step":"Verify","status":"completed"}]}
+  ],"markdown":["# Plan\n\nStart work\n\n- [~] Inspect\n- [ ] Verify\n","# Plan\n\n- [x] Inspect\n- [~] Verify\n","# Plan\n\n- [x] Inspect\n- [x] Verify\n"]},
+  {"name":"unicode","updates":[{"plan":[{"step":"Vérifier 日本語","status":"pending"}]}],"markdown":["# Plan\n\n- [ ] Vérifier 日本語\n"]},
+  {"name":"clear","updates":[{"plan":[{"step":"Old work","status":"completed"}]},{"plan":[]}],"markdown":["# Plan\n\n- [x] Old work\n","# Plan\n\n"]}
+]
