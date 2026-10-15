@@ -2,6 +2,73 @@ use super::*;
 use crate::model::{CheckoutMode, GenerationSelector};
 use crate::performance::BOUNDARY_BUDGET;
 
+proptest::proptest! {
+    // Property: after every arbitrary owner/payload retirement and admitted
+    // charge, live bytes equal the surviving allocations, while only the
+    // requested item charge changes the completed-work receipt.
+    #[test]
+    fn arbitrary_retirement_traces_preserve_live_bytes_and_exact_charges(
+        sizes in proptest::collection::vec(1_u16..257, 1..9),
+        actions in proptest::collection::vec((proptest::bool::ANY, 0_usize..8), 0..65),
+    ) {
+        retirement_trace(&sizes, &actions)
+            .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
+    }
+}
+
+fn retirement_trace(sizes: &[u16], actions: &[(bool, usize)]) -> TestResult {
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(BOUNDARY_BUDGET, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let baseline = original.live_allocation_bytes();
+    let mut owners = Vec::with_capacity(sizes.len());
+    let mut claims = Vec::with_capacity(sizes.len());
+    for &bytes in sizes {
+        let owner = native_custody(&original)?;
+        let mut allocation = original.claim(u64::from(bytes), 1, WorkCounters::UNCHARGED)?;
+        claims.push(Some(allocation.transfer_checkout_control(&owner, &owner)?));
+        owners.push(Some(owner));
+    }
+    let mut expected_work = original.receipt();
+    for &(payload, index) in actions {
+        let index = index % sizes.len();
+        if payload {
+            drop(claims[index].take());
+        } else {
+            drop(owners[index].take());
+        }
+        original.charge(SCAN)?;
+        expected_work.items_examined += 1;
+        let headers = owners
+            .iter()
+            .zip(&claims)
+            .filter(|(owner, claim)| owner.is_some() || claim.is_some())
+            .count() as u64;
+        let payload = claims
+            .iter()
+            .zip(sizes)
+            .filter(|(claim, _)| claim.is_some())
+            .map(|(_, &bytes)| u64::from(bytes))
+            .sum::<u64>();
+        let shared = if headers == 0 {
+            0
+        } else {
+            std::mem::size_of::<NativeProofAccounting>() as u64
+        };
+        assert_eq!(
+            original.live_allocation_bytes(),
+            baseline + shared + headers * std::mem::size_of::<ProofDataCustody>() as u64 + payload
+        );
+        assert_eq!(original.receipt(), expected_work);
+    }
+    drop(claims);
+    drop(owners);
+    original.charge(WorkCounters::UNCHARGED)?;
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.receipt(), expected_work);
+    Ok(())
+}
+
 #[tokio::test]
 async fn read_then_bind_native_original_reconciles_without_another_payload_change()
 -> Result<(), Box<dyn std::error::Error>> {

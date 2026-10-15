@@ -6,25 +6,12 @@ use crate::kernel::{
 };
 use std::sync::{
     Arc, Weak,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering, fence},
 };
 
-#[derive(Debug, Default)]
-pub(crate) struct NativeProofAccounting {
-    retired: AtomicU64,
-    non_native: AtomicU64,
-}
-impl NativeProofAccounting {
-    pub(crate) fn retire_native(&self, bytes: u64) {
-        self.retired.fetch_add(bytes, Ordering::Release);
-    }
-    pub(crate) fn retain_non_native(&self, bytes: u64) {
-        self.non_native.fetch_add(bytes, Ordering::Release);
-    }
-    pub(crate) fn retire_non_native(&self, bytes: u64) {
-        self.non_native.fetch_sub(bytes, Ordering::Release);
-    }
-}
+#[path = "admissions_accounting.rs"]
+mod accounting;
+pub(crate) use accounting::NativeProofAccounting;
 pub(super) const SCAN: WorkCounters = WorkCounters {
     items_examined: 1,
     ..WorkCounters::UNCHARGED
@@ -139,19 +126,15 @@ impl DemandWork {
         let Some(shared) = &self.roots.proof_accounting else {
             return Ok(());
         };
-        let retired = if shared.retired.load(Ordering::Acquire) == 0 {
-            0
-        } else {
-            shared.retired.swap(0, Ordering::AcqRel)
-        };
+        let retired = shared.take_retired();
         if let Err(error) = self.allocations.release(retired) {
             shared.retire_native(retired);
             return Err(error.into_work_or(crate::WorkError::Overflow));
         }
-        if Arc::strong_count(shared) == 1 {
+        if accounting::acquire_final_owner(Arc::strong_count(shared)) {
             let bytes = (std::mem::size_of::<NativeProofAccounting>() as u64)
                 .checked_add(self.roots.paid_non_native)
-                .and_then(|bytes| bytes.checked_add(shared.retired.swap(0, Ordering::AcqRel)))
+                .and_then(|bytes| bytes.checked_add(shared.take_retired()))
                 .ok_or(crate::WorkError::Overflow)?;
             drop(self.roots.proof_accounting.take());
             self.roots.paid_non_native = 0;
@@ -384,3 +367,7 @@ mod registry_tests;
 #[cfg(all(test, feature = "memory"))]
 #[path = "admissions_tests.rs"]
 mod tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "admissions_loom_tests.rs"]
+mod loom_tests;
