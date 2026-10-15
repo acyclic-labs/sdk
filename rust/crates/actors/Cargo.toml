@@ -10,6 +10,8 @@ description = "Public Actors v1 contract and validation"
 readme = "README.md"
 
 [dependencies]
+ipnet = "=2.12.2"
+url = "=2.5.8"
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 http-body = "1.1.0"
 prost.workspace = true
@@ -46,6 +48,10 @@ tempfile = "3.27.0"
 tracing-subscriber.workspace = true
 
 [build-dependencies]
+serde.workspace = true
+serde_json.workspace = true
+ipnet = "=2.12.2"
+url = "=2.5.8"
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["codegen"] }
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 prost = "=0.14.4"

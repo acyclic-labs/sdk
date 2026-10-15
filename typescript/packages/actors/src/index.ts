@@ -2,4 +2,5 @@
 export * from "../generated/proto/actors/v1/actors_pb.js";
 export * as semantic from "./generated/semantic/actors/readonly.js";
 export * from "./client.js";
+export { serializeAttachment, deserializeAttachment } from "./attachment.js";
 export { performanceObserver, type AcyclicObserver, type OperationEvent } from "./observe.js";

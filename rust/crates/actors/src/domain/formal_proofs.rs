@@ -3,7 +3,10 @@
 //! Observation harnesses quantify full-width numeric values and optional presence
 //! through production conversions and getters, with fixed valid nonnumeric context.
 
-use super::{ActorLimits, ActorState, DomainError, ErrorCode, PositiveU64, SubscriptionStart, SubscriptionState};
+use super::{
+    ActorLimits, ActorState, DomainError, ErrorCode, PositiveU64, SubscriptionStart,
+    SubscriptionState,
+};
 
 fn assert_subscription_state_mapping(raw: i32) {
     let expected = raw == SubscriptionState::Unspecified as i32
@@ -298,6 +301,7 @@ fn update_expected_configuration_revision_is_lossless() {
             handler_timeout_millis: 1,
             memory_bytes: 1,
             checkpoint_bytes: 1,
+            sockets: None,
         }),
         expected_configuration_revision: revision,
         idempotency_key: "i".into(),

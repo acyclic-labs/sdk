@@ -60,6 +60,7 @@ impl Options {
             "bytes",
             "uint32",
             "uint64",
+            "double",
             "bool",
             "message",
             "enumeration",
@@ -139,6 +140,7 @@ pub fn primitive(ty: &Type) -> syn::Result<String> {
             ("bool", "bool"),
             ("u32", "uint32"),
             ("u64", "uint64"),
+            ("f64", "double"),
         ] {
             if path.path.is_ident(name) {
                 return Ok(kind.into());

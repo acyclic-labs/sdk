@@ -58,7 +58,8 @@ pub fn validate_create(request: &wire::CreateActorRequest) -> Result<(), Contrac
         || request.home_region.is_empty()
         || !valid_idempotency_key(&request.idempotency_key)
         || !request.limits.as_ref().is_some_and(|limits| {
-            limits.handler_timeout_millis > 0
+            domain::ActorLimits::try_from(limits.clone()).is_ok()
+                && limits.handler_timeout_millis > 0
                 && limits.memory_bytes > 0
                 && limits.checkpoint_bytes > 0
         })
@@ -84,7 +85,7 @@ pub fn validate_create(request: &wire::CreateActorRequest) -> Result<(), Contrac
     }
     names.clear();
     for item in &request.bindings {
-        if item.name.is_empty() || item.capability.is_empty() || item.resource.is_empty() {
+        if domain::Binding::try_from(item.clone()).is_err() {
             return Err(ContractError::InvalidArgument);
         }
         if !names.insert(&item.name) {
@@ -100,7 +101,8 @@ pub fn validate_update(request: &wire::UpdateActorRequest) -> Result<(), Contrac
         || !domain::valid_code_sha256(&request.code_sha256)
         || !valid_idempotency_key(&request.idempotency_key)
         || !request.limits.as_ref().is_some_and(|limits| {
-            limits.handler_timeout_millis > 0
+            domain::ActorLimits::try_from(limits.clone()).is_ok()
+                && limits.handler_timeout_millis > 0
                 && limits.memory_bytes > 0
                 && limits.checkpoint_bytes > 0
         })
@@ -112,7 +114,7 @@ pub fn validate_update(request: &wire::UpdateActorRequest) -> Result<(), Contrac
     }
     let mut names = HashSet::new();
     for item in &request.bindings {
-        if item.name.is_empty() || item.capability.is_empty() || item.resource.is_empty() {
+        if domain::Binding::try_from(item.clone()).is_err() {
             return Err(ContractError::InvalidArgument);
         }
         if !names.insert(&item.name) {
@@ -194,15 +196,26 @@ pub fn render_proto_files(root: impl AsRef<std::path::Path>) -> std::io::Result<
     reason = "These generated Proto aliases are consumed by the native and WASM bridges"
 )]
 pub use generated::{
-    ActorLimitsProto, ActorObservationProto, ActorState, AddSubscriptionRequestProto,
-    AddSubscriptionResponseProto, BindingProto, CheckpointActorRequestProto,
-    CheckpointActorResponseProto, CreateActorRequestProto, CreateActorResponseProto,
-    DeleteActorRequestProto, DeleteActorResponseProto, ErrorCode, HeaderProto,
+    ActorAddressProto, ActorCallProto, ActorCallResultProto, ActorLimitsProto,
+    ActorObservationProto, ActorState, AddSubscriptionRequestProto, AddSubscriptionResponseProto,
+    BindingProto, BroadcastProto, CheckpointActorRequestProto, CheckpointActorResponseProto,
+    CloseProto, ConnectProto, CreateActorRequestProto, CreateActorResponseProto,
+    DeleteActorRequestProto, DeleteActorResponseProto, EffectIdProto, ErrorCode, HeaderProto,
     InspectActorRequestProto, InspectActorResponseProto, InvokeActorRequestProto,
     InvokeActorResponseProto, RemoveSubscriptionRequestProto, RemoveSubscriptionResponseProto,
-    ResumeSubscriptionRequestProto, ResumeSubscriptionResponseProto, ServiceErrorProto,
-    SubscriptionObservationProto, SubscriptionSpecProto, SubscriptionStartProto, SubscriptionState,
-    UpdateActorRequestProto, UpdateActorResponseProto, subscription_start,
+    ResumeSubscriptionRequestProto, ResumeSubscriptionResponseProto, SendProto, ServiceErrorProto,
+    SetAttachmentProto, SetAutoResponseProto, SetTagsProto, SocketAcceptProto,
+    SocketAutoResponseProto, SocketAutoResponseUpdateProto, SocketBroadcastTargetProto,
+    SocketCheckpointProto, SocketCloseInitiator, SocketCloseProto, SocketConfigProto,
+    SocketConnectCapabilityProto, SocketConnectionProto, SocketConnectionSetProto,
+    SocketDecisionProto, SocketEffectProto, SocketErrorProto, SocketEventProto,
+    SocketHostRuleProto, SocketKeepaliveProto, SocketMessageProto, SocketMeteringProto,
+    SocketOpenProto, SocketPayloadProto, SocketPortRangeProto, SocketReconnectMode,
+    SocketReconnectProto, SocketReconnectingProto, SocketRejectProto, SocketScopeProto,
+    SocketSecretHeaderProto, SocketTransport, SubscriptionObservationProto, SubscriptionSpecProto,
+    SubscriptionStartProto, SubscriptionState, UpdateActorRequestProto, UpdateActorResponseProto,
+    connect, send, socket_auto_response_update, socket_broadcast_target, socket_decision,
+    socket_effect, socket_event, socket_message, socket_payload, socket_scope, subscription_start,
 };
 
 /// Actors service operations generated from the protobuf contract.

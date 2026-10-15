@@ -25,16 +25,51 @@ enum ErrorCode {
   ERROR_CODE_DEPENDENCY_UNAVAILABLE = 10;
 }
 
+enum SocketCloseInitiator {
+  SOCKET_CLOSE_INITIATOR_UNSPECIFIED = 0;
+  SOCKET_CLOSE_INITIATOR_PEER = 1;
+  SOCKET_CLOSE_INITIATOR_ACTOR = 2;
+  SOCKET_CLOSE_INITIATOR_RUNTIME = 3;
+}
+
+enum SocketReconnectMode {
+  SOCKET_RECONNECT_MODE_UNSPECIFIED = 0;
+  SOCKET_RECONNECT_MODE_NONE = 1;
+  SOCKET_RECONNECT_MODE_BACKOFF = 2;
+}
+
+enum SocketTransport {
+  SOCKET_TRANSPORT_UNSPECIFIED = 0;
+  SOCKET_TRANSPORT_INTERNAL = 1;
+  SOCKET_TRANSPORT_EXTERNAL = 2;
+}
+
 enum SubscriptionState {
   SUBSCRIPTION_STATE_UNSPECIFIED = 0;
   SUBSCRIPTION_STATE_ACTIVE = 1;
   SUBSCRIPTION_STATE_PAUSED = 2;
 }
 
+message ActorAddress {
+  string actor_id = 1;
+  optional string app_channel = 2;
+}
+
+message ActorCall {
+  string request_id = 1;
+  InvokeActorRequest request = 2;
+}
+
+message ActorCallResult {
+  string request_id = 1;
+  InvokeActorResponse response = 2;
+}
+
 message ActorLimits {
   uint64 handler_timeout_millis = 1;
   uint64 memory_bytes = 2;
   uint64 checkpoint_bytes = 3;
+  SocketConfig sockets = 4;
 }
 
 message ActorObservation {
@@ -62,6 +97,14 @@ message Binding {
   string name = 1;
   string capability = 2;
   string resource = 3;
+  SocketConnectCapability websocket_connect = 4;
+}
+
+message Broadcast {
+  EffectId effect_id = 1;
+  SocketBroadcastTarget target = 2;
+  repeated string except = 3;
+  SocketPayload payload = 4;
 }
 
 message CheckpointActorRequest {
@@ -71,6 +114,25 @@ message CheckpointActorRequest {
 
 message CheckpointActorResponse {
   ActorObservation actor = 1;
+}
+
+message Close {
+  EffectId effect_id = 1;
+  string connection_id = 2;
+  uint32 code = 3;
+  string reason = 4;
+}
+
+message Connect {
+  EffectId effect_id = 1;
+  string binding = 2;
+  oneof target {
+    string url = 3;
+    ActorAddress actor_address = 6;
+  }
+  repeated string subprotocols = 4;
+  SocketReconnect reconnect = 5;
+  SocketKeepalive keepalive = 7;
 }
 
 message CreateActorRequest {
@@ -92,6 +154,12 @@ message DeleteActorRequest {
 }
 
 message DeleteActorResponse {}
+
+message EffectId {
+  string actor_id = 1;
+  uint64 checkpoint_sequence = 2;
+  uint32 index_in_outbox = 3;
+}
 
 message Error {
   ErrorCode code = 1;
@@ -143,6 +211,223 @@ message ResumeSubscriptionRequest {
 
 message ResumeSubscriptionResponse {
   ActorObservation actor = 1;
+}
+
+message Send {
+  EffectId effect_id = 1;
+  string connection_id = 2;
+  oneof payload {
+    string text = 3;
+    bytes binary = 4;
+  }
+}
+
+message SetAttachment {
+  EffectId effect_id = 1;
+  string connection_id = 2;
+  bytes attachment = 3;
+}
+
+message SetAutoResponse {
+  EffectId effect_id = 1;
+  SocketScope scope = 2;
+  SocketAutoResponseUpdate setting = 3;
+}
+
+message SetTags {
+  EffectId effect_id = 1;
+  string connection_id = 2;
+  repeated string tags = 3;
+}
+
+message SocketAccept {
+  optional string subprotocol = 1;
+  bytes attachment = 2;
+  repeated string tags = 3;
+}
+
+message SocketAutoResponse {
+  string request = 1;
+  string response = 2;
+}
+
+message SocketAutoResponseUpdate {
+  oneof value {
+    SocketAutoResponse pair = 1;
+    bool clear = 2;
+  }
+}
+
+message SocketBroadcastTarget {
+  oneof value {
+    string tag = 1;
+    SocketConnectionSet connections = 2;
+  }
+}
+
+message SocketCheckpoint {
+  uint64 checkpoint_sequence = 1;
+  bytes state = 2;
+  repeated SocketConnection connections = 3;
+  repeated SocketEffect effects = 4;
+  SocketAutoResponse auto_response = 5;
+}
+
+message SocketClose {
+  uint64 offset = 1;
+  uint32 code = 2;
+  string reason = 3;
+  SocketCloseInitiator initiator = 4;
+}
+
+message SocketConfig {
+  uint32 max_frame_bytes = 1;
+  uint32 max_connections = 2;
+  uint32 inbound_buffer_bytes = 3;
+  uint32 inbound_buffer_frames = 4;
+  uint32 actor_buffer_bytes = 5;
+}
+
+message SocketConnectCapability {
+  string binding = 1;
+  repeated SocketHostRule rules = 2;
+  repeated SocketSecretHeader headers = 3;
+}
+
+message SocketConnection {
+  string connection_id = 1;
+  bytes attachment = 2;
+  repeated string tags = 3;
+  uint64 delivered_offset = 4;
+  bool outbound = 5;
+  SocketAutoResponse auto_response = 6;
+  optional uint64 last_auto_response_at = 7;
+  SocketTransport transport = 8;
+}
+
+message SocketConnectionSet {
+  repeated string connection_ids = 1;
+}
+
+message SocketDecision {
+  oneof value {
+    SocketAccept accept = 1;
+    SocketReject reject = 2;
+  }
+}
+
+message SocketEffect {
+  oneof value {
+    Send send = 1;
+    Close close = 2;
+    Broadcast broadcast = 3;
+    SetAutoResponse set_auto_response = 4;
+    SetTags set_tags = 5;
+    SetAttachment set_attachment = 6;
+    Connect connect = 7;
+  }
+}
+
+message SocketError {
+  uint64 offset = 1;
+  string code = 2;
+  string message = 3;
+}
+
+message SocketEvent {
+  oneof value {
+    SocketOpen open = 1;
+    SocketMessage message = 2;
+    SocketClose close = 3;
+    SocketError error = 4;
+    SocketReconnecting reconnecting = 5;
+  }
+}
+
+message SocketHostRule {
+  string host = 1;
+  repeated SocketPortRange ports = 2;
+}
+
+message SocketKeepalive {
+  SocketPayload frame = 1;
+  uint64 interval_ms = 2;
+}
+
+message SocketMessage {
+  uint64 offset = 1;
+  oneof payload {
+    string text = 2;
+    bytes binary = 3;
+  }
+}
+
+message SocketMetering {
+  string actor_id = 1;
+  optional string connection_id = 2;
+  uint64 wakes = 3;
+  uint64 messages_in = 4;
+  uint64 messages_out = 5;
+  uint64 bytes_in = 6;
+  uint64 bytes_out = 7;
+  double real_socket_seconds = 8;
+  double buffered_byte_seconds = 9;
+  uint64 auto_responses = 10;
+  uint64 protocol_pings = 11;
+}
+
+message SocketOpen {
+  string actor_id = 1;
+  string connection_id = 2;
+  optional string app_channel = 3;
+  repeated string subprotocols = 4;
+  repeated Header headers = 5;
+  uint64 resume_after = 6;
+  bool reconnected = 7;
+  SocketTransport transport = 9;
+}
+
+message SocketPayload {
+  oneof value {
+    string text = 1;
+    bytes binary = 2;
+  }
+}
+
+message SocketPortRange {
+  uint32 first = 1;
+  uint32 last = 2;
+}
+
+message SocketReconnect {
+  SocketReconnectMode mode = 1;
+  uint32 initial_ms = 2;
+  uint32 max_ms = 3;
+  double multiplier = 4;
+  double jitter = 5;
+  uint32 max_attempts = 6;
+}
+
+message SocketReconnecting {
+  uint64 attempt = 1;
+  uint32 delay_ms = 2;
+}
+
+message SocketReject {
+  uint32 status = 1;
+  string reason = 2;
+}
+
+message SocketScope {
+  oneof value {
+    bool actor = 1;
+    string connection_id = 2;
+  }
+}
+
+message SocketSecretHeader {
+  string name = 1;
+  string secret_binding = 2;
 }
 
 message SubscriptionObservation {

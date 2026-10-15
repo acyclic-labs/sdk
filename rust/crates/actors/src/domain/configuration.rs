@@ -41,6 +41,9 @@ pub struct Binding {
     capability: String,
     #[wire(tag = 3)]
     resource: String,
+    #[wire(tag = 4, message)]
+    #[ts(optional)]
+    websocket_connect: Option<SocketConnectCapability>,
 }
 
 impl Binding {
@@ -50,13 +53,24 @@ impl Binding {
             name,
             capability,
             resource,
+            websocket_connect: None,
         };
         binding.validate_admission()?;
         Ok(binding)
     }
 
     fn validate_admission(&self) -> Result<(), DomainError> {
-        if self.name.is_empty() || self.capability.is_empty() || self.resource.is_empty() {
+        if self.name.is_empty()
+            || self.capability.is_empty()
+            || self.resource.is_empty()
+            || (self.capability == SocketConnectCapability::CAPABILITY
+                && !self
+                    .websocket_connect
+                    .as_ref()
+                    .is_some_and(|value| value.binding() == self.name))
+            || (self.capability != SocketConnectCapability::CAPABILITY
+                && self.websocket_connect.is_some())
+        {
             return Err(DomainError::InvalidBinding);
         }
         Ok(())
@@ -65,6 +79,21 @@ impl Binding {
     /// Re-checks a value admitted from an untrusted protobuf wire message
     fn validate_from_proto(&self) -> Result<(), DomainError> {
         self.validate_admission()
+    }
+
+    /// Constructs the typed outbound WebSocket capability binding.
+    pub fn websocket_connect(capability: SocketConnectCapability) -> Self {
+        Self {
+            name: capability.binding().to_owned(),
+            capability: SocketConnectCapability::CAPABILITY.to_owned(),
+            resource: "websocket".to_owned(),
+            websocket_connect: Some(capability),
+        }
+    }
+
+    /// Returns the typed outbound socket allow rules.
+    pub fn websocket_connect_capability(&self) -> Option<&SocketConnectCapability> {
+        self.websocket_connect.as_ref()
     }
 
     /// Returns the binding name.
@@ -95,6 +124,9 @@ pub struct ActorLimits {
     memory_bytes: PositiveU64,
     #[wire(tag = 3, uint64)]
     checkpoint_bytes: PositiveU64,
+    #[wire(tag = 4, message)]
+    #[ts(optional)]
+    sockets: Option<SocketConfig>,
 }
 
 impl ActorLimits {
@@ -108,7 +140,19 @@ impl ActorLimits {
             handler_timeout_millis: handler_timeout_millis.try_into()?,
             memory_bytes: memory_bytes.try_into()?,
             checkpoint_bytes: checkpoint_bytes.try_into()?,
+            sockets: None,
         })
+    }
+
+    /// Sets validated socket frame, connection and backpressure limits.
+    pub fn with_sockets(mut self, sockets: SocketConfig) -> Self {
+        self.sockets = Some(sockets);
+        self
+    }
+
+    /// Socket limits, using platform defaults when absent.
+    pub fn socket_limits(&self) -> SocketConfig {
+        self.sockets.unwrap_or_default()
     }
 
     /// Returns the handler timeout in milliseconds.

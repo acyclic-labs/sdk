@@ -22,6 +22,7 @@ dependencies = [
  "acyclic-grpc-observability",
  "acyclic-tonic-web-wasm-client",
  "http-body",
+ "ipnet",
  "prost",
  "prost-reflect",
  "protoc-bin-vendored",

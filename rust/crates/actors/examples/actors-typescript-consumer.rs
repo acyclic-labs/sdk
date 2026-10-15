@@ -10,11 +10,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             name: "database".into(),
             capability: "read".into(),
             resource: "tenant-db".into(),
+            websocket_connect: None,
         }],
         limits: Some(wire::ActorLimits {
             handler_timeout_millis: 1_000,
             memory_bytes: 1024,
             checkpoint_bytes: 1024,
+            sockets: None,
         }),
         subscriptions: vec![wire::SubscriptionSpec {
             subscription_id: "events".into(),

@@ -39,8 +39,11 @@ impl Field {
             ));
         }
         let optional = options::inner(&field.ty, "Option");
-        let repeated =
-            options::inner(&field.ty, "Vec").filter(|_| options.kind.as_deref() == Some("message"));
+        let repeated = options::inner(&field.ty, "Vec").filter(|inner| {
+            options.kind.as_deref() != Some("bytes")
+                && !(options.kind.is_none()
+                    && matches!(inner, Type::Path(path) if path.path.is_ident("u8")))
+        });
         let ty = optional
             .clone()
             .or(repeated.clone())
@@ -66,6 +69,7 @@ impl Field {
             "bytes" => syn::parse_quote!(::std::vec::Vec<u8>),
             "uint32" => syn::parse_quote!(u32),
             "uint64" => syn::parse_quote!(u64),
+            "double" => syn::parse_quote!(f64),
             "bool" => syn::parse_quote!(bool),
             _ => return Err(syn::Error::new_spanned(&ty, "unsupported wire kind")),
         };
@@ -300,7 +304,7 @@ pub fn expand(mut input: ItemStruct, options: Options) -> syn::Result<TokenStrea
         impl ::prost::Name for #wire { const NAME: &'static str = #wire_name; const PACKAGE: &'static str = #file::PACKAGE; }
         impl ::core::convert::TryFrom<#wire> for #name {
             type Error = #error;
-            fn try_from(value: #wire) -> Result<Self, Self::Error> { let result = Self { #(#ingress,)* }; #post Ok(result) }
+            fn try_from(value: #wire) -> Result<Self, #error> { let result = Self { #(#ingress,)* }; #post Ok(result) }
         }
         impl ::core::convert::From<#name> for #wire {
             fn from(value: #name) -> Self { Self { #(#egress,)* } }
@@ -391,7 +395,7 @@ pub fn oneof(mut input: syn::ItemEnum, options: Options) -> syn::Result<TokenStr
         }
         impl ::core::convert::TryFrom<#wire> for #name {
             type Error = #error;
-            fn try_from(value: #wire) -> Result<Self, Self::Error> { Ok(match value { #(#ingress,)* }) }
+            fn try_from(value: #wire) -> Result<Self, #error> { Ok(match value { #(#ingress,)* }) }
         }
         impl ::core::convert::From<#name> for #wire {
             fn from(value: #name) -> Self { match value { #(#egress,)* } }

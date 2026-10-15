@@ -1,5 +1,44 @@
-
-#[acyclic_contract_derive::file(family = "actors", messages(BindingProto,
+#[acyclic_contract_derive::file(
+    family = "actors",
+    messages(
+        ActorAddressProto,
+        SocketKeepaliveProto,
+        SocketMeteringProto,
+        EffectIdProto,
+        SocketConnectionProto,
+        SocketAutoResponseProto,
+        SocketConfigProto,
+        SocketPortRangeProto,
+        SocketHostRuleProto,
+        SocketSecretHeaderProto,
+        SocketConnectCapabilityProto,
+        SocketReconnectProto,
+        ConnectProto,
+        SocketAcceptProto,
+        SocketRejectProto,
+        SendProto,
+        CloseProto,
+        SocketConnectionSetProto,
+        BroadcastProto,
+        SetAutoResponseProto,
+        SetTagsProto,
+        SetAttachmentProto,
+        SocketOpenProto,
+        SocketMessageProto,
+        SocketCloseProto,
+        SocketErrorProto,
+        SocketReconnectingProto,
+        ActorCallProto,
+        ActorCallResultProto,
+        SocketCheckpointProto,
+        SocketPayloadProto,
+        SocketBroadcastTargetProto,
+        SocketScopeProto,
+        SocketAutoResponseUpdateProto,
+        SocketEffectProto,
+        SocketEventProto,
+        SocketDecisionProto,
+        BindingProto,
         ActorLimitsProto,
         SubscriptionStartProto,
         SubscriptionSpecProto,
@@ -24,18 +63,56 @@
         HeaderProto,
         InvokeActorRequestProto,
         InvokeActorResponseProto,
-        ServiceErrorProto), enums(SubscriptionState, ActorState, ErrorCode), services(ActorsService))]
+        ServiceErrorProto
+    ),
+    enums(
+        SocketTransport,
+        SocketReconnectMode,
+        SocketCloseInitiator,
+        SubscriptionState,
+        ActorState,
+        ErrorCode
+    ),
+    services(ActorsService)
+)]
 pub struct ActorsFile;
 
 #[acyclic_contract_derive::service(file = ActorsFile)]
 pub enum ActorsService {
-    CreateActor { request: CreateActorRequestProto, response: CreateActorResponseProto },
-    UpdateActor { request: UpdateActorRequestProto, response: UpdateActorResponseProto },
-    InspectActor { request: InspectActorRequestProto, response: InspectActorResponseProto },
-    AddSubscription { request: AddSubscriptionRequestProto, response: AddSubscriptionResponseProto },
-    RemoveSubscription { request: RemoveSubscriptionRequestProto, response: RemoveSubscriptionResponseProto },
-    ResumeSubscription { request: ResumeSubscriptionRequestProto, response: ResumeSubscriptionResponseProto },
-    CheckpointActor { request: CheckpointActorRequestProto, response: CheckpointActorResponseProto },
-    InvokeActor { request: InvokeActorRequestProto, response: InvokeActorResponseProto },
-    DeleteActor { request: DeleteActorRequestProto, response: DeleteActorResponseProto },
+    CreateActor {
+        request: CreateActorRequestProto,
+        response: CreateActorResponseProto,
+    },
+    UpdateActor {
+        request: UpdateActorRequestProto,
+        response: UpdateActorResponseProto,
+    },
+    InspectActor {
+        request: InspectActorRequestProto,
+        response: InspectActorResponseProto,
+    },
+    AddSubscription {
+        request: AddSubscriptionRequestProto,
+        response: AddSubscriptionResponseProto,
+    },
+    RemoveSubscription {
+        request: RemoveSubscriptionRequestProto,
+        response: RemoveSubscriptionResponseProto,
+    },
+    ResumeSubscription {
+        request: ResumeSubscriptionRequestProto,
+        response: ResumeSubscriptionResponseProto,
+    },
+    CheckpointActor {
+        request: CheckpointActorRequestProto,
+        response: CheckpointActorResponseProto,
+    },
+    InvokeActor {
+        request: InvokeActorRequestProto,
+        response: InvokeActorResponseProto,
+    },
+    DeleteActor {
+        request: DeleteActorRequestProto,
+        response: DeleteActorResponseProto,
+    },
 }

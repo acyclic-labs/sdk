@@ -9,6 +9,9 @@ pub use contract::{
 /// Authenticated operations over the platform's Rust-owned transport.
 pub mod client;
 
+/// In-process runtime-owned actor socket state and checkpoint transactions.
+pub mod local;
+
 /// Rust-owned Actors contract declarations and schema renderer.
 pub mod contract;
 
@@ -69,6 +72,7 @@ mod tests {
                 handler_timeout_millis: 1_000,
                 memory_bytes: 1024,
                 checkpoint_bytes: 1024,
+                sockets: None,
             }),
             subscriptions: vec![wire::SubscriptionSpec {
                 subscription_id: "events".into(),

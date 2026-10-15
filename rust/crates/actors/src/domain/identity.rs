@@ -26,6 +26,12 @@ pub enum DomainError {
     /// Actor validators require an actor identity to be present.
     #[error("actor_id must not be empty")]
     EmptyActorId,
+    /// Socket metadata, payload or capability violates the Actors contract.
+    #[error("invalid actor socket data")]
+    InvalidSocket,
+    /// Unknown socket enumeration.
+    #[error("unknown actor socket enum {0}")]
+    UnknownSocketEnum(i32),
     /// Actor validators require exactly 32 bytes with at least one non-zero byte.
     #[error("code_sha256 must contain 32 bytes and must not be all zero")]
     InvalidCodeSha256,
@@ -57,6 +63,8 @@ impl DomainError {
     /// Returns the stable error code shared by every SDK bridge.
     pub const fn code_name(&self) -> &'static str {
         match self {
+            Self::UnknownSocketEnum(_) => "unknown_socket_enum",
+            Self::InvalidSocket => "invalid_socket",
             Self::EmptyActorId => "empty_actor_id",
             Self::InvalidCodeSha256 => "invalid_code_sha256",
             Self::Contract(error) => error.code_name(),

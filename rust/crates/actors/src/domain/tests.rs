@@ -79,6 +79,7 @@ fn positive_u64_is_the_single_limits_admission_predicate() {
         handler_timeout_millis: 1,
         memory_bytes: u64::MAX,
         checkpoint_bytes: 4096,
+        sockets: None,
     };
     let limits = ActorLimits::try_from(wire.clone()).expect("positive wire limits");
     assert_eq!(limits.handler_timeout_millis(), 1);
@@ -90,6 +91,7 @@ fn positive_u64_is_the_single_limits_admission_predicate() {
         handler_timeout_millis: 0,
         memory_bytes: 1,
         checkpoint_bytes: 1,
+        sockets: None,
     };
     assert_eq!(ActorLimits::try_from(invalid_wire), Err(invalid));
 }
@@ -204,6 +206,7 @@ fn wire_ingress_rechecks_container_constructor_predicates() {
         name: String::new(),
         capability: "read".into(),
         resource: "bucket/a".into(),
+        websocket_connect: None,
     };
     assert_eq!(
         Binding::try_from(invalid_binding),
@@ -238,6 +241,7 @@ fn wire_ingress_rechecks_request_admission_predicates() {
         name: "storage".into(),
         capability: "read".into(),
         resource: "bucket/a".into(),
+        websocket_connect: None,
     };
     let create = wire::CreateActorRequest {
         code_sha256: vec![1; 32],
@@ -247,6 +251,7 @@ fn wire_ingress_rechecks_request_admission_predicates() {
             handler_timeout_millis: 1,
             memory_bytes: 2,
             checkpoint_bytes: 3,
+            sockets: None,
         }),
         subscriptions: vec![subscription.clone()],
         idempotency_key: "create-1".into(),
@@ -284,6 +289,7 @@ fn wire_ingress_rechecks_request_admission_predicates() {
             name: format!("binding-{index}"),
             capability: "read".into(),
             resource: "bucket/a".into(),
+            websocket_connect: None,
         }));
     assert_eq!(
         CreateActorRequest::try_from(over_limit),
@@ -298,6 +304,7 @@ fn wire_ingress_rechecks_request_admission_predicates() {
             handler_timeout_millis: 1,
             memory_bytes: 2,
             checkpoint_bytes: 3,
+            sockets: None,
         }),
         expected_configuration_revision: 1,
         idempotency_key: "update-1".into(),

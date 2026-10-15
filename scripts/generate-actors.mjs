@@ -42,13 +42,14 @@ export async function assertTreeEqual(expected, actual, label) {
   }
 }
 
-async function rustGenerate(output, protoRoot) {
+async function rustGenerate(output, protoRoot, descriptorOutput) {
   await mkdir(protoRoot, { recursive: true });
   run("cargo", [
     "run", "--offline", "--locked", "-p", "acyclic-actors", "--example", "actors-http-routes", "--",
     output, "--proto-out", protoRoot,
   ]);
   run(buf, ["format", "-w", join(protoRoot, "actors/v1/actors.proto")]);
+  if (descriptorOutput) await cp(join(dirname(output), "Actors.service.bin"), descriptorOutput);
   await serviceGenerate("Actors", dirname(output), output);
   const readonly = spawnSync("cargo", ["run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", "readonly"], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], windowsHide: true });
   if (readonly.error) throw readonly.error;
@@ -84,7 +85,11 @@ async function bufActorOutput(protoFile) {
     run(buf, ["generate"], temporary);
     for (const relativePath of ["generated/typescript/actors/v1/actors_pb.js", "generated/typescript/actors/v1/actors_pb.d.ts"]) {
       const path = join(temporary, relativePath);
-      await writeFile(path, (await readFile(path, "utf8")).replace(/\n+$/u, "\n"));
+      let source = await readFile(path, "utf8");
+      // Public semantic declarations carry field documentation. Keep the raw
+      // protobuf projection compact as the contract grows.
+      if (path.endsWith(".d.ts")) source = source.replace(/\/\*\*[\s\S]*?\*\//gu, "").replace(/^\s*\n/gmu, "");
+      await writeFile(path, source.replace(/\n+$/u, "\n"));
     }
     return temporary;
   } catch (error) {
@@ -122,8 +127,12 @@ async function write() {
   const temporary = await mkdtemp(join(root, ".tmp-actors-write-"));
   try {
     const protoRoot = join(temporary, "proto");
-    await rustGenerate(join(packageGenerated, "actors-service.ts"), protoRoot);
+    await rustGenerate(join(packageGenerated, "actors-service.ts"), protoRoot,
+      join(root, "rust/crates/actors/tests/fixtures/actors/v1/actors-v1.bin"));
     await copyRustProto(protoRoot, rustProto);
+    run(buf, ["build", "--as-file-descriptor-set", "--path", "proto/actors", "-o", "rust/crates/actors/tests/fixtures/actors/v1/actors-buf-v1.bin"]);
+    await cp(join(root, "rust/crates/actors/tests/fixtures/actors/v1/actors-buf-v1.bin"),
+      join(root, "compatibility/descriptors/actors-v1.bin"));
     const bufRoot = await bufActorOutput(rustProto);
     try {
       await rm(packageProto, { recursive: true, force: true });

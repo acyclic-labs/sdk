@@ -3,6 +3,43 @@ use super::*;
 macro_rules! typescript_message_roots {
     ($callback:ident) => {
         $callback!(
+            SocketMetering,
+            SocketKeepalive,
+            ActorAddress,
+            EffectId,
+            SocketConnection,
+            SocketAutoResponse,
+            SocketConfig,
+            SocketPortRange,
+            SocketHostRule,
+            SocketSecretHeader,
+            SocketConnectCapability,
+            SocketReconnect,
+            Connect,
+            SocketAccept,
+            SocketReject,
+            Send,
+            Close,
+            SocketConnectionSet,
+            Broadcast,
+            SetAutoResponse,
+            SetTags,
+            SetAttachment,
+            SocketOpen,
+            SocketMessage,
+            SocketClose,
+            SocketError,
+            SocketReconnecting,
+            ActorCall,
+            ActorCallResult,
+            SocketCheckpoint,
+            SocketPayload,
+            SocketBroadcastTarget,
+            SocketScope,
+            SocketAutoResponseUpdate,
+            SocketEffect,
+            SocketEvent,
+            SocketDecision,
             ActorObservation,
             CreateActorRequest,
             UpdateActorRequest,
@@ -29,6 +66,10 @@ macro_rules! typescript_roots {
     ($callback:ident) => {
         $callback!(
             subscription_start::CurrentHeadMarker,
+            SocketTransport,
+            SocketMarker,
+            SocketReconnectMode,
+            SocketCloseInitiator,
             PositiveU64,
             ErrorCode,
             ServiceError,
@@ -126,6 +167,9 @@ pub fn export_typescript(path: impl AsRef<Path>) -> Result<(), ExportError> {
     }
 
     typescript_roots!(export_roots);
+    export_numeric_union::<SocketTransport>(path.as_ref(), &config)?;
+    export_numeric_union::<SocketReconnectMode>(path.as_ref(), &config)?;
+    export_numeric_union::<SocketCloseInitiator>(path.as_ref(), &config)?;
     export_numeric_union::<SubscriptionState>(path.as_ref(), &config)?;
     export_numeric_union::<ActorState>(path.as_ref(), &config)?;
     export_numeric_union::<ErrorCode>(path.as_ref(), &config)?;
