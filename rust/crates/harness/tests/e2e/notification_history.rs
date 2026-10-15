@@ -40,14 +40,14 @@ pub(super) fn verify(
     else {
         assert!(maximum_tasks == 0 || maximum_pending == 0 || maximum_text_bytes == 0);
         for (record, _) in operations {
-            encode(&record, (mode, protocol, focused));
+            let _ = encode(&record, (mode, protocol, focused));
         }
         return Vec::new();
     };
     assert!(maximum_tasks > 0 && maximum_pending > 0 && maximum_text_bytes > 0);
     let mut pending = VecDeque::new();
     for (record, drain) in operations {
-        encode(&record, (mode, protocol, focused));
+        let _ = encode(&record, (mode, protocol, focused));
         let before = serde_json::to_value(&view).unwrap();
         let serialized = serde_json::to_value(&record).unwrap();
         let previous = before["latest"].get(&record.task);

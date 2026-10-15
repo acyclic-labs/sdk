@@ -51,7 +51,7 @@ proptest! {
             "expect":{"applied":vec![true; records.len()], "output":""}});
         if let Some(mode) = mode { value["mode"] = json!(mode); }
         let case = Notifications::parse(value).unwrap();
-        case.verify_history();
+        let _ = case.verify_history();
         let bytes = serde_json::to_vec(&case).unwrap();
         let decoded = Notifications::parse(serde_json::from_slice(&bytes).unwrap()).unwrap();
         prop_assert_eq!(case, decoded);
@@ -64,19 +64,16 @@ proptest! {
         notification.task = notification.detail.clone();
         for protocol in [TerminalNotificationProtocol::Osc9,
             TerminalNotificationProtocol::Osc777, TerminalNotificationProtocol::Bell] {
-            crate::notification_history::encode(&notification, (NotificationMode::On, protocol, false));
+            let _ = crate::notification_history::encode(&notification, (NotificationMode::On, protocol, false));
         }
     }
 }
 
 #[test]
 fn fuzz_history_continues_after_stale_fixture_expectations() -> TestResult {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
-    let mut value =
-        crate::scenario::load_value(&root, &root.join("notifications/queue-bound.json"))?;
-    value.as_object_mut().unwrap().remove("driver");
-    value["records"][0]["sequence"] = json!(0);
-    let case = Notifications::parse(value)?;
+    let case = Notifications::parse(serde_json::from_slice(include_bytes!(
+        "../../fuzz/corpus/notification_scenario/early-oracle-mismatch.json"
+    ))?)?;
     assert_eq!(
         case.verify_history(),
         b"\x1b]9;Goal done: task-1: Ready\x07"
