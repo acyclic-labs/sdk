@@ -6,10 +6,10 @@ import {
   ForkMutationSchema, ForkRequestSchema, TailConditionSchema, TailRequestSchema,
   ReadRequestSchema, FollowRequestSchema,
   ChildrenRequestSchema, ChildrenPageRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema,
-  CreateTokenRequestSchema, RecordBatchSchema, StreamLimit,
+  CreateTokenRequestSchema, RecordBatchSchema,
 } from "../generated/proto/stream/v1/stream_pb.js";
 import type { ReadResponse, Record as WireRecord } from "../generated/proto/stream/v1/stream_pb.js";
-import type { AppendOptions, CommitOptions, CreateTokenRequest, EncodedRecord, ForkOptions, IdempotencyKey, ProviderCommitRequest } from "./types.js";
+import type { AppendOptions, CommitOptions, CreateTokenRequest, ForkOptions, IdempotencyKey, ProviderCommitRequest } from "./types.js";
 import { StreamError, commitId, idempotencyKey } from "./types.js";
 import type { HttpRoute } from "./http-contract.js";
 
@@ -62,14 +62,7 @@ export function readResponseRecords(frame: ReadResponse): WireRecord[] {
   catch { throw new StreamError("invalid_response", "stream read frame does not hold a record batch"); }
 }
 
-/** Validate a record's cursor, body bound and canonical commit identity. */
-export function checkedRecord(record: WireRecord | undefined, expected: bigint): EncodedRecord {
-  if (record === undefined || record.sequence !== expected || record.value.length > StreamLimit.MAX_RECORD_BYTES) {
-    throw new StreamError("invalid_response", "stream response contains an invalid record cursor or body");
-  }
-  try { return { sequence: record.sequence, value: record.value, commitId: commitId(record.commitId), committedAtMicros: record.committedAtMicros }; }
-  catch { throw new StreamError("invalid_response", "stream record omitted its canonical commit identity"); }
-}
+export { checkedRecord } from "./record.js";
 
 /** Validates one path through the canonical Rust Stream parser. */
 export function validatePathValue(value: unknown): void {
