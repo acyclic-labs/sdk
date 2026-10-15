@@ -1,3 +1,4 @@
+//! Fuzz admission validation and protobuf round-trip stability.
 #![no_main]
 
 use acyclic_harness::{wire, wire_api::validate_admission};
