@@ -55,7 +55,7 @@ fn modeled<T>(operation: impl FnOnce() -> T) -> T {
 fn read_and_invalidate(legacy_inspection: bool) {
     use super::NativeMountAllocationCustody;
     use crate::{CancellationToken, NativeMaterializationWork, WorkCounters};
-    use loom::sync::{Arc as ModelArc, Condvar};
+    use loom::sync::Condvar;
     use std::sync::Arc;
     crate::initialize_test_native_io();
     loom::model(move || {
@@ -78,7 +78,7 @@ fn read_and_invalidate(legacy_inspection: bool) {
             drop(resource);
             // Callback result mutex: acquired only after dropping leaf, and
             // released before any demand call or joining invalidation.
-            let complete = ModelArc::new((Mutex::new(None), Condvar::new()));
+            let complete = Arc::new((Mutex::new(None), Condvar::new()));
             let read_complete = complete.clone();
             let read_work = original.clone();
             let read = loom::thread::spawn(move || {
