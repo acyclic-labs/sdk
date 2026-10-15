@@ -59,7 +59,7 @@ proptest! {
             manifest.environments[0].entries[0].runtime = EntryRuntime::Worker { limits: WorkerLimits { cpu_millis:quota, memory_bytes:quota, timeout_millis:quota } };
         }
         validate(&manifest)?;
-        prop_assert_eq!(parse(&serde_json::to_vec(&manifest)?)?, &manifest);
+        prop_assert_eq!(&parse(&serde_json::to_vec(&manifest)?)?, &manifest);
         if worker {
             manifest.environments[0].entries[0].runtime = EntryRuntime::Worker { limits: WorkerLimits { cpu_millis:0, memory_bytes:quota, timeout_millis:quota } };
             prop_assert!(validate(&manifest).is_err());
