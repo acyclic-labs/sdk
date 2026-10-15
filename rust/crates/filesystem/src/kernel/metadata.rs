@@ -2,6 +2,7 @@
 
 use super::codec::{CanonicalDecodeError, DecodeLimits, Decoder, Encoder};
 use super::types::digest_object;
+use crate::WorkCounters;
 use crate::storage::{ObjectId, ObjectKind, object_digest};
 
 const DOMAIN: &[u8; 8] = b"ACYFSMET";
@@ -17,9 +18,6 @@ pub enum MetadataField<T> {
 }
 
 /// Complete profile-independent metadata record.
-///
-/// Platform-specific facts are never guessed. `Unavailable` is distinct from a
-/// supported field whose exact value is zero.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FileMetadata {
     /// POSIX permission/type bits when represented by the source.
@@ -68,8 +66,6 @@ impl Default for FileMetadata {
 }
 
 impl FileMetadata {
-    /// This metadata without the timestamps that reads, writes, and captures
-    /// move on their own.
     #[must_use]
     pub(crate) const fn without_timestamps(self) -> Self {
         Self {
@@ -81,9 +77,7 @@ impl FileMetadata {
         }
     }
 
-    /// Records a content change made at `at_ns`, in signed Unix-epoch
-    /// nanoseconds: every represented modification and status-change time
-    /// takes that instant. Returns whether any such time is represented.
+    /// Records a content change made at `at_ns`, in signed Unix-epoch nanoseconds: every represented modification and status-change time takes that instant.
     pub fn stamp_content_change(&mut self, at_ns: i64) -> bool {
         let mut stamped = false;
         for time in [&mut self.modified_ns, &mut self.changed_ns] {
@@ -110,70 +104,170 @@ impl FileMetadata {
     }
 }
 
-/// Encodes one canonical metadata record.
-///
-/// # Errors
-///
-/// Rejects references whose typed object class does not match the field.
-pub fn encode_file_metadata(metadata: FileMetadata) -> Result<Vec<u8>, CanonicalDecodeError> {
-    metadata.validate()?;
-    let mut encoder = Encoder::new(DOMAIN, VERSION);
-    encode_u32(&mut encoder, metadata.posix_mode);
-    encode_u32(&mut encoder, metadata.posix_uid);
-    encode_u32(&mut encoder, metadata.posix_gid);
-    encode_u64(&mut encoder, metadata.posix_flags);
-    encode_u32(&mut encoder, metadata.windows_attributes);
-    encode_i64(&mut encoder, metadata.created_ns);
-    encode_i64(&mut encoder, metadata.modified_ns);
-    encode_i64(&mut encoder, metadata.accessed_ns);
-    encode_i64(&mut encoder, metadata.changed_ns);
-    encode_object(&mut encoder, metadata.named_attributes);
-    encode_object(&mut encoder, metadata.acl);
-    encode_object(&mut encoder, metadata.security_descriptor);
+/// Encodes one canonical object with before-effect admission.
+pub fn encode_file_metadata<E>(
+    metadata: FileMetadata,
+    mut observe: impl FnMut(super::codec::EncodeWorkStep) -> Result<(), E>,
+    allocation_error: impl FnOnce(std::collections::TryReserveError) -> E,
+) -> Result<Vec<u8>, E>
+where
+    E: From<CanonicalDecodeError>,
+{
+    use super::codec::EncodeWorkStep;
+    observe(EncodeWorkStep::Check)?;
+    let examined = WorkCounters {
+        items_examined: 1,
+        ..WorkCounters::default()
+    };
+    observe(EncodeWorkStep::Admit(examined))?;
+    let length = file_metadata_encoded_len(metadata);
+    observe(EncodeWorkStep::Completed(examined))?;
+    let length = length?;
+    let copied = [
+        metadata.named_attributes,
+        metadata.acl,
+        metadata.security_descriptor,
+    ]
+    .into_iter()
+    .filter(|field| matches!(field, MetadataField::Value(_)))
+    .count() as u64
+        * 32;
+    observe(EncodeWorkStep::Admit(WorkCounters {
+        items_examined: 12,
+        bytes_encoded: length as u64,
+        bytes_copied: copied,
+        ..WorkCounters::default()
+    }))?;
+    let mut encoder = Encoder::with_exact_capacity(
+        DOMAIN,
+        VERSION,
+        length,
+        |step| observe(EncodeWorkStep::Allocation(step)),
+        allocation_error,
+    )?;
+    encode_metadata_fields(metadata, &mut encoder, &mut observe)?;
     Ok(encoder.finish())
 }
 
-/// Decodes one bounded canonical metadata record.
-///
-/// # Errors
-///
-/// Fails closed on malformed bytes, non-canonical presence tags, wrong object
-/// classes, unsupported versions, or trailing data.
-pub fn decode_file_metadata(
+fn file_metadata_encoded_len(metadata: FileMetadata) -> Result<usize, CanonicalDecodeError> {
+    metadata.validate()?;
+    fn field<T>(value: &MetadataField<T>, payload: usize) -> usize {
+        match value {
+            MetadataField::Unavailable => 1,
+            MetadataField::Value(_) => 1 + payload,
+        }
+    }
+    fn object(value: MetadataField<ObjectId>) -> usize {
+        match value {
+            MetadataField::Unavailable => 1,
+            MetadataField::Value(value) => 1 + value.digest.as_bytes().len(),
+        }
+    }
+    [
+        field(&metadata.posix_mode, std::mem::size_of::<u32>()),
+        field(&metadata.posix_uid, std::mem::size_of::<u32>()),
+        field(&metadata.posix_gid, std::mem::size_of::<u32>()),
+        field(&metadata.posix_flags, std::mem::size_of::<u64>()),
+        field(&metadata.windows_attributes, std::mem::size_of::<u32>()),
+        field(&metadata.created_ns, std::mem::size_of::<i64>()),
+        field(&metadata.modified_ns, std::mem::size_of::<i64>()),
+        field(&metadata.accessed_ns, std::mem::size_of::<i64>()),
+        field(&metadata.changed_ns, std::mem::size_of::<i64>()),
+        object(metadata.named_attributes),
+        object(metadata.acl),
+        object(metadata.security_descriptor),
+    ]
+    .into_iter()
+    .try_fold(DOMAIN.len() + std::mem::size_of::<u16>(), |bytes, field| {
+        bytes
+            .checked_add(field)
+            .ok_or(CanonicalDecodeError::LengthOverflow)
+    })
+}
+
+fn encode_metadata_fields<E>(
+    metadata: FileMetadata,
+    encoder: &mut Encoder,
+    observe: &mut impl FnMut(super::codec::EncodeWorkStep) -> Result<(), E>,
+) -> Result<(), E> {
+    macro_rules! field {
+        ($value:expr, $payload:expr, $copied:expr, $encode:ident) => {{
+            observe(super::codec::EncodeWorkStep::Check)?;
+            let (encoded, copied) = match $value {
+                MetadataField::Unavailable => (1, 0),
+                MetadataField::Value(_) => (1 + $payload, $copied),
+            };
+            let completed = WorkCounters {
+                items_examined: 1,
+                bytes_encoded: encoded,
+                bytes_copied: copied,
+                ..WorkCounters::default()
+            };
+            observe(super::codec::EncodeWorkStep::Admit(completed))?;
+            $encode(encoder, $value);
+            observe(super::codec::EncodeWorkStep::Completed(completed))?;
+        }};
+    }
+    field!(metadata.posix_mode, 4, 0, encode_u32);
+    field!(metadata.posix_uid, 4, 0, encode_u32);
+    field!(metadata.posix_gid, 4, 0, encode_u32);
+    field!(metadata.posix_flags, 8, 0, encode_u64);
+    field!(metadata.windows_attributes, 4, 0, encode_u32);
+    field!(metadata.created_ns, 8, 0, encode_i64);
+    field!(metadata.modified_ns, 8, 0, encode_i64);
+    field!(metadata.accessed_ns, 8, 0, encode_i64);
+    field!(metadata.changed_ns, 8, 0, encode_i64);
+    field!(metadata.named_attributes, 32, 32, encode_object);
+    field!(metadata.acl, 32, 32, encode_object);
+    field!(metadata.security_descriptor, 32, 32, encode_object);
+    Ok(())
+}
+
+/// Decodes the same record with admission and actual primitive/item completions.
+pub fn decode_file_metadata<E: From<CanonicalDecodeError>>(
     bytes: &[u8],
     limits: DecodeLimits,
-) -> Result<FileMetadata, CanonicalDecodeError> {
-    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, limits.maximum_object_bytes)?;
+    observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+) -> Result<FileMetadata, E> {
+    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, limits.maximum_object_bytes, observe)?;
+    observe(super::codec::ReadAllocationStep::BeforeItem)?;
     let metadata = FileMetadata {
-        posix_mode: decode_u32(&mut decoder, "posix_mode")?,
-        posix_uid: decode_u32(&mut decoder, "posix_uid")?,
-        posix_gid: decode_u32(&mut decoder, "posix_gid")?,
-        posix_flags: decode_u64(&mut decoder, "posix_flags")?,
-        windows_attributes: decode_u32(&mut decoder, "windows_attributes")?,
-        created_ns: decode_i64(&mut decoder, "created_ns")?,
-        modified_ns: decode_i64(&mut decoder, "modified_ns")?,
-        accessed_ns: decode_i64(&mut decoder, "accessed_ns")?,
-        changed_ns: decode_i64(&mut decoder, "changed_ns")?,
+        posix_mode: decode_u32(&mut decoder, "posix_mode", observe)?,
+        posix_uid: decode_u32(&mut decoder, "posix_uid", observe)?,
+        posix_gid: decode_u32(&mut decoder, "posix_gid", observe)?,
+        posix_flags: decode_u64(&mut decoder, "posix_flags", observe)?,
+        windows_attributes: decode_u32(&mut decoder, "windows_attributes", observe)?,
+        created_ns: decode_i64(&mut decoder, "created_ns", observe)?,
+        modified_ns: decode_i64(&mut decoder, "modified_ns", observe)?,
+        accessed_ns: decode_i64(&mut decoder, "accessed_ns", observe)?,
+        changed_ns: decode_i64(&mut decoder, "changed_ns", observe)?,
         named_attributes: decode_object(
             &mut decoder,
             ObjectKind::AttributePage,
             "named_attributes",
+            observe,
         )?,
-        acl: decode_object(&mut decoder, ObjectKind::Blob, "acl")?,
-        security_descriptor: decode_object(&mut decoder, ObjectKind::Blob, "security_descriptor")?,
+        acl: decode_object(&mut decoder, ObjectKind::Blob, "acl", observe)?,
+        security_descriptor: decode_object(
+            &mut decoder,
+            ObjectKind::Blob,
+            "security_descriptor",
+            observe,
+        )?,
     };
     decoder.finish()?;
     metadata.validate()?;
+    observe(super::codec::ReadAllocationStep::Item)?;
     Ok(metadata)
 }
 
 /// Computes the typed authenticated identity of canonical metadata.
-///
-/// # Errors
-///
-/// Returns the same validation errors as [`encode_file_metadata`].
 pub fn file_metadata_id(metadata: FileMetadata) -> Result<ObjectId, CanonicalDecodeError> {
-    let bytes = encode_file_metadata(metadata)?;
+    let bytes = encode_file_metadata(
+        metadata,
+        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+        |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+    )?;
     Ok(ObjectId {
         kind: ObjectKind::Metadata,
         digest: object_digest(ObjectKind::Metadata, &bytes),
@@ -220,48 +314,55 @@ fn encode_object(encoder: &mut Encoder, field: MetadataField<ObjectId>) {
     }
 }
 
-fn decode_u32(
+fn decode_u32<E: From<CanonicalDecodeError>>(
     decoder: &mut Decoder<'_>,
     field: &'static str,
-) -> Result<MetadataField<u32>, CanonicalDecodeError> {
-    match decoder.u8()? {
+    observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+) -> Result<MetadataField<u32>, E> {
+    match decoder.u8(observe)? {
         0 => Ok(MetadataField::Unavailable),
-        1 => Ok(MetadataField::Value(decoder.u32()?)),
-        tag => Err(CanonicalDecodeError::UnknownTag { field, tag }),
+        1 => Ok(MetadataField::Value(decoder.u32(observe)?)),
+        tag => Err(CanonicalDecodeError::UnknownTag { field, tag }.into()),
     }
 }
 
-fn decode_u64(
+fn decode_u64<E: From<CanonicalDecodeError>>(
     decoder: &mut Decoder<'_>,
     field: &'static str,
-) -> Result<MetadataField<u64>, CanonicalDecodeError> {
-    match decoder.u8()? {
+    observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+) -> Result<MetadataField<u64>, E> {
+    match decoder.u8(observe)? {
         0 => Ok(MetadataField::Unavailable),
-        1 => Ok(MetadataField::Value(decoder.u64()?)),
-        tag => Err(CanonicalDecodeError::UnknownTag { field, tag }),
+        1 => Ok(MetadataField::Value(decoder.u64(observe)?)),
+        tag => Err(CanonicalDecodeError::UnknownTag { field, tag }.into()),
     }
 }
 
-fn decode_i64(
+fn decode_i64<E: From<CanonicalDecodeError>>(
     decoder: &mut Decoder<'_>,
     field: &'static str,
-) -> Result<MetadataField<i64>, CanonicalDecodeError> {
-    match decoder.u8()? {
+    observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+) -> Result<MetadataField<i64>, E> {
+    match decoder.u8(observe)? {
         0 => Ok(MetadataField::Unavailable),
-        1 => Ok(MetadataField::Value(decoder.i64()?)),
-        tag => Err(CanonicalDecodeError::UnknownTag { field, tag }),
+        1 => Ok(MetadataField::Value(decoder.i64(observe)?)),
+        tag => Err(CanonicalDecodeError::UnknownTag { field, tag }.into()),
     }
 }
 
-fn decode_object(
+fn decode_object<E: From<CanonicalDecodeError>>(
     decoder: &mut Decoder<'_>,
     kind: ObjectKind,
     field: &'static str,
-) -> Result<MetadataField<ObjectId>, CanonicalDecodeError> {
-    match decoder.u8()? {
+    observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+) -> Result<MetadataField<ObjectId>, E> {
+    match decoder.u8(observe)? {
         0 => Ok(MetadataField::Unavailable),
-        1 => Ok(MetadataField::Value(digest_object(kind, decoder.fixed()?))),
-        tag => Err(CanonicalDecodeError::UnknownTag { field, tag }),
+        1 => Ok(MetadataField::Value(digest_object(
+            kind,
+            decoder.fixed::<32, E>(observe)?,
+        ))),
+        tag => Err(CanonicalDecodeError::UnknownTag { field, tag }.into()),
     }
 }
 
@@ -273,9 +374,9 @@ fn validate_object(
     if let MetadataField::Value(object) = field
         && object.kind != kind
     {
-        return Err(CanonicalDecodeError::Invariant(format!(
-            "{name} has the wrong object kind"
-        )));
+        return Err(CanonicalDecodeError::Invariant(
+            super::codec::CanonicalInvariant::MetadataReferenceKind { field: name },
+        ));
     }
     Ok(())
 }

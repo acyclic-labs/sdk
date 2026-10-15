@@ -1,6 +1,8 @@
 //! Canonical volume-creation facts and deterministic authority ownership.
 
-use super::codec::{CanonicalDecodeError, Decoder, Encoder};
+use super::codec::{CanonicalDecodeError, Decoder, EncodeWorkStep, Encoder, ReadAllocationStep};
+
+use crate::WorkCounters;
 use crate::foundation::{AuthorityId, Digest, VolumeId};
 use crate::model::{
     CaseSensitivity, ConcurrencyMode, FilesystemProfile, Lifecycle, UnicodePolicy, VolumeConfig,
@@ -12,6 +14,7 @@ use thiserror::Error;
 const DOMAIN: &[u8] = b"acyclic-fs-volume-created-v1\0";
 const VERSION: u16 = 1;
 
+pub(crate) const CONFIG_ENCODED_BYTES: usize = 80;
 /// Immutable creation fact at sequence one of a volume authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VolumeCreated {
@@ -32,56 +35,107 @@ pub enum VolumeCreatedError {
     /// The canonical payload is malformed or unsupported.
     #[error(transparent)]
     Decode(#[from] CanonicalDecodeError),
+    /// Finite preparation permit was exhausted.
+    #[error(transparent)]
+    Work(#[from] crate::WorkError),
+    /// Preparation was cancelled.
+    #[error(transparent)]
+    Cancelled(#[from] crate::CancellationError),
 }
 
 /// Returns the sole authority identity for a volume.
-///
-/// This bijection eliminates a mutable volume catalog: resolving a volume does
-/// not need a third durable lookup besides authority and immutable objects.
 #[must_use]
 pub const fn volume_authority_id(volume_id: VolumeId) -> AuthorityId {
     AuthorityId::from_bytes(volume_id.into_bytes())
 }
 
-/// Encodes one canonical immutable volume-creation authority fact.
-///
-/// # Errors
-///
-/// Rejects invalid configuration or a non-generation initial root.
-pub fn encode_volume_created(value: VolumeCreated) -> Result<Vec<u8>, VolumeCreatedError> {
+fn validate_volume_created(value: VolumeCreated) -> Result<(), VolumeCreatedError> {
     value.config.validate()?;
     if value.initial_generation_root.kind != ObjectKind::GenerationRoot {
         return Err(invariant("initial volume object is not a generation root").into());
     }
-    let mut encoder = Encoder::new(DOMAIN, VERSION);
+    Ok(())
+}
+
+/// Encodes one canonical object with before-effect admission.
+pub fn encode_volume_created<E>(
+    value: VolumeCreated,
+    mut observe: impl FnMut(EncodeWorkStep) -> Result<(), E>,
+    allocation_error: impl FnOnce(std::collections::TryReserveError) -> E,
+) -> Result<Vec<u8>, E>
+where
+    E: From<CanonicalDecodeError> + From<VolumeCreatedError>,
+{
+    observe(EncodeWorkStep::Check)?;
+    validate_volume_created(value).map_err(E::from)?;
+    let item = WorkCounters {
+        items_examined: 1,
+        ..WorkCounters::UNCHARGED
+    };
+    observe(EncodeWorkStep::Admit(item))?;
+    observe(EncodeWorkStep::Completed(item))?;
+    let length = DOMAIN.len() + 2 + 16 + CONFIG_ENCODED_BYTES + 1 + 32;
+    observe(EncodeWorkStep::Admit(WorkCounters {
+        bytes_encoded: length as u64,
+        bytes_copied: 48,
+        ..WorkCounters::UNCHARGED
+    }))?;
+    observe(EncodeWorkStep::Check)?;
+    let mut encoder = Encoder::with_exact_capacity(
+        DOMAIN,
+        VERSION,
+        length,
+        |step| observe(EncodeWorkStep::Allocation(step)),
+        allocation_error,
+    )?;
     encoder.fixed(&value.volume_id.into_bytes());
+    observe(EncodeWorkStep::Completed(WorkCounters {
+        bytes_encoded: 16,
+        bytes_copied: 16,
+        ..WorkCounters::UNCHARGED
+    }))?;
     encode_config(&mut encoder, value.config);
+    observe(EncodeWorkStep::Completed(WorkCounters {
+        bytes_encoded: CONFIG_ENCODED_BYTES as u64,
+        ..WorkCounters::UNCHARGED
+    }))?;
     encoder.u8(value.initial_generation_root.kind.canonical_tag());
+    observe(EncodeWorkStep::Completed(WorkCounters {
+        bytes_encoded: 1,
+        ..WorkCounters::UNCHARGED
+    }))?;
     encoder.fixed(value.initial_generation_root.digest.as_bytes());
+    observe(EncodeWorkStep::Completed(WorkCounters {
+        bytes_encoded: 32,
+        bytes_copied: 32,
+        ..WorkCounters::UNCHARGED
+    }))?;
     Ok(encoder.finish())
 }
 
-/// Decodes one bounded canonical immutable volume-creation authority fact.
-///
-/// # Errors
-///
-/// Fails closed for malformed, trailing, unknown, contradictory, oversized, or
-/// non-generation-root data.
-pub fn decode_volume_created(
+/// Decodes one canonical object with before-effect admission.
+pub fn decode_volume_created<E>(
     bytes: &[u8],
     maximum_payload_bytes: u64,
-) -> Result<VolumeCreated, VolumeCreatedError> {
-    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, maximum_payload_bytes)?;
-    let volume_id = VolumeId::from_bytes(decoder.fixed()?);
-    let config = decode_config(&mut decoder)?.validate()?;
-    let kind = ObjectKind::from_canonical_tag(decoder.u8()?)
+    observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
+) -> Result<VolumeCreated, E>
+where
+    E: From<CanonicalDecodeError> + From<VolumeCreatedError>,
+{
+    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, maximum_payload_bytes, observe)?;
+    let volume_id = VolumeId::from_bytes(decoder.fixed::<16, E>(observe)?);
+    let config = decode_config(&mut decoder, observe)?
+        .validate()
+        .map_err(VolumeCreatedError::from)
+        .map_err(E::from)?;
+    let kind = ObjectKind::from_canonical_tag(decoder.u8(observe)?)
         .map_err(|_| invariant("unknown initial-generation object kind"))?;
     if kind != ObjectKind::GenerationRoot {
         return Err(invariant("initial volume object is not a generation root").into());
     }
     let initial_generation_root = ObjectId {
         kind,
-        digest: Digest::from_bytes(decoder.fixed()?),
+        digest: Digest::from_bytes(decoder.fixed::<32, E>(observe)?),
     };
     decoder.finish()?;
     Ok(VolumeCreated {
@@ -133,44 +187,45 @@ pub(crate) fn encode_config(encoder: &mut Encoder, config: VolumeConfig) {
     encoder.u64(config.limits.maximum_generation_bytes);
 }
 
-pub(crate) fn decode_config(
+pub(crate) fn decode_config<E: From<CanonicalDecodeError>>(
     decoder: &mut Decoder<'_>,
-) -> Result<VolumeConfig, CanonicalDecodeError> {
-    let profile = match decoder.u8()? {
+    observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
+) -> Result<VolumeConfig, E> {
+    let profile = match decoder.u8(observe)? {
         1 => FilesystemProfile::Portable,
         2 => FilesystemProfile::Posix,
         3 => FilesystemProfile::Windows,
         4 => FilesystemProfile::Browser,
-        _ => return Err(invariant("unknown filesystem profile")),
+        _ => return Err(invariant("unknown filesystem profile").into()),
     };
-    let concurrency = match decoder.u8()? {
+    let concurrency = match decoder.u8(observe)? {
         1 => ConcurrencyMode::ExclusiveWriter,
         2 => ConcurrencyMode::Optimistic,
         3 => ConcurrencyMode::SerializedAuthority,
-        _ => return Err(invariant("unknown concurrency mode")),
+        _ => return Err(invariant("unknown concurrency mode").into()),
     };
-    let lifecycle = match decoder.u8()? {
+    let lifecycle = match decoder.u8(observe)? {
         1 => Lifecycle::Ephemeral,
         2 => Lifecycle::Durable,
-        _ => return Err(invariant("unknown lifecycle")),
+        _ => return Err(invariant("unknown lifecycle").into()),
     };
-    let case_sensitivity = match decoder.u8()? {
+    let case_sensitivity = match decoder.u8(observe)? {
         1 => CaseSensitivity::Sensitive,
         2 => CaseSensitivity::ProfileFolded,
-        _ => return Err(invariant("unknown case-sensitivity mode")),
+        _ => return Err(invariant("unknown case-sensitivity mode").into()),
     };
-    let unicode = match decoder.u8()? {
+    let unicode = match decoder.u8(observe)? {
         1 => UnicodePolicy::Preserve,
         2 => UnicodePolicy::RequireNfc,
-        _ => return Err(invariant("unknown Unicode policy")),
+        _ => return Err(invariant("unknown Unicode policy").into()),
     };
-    let symbolic_links = decode_bool(decoder.u8()?)?;
-    let hard_links = decode_bool(decoder.u8()?)?;
-    let sparse_files = decode_bool(decoder.u8()?)?;
-    let maximum_path_bytes = decoder.u32()?;
-    let maximum_component_bytes = decoder.u32()?;
-    let maximum_path_depth =
-        u16::try_from(decoder.u32()?).map_err(|_| invariant("maximum path depth exceeds u16"))?;
+    let symbolic_links = decode_bool(decoder.u8(observe)?)?;
+    let hard_links = decode_bool(decoder.u8(observe)?)?;
+    let sparse_files = decode_bool(decoder.u8(observe)?)?;
+    let maximum_path_bytes = decoder.u32(observe)?;
+    let maximum_component_bytes = decoder.u32(observe)?;
+    let maximum_path_depth = u16::try_from(decoder.u32(observe)?)
+        .map_err(|_| invariant("maximum path depth exceeds u16"))?;
     Ok(VolumeConfig {
         profile,
         concurrency,
@@ -184,17 +239,17 @@ pub(crate) fn decode_config(
             maximum_path_bytes,
             maximum_component_bytes,
             maximum_path_depth,
-            maximum_object_bytes: decoder.u64()?,
-            maximum_mutations_per_batch: decoder.u32()?,
-            maximum_paths_per_batch: decoder.u32()?,
-            maximum_checkout_dependencies: decoder.u32()?,
-            maximum_directory_page_entries: decoder.u32()?,
-            maximum_page_height: u16::try_from(decoder.u32()?)
+            maximum_object_bytes: decoder.u64(observe)?,
+            maximum_mutations_per_batch: decoder.u32(observe)?,
+            maximum_paths_per_batch: decoder.u32(observe)?,
+            maximum_checkout_dependencies: decoder.u32(observe)?,
+            maximum_directory_page_entries: decoder.u32(observe)?,
+            maximum_page_height: u16::try_from(decoder.u32(observe)?)
                 .map_err(|_| invariant("maximum page height exceeds u16"))?,
-            maximum_read_bytes: decoder.u64()?,
-            maximum_files_per_generation: decoder.u64()?,
-            maximum_objects_per_generation: decoder.u64()?,
-            maximum_generation_bytes: decoder.u64()?,
+            maximum_read_bytes: decoder.u64(observe)?,
+            maximum_files_per_generation: decoder.u64(observe)?,
+            maximum_objects_per_generation: decoder.u64(observe)?,
+            maximum_generation_bytes: decoder.u64(observe)?,
         },
     })
 }
@@ -207,8 +262,8 @@ fn decode_bool(value: u8) -> Result<bool, CanonicalDecodeError> {
     }
 }
 
-fn invariant(message: &str) -> CanonicalDecodeError {
-    CanonicalDecodeError::Invariant(message.to_owned())
+fn invariant(message: &'static str) -> CanonicalDecodeError {
+    CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Static(message))
 }
 
 #[cfg(test)]

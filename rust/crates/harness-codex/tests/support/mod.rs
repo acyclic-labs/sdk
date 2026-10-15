@@ -13,7 +13,7 @@ use acyclic_harness::{
     resources::ProviderRef,
     runtime::RuntimeScope,
     tool::{
-        Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry,
+        JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolRegistry,
         ToolResult,
     },
 };
@@ -204,43 +204,20 @@ pub fn message_turn(n: usize, text: &str) -> Vec<Value> {
 }
 
 /// A response whose only output is a function call.
-pub fn function_call_turn(n: usize, name: &str, arguments: &Value) -> Vec<Value> {
-    turn(
-        n,
-        &json!({
-            "type": "function_call", "id": format!("fc_{n}"), "call_id": format!("call_{n}"),
-            "name": name, "arguments": arguments.to_string(), "status": "completed"
-        }),
-    )
-}
-
-/// A response whose only output is a call to a tool inside a namespace
-/// (how Codex 0.155.1 offers MCP tools: namespace `mcp__<server>`).
-pub fn namespaced_call_turn(
+pub fn function_call_turn(
     n: usize,
-    namespace: &str,
+    namespace: Option<&str>,
     name: &str,
     arguments: &Value,
 ) -> Vec<Value> {
-    turn(
-        n,
-        &json!({
-            "type": "function_call", "id": format!("fc_{n}"), "call_id": format!("call_{n}"),
-            "namespace": namespace, "name": name, "arguments": arguments.to_string(), "status": "completed"
-        }),
-    )
-}
-
-/// Whether a request already carries a tool result (the model's next step).
-pub fn has_tool_output(request: &Recorded) -> bool {
-    request.body["input"].as_array().is_some_and(|input| {
-        input.iter().any(|item| {
-            matches!(
-                item["type"].as_str(),
-                Some("function_call_output" | "custom_tool_call_output")
-            )
-        })
-    })
+    let mut item = json!({
+        "type": "function_call", "id": format!("fc_{n}"), "call_id": format!("call_{n}"),
+        "name": name, "arguments": arguments.to_string(), "status": "completed"
+    });
+    if let Some(namespace) = namespace {
+        item["namespace"] = namespace.into();
+    }
+    turn(n, &item)
 }
 
 // ------------------------------------------------------------------- meter
@@ -253,13 +230,6 @@ pub struct RecordingMeter {
 }
 
 impl RecordingMeter {
-    pub fn stopping_after(calls: usize) -> Self {
-        Self {
-            stop_after: Some(calls),
-            ..Self::default()
-        }
-    }
-
     pub fn recorded(&self) -> Vec<ResponsesUsage> {
         self.recorded.lock().expect("meter").clone()
     }
@@ -401,7 +371,11 @@ exit {exit}
 struct Echo;
 
 impl ToolExecutor for Echo {
-    fn execute<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
+    fn execute<'a>(
+        &'a self,
+        invocation: ToolInvocation,
+        _context: Option<crate::runtime::ToolContext>,
+    ) -> BoxFuture<'a, Result<ToolResult>> {
         async move {
             if invocation.arguments["fail"].as_bool() == Some(true) {
                 return Err(Error::Invalid("echo was asked to fail".into()));
@@ -413,16 +387,12 @@ impl ToolExecutor for Echo {
         .boxed()
     }
 
-    fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+    fn reconcile<'a>(
+        &'a self,
+        _: ToolInvocation,
+        _context: Option<crate::runtime::ToolContext>,
+    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
         async { Ok(None) }.boxed()
-    }
-}
-
-struct Identity;
-
-impl ToolProjection for Identity {
-    fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        Ok(json!({"kind":"json","value":result.value}))
     }
 }
 
@@ -444,7 +414,7 @@ fn tool(name: &str) -> Tool {
             ),
         },
         executor: Arc::new(Echo),
-        projection: Arc::new(Identity),
+        projection: Arc::new(JsonToolProjection),
     }
 }
 
@@ -452,10 +422,10 @@ fn tool(name: &str) -> Tool {
 pub fn registry() -> ToolRegistry {
     let mut registry = ToolRegistry::default();
     registry
-        .register(tool("acyclic.echo"))
+        .register((tool("acyclic.echo"), None), &mut None, None)
         .expect("register echo");
     registry
-        .register(tool("acyclic.secret"))
+        .register((tool("acyclic.secret"), None), &mut None, None)
         .expect("register secret");
     registry
 }
@@ -611,7 +581,7 @@ impl ExecutionJournal for Journal {
                 };
             }
             let volume = VolumeRef::new(
-                ProviderRef::new("test", "filesystem", "2")?,
+                ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
                 "journal",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([0; 16])),
@@ -630,14 +600,17 @@ impl ExecutionJournal for Journal {
         .boxed()
     }
 
-    fn load<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+    fn load<'a>(
+        &'a self,
+        reference: &'a FileRef,
+    ) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         async move {
             self.staged
                 .lock()
                 .map_err(poisoned)?
                 .values()
                 .find(|(stored, _)| stored == reference)
-                .map(|(_, bytes)| bytes.clone())
+                .map(|(_, bytes)| acyclic_stream::OwnedBytes::from(bytes.clone()))
                 .ok_or_else(|| Error::NotFound("journal content is missing".into()))
         }
         .boxed()

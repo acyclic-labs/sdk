@@ -1,13 +1,8 @@
-//! WebAssembly bridge for the Rust-owned Actors client.
-//!
-//! Only protobuf bytes cross this boundary. Endpoint, credential, message
-//! size, contract, and semantic conversion policy remain in `acyclic-actors`.
-
+//! WebAssembly boundary for the Rust Actors client.
 #![cfg(target_arch = "wasm32")]
 
-use acyclic_actors::{client, domain, wire};
+use acyclic_actors::{client, domain};
 use js_sys::{BigInt, Function, Reflect, Uint8Array};
-use prost::Message;
 use tokio_util::sync::CancellationToken;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
@@ -90,27 +85,6 @@ pub fn current_head_marker(
         .map_err(nominal_error)
 }
 
-fn decode<T: Message + Default>(bytes: &[u8]) -> Result<T, JsValue> {
-    T::decode(bytes).map_err(|error| js_error("invalid_argument", error))
-}
-
-fn decode_semantic<T, D>(bytes: &[u8]) -> Result<D, JsValue>
-where
-    T: Message + Default,
-    D: TryFrom<T>,
-    D::Error: std::fmt::Display,
-{
-    D::try_from(decode::<T>(bytes)?).map_err(|error| js_error("invalid_argument", error))
-}
-
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "prost encoders consume the generated response value at the ABI boundary"
-)]
-fn encode<T: Message>(message: T) -> Vec<u8> {
-    message.encode_to_vec()
-}
-
 struct AbortRegistration {
     signal: JsValue,
     callback: Closure<dyn FnMut(JsValue)>,
@@ -134,32 +108,25 @@ impl AbortRegistration {
             &JsValue::from_str("abort"),
             callback.as_ref().unchecked_ref(),
         )?;
-        let aborted = Reflect::get(&signal, &JsValue::from_str("aborted"))?
-            .as_bool()
-            .unwrap_or(false);
-        if aborted {
-            token.cancel();
-        }
-        Ok(Some(Self {
+        let registration = Self {
             signal,
             callback,
             token,
-        }))
-    }
-
-    fn token(&self) -> CancellationToken {
-        self.token.clone()
+        };
+        let aborted = Reflect::get(&registration.signal, &JsValue::from_str("aborted"))?
+            .as_bool()
+            .unwrap_or(false);
+        if aborted {
+            registration.token.cancel();
+        }
+        Ok(Some(registration))
     }
 }
 
 impl Drop for AbortRegistration {
-    #[allow(
-        clippy::useless_conversion,
-        reason = "wasm-bindgen's dynamic cast error is already a JsValue"
-    )]
     fn drop(&mut self) {
         if let Ok(remove) = Reflect::get(&self.signal, &JsValue::from_str("removeEventListener"))
-            .and_then(|value| value.dyn_into::<Function>().map_err(Into::into))
+            .and_then(|value| value.dyn_into::<Function>())
         {
             let _ = remove.call2(
                 &self.signal,
@@ -170,8 +137,7 @@ impl Drop for AbortRegistration {
     }
 }
 
-/// Connected browser Actors client. Transport and validation are implemented
-/// by the shared Rust client; this object only provides the JS ABI.
+/// Browser binding for the shared Actors client.
 #[wasm_bindgen]
 pub struct ActorsClient {
     inner: client::Client,
@@ -187,9 +153,12 @@ impl ActorsClient {
         signal: Option<JsValue>,
     ) -> Result<ActorsClient, JsValue> {
         let registration = AbortRegistration::new(signal)?;
-        let cancellation = registration.as_ref().map(AbortRegistration::token);
+        let cancellation = registration
+            .as_ref()
+            .map(|registration| registration.token.clone());
         let result =
-            client::run_with_cancellation(client::connect(&endpoint, &token), cancellation).await;
+            client::run_with_cancellation(client::connect(&endpoint, &token, None), cancellation)
+                .await;
         drop(registration);
         result.map(|inner| Self { inner }).map_err(map_error)
     }
@@ -199,7 +168,9 @@ impl ActorsClient {
         F: std::future::Future<Output = Result<T, client::Error>>,
     {
         let registration = AbortRegistration::new(signal)?;
-        let cancellation = registration.as_ref().map(AbortRegistration::token);
+        let cancellation = registration
+            .as_ref()
+            .map(|registration| registration.token.clone());
         let result = client::run_with_cancellation(operation, cancellation).await;
         drop(registration);
         result.map_err(map_error)
@@ -217,11 +188,8 @@ impl ActorsClient {
         request: &[u8],
         signal: Option<JsValue>,
     ) -> Result<Vec<u8>, JsValue> {
-        let request =
-            decode_semantic::<wire::CreateActorRequest, domain::CreateActorRequest>(request)?;
-        self.run(signal, self.inner.create_actor(&request))
+        self.run(signal, self.inner.call("CreateActor", request))
             .await
-            .map(|value| encode(wire::CreateActorResponse::from(value)))
     }
 
     /// Execute `UpdateActor` with an encoded protobuf request.
@@ -230,11 +198,8 @@ impl ActorsClient {
         request: &[u8],
         signal: Option<JsValue>,
     ) -> Result<Vec<u8>, JsValue> {
-        let request =
-            decode_semantic::<wire::UpdateActorRequest, domain::UpdateActorRequest>(request)?;
-        self.run(signal, self.inner.update_actor(&request))
+        self.run(signal, self.inner.call("UpdateActor", request))
             .await
-            .map(|value| encode(wire::UpdateActorResponse::from(value)))
     }
 
     /// Execute `InspectActor` with an encoded protobuf request.
@@ -243,11 +208,8 @@ impl ActorsClient {
         request: &[u8],
         signal: Option<JsValue>,
     ) -> Result<Vec<u8>, JsValue> {
-        let request =
-            decode_semantic::<wire::InspectActorRequest, domain::InspectActorRequest>(request)?;
-        self.run(signal, self.inner.inspect_actor(&request))
+        self.run(signal, self.inner.call("InspectActor", request))
             .await
-            .map(|value| encode(wire::InspectActorResponse::from(value)))
     }
 
     /// Execute `AddSubscription` with an encoded protobuf request.
@@ -256,13 +218,8 @@ impl ActorsClient {
         request: &[u8],
         signal: Option<JsValue>,
     ) -> Result<Vec<u8>, JsValue> {
-        let request = decode_semantic::<
-            wire::AddSubscriptionRequest,
-            domain::AddSubscriptionRequest,
-        >(request)?;
-        self.run(signal, self.inner.add_subscription(&request))
+        self.run(signal, self.inner.call("AddSubscription", request))
             .await
-            .map(|value| encode(wire::AddSubscriptionResponse::from(value)))
     }
 
     /// Execute `RemoveSubscription` with an encoded protobuf request.
@@ -271,13 +228,8 @@ impl ActorsClient {
         request: &[u8],
         signal: Option<JsValue>,
     ) -> Result<Vec<u8>, JsValue> {
-        let request = decode_semantic::<
-            wire::RemoveSubscriptionRequest,
-            domain::RemoveSubscriptionRequest,
-        >(request)?;
-        self.run(signal, self.inner.remove_subscription(&request))
+        self.run(signal, self.inner.call("RemoveSubscription", request))
             .await
-            .map(|value| encode(wire::RemoveSubscriptionResponse::from(value)))
     }
 
     /// Execute `ResumeSubscription` with an encoded protobuf request.
@@ -286,13 +238,8 @@ impl ActorsClient {
         request: &[u8],
         signal: Option<JsValue>,
     ) -> Result<Vec<u8>, JsValue> {
-        let request = decode_semantic::<
-            wire::ResumeSubscriptionRequest,
-            domain::ResumeSubscriptionRequest,
-        >(request)?;
-        self.run(signal, self.inner.resume_subscription(&request))
+        self.run(signal, self.inner.call("ResumeSubscription", request))
             .await
-            .map(|value| encode(wire::ResumeSubscriptionResponse::from(value)))
     }
 
     /// Execute `CheckpointActor` with an encoded protobuf request.
@@ -301,13 +248,8 @@ impl ActorsClient {
         request: &[u8],
         signal: Option<JsValue>,
     ) -> Result<Vec<u8>, JsValue> {
-        let request = decode_semantic::<
-            wire::CheckpointActorRequest,
-            domain::CheckpointActorRequest,
-        >(request)?;
-        self.run(signal, self.inner.checkpoint_actor(&request))
+        self.run(signal, self.inner.call("CheckpointActor", request))
             .await
-            .map(|value| encode(wire::CheckpointActorResponse::from(value)))
     }
 
     /// Execute `InvokeActor` with an encoded protobuf request.
@@ -316,11 +258,8 @@ impl ActorsClient {
         request: &[u8],
         signal: Option<JsValue>,
     ) -> Result<Vec<u8>, JsValue> {
-        let request =
-            decode_semantic::<wire::InvokeActorRequest, domain::InvokeActorRequest>(request)?;
-        self.run(signal, self.inner.invoke_actor(&request))
+        self.run(signal, self.inner.call("InvokeActor", request))
             .await
-            .map(|value| encode(wire::InvokeActorResponse::from(value)))
     }
 
     /// Execute `DeleteActor` with an encoded protobuf request.
@@ -329,10 +268,7 @@ impl ActorsClient {
         request: &[u8],
         signal: Option<JsValue>,
     ) -> Result<Vec<u8>, JsValue> {
-        let request =
-            decode_semantic::<wire::DeleteActorRequest, domain::DeleteActorRequest>(request)?;
-        self.run(signal, self.inner.delete_actor(&request))
+        self.run(signal, self.inner.call("DeleteActor", request))
             .await
-            .map(|value| encode(wire::DeleteActorResponse::from(value)))
     }
 }

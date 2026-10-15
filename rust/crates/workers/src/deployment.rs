@@ -51,7 +51,7 @@ impl<P: ObjectsProvider> Client<P> {
                     mutation: Some(objects::MutationIdentity { idempotency_key }),
                     ..Default::default()
                 },
-                code,
+                code.into(),
             )
             .await?;
         Ok(digest)

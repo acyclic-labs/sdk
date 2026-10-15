@@ -299,7 +299,7 @@ impl Store {
         file.write_all(&bytes)?;
         file.sync_all()?;
         drop(file);
-        crate::durable_rename(&temporary, &self.path, crate::RenameMode::Replace)?;
+        crate::durable_rename(&temporary, &self.path, crate::RenameMode::Replace, None)?;
         Ok(())
     }
 
@@ -380,14 +380,13 @@ fn reject_alias(path: &Path) -> io::Result<()> {
     }
     #[cfg(windows)]
     {
-        let parent = path.parent().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "credentials need a parent")
-        })?;
-        let name = path.file_name().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "credentials need a filename")
-        })?;
-        let root = acyclic_fs::native_host::HostRoot::open(parent)?;
-        if root.stat(Path::new(name))?.number_of_links() != Some(1) {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        let file = fs::OpenOptions::new()
+            .access_mode(0)
+            .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?;
+        let links = crate::service_process::link_count(&file).map_err(io::Error::other)?;
+        if links != 1 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "credential hard links are not supported",

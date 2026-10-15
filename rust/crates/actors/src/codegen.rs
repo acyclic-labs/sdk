@@ -6,8 +6,6 @@ use std::{
 };
 
 /// Vendored protoc on Windows cannot open paths with the extended-length
-/// `\\?\` prefix that Cargo may place in `OUT_DIR`. Keep the long-path form
-/// for filesystem operations, but pass a normal drive or UNC path to protoc.
 fn protoc_path(path: &Path) -> PathBuf {
     #[cfg(windows)]
     {

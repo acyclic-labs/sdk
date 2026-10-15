@@ -3,16 +3,22 @@
 //! This layer owns no authority. Every entry is keyed by a canonical typed
 //! object identity and may be discarded without changing filesystem results.
 
+#[cfg(all(test, feature = "memory"))]
+use crate::WorkBudget;
 use crate::async_storage::{
     AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue,
 };
 use crate::cancellation::CancellationToken;
-use crate::performance::{WorkBudget, WorkCounters};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::kernel::allocation::KernelAccounting;
+use crate::kernel::{Owned, allocation::KernelOwnedAllocation};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::materializer::{NativeAllocation, NativeMaterializationWork};
+use crate::performance::WorkCounters;
 use crate::storage::{
-    ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectReceipt,
-    ObjectResult, ObjectStoreError, ObjectWrite,
+    ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectStoreError, ObjectWrite,
 };
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::{Future, poll_fn};
 use std::mem::size_of;
@@ -96,7 +102,7 @@ pub struct ObjectCacheStats {
 }
 
 struct CacheEntry {
-    bytes: Bytes,
+    bytes: OwnedBytes,
     touched: u64,
 }
 
@@ -111,15 +117,6 @@ enum RecencyKey {
     Decoded(DecodedCacheKey),
 }
 
-#[derive(Default)]
-struct MutableStats {
-    hits: u64,
-    decoded_hits: u64,
-    misses: u64,
-    coalesced_reads: u64,
-    evictions: u64,
-}
-
 struct CacheState {
     entries: BTreeMap<ObjectId, CacheEntry>,
     decoded: BTreeMap<DecodedCacheKey, DecodedCacheEntry>,
@@ -129,7 +126,11 @@ struct CacheState {
     resident_canonical_bytes: u64,
     resident_decoded_bytes: u64,
     clock: u64,
-    stats: MutableStats,
+    hits: u64,
+    decoded_hits: u64,
+    misses: u64,
+    coalesced_reads: u64,
+    evictions: u64,
 }
 
 impl Default for CacheState {
@@ -143,7 +144,11 @@ impl Default for CacheState {
             resident_canonical_bytes: 0,
             resident_decoded_bytes: 0,
             clock: 1,
-            stats: MutableStats::default(),
+            hits: 0,
+            decoded_hits: 0,
+            misses: 0,
+            coalesced_reads: 0,
+            evictions: 0,
         }
     }
 }
@@ -154,59 +159,128 @@ struct Shared {
 }
 
 enum FlightState {
-    Running(Vec<Waker>),
-    Complete(Option<Bytes>),
+    Running(Owned<Vec<Waker>>),
+    Complete(Option<OwnedBytes>),
 }
 
 struct Flight {
     state: Mutex<FlightState>,
     maximum_waiters: u32,
+    #[cfg(not(target_arch = "wasm32"))]
+    _allocation: Option<NativeAllocation>,
 }
 
 impl Flight {
     fn new(maximum_waiters: u32) -> Self {
         Self {
-            state: Mutex::new(FlightState::Running(Vec::new())),
+            state: Mutex::new(FlightState::Running(Owned::new(
+                Vec::new(),
+                KernelOwnedAllocation::Standalone,
+                0,
+            ))),
             maximum_waiters,
+            #[cfg(not(target_arch = "wasm32"))]
+            _allocation: None,
         }
     }
 
-    fn finish(&self, bytes: Option<Bytes>) {
-        let waiters = match self.state.lock() {
-            Ok(mut state) => match std::mem::replace(&mut *state, FlightState::Complete(bytes)) {
+    fn finish(&self, bytes: Option<OwnedBytes>) {
+        let waiters = {
+            let (mut state, bytes) = match self.state.lock() {
+                Ok(state) => (state, bytes),
+                Err(poisoned) => (poisoned.into_inner(), None),
+            };
+            if matches!(*state, FlightState::Complete(_)) {
+                return;
+            }
+            match std::mem::replace(&mut *state, FlightState::Complete(bytes)) {
                 FlightState::Running(waiters) => waiters,
-                FlightState::Complete(_) => return,
-            },
-            Err(poisoned) => {
-                let mut state = poisoned.into_inner();
-                match std::mem::replace(&mut *state, FlightState::Complete(None)) {
-                    FlightState::Running(waiters) => waiters,
-                    FlightState::Complete(_) => return,
-                }
+                FlightState::Complete(_) => unreachable!(),
             }
         };
-        for waiter in waiters {
+        for waiter in waiters.value {
             waiter.wake();
         }
     }
 
-    fn poll(&self, context: &Context<'_>) -> Poll<Result<Option<Bytes>, ObjectStoreError>> {
+    fn poll(
+        &self,
+        context: &Context<'_>,
+        #[cfg(not(target_arch = "wasm32"))] work: Option<&NativeMaterializationWork>,
+    ) -> Poll<Result<Option<OwnedBytes>, ObjectStoreError>> {
         let mut state = self.state.lock().map_err(|_| ObjectStoreError::Corrupt)?;
         match &mut *state {
             FlightState::Complete(bytes) => Poll::Ready(Ok(bytes.clone())),
             FlightState::Running(waiters) => {
                 if waiters
+                    .value
                     .iter()
                     .any(|waiter| waiter.will_wake(context.waker()))
                 {
                     return Poll::Pending;
                 }
-                if waiters.len() >= usize::try_from(self.maximum_waiters).unwrap_or(usize::MAX) {
+                if waiters.value.len()
+                    >= usize::try_from(self.maximum_waiters).unwrap_or(usize::MAX)
+                {
                     return Poll::Ready(Err(ObjectStoreError::Rejected(
                         "immutable-object single-flight waiter bound exhausted".to_owned(),
                     )));
                 }
-                waiters.push(context.waker().clone());
+                #[cfg(not(target_arch = "wasm32"))]
+                if waiters.value.len() == waiters.value.capacity()
+                    && (work.is_some()
+                        || matches!(waiters.allocation, KernelOwnedAllocation::NativeOriginal(_)))
+                {
+                    // Fund the actual replacement scope before entering its
+                    // allocator; never construct or drop storage under a root loan.
+                    let capacity = waiters
+                        .value
+                        .len()
+                        .saturating_mul(2)
+                        .max(1)
+                        .min(usize::try_from(self.maximum_waiters).unwrap_or(usize::MAX));
+                    let mut replacement = if let Some(work) = work {
+                        Owned::allocate(
+                            capacity,
+                            &mut KernelAccounting::native(work, work.cancellation()),
+                        )
+                        .map_err(crate::async_storage::object_error)?
+                    } else {
+                        let mut values = Vec::new();
+                        values.try_reserve_exact(capacity).map_err(|_| {
+                            ObjectStoreError::Rejected(
+                                "immutable-object waiter allocation failed".to_owned(),
+                            )
+                        })?;
+                        let bytes = (values.capacity() * size_of::<Waker>()) as u64;
+                        Owned::new(values, KernelOwnedAllocation::Standalone, bytes)
+                    };
+                    let copy = work
+                        .map(|work| {
+                            work.reserve_work(crate::WorkCounters {
+                                bytes_copied: (waiters.value.len() * size_of::<Waker>()) as u64,
+                                ..crate::WorkCounters::UNCHARGED
+                            })
+                        })
+                        .transpose()?;
+                    replacement.value.append(&mut waiters.value);
+                    let copied = (replacement.value.len() * size_of::<Waker>()) as u64;
+                    // Commit moved waiters before a late refusal, preserving all
+                    // prior registrations. Free old storage before its guard.
+                    drop(std::mem::replace(waiters, replacement));
+                    if let Some(copy) = copy {
+                        copy.record_completed(crate::WorkCounters {
+                            bytes_copied: copied,
+                            ..crate::WorkCounters::UNCHARGED
+                        })?;
+                    }
+                    if let Some(work) = work {
+                        KernelAccounting::native(work, work.cancellation())
+                            .record_completed(WorkCounters::UNCHARGED)
+                            .map_err(crate::async_storage::object_error)?;
+                    }
+                }
+                waiters.value.push(context.waker().clone());
                 Poll::Pending
             }
         }
@@ -217,44 +291,31 @@ struct ActiveFlightGuard<'a, S> {
     store: &'a CachedObjectStore<S>,
     object_id: ObjectId,
     flight: Arc<Flight>,
-    finished: bool,
 }
 
-impl<'a, S> ActiveFlightGuard<'a, S> {
-    fn new(store: &'a CachedObjectStore<S>, object_id: ObjectId, flight: Arc<Flight>) -> Self {
-        Self {
-            store,
-            object_id,
-            flight,
-            finished: false,
-        }
-    }
-
-    fn finish(mut self, bytes: Option<Bytes>) -> Result<(), ObjectStoreError> {
+impl<S> ActiveFlightGuard<'_, S> {
+    fn finish(self, bytes: Option<OwnedBytes>) -> Result<(), ObjectStoreError> {
         self.flight.finish(bytes);
         self.store.remove_flight(self.object_id, &self.flight)?;
-        self.finished = true;
         Ok(())
     }
 }
 
 impl<S> Drop for ActiveFlightGuard<'_, S> {
     fn drop(&mut self) {
-        if !self.finished {
-            self.flight.finish(None);
-            let _ = self.store.remove_flight(self.object_id, &self.flight);
-        }
+        self.flight.finish(None);
+        let _ = self.store.remove_flight(self.object_id, &self.flight);
     }
 }
 
 enum ReadPlan {
-    Hit(Bytes),
+    Hit(OwnedBytes),
     Leader(Arc<Flight>),
     Follower(Arc<Flight>),
 }
 
 enum BatchSlot {
-    Hit(Bytes),
+    Hit(OwnedBytes),
     LocalLeader(usize),
     ExternalFollower(Arc<Flight>),
 }
@@ -266,12 +327,25 @@ struct BatchLeader {
 }
 
 struct PreparedBatch {
-    slots: Vec<BatchSlot>,
-    leaders: Vec<BatchLeader>,
-    work: WorkCounters,
-    planning_bytes: u64,
-    result_bytes: u64,
-    item_count: u64,
+    slots: Owned<Vec<BatchSlot>>,
+    leaders: Owned<Vec<BatchLeader>>,
+    shared: Arc<Shared>,
+}
+
+impl Drop for PreparedBatch {
+    fn drop(&mut self) {
+        for leader in &self.leaders.value {
+            leader.flight.finish(None);
+            if let Ok(mut state) = self.shared.state.lock()
+                && state
+                    .flights
+                    .get(&leader.object_id)
+                    .is_some_and(|flight| Arc::ptr_eq(flight, &leader.flight))
+            {
+                state.flights.remove(&leader.object_id);
+            }
+        }
+    }
 }
 
 /// Async immutable-object accelerator over any conforming backend.
@@ -291,10 +365,6 @@ impl<S: Clone> Clone for CachedObjectStore<S> {
 
 impl<S> CachedObjectStore<S> {
     /// Wraps one backend with an independently bounded disposable cache.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a zero bound.
     pub fn new(inner: S, options: ObjectCacheOptions) -> Result<Self, ObjectCacheConfigError> {
         Ok(Self {
             inner,
@@ -312,18 +382,14 @@ impl<S> CachedObjectStore<S> {
     }
 
     /// Returns exact current and cumulative accelerator observations.
-    ///
-    /// # Errors
-    ///
-    /// Fails closed if accelerator state was poisoned.
     pub fn stats(&self) -> Result<ObjectCacheStats, ObjectStoreError> {
         let state = self.lock_state()?;
         Ok(ObjectCacheStats {
-            hits: state.stats.hits,
-            decoded_hits: state.stats.decoded_hits,
-            misses: state.stats.misses,
-            coalesced_reads: state.stats.coalesced_reads,
-            evictions: state.stats.evictions,
+            hits: state.hits,
+            decoded_hits: state.decoded_hits,
+            misses: state.misses,
+            coalesced_reads: state.coalesced_reads,
+            evictions: state.evictions,
             resident_entries: u64::try_from(
                 state.entries.len().saturating_add(state.decoded.len()),
             )
@@ -338,11 +404,6 @@ impl<S> CachedObjectStore<S> {
     }
 
     /// Discards every resident byte. In-flight reads remain valid and may
-    /// repopulate after this call.
-    ///
-    /// # Errors
-    ///
-    /// Fails closed if accelerator state was poisoned.
     pub fn clear(&self) -> Result<(), ObjectStoreError> {
         let mut state = self.lock_state()?;
         state.entries.clear();
@@ -361,7 +422,11 @@ impl<S> CachedObjectStore<S> {
             .map_err(|_| ObjectStoreError::Corrupt)
     }
 
-    fn read_plan(&self, object_id: ObjectId) -> Result<ReadPlan, ObjectStoreError> {
+    fn read_plan(
+        &self,
+        object_id: ObjectId,
+        #[cfg(not(target_arch = "wasm32"))] work: Option<&NativeMaterializationWork>,
+    ) -> Result<ReadPlan, ObjectStoreError> {
         let mut state = self.lock_state()?;
         let tick = next_tick(&mut state)?;
         if let Some(entry) = state.entries.get_mut(&object_id) {
@@ -374,10 +439,10 @@ impl<S> CachedObjectStore<S> {
             state
                 .recency
                 .insert((tick, RecencyKey::Canonical(object_id)));
-            state.stats.hits = increment(state.stats.hits)?;
+            state.hits = increment(state.hits)?;
             return Ok(ReadPlan::Hit(bytes));
         }
-        state.stats.misses = increment(state.stats.misses)?;
+        state.misses = increment(state.misses)?;
         if let Some(flight) = state.flights.get(&object_id) {
             return Ok(ReadPlan::Follower(Arc::clone(flight)));
         }
@@ -388,7 +453,24 @@ impl<S> CachedObjectStore<S> {
                 "immutable-object single-flight identity bound exhausted".to_owned(),
             ));
         }
-        let flight = Arc::new(Flight::new(self.shared.options.maximum_waiters_per_object));
+        #[cfg(not(target_arch = "wasm32"))]
+        let allocation = work
+            .map(|work| {
+                let claim_bytes = size_of::<Flight>() as u64;
+                work.claim(
+                    claim_bytes,
+                    u64::from(claim_bytes != 0),
+                    crate::WorkCounters::UNCHARGED,
+                )
+            })
+            .transpose()?;
+        let flight = Flight::new(self.shared.options.maximum_waiters_per_object);
+        #[cfg(not(target_arch = "wasm32"))]
+        let flight = Flight {
+            _allocation: allocation,
+            ..flight
+        };
+        let flight = Arc::new(flight);
         state.flights.insert(object_id, Arc::clone(&flight));
         Ok(ReadPlan::Leader(flight))
     }
@@ -397,7 +479,7 @@ impl<S> CachedObjectStore<S> {
         let mut state = self.lock_state()?;
         let tick = next_tick(&mut state)?;
         let Some(entry) = state.entries.get_mut(&object_id) else {
-            state.stats.misses = increment(state.stats.misses)?;
+            state.misses = increment(state.misses)?;
             return Ok(false);
         };
         let prior = entry.touched;
@@ -408,11 +490,11 @@ impl<S> CachedObjectStore<S> {
         state
             .recency
             .insert((tick, RecencyKey::Canonical(object_id)));
-        state.stats.hits = increment(state.stats.hits)?;
+        state.hits = increment(state.hits)?;
         Ok(true)
     }
 
-    fn insert(&self, object_id: ObjectId, bytes: Bytes) -> Result<bool, ObjectStoreError> {
+    fn insert(&self, object_id: ObjectId, bytes: OwnedBytes) -> Result<bool, ObjectStoreError> {
         let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         if length > self.shared.options.maximum_bytes {
             return Ok(false);
@@ -469,8 +551,8 @@ impl<S> CachedObjectStore<S> {
         let value = entry.value.clone();
         state.recency.remove(&(prior, RecencyKey::Decoded(key)));
         state.recency.insert((tick, RecencyKey::Decoded(key)));
-        state.stats.hits = increment(state.stats.hits)?;
-        state.stats.decoded_hits = increment(state.stats.decoded_hits)?;
+        state.hits = increment(state.hits)?;
+        state.decoded_hits = increment(state.decoded_hits)?;
         Ok(Some(value))
     }
 
@@ -533,7 +615,7 @@ impl<S> CachedObjectStore<S> {
 
     fn record_coalesced(&self) -> Result<(), ObjectStoreError> {
         let mut state = self.lock_state()?;
-        state.stats.coalesced_reads = increment(state.stats.coalesced_reads)?;
+        state.coalesced_reads = increment(state.coalesced_reads)?;
         Ok(())
     }
 }
@@ -583,7 +665,7 @@ fn evict_oldest(state: &mut CacheState) -> Result<(), ObjectStoreError> {
         .resident_bytes
         .checked_sub(removed_bytes)
         .ok_or(ObjectStoreError::Corrupt)?;
-    state.stats.evictions = increment(state.stats.evictions)?;
+    state.evictions = increment(state.evictions)?;
     Ok(())
 }
 
@@ -595,421 +677,223 @@ fn cache_probe_work() -> WorkCounters {
     }
 }
 
-fn combine_failure(prior: WorkCounters, failure: ObjectFailure) -> ObjectFailure {
-    match prior.checked_add(*failure.work) {
-        Ok(work) => ObjectFailure::new(failure.error, work),
-        Err(error) => ObjectFailure::new(error.into(), prior),
-    }
-}
-
-fn shared_read(bytes: Bytes, work: WorkCounters) -> ObjectReceipt<ObjectRead> {
-    ObjectReceipt {
-        value: ObjectRead {
-            bytes,
-            retention: ObjectReadRetention::Shared,
-        },
-        work,
-    }
-}
-
 async fn wait_for_flight(
     flight: &Flight,
     cancellation: &CancellationToken,
-) -> Result<Option<Bytes>, ObjectStoreError> {
+    #[cfg(not(target_arch = "wasm32"))] work: Option<&NativeMaterializationWork>,
+) -> Result<Option<OwnedBytes>, ObjectStoreError> {
     let mut cancelled = pin!(cancellation.cancelled());
     poll_fn(|context| {
         if cancelled.as_mut().poll(context).is_ready() {
             return Poll::Ready(Err(ObjectStoreError::Cancelled));
         }
-        flight.poll(context)
+        flight.poll(
+            context,
+            #[cfg(not(target_arch = "wasm32"))]
+            work,
+        )
     })
     .await
 }
 
-impl<S: AsyncObjectStore> CachedObjectStore<S> {
-    fn validate_cached_read(
-        _object_id: ObjectId,
-        bytes: Bytes,
-        maximum_bytes: u64,
-        work: WorkCounters,
-    ) -> ObjectResult<ObjectRead> {
-        let observed = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        if observed > maximum_bytes {
-            return Err(ObjectFailure::new(
-                ObjectStoreError::TooLarge {
-                    observed,
-                    maximum: maximum_bytes,
-                },
-                work,
-            ));
-        }
-        Ok(shared_read(bytes, work))
+fn shared_read(bytes: OwnedBytes, maximum: u64) -> Result<ObjectRead, ObjectStoreError> {
+    let observed = bytes.len() as u64;
+    if observed > maximum {
+        return Err(ObjectStoreError::TooLarge { observed, maximum });
     }
+    Ok(ObjectRead {
+        bytes,
+        retention: ObjectReadRetention::Shared,
+    })
+}
 
+impl<S: AsyncObjectStore> CachedObjectStore<S> {
     async fn load_leader(
         &self,
         object_id: ObjectId,
-        maximum_bytes: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-        prior: WorkCounters,
+        maximum: u64,
         flight: Arc<Flight>,
-    ) -> ObjectResult<ObjectRead> {
-        let guard = ActiveFlightGuard::new(self, object_id, Arc::clone(&flight));
-        let receipt = match self
-            .inner
-            .read(
-                object_id,
-                maximum_bytes,
-                prior
-                    .remaining(budget)
-                    .map_err(|error| ObjectFailure::new(error.into(), prior))?,
-                cancellation,
-            )
-            .await
-        {
-            Ok(receipt) => receipt,
-            Err(failure) => {
-                guard
-                    .finish(None)
-                    .map_err(|error| ObjectFailure::new(error, prior))?;
-                return Err(combine_failure(prior, failure));
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<ObjectRead, ObjectStoreError> {
+        let guard = ActiveFlightGuard {
+            store: self,
+            object_id,
+            flight,
+        };
+        let read = match self.inner.read(object_id, maximum, work).await {
+            Ok(read) => read,
+            Err(error) => {
+                guard.finish(None)?;
+                return Err(error);
             }
         };
-        let work = prior
-            .checked_add(receipt.work)
-            .map_err(|error| ObjectFailure::new(error.into(), prior))?;
-        let bytes = receipt.value.bytes.clone();
-        if self
-            .insert(object_id, bytes.clone())
-            .map_err(|error| ObjectFailure::new(error, work))?
-        {
-            guard
-                .finish(Some(bytes.clone()))
-                .map_err(|error| ObjectFailure::new(error, work))?;
-            return Ok(shared_read(bytes, work));
+        let bytes = read.bytes.clone();
+        if self.insert(object_id, bytes.clone())? {
+            guard.finish(Some(bytes.clone()))?;
+            return shared_read(bytes, maximum);
         }
-        guard
-            .finish(None)
-            .map_err(|error| ObjectFailure::new(error, work))?;
-        Ok(ObjectReceipt {
-            value: receipt.value,
-            work,
-        })
+        guard.finish(None)?;
+        Ok(read)
     }
 
     fn prepare_batch(
         &self,
         requests: &[ObjectReadRequest],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<PreparedBatch, ObjectFailure> {
-        cancellation
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<PreparedBatch, ObjectStoreError> {
+        work.accounting()
             .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+            .map_err(crate::async_storage::object_error)?;
         if requests.is_empty() {
-            return Err(ObjectFailure::before_work(ObjectStoreError::Rejected(
+            return Err(ObjectStoreError::Rejected(
                 "object read batch is empty".to_owned(),
-            )));
+            ));
         }
-        let item_count = u64::try_from(requests.len()).unwrap_or(u64::MAX);
-        let result_bytes = item_count
-            .checked_mul(u64::try_from(size_of::<ObjectRead>()).unwrap_or(u64::MAX))
-            .ok_or_else(|| ObjectFailure::before_work(crate::WorkError::Overflow.into()))?;
-        let planning_bytes = item_count
-            .checked_mul(
-                u64::try_from(
-                    size_of::<BatchSlot>()
-                        + size_of::<BatchLeader>()
-                        + size_of::<ObjectReadRequest>(),
-                )
-                .unwrap_or(u64::MAX),
-            )
-            .ok_or_else(|| ObjectFailure::before_work(crate::WorkError::Overflow.into()))?;
-        let mut work = WorkCounters {
-            object_probes: item_count,
-            items_examined: item_count,
-            items_returned: item_count,
-            allocation_operations: 4,
-            peak_allocation_bytes: planning_bytes.saturating_add(result_bytes),
-            ..WorkCounters::default()
-        };
-        work.verify(budget)
-            .map_err(|error| ObjectFailure::before_work(error.into()))?;
-        work.items_returned = 0;
-        let mut slots = Vec::new();
-        let mut leaders = Vec::new();
-        let mut local_leaders = BTreeMap::<ObjectId, usize>::new();
-        slots.try_reserve_exact(requests.len()).map_err(|_| {
-            ObjectFailure::before_work(ObjectStoreError::Rejected(
-                "object cache batch plan allocation failed".to_owned(),
-            ))
-        })?;
-        leaders.try_reserve_exact(requests.len()).map_err(|_| {
-            ObjectFailure::before_work(ObjectStoreError::Rejected(
-                "object cache leader allocation failed".to_owned(),
-            ))
-        })?;
-        for request in requests {
-            match self.prepare_batch_slot(request, &mut leaders, &mut local_leaders, work) {
-                Ok(slot) => slots.push(slot),
-                Err(failure) => {
-                    self.abandon_unstarted_leaders(&leaders);
-                    return Err(failure);
-                }
-            }
-        }
-        Ok(PreparedBatch {
+        let count = requests.len() as u64;
+        work.accounting()
+            .admit(WorkCounters {
+                items_returned: count,
+                ..WorkCounters::UNCHARGED
+            })
+            .map_err(crate::async_storage::object_error)?;
+        work.accounting()
+            .charge(WorkCounters {
+                object_probes: count,
+                items_examined: count,
+                ..WorkCounters::UNCHARGED
+            })
+            .map_err(crate::async_storage::object_error)?;
+        let slots = Owned::allocate(requests.len(), &mut work.accounting())
+            .map_err(crate::async_storage::object_error)?;
+        let leaders = Owned::allocate(requests.len(), &mut work.accounting())
+            .map_err(crate::async_storage::object_error)?;
+        let mut prepared = PreparedBatch {
             slots,
             leaders,
-            work,
-            planning_bytes,
-            result_bytes,
-            item_count,
-        })
-    }
-
-    fn prepare_batch_slot(
-        &self,
-        request: &ObjectReadRequest,
-        leaders: &mut Vec<BatchLeader>,
-        local_leaders: &mut BTreeMap<ObjectId, usize>,
-        work: WorkCounters,
-    ) -> Result<BatchSlot, ObjectFailure> {
-        match self
-            .read_plan(request.object_id)
-            .map_err(|error| ObjectFailure::new(error, work))?
-        {
-            ReadPlan::Hit(bytes) => Ok(BatchSlot::Hit(bytes)),
-            ReadPlan::Leader(flight) => {
-                let index = leaders.len();
-                leaders.push(BatchLeader {
-                    object_id: request.object_id,
-                    maximum_bytes: request.maximum_bytes,
-                    flight: Arc::clone(&flight),
-                });
-                local_leaders.insert(request.object_id, index);
-                Ok(BatchSlot::LocalLeader(index))
-            }
-            ReadPlan::Follower(flight) => {
-                if let Some(&index) = local_leaders.get(&request.object_id)
-                    && leaders
-                        .get(index)
-                        .is_some_and(|leader| Arc::ptr_eq(&leader.flight, &flight))
-                {
-                    if let Some(leader) = leaders.get_mut(index) {
-                        leader.maximum_bytes = leader.maximum_bytes.max(request.maximum_bytes);
-                    }
-                    Ok(BatchSlot::LocalLeader(index))
-                } else {
-                    Ok(BatchSlot::ExternalFollower(flight))
+            shared: self.shared.clone(),
+        };
+        let mut local_leaders = BTreeMap::<ObjectId, usize>::new();
+        for request in requests {
+            let slot = match self.read_plan(
+                request.object_id,
+                #[cfg(not(target_arch = "wasm32"))]
+                work.original,
+            )? {
+                ReadPlan::Hit(bytes) => BatchSlot::Hit(bytes),
+                ReadPlan::Leader(flight) => {
+                    let index = prepared.leaders.value.len();
+                    prepared.leaders.value.push(BatchLeader {
+                        object_id: request.object_id,
+                        maximum_bytes: request.maximum_bytes,
+                        flight,
+                    });
+                    local_leaders.insert(request.object_id, index);
+                    BatchSlot::LocalLeader(index)
                 }
-            }
+                ReadPlan::Follower(flight) => {
+                    if let Some(&index) = local_leaders.get(&request.object_id)
+                        && let Some(leader) = prepared.leaders.value.get_mut(index)
+                        && Arc::ptr_eq(&leader.flight, &flight)
+                    {
+                        leader.maximum_bytes = leader.maximum_bytes.max(request.maximum_bytes);
+                        BatchSlot::LocalLeader(index)
+                    } else {
+                        BatchSlot::ExternalFollower(flight)
+                    }
+                }
+            };
+            prepared.slots.value.push(slot);
         }
+        Ok(prepared)
     }
 
     async fn load_batch_leaders(
         &self,
         prepared: &PreparedBatch,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<Vec<ObjectRead>> {
-        if prepared.leaders.is_empty() {
-            return Ok(ObjectReceipt {
-                value: Vec::new(),
-                work: prepared.work,
-            });
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
+        if prepared.leaders.value.is_empty() {
+            return Ok((Vec::new(), None));
         }
-        let mut requests = Vec::new();
-        requests
-            .try_reserve_exact(prepared.leaders.len())
-            .map_err(|_| {
-                ObjectFailure::new(
-                    ObjectStoreError::Rejected(
-                        "object cache backend batch allocation failed".to_owned(),
-                    ),
-                    prepared.work,
-                )
-            })?;
-        requests.extend(prepared.leaders.iter().map(|leader| ObjectReadRequest {
-            object_id: leader.object_id,
-            maximum_bytes: leader.maximum_bytes,
-        }));
-        let mut guards = prepared
-            .leaders
-            .iter()
-            .map(|leader| {
-                Some(ActiveFlightGuard::new(
-                    self,
-                    leader.object_id,
-                    Arc::clone(&leader.flight),
-                ))
-            })
-            .collect::<Vec<_>>();
-        let receipt = match self
-            .inner
-            .read_many(
-                &requests,
-                prepared
-                    .work
-                    .remaining(budget)
-                    .map_err(|error| ObjectFailure::new(error.into(), prepared.work))?,
-                cancellation,
-            )
-            .await
-        {
-            Ok(receipt) => receipt,
-            Err(failure) => {
-                Self::abort_batch_leaders(&mut guards);
-                return Err(combine_failure(prepared.work, failure));
-            }
+        let count = prepared.leaders.value.len();
+        let delta = WorkCounters {
+            bytes_copied: count
+                .checked_mul(size_of::<ObjectReadRequest>())
+                .ok_or(crate::WorkError::Overflow)? as u64,
+            ..WorkCounters::UNCHARGED
         };
-        let mut work = prepared
-            .work
-            .checked_add(receipt.work)
-            .map_err(|error| ObjectFailure::new(error.into(), prepared.work))?;
-        if receipt.value.len() != prepared.leaders.len() {
-            Self::abort_batch_leaders(&mut guards);
-            return Err(ObjectFailure::new(ObjectStoreError::Corrupt, work));
-        }
-        let mut values = receipt.value;
-        for ((leader, value), guard) in prepared
-            .leaders
-            .iter()
-            .zip(values.iter_mut())
-            .zip(guards.iter_mut())
-        {
-            let bytes = value.bytes.clone();
-            let retained = self
-                .insert(leader.object_id, bytes.clone())
-                .map_err(|error| ObjectFailure::new(error, work))?;
-            if retained {
-                value.retention = ObjectReadRetention::Shared;
-            }
-            if let Some(guard) = guard.take() {
-                guard
-                    .finish(retained.then_some(bytes))
-                    .map_err(|error| ObjectFailure::new(error, work))?;
-            }
-        }
-        work.peak_allocation_bytes = work.peak_allocation_bytes.max(
+        work.accounting()
+            .admit(delta)
+            .map_err(crate::async_storage::object_error)?;
+        let mut requests = Owned::allocate(count, &mut work.accounting())
+            .map_err(crate::async_storage::object_error)?;
+        requests.value.extend(
             prepared
-                .planning_bytes
-                .saturating_add(prepared.result_bytes),
+                .leaders
+                .value
+                .iter()
+                .map(|leader| ObjectReadRequest {
+                    object_id: leader.object_id,
+                    maximum_bytes: leader.maximum_bytes,
+                }),
         );
-        Ok(ObjectReceipt {
-            value: values,
-            work,
-        })
-    }
-
-    fn abort_batch_leaders(guards: &mut [Option<ActiveFlightGuard<'_, S>>]) {
-        for guard in guards {
-            if let Some(guard) = guard.take() {
-                let _ = guard.finish(None);
+        work.accounting()
+            .record_completed(delta)
+            .map_err(crate::async_storage::object_error)?;
+        let result = self.inner.read_many(&requests.value, work).await;
+        requests
+            .retire(&mut work.accounting())
+            .map_err(crate::async_storage::object_error)?;
+        let mut reads = result?;
+        if reads.0.len() != count {
+            return Err(ObjectStoreError::Corrupt);
+        }
+        for (leader, read) in prepared.leaders.value.iter().zip(&mut reads.0) {
+            let bytes = read.bytes.clone();
+            let retained = self.insert(leader.object_id, bytes.clone())?;
+            if retained {
+                read.retention = ObjectReadRetention::Shared;
             }
+            leader.flight.finish(retained.then_some(bytes));
+            self.remove_flight(leader.object_id, &leader.flight)?;
         }
-    }
-
-    fn abandon_unstarted_leaders(&self, leaders: &[BatchLeader]) {
-        for leader in leaders {
-            leader.flight.finish(None);
-            let _ = self.remove_flight(leader.object_id, &leader.flight);
-        }
-    }
-
-    async fn resolve_prepared_batch(
-        &self,
-        requests: &[ObjectReadRequest],
-        prepared: PreparedBatch,
-        leaders: ObjectReceipt<Vec<ObjectRead>>,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<Vec<ObjectRead>> {
-        let mut work = leaders.work;
-        let mut values = Vec::new();
-        values.try_reserve_exact(requests.len()).map_err(|_| {
-            ObjectFailure::new(
-                ObjectStoreError::Rejected("object cache result allocation failed".to_owned()),
-                work,
-            )
-        })?;
-        for (request, slot) in requests.iter().zip(prepared.slots) {
-            cancellation
-                .check()
-                .map_err(|_| ObjectFailure::new(ObjectStoreError::Cancelled, work))?;
-            let value = self
-                .resolve_batch_slot(
-                    request,
-                    slot,
-                    &leaders.value,
-                    &mut work,
-                    budget,
-                    cancellation,
-                )
-                .await?;
-            values.push(value);
-        }
-        work.items_returned = prepared.item_count;
-        work.verify(budget)
-            .map_err(|error| ObjectFailure::new(error.into(), work))?;
-        Ok(ObjectReceipt {
-            value: values,
-            work,
-        })
+        Ok(reads)
     }
 
     async fn resolve_batch_slot(
         &self,
         request: &ObjectReadRequest,
         slot: BatchSlot,
-        leader_values: &[ObjectRead],
-        work: &mut WorkCounters,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<ObjectRead, ObjectFailure> {
+        leaders: &[ObjectRead],
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<ObjectRead, ObjectStoreError> {
         let bytes = match slot {
             BatchSlot::Hit(bytes) => bytes,
-            BatchSlot::LocalLeader(index) => leader_values
+            BatchSlot::LocalLeader(index) => leaders
                 .get(index)
-                .ok_or_else(|| ObjectFailure::new(ObjectStoreError::Corrupt, *work))?
+                .ok_or(ObjectStoreError::Corrupt)?
                 .bytes
                 .clone(),
             BatchSlot::ExternalFollower(flight) => {
-                let result = wait_for_flight(&flight, cancellation)
-                    .await
-                    .map_err(|error| ObjectFailure::new(error, *work))?;
-                self.record_coalesced()
-                    .map_err(|error| ObjectFailure::new(error, *work))?;
+                let result = wait_for_flight(
+                    &flight,
+                    work.cancellation,
+                    #[cfg(not(target_arch = "wasm32"))]
+                    work.original,
+                )
+                .await?;
+                self.record_coalesced()?;
                 if let Some(bytes) = result {
                     bytes
                 } else {
-                    self.remove_flight(request.object_id, &flight)
-                        .map_err(|error| ObjectFailure::new(error, *work))?;
-                    let receipt = self
-                        .read(
-                            request.object_id,
-                            request.maximum_bytes,
-                            work.remaining(budget)
-                                .map_err(|error| ObjectFailure::new(error.into(), *work))?,
-                            cancellation,
-                        )
-                        .await
-                        .map_err(|failure| combine_failure(*work, failure))?;
-                    *work = work
-                        .checked_add(receipt.work)
-                        .map_err(|error| ObjectFailure::new(error.into(), *work))?;
-                    return Ok(receipt.value);
+                    self.remove_flight(request.object_id, &flight)?;
+                    return self
+                        .read(request.object_id, request.maximum_bytes, work)
+                        .await;
                 }
             }
         };
-        Ok(Self::validate_cached_read(
-            request.object_id,
-            bytes,
-            request.maximum_bytes,
-            WorkCounters::default(),
-        )?
-        .value)
+        shared_read(bytes, request.maximum_bytes)
     }
 }
 
@@ -1029,158 +913,208 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
         self.decoded_admit(key, value)
     }
 
+    fn collection(&self) -> Option<&Arc<crate::Collection>> {
+        self.inner.collection()
+    }
+
+    fn collection_sweeps(&self) -> u64 {
+        self.inner.collection_sweeps()
+    }
+
+    async fn historical_generation_evidence(
+        &self,
+        authority_id: crate::AuthorityId,
+        record: &crate::DurableCommit,
+        maximum_bytes: u64,
+        maximum_objects: u64,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<Option<crate::kernel::HistoricalGenerationEvidence>, ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(ObjectStoreError::NativeUnavailable);
+        }
+        self.inner
+            .historical_generation_evidence(
+                authority_id,
+                record,
+                maximum_bytes,
+                maximum_objects,
+                context,
+            )
+            .await
+    }
+
     async fn put(
         &self,
         object_id: ObjectId,
-        bytes: Bytes,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
-        cancellation
+        bytes: OwnedBytes,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), ObjectStoreError> {
+        context
+            .accounting()
             .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+            .map_err(crate::async_storage::object_error)?;
         let retained = bytes.clone();
-        let receipt = self
-            .inner
-            .put(object_id, bytes, budget, cancellation)
-            .await?;
-        self.insert(object_id, retained)
-            .map_err(|error| ObjectFailure::new(error, receipt.work))?;
-        Ok(receipt)
+        self.inner.put(object_id, bytes, context).await?;
+        self.insert(object_id, retained)?;
+        Ok(())
+    }
+
+    async fn put_hashed(
+        &self,
+        object: crate::storage::HashedObject,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), ObjectStoreError> {
+        context
+            .accounting()
+            .check()
+            .map_err(crate::async_storage::object_error)?;
+        let object_id = object.object_id();
+        let retained = object.bytes().clone();
+        self.inner.put_hashed(object, context).await?;
+        self.insert(object_id, retained)?;
+        Ok(())
+    }
+
+    async fn flush_before_publish(
+        &self,
+        scope: crate::async_storage::PublicationScope<'_>,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::PublicationHold, ObjectStoreError> {
+        self.inner.flush_before_publish(scope, context).await
     }
 
     async fn put_many(
         &self,
         writes: &[ObjectWrite],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
-        cancellation
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), ObjectStoreError> {
+        context
+            .accounting()
             .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        let receipt = self.inner.put_many(writes, budget, cancellation).await?;
+            .map_err(crate::async_storage::object_error)?;
+        self.inner.put_many(writes, context).await?;
         for write in writes {
-            self.insert(write.object_id, write.bytes.clone())
-                .map_err(|error| ObjectFailure::new(error, receipt.work))?;
+            self.insert(write.object_id, write.bytes.clone())?;
         }
-        Ok(receipt)
+        Ok(())
     }
 
     async fn read(
         &self,
         object_id: ObjectId,
         maximum_bytes: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<ObjectRead> {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        let mut prior = cache_probe_work();
-        prior
-            .verify(budget)
-            .map_err(|error| ObjectFailure::before_work(error.into()))?;
-        loop {
-            cancellation
-                .check()
-                .map_err(|_| ObjectFailure::new(ObjectStoreError::Cancelled, prior))?;
-            match self
-                .read_plan(object_id)
-                .map_err(|error| ObjectFailure::new(error, prior))?
-            {
-                ReadPlan::Hit(bytes) => {
-                    return Self::validate_cached_read(object_id, bytes, maximum_bytes, prior);
-                }
-                ReadPlan::Leader(flight) => {
-                    return self
-                        .load_leader(
-                            object_id,
-                            maximum_bytes,
-                            budget,
-                            cancellation,
-                            prior,
-                            flight,
-                        )
-                        .await;
-                }
-                ReadPlan::Follower(flight) => {
-                    let result = wait_for_flight(&flight, cancellation)
-                        .await
-                        .map_err(|error| ObjectFailure::new(error, prior))?;
-                    self.record_coalesced()
-                        .map_err(|error| ObjectFailure::new(error, prior))?;
-                    if let Some(bytes) = result {
-                        return Self::validate_cached_read(object_id, bytes, maximum_bytes, prior);
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<ObjectRead, ObjectStoreError> {
+        let mut work = crate::AuthorityWork::new(context.read_budget()?, context.cancellation);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            work.original = context.original;
+        }
+        let result = async {
+            loop {
+                work.accounting()
+                    .charge(cache_probe_work())
+                    .map_err(crate::async_storage::object_error)?;
+                match self.read_plan(
+                    object_id,
+                    #[cfg(not(target_arch = "wasm32"))]
+                    work.original,
+                )? {
+                    ReadPlan::Hit(bytes) => return shared_read(bytes, maximum_bytes),
+                    ReadPlan::Leader(flight) => {
+                        return self
+                            .load_leader(object_id, maximum_bytes, flight, &mut work)
+                            .await;
                     }
-                    self.remove_flight(object_id, &flight)
-                        .map_err(|error| ObjectFailure::new(error, prior))?;
-                    prior = prior
-                        .checked_add(cache_probe_work())
-                        .map_err(|error| ObjectFailure::new(error.into(), prior))?;
-                    prior
-                        .verify(budget)
-                        .map_err(|error| ObjectFailure::new(error.into(), prior))?;
+                    ReadPlan::Follower(flight) => {
+                        let result = wait_for_flight(
+                            &flight,
+                            work.cancellation,
+                            #[cfg(not(target_arch = "wasm32"))]
+                            work.original,
+                        )
+                        .await?;
+                        self.record_coalesced()?;
+                        if let Some(bytes) = result {
+                            return shared_read(bytes, maximum_bytes);
+                        }
+                        self.remove_flight(object_id, &flight)?;
+                    }
                 }
             }
         }
+        .await;
+        context.accept(work.receipt(result))
     }
 
     async fn read_many(
         &self,
         requests: &[ObjectReadRequest],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<Vec<ObjectRead>> {
-        let prepared = self.prepare_batch(requests, budget, cancellation)?;
-        let leaders = self
-            .load_batch_leaders(&prepared, budget, cancellation)
-            .await?;
-        self.resolve_prepared_batch(requests, prepared, leaders, budget, cancellation)
-            .await
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
+        let mut work = crate::AuthorityWork::new(
+            context.work.remaining(context.budget)?,
+            context.cancellation,
+        );
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            work.original = context.original;
+        }
+        let result = async {
+            let mut prepared = self.prepare_batch(requests, &mut work)?;
+            let leaders = self.load_batch_leaders(&prepared, &mut work).await?;
+            let mut values = Owned::allocate(requests.len(), &mut work.accounting())
+                .map_err(crate::async_storage::object_error)?;
+            for (request, slot) in requests
+                .iter()
+                .zip(std::mem::take(&mut prepared.slots.value))
+            {
+                work.accounting()
+                    .check()
+                    .map_err(crate::async_storage::object_error)?;
+                let read = self
+                    .resolve_batch_slot(request, slot, &leaders.0, &mut work)
+                    .await?;
+                values.value.push(read);
+                work.accounting()
+                    .record_completed(WorkCounters {
+                        items_returned: 1,
+                        ..WorkCounters::UNCHARGED
+                    })
+                    .map_err(crate::async_storage::object_error)?;
+            }
+            let allocation = match values.allocation {
+                KernelOwnedAllocation::Standalone => None,
+                #[cfg(not(target_arch = "wasm32"))]
+                KernelOwnedAllocation::NativeOriginal(allocation) => Some(allocation),
+            };
+            Ok((values.value, allocation))
+        }
+        .await;
+        context.accept(work.receipt(result))
     }
 
     async fn contains(
         &self,
         object_id: ObjectId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<bool> {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        let prior = cache_probe_work();
-        prior
-            .verify(budget)
-            .map_err(|error| ObjectFailure::before_work(error.into()))?;
-        if self
-            .cached_contains(object_id)
-            .map_err(|error| ObjectFailure::new(error, prior))?
-        {
-            return Ok(ObjectReceipt {
-                value: true,
-                work: prior,
-            });
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<bool, ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.is_native() {
+            return Err(ObjectStoreError::NativeUnavailable);
         }
-        let receipt = self
-            .inner
-            .contains(
-                object_id,
-                prior
-                    .remaining(budget)
-                    .map_err(|error| ObjectFailure::new(error.into(), prior))?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| combine_failure(prior, failure))?;
-        Ok(ObjectReceipt {
-            value: receipt.value,
-            work: prior
-                .checked_add(receipt.work)
-                .map_err(|error| ObjectFailure::new(error.into(), prior))?,
-        })
+        context
+            .accounting()
+            .charge(cache_probe_work())
+            .map_err(crate::async_storage::object_error)?;
+        if self.cached_contains(object_id)? {
+            return Ok(true);
+        }
+        self.inner.contains(object_id, context).await
     }
 }
 
 #[cfg(all(test, feature = "memory"))]
-#[path = "tests/cache.rs"]
+#[path = "tests/cache/mod.rs"]
 mod tests;

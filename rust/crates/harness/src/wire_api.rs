@@ -15,12 +15,7 @@ use crate::{
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::BoxProviderStream as BoxStream;
 
-/// Complete application-facing wire API. Adapters own framing, never semantics.
-///
-/// Operation-control implementations must authenticate the decoded scope against
-/// the requested owner; [`crate::distributed::DistributedCoordinator::observe_operation`] and
-/// [`crate::distributed::DistributedCoordinator::cancel_operation`] provide the canonical checks.
-/// Wire validation alone deliberately cannot authenticate host-held key material.
+/// Complete application-facing wire API.
 pub trait HarnessWireApi: acyclic_stream::ProviderPlatform + 'static {
     /// Negotiates the exact protocol and required capabilities before other calls.
     fn handshake<'a>(
@@ -70,7 +65,13 @@ pub fn validate_resume_protocol(request: &wire::ResumeRequest) -> Result<()> {
 }
 
 fn validate_request_protocol(protocol: Option<&wire::ProtocolIdentity>) -> Result<()> {
-    validate_protocol(protocol, &current_protocol(), Error::Invalid)
+    let expected = current_protocol();
+    validate_protocol(
+        protocol,
+        (&expected.version, &expected.descriptor_digest),
+        wire::ErrorCode::Invalid,
+        &None,
+    )
 }
 
 /// Decoded operation-control request shared by all server adapters.
@@ -86,8 +87,8 @@ pub struct OperationControlRequest {
 impl OperationControlRequest {
     /// Verifies the signed scope against the host-selected owner trust root.
     pub fn authenticate(&self, verifier: &crate::core::AuthorityVerifier) -> Result<()> {
-        verifier.verify_audience(&self.owner)?;
-        verifier.verify(&self.scope)
+        verifier.verify_audience(&self.owner, &mut None)?;
+        verifier.verify(&self.scope, &mut None)
     }
 }
 
@@ -184,9 +185,10 @@ fn decode_control(
 ) -> Result<OperationControlRequest> {
     let owner = decode_authority(
         owner.ok_or_else(|| Error::Invalid("operation owner is missing".into()))?,
-        Error::Invalid,
+        wire::ErrorCode::Invalid,
+        &None,
     )?;
-    owner.stream_path()?;
+    owner.stream_path(&mut None)?;
     let operation_id = OperationId::parse(operation_id)?;
     let scope = decode_scope(
         scope.ok_or_else(|| Error::Invalid("operation control scope is missing".into()))?,
@@ -308,7 +310,7 @@ mod tests {
             cancellation_requested: false,
             revision: 3,
         };
-        validate_operation_status(&observe, &status)?;
+        validate_operation_status(&observe.operation_id, observe.owner.as_ref(), &status)?;
 
         let mut mismatched_error = status.clone();
         mismatched_error.error = Some(wire::Error {
@@ -317,7 +319,11 @@ mod tests {
             operation_id: OperationId::from_bytes([9; 16]).to_string(),
         });
         assert!(matches!(
-            validate_operation_status(&observe, &mismatched_error),
+            validate_operation_status(
+                &observe.operation_id,
+                observe.owner.as_ref(),
+                &mismatched_error
+            ),
             Err(Error::Conflict(_))
         ));
 

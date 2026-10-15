@@ -22,12 +22,18 @@ impl PortablePath {
     /// separator, or over-limit paths. Host adapters parse native paths before
     /// this portable boundary.
     pub fn parse(value: &str, limits: VolumeLimits) -> Result<Self, PathError> {
+        Self::validate(value, limits)?;
+        Ok(Self(value.to_owned()))
+    }
+
+    /// Validates the borrowed spelling without creating an owned path.
+    pub(crate) fn validate(value: &str, limits: VolumeLimits) -> Result<usize, PathError> {
         let path_bytes = u32::try_from(value.len()).map_err(|_| PathError::PathTooLong)?;
         if path_bytes > limits.maximum_path_bytes {
             return Err(PathError::PathTooLong);
         }
         if value == Self::ROOT {
-            return Ok(Self(value.to_owned()));
+            return Ok(0);
         }
         if !value.starts_with('/') {
             return Err(PathError::NotAbsolute);
@@ -60,7 +66,7 @@ impl PortablePath {
                 return Err(PathError::TooDeep);
             }
         }
-        Ok(Self(value.to_owned()))
+        Ok(usize::from(depth))
     }
 
     /// Borrows the canonical wire string.
@@ -126,14 +132,37 @@ impl fmt::Display for PortablePath {
 /// the spelling is unambiguous on Windows hosts too. Length bounds are left
 /// to the volume that later resolves the path.
 pub(crate) fn is_canonical_relative(path: &str) -> bool {
-    !path.is_empty()
-        && !path.contains('\\')
-        && path.split('/').all(|component| {
-            !component.is_empty()
-                && component != "."
-                && component != ".."
-                && !component.contains('\0')
-        })
+    match is_canonical_relative_with_step::<std::convert::Infallible>(path, || Ok(())) {
+        Ok(valid) => valid,
+        Err(never) => match never {},
+    }
+}
+
+/// Uses the same grammar while admitting each byte before examining it.
+pub(crate) fn is_canonical_relative_with_step<E>(
+    path: &str,
+    mut step: impl FnMut() -> Result<(), E>,
+) -> Result<bool, E> {
+    let mut component_length = 0_usize;
+    let mut all_dots = true;
+    for byte in path.bytes() {
+        step()?;
+        match byte {
+            0 | b'\\' => return Ok(false),
+            b'/' => {
+                if component_length == 0 || (all_dots && component_length <= 2) {
+                    return Ok(false);
+                }
+                component_length = 0;
+                all_dots = true;
+            }
+            byte => {
+                component_length += 1;
+                all_dots &= byte == b'.';
+            }
+        }
+    }
+    Ok(component_length != 0 && !(all_dots && component_length <= 2))
 }
 
 /// Portable path admission failures.

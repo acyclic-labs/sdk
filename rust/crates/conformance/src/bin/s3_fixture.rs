@@ -73,11 +73,14 @@ impl FilesystemS3Resolver<LocalAuthorityBackend, LocalObjectBackend> for Resolve
         }
         let workspace = self
             .filesystem
-            .create_workspace(format!(
-                "s3-{}",
-                hex::encode(IdempotencyKey::new().into_bytes())
-            ))
+            .create_workspace(
+                format!("s3-{}", hex::encode(IdempotencyKey::new().into_bytes())),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
             .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
             .map_err(|_| s3s::s3_error!(InternalError))?;
         buckets.insert(bucket.to_owned(), (access_key.to_owned(), workspace));
         Ok(())
@@ -142,7 +145,15 @@ impl FilesystemS3Resolver<LocalAuthorityBackend, LocalObjectBackend> for Resolve
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = PathBuf::from(std::env::args_os().nth(1).ok_or("usage: s3-fixture ROOT")?);
     let filesystem = Fs::local(LocalOptions::new(root)).await?;
-    let workspace = filesystem.create_workspace("s3-fixture-initial").await?;
+    let workspace = filesystem
+        .create_workspace(
+            "s3-fixture-initial",
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)?;
     let mut buckets = BTreeMap::new();
     buckets.insert("bucket".to_owned(), ("access".to_owned(), workspace));
     let resolver = Arc::new(Resolver {

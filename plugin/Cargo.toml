@@ -22,7 +22,7 @@ acyclic-harness = { path = "../rust/crates/harness", version = "=0.2.0", default
 acyclic-stream = { path = "../rust/crates/stream", version = "=0.2.0", default-features = false, features = ["local"] }
 acyclic-fs = { path = "../rust/crates/filesystem", version = "=0.2.0", features = ["local", "native-watch", "native-mount"] }
 acyclic-native-runtime = { path = "../rust/crates/native-runtime", version = "=0.2.0" }
-base64 = "0.22.1"
+base64 = "0.23.1"
 blake3.workspace = true
 fs2.workspace = true
 hex.workspace = true
@@ -45,6 +45,7 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_Foundation",
   "Win32_Security",
   "Win32_Security_Authorization",
+  "Win32_Security_Cryptography",
   "Win32_Storage_FileSystem",
   "Win32_System_Memory",
   "Win32_System_Pipes",
@@ -55,8 +56,10 @@ windows-sys = { version = "0.61.2", features = [
 rustix = { workspace = true, features = ["fs", "process"] }
 
 [dev-dependencies]
+async-trait.workspace = true
 axum.workspace = true
 bytes.workspace = true
+futures.workspace = true
 tempfile = "3"
 
 [lints]

@@ -4,7 +4,7 @@ use super::super::{from_js, js_error, to_js};
 use crate::{
     Error, OperationId, Result,
     mcp::{
-        McpInitializeResult, McpToolTransport,
+        McpToolTransport,
         http::{HttpMcpTransport, McpHttpProvider, McpHttpRequest, McpHttpResponse},
     },
 };
@@ -135,16 +135,14 @@ impl McpHttpProvider for BrowserProvider {
 }
 
 /// Low-level explicitly bound transport for a host's admitted MCP operations.
-/// The existing Harness tool/task journal owns admission and result retention.
 #[wasm_bindgen]
 pub struct WasmMcpHttpTransport(HttpMcpTransport);
 
-/// An observed initialization and immutable binding, with a readiness request
-/// that the host must admit separately. Acceptance performs no network I/O.
+/// An observed initialization and immutable binding, with a readiness request that the host must admit separately.
 #[wasm_bindgen]
 pub struct WasmMcpHttpInitialization {
     transport: HttpMcpTransport,
-    result: McpInitializeResult,
+    result: serde_json::Value,
     notification: McpHttpRequest,
 }
 
@@ -186,6 +184,7 @@ impl WasmMcpHttpTransport {
             session,
             from_js(maximum_bytes)?,
             from_js(timeout_ms)?,
+            None,
         )
         .map(Self)
         .map_err(js_error)
@@ -212,8 +211,6 @@ impl WasmMcpHttpTransport {
     }
 
     /// Validates a host-retained response through the same native decoder.
-    /// The original binding remains unchanged. Check the byte allowance before
-    /// copying the host's body into WASM memory.
     #[wasm_bindgen(js_name = acceptInitialization)]
     pub async fn accept_initialization(
         &self,
@@ -250,8 +247,7 @@ impl WasmMcpHttpTransport {
         })
     }
 
-    /// Discovers one separately admitted page. The host gathers and validates
-    /// the complete catalog before publishing a replacement.
+    /// Discovers one separately admitted page.
     #[wasm_bindgen(js_name = listToolsJson)]
     pub async fn list_tools_json(
         &self,
@@ -260,16 +256,37 @@ impl WasmMcpHttpTransport {
     ) -> std::result::Result<Vec<u8>, JsValue> {
         let page = self
             .0
-            .list_tools(
+            .rpc(
                 OperationId::parse(&operation).map_err(js_error)?,
-                cursor.as_deref(),
+                "tools/list",
+                cursor.as_deref().map_or_else(
+                    || serde_json::json!({}),
+                    |cursor| serde_json::json!({"cursor":cursor}),
+                ),
+                None,
             )
             .await
             .map_err(js_error)?;
         serde_json::to_vec(&page).map_err(|error| JsValue::from_str(&error.to_string()))
     }
-    /// Calls an already admitted operation. Canonical JSON bytes preserve
-    /// full-width remote numbers and avoid a second JavaScript result engine.
+    /// Executes one explicitly admitted resource or prompt operation through the same bounded Rust transport; method/parameters/results validate at runtime.
+    #[wasm_bindgen(js_name = serviceJson)]
+    pub async fn service_json(
+        &self,
+        operation: String,
+        method: String,
+        #[wasm_bindgen(unchecked_param_type = "WasmToolJsonValue")] params: JsValue,
+    ) -> std::result::Result<Vec<u8>, JsValue> {
+        let operation = OperationId::parse(&operation).map_err(js_error)?;
+        let params = from_js(params)?;
+        let result = self
+            .0
+            .rpc(operation, &method, params, None)
+            .await
+            .map_err(js_error)?;
+        serde_json::to_vec(&result).map_err(|error| JsValue::from_str(&error.to_string()))
+    }
+    /// Calls an already admitted operation.
     #[wasm_bindgen(js_name=callJson)]
     pub async fn call_json(
         &self,
@@ -280,13 +297,12 @@ impl WasmMcpHttpTransport {
         let operation = OperationId::parse(&operation).map_err(js_error)?;
         let result = self
             .0
-            .call(operation, &name, from_js(arguments)?)
+            .call(operation, &name, from_js(arguments)?, None)
             .await
             .map_err(js_error)?;
         serde_json::to_vec(&result).map_err(|error| JsValue::from_str(&error.to_string()))
     }
     /// Queries the transport's explicit receipt capability without network I/O.
-    /// This HTTP provider has none; the owning journal retains known results.
     #[wasm_bindgen(js_name=reconcileJson)]
     pub async fn reconcile_json(
         &self,
@@ -294,7 +310,7 @@ impl WasmMcpHttpTransport {
     ) -> std::result::Result<Option<Vec<u8>>, JsValue> {
         let operation = OperationId::parse(&operation).map_err(js_error)?;
         self.0
-            .reconcile(operation)
+            .reconcile(operation, None)
             .await
             .map_err(js_error)?
             .map(|result| {

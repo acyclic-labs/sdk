@@ -1,0 +1,502 @@
+use super::*;
+use crate::wire::ErrorCode::{Conflict, Invalid, Unauthorized};
+
+impl StockExecution<'_> {
+    pub(super) async fn settle_tool_call(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation_id: OperationId,
+        step: u32,
+        invocation: ToolInvocation,
+        prior_messages: &mut Vec<ModelMessage>,
+    ) -> Result<ExecutionProgress<()>> {
+        self.verify_task_context_binding(operation_id)?;
+        stock_validate_invocation(&invocation, self.io)?;
+        let tool = stock_tool_lookup(&self.stock.tools, &invocation.name, self.io)?;
+        let _capability;
+        let mut context;
+        (context, _capability) = self.authorize_tool_invocation(tool, &invocation)?;
+        let (_, records) = self
+            .tool_records(journal, operation_id, step, &invocation.call_id)
+            .await?;
+        let started = records.iter().find_map(|record| match &record.event {
+            ExecutionEvent::ToolStarted {
+                step: recorded,
+                call_id,
+                invocation: reference,
+            } if *recorded == step && call_id == &invocation.call_id => Some(reference),
+            _ => None,
+        });
+        if let Some(reference) = started
+            && load_json::<ToolInvocation>(journal, reference, self.io)
+                .await?
+                .0
+                != invocation
+        {
+            return Err(stock_boundary(
+                self.io,
+                Conflict,
+                "tool call identity is bound to another invocation",
+            ));
+        }
+        if let Some(reason) = records.iter().find_map(|record| match &record.event {
+            ExecutionEvent::ToolFailed {
+                step: recorded,
+                call_id,
+                reason,
+            } if *recorded == step && call_id == &invocation.call_id => Some(*reason),
+            _ => None,
+        }) {
+            return Err(stock_boundary(self.io, Invalid, reason.message()));
+        }
+        let completed = records.iter().find_map(|record| match &record.event {
+            ExecutionEvent::ToolCompleted {
+                step: recorded,
+                call_id,
+                result,
+                projection,
+            } if *recorded == step && call_id == &invocation.call_id => Some((result, projection)),
+            _ => None,
+        });
+        if completed.is_some() && started.is_none() {
+            return Err(stock_boundary(
+                self.io,
+                Invalid,
+                "completed tool has no admitted invocation",
+            ));
+        }
+        if self.stock.reconciliation_only && started.is_none() {
+            return Err(Error::Indeterminate(operation_id));
+        }
+        let content = if let Some((result, projection)) = completed {
+            self.replay_tool_output(journal, result, projection, tool)
+                .await?
+        } else {
+            if let Some(progress) = self
+                .require_tool_policy(journal, operation_id, &invocation, tool, started.is_some())
+                .await?
+            {
+                return Ok(progress);
+            }
+            self.execute_tool_invocation(
+                journal,
+                (operation_id, step),
+                &invocation,
+                tool,
+                &mut context,
+                started.is_some(),
+            )
+            .await?
+        };
+        let message = ModelMessage {
+            role: ModelRole::Tool,
+            content: ModelContent::Part(ModelContentPart::ToolResult {
+                call_id: stock_string_copy(&invocation.call_id, self.io)?,
+                name: stock_string_copy(&invocation.name, self.io)?,
+                content,
+            }),
+        };
+        with_history_io(self.io, |work| {
+            message.content.validate_limits(self.stock.limits, work)
+        })?;
+        stock_vec_push(prior_messages, message, self.io)?;
+        Ok(ExecutionProgress::Ready(()))
+    }
+    fn authorize_tool_invocation(
+        &self,
+        tool: &crate::tool::Tool,
+        invocation: &ToolInvocation,
+    ) -> Result<(Option<crate::runtime::ToolContext>, String)> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = self.native_work() {
+            tool.executor.supports_native_execution(work)?;
+            tool.projection.supports_native_projection(Some(work))?;
+        }
+        let capability = with_history_io(self.io, |work| {
+            preparation_format(format_args!("tool:call:{}", tool.definition.name), work)
+        })?;
+        if !self.stock.tool_scope.grants().contains(&capability) {
+            return Err(if stock_is_native(self.io) {
+                stock_boundary(self.io, Unauthorized, "scope lacks the tool capability")
+            } else {
+                Error::Unauthorized(format!("scope lacks {capability}"))
+            });
+        }
+        stock_json_bound(
+            invocation,
+            self.stock
+                .limits
+                .file_bytes
+                .min(self.stock.tool_scope.limits().file_bytes),
+            self.io,
+        )?;
+        let context = self.invocation_context(invocation)?;
+        stock_authorize_tool(
+            tool,
+            context.as_ref(),
+            &self.stock.tool_scope,
+            invocation,
+            self.io,
+        )?;
+        with_history_io(self.io, |work| {
+            validate_json_schema_value(
+                &tool.definition.input_schema,
+                &invocation.arguments,
+                "tool input",
+                work,
+            )
+        })?;
+        Ok((context, capability))
+    }
+
+    async fn require_tool_policy(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation_id: OperationId,
+        invocation: &ToolInvocation,
+        tool: &crate::tool::Tool,
+        started: bool,
+    ) -> Result<Option<ExecutionProgress<()>>> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(progress) = self
+            .settle_native_tool_policy(journal, operation_id, invocation, &tool.definition, started)
+            .await?
+        {
+            return Ok(Some(progress));
+        }
+        if !stock_is_native(self.io) {
+            let scope = &self.stock.tool_scope;
+            if let Some(policy) = &self.stock.policy {
+                if self.stock.policy_identity.as_ref() != Some(&policy.identity()) {
+                    return Err(Error::Conflict("stock policy changed after binding".into()));
+                }
+                let decision = policy.evaluate(invocation, scope, None)?.await?.0;
+                if self.stock.policy_identity.as_ref() != Some(&policy.identity()) {
+                    return Err(Error::Conflict(
+                        "stock policy changed during evaluation".into(),
+                    ));
+                }
+                match decision {
+                    ToolPolicyDecision::Allow => {}
+                    ToolPolicyDecision::Deny { reason } => {
+                        return Err(Error::Unauthorized(reason));
+                    }
+                    ToolPolicyDecision::RequireApproval { prompt } => {
+                        if !scope.grants().contains(capability::INTERACTION_ROUTE) {
+                            return Err(Error::Unauthorized(
+                                "stock tool approval requires interaction:route".into(),
+                            ));
+                        }
+                        let task = self.stock.task.as_ref().map_or(
+                            TaskId::from_bytes(operation_id.into_bytes()),
+                            |(_, task, _)| *task,
+                        );
+                        let ((approval_operation, request), _hold) = tool_approval_request(
+                            task,
+                            self.stock.policy_identity.as_ref().ok_or_else(|| {
+                                Error::Conflict("stock policy identity is missing".into())
+                            })?,
+                            &tool.definition,
+                            invocation,
+                            (prompt, None),
+                            None,
+                        )?;
+                        if let Some(progress) = self
+                            .settle_approval(
+                                journal,
+                                operation_id,
+                                approval_operation,
+                                &request,
+                                invocation,
+                                started,
+                            )
+                            .await?
+                        {
+                            return Ok(Some(progress));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+    async fn execute_tool_invocation(
+        &self,
+        journal: &dyn ExecutionJournal,
+        identity: (OperationId, u32),
+        invocation: &ToolInvocation,
+        tool: &crate::tool::Tool,
+        context: &mut Option<crate::runtime::ToolContext>,
+        started: bool,
+    ) -> Result<crate::model::ToolResultContent> {
+        let (operation_id, step) = identity;
+        let claimed = self
+            .claim_tool_invocation(
+                journal,
+                (operation_id, step),
+                invocation,
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                context,
+                started,
+            )
+            .await?;
+        let execution = if claimed {
+            stock_tool_call(
+                context,
+                self.io,
+                |context| tool.executor.execute(invocation.clone(), context),
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                |context, work| {
+                    tool.executor
+                        .execute_with_native_context(context, invocation, work)
+                },
+            )
+            .await
+            .map(Some)
+        } else {
+            stock_tool_call(
+                context,
+                self.io,
+                |context| tool.executor.reconcile(invocation.clone(), context),
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                |context, work| {
+                    tool.executor
+                        .reconcile_with_native_context(context, invocation, work)
+                },
+            )
+            .await
+        };
+        let result = match execution {
+            Ok(Some(result)) => result,
+            Err(error) if error.is_native_failure() => return Err(error),
+            Ok(None) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
+                return Err(Error::Indeterminate(operation_id));
+            }
+            Err(error) => {
+                return self
+                    .reject_tool_call(
+                        journal,
+                        operation_id,
+                        step,
+                        &invocation.call_id,
+                        ToolFailureKind::ExecutorRejected,
+                        error,
+                    )
+                    .await;
+            }
+        };
+        let (projection, content) = self
+            .project_tool_output(journal, (operation_id, step), invocation, tool, &result)
+            .await?;
+        self.publish_tool_completion(
+            journal,
+            (operation_id, step),
+            &invocation.call_id,
+            &result,
+            &projection,
+        )
+        .await?;
+        Ok(content)
+    }
+
+    async fn claim_tool_invocation(
+        &self,
+        journal: &dyn ExecutionJournal,
+        identity: (OperationId, u32),
+        invocation: &ToolInvocation,
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] context: &Option<
+            crate::runtime::ToolContext,
+        >,
+        started: bool,
+    ) -> Result<bool> {
+        let (operation_id, step) = identity;
+        let claimed = if started {
+            false
+        } else {
+            let key = with_history_io(self.io, |work| {
+                preparation_format(
+                    format_args!("tool:{step}:{}:invocation", invocation.call_id),
+                    work,
+                )
+            })?;
+            let reference = stage_json(journal, operation_id, &key, invocation, self.io).await?;
+            let (tail, current) = self
+                .tool_records(journal, operation_id, step, &invocation.call_id)
+                .await?;
+            if current.iter().any(|record| {
+                matches!(&record.event,
+                    ExecutionEvent::ToolStarted { step: recorded, call_id, .. }
+                        if *recorded == step && call_id == &invocation.call_id)
+            }) {
+                return Err(Error::Indeterminate(operation_id));
+            }
+            let key = with_history_io(self.io, |work| {
+                preparation_format(
+                    format_args!(
+                        "tool:{step}:{}:claim:{}",
+                        invocation.call_id,
+                        OperationId::new()
+                    ),
+                    work,
+                )
+            })?;
+            let event = ExecutionEvent::ToolStarted {
+                step,
+                call_id: stock_string_copy(&invocation.call_id, self.io)?,
+                invocation: reference,
+            };
+            match journal
+                .append_if_tail(operation_id, tail, &key, &event, self.io)?
+                .await
+            {
+                Ok(true) => {
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    if let Some(work) = self.native_work() {
+                        context
+                            .as_ref()
+                            .ok_or_else(|| {
+                                stock_boundary(
+                                    self.io,
+                                    Unauthorized,
+                                    "native tool acceptance has no issued context",
+                                )
+                            })?
+                            .validate_native_mcp_context(work)?;
+                    }
+                    true
+                }
+                Ok(false) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
+                    return Err(Error::Indeterminate(operation_id));
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        Ok(claimed)
+    }
+
+    async fn project_tool_output(
+        &self,
+        journal: &dyn ExecutionJournal,
+        identity: (OperationId, u32),
+        invocation: &ToolInvocation,
+        tool: &crate::tool::Tool,
+        result: &ToolResult,
+    ) -> Result<(Value, crate::model::ToolResultContent)> {
+        let (operation_id, step) = identity;
+        if let Err(error) = with_history_io(self.io, |work| {
+            validate_json_schema_value(
+                &tool.definition.output_schema,
+                &result.value,
+                "tool output",
+                work,
+            )
+        }) {
+            return self
+                .reject_tool_call(
+                    journal,
+                    operation_id,
+                    step,
+                    &invocation.call_id,
+                    ToolFailureKind::InvalidOutput,
+                    error,
+                )
+                .await;
+        }
+        let (projection, content) =
+            match stock_project_tool(tool, invocation, result, self.stock.limits, self.io) {
+                Ok(projected) => projected,
+                Err(error) => {
+                    return self
+                        .reject_tool_call(
+                            journal,
+                            operation_id,
+                            step,
+                            &invocation.call_id,
+                            ToolFailureKind::ProjectionRejected,
+                            error,
+                        )
+                        .await;
+                }
+            };
+        Ok((projection, content))
+    }
+
+    async fn publish_tool_completion(
+        &self,
+        journal: &dyn ExecutionJournal,
+        identity: (OperationId, u32),
+        call_id: &str,
+        result: &ToolResult,
+        projection: &Value,
+    ) -> Result<()> {
+        let (operation_id, step) = identity;
+        let result = self
+            .publish_tool_payload(journal, operation_id, step, call_id, "result", result)
+            .await?;
+        let projection = self
+            .publish_tool_payload(
+                journal,
+                operation_id,
+                step,
+                call_id,
+                "projection",
+                projection,
+            )
+            .await?;
+        let (tail, current) = self
+            .tool_records(journal, operation_id, step, call_id)
+            .await?;
+        if current.iter().any(|record| {
+            matches!(&record.event,
+                ExecutionEvent::ToolCompleted { step: recorded, call_id: recorded_call, .. }
+                    | ExecutionEvent::ToolFailed { step: recorded, call_id: recorded_call, .. }
+                    if *recorded == step && recorded_call == call_id)
+        }) {
+            return Err(Error::Indeterminate(operation_id));
+        }
+        let key = with_history_io(self.io, |work| {
+            preparation_format(
+                format_args!("tool:{step}:{}:completed:{}", call_id, OperationId::new()),
+                work,
+            )
+        })?;
+        let event = ExecutionEvent::ToolCompleted {
+            step,
+            call_id: stock_string_copy(call_id, self.io)?,
+            result,
+            projection,
+        };
+        match journal
+            .append_if_tail(operation_id, tail, &key, &event, self.io)?
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
+                return Err(Error::Indeterminate(operation_id));
+            }
+            Err(error) => return Err(error),
+        }
+        Ok(())
+    }
+
+    async fn replay_tool_output(
+        &self,
+        journal: &dyn ExecutionJournal,
+        result: &FileRef,
+        projection: &FileRef,
+        tool: &crate::tool::Tool,
+    ) -> Result<crate::model::ToolResultContent> {
+        let result = load_json::<ToolResult>(journal, result, self.io).await?;
+        with_history_io(self.io, |work| {
+            validate_json_schema_value(
+                &tool.definition.output_schema,
+                &result.0.value,
+                "tool output",
+                work,
+            )
+        })?;
+        let projection = load_json::<Value>(journal, projection, self.io).await?;
+        tool.definition
+            .validate_projection(&projection.0, self.stock.limits, self.io)
+    }
+}

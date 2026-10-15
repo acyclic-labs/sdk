@@ -4,7 +4,7 @@ use super::{
     Download, Error, Object, ObjectsProvider, UploadBody, request, response, upload, wire,
 };
 use crate::obs;
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use futures::{FutureExt, StreamExt, stream};
 use prost::Message;
 use tonic::{
@@ -17,14 +17,14 @@ const MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const MAX_TRANSFER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
 
-fn put_frame(chunk: Result<Bytes, Error>) -> wire::PutObjectRequest {
+fn put_frame(chunk: Result<OwnedBytes, Error>) -> wire::PutObjectRequest {
     wire::PutObjectRequest {
         frame: chunk
             .ok()
             .map(|chunk| wire::put_object_request::Frame::Body(chunk.to_vec())),
     }
 }
-fn part_frame(chunk: Result<Bytes, Error>) -> wire::UploadPartRequest {
+fn part_frame(chunk: Result<OwnedBytes, Error>) -> wire::UploadPartRequest {
     wire::UploadPartRequest {
         frame: chunk
             .ok()
@@ -38,12 +38,12 @@ pub enum ConnectError {
     /// Endpoint, credential, or private CA violates the client contract.
     #[error("invalid Objects gRPC configuration")]
     InvalidConfiguration,
-    /// The platform certificate verifier could not be initialized.
-    #[error("Objects platform certificate verifier: {0}")]
-    PlatformVerifier(#[source] rustls::Error),
     /// Connection could not be established.
     #[error(transparent)]
     Transport(#[from] tonic::transport::Error),
+    /// The platform certificate verifier could not be initialized.
+    #[error("Objects platform certificate verifier: {0}")]
+    PlatformVerifier(#[source] rustls::Error),
 }
 
 /// Logical Objects client. Every request carries a sensitive bearer credential.
@@ -55,12 +55,6 @@ pub struct GrpcObjects {
 }
 impl GrpcObjects {
     /// Sets the finite deadline for streamed PUT, multipart parts and complete GET bodies.
-    /// Metadata operations retain their 30-second deadline. The default transfer
-    /// deadline is 30 seconds; large-body callers may select up to 30 minutes.
-    /// Authentication, message bounds, validation and retry behavior are unchanged.
-    ///
-    /// # Errors
-    /// Rejects zero or a duration above 30 minutes.
     pub fn with_transfer_timeout(
         mut self,
         timeout: std::time::Duration,
@@ -71,169 +65,26 @@ impl GrpcObjects {
         self.transfer_timeout = timeout;
         Ok(self)
     }
-    /// Publishes a caller-owned stream; a source failure cancels the RPC before valid EOF.
-    pub fn put_stream(
-        &self,
-        query: wire::PutObjectHeader,
-        body: UploadBody,
-    ) -> impl std::future::Future<Output = Result<wire::ObjectInfo, Error>> + Send + 'static {
-        Self::put_stream_owned(self.clone(), query, body)
-    }
-    /// Streams one staged multipart part without publishing the final object.
-    pub fn upload_part_stream(
-        &self,
-        query: wire::UploadPartHeader,
-        body: UploadBody,
-    ) -> impl std::future::Future<Output = Result<wire::UploadedPart, Error>> + Send + 'static {
-        Self::upload_part_stream_owned(self.clone(), query, body)
-    }
-    /// Publishes a caller-owned stream; a source failure cancels the RPC before valid EOF.
-    async fn put_stream_owned(
-        owner: Self,
-        query: wire::PutObjectHeader,
-        body: UploadBody,
-    ) -> Result<wire::ObjectInfo, Error> {
-        obs::traced(
-            obs::span!(INFO, "acyclic.objects.grpc.put", rpc.code = obs::Empty),
-            async {
-                request::put_stream_digest(&query)?;
-                let original = query.encode_to_vec();
-                let header = wire::PutObjectRequest {
-                    frame: Some(wire::put_object_request::Frame::Header(query)),
-                };
-                let (chunks, state, failure) = upload::chunks(body);
-                // An invalid frame also prevents valid EOF if the transport polls a failing source.
-                let frames =
-                    chunks.map(put_frame as fn(Result<Bytes, Error>) -> wire::PutObjectRequest);
-                let mut client = owner.objects();
-                let complete = wire::PutObjectRequest {
-                    frame: Some(wire::put_object_request::Frame::Complete(true)),
-                };
-                let input = owner.authenticated_transfer(
-                    stream::iter([header])
-                        .chain(frames)
-                        .chain(stream::iter([complete]))
-                        .boxed(),
-                );
-                let result = upload::run(
-                    client
-                        .put_object(input)
-                        .map(|reply| reply.map(ok).map_err(|status| error_from_status(&status)))
-                        .boxed(),
-                    failure,
-                )
-                .await?;
-                response::validate_binary(
-                    "objects/put",
-                    &original,
-                    &result.encode_to_vec(),
-                    state.finish()?,
-                )?;
-                Ok(result)
-            },
-        )
-        .await
-    }
-    /// Streams one staged multipart part without publishing the final object.
-    async fn upload_part_stream_owned(
-        owner: Self,
-        query: wire::UploadPartHeader,
-        body: UploadBody,
-    ) -> Result<wire::UploadedPart, Error> {
-        obs::traced(
-            obs::span!(
-                INFO,
-                "acyclic.objects.grpc.upload_part",
-                rpc.code = obs::Empty
-            ),
-            async {
-                request::upload_part_stream_digest(&query)?;
-                let original = query.encode_to_vec();
-                let header = wire::UploadPartRequest {
-                    frame: Some(wire::upload_part_request::Frame::Header(query)),
-                };
-                let (chunks, state, failure) = upload::chunks(body);
-                let frames =
-                    chunks.map(part_frame as fn(Result<Bytes, Error>) -> wire::UploadPartRequest);
-                let mut client = owner.multipart();
-                let complete = wire::UploadPartRequest {
-                    frame: Some(wire::upload_part_request::Frame::Complete(true)),
-                };
-                let input = owner.authenticated_transfer(
-                    stream::iter([header])
-                        .chain(frames)
-                        .chain(stream::iter([complete]))
-                        .boxed(),
-                );
-                let result = upload::run(
-                    client
-                        .upload_part(input)
-                        .map(|reply| reply.map(ok).map_err(|status| error_from_status(&status)))
-                        .boxed(),
-                    failure,
-                )
-                .await?;
-                response::validate_binary(
-                    "multipart/upload-part",
-                    &original,
-                    &result.encode_to_vec(),
-                    state.finish()?,
-                )?;
-                Ok(result)
-            },
-        )
-        .await
-    }
-    /// Connects over authenticated TLS. A given `ca` is the whole trust for this
-    /// connection; without one, the platform verifier checks the server (on Linux,
-    /// the native roots, which `SSL_CERT_FILE` and `SSL_CERT_DIR` select).
-    ///
-    /// # Errors
-    /// Rejects invalid credentials, non-HTTPS endpoints, oversized CA bundles, or failed connections.
+
+    /// Connects with PEM client identity, trusting only the declared CA or otherwise platform roots.
     pub async fn connect(
         endpoint: &str,
         token: &str,
         ca: Option<&[u8]>,
+        identity: Option<(&[u8], &[u8])>,
     ) -> Result<Self, ConnectError> {
-        Self::connect_tls(endpoint, token, ca, None).await
-    }
-    /// Connects with a caller-supplied PEM client certificate chain and private key.
-    ///
-    /// Server certificate verification, bearer authentication, message bounds, and
-    /// operation deadlines are the same as [`Self::connect`]. The server owns client
-    /// identity authorization; presenting a certificate does not grant access.
-    ///
-    /// # Errors
-    /// Rejects empty or oversized identity inputs, invalid configuration, malformed
-    /// or mismatched certificate/key material, or failed connections.
-    pub async fn connect_with_identity(
-        endpoint: &str,
-        token: &str,
-        ca: Option<&[u8]>,
-        certificate_pem: &[u8],
-        private_key_pem: &[u8],
-    ) -> Result<Self, ConnectError> {
-        if certificate_pem.is_empty()
-            || certificate_pem.len() > super::MAX_PEM_BYTES
-            || private_key_pem.is_empty()
-            || private_key_pem.len() > super::MAX_PEM_BYTES
-        {
-            return Err(ConnectError::InvalidConfiguration);
-        }
-        Self::connect_tls(
-            endpoint,
-            token,
-            ca,
-            Some(Identity::from_pem(certificate_pem, private_key_pem)),
-        )
-        .await
-    }
-    async fn connect_tls(
-        endpoint: &str,
-        token: &str,
-        ca: Option<&[u8]>,
-        identity: Option<Identity>,
-    ) -> Result<Self, ConnectError> {
+        let identity = identity
+            .map(|(certificate, key)| {
+                if certificate.is_empty()
+                    || certificate.len() > super::MAX_PEM_BYTES
+                    || key.is_empty()
+                    || key.len() > super::MAX_PEM_BYTES
+                {
+                    return Err(ConnectError::InvalidConfiguration);
+                }
+                Ok(Identity::from_pem(certificate, key))
+            })
+            .transpose()?;
         let endpoint = Endpoint::from_shared(endpoint.to_owned())?;
         if endpoint.uri().scheme_str() != Some("https")
             || endpoint
@@ -252,15 +103,17 @@ impl GrpcObjects {
             .map_err(|_| ConnectError::InvalidConfiguration)?;
         authorization.set_sensitive(true);
         let mut tls = ClientTlsConfig::new();
-        if let Some(identity) = identity {
-            tls = tls.identity(identity);
-        }
-        // A declared CA is the whole trust; otherwise the platform verifier.
-        let endpoint = if let Some(ca) = ca {
+        if let Some(ca) = ca {
             if ca.is_empty() || ca.len() > super::MAX_PEM_BYTES {
                 return Err(ConnectError::InvalidConfiguration);
             }
-            endpoint.tls_config(tls.ca_certificate(Certificate::from_pem(ca)))?
+            tls = tls.ca_certificate(Certificate::from_pem(ca));
+        }
+        if let Some(identity) = identity {
+            tls = tls.identity(identity);
+        }
+        let endpoint = if ca.is_some() {
+            endpoint.tls_config(tls)?
         } else {
             let verifier = rustls_platform_verifier::Verifier::new(std::sync::Arc::new(
                 rustls::crypto::ring::default_provider(),
@@ -270,8 +123,7 @@ impl GrpcObjects {
         };
         let channel = endpoint
             .connect_timeout(std::time::Duration::from_secs(10))
-            // Requests carry their own deadlines. This ceiling must permit
-            // caller-selected streaming budgets to reach the transport.
+            // Requests carry their own deadlines; this ceiling admits the largest transfer budget.
             .timeout(MAX_TRANSFER_TIMEOUT)
             .connect()
             .await?;
@@ -281,13 +133,8 @@ impl GrpcObjects {
             transfer_timeout: REQUEST_TIMEOUT,
         })
     }
-    fn authenticated<T>(&self, value: T) -> Request<T> {
-        self.authenticated_with_timeout(value, REQUEST_TIMEOUT)
-    }
-    fn authenticated_transfer<T>(&self, value: T) -> Request<T> {
-        self.authenticated_with_timeout(value, self.transfer_timeout)
-    }
-    fn authenticated_with_timeout<T>(&self, value: T, timeout: std::time::Duration) -> Request<T> {
+
+    fn authenticated<T>(&self, value: T, timeout: std::time::Duration) -> Request<T> {
         let mut request = Request::new(value);
         request.set_timeout(timeout);
         request
@@ -295,23 +142,159 @@ impl GrpcObjects {
             .insert("authorization", self.authorization.clone());
         request
     }
+
     fn buckets(&self) -> wire::buckets_service_client::BucketsServiceClient<Channel> {
         wire::buckets_service_client::BucketsServiceClient::new(self.channel.clone())
             .max_decoding_message_size(MESSAGE_BYTES)
             .max_encoding_message_size(MESSAGE_BYTES)
     }
+
     fn objects(&self) -> wire::objects_service_client::ObjectsServiceClient<Channel> {
         wire::objects_service_client::ObjectsServiceClient::new(self.channel.clone())
             .max_decoding_message_size(MESSAGE_BYTES)
             .max_encoding_message_size(MESSAGE_BYTES)
     }
+
+    /// The generated client is unary-only, so object body RPCs are routed here.
+    async fn streaming(
+        &self,
+        path: &'static str,
+    ) -> Result<
+        (
+            tonic::client::Grpc<Channel>,
+            tonic::codegen::http::uri::PathAndQuery,
+        ),
+        Error,
+    > {
+        let mut client = tonic::client::Grpc::new(self.channel.clone())
+            .max_decoding_message_size(MESSAGE_BYTES)
+            .max_encoding_message_size(MESSAGE_BYTES);
+        client.ready().await.map_err(|_| {
+            obs::record!("rpc.code" = tonic::Code::Unknown as u64);
+            protocol()
+        })?;
+        Ok((
+            client,
+            tonic::codegen::http::uri::PathAndQuery::from_static(path),
+        ))
+    }
+
     fn multipart(&self) -> wire::multipart_service_client::MultipartServiceClient<Channel> {
         wire::multipart_service_client::MultipartServiceClient::new(self.channel.clone())
             .max_decoding_message_size(MESSAGE_BYTES)
             .max_encoding_message_size(MESSAGE_BYTES)
     }
+
+    /// Publishes a caller-owned stream; a source failure cancels the RPC before valid EOF.
+    pub fn put_stream(
+        &self,
+        query: wire::PutObjectHeader,
+        body: UploadBody,
+    ) -> impl Future<Output = Result<wire::ObjectInfo, Error>> + Send + 'static {
+        let owner = self.clone();
+        async move {
+            obs::traced(
+                obs::span!(INFO, "acyclic.objects.grpc.put", rpc.code = obs::Empty),
+                async {
+                    request::put(&query)?;
+                    let header = wire::PutObjectRequest {
+                        frame: Some(wire::put_object_request::Frame::Header(query)),
+                    };
+                    let (chunks, state) = upload::chunks(body);
+                    // An invalid frame also prevents valid EOF if the transport polls a failing source.
+                    let frames = chunks
+                        .map(put_frame as fn(Result<OwnedBytes, Error>) -> wire::PutObjectRequest);
+                    let complete = wire::PutObjectRequest {
+                        frame: Some(wire::put_object_request::Frame::Complete(true)),
+                    };
+                    let mut input = owner.authenticated(
+                        stream::iter([header])
+                            .chain(frames)
+                            .chain(stream::iter([complete])),
+                        owner.transfer_timeout,
+                    );
+                    input.extensions_mut().insert(tonic::GrpcMethod::new(
+                        "acyclic.objects.v1.ObjectsService",
+                        "PutObject",
+                    ));
+                    let result = upload::run(
+                        async {
+                            let (mut client, path) = owner
+                                .streaming("/acyclic.objects.v1.ObjectsService/PutObject")
+                                .await?;
+                            client
+                                .client_streaming(input, path, tonic_prost::ProstCodec::default())
+                                .await
+                                .map(ok)
+                                .map_err(|status| error_from_status(&status))
+                        }
+                        .boxed(),
+                        &state,
+                    )
+                    .await?;
+                    info(&result)?;
+                    if result.size != state.finish()? {
+                        return Err(response::invalid());
+                    }
+                    Ok(result)
+                },
+            )
+            .await
+        }
+    }
+
+    /// Streams one staged multipart part without publishing the final object.
+    pub fn upload_part_stream(
+        &self,
+        query: wire::UploadPartHeader,
+        body: UploadBody,
+    ) -> impl Future<Output = Result<wire::UploadedPart, Error>> + Send + 'static {
+        let owner = self.clone();
+        async move {
+            obs::traced(
+                obs::span!(
+                    INFO,
+                    "acyclic.objects.grpc.upload_part",
+                    rpc.code = obs::Empty
+                ),
+                async {
+                    request::upload_part(&query)?;
+                    let part_number = query.part_number;
+                    let header = wire::UploadPartRequest {
+                        frame: Some(wire::upload_part_request::Frame::Header(query)),
+                    };
+                    let (chunks, state) = upload::chunks(body);
+                    let frames = chunks.map(
+                        part_frame as fn(Result<OwnedBytes, Error>) -> wire::UploadPartRequest,
+                    );
+                    let complete = wire::UploadPartRequest {
+                        frame: Some(wire::upload_part_request::Frame::Complete(true)),
+                    };
+                    let input = owner.authenticated(
+                        stream::iter([header])
+                            .chain(frames)
+                            .chain(stream::iter([complete]))
+                            .boxed(),
+                        owner.transfer_timeout,
+                    );
+                    let result = upload::run(
+                        owner
+                            .multipart()
+                            .upload_part(input)
+                            .map(|reply| reply.map(ok).map_err(|status| error_from_status(&status)))
+                            .boxed(),
+                        &state,
+                    )
+                    .await?;
+                    response::part(&result, part_number, state.finish()?)?;
+                    Ok(result)
+                },
+            )
+            .await
+        }
+    }
+
     /// Starts a validated download without buffering the selected representation.
-    /// Dropping the returned stream releases the underlying gRPC response.
     pub async fn get_stream(
         &self,
         query: wire::GetObjectRequest,
@@ -320,12 +303,19 @@ impl GrpcObjects {
         obs::download(
             obs::span!(INFO, "acyclic.objects.grpc.get", rpc.code = obs::Empty),
             async {
-                request::validate_binary("objects/get", &query.encode_to_vec(), 0)?;
+                request::get(&query)?;
                 let range = query.range;
                 let deadline = tokio::time::Instant::now() + self.transfer_timeout;
-                let mut frames = self
-                    .objects()
-                    .get_object(self.authenticated_transfer(query))
+                let mut request = self.authenticated(query, self.transfer_timeout);
+                request.extensions_mut().insert(tonic::GrpcMethod::new(
+                    "acyclic.objects.v1.ObjectsService",
+                    "GetObject",
+                ));
+                let (mut client, path) = self
+                    .streaming("/acyclic.objects.v1.ObjectsService/GetObject")
+                    .await?;
+                let mut frames: tonic::Streaming<wire::GetObjectResponse> = client
+                    .server_streaming(request, path, tonic_prost::ProstCodec::default())
                     .await
                     .map(ok)
                     .map_err(|status| error_from_status(&status))?;
@@ -336,10 +326,7 @@ impl GrpcObjects {
                     .ok_or_else(protocol)?;
                 let header = match first.frame {
                     Some(wire::get_object_response::Frame::Header(header)) => header,
-                    Some(wire::get_object_response::Frame::Error(detail)) => {
-                        return Err(frame_error(detail.code));
-                    }
-                    _ => return Err(protocol()),
+                    frame => return Err(response::reject_frame(frame)),
                 };
                 let remaining = response::get_header(&header, &range, maximum_bytes)?;
                 let body = stream::try_unfold(
@@ -360,12 +347,9 @@ impl GrpcObjects {
                             Some(wire::get_object_response::Frame::Body(frame)) => {
                                 let bytes = response::body(frame, remaining)?;
                                 let remaining = remaining - bytes.len() as u64;
-                                Ok(Some((Bytes::from(bytes), (frames, remaining))))
+                                Ok(Some((bytes::Bytes::from(bytes), (frames, remaining))))
                             }
-                            Some(wire::get_object_response::Frame::Error(detail)) => {
-                                Err(frame_error(detail.code))
-                            }
-                            _ => Err(protocol()),
+                            frame => Err(response::reject_frame(frame)),
                         }
                     },
                 )
@@ -379,12 +363,6 @@ impl GrpcObjects {
         .await
     }
 }
-fn frame_error(code: i32) -> Error {
-    wire::ErrorCode::try_from(code)
-        .ok()
-        .filter(|code| *code != wire::ErrorCode::Unspecified)
-        .map_or_else(protocol, Error::from)
-}
 
 /// Unwraps a successful reply, recording its gRPC code on the current span.
 fn ok<T>(reply: tonic::Response<T>) -> T {
@@ -393,8 +371,7 @@ fn ok<T>(reply: tonic::Response<T>) -> T {
 }
 
 /// Maps canonical service details, falling back to stable transport categories.
-#[must_use]
-pub fn error_from_status(status: &tonic::Status) -> Error {
+fn error_from_status(status: &tonic::Status) -> Error {
     obs::record!("rpc.code" = status.code() as u64);
     if let Ok(detail) = wire::ErrorDetail::decode(status.details())
         && let Ok(code) = wire::ErrorCode::try_from(detail.code)
@@ -416,6 +393,7 @@ pub fn error_from_status(status: &tonic::Status) -> Error {
     }
     .into()
 }
+
 fn bounded<T: Message>(query: &T) -> Result<(), Error> {
     if query.encoded_len() > MESSAGE_BYTES {
         Err(wire::ErrorCode::QuotaExceeded.into())
@@ -423,95 +401,111 @@ fn bounded<T: Message>(query: &T) -> Result<(), Error> {
         Ok(())
     }
 }
+
 fn protocol() -> Error {
     wire::ErrorCode::Unavailable.into()
 }
 
-#[async_trait::async_trait]
-impl ObjectsProvider for GrpcObjects {
-    async fn create_bucket(&self, query: wire::CreateBucketRequest) -> Result<wire::Bucket, Error> {
-        obs::traced(
-            obs::span!(
-                INFO,
-                "acyclic.objects.grpc.create_bucket",
-                rpc.code = obs::Empty
-            ),
-            async {
-                request::bucket_name(&query.name)?;
-                request::identity(&query.mutation)?;
-                bounded(&query)?;
-                let expected = wire::BucketRef {
-                    name: query.name.clone(),
-                };
-                let result = self
-                    .buckets()
-                    .create_bucket(self.authenticated(query))
-                    .await
-                    .map(ok)
-                    .map_err(|status| error_from_status(&status))?;
-                response::bucket(&result, &expected)?;
-                Ok(result)
-            },
-        )
-        .await
-    }
-    async fn head_bucket(&self, query: wire::HeadBucketRequest) -> Result<wire::Bucket, Error> {
-        obs::traced(
-            obs::span!(
-                INFO,
-                "acyclic.objects.grpc.head_bucket",
-                rpc.code = obs::Empty
-            ),
-            async {
-                request::bucket(&query.bucket)?;
-                bounded(&query)?;
-                let expected = query
-                    .bucket
-                    .clone()
-                    .ok_or(Error::from(wire::ErrorCode::InvalidArgument))?;
-                let result = self
-                    .buckets()
-                    .head_bucket(self.authenticated(query))
-                    .await
-                    .map(ok)
-                    .map_err(|status| error_from_status(&status))?;
-                response::bucket(&result, &expected)?;
-                Ok(result)
-            },
-        )
-        .await
-    }
-    async fn delete_bucket(
-        &self,
-        query: wire::DeleteBucketRequest,
-    ) -> Result<wire::DeleteBucketResponse, Error> {
-        obs::traced(
-            obs::span!(
-                INFO,
-                "acyclic.objects.grpc.delete_bucket",
-                rpc.code = obs::Empty
-            ),
-            async {
-                request::bucket(&query.bucket)?;
-                request::identity(&query.mutation)?;
-                bounded(&query)?;
-                self.buckets()
-                    .delete_bucket(self.authenticated(query))
-                    .await
-                    .map(ok)
-                    .map_err(|status| error_from_status(&status))
-            },
-        )
-        .await
-    }
+macro_rules! unary {
+    ($( $method:ident($input:ident) -> $output:ident, $client:ident.$rpc:ident,
+        |$query:ident, $result:ident| {$($prepare:tt)*}, $validate:block; )*
+        { $($stream:tt)* }) => {
+        #[async_trait::async_trait]
+        impl ObjectsProvider for GrpcObjects {
+            $(async fn $method(&self, $query: wire::$input) -> Result<wire::$output, Error> {
+                obs::traced(
+                    obs::span!(INFO, concat!("acyclic.objects.grpc.", stringify!($method)), rpc.code = obs::Empty),
+                    async {
+                        $($prepare)*
+                        let $result = self.$client()
+                            .$rpc(self.authenticated($query, REQUEST_TIMEOUT))
+                            .await.map(ok).map_err(|status| error_from_status(&status))?;
+                        $validate;
+                        Ok($result)
+                    },
+                ).await
+            })*
+            $($stream)*
+        }
+    };
+}
+
+unary! {
+create_bucket(CreateBucketRequest) -> Bucket, buckets.create_bucket,
+    |query, result| {
+        request::bucket_name(&query.name)?;
+        request::identity(&query.mutation)?;
+        bounded(&query)?;
+        let expected = wire::BucketRef { name: query.name.clone() };
+    }, {
+        response::bucket(&result, &expected)?;
+    };
+head_bucket(HeadBucketRequest) -> Bucket, buckets.head_bucket,
+    |query, result| {
+        request::bucket(&query.bucket)?;
+        bounded(&query)?;
+        let expected = query.bucket.clone().ok_or(Error::from(wire::ErrorCode::InvalidArgument))?;
+    }, {
+        response::bucket(&result, &expected)?;
+    };
+delete_bucket(DeleteBucketRequest) -> DeleteBucketResponse, buckets.delete_bucket,
+    |query, result| {
+        request::bucket(&query.bucket)?;
+        request::identity(&query.mutation)?;
+        bounded(&query)?;
+    }, {};
+head(HeadObjectRequest) -> HeadObjectResponse, objects.head_object,
+    |query, result| {
+        request::head(&query)?;
+    }, {
+        info(result.object.as_ref().ok_or_else(protocol)?)?;
+    };
+delete(DeleteObjectRequest) -> DeleteObjectResponse, objects.delete_object,
+    |query, result| {
+        bounded(&query)?;
+    }, {};
+list(ListObjectsRequest) -> ListObjectsResponse, objects.list_objects,
+    |query, result| {
+        request::list(&query)?;
+        let expected = query.clone();
+    }, {
+        response::listing(&expected, &result)?;
+    };
+create_multipart(CreateMultipartRequest) -> MultipartUpload, multipart.create_multipart,
+    |query, result| {
+        request::bucket(&query.bucket)?;
+        request::key(&query.object_key)?;
+        request::metadata(&query.metadata)?;
+        request::identity(&query.mutation)?;
+        bounded(&query)?;
+    }, {};
+list_parts(ListPartsRequest) -> ListPartsResponse, multipart.list_parts,
+    |query, result| {
+        request::list_parts(&query)?;
+        let expected = query.clone();
+    }, {
+        response::parts(&expected, &result)?;
+    };
+complete_multipart(CompleteMultipartRequest) -> ObjectInfo, multipart.complete_multipart,
+    |query, result| {
+        bounded(&query)?;
+    }, {
+        info(&result)?;
+    };
+abort_multipart(AbortMultipartRequest) -> AbortMultipartResponse, multipart.abort_multipart,
+    |query, result| {
+        bounded(&query)?;
+    }, {};
+{
     async fn put(
         &self,
         query: wire::PutObjectHeader,
-        body: Bytes,
+        body: OwnedBytes,
     ) -> Result<wire::ObjectInfo, Error> {
-        self.put_stream(query, stream::once(async { Ok(body) }).boxed())
+        self.put_stream(query, stream::once(async { Ok(body) }).boxed().into())
             .await
     }
+
     async fn get(
         &self,
         query: wire::GetObjectRequest,
@@ -522,173 +516,14 @@ impl ObjectsProvider for GrpcObjects {
             .collect(maximum_bytes)
             .await
     }
-    async fn head(
-        &self,
-        query: wire::HeadObjectRequest,
-    ) -> Result<wire::HeadObjectResponse, Error> {
-        obs::traced(
-            obs::span!(INFO, "acyclic.objects.grpc.head", rpc.code = obs::Empty),
-            async {
-                request::validate_binary("objects/head", &query.encode_to_vec(), 0)?;
-                request::bucket(&query.bucket)?;
-                request::key(&query.object_key)?;
-                bounded(&query)?;
-                let response = self
-                    .objects()
-                    .head_object(self.authenticated(query))
-                    .await
-                    .map(ok)
-                    .map_err(|status| error_from_status(&status))?;
-                info(response.object.as_ref().ok_or_else(protocol)?)?;
-                Ok(response)
-            },
-        )
-        .await
-    }
-    async fn delete(
-        &self,
-        query: wire::DeleteObjectRequest,
-    ) -> Result<wire::DeleteObjectResponse, Error> {
-        obs::traced(
-            obs::span!(INFO, "acyclic.objects.grpc.delete", rpc.code = obs::Empty),
-            async {
-                bounded(&query)?;
-                self.objects()
-                    .delete_object(self.authenticated(query))
-                    .await
-                    .map(ok)
-                    .map_err(|status| error_from_status(&status))
-            },
-        )
-        .await
-    }
-    async fn list(
-        &self,
-        query: wire::ListObjectsRequest,
-    ) -> Result<wire::ListObjectsResponse, Error> {
-        obs::traced(
-            obs::span!(INFO, "acyclic.objects.grpc.list", rpc.code = obs::Empty),
-            async {
-                request::validate_binary("objects/list", &query.encode_to_vec(), 0)?;
-                request::page_size(query.page_size)?;
-                bounded(&query)?;
-                let response = self
-                    .objects()
-                    .list_objects(self.authenticated(query.clone()))
-                    .await
-                    .map(ok)
-                    .map_err(|status| error_from_status(&status))?;
-                response::listing(&query, &response)?;
-                Ok(response)
-            },
-        )
-        .await
-    }
-    async fn create_multipart(
-        &self,
-        query: wire::CreateMultipartRequest,
-    ) -> Result<wire::MultipartUpload, Error> {
-        obs::traced(
-            obs::span!(
-                INFO,
-                "acyclic.objects.grpc.create_multipart",
-                rpc.code = obs::Empty
-            ),
-            async {
-                request::bucket(&query.bucket)?;
-                request::key(&query.object_key)?;
-                request::metadata(&query.metadata)?;
-                request::identity(&query.mutation)?;
-                bounded(&query)?;
-                self.multipart()
-                    .create_multipart(self.authenticated(query))
-                    .await
-                    .map(ok)
-                    .map_err(|status| error_from_status(&status))
-            },
-        )
-        .await
-    }
+
     async fn upload_part(
         &self,
         query: wire::UploadPartHeader,
-        body: Bytes,
+        body: OwnedBytes,
     ) -> Result<wire::UploadedPart, Error> {
-        self.upload_part_stream(query, stream::once(async { Ok(body) }).boxed())
+        self.upload_part_stream(query, stream::once(async { Ok(body) }).boxed().into())
             .await
     }
-    async fn list_parts(
-        &self,
-        query: wire::ListPartsRequest,
-    ) -> Result<wire::ListPartsResponse, Error> {
-        obs::traced(
-            obs::span!(
-                INFO,
-                "acyclic.objects.grpc.list_parts",
-                rpc.code = obs::Empty
-            ),
-            async {
-                request::validate_binary("multipart/list-parts", &query.encode_to_vec(), 0)?;
-                request::page_size(query.page_size)?;
-                bounded(&query)?;
-                let response = self
-                    .multipart()
-                    .list_parts(self.authenticated(query.clone()))
-                    .await
-                    .map(ok)
-                    .map_err(|status| error_from_status(&status))?;
-                response::parts(&query, &response)?;
-                Ok(response)
-            },
-        )
-        .await
-    }
-    async fn complete_multipart(
-        &self,
-        query: wire::CompleteMultipartRequest,
-    ) -> Result<wire::ObjectInfo, Error> {
-        obs::traced(
-            obs::span!(
-                INFO,
-                "acyclic.objects.grpc.complete_multipart",
-                rpc.code = obs::Empty
-            ),
-            async {
-                bounded(&query)?;
-                let response = self
-                    .multipart()
-                    .complete_multipart(self.authenticated(query))
-                    .await
-                    .map(ok)
-                    .map_err(|status| error_from_status(&status))?;
-                info(&response)?;
-                Ok(response)
-            },
-        )
-        .await
-    }
-    async fn abort_multipart(
-        &self,
-        query: wire::AbortMultipartRequest,
-    ) -> Result<wire::AbortMultipartResponse, Error> {
-        obs::traced(
-            obs::span!(
-                INFO,
-                "acyclic.objects.grpc.abort_multipart",
-                rpc.code = obs::Empty
-            ),
-            async {
-                request::bucket(&query.bucket)?;
-                request::key(&query.object_key)?;
-                request::identity(&query.mutation)?;
-                bounded(&query)?;
-                self.multipart()
-                    .abort_multipart(self.authenticated(query))
-                    .await
-                    .map(ok)
-                    .map_err(|status| error_from_status(&status))
-            },
-        )
-        .await
-    }
+}
 }

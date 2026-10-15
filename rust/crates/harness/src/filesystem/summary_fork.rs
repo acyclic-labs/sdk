@@ -1,62 +1,135 @@
 //! Child-owned Summary materialization through existing Filesystem operations.
-use super::{ParentProjectController, WorkspaceMutation, filesystem_key, map_error, workspace_ref};
+use super::{ParentProjectController, PreparationIo, WorkspaceMutation, fork_preparer_io as fsio};
 use crate::{
-    Error, IdempotencyKey, Result,
+    IdempotencyKey, Result,
     context::Context,
-    conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
+    conversation::{
+        ContentGrant, ContentResidencyVerifier, FileDescriptor, FileRef, VolumeClass,
+        VolumeOperation, VolumeOwner, VolumeRef,
+    },
     core::Reducer,
-    executor::ExecutionJournal,
-    fork::{PreparedSummaryFork, SummaryForkCapture},
-    model::{ModelContent, ModelContentPart},
+    executor::{
+        ExecutionJournal, preparation_format, stock_boundary, stock_string_copy as text,
+        with_history_io,
+    },
+    fork::{PreparedSummaryFork, SummaryForkCapture, SummaryForkSelection},
+    model::{
+        FileProjectionPolicy, ModelContent, ModelContentPart, ModelDataPart, ToolResultContent,
+        charge_items, vec_with_capacity,
+    },
     resources::GenerationRef,
+    wire::ErrorCode,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
+type ReferenceIndex<'a> = BTreeMap<[u8; 32], &'a FileRef>;
 type References = BTreeMap<[u8; 32], FileRef>;
+const CONTEXT_PATH: &str = ".system/inherited-conversation/summary-context.json";
+const ZERO_VERSION: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
-pub(super) fn summary_keys(key: &IdempotencyKey) -> Result<[IdempotencyKey; 2]> {
-    Ok([
-        IdempotencyKey::new(format!("{}:summary-payloads", key.as_str()))?,
-        IdempotencyKey::new(format!("{}:summary-context", key.as_str()))?,
-    ])
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "summary_fork/tests.rs"]
+mod tests;
+
+pub(super) fn summary_keys(
+    key: &IdempotencyKey,
+    io: Option<&PreparationIo>,
+) -> Result<[IdempotencyKey; 2]> {
+    let key_for = |suffix| {
+        IdempotencyKey::new(with_history_io(io, |work| {
+            preparation_format(format_args!("{}:{suffix}", key.as_str()), work)
+        })?)
+    };
+    Ok([key_for("summary-payloads")?, key_for("summary-context")?])
 }
 
-pub(super) fn split_references(prepared: &PreparedSummaryFork) -> Result<(References, References)> {
-    let context = prepared.context();
+pub(super) fn split_references<'a>(
+    prepared: &'a PreparedSummaryFork,
+    io: Option<&PreparationIo>,
+) -> Result<(ReferenceIndex<'a>, ReferenceIndex<'a>)> {
     let mut payloads = BTreeMap::new();
     let mut references = BTreeMap::new();
-    for file in context
+    for file in prepared
+        .context()
         .messages
         .iter()
         .flat_map(|message| message.content.file_refs())
-        .chain(context.metadata.values())
+        .chain(prepared.context().metadata.values())
     {
-        let key = crate::contract::canonical_json_digest(file)?;
-        if crate::conversation::is_internal_path(file.path())
-            && !crate::conversation::is_inherited_context_path(file.path())
-        {
-            if !file.path().starts_with(".system/execution/") {
-                return Err(Error::Unsupported(
-                    "summary fork private payload family is unavailable".into(),
-                ));
-            }
-            payloads.insert(key, file.clone());
+        let key = with_history_io(io, |work| {
+            crate::executor::json::canonical_json_digest(
+                file,
+                io.map(PreparationIo::remaining)
+                    .transpose()?
+                    .map_or(acyclic_stream::MAX_RECORD_BYTES as u64, |budget| {
+                        budget.bytes_encoded
+                    }),
+                work,
+            )
+        })?;
+        let private = crate::conversation::is_internal_path(file.path())
+            && !crate::conversation::is_inherited_context_path(file.path());
+        if private && !file.path().starts_with(".system/execution/") {
+            return Err(stock_boundary(
+                io,
+                ErrorCode::Unsupported,
+                "summary fork private payload family is unavailable",
+            ));
+        }
+        let selected = if private {
+            &mut payloads
         } else {
-            references.insert(key, file.clone());
+            &mut references
+        };
+        charge_items(io, 1)?;
+        if let std::collections::btree_map::Entry::Vacant(entry) = selected.entry(key) {
+            if let Some(io) = io {
+                io.retain_owned(std::mem::size_of::<([u8; 32], &FileRef)>() as u64)?;
+            }
+            entry.insert(file);
         }
     }
     Ok((payloads, references))
 }
 
-fn rewritten_context(context: &Context, replacements: &References) -> Result<Context> {
-    fn replace(file: &mut FileRef, replacements: &References) -> Result<()> {
-        if let Some(copy) = replacements.get(&crate::contract::canonical_json_digest(file)?) {
-            *file = copy.clone();
+fn rewritten_context(
+    context: &Context,
+    replacements: &References,
+    io: Option<&PreparationIo>,
+) -> Result<Context> {
+    let replace = |file: &mut FileRef| -> Result<()> {
+        let key = with_history_io(io, |work| {
+            crate::executor::json::canonical_json_digest(
+                file,
+                io.map(PreparationIo::remaining)
+                    .transpose()?
+                    .map_or(acyclic_stream::MAX_RECORD_BYTES as u64, |budget| {
+                        budget.bytes_encoded
+                    }),
+                work,
+            )
+        })?;
+        if let Some(copy) = replacements.get(&key) {
+            let retired = io.map(|_| file.logical_owned_bytes()).transpose()?;
+            let copy = with_history_io(io, |work| copy.copy(work))?;
+            drop(std::mem::replace(file, copy));
+            if let (Some(io), Some(bytes)) = (io, retired) {
+                io.release(bytes)?;
+            }
         }
         Ok(())
-    }
-    let mut context = context.clone();
+    };
+    let replace_file = |file: &mut FileRef, policy: &mut FileProjectionPolicy| -> Result<()> {
+        replace(file)?;
+        if let FileProjectionPolicy::Native(policy) = policy
+            && let Some(binding) = &mut policy.configuration
+        {
+            replace(&mut binding.configuration.content)?;
+        }
+        Ok(())
+    };
+    let mut context = crate::context::copy_context(context, io)?;
     for message in &mut context.messages {
         let parts = match &mut message.content {
             ModelContent::Text(_) => continue,
@@ -64,48 +137,157 @@ fn rewritten_context(context: &Context, replacements: &References) -> Result<Con
             ModelContent::Parts(parts) => parts.as_mut_slice(),
         };
         for part in parts {
-            if let ModelContentPart::File { file, .. } = part {
-                replace(file, replacements)?;
+            match part {
+                ModelContentPart::File { file, policy } => replace_file(file, policy)?,
+                ModelContentPart::ToolResult {
+                    content: ToolResultContent::Parts { parts },
+                    ..
+                } => {
+                    for part in parts {
+                        if let ModelDataPart::File { file, policy } = part {
+                            replace_file(file, policy)?;
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
     for file in context.metadata.values_mut() {
-        replace(file, replacements)?;
+        replace(file)?;
     }
     Ok(context)
 }
 
 fn copy_references(
-    payloads: &References,
+    payloads: &BTreeMap<[u8; 32], &FileRef>,
     child: &VolumeRef,
     generation: &str,
+    io: Option<&PreparationIo>,
 ) -> Result<References> {
-    payloads
-        .iter()
-        .map(|(key, source)| {
-            Ok((
-                *key,
+    let mut copies = BTreeMap::new();
+    for (key, source) in payloads {
+        charge_items(io, 1)?;
+        if let Some(io) = io {
+            io.retain_owned(std::mem::size_of::<([u8; 32], FileRef)>() as u64)?;
+        }
+        let encoded = fsio::hex_key(key, io)?;
+        let path = with_history_io(io, |work| {
+            preparation_format(
+                format_args!(".system/inherited-conversation/summary-payloads/{encoded}"),
+                work,
+            )
+        })?;
+        copies.insert(
+            *key,
+            with_history_io(io, |work| {
                 FileRef::new(
-                    child.clone(),
-                    format!(
-                        ".system/inherited-conversation/summary-payloads/{}",
-                        hex::encode(key)
-                    ),
-                    generation,
-                    source.descriptor().clone(),
-                    source.display_name(),
-                )?,
-            ))
-        })
-        .collect()
+                    child.copy(work)?,
+                    path,
+                    text(generation, io)?,
+                    FileDescriptor::new(
+                        *source.descriptor().sha256(),
+                        source.descriptor().byte_length(),
+                        text(source.descriptor().media_type(), io)?,
+                    )?,
+                    text(source.display_name(), io)?,
+                    work,
+                )
+            })?,
+        );
+    }
+    Ok(copies)
+}
+
+fn context_reference(
+    child: &VolumeRef,
+    version: &str,
+    bytes: &[u8],
+    io: Option<&PreparationIo>,
+) -> Result<FileRef> {
+    with_history_io(io, |work| {
+        FileRef::new(
+            child.copy(work)?,
+            text(CONTEXT_PATH, io)?,
+            text(version, io)?,
+            FileDescriptor::from_bytes(bytes, "application/json", work)?,
+            text("summary-context.json", io)?,
+            work,
+        )
+    })
+}
+
+fn capture(
+    prepared: &PreparedSummaryFork,
+    context: FileRef,
+    copies: References,
+    references: &BTreeMap<[u8; 32], &FileRef>,
+    io: Option<&PreparationIo>,
+) -> Result<SummaryForkCapture> {
+    let mut payloads = vec_with_capacity(copies.len(), io)?;
+    payloads.extend(copies.into_values());
+    let mut files = vec_with_capacity(references.len(), io)?;
+    for file in references.values() {
+        files.push(with_history_io(io, |work| file.copy(work))?);
+    }
+    Ok(SummaryForkCapture {
+        selection: SummaryForkSelection {
+            checkpoint: with_history_io(io, |work| prepared.selection().checkpoint.copy(work))?,
+            limits: prepared.selection().limits,
+            history_limits: prepared.selection().history_limits,
+        },
+        context,
+        payloads,
+        references: files,
+    })
+}
+
+async fn publish<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    controller: &ParentProjectController<'_, A, O>,
+    workspace: &crate::resources::WorkspaceRef,
+    expected: &GenerationRef,
+    mutations: &[WorkspaceMutation],
+    key: &IdempotencyKey,
+    io: Option<&PreparationIo>,
+    preparation: Option<&Arc<crate::resource_preparation::TaskResourcePreparation>>,
+) -> Result<GenerationRef> {
+    let generation = (controller.host)
+        .apply_generation(
+            workspace,
+            Some(expected),
+            mutations,
+            IdempotencyKey(crate::executor::stock_string_copy(key.as_str(), io)?),
+            io,
+            preparation,
+        )
+        .await?;
+    fsio::retain(&generation, io).await?;
+    fsio::generation_ref(&controller.host.provider, generation.id(), io)
+}
+
+async fn original_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    controller: &ParentProjectController<'_, A, O>,
+    workspace: &crate::resources::WorkspaceRef,
+    key: &IdempotencyKey,
+    io: Option<&PreparationIo>,
+) -> Result<Option<GenerationRef>> {
+    match (controller.host)
+        .operation_generation(workspace, key, io)
+        .await?
+    {
+        Some(generation) => {
+            fsio::retain(&generation, io).await?;
+            Ok(Some(fsio::generation_ref(
+                &controller.host.provider,
+                generation.id(),
+                io,
+            )?))
+        }
+        None => Ok(None),
+    }
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A, O> {
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::too_many_lines,
-        reason = "one bounded capture with two existing idempotent publication steps"
-    )]
     pub(super) async fn materialize_summary_context(
         &self,
         parent: &Reducer,
@@ -117,10 +299,43 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         maximum_bytes: u64,
         maximum_references: usize,
         key: &IdempotencyKey,
+        resolver: &dyn ContentResidencyVerifier,
+        io: Option<&PreparationIo>,
+        preparation: Option<&Arc<crate::resource_preparation::TaskResourcePreparation>>,
     ) -> Result<(SummaryForkCapture, GenerationRef)> {
-        self.require("fork:publish", VolumeOperation::Read)?;
-        if parent.authority() != &self.parent
-            || prepared.parent() != &self.parent
+        let invalid = |reason| stock_boundary(io, ErrorCode::Invalid, reason);
+        let denied = |reason| stock_boundary(io, ErrorCode::Unauthorized, reason);
+        let conflict = |reason| stock_boundary(io, ErrorCode::Conflict, reason);
+        {
+            let temporary = PreparationIo::temporary(io)?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if temporary.is_some() && preparation.is_none() {
+                return Err(denied(
+                    "native summary publication requires its original issued creation guard",
+                ));
+            }
+            let io = temporary.as_ref().or(io);
+            if let Some(preparation) = preparation {
+                preparation.verify(false, io)?.await?;
+            }
+        }
+        with_history_io(io, |work| {
+            if !self.scope.capabilities().contains("fork:publish") {
+                return Err(denied(
+                    "summary fork scope lacks original publication authority",
+                ));
+            }
+            ContentGrant::authorize_volume(
+                &self.verifier,
+                &self.scope,
+                &self.project,
+                VolumeOperation::Read,
+                u64::MAX,
+                work,
+            )
+        })?;
+        if parent.authority() != self.verifier.audience()
+            || prepared.parent() != self.verifier.audience()
             || prepared.parent_revision() != parent.revision()
             || parent.conversation().and_then(|state| state.agent) != self.scope.agent()
             || prepared.through_sequence()
@@ -128,36 +343,32 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                     .conversation()
                     .and_then(|state| state.messages().last())
                     .map_or(0, |message| message.sequence)
-            || journal.canonical_authority() != Some(&self.parent)
+            || journal.canonical_authority() != Some(self.verifier.audience())
             || child_private.provider() != &self.host.provider
             || child_private.class() != VolumeClass::AgentPrivate
             || !matches!(child_private.owner(), VolumeOwner::Agent(_))
             || prefix.volume() != child_private
         {
-            return Err(Error::Unauthorized(
-                "summary fork capture is not bound to the original parent and child".into(),
+            return Err(denied(
+                "summary fork capture is not bound to the original parent and child",
             ));
         }
         let owner = parent
             .conversation()
             .and_then(|conversation| conversation.agent)
-            .ok_or_else(|| Error::Invalid("summary fork parent is unbound".into()))?;
+            .ok_or_else(|| invalid("summary fork parent is unbound"))?;
         if maximum_bytes == 0 || maximum_references == 0 {
-            return Err(Error::Invalid(
-                "summary fork capture allowance must be positive".into(),
-            ));
+            return Err(invalid("summary fork capture allowance must be positive"));
         }
         let limits = prepared.selection().limits;
-        crate::context::validate_projected_context(prepared.context(), limits)?;
-        let (payloads, references) = split_references(prepared)?;
+        crate::context::validate_projected_context(prepared.context(), limits, io)?;
+        let (payloads, references) = split_references(prepared, io)?;
         if payloads
             .len()
             .checked_add(references.len())
             .is_none_or(|count| count > maximum_references)
         {
-            return Err(Error::Invalid(
-                "summary fork references exceed capture allowance".into(),
-            ));
+            return Err(invalid("summary fork references exceed capture allowance"));
         }
         let mut body_bytes = prefix.descriptor().byte_length();
         for file in payloads.values() {
@@ -165,148 +376,147 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                 || file.volume().class() != VolumeClass::AgentPrivate
                 || file.volume().owner() != &VolumeOwner::Agent(owner)
             {
-                return Err(Error::Unauthorized(
-                    "summary fork private payload is not original-parent owned".into(),
+                return Err(denied(
+                    "summary fork private payload is not original-parent owned",
                 ));
             }
             body_bytes = body_bytes
                 .checked_add(file.descriptor().byte_length())
                 .filter(|bytes| *bytes <= maximum_bytes)
-                .ok_or_else(|| {
-                    Error::Invalid("summary fork copies exceed aggregate byte allowance".into())
-                })?;
+                .ok_or_else(|| invalid("summary fork copies exceed aggregate byte allowance"))?;
         }
-        // Generation keys encode to 64 hex bytes. Preflight the final context
-        // before reading payloads or publishing either phase, without a cycle
-        // between a context's bytes and the generation containing those bytes.
-        let planned = copy_references(&payloads, child_private, &"0".repeat(64))?;
-        let context = rewritten_context(prepared.context(), &planned)?;
-        crate::context::validate_projected_context(&context, limits)?;
-        let planned_bytes = crate::contract::canonical_json_bytes(&context)?;
-        if body_bytes
-            .checked_add(planned_bytes.len() as u64)
-            .is_none_or(|bytes| bytes > maximum_bytes)
-        {
-            return Err(Error::Invalid(
-                "summary fork context exceeds aggregate byte allowance".into(),
-            ));
-        }
-        let planned_capture = SummaryForkCapture {
-            selection: prepared.selection().clone(),
-            context: FileRef::new(
-                child_private.clone(),
-                ".system/inherited-conversation/summary-context.json",
-                "0".repeat(64),
-                FileDescriptor::from_bytes(&planned_bytes, "application/json")?,
-                "summary-context.json",
-            )?,
-            payloads: planned.into_values().collect(),
-            references: references.values().cloned().collect(),
+        let planned_extent = {
+            let temporary = PreparationIo::temporary(io)?;
+            let io = temporary.as_ref().or(io);
+            let planned = copy_references(&payloads, child_private, ZERO_VERSION, io)?;
+            let context = rewritten_context(prepared.context(), &planned, io)?;
+            crate::context::validate_projected_context(&context, limits, io)?;
+            let bytes = match io {
+                Some(io) => io.encode(&context, maximum_bytes.saturating_sub(body_bytes), true)?,
+                None => crate::contract::canonical_json_bytes(&context)?.into(),
+            };
+            if body_bytes
+                .checked_add(bytes.len() as u64)
+                .is_none_or(|bytes| bytes > maximum_bytes)
+            {
+                return Err(invalid(
+                    "summary fork context exceeds aggregate byte allowance",
+                ));
+            }
+            let context = context_reference(child_private, ZERO_VERSION, &bytes, io)?;
+            let planned = capture(prepared, context, planned, &references, io)?;
+            with_history_io(io, |work| planned.validate_with_work(child_private, work))?;
+            bytes.len()
         };
-        planned_capture.validate(child_private)?;
-        let keys = summary_keys(key)?;
-        let workspace = workspace_ref(self.host.provider.clone(), &child_private.storage_name()?)?;
-        let target = self.host.open(&workspace).await?;
-        let payload_generation = target
-            .operation_generation(filesystem_key(&keys[0]))
-            .await
-            .map_err(map_error)?
-            .map(|generation| self.host.generation_ref(&generation))
-            .transpose()?;
-        let context_generation = target
-            .operation_generation(filesystem_key(&keys[1]))
-            .await
-            .map_err(map_error)?
-            .map(|generation| self.host.generation_ref(&generation))
-            .transpose()?;
-        let head = self.host.resolve(&workspace).await?.generation;
+        if let Some(io) = io {
+            for file in references.values() {
+                resolver.verify(file, limits.file_bytes, Some(io))?.await?;
+            }
+        }
+        let keys = summary_keys(key, io)?;
+        let workspace = fsio::content_workspace(&self.host.provider, child_private, io)?;
+        let payload_generation = original_generation(self, &workspace, &keys[0], io).await?;
+        let context_generation = original_generation(self, &workspace, &keys[1], io).await?;
+        let head = (self.host).resolve(&workspace, io).await?.generation;
         if &head != initial_generation
             && payload_generation.as_ref() != Some(&head)
             && context_generation.as_ref() != Some(&head)
         {
-            return Err(Error::Conflict(
-                "child private workspace changed outside summary capture".into(),
+            return Err(conflict(
+                "child private workspace changed outside summary capture",
             ));
         }
         let payload_generation = if payloads.is_empty() {
-            initial_generation.clone()
+            if let Some(io) = io {
+                let target = (self.host).open(&workspace, Some(io)).await?;
+                let generation = (self.host)
+                    .generation(&target, initial_generation, Some(io))
+                    .await?;
+                fsio::retain(&generation, Some(io)).await?;
+                initial_generation.clone_with_io(io)?
+            } else {
+                self.host
+                    .retain_generation(&workspace, initial_generation)
+                    .await?;
+                initial_generation.clone()
+            }
         } else if let Some(generation) = payload_generation {
             generation
         } else {
-            let mut writes = vec![WorkspaceMutation::CreateDirectory {
-                path: "/.system/inherited-conversation/summary-payloads".into(),
-            }];
+            let capacity = payloads
+                .len()
+                .checked_add(1)
+                .ok_or_else(|| invalid("summary mutation count overflow"))?;
+            let mut writes = vec_with_capacity(capacity, io)?;
+            writes.push(WorkspaceMutation::CreateDirectory {
+                path: text("/.system/inherited-conversation/summary-payloads", io)?,
+            });
             for (key, file) in &payloads {
-                let bytes = journal.load(file).await?;
-                file.descriptor().verify(&bytes)?;
-                writes.push(WorkspaceMutation::PutFile {
-                    path: format!(
-                        "/.system/inherited-conversation/summary-payloads/{}",
-                        hex::encode(key)
-                    ),
-                    bytes,
-                });
+                let bytes = journal.load(file, io)?.await?;
+                with_history_io(io, |work| file.descriptor().verify(&bytes, work))?;
+                let encoded = fsio::hex_key(key, io)?;
+                let path = with_history_io(io, |work| {
+                    preparation_format(
+                        format_args!("/.system/inherited-conversation/summary-payloads/{encoded}"),
+                        work,
+                    )
+                })?;
+                writes.push(WorkspaceMutation::PutFile { path, bytes });
             }
-            self.host
-                .apply(&workspace, Some(initial_generation), &writes, &keys[0])
-                .await?
+            publish(
+                self,
+                &workspace,
+                initial_generation,
+                &writes,
+                &keys[0],
+                io,
+                preparation,
+            )
+            .await?
         };
-        self.host
-            .retain_generation(&workspace, &payload_generation)
-            .await?;
-        let copies = copy_references(
-            &payloads,
-            child_private,
-            &hex::encode(payload_generation.as_resource().key()),
-        )?;
+        let payload_version = fsio::hex_key(payload_generation.as_resource().key(), io)?;
+        let copies = copy_references(&payloads, child_private, &payload_version, io)?;
         for file in copies.values() {
-            let bytes = self.host.read_pinned(file, maximum_bytes).await?;
-            file.descriptor().verify(&bytes)?;
+            self.host.read_pinned_io(file, maximum_bytes, io).await?;
         }
-        let context = rewritten_context(prepared.context(), &copies)?;
-        crate::context::validate_projected_context(&context, limits)?;
-        let bytes = crate::contract::canonical_json_bytes(&context)?;
-        if bytes.len() != planned_bytes.len() {
-            return Err(Error::Invalid(
-                "summary fork context changed its preflight extent".into(),
-            ));
+        let context = rewritten_context(prepared.context(), &copies, io)?;
+        crate::context::validate_projected_context(&context, limits, io)?;
+        let bytes = match io {
+            Some(io) => io.encode(&context, maximum_bytes.saturating_sub(body_bytes), true)?,
+            None => crate::contract::canonical_json_bytes(&context)?.into(),
+        };
+        if bytes.len() != planned_extent {
+            return Err(invalid("summary fork context changed its preflight extent"));
         }
-        let generation = if let Some(generation) = context_generation {
-            generation
-        } else {
-            self.host
-                .apply(
+        let generation = match context_generation {
+            Some(generation) => generation,
+            None => {
+                publish(
+                    self,
                     &workspace,
-                    Some(&payload_generation),
+                    &payload_generation,
                     &[WorkspaceMutation::PutFile {
-                        path: "/.system/inherited-conversation/summary-context.json".into(),
+                        path: text("/.system/inherited-conversation/summary-context.json", io)?,
                         bytes: bytes.clone(),
                     }],
                     &keys[1],
+                    io,
+                    preparation,
                 )
                 .await?
+            }
         };
-        self.host.retain_generation(&workspace, &generation).await?;
-        let context = FileRef::new(
-            child_private.clone(),
-            ".system/inherited-conversation/summary-context.json",
-            hex::encode(generation.as_resource().key()),
-            FileDescriptor::from_bytes(&bytes, "application/json")?,
-            "summary-context.json",
-        )?;
-        let committed = self.host.read_pinned(&context, maximum_bytes).await?;
-        if committed.as_ref() != bytes {
-            return Err(Error::Conflict(
-                "summary fork retry changed its context".into(),
-            ));
+        let version = fsio::hex_key(generation.as_resource().key(), io)?;
+        let context = context_reference(child_private, &version, &bytes, io)?;
+        let committed = self
+            .host
+            .read_pinned_io(&context, maximum_bytes, io)
+            .await?;
+        if committed.as_ref() != bytes.as_ref() {
+            return Err(conflict("summary fork retry changed its context"));
         }
-        let capture = SummaryForkCapture {
-            selection: prepared.selection().clone(),
-            context,
-            payloads: copies.into_values().collect(),
-            references: references.into_values().collect(),
-        };
-        capture.validate(child_private)?;
+        let capture = capture(prepared, context, copies, &references, io)?;
+        with_history_io(io, |work| capture.validate_with_work(child_private, work))?;
         Ok((capture, generation))
     }
 }

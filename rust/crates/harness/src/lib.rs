@@ -36,7 +36,6 @@ pub mod filesystem;
 pub mod fork;
 #[cfg(feature = "grpc")]
 pub mod grpc;
-mod handles;
 pub mod interaction;
 pub mod live;
 #[cfg(feature = "machines")]
@@ -50,31 +49,48 @@ pub mod mcp;
 pub(crate) mod memory_store;
 pub mod merge;
 pub mod model;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+mod native_future;
 #[cfg(feature = "objects")]
 pub mod objects;
 mod obs;
 pub mod projection;
 pub mod registry;
+pub mod resource_preparation;
 pub mod resources;
 pub mod runtime;
 pub mod scheduler;
+pub mod source_authorization;
 pub mod store;
 pub mod tool;
 pub mod turn;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
 pub mod wire_api;
-mod wire_codec;
+pub mod wire_codec;
 pub use wire_codec::encode_error;
 #[cfg(test)]
-#[path = "../tests/support/stream.rs"]
+#[path = "../tests/support/stream/mod.rs"]
 mod test_stream;
 pub mod wire_validation;
 pub mod wire_values;
 pub mod workflow;
 
-/// Generated Protobuf packages, nested as their package names are, so the
-/// harness messages resolve the shared protocol handshake they import.
+/// Optional original native work; `None` selects unbounded work.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub type NativeWork<'a> = Option<&'a acyclic_fs::NativeMaterializationWork>;
+/// Optional original native work; `None` selects unbounded work.
+#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+pub type NativeWork<'a> = Option<&'a ()>;
+
+/// Optional custody retained for an original native allocation.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub type NativeCustody = Option<acyclic_fs::NativeAllocation>;
+/// Optional custody retained for an original native allocation.
+#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+pub type NativeCustody = Option<()>;
+
+/// Generated Protobuf packages, nested as their package names are, so the harness messages resolve the shared protocol handshake they import.
 #[allow(
     missing_docs,
     clippy::pedantic,
@@ -96,8 +112,7 @@ mod generated {
     }
 }
 
-/// Generated Protobuf envelopes shared by every transport: the harness
-/// contract and the protocol handshake it negotiates with.
+/// Generated Protobuf envelopes shared by every transport: the harness contract and the protocol handshake it negotiates with.
 pub mod wire {
     pub use super::generated::acyclic::harness::v2::*;
     pub use super::generated::acyclic::protocol::v1::*;
@@ -107,6 +122,14 @@ pub mod wire {
 pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/harness_descriptor.bin"));
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub use crate::executor::json::json_from_value_bounded;
+pub use crate::executor::json::{
+    JsonBounds, JsonCodecCharge, JsonValueSchema, JsonValueShape, canonical_json_bytes_bounded,
+    json_bytes_bounded, json_from_slice_bounded, json_owned_value_conversion_additional_bytes,
+    json_typed_diagnostic_owned_bytes, json_value_bounded, json_value_decode_owned_bytes,
+    preparation_serde_diagnostic_label_bytes, sdk_json_diagnostic_bytes,
+};
 pub use bundle::{HarnessBuilder, HarnessBundle as Harness};
 pub use contract::{
     Admission, AgentId, AuthorityLevel, AuthorityPolicy, BatchId, COMPONENT_LABEL_FORBIDDEN_EXACT,
@@ -116,11 +139,10 @@ pub use contract::{
     is_valid_component_label, resolve_policies, resolve_policy_layers,
 };
 pub use extension::{
-    ExtensionIdentity, ExtensionLease, ExtensionLeases, ExtensionLinker, ExtensionRegistry,
-    ExtensionRuntime, NativeExtension, NativeExtensionBundle,
+    ExtensionIdentity, ExtensionLease, ExtensionRegistry, ExtensionRuntime, NativeExtension,
 };
-pub use handles::{Agent, Conversation, Session, Task, Turn};
-pub use live::{
-    TaskGroup, TaskHandle, completion_stream, first_success, join_all, ordered_reduce, quorum,
-    race, recursive_sum,
-};
+pub use live::{TaskGroup, TaskHandle, completion_stream, first_success, join_all, ordered_reduce};
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub use native_future::NativeFutureBundle;
+#[cfg(feature = "filesystem")]
+pub use resource_preparation::ChildScratchCreationProof;

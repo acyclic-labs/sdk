@@ -27,8 +27,10 @@ pub enum Error {
     Service {
         /// HTTP response status.
         status: u16,
-        /// Canonical semantic error detail.
+        /// Decoded wire error, including service codes unknown to this SDK.
         detail: Option<wire::Error>,
+        /// Exact response body, including empty or malformed error payloads.
+        raw_details: Vec<u8>,
     },
 }
 
@@ -46,16 +48,92 @@ impl Error {
     }
 }
 
-/// Plain HTTP is admitted only for `localhost` and loopback IP literals.
-fn loopback(endpoint: &Url) -> bool {
-    endpoint.host_str().is_some_and(|host| {
+/// Configures bounded authenticated HTTP without redirects.
+fn configure(
+    endpoint: &str,
+    token: &str,
+    maximum: usize,
+) -> Result<(Transport, Url, HeaderValue), Error> {
+    let mut endpoint = Url::parse(endpoint).map_err(|_| Error::InvalidArgument)?;
+    let loopback = endpoint.host_str().is_some_and(|host| {
         host == "localhost"
             || host
                 .trim_start_matches('[')
                 .trim_end_matches(']')
                 .parse::<std::net::IpAddr>()
                 .is_ok_and(|ip| ip.is_loopback())
-    })
+    });
+    if !(endpoint.scheme() == "https" || endpoint.scheme() == "http" && loopback)
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || endpoint.query().is_some()
+        || endpoint.fragment().is_some()
+        || !crate::valid_token(token)
+        || maximum == 0
+    {
+        return Err(Error::InvalidArgument);
+    }
+    let mut authorization =
+        HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| Error::InvalidArgument)?;
+    authorization.set_sensitive(true);
+    if !endpoint.path().ends_with('/') {
+        endpoint.set_path(&format!("{}/", endpoint.path()));
+    }
+    let transport = Transport::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    Ok((transport, endpoint, authorization))
+}
+
+/// Encodes a request through its canonical JSON descriptor.
+fn encode(
+    descriptors: &DescriptorPool,
+    name: &str,
+    request: &impl Message,
+) -> Result<Vec<u8>, Error> {
+    let descriptor = descriptors
+        .get_message_by_name(name)
+        .ok_or(Error::MalformedResponse)?;
+    let message = DynamicMessage::decode(descriptor, request.encode_to_vec().as_slice())
+        .map_err(|_| Error::InvalidArgument)?;
+    serde_json::to_vec(&message).map_err(|_| Error::InvalidArgument)
+}
+
+/// Decodes a complete response through its canonical JSON descriptor.
+fn decode<O: Message + Default>(
+    descriptors: &DescriptorPool,
+    name: &str,
+    bytes: &[u8],
+) -> Result<O, Error> {
+    let descriptor = descriptors
+        .get_message_by_name(name)
+        .ok_or(Error::MalformedResponse)?;
+    let mut json = serde_json::Deserializer::from_slice(bytes);
+    let message =
+        DynamicMessage::deserialize(descriptor, &mut json).map_err(|_| Error::MalformedResponse)?;
+    json.end().map_err(|_| Error::MalformedResponse)?;
+    message.transcode_to().map_err(|_| Error::MalformedResponse)
+}
+
+/// Collects a response within `maximum`, returning `None` when it exceeds the bound.
+async fn response_body(
+    response: &mut reqwest::Response,
+    maximum: usize,
+) -> Result<Option<Vec<u8>>, reqwest::Error> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > maximum as u64)
+    {
+        return Ok(None);
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if chunk.len() > maximum.saturating_sub(bytes.len()) {
+            return Ok(None);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(Some(bytes))
 }
 
 /// Typed HTTP operations with bearer authentication and bounded responses.
@@ -68,33 +146,28 @@ pub struct Client {
     descriptors: DescriptorPool,
 }
 
+macro_rules! operations {
+    ($(($method:ident, $index:literal, $input:ident, $output:ident)),+ $(,)?) => {
+        $(/// Executes the canonical HTTP operation.
+        pub async fn $method(&self, request: &wire::$input) -> Result<wire::$output, Error> {
+            let route = HTTP_ROUTES.get($index).ok_or(Error::InvalidArgument)?.1;
+            self.call(
+                route,
+                concat!("acyclic.actors.v1.", stringify!($input)),
+                concat!("acyclic.actors.v1.", stringify!($output)),
+                request,
+            ).await
+        })+
+    };
+}
+
 impl Client {
     /// Create a client. HTTPS or loopback HTTP is required.
-    ///
-    /// # Errors
-    /// Rejects unsafe endpoints, invalid credentials, or a zero response bound.
     pub fn new(endpoint: &str, token: &str, maximum_response_bytes: usize) -> Result<Self, Error> {
-        let mut endpoint = Url::parse(endpoint).map_err(|_| Error::InvalidArgument)?;
-        if !(endpoint.scheme() == "https" || endpoint.scheme() == "http" && loopback(&endpoint))
-            || !endpoint.username().is_empty()
-            || endpoint.password().is_some()
-            || endpoint.query().is_some()
-            || endpoint.fragment().is_some()
-            || !crate::valid_token(token)
-            || maximum_response_bytes == 0
-        {
-            return Err(Error::InvalidArgument);
-        }
-        let mut authorization = HeaderValue::from_str(&format!("Bearer {token}"))
-            .map_err(|_| Error::InvalidArgument)?;
-        authorization.set_sensitive(true);
-        if !endpoint.path().ends_with('/') {
-            endpoint.set_path(&format!("{}/", endpoint.path()));
-        }
+        let (transport, endpoint, authorization) =
+            configure(endpoint, token, maximum_response_bytes)?;
         Ok(Self {
-            transport: Transport::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .build()?,
+            transport,
             endpoint,
             authorization,
             maximum: maximum_response_bytes,
@@ -103,9 +176,7 @@ impl Client {
         })
     }
 
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
+    #[tracing::instrument(
             name = "acyclic.actors.http.call",
             level = "info",
             skip_all,
@@ -115,7 +186,6 @@ impl Client {
                 outcome = tracing::field::Empty,
                 error.kind = tracing::field::Empty,
             )
-        )
     )]
     async fn call<I: Message, O: Message + Default>(
         &self,
@@ -124,240 +194,61 @@ impl Client {
         output: &str,
         request: &I,
     ) -> Result<O, Error> {
-        let result = self.exchange(route, input, output, request).await;
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let span = tracing::Span::current();
-            match &result {
-                Ok(_) => span.record("outcome", "ok"),
-                Err(error) => span
-                    .record("outcome", "err")
-                    .record("error.kind", error.kind()),
-            };
+        let result = async {
+            let body = encode(&self.descriptors, input, request)?;
+            let mut response = self
+                .transport
+                .post(
+                    self.endpoint
+                        .join(route)
+                        .map_err(|_| Error::InvalidArgument)?,
+                )
+                .header(AUTHORIZATION, self.authorization.clone())
+                .header("content-type", "application/json")
+                .body(body)
+                .send()
+                .await?;
+            let status = response.status();
+            tracing::Span::current().record("http.status", status.as_u16());
+            let bytes = response_body(&mut response, self.maximum)
+                .await?
+                .ok_or(Error::ResponseTooLarge)?;
+            if !status.is_success() {
+                let detail =
+                    decode::<wire::Error>(&self.descriptors, "acyclic.actors.v1.Error", &bytes)
+                        .ok()
+                        .filter(|detail| {
+                            wire::ErrorCode::try_from(detail.code)
+                                .is_ok_and(|code| code != wire::ErrorCode::Unspecified)
+                        });
+                return Err(Error::Service {
+                    status: status.as_u16(),
+                    detail,
+                    raw_details: bytes,
+                });
+            }
+            decode(&self.descriptors, output, &bytes)
         }
+        .await;
+        let span = tracing::Span::current();
+        match &result {
+            Ok(_) => span.record("outcome", "ok"),
+            Err(error) => span
+                .record("outcome", "err")
+                .record("error.kind", error.kind()),
+        };
         result
     }
 
-    async fn exchange<I: Message, O: Message + Default>(
-        &self,
-        route: &str,
-        input: &str,
-        output: &str,
-        request: &I,
-    ) -> Result<O, Error> {
-        let descriptor = self
-            .descriptors
-            .get_message_by_name(input)
-            .ok_or(Error::MalformedResponse)?;
-        let message = DynamicMessage::decode(descriptor, request.encode_to_vec().as_slice())
-            .map_err(|_| Error::InvalidArgument)?;
-        let body = serde_json::to_vec(&message).map_err(|_| Error::InvalidArgument)?;
-        let mut response = self
-            .transport
-            .post(
-                self.endpoint
-                    .join(route)
-                    .map_err(|_| Error::InvalidArgument)?,
-            )
-            .header(AUTHORIZATION, self.authorization.clone())
-            .header("content-type", "application/json")
-            .body(body)
-            .send()
-            .await?;
-        let status = response.status();
-        #[cfg(not(target_arch = "wasm32"))]
-        tracing::Span::current().record("http.status", status.as_u16());
-        if response
-            .content_length()
-            .is_some_and(|length| length > self.maximum as u64)
-        {
-            return Err(Error::ResponseTooLarge);
-        }
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await? {
-            if chunk.len() > self.maximum.saturating_sub(bytes.len()) {
-                return Err(Error::ResponseTooLarge);
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-        if !status.is_success() {
-            let detail = self
-                .decode::<wire::Error>("acyclic.actors.v1.Error", &bytes)
-                .ok()
-                .filter(|detail| {
-                    wire::ErrorCode::try_from(detail.code)
-                        .is_ok_and(|code| code != wire::ErrorCode::Unspecified)
-                });
-            return Err(Error::Service {
-                status: status.as_u16(),
-                detail,
-            });
-        }
-        self.decode(output, &bytes)
-    }
-
-    fn decode<O: Message + Default>(&self, name: &str, bytes: &[u8]) -> Result<O, Error> {
-        let descriptor = self
-            .descriptors
-            .get_message_by_name(name)
-            .ok_or(Error::MalformedResponse)?;
-        let mut json = serde_json::Deserializer::from_slice(bytes);
-        let message = DynamicMessage::deserialize(descriptor, &mut json)
-            .map_err(|_| Error::MalformedResponse)?;
-        json.end().map_err(|_| Error::MalformedResponse)?;
-        message.transcode_to().map_err(|_| Error::MalformedResponse)
-    }
-
-    /// Execute the canonical `CreateActor` operation.
-    ///
-    /// # Errors
-    /// Returns configuration, transport, decoding, bound, or canonical service errors.
-    pub async fn create_actor(
-        &self,
-        request: &wire::CreateActorRequest,
-    ) -> Result<wire::CreateActorResponse, Error> {
-        self.call(
-            HTTP_ROUTES.first().ok_or(Error::InvalidArgument)?.1,
-            "acyclic.actors.v1.CreateActorRequest",
-            "acyclic.actors.v1.CreateActorResponse",
-            request,
-        )
-        .await
-    }
-
-    /// Execute the canonical `UpdateActor` operation.
-    ///
-    /// # Errors
-    /// Returns configuration, transport, decoding, bound, or canonical service errors.
-    pub async fn update_actor(
-        &self,
-        request: &wire::UpdateActorRequest,
-    ) -> Result<wire::UpdateActorResponse, Error> {
-        self.call(
-            HTTP_ROUTES.get(1).ok_or(Error::InvalidArgument)?.1,
-            "acyclic.actors.v1.UpdateActorRequest",
-            "acyclic.actors.v1.UpdateActorResponse",
-            request,
-        )
-        .await
-    }
-
-    /// Execute the canonical `InspectActor` operation.
-    ///
-    /// # Errors
-    /// Returns configuration, transport, decoding, bound, or canonical service errors.
-    pub async fn inspect_actor(
-        &self,
-        request: &wire::InspectActorRequest,
-    ) -> Result<wire::InspectActorResponse, Error> {
-        self.call(
-            HTTP_ROUTES.get(2).ok_or(Error::InvalidArgument)?.1,
-            "acyclic.actors.v1.InspectActorRequest",
-            "acyclic.actors.v1.InspectActorResponse",
-            request,
-        )
-        .await
-    }
-
-    /// Execute the canonical `AddSubscription` operation.
-    ///
-    /// # Errors
-    /// Returns configuration, transport, decoding, bound, or canonical service errors.
-    pub async fn add_subscription(
-        &self,
-        request: &wire::AddSubscriptionRequest,
-    ) -> Result<wire::AddSubscriptionResponse, Error> {
-        self.call(
-            HTTP_ROUTES.get(3).ok_or(Error::InvalidArgument)?.1,
-            "acyclic.actors.v1.AddSubscriptionRequest",
-            "acyclic.actors.v1.AddSubscriptionResponse",
-            request,
-        )
-        .await
-    }
-
-    /// Execute the canonical `RemoveSubscription` operation.
-    ///
-    /// # Errors
-    /// Returns configuration, transport, decoding, bound, or canonical service errors.
-    pub async fn remove_subscription(
-        &self,
-        request: &wire::RemoveSubscriptionRequest,
-    ) -> Result<wire::RemoveSubscriptionResponse, Error> {
-        self.call(
-            HTTP_ROUTES.get(4).ok_or(Error::InvalidArgument)?.1,
-            "acyclic.actors.v1.RemoveSubscriptionRequest",
-            "acyclic.actors.v1.RemoveSubscriptionResponse",
-            request,
-        )
-        .await
-    }
-
-    /// Execute the canonical `ResumeSubscription` operation.
-    ///
-    /// # Errors
-    /// Returns configuration, transport, decoding, bound, or canonical service errors.
-    pub async fn resume_subscription(
-        &self,
-        request: &wire::ResumeSubscriptionRequest,
-    ) -> Result<wire::ResumeSubscriptionResponse, Error> {
-        self.call(
-            HTTP_ROUTES.get(5).ok_or(Error::InvalidArgument)?.1,
-            "acyclic.actors.v1.ResumeSubscriptionRequest",
-            "acyclic.actors.v1.ResumeSubscriptionResponse",
-            request,
-        )
-        .await
-    }
-
-    /// Execute the canonical `CheckpointActor` operation.
-    ///
-    /// # Errors
-    /// Returns configuration, transport, decoding, bound, or canonical service errors.
-    pub async fn checkpoint_actor(
-        &self,
-        request: &wire::CheckpointActorRequest,
-    ) -> Result<wire::CheckpointActorResponse, Error> {
-        self.call(
-            HTTP_ROUTES.get(6).ok_or(Error::InvalidArgument)?.1,
-            "acyclic.actors.v1.CheckpointActorRequest",
-            "acyclic.actors.v1.CheckpointActorResponse",
-            request,
-        )
-        .await
-    }
-
-    /// Execute the canonical `InvokeActor` operation.
-    ///
-    /// # Errors
-    /// Returns configuration, transport, decoding, bound, or canonical service errors.
-    pub async fn invoke_actor(
-        &self,
-        request: &wire::InvokeActorRequest,
-    ) -> Result<wire::InvokeActorResponse, Error> {
-        self.call(
-            HTTP_ROUTES.get(7).ok_or(Error::InvalidArgument)?.1,
-            "acyclic.actors.v1.InvokeActorRequest",
-            "acyclic.actors.v1.InvokeActorResponse",
-            request,
-        )
-        .await
-    }
-
-    /// Execute the canonical `DeleteActor` operation.
-    ///
-    /// # Errors
-    /// Returns configuration, transport, decoding, bound, or canonical service errors.
-    pub async fn delete_actor(
-        &self,
-        request: &wire::DeleteActorRequest,
-    ) -> Result<wire::DeleteActorResponse, Error> {
-        self.call(
-            HTTP_ROUTES.get(8).ok_or(Error::InvalidArgument)?.1,
-            "acyclic.actors.v1.DeleteActorRequest",
-            "acyclic.actors.v1.DeleteActorResponse",
-            request,
-        )
-        .await
+    operations! {
+        (create_actor, 0, CreateActorRequest, CreateActorResponse),
+        (update_actor, 1, UpdateActorRequest, UpdateActorResponse),
+        (inspect_actor, 2, InspectActorRequest, InspectActorResponse),
+        (add_subscription, 3, AddSubscriptionRequest, AddSubscriptionResponse),
+        (remove_subscription, 4, RemoveSubscriptionRequest, RemoveSubscriptionResponse),
+        (resume_subscription, 5, ResumeSubscriptionRequest, ResumeSubscriptionResponse),
+        (checkpoint_actor, 6, CheckpointActorRequest, CheckpointActorResponse),
+        (invoke_actor, 7, InvokeActorRequest, InvokeActorResponse),
+        (delete_actor, 8, DeleteActorRequest, DeleteActorResponse),
     }
 }

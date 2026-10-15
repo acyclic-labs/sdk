@@ -236,7 +236,7 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
         "scripts/generated-bindings.mjs",
         "scripts/ensure-bun.ps1",
         "scripts/ensure-bun.sh",
-        "patches/napi-rs-cli-3.10.5.patch",
+        "patches/napi-rs-cli-3.10.8.patch",
     ] {
         roots.insert(path.to_owned());
     }

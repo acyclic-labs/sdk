@@ -147,7 +147,7 @@ impl StateSlots {
             .write(true)
             .open(data.join(ADAPTER_STATE_SLOTS[2]))
             .map_err(display)?;
-        sync_file(&file, Durability::Full).map_err(display)?;
+        sync_file(&file, Durability::Full, None).map_err(display)?;
         if !self.durable_entry[2] {
             sync_parent(data, Durability::Full).map_err(display)?;
             self.durable_entry[2] = true;
@@ -205,7 +205,7 @@ impl StateSlots {
             self.flushed.get_mut(target),
             self.durable_entry.get_mut(target),
         ) {
-            sync_file(&file, Durability::Full).map_err(display)?;
+            sync_file(&file, Durability::Full, None).map_err(display)?;
             if !*durable_entry {
                 sync_parent(data, Durability::Full).map_err(display)?;
                 *durable_entry = true;
@@ -262,20 +262,6 @@ pub(crate) fn save_state(
     survives: Survives,
 ) -> Result<(), String> {
     StateSlots::read(data)?.0.save(data, state, survives)
-}
-
-/// When the session last completed a save, for newest-first recovery order.
-pub(crate) fn state_modified(data: &Path) -> std::time::SystemTime {
-    ADAPTER_STATE_SLOTS
-        .iter()
-        .filter_map(|slot| {
-            data.join(slot)
-                .metadata()
-                .and_then(|metadata| metadata.modified())
-                .ok()
-        })
-        .max()
-        .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
 }
 
 pub(crate) fn validate_state_version(state: &AdapterState) -> Result<(), String> {
@@ -359,6 +345,20 @@ pub(crate) fn validate_state_bounds(state: &AdapterState) -> Result<(), String> 
     {
         return Err("pending root registration is incomplete".to_owned());
     }
+    for root in state.roots.values() {
+        match &root.allocation {
+            RootAllocation::Created(creation) => creation.validate()?,
+            RootAllocation::Preparing
+                if matches!(state.task_binding, PluginTaskBinding::Pi(_))
+                    && state.pending_root_registration
+                    && state.routes.is_empty()
+                    && state.pending.is_empty()
+                    && state.pending_root_adoptions.is_empty()
+                    && state.leases.is_empty()
+                    && state.pending_discards.is_empty() => {}
+            _ => return Err("root allocation is invalid or has unbound preparation".to_owned()),
+        }
+    }
     if state
         .routes
         .values()
@@ -375,18 +375,44 @@ pub(crate) fn validate_state_bounds(state: &AdapterState) -> Result<(), String> 
         return Err("adapter route or lease exceeds the root bound".to_owned());
     }
     if state.pending.iter().any(|pending| {
-        let pending_key = pending.mount_name();
-        pending
-            .mount_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            != Some(pending_key.as_str())
-            || pending
-                .mount_path
-                .parent()
-                .and_then(Path::file_name)
-                .and_then(|name| name.to_str())
-                != Some("w")
+        let invalid_location = match &pending.task_binding {
+            PluginTaskBinding::HostManaged => {
+                let pending_key = pending.mount_name();
+                pending
+                    .mount_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    != Some(pending_key.as_str())
+                    || pending
+                        .mount_path
+                        .parent()
+                        .and_then(Path::file_name)
+                        .and_then(|name| name.to_str())
+                        != Some("w")
+            }
+            PluginTaskBinding::Pi(binding) => {
+                let task_directory = blake3::hash(&binding.task_id.into_bytes()).to_hex();
+                pending
+                    .mount_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    != Some("view")
+                    || pending
+                        .mount_path
+                        .parent()
+                        .and_then(Path::file_name)
+                        .and_then(|name| name.to_str())
+                        != Some(task_directory.as_str())
+                    || pending
+                        .mount_path
+                        .parent()
+                        .and_then(Path::parent)
+                        .and_then(Path::file_name)
+                        .and_then(|name| name.to_str())
+                        != Some("agents")
+            }
+        };
+        invalid_location
             || pending
                 .roots
                 .iter()

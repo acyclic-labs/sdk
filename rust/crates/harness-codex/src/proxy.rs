@@ -117,35 +117,11 @@ impl std::fmt::Debug for ResponsesProxy {
 }
 
 impl ResponsesProxy {
-    /// Starts the proxy. `max_steps` caps forwarded model calls for the turn.
+    /// Starts the proxy with a model-step cap and optional call reporting.
     ///
     /// # Errors
     /// When the listener cannot bind or the HTTP client cannot be built.
     pub async fn start(
-        upstream: Upstream,
-        meter: Arc<dyn UsageMeter>,
-        max_steps: u32,
-    ) -> Result<Self> {
-        Self::launch(upstream, meter, max_steps, None).await
-    }
-
-    /// Starts the proxy and reports every call on the returned channel.
-    ///
-    /// # Errors
-    /// As [`Self::start`].
-    pub async fn start_reporting(
-        upstream: Upstream,
-        meter: Arc<dyn UsageMeter>,
-        max_steps: u32,
-    ) -> Result<(Self, mpsc::UnboundedReceiver<ProxyCall>)> {
-        let (sender, receiver) = mpsc::unbounded_channel();
-        Ok((
-            Self::launch(upstream, meter, max_steps, Some(sender)).await?,
-            receiver,
-        ))
-    }
-
-    async fn launch(
         upstream: Upstream,
         meter: Arc<dyn UsageMeter>,
         max_steps: u32,

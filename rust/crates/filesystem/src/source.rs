@@ -10,8 +10,8 @@ use crate::model::{CheckoutMode, GenerationSelector};
 use crate::path::PortablePath;
 use crate::{
     AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, CancellationToken, CaptureOptions,
-    CapturePolicy, Checkout, CheckoutCommitOutcome, CreateAuthorityOutcome, Fs, Generation,
-    IdempotencyKey, NativeWatch, NativeWatchOptions, ReplayLimit, WatchBatch,
+    CapturePolicy, Checkout, CreateAuthorityOutcome, Fs, Generation, IdempotencyKey,
+    LivePublicationObservation, NativeWatch, NativeWatchOptions, ReplayLimit, WatchBatch,
     WatchInvalidationReason, WorkBudget, Workspace,
 };
 use bytes::Bytes;
@@ -65,8 +65,7 @@ pub enum SourceState {
     PendingCapture,
     /// Native continuity was lost; automatic advancement is stopped.
     NeedsRescan(WatchInvalidationReason),
-    /// Source changes overlap independent workspace publication; reattachment
-    /// is required to establish a new acknowledged base.
+    /// Source changes overlap independent workspace publication; reattachment is required to establish a new acknowledged base.
     Conflict,
     /// The returned generation is independent of this source.
     Sealed,
@@ -78,8 +77,7 @@ pub enum ReconcileOutcome<A, O> {
     Clean(Generation<A, O>),
     /// Continuity is lost and an explicit full rescan is required.
     NeedsRescan(WatchInvalidationReason),
-    /// Concurrent workspace changes overlap source capture; the source remains
-    /// fail-closed until it is reattached.
+    /// Concurrent workspace changes overlap source capture; the source remains fail-closed until it is reattached.
     Conflict,
 }
 
@@ -158,12 +156,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
         self.inner.lock().await.state
     }
 
-    /// Re-establishes a clean source baseline after the core materializer has
-    /// installed a published workspace generation into the attached root.
-    ///
-    /// A fresh checkout is opened at authenticated workspace HEAD and a full
-    /// bounded rescan proves the resulting host tree. Any concurrent host
-    /// change is captured as a later generation instead of being discarded.
+    /// Re-establishes a clean source baseline after the core materializer has installed a published workspace generation into the attached root.
     pub async fn acknowledge_materialization(
         &self,
         key: IdempotencyKey,
@@ -194,26 +187,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
     }
 
     /// Captures one bounded contiguous watcher interval and publishes it.
-    /// A clean interval still advances authority ordering to atomically prove
-    /// that its acknowledged workspace generation was current.
-    ///
-    /// # Errors
-    ///
-    /// Rejects pinned sources and propagates exact native/canonical failures.
     pub async fn reconcile(&self) -> Result<ReconcileOutcome<A, O>, SourceError> {
         self.reconcile_with_key(IdempotencyKey::new()).await
     }
 
     /// Captures and publishes one watcher interval under a stable retry key.
-    ///
-    /// An exact retry returns the original durable outcome, including after a
-    /// process restart. Reusing the key for another lifecycle operation is an
-    /// idempotency conflict.
-    ///
-    /// # Errors
-    ///
-    /// Rejects pinned sources, conflicting retry identities, and exact
-    /// native/canonical failures.
     pub async fn reconcile_with_key(
         &self,
         key: IdempotencyKey,
@@ -253,7 +231,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
         }
         let capture = session.capture.clone();
         let policy = session.capture_policy.clone();
-        crate::capture_watch_batch_with_policy(
+        crate::capture_watch_batch(
             &mut session.checkout,
             batch,
             &capture,
@@ -272,23 +250,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
         .await
     }
 
-    /// Rebuilds one complete authenticated baseline while preserving events
-    /// that arrive concurrently with the scan.
-    ///
-    /// # Errors
-    ///
-    /// Returns native, capture, authority, or storage failures without
-    /// acknowledging an incomplete interval.
+    /// Rebuilds one complete authenticated baseline while preserving events that arrive concurrently with the scan.
     pub async fn rescan(&self) -> Result<ReconcileOutcome<A, O>, SourceError> {
         self.rescan_with_key(IdempotencyKey::new()).await
     }
 
     /// Rebuilds a complete baseline under a stable retry key.
-    ///
-    /// # Errors
-    ///
-    /// Returns conflicting retry identities and exact native/canonical
-    /// failures.
     pub async fn rescan_with_key(
         &self,
         key: IdempotencyKey,
@@ -312,22 +279,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
         .await
     }
 
-    /// Produces an immutable generation whose bytes no longer depend on the
-    /// attached directory.
-    ///
-    /// # Errors
-    ///
-    /// Fails unless a complete authenticated rescan and publication succeeds.
+    /// Produces an immutable generation whose bytes no longer depend on the attached directory.
     pub async fn seal(&self) -> Result<Generation<A, O>, SourceError> {
         self.seal_with_key(IdempotencyKey::new()).await
     }
 
     /// Seals the source under a stable retry key.
-    ///
-    /// # Errors
-    ///
-    /// Returns conflicting retry identities and fails unless the original or
-    /// recovered operation reached a clean sealed generation.
     pub async fn seal_with_key(
         &self,
         key: IdempotencyKey,
@@ -371,7 +328,7 @@ async fn rescan_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         loop {
             session.watcher.begin_rescan().map_err(engine)?;
             let policy = session.capture_policy.clone();
-            let capture = crate::capture_baseline_with_policy(
+            let capture = crate::capture_baseline(
                 &mut session.checkout,
                 &session.capture,
                 &policy,
@@ -420,7 +377,7 @@ async fn rescan_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     }
     let capture = session.capture.clone();
     let policy = session.capture_policy.clone();
-    crate::capture_watch_batch_with_policy(
+    crate::capture_watch_batch(
         &mut session.checkout,
         trailing,
         &capture,
@@ -463,24 +420,34 @@ async fn publish_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let operation_context = source_volume_operation_context(key, operation);
     let outcome = session
         .checkout
-        .commit_with_context(
+        .commit_even_if_clean(
             operation_id,
-            operation_context,
+            Some(operation_context),
+            None,
+            None,
+            crate::PublicationPermit::Unrestricted,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
+            &mut |_| async {
+                crate::FsResult::Ok(crate::OperationReceipt {
+                    value: (),
+                    work: crate::WorkCounters::UNCHARGED,
+                })
+            },
+            None,
         )
         .await
         .map_err(engine)?
         .value;
     match outcome {
-        CheckoutCommitOutcome::Committed { generation_id, .. }
-        | CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. } => {
+        LivePublicationObservation::Committed { generation_id, .. }
+        | LivePublicationObservation::AlreadyCommitted { generation_id, .. } => {
             persist_generation_outcome(session, terminal_state, generation_id, key, operation).await
         }
-        CheckoutCommitOutcome::Conflict { .. } if !had_pending_mutations => {
+        LivePublicationObservation::Conflict { .. } if !had_pending_mutations => {
             persist_state_outcome(session, SourceState::Conflict, key, operation).await
         }
-        CheckoutCommitOutcome::Conflict { actual } => {
+        LivePublicationObservation::Conflict { actual } => {
             if conflict_head_reuses_checkout_base(
                 &session.workspace,
                 session.checkout.generation_id(),
@@ -496,18 +463,28 @@ async fn publish_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             }
             let retried = session
                 .checkout
-                .commit_with_context(
+                .commit_even_if_clean(
                     operation_id,
-                    operation_context,
+                    Some(operation_context),
+                    None,
+                    None,
+                    crate::PublicationPermit::Unrestricted,
                     WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
+                    &mut |_| async {
+                        crate::FsResult::Ok(crate::OperationReceipt {
+                            value: (),
+                            work: crate::WorkCounters::UNCHARGED,
+                        })
+                    },
+                    None,
                 )
                 .await
                 .map_err(engine)?
                 .value;
             match retried {
-                CheckoutCommitOutcome::Committed { generation_id, .. }
-                | CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. } => {
+                LivePublicationObservation::Committed { generation_id, .. }
+                | LivePublicationObservation::AlreadyCommitted { generation_id, .. } => {
                     persist_generation_outcome(
                         session,
                         terminal_state,
@@ -517,18 +494,21 @@ async fn publish_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     )
                     .await
                 }
-                CheckoutCommitOutcome::Conflict { .. } | CheckoutCommitOutcome::Fenced { .. } => {
+                LivePublicationObservation::Conflict { .. }
+                | LivePublicationObservation::Fenced { .. } => {
                     persist_state_outcome(session, SourceState::Conflict, key, operation).await
                 }
-                CheckoutCommitOutcome::IdempotencyConflict { .. } => {
+                LivePublicationObservation::IdempotencyConflict { .. } => {
                     Err(SourceError::IdempotencyConflict)
                 }
             }
         }
-        CheckoutCommitOutcome::Fenced { .. } => {
+        LivePublicationObservation::Fenced { .. } => {
             persist_state_outcome(session, SourceState::Conflict, key, operation).await
         }
-        CheckoutCommitOutcome::IdempotencyConflict { .. } => Err(SourceError::IdempotencyConflict),
+        LivePublicationObservation::IdempotencyConflict { .. } => {
+            Err(SourceError::IdempotencyConflict)
+        }
     }
 }
 
@@ -540,11 +520,8 @@ async fn conflict_head_reuses_checkout_base<A: AsyncAuthorityStore, O: AsyncObje
     let previous_sequence = actual.sequence.get().checked_sub(1).ok_or_else(|| {
         SourceError::Engine("conflicting volume head has no durable record".to_owned())
     })?;
-    let records = workspace
-        .volume
-        .fs
-        .authority()
-        .replay(
+    let records = ({
+        let __authority_args = (
             volume_authority_id(workspace.volume.id()),
             Sequence::new(previous_sequence),
             ReplayLimit {
@@ -553,10 +530,25 @@ async fn conflict_head_reuses_checkout_base<A: AsyncAuthorityStore, O: AsyncObje
             },
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        )
-        .await
-        .map_err(engine)?
-        .value;
+        );
+        let mut __authority_work =
+            crate::AuthorityWork::new(__authority_args.3, __authority_args.4);
+        let __authority_result = workspace
+            .volume
+            .fs
+            .authority()
+            .replay(
+                __authority_args.0,
+                __authority_args.1,
+                __authority_args.2,
+                &mut __authority_work,
+            )
+            .await
+            .map(|(value, _allocation)| value);
+        __authority_work.receipt(__authority_result)
+    })
+    .map_err(engine)?
+    .value;
     let record = records.first().ok_or_else(|| {
         SourceError::Engine("conflicting volume head has no durable record".to_owned())
     })?;
@@ -568,7 +560,10 @@ async fn conflict_head_reuses_checkout_base<A: AsyncAuthorityStore, O: AsyncObje
             "conflicting volume head does not match durable history".to_owned(),
         ));
     }
-    let published = decode_published_generation(&record.payload, 4096).map_err(engine)?;
+    let published = decode_published_generation(&record.payload, 4096, |_| {
+        Ok::<_, crate::kernel::CanonicalDecodeError>(())
+    })
+    .map_err(engine)?;
     if published.volume_id != workspace.volume.id() {
         return Err(SourceError::Engine(
             "conflicting volume publication belongs to another volume".to_owned(),
@@ -629,6 +624,7 @@ fn reconcile_outcome_from_fact<A, O>(
             Ok(ReconcileOutcome::Clean(Generation {
                 workspace: session.workspace.clone(),
                 id: fact.generation_id,
+                publication_closure: None,
             }))
         }
         DurableSourceState::NeedsRescan(reason) => {
@@ -643,11 +639,6 @@ fn reconcile_outcome_from_fact<A, O>(
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     /// Creates or opens one workspace and attaches an exact native directory.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid bounds, unsafe roots, unsupported host semantics, or a
-    /// baseline that cannot be atomically authenticated and published.
     pub async fn attach_directory(
         &self,
         name: impl AsRef<str>,
@@ -660,7 +651,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         {
             return Err(SourceError::InvalidOptions);
         }
-        let workspace = self.create_workspace(name).await.map_err(engine)?;
+        let workspace = self
+            .create_workspace(
+                name,
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
+            .map_err(engine)?;
         let watcher = NativeWatch::open_with_profile(
             path.as_ref(),
             workspace.volume.config().profile,
@@ -692,7 +692,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 .collect::<Result<Vec<_>, _>>()?,
         )
         .map_err(engine)?;
-        let generation = workspace.head().await.map_err(engine)?;
+        let generation = workspace
+            .head(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
+            .map_err(engine)?;
         let authority_head = attach_source_authority(
             &workspace,
             watcher.root_identity(),
@@ -745,19 +753,31 @@ async fn attach_source_authority<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     generation_id: crate::GenerationId,
 ) -> Result<Head, SourceError> {
     let authority_id = source_authority_id(workspace.volume.id());
-    let created = workspace
-        .volume
-        .fs
-        .authority()
-        .create_authority(
+    let created = ({
+        let __authority_args = (
             authority_id,
             Epoch::GENESIS,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        )
-        .await
-        .map_err(engine)?
-        .value;
+        );
+        let mut __authority_work =
+            crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
+        let __authority_result = workspace
+            .volume
+            .fs
+            .authority()
+            .create_authority(
+                __authority_args.0,
+                __authority_args.1,
+                &mut __authority_work,
+                None::<&mut ()>,
+            )
+            .await
+            .map_err(|error| error.into_error(std::convert::identity));
+        __authority_work.receipt(__authority_result)
+    })
+    .map_err(engine)?
+    .value;
     let head = match created {
         CreateAuthorityOutcome::Created(head) | CreateAuthorityOutcome::Existing(head) => head,
     };
@@ -797,11 +817,8 @@ async fn replay_source_fact<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     head: Head,
 ) -> Result<SourceFact, SourceError> {
     let after = Sequence::new(head.sequence.get().saturating_sub(1));
-    let records = workspace
-        .volume
-        .fs
-        .authority()
-        .replay(
+    let records = ({
+        let __authority_args = (
             source_authority_id(workspace.volume.id()),
             after,
             ReplayLimit {
@@ -810,10 +827,25 @@ async fn replay_source_fact<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             },
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        )
-        .await
-        .map_err(engine)?
-        .value;
+        );
+        let mut __authority_work =
+            crate::AuthorityWork::new(__authority_args.3, __authority_args.4);
+        let __authority_result = workspace
+            .volume
+            .fs
+            .authority()
+            .replay(
+                __authority_args.0,
+                __authority_args.1,
+                __authority_args.2,
+                &mut __authority_work,
+            )
+            .await
+            .map(|(value, _allocation)| value);
+        __authority_work.receipt(__authority_result)
+    })
+    .map_err(engine)?
+    .value;
     let record = records.first().ok_or_else(|| {
         SourceError::Engine("source authority head has no terminal fact".to_owned())
     })?;
@@ -823,19 +855,25 @@ async fn replay_source_fact<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 async fn refresh_source_authority<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     session: &mut SourceSession<A, O>,
 ) -> Result<(), SourceError> {
-    let head = session
-        .workspace
-        .volume
-        .fs
-        .authority()
-        .head(
+    let head = ({
+        let __authority_args = (
             source_authority_id(session.workspace.volume.id()),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        )
-        .await
-        .map_err(engine)?
-        .value;
+        );
+        let mut __authority_work =
+            crate::AuthorityWork::new(__authority_args.1, __authority_args.2);
+        let __authority_result = session
+            .workspace
+            .volume
+            .fs
+            .authority()
+            .head(__authority_args.0, &mut __authority_work)
+            .await;
+        __authority_work.receipt(__authority_result)
+    })
+    .map_err(engine)?
+    .value;
     if head == session.authority_head {
         return Ok(());
     }
@@ -920,6 +958,7 @@ async fn replay_reconcile_operation<A: AsyncAuthorityStore, O: AsyncObjectStore>
         DurableSourceState::Clean => ReconcileOutcome::Clean(Generation {
             workspace: session.workspace.clone(),
             id: fact.generation_id,
+            publication_closure: None,
         }),
         DurableSourceState::NeedsRescan(reason) => {
             ReconcileOutcome::NeedsRescan(watch_invalidation(reason))
@@ -985,6 +1024,7 @@ async fn replay_seal_operation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         DurableSourceState::Sealed => Ok(Some(Generation {
             workspace: session.workspace.clone(),
             id: fact.generation_id,
+            publication_closure: None,
         })),
         DurableSourceState::Conflict => Err(SourceError::Conflict),
         DurableSourceState::NeedsRescan(_) => Err(SourceError::Engine(
@@ -1003,20 +1043,30 @@ async fn find_source_operation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     stage: SourceOperationStage,
 ) -> Result<Option<RecoveredSourceOperation>, SourceError> {
     let authority_id = source_authority_id(session.workspace.volume.id());
-    let recovered = session
-        .workspace
-        .volume
-        .fs
-        .authority()
-        .find_operation(
+    let recovered = ({
+        let __authority_args = (
             authority_id,
             source_stage_operation_id(key, stage),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        )
-        .await
-        .map_err(engine)?
-        .value;
+        );
+        let mut __authority_work =
+            crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
+        let __authority_result = session
+            .workspace
+            .volume
+            .fs
+            .authority()
+            .find_operation(
+                __authority_args.0,
+                __authority_args.1,
+                &mut __authority_work,
+            )
+            .await;
+        __authority_work.receipt(__authority_result)
+    })
+    .map_err(engine)?
+    .value;
     let Some(commit) = recovered else {
         return Ok(None);
     };
@@ -1076,7 +1126,10 @@ async fn published_generation_for_key<A: AsyncAuthorityStore, O: AsyncObjectStor
     let Some(commit) = receipt.value else {
         return Ok(None);
     };
-    let published = decode_published_generation(&commit.payload, 4096).map_err(engine)?;
+    let published = decode_published_generation(&commit.payload, 4096, |_| {
+        Ok::<_, crate::kernel::CanonicalDecodeError>(())
+    })
+    .map_err(engine)?;
     if published.volume_id != session.workspace.volume.id() {
         return Err(SourceError::IdempotencyConflict);
     }
@@ -1096,11 +1149,18 @@ async fn published_generation_for_key<A: AsyncAuthorityStore, O: AsyncObjectStor
         operation_id: source_volume_operation_id(key, operation),
         generation_root: published.generation_root,
     };
+    let cancellation = CancellationToken::new();
+    let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    );
     if commit.fingerprint
         != contextual_publication_fingerprint(
             request,
             source_volume_operation_context(key, operation),
+            &mut accounting,
         )
+        .map_err(engine)?
     {
         return Err(SourceError::IdempotencyConflict);
     }
@@ -1265,11 +1325,8 @@ async fn append_source_fact_with_identity<A: AsyncAuthorityStore, O: AsyncObject
 ) -> Result<Head, SourceError> {
     let authority_id = source_authority_id(workspace.volume.id());
     let payload = encode_source_fact(fact).map_err(engine)?;
-    let outcome = workspace
-        .volume
-        .fs
-        .authority()
-        .compare_and_append(
+    let outcome = ({
+        let __authority_args = (
             authority_id,
             expected.epoch,
             expected,
@@ -1280,10 +1337,30 @@ async fn append_source_fact_with_identity<A: AsyncAuthorityStore, O: AsyncObject
             },
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        )
-        .await
-        .map_err(engine)?
-        .value;
+        );
+        let mut __authority_work =
+            crate::AuthorityWork::new(__authority_args.4, __authority_args.5);
+        let __authority_result = workspace
+            .volume
+            .fs
+            .authority()
+            .compare_and_append(
+                crate::GuardedAppend {
+                    authority_id: __authority_args.0,
+                    epoch: __authority_args.1,
+                    expected: __authority_args.2,
+                    commit: __authority_args.3,
+                    permit: crate::PublicationPermit::Unrestricted,
+                },
+                &mut __authority_work,
+                None::<&mut ()>,
+            )
+            .await
+            .map_err(|error| error.into_error(std::convert::identity));
+        __authority_work.receipt(__authority_result)
+    })
+    .map_err(engine)?
+    .value;
     match outcome {
         AppendOutcome::Committed(commit) | AppendOutcome::AlreadyCommitted(commit) => Ok(Head {
             epoch: commit.epoch,
@@ -1493,107 +1570,146 @@ mod tests {
     }
 
     impl AsyncAuthorityStore for GatedAuthorityStore {
-        async fn fork_generation_authority(
+        async fn create_authority<G: crate::AuthorityGuard>(
+            &self,
+            authority: crate::AuthorityId,
+            epoch: crate::Epoch,
+            work: &mut crate::AuthorityWork<'_>,
+            mut guard: Option<&mut G>,
+        ) -> Result<crate::CreateAuthorityOutcome, crate::AuthorityError<G::Error>> {
+            #[cfg(not(target_arch = "wasm32"))]
+            if work.original.is_some() {
+                return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into());
+            }
+            crate::async_storage::seal(guard.as_deref_mut(), work).await?;
+            let value = self
+                .inner
+                .create_authority(authority, epoch, work, None::<&mut ()>)
+                .await
+                .map_err(|error| {
+                    crate::AuthorityError::Authority(error.into_error(std::convert::identity))
+                })?;
+            if matches!(value, crate::CreateAuthorityOutcome::Existing(_)) {
+                crate::async_storage::seal(guard, work).await?;
+            }
+            Ok(value)
+        }
+        async fn fork_authority<G: crate::AuthorityGuard>(
             &self,
             source: crate::GenerationForkSource,
-            destination_authority: crate::foundation::AuthorityId,
-            operation_id: crate::foundation::OperationId,
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> crate::AuthorityResult<CreateAuthorityOutcome> {
-            self.inner
-                .fork_generation_authority(
-                    source,
-                    destination_authority,
-                    operation_id,
-                    budget,
-                    cancellation,
+            destination: crate::AuthorityId,
+            operation: crate::OperationId,
+            work: &mut crate::AuthorityWork<'_>,
+            mut guard: Option<&mut G>,
+        ) -> Result<crate::CreateAuthorityOutcome, crate::AuthorityError<G::Error>> {
+            #[cfg(not(target_arch = "wasm32"))]
+            if work.original.is_some() {
+                return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into());
+            }
+            crate::async_storage::seal(guard.as_deref_mut(), work).await?;
+            let value = self
+                .inner
+                .fork_authority(source, destination, operation, work, None::<&mut ()>)
+                .await
+                .map_err(|error| {
+                    crate::AuthorityError::Authority(error.into_error(std::convert::identity))
+                })?;
+            if matches!(value, crate::CreateAuthorityOutcome::Existing(_)) {
+                crate::async_storage::seal(guard, work).await?;
+            }
+            Ok(value)
+        }
+        async fn compare_and_append<G: crate::AuthorityGuard>(
+            &self,
+            request: crate::GuardedAppend,
+            work: &mut crate::AuthorityWork<'_>,
+            guard: Option<&mut G>,
+        ) -> Result<crate::AppendOutcome, crate::AuthorityError<G::Error>> {
+            #[cfg(not(target_arch = "wasm32"))]
+            if work.original.is_some() {
+                return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into());
+            }
+            if request.permit != crate::PublicationPermit::Unrestricted {
+                return Err(crate::AuthorityStoreError::Rejected(
+                    "authority backend cannot atomically evaluate operation leases".to_owned(),
                 )
-                .await
-        }
+                .into());
+            }
+            crate::async_storage::seal(guard, work).await?;
 
-        async fn create_authority(
-            &self,
-            authority_id: crate::foundation::AuthorityId,
-            genesis_epoch: Epoch,
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> crate::AuthorityResult<CreateAuthorityOutcome> {
-            self.inner
-                .create_authority(authority_id, genesis_epoch, budget, cancellation)
-                .await
-        }
-
-        async fn head(
-            &self,
-            authority_id: crate::foundation::AuthorityId,
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> crate::AuthorityResult<Head> {
-            self.inner.head(authority_id, budget, cancellation).await
-        }
-
-        async fn compare_and_append(
-            &self,
-            authority_id: crate::foundation::AuthorityId,
-            epoch: Epoch,
-            expected: Head,
-            commit: ProposedCommit,
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> crate::AuthorityResult<AppendOutcome> {
             if self
                 .gate
-                .matches(commit.operation_id, AppendGatePhase::Before)
+                .matches(request.commit.operation_id, AppendGatePhase::Before)
             {
                 self.gate.wait().await;
             }
-            let operation_id = commit.operation_id;
+            let operation_id = request.commit.operation_id;
             let result = self
                 .inner
-                .compare_and_append(authority_id, epoch, expected, commit, budget, cancellation)
-                .await;
+                .compare_and_append(request, work, None::<&mut ()>)
+                .await
+                .map_err(|error| {
+                    crate::AuthorityError::Authority(error.into_error(std::convert::identity))
+                });
             if self.gate.matches(operation_id, AppendGatePhase::After) {
                 self.gate.wait().await;
             }
             result
         }
+        async fn head(
+            &self,
+            authority: crate::AuthorityId,
+            work: &mut crate::AuthorityWork<'_>,
+        ) -> Result<crate::Head, crate::AuthorityStoreError> {
+            #[cfg(not(target_arch = "wasm32"))]
+            if work.original.is_some() {
+                return Err(crate::AuthorityStoreError::NativeOriginalUnsupported);
+            }
 
+            self.inner.head(authority, work).await
+        }
         async fn replay(
             &self,
-            authority_id: crate::foundation::AuthorityId,
-            after: Sequence,
-            limit: ReplayLimit,
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> crate::AuthorityResult<Vec<crate::foundation::DurableCommit>> {
-            self.inner
-                .replay(authority_id, after, limit, budget, cancellation)
-                .await
-        }
+            authority: crate::AuthorityId,
+            after: crate::Sequence,
+            limit: crate::ReplayLimit,
+            work: &mut crate::AuthorityWork<'_>,
+        ) -> Result<
+            (Vec<crate::DurableCommit>, crate::AuthorityAllocation),
+            crate::AuthorityStoreError,
+        > {
+            #[cfg(not(target_arch = "wasm32"))]
+            if work.original.is_some() {
+                return Err(crate::AuthorityStoreError::NativeOriginalUnsupported);
+            }
 
+            self.inner.replay(authority, after, limit, work).await
+        }
         async fn fence(
             &self,
-            authority_id: crate::foundation::AuthorityId,
-            expected: Head,
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> crate::AuthorityResult<crate::FenceOutcome> {
-            self.inner
-                .fence(authority_id, expected, budget, cancellation)
-                .await
-        }
+            authority: crate::AuthorityId,
+            expected: crate::Head,
+            work: &mut crate::AuthorityWork<'_>,
+        ) -> Result<crate::FenceOutcome, crate::AuthorityStoreError> {
+            #[cfg(not(target_arch = "wasm32"))]
+            if work.original.is_some() {
+                return Err(crate::AuthorityStoreError::NativeOriginalUnsupported);
+            }
 
+            self.inner.fence(authority, expected, work).await
+        }
         async fn find_operation(
             &self,
-            authority_id: crate::foundation::AuthorityId,
-            operation_id: OperationId,
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> crate::AuthorityResult<Option<crate::foundation::DurableCommit>> {
-            self.inner
-                .find_operation(authority_id, operation_id, budget, cancellation)
-                .await
+            authority: crate::AuthorityId,
+            operation: crate::OperationId,
+            work: &mut crate::AuthorityWork<'_>,
+        ) -> Result<Option<crate::DurableCommit>, crate::AuthorityStoreError> {
+            #[cfg(not(target_arch = "wasm32"))]
+            if work.original.is_some() {
+                return Err(crate::AuthorityStoreError::NativeOriginalUnsupported);
+            }
+
+            self.inner.find_operation(authority, operation, work).await
         }
     }
 
@@ -1631,7 +1747,7 @@ mod tests {
         session.watcher.begin_rescan()?;
         let capture = session.capture.clone();
         let policy = session.capture_policy.clone();
-        crate::capture_baseline_with_policy(
+        crate::capture_baseline(
             &mut session.checkout,
             &capture,
             &policy,
@@ -1640,7 +1756,7 @@ mod tests {
         )
         .await?;
         let trailing = session.watcher.finish_rescan()?;
-        crate::capture_watch_batch_with_policy(
+        crate::capture_watch_batch(
             &mut session.checkout,
             trailing,
             &capture,
@@ -1651,17 +1767,29 @@ mod tests {
         .await?;
         match session
             .checkout
-            .commit_with_context(
+            .commit_even_if_clean(
                 source_volume_operation_id(key, operation),
-                source_volume_operation_context(key, operation),
+                Some(source_volume_operation_context(key, operation)),
+                None,
+                None,
+                crate::PublicationPermit::Unrestricted,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
+                &mut |_| async {
+                    crate::FsResult::Ok(crate::OperationReceipt {
+                        value: (),
+                        work: crate::WorkCounters::UNCHARGED,
+                    })
+                },
+                None,
             )
             .await?
             .value
         {
-            CheckoutCommitOutcome::Committed { generation_id, .. }
-            | CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. } => Ok(generation_id),
+            LivePublicationObservation::Committed { generation_id, .. }
+            | LivePublicationObservation::AlreadyCommitted { generation_id, .. } => {
+                Ok(generation_id)
+            }
             _ => Err("source publication did not commit".into()),
         }
     }
@@ -1675,8 +1803,17 @@ mod tests {
             Box::pin(Fs::memory().attach_directory("repo", root.path(), SourceOptions::default()))
                 .await?;
         assert_eq!(
-            workspace.read("/before.txt", 16).await?,
-            Bytes::from_static(b"before")
+            workspace
+                .read(
+                    "/before.txt",
+                    16,
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new()
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?,
+            acyclic_stream::OwnedBytes::from_static(b"before")
         );
         let source = workspace.source().ok_or("source handle missing")?;
         assert_eq!(source.state().await, SourceState::Clean);
@@ -1688,19 +1825,46 @@ mod tests {
             ReconcileOutcome::Clean(_)
         ));
         assert_eq!(
-            workspace.read("/before.txt", 16).await?,
-            Bytes::from_static(b"after")
+            workspace
+                .read(
+                    "/before.txt",
+                    16,
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new()
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?,
+            acyclic_stream::OwnedBytes::from_static(b"after")
         );
         assert_eq!(
-            workspace.read("/added.txt", 16).await?,
-            Bytes::from_static(b"added")
+            workspace
+                .read(
+                    "/added.txt",
+                    16,
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new()
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?,
+            acyclic_stream::OwnedBytes::from_static(b"added")
         );
         let sealed = Box::pin(workspace.seal()).await?;
         assert_eq!(source.state().await, SourceState::Sealed);
         std::fs::remove_dir_all(root.path())?;
         assert_eq!(
-            sealed.read("/before.txt", 16).await?,
-            Bytes::from_static(b"after")
+            sealed
+                .read(
+                    "/before.txt",
+                    16,
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new()
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?,
+            acyclic_stream::OwnedBytes::from_static(b"after")
         );
         Ok(())
     }
@@ -1722,10 +1886,31 @@ mod tests {
         let workspace =
             Box::pin(Fs::memory().attach_directory("filtered", root.path(), options)).await?;
         assert_eq!(
-            workspace.read("/visible.txt", 16).await?,
-            Bytes::from_static(b"visible")
+            workspace
+                .read(
+                    "/visible.txt",
+                    16,
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new()
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?,
+            acyclic_stream::OwnedBytes::from_static(b"visible")
         );
-        assert!(workspace.read("/.git/config", 16).await.is_err());
+        assert!(
+            workspace
+                .read(
+                    "/.git/config",
+                    16,
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new()
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+                .is_err()
+        );
 
         std::fs::write(root.path().join(".git").join("config"), b"changed")?;
         let source = workspace.source().ok_or("source handle missing")?;
@@ -1733,11 +1918,23 @@ mod tests {
             Box::pin(source.rescan()).await?,
             ReconcileOutcome::Clean(_)
         ));
-        assert!(workspace.read("/.git/config", 16).await.is_err());
+        assert!(
+            workspace
+                .read(
+                    "/.git/config",
+                    16,
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new()
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+                .is_err()
+        );
         Ok(())
     }
 
-    #[cfg(feature = "local")]
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     #[tokio::test]
     async fn durable_source_restarts_fail_closed_and_remains_gc_classifiable()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -1768,8 +1965,16 @@ mod tests {
             ))
             .await?;
             assert_eq!(
-                Box::pin(workspace.read("/durable.txt", 8)).await?,
-                Bytes::from_static(b"two")
+                Box::pin(workspace.read(
+                    "/durable.txt",
+                    8,
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new()
+                ))
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?,
+                acyclic_stream::OwnedBytes::from_static(b"two")
             );
             let wrong_root = tempfile::tempdir()?;
             assert!(matches!(
@@ -1802,8 +2007,17 @@ mod tests {
         let retried = clean_generation(Box::pin(source.rescan_with_key(key)).await?)?;
         assert_eq!(retried.id(), first.id());
         assert_eq!(
-            retried.read("/value.txt", 8).await?,
-            Bytes::from_static(b"two")
+            retried
+                .read(
+                    "/value.txt",
+                    8,
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new()
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?,
+            acyclic_stream::OwnedBytes::from_static(b"two")
         );
         assert!(matches!(
             Box::pin(source.seal_with_key(key)).await,
@@ -1836,20 +2050,30 @@ mod tests {
             .await?
             .value;
         let advanced = match unrelated
-            .commit_with_context(
+            .commit_even_if_clean(
                 IdempotencyKey::from_bytes([62; 16]).operation_id(),
-                Digest::from_bytes([62; 32]),
+                Some(Digest::from_bytes([62; 32])),
+                None,
+                None,
+                crate::PublicationPermit::Unrestricted,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
+                &mut |_| async {
+                    crate::FsResult::Ok(crate::OperationReceipt {
+                        value: (),
+                        work: crate::WorkCounters::UNCHARGED,
+                    })
+                },
+                None,
             )
             .await?
             .value
         {
-            CheckoutCommitOutcome::Committed { generation_id, .. }
-            | CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. } => generation_id,
-            CheckoutCommitOutcome::Conflict { .. }
-            | CheckoutCommitOutcome::Fenced { .. }
-            | CheckoutCommitOutcome::IdempotencyConflict { .. } => {
+            LivePublicationObservation::Committed { generation_id, .. }
+            | LivePublicationObservation::AlreadyCommitted { generation_id, .. } => generation_id,
+            LivePublicationObservation::Conflict { .. }
+            | LivePublicationObservation::Fenced { .. }
+            | LivePublicationObservation::IdempotencyConflict { .. } => {
                 return Err("independent workspace authority advance was rejected".into());
             }
         };
@@ -1888,7 +2112,18 @@ mod tests {
             Err(SourceError::Conflict)
         ));
         assert_eq!(source.state().await, SourceState::Conflict);
-        assert_eq!(workspace.head().await?.id(), advanced);
+        assert_eq!(
+            workspace
+                .head(
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new()
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?
+                .id(),
+            advanced
+        );
         Ok(())
     }
 
@@ -1913,10 +2148,13 @@ mod tests {
             let path = crate::kernel::NamespacePath::from_portable(&portable, limits)?;
             session
                 .checkout
-                .write_file(
+                .change_content(
                     path,
-                    0,
-                    Bytes::from_static(b"captured"),
+                    crate::ContentChange::Write {
+                        offset: 0,
+                        bytes: acyclic_stream::OwnedBytes::from_static(b"captured"),
+                    },
+                    crate::ContentTimes::Preserve,
                     WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
                 )
@@ -1935,20 +2173,30 @@ mod tests {
             .await?
             .value;
         let advanced = match unrelated
-            .commit_with_context(
+            .commit_even_if_clean(
                 IdempotencyKey::from_bytes([78; 16]).operation_id(),
-                Digest::from_bytes([78; 32]),
+                Some(Digest::from_bytes([78; 32])),
+                None,
+                None,
+                crate::PublicationPermit::Unrestricted,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
+                &mut |_| async {
+                    crate::FsResult::Ok(crate::OperationReceipt {
+                        value: (),
+                        work: crate::WorkCounters::UNCHARGED,
+                    })
+                },
+                None,
             )
             .await?
             .value
         {
-            CheckoutCommitOutcome::Committed { generation_id, .. }
-            | CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. } => generation_id,
-            CheckoutCommitOutcome::Conflict { .. }
-            | CheckoutCommitOutcome::Fenced { .. }
-            | CheckoutCommitOutcome::IdempotencyConflict { .. } => {
+            LivePublicationObservation::Committed { generation_id, .. }
+            | LivePublicationObservation::AlreadyCommitted { generation_id, .. } => generation_id,
+            LivePublicationObservation::Conflict { .. }
+            | LivePublicationObservation::Fenced { .. }
+            | LivePublicationObservation::IdempotencyConflict { .. } => {
                 return Err("independent workspace authority advance was rejected".into());
             }
         };
@@ -1970,7 +2218,18 @@ mod tests {
             ReconcileOutcome::Conflict
         ));
         assert_eq!(source.state().await, SourceState::Conflict);
-        assert_eq!(workspace.head().await?.id(), advanced);
+        assert_eq!(
+            workspace
+                .head(
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new()
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?
+                .id(),
+            advanced
+        );
         Ok(())
     }
 
@@ -1996,10 +2255,13 @@ mod tests {
             let path = crate::kernel::NamespacePath::from_portable(&portable, limits)?;
             session
                 .checkout
-                .write_file(
+                .change_content(
                     path,
-                    0,
-                    Bytes::from_static(b"captured"),
+                    crate::ContentChange::Write {
+                        offset: 0,
+                        bytes: acyclic_stream::OwnedBytes::from_static(b"captured"),
+                    },
+                    crate::ContentTimes::Preserve,
                     WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
                 )
@@ -2009,12 +2271,41 @@ mod tests {
         };
 
         let mut unrelated = workspace
-            .begin_transaction(IdempotencyKey::from_bytes([80; 16]))
-            .await?;
+            .begin_transaction(
+                IdempotencyKey::from_bytes([80; 16]),
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)?;
         unrelated
-            .write("/unrelated.txt", Bytes::from_static(b"unrelated"))
+            .write(
+                "/unrelated.txt",
+                Bytes::from_static(b"unrelated"),
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
             .await?;
-        let advanced = match unrelated.commit().await? {
+        let advanced = match unrelated
+            .commit(
+                None,
+                crate::PublicationPermit::Unrestricted,
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+                |_| async {
+                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
+                        crate::OperationReceipt {
+                            value: (),
+                            work: crate::WorkCounters::default(),
+                        },
+                    )
+                },
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)?
+        {
             crate::TransactionCommit::Committed(generation)
             | crate::TransactionCommit::AlreadyCommitted(generation) => generation,
             crate::TransactionCommit::Conflict { .. }
@@ -2038,12 +2329,30 @@ mod tests {
             )?
         };
         assert_eq!(
-            reconciled.read("/source.txt", 16).await?,
-            Bytes::from_static(b"captured")
+            reconciled
+                .read(
+                    "/source.txt",
+                    16,
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new()
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?,
+            acyclic_stream::OwnedBytes::from_static(b"captured")
         );
         assert_eq!(
-            reconciled.read("/unrelated.txt", 16).await?,
-            Bytes::from_static(b"unrelated")
+            reconciled
+                .read(
+                    "/unrelated.txt",
+                    16,
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new()
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?,
+            acyclic_stream::OwnedBytes::from_static(b"unrelated")
         );
         assert_eq!(
             clean_generation(Box::pin(source.reconcile_with_key(key)).await?)?.id(),
@@ -2091,12 +2400,41 @@ mod tests {
         gate.wait_for_arrivals(1).await;
 
         let mut unrelated = workspace
-            .begin_transaction(IdempotencyKey::from_bytes([67; 16]))
-            .await?;
+            .begin_transaction(
+                IdempotencyKey::from_bytes([67; 16]),
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)?;
         unrelated
-            .write("/unrelated.txt", Bytes::from_static(b"unrelated"))
+            .write(
+                "/unrelated.txt",
+                Bytes::from_static(b"unrelated"),
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
             .await?;
-        let advanced = match unrelated.commit().await? {
+        let advanced = match unrelated
+            .commit(
+                None,
+                crate::PublicationPermit::Unrestricted,
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+                |_| async {
+                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
+                        crate::OperationReceipt {
+                            value: (),
+                            work: crate::WorkCounters::default(),
+                        },
+                    )
+                },
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)?
+        {
             crate::TransactionCommit::Committed(generation)
             | crate::TransactionCommit::AlreadyCommitted(generation) => generation,
             crate::TransactionCommit::Conflict { .. }
@@ -2115,7 +2453,18 @@ mod tests {
             ReconcileOutcome::Conflict
         ));
         assert_eq!(source.state().await, SourceState::Conflict);
-        assert_eq!(workspace.head().await?.id(), advanced.id());
+        assert_eq!(
+            workspace
+                .head(
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new()
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?
+                .id(),
+            advanced.id()
+        );
         Ok(())
     }
 
@@ -2157,12 +2506,41 @@ mod tests {
         gate.wait_for_arrivals(1).await;
 
         let mut unrelated = workspace
-            .begin_transaction(IdempotencyKey::from_bytes([65; 16]))
-            .await?;
+            .begin_transaction(
+                IdempotencyKey::from_bytes([65; 16]),
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)?;
         unrelated
-            .write("/unrelated.txt", Bytes::from_static(b"unrelated"))
+            .write(
+                "/unrelated.txt",
+                Bytes::from_static(b"unrelated"),
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
             .await?;
-        let advanced = match unrelated.commit().await? {
+        let advanced = match unrelated
+            .commit(
+                None,
+                crate::PublicationPermit::Unrestricted,
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+                |_| async {
+                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
+                        crate::OperationReceipt {
+                            value: (),
+                            work: crate::WorkCounters::default(),
+                        },
+                    )
+                },
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)?
+        {
             crate::TransactionCommit::Committed(generation)
             | crate::TransactionCommit::AlreadyCommitted(generation) => generation,
             crate::TransactionCommit::Conflict { .. }
@@ -2182,7 +2560,18 @@ mod tests {
             acknowledged
         );
         assert_eq!(source.state().await, SourceState::Clean);
-        assert_eq!(workspace.head().await?.id(), advanced.id());
+        assert_eq!(
+            workspace
+                .head(
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new()
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?
+                .id(),
+            advanced.id()
+        );
         Ok(())
     }
 
@@ -2207,20 +2596,35 @@ mod tests {
             let published_begin_head = session.authority_head;
             let publication = session
                 .checkout
-                .commit_with_context(
+                .commit_even_if_clean(
                     source_volume_operation_id(published_key, SourceOperation::Reconcile),
-                    source_volume_operation_context(published_key, SourceOperation::Reconcile),
+                    Some(source_volume_operation_context(
+                        published_key,
+                        SourceOperation::Reconcile,
+                    )),
+                    None,
+                    None,
+                    crate::PublicationPermit::Unrestricted,
                     WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
+                    &mut |_| async {
+                        crate::FsResult::Ok(crate::OperationReceipt {
+                            value: (),
+                            work: crate::WorkCounters::UNCHARGED,
+                        })
+                    },
+                    None,
                 )
                 .await?
                 .value;
             let published_generation = match publication {
-                CheckoutCommitOutcome::Committed { generation_id, .. }
-                | CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. } => generation_id,
-                CheckoutCommitOutcome::Conflict { .. }
-                | CheckoutCommitOutcome::Fenced { .. }
-                | CheckoutCommitOutcome::IdempotencyConflict { .. } => {
+                LivePublicationObservation::Committed { generation_id, .. }
+                | LivePublicationObservation::AlreadyCommitted { generation_id, .. } => {
+                    generation_id
+                }
+                LivePublicationObservation::Conflict { .. }
+                | LivePublicationObservation::Fenced { .. }
+                | LivePublicationObservation::IdempotencyConflict { .. } => {
                     return Err("source volume publication was rejected".into());
                 }
             };
@@ -2304,7 +2708,14 @@ mod tests {
         ))
         .await?;
         let second = second_workspace.source().ok_or("second source missing")?;
-        let advanced = second_workspace.head().await?;
+        let advanced = second_workspace
+            .head(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)?;
         assert_ne!(advanced.id(), published_generation);
         assert_eq!(second.state().await, SourceState::Clean);
 
@@ -2354,20 +2765,35 @@ mod tests {
             begin_source_operation(&mut session, completed_key, SourceOperation::Reconcile).await?;
             let publication = session
                 .checkout
-                .commit_with_context(
+                .commit_even_if_clean(
                     source_volume_operation_id(completed_key, SourceOperation::Reconcile),
-                    source_volume_operation_context(completed_key, SourceOperation::Reconcile),
+                    Some(source_volume_operation_context(
+                        completed_key,
+                        SourceOperation::Reconcile,
+                    )),
+                    None,
+                    None,
+                    crate::PublicationPermit::Unrestricted,
                     WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
+                    &mut |_| async {
+                        crate::FsResult::Ok(crate::OperationReceipt {
+                            value: (),
+                            work: crate::WorkCounters::UNCHARGED,
+                        })
+                    },
+                    None,
                 )
                 .await?
                 .value;
             let completed_generation = match publication {
-                CheckoutCommitOutcome::Committed { generation_id, .. }
-                | CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. } => generation_id,
-                CheckoutCommitOutcome::Conflict { .. }
-                | CheckoutCommitOutcome::Fenced { .. }
-                | CheckoutCommitOutcome::IdempotencyConflict { .. } => {
+                LivePublicationObservation::Committed { generation_id, .. }
+                | LivePublicationObservation::AlreadyCommitted { generation_id, .. } => {
+                    generation_id
+                }
+                LivePublicationObservation::Conflict { .. }
+                | LivePublicationObservation::Fenced { .. }
+                | LivePublicationObservation::IdempotencyConflict { .. } => {
                     return Err("source volume publication was rejected".into());
                 }
             };
@@ -2537,33 +2963,75 @@ mod tests {
             let source = workspace.source().ok_or("source missing")?;
             let recovered = clean_generation(Box::pin(source.rescan_with_key(key)).await?)?;
             assert_eq!(
-                recovered.read("/value.txt", 8).await?,
-                Bytes::from_static(b"two")
+                recovered
+                    .read(
+                        "/value.txt",
+                        8,
+                        crate::WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new()
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)?,
+                acyclic_stream::OwnedBytes::from_static(b"two")
             );
             std::fs::write(root.path().join("value.txt"), b"three")?;
             let current = clean_generation(Box::pin(source.rescan()).await?)?;
-            let current_head = workspace.head().await?;
+            let current_head = workspace
+                .head(
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?;
             assert_eq!(current_head.id(), current.id());
             assert_eq!(
-                current.read("/value.txt", 8).await?,
-                Bytes::from_static(b"three")
+                current
+                    .read(
+                        "/value.txt",
+                        8,
+                        crate::WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new()
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)?,
+                acyclic_stream::OwnedBytes::from_static(b"three")
             );
             assert_eq!(
                 clean_generation(Box::pin(source.rescan_with_key(key)).await?)?.id(),
                 recovered.id()
             );
-            assert_eq!(workspace.head().await?.id(), current.id());
+            assert_eq!(
+                workspace
+                    .head(
+                        crate::WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new()
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)?
+                    .id(),
+                current.id()
+            );
             assert_eq!(source.state().await, SourceState::Clean);
             let session = source.inner.lock().await;
-            let durable_head = authority
-                .inner
-                .head(
+            let durable_head = ({
+                let __authority_args = (
                     source_authority_id(workspace.volume.id()),
                     WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
-                )
-                .await?
-                .value;
+                );
+                let mut __authority_work =
+                    crate::AuthorityWork::new(__authority_args.1, __authority_args.2);
+                let __authority_result = authority
+                    .inner
+                    .head(__authority_args.0, &mut __authority_work)
+                    .await;
+                __authority_work.receipt(__authority_result)
+            })?
+            .value;
             assert_eq!(session.authority_head, durable_head);
         }
 
@@ -2614,33 +3082,75 @@ mod tests {
             let workspace =
                 Box::pin(fs.attach_directory(name, root.path(), SourceOptions::default())).await?;
             let source = workspace.source().ok_or("source missing")?;
-            let current = workspace.head().await?;
+            let current = workspace
+                .head(
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?;
             assert_eq!(
-                current.read("/value.txt", 8).await?,
-                Bytes::from_static(b"three")
+                current
+                    .read(
+                        "/value.txt",
+                        8,
+                        crate::WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new()
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)?,
+                acyclic_stream::OwnedBytes::from_static(b"three")
             );
             let outcome = Box::pin(source.rescan_with_key(key)).await?;
             if terminal_append {
                 assert_eq!(
-                    clean_generation(outcome)?.read("/value.txt", 8).await?,
-                    Bytes::from_static(b"two")
+                    clean_generation(outcome)?
+                        .read(
+                            "/value.txt",
+                            8,
+                            crate::WorkBudget::UNBOUNDED,
+                            &crate::CancellationToken::new()
+                        )
+                        .await
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| failure.error)?,
+                    acyclic_stream::OwnedBytes::from_static(b"two")
                 );
                 assert_eq!(source.state().await, SourceState::Clean);
             } else {
                 assert!(matches!(outcome, ReconcileOutcome::Conflict));
                 assert_eq!(source.state().await, SourceState::Conflict);
             }
-            assert_eq!(workspace.head().await?.id(), current.id());
+            assert_eq!(
+                workspace
+                    .head(
+                        crate::WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new()
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)?
+                    .id(),
+                current.id()
+            );
             let session = source.inner.lock().await;
-            let durable_head = authority
-                .inner
-                .head(
+            let durable_head = ({
+                let __authority_args = (
                     source_authority_id(workspace.volume.id()),
                     WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
-                )
-                .await?
-                .value;
+                );
+                let mut __authority_work =
+                    crate::AuthorityWork::new(__authority_args.1, __authority_args.2);
+                let __authority_result = authority
+                    .inner
+                    .head(__authority_args.0, &mut __authority_work)
+                    .await;
+                __authority_work.receipt(__authority_result)
+            })?
+            .value;
             assert_eq!(session.authority_head, durable_head);
         }
         Ok(())
@@ -2667,11 +3177,42 @@ mod tests {
         let forged_key = IdempotencyKey::from_bytes(
             source_volume_operation_id(key, SourceOperation::Rescan).into_bytes(),
         );
-        let mut unrelated = workspace.begin_transaction(forged_key).await?;
+        let mut unrelated = workspace
+            .begin_transaction(
+                forged_key,
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)?;
         unrelated
-            .write("/unrelated.txt", Bytes::from_static(b"generic"))
+            .write(
+                "/unrelated.txt",
+                Bytes::from_static(b"generic"),
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
             .await?;
-        let unrelated = match unrelated.commit().await? {
+        let unrelated = match unrelated
+            .commit(
+                None,
+                crate::PublicationPermit::Unrestricted,
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+                |_| async {
+                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
+                        crate::OperationReceipt {
+                            value: (),
+                            work: crate::WorkCounters::default(),
+                        },
+                    )
+                },
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)?
+        {
             crate::TransactionCommit::Committed(generation)
             | crate::TransactionCommit::AlreadyCommitted(generation) => generation,
             crate::TransactionCommit::Conflict { .. }
@@ -2685,7 +3226,18 @@ mod tests {
             Box::pin(source.rescan_with_key(key)).await,
             Err(SourceError::IdempotencyConflict)
         ));
-        assert_eq!(workspace.head().await?.id(), unrelated.id());
+        assert_eq!(
+            workspace
+                .head(
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new()
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?
+                .id(),
+            unrelated.id()
+        );
         assert_eq!(source.state().await, SourceState::PendingCapture);
         Ok(())
     }
@@ -2747,28 +3299,64 @@ mod tests {
             ))
             .await?;
             let source = workspace.source().ok_or("source missing")?;
-            let current = workspace.head().await?;
+            let current = workspace
+                .head(
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?;
             assert_eq!(
-                current.read("/value.txt", 8).await?,
-                Bytes::from_static(b"three")
+                current
+                    .read(
+                        "/value.txt",
+                        8,
+                        crate::WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new()
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)?,
+                acyclic_stream::OwnedBytes::from_static(b"three")
             );
             let outcome = Box::pin(source.rescan_with_key(key)).await?;
             if terminal_fault {
                 assert_eq!(
-                    clean_generation(outcome)?.read("/value.txt", 8).await?,
-                    Bytes::from_static(b"two")
+                    clean_generation(outcome)?
+                        .read(
+                            "/value.txt",
+                            8,
+                            crate::WorkBudget::UNBOUNDED,
+                            &crate::CancellationToken::new()
+                        )
+                        .await
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| failure.error)?,
+                    acyclic_stream::OwnedBytes::from_static(b"two")
                 );
                 assert_eq!(source.state().await, SourceState::Clean);
             } else {
                 assert!(matches!(outcome, ReconcileOutcome::Conflict));
                 assert_eq!(source.state().await, SourceState::Conflict);
             }
-            assert_eq!(workspace.head().await?.id(), current.id());
+            assert_eq!(
+                workspace
+                    .head(
+                        crate::WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new()
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)?
+                    .id(),
+                current.id()
+            );
         }
         Ok(())
     }
 
-    #[cfg(feature = "local")]
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     #[tokio::test]
     async fn restart_recovers_publication_missing_its_terminal_source_record()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -2794,16 +3382,43 @@ mod tests {
                 Box::pin(fs.attach_directory("recover", root.path(), SourceOptions::default()))
                     .await?;
             let source = workspace.source().ok_or("source missing")?;
-            let current = workspace.head().await?;
+            let current = workspace
+                .head(
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?;
             assert_eq!(
-                current.read("/value.txt", 8).await?,
-                Bytes::from_static(b"three")
+                current
+                    .read(
+                        "/value.txt",
+                        8,
+                        crate::WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new()
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)?,
+                acyclic_stream::OwnedBytes::from_static(b"three")
             );
             assert!(matches!(
                 Box::pin(source.rescan_with_key(key)).await?,
                 ReconcileOutcome::Conflict
             ));
-            assert_eq!(workspace.head().await?.id(), current.id());
+            assert_eq!(
+                workspace
+                    .head(
+                        crate::WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new()
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)?
+                    .id(),
+                current.id()
+            );
             assert_eq!(source.state().await, SourceState::Conflict);
         }
 
@@ -2825,12 +3440,30 @@ mod tests {
                 Box::pin(fs.attach_directory("recover", root.path(), SourceOptions::default()))
                     .await?;
             let source = workspace.source().ok_or("source missing")?;
-            let current = workspace.head().await?;
+            let current = workspace
+                .head(
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?;
             assert!(matches!(
                 Box::pin(source.seal_with_key(seal_key)).await,
                 Err(SourceError::Conflict)
             ));
-            assert_eq!(workspace.head().await?.id(), current.id());
+            assert_eq!(
+                workspace
+                    .head(
+                        crate::WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new()
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)?
+                    .id(),
+                current.id()
+            );
             assert_eq!(source.state().await, SourceState::Conflict);
         }
 
@@ -2839,8 +3472,17 @@ mod tests {
             Box::pin(fs.attach_directory("recover", root.path(), SourceOptions::default())).await?;
         let source = workspace.source().ok_or("source missing")?;
         assert_eq!(
-            workspace.read("/value.txt", 8).await?,
-            Bytes::from_static(b"five")
+            workspace
+                .read(
+                    "/value.txt",
+                    8,
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new()
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?,
+            acyclic_stream::OwnedBytes::from_static(b"five")
         );
         assert!(matches!(
             Box::pin(source.rescan_with_key(key)).await?,
@@ -2851,8 +3493,17 @@ mod tests {
             Err(SourceError::Conflict)
         ));
         assert_eq!(
-            workspace.read("/value.txt", 8).await?,
-            Bytes::from_static(b"five")
+            workspace
+                .read(
+                    "/value.txt",
+                    8,
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new()
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?,
+            acyclic_stream::OwnedBytes::from_static(b"five")
         );
         assert_eq!(source.state().await, SourceState::Clean);
         Ok(())

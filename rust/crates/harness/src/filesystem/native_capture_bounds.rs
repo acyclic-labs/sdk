@@ -7,8 +7,6 @@ pub(crate) const fn capture_allowances_valid(
     maximum_output_bytes: u32,
     maximum_result_bytes: u32,
 ) -> bool {
-    // JSON byte arrays use at most four characters per byte. Fixed fields and
-    // the bounded stop diagnostic fit within the additional metadata allowance.
     timeout_ms > 0
         && control_timeout_ms > 0
         && control_timeout_ms <= timeout_ms

@@ -1,7 +1,7 @@
 #![allow(missing_docs, reason = "contract example binary, not public API")]
 
 use acyclic_objects::{MemoryObjects, MemoryOptions, ObjectsProvider, wire};
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use futures::executor::block_on;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -13,7 +13,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 mutation: None,
             })
             .await?;
-        let body = Bytes::from_static(b"hello from Rust");
+        let body = OwnedBytes::from_static(b"hello from Rust");
         let info = provider
             .put(
                 wire::PutObjectHeader {
@@ -38,7 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 1024,
             )
             .await?;
-        if value.body != body {
+        if value.body() != &body {
             return Err("Rust Objects body parity failed".into());
         }
         println!(

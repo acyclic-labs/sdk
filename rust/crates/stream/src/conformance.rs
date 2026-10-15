@@ -1,7 +1,7 @@
 //! Reusable black-box qualification of the complete public Stream contract.
 
-use bytes::Bytes;
-use futures::StreamExt as _;
+use crate::OwnedBytes as Bytes;
+use futures::{StreamExt as _, TryStreamExt as _};
 
 use crate::{
     AppendOutcome, AppendRequest, ChildrenPageRequest, ChildrenRequest, CommitCondition,
@@ -16,25 +16,19 @@ const _: () = assert!(!SUITE.is_empty(), "conformance inventory is empty");
 /// Exercises the complete provider-independent hierarchical Stream contract.
 #[allow(
     clippy::too_many_lines,
-    reason = "linear conformance walkthrough; each check is a distinct provider-contract \
-              assertion, and splitting it would only move the same sequential checks behind \
-              indirection"
-)]
-#[allow(
     clippy::cognitive_complexity,
-    reason = "the linear provider conformance walkthrough keeps each assertion visible"
+    reason = "one public contract walkthrough"
 )]
-pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
+pub async fn verify(provider: &dyn StreamProvider) -> Result<(), StreamError> {
     let source = path("conformance/source")?;
     let child = path("conformance/child")?;
     let append_key = key(b"stream-append")?;
     if provider
         .inspect_idempotency(append_key.clone())
-        .await
-        .map_err(|err| error(&err))?
+        .await?
         .is_some()
     {
-        return Err("unknown idempotency identity was reported as retained".into());
+        return Err(StreamError::Unavailable);
     }
     let initial = AppendRequest {
         path: source.clone(),
@@ -42,19 +36,16 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
         if_tail: Some(0),
         idempotency_key: Some(append_key.clone()),
     };
-    let first = provider
-        .append(initial.clone())
-        .await
-        .map_err(|err| error(&err))?;
+    let first = provider.append(initial.clone()).await?;
     let AppendOutcome::Committed(first_receipt) = &first else {
-        return Err("initial tail CAS conflicted".into());
+        return Err(StreamError::Unavailable);
     };
     if first_receipt.start != 0
         || first_receipt.end != 2
         || first_receipt.tail != 2
-        || provider.append(initial).await.map_err(|err| error(&err))? != first
+        || provider.append(initial).await? != first
     {
-        return Err("atomic append or exact replay changed its receipt".into());
+        return Err(StreamError::Unavailable);
     }
     if provider
         .append(AppendRequest {
@@ -66,18 +57,17 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
         .await
         != Err(StreamError::IdempotencyMismatch)
     {
-        return Err("changed idempotency arguments were accepted".into());
+        return Err(StreamError::Unavailable);
     }
     let append_observation = provider
         .inspect_idempotency(append_key.clone())
-        .await
-        .map_err(|err| error(&err))?
-        .ok_or_else(|| "committed append identity was not retained".to_owned())?;
+        .await?
+        .ok_or(StreamError::Unavailable)?;
     if append_observation.idempotency_key != append_key
         || append_observation.request_digest == [0; 32]
         || append_observation.outcome != IdempotencyOutcome::Append(first.clone())
     {
-        return Err("append inspection did not return the exact retained outcome".into());
+        return Err(StreamError::Unavailable);
     }
     if provider
         .append(AppendRequest {
@@ -86,11 +76,10 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
             if_tail: Some(1),
             idempotency_key: None,
         })
-        .await
-        .map_err(|err| error(&err))?
+        .await?
         != (AppendOutcome::TailConflict { actual_tail: 2 })
     {
-        return Err("tail conflict was not returned as data".into());
+        return Err(StreamError::Unavailable);
     }
     let fork = provider
         .fork(ForkRequest {
@@ -99,10 +88,9 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
             at_tail: Some(1),
             idempotency_key: Some(key(b"stream-fork")?),
         })
-        .await
-        .map_err(|err| error(&err))?;
+        .await?;
     if fork.forked_at != 1 || fork.tail != 1 {
-        return Err("fork did not retain the exact immutable prefix".into());
+        return Err(StreamError::Unavailable);
     }
     let inherited = provider
         .read(ReadRequest {
@@ -110,35 +98,30 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
             from: 0,
             limit: 8,
         })
-        .await
-        .map_err(|err| error(&err))?
-        .collect::<Vec<_>>()
-        .await;
+        .await?
+        .try_collect::<Vec<_>>()
+        .await?;
     let [item] = inherited.as_slice() else {
-        return Err("forked history was not exact".into());
+        return Err(StreamError::Unavailable);
     };
-    if item.as_ref().map_err(ToString::to_string)?.value != Bytes::from_static(b"one") {
-        return Err("forked history was not exact".into());
+    if item.value != Bytes::from_static(b"one") {
+        return Err(StreamError::Unavailable);
     }
     let children = provider
         .children(ChildrenRequest {
             parent: Some(path("conformance")?),
             limit: 8,
         })
-        .await
-        .map_err(|err| error(&err))?
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| error(&err))?;
+        .await?
+        .try_collect::<Vec<_>>()
+        .await?;
     let mut child_paths = children
         .into_iter()
         .map(|child| child.path)
         .collect::<Vec<_>>();
     child_paths.sort();
     if child_paths != vec![path("conformance/child")?, path("conformance/source")?] {
-        return Err("direct child listing changed its fixed snapshot".into());
+        return Err(StreamError::Unavailable);
     }
     let first_page = provider
         .children_page(ChildrenPageRequest {
@@ -147,13 +130,12 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
             hierarchy_version: None,
             limit: 1,
         })
-        .await
-        .map_err(|err| error(&err))?;
+        .await?;
     let [first_child] = first_page.children.as_slice() else {
-        return Err("first hierarchy page did not expose one child".into());
+        return Err(StreamError::Unavailable);
     };
     if first_page.next_after.as_ref() != Some(&first_child.path) {
-        return Err("first hierarchy page did not expose a continuation".into());
+        return Err(StreamError::Unavailable);
     }
     let final_page = provider
         .children_page(ChildrenPageRequest {
@@ -162,13 +144,12 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
             hierarchy_version: Some(first_page.hierarchy_version),
             limit: 1,
         })
-        .await
-        .map_err(|err| error(&err))?;
+        .await?;
     let [final_child] = final_page.children.as_slice() else {
-        return Err("final hierarchy page did not expose one child".into());
+        return Err(StreamError::Unavailable);
     };
     if final_page.next_after.is_some() || final_child.path == first_child.path {
-        return Err("hierarchy pagination duplicated or omitted a child".into());
+        return Err(StreamError::Unavailable);
     }
     provider
         .append(AppendRequest {
@@ -177,8 +158,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
             if_tail: Some(0),
             idempotency_key: None,
         })
-        .await
-        .map_err(|err| error(&err))?;
+        .await?;
     if provider
         .children_page(ChildrenPageRequest {
             parent: Some(path("conformance")?),
@@ -189,12 +169,9 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
         .await
         != Err(StreamError::HierarchyChanged)
     {
-        return Err("stale hierarchy continuation was accepted".into());
+        return Err(StreamError::Unavailable);
     }
-    let mut follow = provider
-        .follow(child.clone(), 1)
-        .await
-        .map_err(|err| error(&err))?;
+    let mut follow = provider.follow(child.clone(), 1).await?;
     provider
         .append(AppendRequest {
             path: child.clone(),
@@ -202,15 +179,13 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
             if_tail: Some(1),
             idempotency_key: None,
         })
-        .await
-        .map_err(|err| error(&err))?;
+        .await?;
     let live = tokio::time::timeout(std::time::Duration::from_secs(1), follow.next())
         .await
-        .map_err(|_| "follow did not make bounded progress".to_owned())?
-        .ok_or_else(|| "follow ended".to_owned())?
-        .map_err(|err| error(&err))?;
+        .map_err(|_| StreamError::Unavailable)?
+        .ok_or(StreamError::Unavailable)??;
     if live.sequence != 1 || live.value != Bytes::from_static(b"live") {
-        return Err("follow returned a gap or duplicate".into());
+        return Err(StreamError::Unavailable);
     }
     let complete_history = provider
         .read(ReadRequest {
@@ -218,24 +193,15 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
             from: 0,
             limit: 8,
         })
-        .await
-        .map_err(|err| error(&err))?
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| error(&err))?;
+        .await?
+        .try_collect::<Vec<_>>()
+        .await?;
     if !matches!(complete_history.as_slice(), [first, second]
         if first.value == Bytes::from_static(b"one")
             && second.value == Bytes::from_static(b"live"))
-        || provider
-            .bounds(child.clone())
-            .await
-            .map_err(|err| error(&err))?
-            .tail
-            != 2
+        || provider.bounds(child.clone()).await?.tail != 2
     {
-        return Err("committed history was not retained from sequence zero".into());
+        return Err(StreamError::Unavailable);
     }
     let committed_path = path("conformance/committed")?;
     let request = CommitRequest {
@@ -256,23 +222,17 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
         }],
         idempotency_key: key(b"stream-commit")?,
     };
-    let committed = provider
-        .commit(request.clone())
-        .await
-        .map_err(|err| error(&err))?;
+    let committed = provider.commit(request.clone()).await?;
     let CommitOutcome::Committed(envelope) = &committed else {
-        return Err("valid coordinated commit conflicted".into());
+        return Err(StreamError::Unavailable);
     };
-    if provider.commit(request).await.map_err(|err| error(&err))? != committed
-        || provider
-            .read_commit(envelope.commit_id)
-            .await
-            .map_err(|err| error(&err))?
-            != *envelope
+    if provider.commit(request).await? != committed
+        || provider.read_commit(envelope.commit_id).await? != *envelope
     {
-        return Err("coordinated commit replay or envelope changed".into());
+        return Err(StreamError::Unavailable);
     }
-    verify_commit_forks(provider, source.clone()).await?;
+    verify_stale_tail_condition(provider, source.clone()).await?;
+    verify_fork_with_records(provider, source.clone()).await?;
     let absent = path("conformance/absent-tail")?;
     let absent_key = key(b"stream-absent-tail")?;
     let absent_request = CommitRequest {
@@ -291,48 +251,29 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
         expected: 0,
         actual: None,
     }]);
-    if provider
-        .commit(absent_request.clone())
-        .await
-        .map_err(|err| error(&err))?
-        != absent_conflict
-        || provider
-            .commit(absent_request)
-            .await
-            .map_err(|err| error(&err))?
-            != absent_conflict
+    if provider.commit(absent_request.clone()).await? != absent_conflict
+        || provider.commit(absent_request).await? != absent_conflict
         || provider.tail(absent).await != Err(StreamError::NotFound)
     {
-        return Err("absent tail condition did not return one replayable conflict".into());
+        return Err(StreamError::Unavailable);
     }
     let absent_observation = provider
         .inspect_idempotency(absent_key.clone())
-        .await
-        .map_err(|err| error(&err))?
-        .ok_or_else(|| "commit conflict identity was not retained".to_owned())?;
+        .await?
+        .ok_or(StreamError::Unavailable)?;
     if absent_observation.idempotency_key != absent_key
         || absent_observation.request_digest == [0; 32]
         || absent_observation.outcome != IdempotencyOutcome::Commit(absent_conflict)
     {
-        return Err("commit-conflict inspection did not preserve the terminal result".into());
+        return Err(StreamError::Unavailable);
     }
     Ok(())
-}
-
-/// A stale tail condition changes nothing, and a fork mutation extends
-/// its new path with records in the same commit.
-async fn verify_commit_forks(
-    provider: &dyn StreamProvider,
-    source: StreamPath,
-) -> Result<(), String> {
-    verify_stale_tail_condition(provider, source.clone()).await?;
-    verify_fork_with_records(provider, source).await
 }
 
 async fn verify_stale_tail_condition(
     provider: &dyn StreamProvider,
     source: StreamPath,
-) -> Result<(), String> {
+) -> Result<(), StreamError> {
     let stale_path = path("conformance/stale-commit")?;
     let stale_conflict = CommitOutcome::Conflict(vec![CommitConflict::Tail {
         path: source.clone(),
@@ -358,23 +299,21 @@ async fn verify_stale_tail_condition(
             }],
             idempotency_key: key(b"stream-stale-commit")?,
         })
-        .await
-        .map_err(|err| error(&err))?
+        .await?
         != stale_conflict
         || provider.tail(stale_path).await != Err(StreamError::NotFound)
-        || provider.tail(source).await.map_err(|err| error(&err))? != 2
+        || provider.tail(source).await? != 2
     {
-        return Err("stale tail condition mutated a coordinated commit".into());
+        return Err(StreamError::Unavailable);
     }
     Ok(())
 }
 
-/// A fork mutation appends its records after the inherited prefix, in the
 /// same commit, and its committed fact carries them.
 async fn verify_fork_with_records(
     provider: &dyn StreamProvider,
     source: StreamPath,
-) -> Result<(), String> {
+) -> Result<(), StreamError> {
     let destination = path("conformance/forked-and-extended")?;
     let request = CommitRequest {
         conditions: vec![
@@ -397,15 +336,12 @@ async fn verify_fork_with_records(
         }],
         idempotency_key: key(b"stream-fork-with-records")?,
     };
-    let committed = provider
-        .commit(request.clone())
-        .await
-        .map_err(|err| error(&err))?;
+    let committed = provider.commit(request.clone()).await?;
     let CommitOutcome::Committed(envelope) = &committed else {
-        return Err("fork with records conflicted".into());
+        return Err(StreamError::Unavailable);
     };
     let [CommittedMutation::Fork(fork)] = envelope.mutations.as_slice() else {
-        return Err("fork with records did not commit one fork fact".into());
+        return Err(StreamError::Unavailable);
     };
     let appended = fork
         .records
@@ -420,7 +356,7 @@ async fn verify_fork_with_records(
                 (2, Bytes::from_static(b"again"), envelope.commit_id),
             ]
     {
-        return Err("fork with records did not append after the inherited prefix".into());
+        return Err(StreamError::Unavailable);
     }
     let values = provider
         .read(ReadRequest {
@@ -428,51 +364,39 @@ async fn verify_fork_with_records(
             from: 0,
             limit: 8,
         })
-        .await
-        .map_err(|err| error(&err))?
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .map(|record| record.map(|record| record.value))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| error(&err))?;
+        .await?
+        .map_ok(|record| record.value)
+        .try_collect::<Vec<_>>()
+        .await?;
     if values
         != [
             Bytes::from_static(b"one"),
             Bytes::from_static(b"extended"),
             Bytes::from_static(b"again"),
         ]
-        || provider
-            .tail(destination)
-            .await
-            .map_err(|err| error(&err))?
-            != 3
-        || provider.commit(request).await.map_err(|err| error(&err))? != committed
+        || provider.tail(destination).await? != 3
+        || provider.commit(request).await? != committed
     {
-        return Err("fork with records history or replay changed".into());
+        return Err(StreamError::Unavailable);
     }
     Ok(())
 }
 
-fn path(value: &str) -> Result<StreamPath, String> {
-    StreamPath::new(value).map_err(|err| error(&err))
+fn path(value: &str) -> Result<StreamPath, StreamError> {
+    StreamPath::new(value)
 }
 
-fn key(value: &'static [u8]) -> Result<IdempotencyKey, String> {
-    IdempotencyKey::new(Bytes::from_static(value)).map_err(|err| error(&err))
-}
-
-fn error(error: &impl ToString) -> String {
-    error.to_string()
+fn key(value: &'static [u8]) -> Result<IdempotencyKey, StreamError> {
+    IdempotencyKey::new(Bytes::from_static(value))
 }
 
 #[cfg(test)]
 mod tests {
     use super::verify;
-    use crate::{MemoryLimits, MemoryStream};
+    use crate::{MemoryLimits, MemoryStream, StreamError};
 
     #[tokio::test]
-    async fn memory_provider_passes_the_public_suite() -> Result<(), String> {
+    async fn memory_provider_passes_the_public_suite() -> Result<(), StreamError> {
         verify(&MemoryStream::new(MemoryLimits::default())).await
     }
 }

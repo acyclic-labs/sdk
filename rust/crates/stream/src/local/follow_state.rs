@@ -1,0 +1,22 @@
+struct FollowState {
+    provider: LocalStream,
+    path: StreamPath,
+    cursor: crate::memory::HistoryCursor,
+    changed: watch::Receiver<u64>,
+    done: bool,
+    span: obs::OperationSpan,
+}
+impl FollowState {
+    fn failed(&mut self, error: &StreamError) {
+        self.done = true;
+        self.span.record("terminal", "error");
+        obs::failed(&self.span, error.code());
+    }
+}
+impl Drop for FollowState {
+    fn drop(&mut self) {
+        if !self.done {
+            self.span.record("terminal", "dropped");
+        }
+    }
+}

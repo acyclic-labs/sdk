@@ -287,6 +287,10 @@ struct fuse_chan *fuse_mount(const char *mountpoint, struct fuse_args *args);
  */
 void fuse_unmount(const char *mountpoint, struct fuse_chan *ch);
 
+/* Destroy a prepared channel not transferred to a FUSE instance.
+ * A channel owned by an instance is destroyed only by fuse_destroy(). */
+void fuse_chan_destroy(struct fuse_chan *ch);
+
 /*
  * Create a new FUSE filesystem instance.
  * Attaches the filesystem callbacks to a channel from fuse_mount().

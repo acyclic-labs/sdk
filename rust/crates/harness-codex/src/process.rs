@@ -87,7 +87,7 @@ impl CodexProcess {
         }
         command.envs(launch.env);
         let mut child =
-            acyclic_native_runtime::spawn_process_tree(&mut command).map_err(|error| {
+            acyclic_native_runtime::ProcessTree::spawn(&mut command).map_err(|error| {
                 Error::Unsupported(format!(
                     "cannot start codex at {}: {error}",
                     launch.binary.display()
@@ -177,17 +177,21 @@ impl CodexProcess {
                 .as_mut()
                 .ok_or_else(|| Error::Storage("codex process ownership absent".into()))?;
             if let Some(status) = tree
-                .try_wait()
+                .try_wait(None)
                 .map_err(|error| Error::Storage(error.to_string()))?
             {
                 let mut tree = self
                     .child
                     .take()
                     .ok_or_else(|| Error::Storage("codex process ownership absent".into()))?;
-                let (tree, result) = acyclic_native_runtime::run_blocking_io(move || {
-                    let result = tree.terminate();
-                    (tree, result)
-                })
+                let (tree, result) = acyclic_native_runtime::run_blocking_io(
+                    move || {
+                        let result = tree.terminate(None);
+                        (tree, result)
+                    },
+                    None,
+                )
+                .expect("unmetered task construction cannot fail")
                 .await
                 .map_err(|error| Error::Storage(error.to_string()))?;
                 self.child = Some(tree);
@@ -208,10 +212,14 @@ impl CodexProcess {
         let Some(mut tree) = self.child.take() else {
             return Ok(());
         };
-        let (tree, result) = acyclic_native_runtime::run_blocking_io(move || {
-            let result = tree.terminate_after(GRACE);
-            (tree, result)
-        })
+        let (tree, result) = acyclic_native_runtime::run_blocking_io(
+            move || {
+                let result = tree.terminate_after(GRACE);
+                (tree, result)
+            },
+            None,
+        )
+        .expect("unmetered task construction cannot fail")
         .await
         .map_err(|error| Error::Storage(error.to_string()))?;
         self.child = Some(tree);
@@ -248,9 +256,17 @@ impl Drop for CodexProcess {
 pub(crate) async fn check_version(binary: &Path) -> Result<()> {
     let mut command = Command::new(binary);
     command.arg("--version");
-    let output = acyclic_native_runtime::run_blocking_io(move || {
-        acyclic_native_runtime::process_output(&mut command, Duration::from_secs(30), STDERR_TAIL)
-    })
+    let output = acyclic_native_runtime::run_blocking_io(
+        move || {
+            acyclic_native_runtime::process_output(
+                &mut command,
+                Duration::from_secs(30),
+                STDERR_TAIL,
+            )
+        },
+        None,
+    )
+    .expect("unmetered task construction cannot fail")
     .await
     .map_err(|error| Error::Storage(error.to_string()))?
     .map_err(|error| {

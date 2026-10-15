@@ -7,57 +7,12 @@ use super::{CanonicalDecodeError, DecodeLimits, LogicalName, TreeEntry};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::heap_future::in_heap;
-use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
+use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkError};
 use crate::storage::{ObjectId, ObjectStoreError};
 use thiserror::Error;
 
-/// Exact lookup result and work evidence.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TreeLookup {
-    /// Matching entry, or explicit authenticated absence.
-    pub entry: Option<TreeEntry>,
-    /// Exact kernel-visible work performed.
-    pub work: WorkCounters,
-}
-
-/// Original-order results from one shared authenticated frontier batch.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TreeBatchLookup {
-    /// One explicit present/absent result for every requested name.
-    pub entries: Vec<Option<TreeEntry>>,
-    /// Exact shared traversal, backend, copy, and allocation work.
-    pub work: WorkCounters,
-}
-
 /// Looks up an arbitrary name batch while reading each distinct tree frontier once.
-///
-/// Input order and duplicate requests are preserved in the returned vector.
-/// Internally, borrowed keys are deterministically ordered and queries sharing
-/// ancestors or leaves are routed together.
-///
-/// # Errors
-///
-/// Rejects empty/oversized batches, malformed routing, cycles, invalid limits,
-/// backend failures, and work outside the admitted budget.
-pub fn lookup_tree_entries<S: crate::ImmediateObjectStore>(
-    store: &S,
-    root: ObjectId,
-    names: &[LogicalName],
-    maximum_queries: u32,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-) -> Result<TreeBatchLookup, TreeReadFailure> {
-    persistent_batch::lookup::<S, TreeFormat>(store, root, names, maximum_queries, limits, budget)
-        .map(to_batch)
-        .map_err(map_batch_failure)
-}
-
-/// Asynchronously executes the same shared-frontier batch as [`lookup_tree_entries`].
-///
-/// # Errors
-///
-/// Returns the same failures, including cancellation before every backend read.
-pub async fn lookup_tree_entries_async<S: AsyncObjectStore>(
+pub async fn lookup_tree_entries<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     names: &[LogicalName],
@@ -65,7 +20,7 @@ pub async fn lookup_tree_entries_async<S: AsyncObjectStore>(
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &CancellationToken,
-) -> Result<TreeBatchLookup, TreeReadFailure> {
+) -> Result<OperationReceipt<Vec<Option<TreeEntry>>>, TreeReadFailure> {
     in_heap(move || async move {
         persistent_batch::lookup_async::<S, TreeFormat>(
             store,
@@ -77,17 +32,44 @@ pub async fn lookup_tree_entries_async<S: AsyncObjectStore>(
             cancellation,
         )
         .await
-        .map(to_batch)
         .map_err(map_batch_failure)
     })
     .await
 }
 
-fn to_batch(receipt: persistent_batch::Receipt<TreeEntry>) -> TreeBatchLookup {
-    TreeBatchLookup {
-        entries: receipt.values,
-        work: receipt.work,
-    }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
+)]
+pub(crate) async fn lookup_tree_entries_async_with_accounting<S: AsyncObjectStore>(
+    store: &S,
+    root: ObjectId,
+    names: &[LogicalName],
+    maximum_queries: u32,
+    limits: DecodeLimits,
+    accounting: &mut super::allocation::KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+    data_custody: Option<&super::ProofDataCustody>,
+) -> Result<
+    (
+        Vec<Option<TreeEntry>>,
+        super::allocation::KernelOwnedAllocation,
+    ),
+    crate::FsError,
+> {
+    persistent_batch::lookup_async_with_accounting::<S, TreeFormat>(
+        store,
+        root,
+        names,
+        maximum_queries,
+        limits,
+        accounting,
+        cancellation,
+        data_custody,
+    )
+    .await
+    .map(|(receipt, allocation)| (receipt.value, allocation))
+    .map_err(map_accounting_failure)
 }
 
 fn map_batch_failure(failure: persistent_batch::Failure) -> TreeReadFailure {
@@ -113,51 +95,57 @@ fn map_batch_error(error: persistent_batch::Error) -> TreeReadError {
 }
 
 /// Looks up one exact name through an authenticated directory B+tree.
-///
-/// # Errors
-///
-/// Fails on wrong object classes, corrupt pages, cycles, excessive height,
-/// backend failures, or a work budget that would be exceeded. The function
-/// never enumerates unrelated leaf entries or reads file bodies.
-pub fn lookup_tree_entry<S: crate::ImmediateObjectStore>(
-    store: &S,
-    root: ObjectId,
-    name: &LogicalName,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-) -> Result<TreeLookup, TreeReadFailure> {
-    crate::async_storage::poll_immediate(lookup_tree_entry_async(
-        store,
-        root,
-        name,
-        limits,
-        budget,
-        &CancellationToken::new(),
-    ))
-}
-
-/// Asynchronously looks up one exact name, sharing every page another
-/// reader of `store` already decoded.
-///
-/// # Errors
-///
-/// Returns the same typed semantic, storage, decode, work, and cancellation
-/// failures as [`lookup_tree_entry`].
-pub async fn lookup_tree_entry_async<S: AsyncObjectStore>(
+pub async fn lookup_tree_entry<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     name: &LogicalName,
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &CancellationToken,
-) -> Result<TreeLookup, TreeReadFailure> {
-    persistent_point::lookup_async::<S, TreeFormat>(store, root, name, limits, budget, cancellation)
-        .await
-        .map(|receipt| TreeLookup {
-            entry: receipt.value,
-            work: receipt.work,
-        })
-        .map_err(map_batch_failure)
+) -> Result<OperationReceipt<Option<TreeEntry>>, TreeReadFailure> {
+    persistent_point::lookup_async::<S, TreeFormat>(
+        store,
+        root,
+        name,
+        limits,
+        budget,
+        cancellation,
+        None,
+    )
+    .await
+    .map_err(map_batch_failure)
+}
+
+pub(crate) async fn lookup_tree_entry_async_with_accounting<S: AsyncObjectStore>(
+    store: &S,
+    root: ObjectId,
+    name: &LogicalName,
+    limits: DecodeLimits,
+    accounting: &mut super::allocation::KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+    data_custody: Option<&super::ProofDataCustody>,
+) -> Result<(Option<TreeEntry>, super::allocation::KernelOwnedAllocation), crate::FsError> {
+    persistent_point::lookup_async_with_accounting::<S, TreeFormat>(
+        store,
+        root,
+        name,
+        limits,
+        accounting,
+        cancellation,
+        data_custody,
+    )
+    .await
+    .map_err(map_accounting_failure)
+}
+
+fn map_accounting_failure(error: crate::FsError) -> crate::FsError {
+    match error {
+        crate::FsError::FileRecord(error) => {
+            let error = map_batch_error(super::file_table::unmap_batch_error(error));
+            super::PathLookupError::Tree(error).into()
+        }
+        error => error,
+    }
 }
 
 /// Sparse authenticated tree failure retaining exact spent work.

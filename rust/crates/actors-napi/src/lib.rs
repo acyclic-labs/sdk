@@ -365,7 +365,7 @@ impl NativeActorsClient {
         cancellation: Option<&NativeActorsCancellation>,
     ) -> Result<Self> {
         cancellable(
-            client::connect(&endpoint, &token),
+            client::connect(&endpoint, &token, None),
             cancellation.map(|value| value.state.clone()),
         )
         .await
@@ -380,12 +380,12 @@ impl NativeActorsClient {
         cancellation: Option<&NativeActorsCancellation>,
     ) -> Result<NativeActorsConnectResult> {
         Ok(connect_envelope(
-            client::connect(&endpoint, &token),
+            client::connect(&endpoint, &token, None),
             cancellation.map(|value| value.state.clone()),
         )
         .await)
     }
-    /// Connect with an additional native CA certificate.
+    /// Connect trusting exclusively the supplied native PEM CA certificate.
     #[napi(factory, js_name = "connectWithCa")]
     pub async fn connect_with_ca(
         endpoint: String,
@@ -394,14 +394,14 @@ impl NativeActorsClient {
         cancellation: Option<&NativeActorsCancellation>,
     ) -> Result<Self> {
         cancellable(
-            client::connect_with_ca_certificate(&endpoint, &token, Some(ca.as_ref())),
+            client::connect(&endpoint, &token, Some(ca.as_ref())),
             cancellation.map(|value| value.state.clone()),
         )
         .await
         .map(Self::from_client)
         .map_err(napi_error)
     }
-    /// Structured connection result with a native CA certificate.
+    /// Structured connection result trusting exclusively the supplied native PEM CA.
     #[napi(js_name = "connectWithCaResult")]
     pub async fn connect_with_ca_result(
         endpoint: String,
@@ -410,7 +410,7 @@ impl NativeActorsClient {
         cancellation: Option<&NativeActorsCancellation>,
     ) -> Result<NativeActorsConnectResult> {
         Ok(connect_envelope(
-            client::connect_with_ca_certificate(&endpoint, &token, Some(ca.as_ref())),
+            client::connect(&endpoint, &token, Some(ca.as_ref())),
             cancellation.map(|value| value.state.clone()),
         )
         .await)

@@ -678,7 +678,7 @@ fn the_fake_codex_replays_its_fixture_and_rejects_an_open_stdin() {
         String::from_utf8_lossy(&output.stdout),
         read(&support::fixture_dir().join("shell.stdout.jsonl"))
     );
-    let mut child = acyclic_native_runtime::spawn_process_tree(
+    let mut child = acyclic_native_runtime::ProcessTree::spawn(
         std::process::Command::new(&fake)
             .arg("exec")
             .stdin(std::process::Stdio::piped())

@@ -1,7 +1,7 @@
-//! Tracing glue for `docs/observability.md`. Spans come from
-//! `#[cfg_attr(not(target_arch = "wasm32"), tracing::instrument(..))]`; these
-//! helpers compile to no-ops on wasm32, which never links `tracing`.
+//! Tracing glue for `docs/observability.md`.
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use acyclic_native_runtime::obs::OperationSpan;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use tracing::field::Empty;
 
@@ -32,49 +32,79 @@ macro_rules! obs_record {
 }
 pub(crate) use obs_record;
 
-/// Opens a span (`DEBUG` unless prefixed with `INFO,`) with `outcome`/`error.kind`
-/// slots for [`traced`]; an empty [`Span`] on wasm32.
+/// Opens an owned operation span; WASM does not evaluate fields.
 macro_rules! obs_span {
     (INFO, $($rest:tt)+) => { crate::obs::obs_span!(@ INFO, $($rest)+) };
     (@ $level:ident, $name:literal $(, $field:ident = $value:expr)* $(,)?) => {{
         #[cfg(not(target_arch = "wasm32"))]
-        let span = ::tracing::span!(
+        let span = crate::obs::OperationSpan::new(::tracing::span!(
             ::tracing::Level::$level,
             $name,
             $($field = $value,)*
             outcome = ::tracing::field::Empty,
             error.kind = ::tracing::field::Empty,
-        );
+        ));
         #[cfg(target_arch = "wasm32")]
-        let span = crate::obs::Span;
+        let span = crate::obs::OperationSpan;
         span
     }};
     ($($rest:tt)+) => { crate::obs::obs_span!(@ DEBUG, $($rest)+) };
 }
 pub(crate) use obs_span;
 
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) type Span = tracing::Span;
 /// wasm32 records nothing.
 #[cfg(target_arch = "wasm32")]
 #[derive(Clone, Copy)]
-pub(crate) struct Span;
+pub(crate) struct OperationSpan;
 
 /// Boxes a trait method's future inside `span` and records its outcome there.
 pub(crate) fn traced<'a, T: 'a>(
-    span: Span,
+    span: OperationSpan,
     future: impl Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a,
 ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<T>> {
     #[cfg(not(target_arch = "wasm32"))]
-    return Box::pin(tracing::Instrument::instrument(
-        async move { outcome(future.await) },
-        span,
-    ));
+    {
+        let context = span.clone();
+        Box::pin(context.scope(async move {
+            let result = future.await;
+            span.record("outcome", if result.is_ok() { "ok" } else { "err" });
+            if let Err(error) = &result {
+                span.record("error.kind", error.kind());
+            }
+            result
+        }))
+    }
     #[cfg(target_arch = "wasm32")]
     {
-        let Span = span;
+        let OperationSpan = span;
         Box::pin(future)
     }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[test]
+fn filtered_operation_cannot_record_failure_on_its_parent() {
+    let (seen, _guard) = capture::install();
+    let parent = obs_span!(INFO, "acyclic.harness.test.parent");
+    parent.in_scope(|| {
+        let result = futures::executor::block_on(traced(
+            OperationSpan::new(tracing::Span::none()),
+            std::future::ready(Err::<(), _>(crate::Error::Invalid("test failure".into()))),
+        ));
+        assert!(result.is_err());
+    });
+    assert!(!capture::has(
+        &seen,
+        "acyclic.harness.test.parent",
+        "outcome",
+        "err"
+    ));
+    assert!(capture::has(
+        &seen,
+        "acyclic.harness.test.parent",
+        "outcome",
+        ""
+    ));
 }
 
 /// Span-test capture layer shared by the crate's test modules.
@@ -118,9 +148,7 @@ pub(crate) mod capture {
         }
     }
 
-    /// Captures this thread's spans until the guard drops. A second live
-    /// dispatcher makes callsites that a concurrent test reached first
-    /// consult this subscriber too, instead of caching that thread's interest.
+    /// Captures this thread's spans until the guard drops.
     pub(crate) fn install() -> (Seen, impl Sized) {
         use tracing_subscriber::layer::SubscriberExt as _;
         let second = tracing::Dispatch::new(tracing_subscriber::registry());

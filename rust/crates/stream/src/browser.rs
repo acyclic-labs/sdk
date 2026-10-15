@@ -1,11 +1,7 @@
 //! Strict `IndexedDB` command publication around the existing Rust state machine.
-//!
-//! Each handle catches up only the commands since its durable cursor. Initial
-//! recovery and total retention have explicit finite ceilings. No snapshot is
-//! serialized per request, and the browser supplies no semantic transitions.
 
 use crate::{
-    journal::{Command, decode_command, journal_command, replay},
+    journal::{Command, decode_command, replay},
     *,
 };
 use async_trait::async_trait;
@@ -16,7 +12,6 @@ use indexed_db_futures::{
     transaction::{Transaction, TransactionDurability, TransactionMode, TransactionOptions},
     typed_array::Uint8Array,
 };
-use prost::Message;
 use std::{
     rc::Rc,
     sync::{Arc, Mutex},
@@ -87,11 +82,6 @@ struct Inner {
 }
 
 /// One account-local durable provider, shared safely across tabs and workers.
-///
-/// `IndexedDB`'s strict read/write transaction serializes refresh, Rust admission,
-/// and journal publication across handles. A cancelled/failed publication
-/// invalidates its disposable cache; the next request recovers durable facts.
-/// Browser quotas or failed persistence return `Unavailable`, never success.
 #[derive(Clone)]
 pub struct BrowserStream {
     inner: Rc<Inner>,
@@ -112,7 +102,6 @@ fn backend<T>(_: T) -> StreamError {
 
 impl BrowserStream {
     /// Opens one browser-local database. Construction acquires no runtime lease.
-    /// Recovery runs on the first operation under the same publication lock.
     pub async fn open(name: &str, limits: BrowserStreamLimits) -> Result<Self, StreamError> {
         if name.is_empty() || limits.words().contains(&0) || limits.commands > u64::from(u32::MAX) {
             return Err(StreamError::InvalidArgument);
@@ -163,7 +152,6 @@ impl BrowserStream {
             cache.cursor = 0;
         }
         // Keep invalid throughout every await: cancellation cannot retain a
-        // partially recovered or unpublished state as an authoritative cache.
         cache.valid = false;
         let store = transaction.object_store(JOURNAL).map_err(backend)?;
         let metadata = store
@@ -233,16 +221,16 @@ impl BrowserStream {
     ) -> Result<Outcome, StreamError> {
         match &mut command {
             Command::Append(request) => {
-                memory::validate_records(&request.records)?;
-                memory::validate_append_size(request)?;
+                crate::request::validate_records(&request.records)?;
+                crate::request::validate_append_size(request)?;
             }
-            Command::Fork(request) => memory::validate_fork_size(request)?,
+            Command::Fork(request) => crate::request::validate_fork_size(request)?,
             Command::Commit(request) => {
-                memory::normalize_commit(request)?;
-                memory::validate_commit_shape(request)?;
+                crate::request::normalize_commit(request)?;
+                crate::request::validate_commit_shape(request)?;
             }
         }
-        let journal = journal_command(&command);
+        let journal = &command;
         if journal.encoded_len() > MAX_COMMAND_BYTES {
             return Err(StreamError::LimitExceeded);
         }
@@ -412,8 +400,6 @@ impl StreamProvider for BrowserStream {
             return Err(StreamError::OutOfRange);
         }
         // Durable polling is the wakeup transport. It observes publication even
-        // when the publishing context dies before sending any notification.
-        // A dropped cursor stops polling; no detached task owns its lifetime.
         Ok(stream::try_unfold(
             (self.clone(), path, memory::HistoryCursor::at(from)),
             |(provider, path, mut cursor)| async move {

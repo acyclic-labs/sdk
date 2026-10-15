@@ -7,11 +7,11 @@ use crate::kernel::{
 use crate::model::{FilesystemProfile as EngineProfile, Lifecycle, VolumeConfig};
 use crate::wire::{filesystem::v2 as wire, protocol::v1 as protocol};
 use crate::{
-    ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken, Digest,
-    DurableCommit, ForkOptions, Fs, Generation, GenerationId, IdempotencyKey, JoinHistory,
-    JoinOutcome, MergeConflict, ObjectId, Sequence, Transaction, TransactionCommit,
-    TransactionConflict, TransactionConflictRegion, TransactionRebase, Workspace, WorkspaceDelete,
-    WorkspaceError, WorkspaceMetadata, WorkspaceRebase,
+    ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken,
+    DependencyRegion, DependencyState, Digest, DurableCommit, ForkOptions, Fs, Generation,
+    GenerationId, IdempotencyKey, JoinHistory, JoinOutcome, MergeConflict, ObjectId,
+    RebaseConflict, Sequence, Transaction, TransactionCommit, TransactionRebase, WorkBudget,
+    Workspace, WorkspaceDelete, WorkspaceError, WorkspaceMetadata, WorkspaceRebase,
 };
 use bytes::Bytes;
 use futures::{StreamExt, stream};
@@ -279,9 +279,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
         let reference = required(reference, "workspace")?;
         let workspace = self
             .filesystem
-            .open_workspace(&reference.name)
+            .open_workspace(
+                &reference.name,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
             .await
-            .map_err(|error| status(&error))?;
+            .map_err(|failure| status(&failure.error))?
+            .value;
         if workspace.id().into_bytes().as_slice() != reference.workspace_id {
             return Err(Status::failed_precondition(
                 "workspace name and identity disagree",
@@ -316,9 +321,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
         let generation = match result.generation_id {
             Some(id) => Some(generation_ref(
                 &workspace
-                    .generation(id)
+                    .generation(id, WorkBudget::UNBOUNDED, &CancellationToken::new())
                     .await
-                    .map_err(|error| status(&error))?,
+                    .map_err(|failure| status(&failure.error))?
+                    .value,
             )),
             None => None,
         };
@@ -347,9 +353,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
         let workspace = self.workspace(reference.workspace).await?;
         let id = generation_id(&reference.generation_id)?;
         workspace
-            .generation(id)
+            .generation(id, WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
-            .map_err(|error| status(&error))
+            .map_err(|failure| status(&failure.error))
+            .map(|receipt| receipt.value)
     }
 
     async fn join_target_head(
@@ -383,9 +390,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
                 existing_operation: true,
             });
         }
+        let cancellation = CancellationToken::new();
+        let mut accounting =
+            crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
         let (current, head) = self
             .filesystem
-            .workspace_head_state(&target.volume)
+            .workspace_head_state(&target.volume, &mut accounting, &cancellation)
             .await
             .map_err(|error| status(&error))?;
         if current == expected {
@@ -396,9 +406,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
         } else {
             Ok(JoinTargetHead::Stale(
                 target
-                    .generation(current)
+                    .generation(current, WorkBudget::UNBOUNDED, &CancellationToken::new())
                     .await
-                    .map_err(|error| status(&error))?,
+                    .map_err(|failure| status(&failure.error))?
+                    .value,
             ))
         }
     }
@@ -497,9 +508,16 @@ where
         config.profile = profile;
         let workspace = self
             .filesystem
-            .create_workspace_with_config_operation(request.name, config, Some(operation_id))
+            .create_workspace_with_config_operation(
+                request.name,
+                config,
+                Some(operation_id),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
             .await
-            .map_err(|error| status(&error))?;
+            .map_err(|failure| status(&failure.error))?
+            .value;
         Ok(Response::new(wire::WorkspaceResponse {
             workspace: Some(workspace_message(&workspace).await?),
             status: wire::MutationStatus::Committed as i32,
@@ -515,11 +533,13 @@ where
             wire::open_workspace_request::Selector::Workspace(reference) => {
                 self.workspace(Some(reference)).await?
             }
-            wire::open_workspace_request::Selector::Name(name) => self
-                .filesystem
-                .open_workspace(name)
-                .await
-                .map_err(|error| status(&error))?,
+            wire::open_workspace_request::Selector::Name(name) => {
+                self.filesystem
+                    .open_workspace(name, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                    .await
+                    .map_err(|failure| status(&failure.error))?
+                    .value
+            }
         };
         Ok(Response::new(wire::WorkspaceResponse {
             workspace: Some(workspace_message(&workspace).await?),
@@ -553,7 +573,11 @@ where
     ) -> Result<Response<wire::GenerationResponse>, Status> {
         self.admit(&request)?;
         let workspace = self.workspace(request.into_inner().workspace).await?;
-        let generation = workspace.head().await.map_err(|error| status(&error))?;
+        let generation = workspace
+            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map_err(|failure| status(&failure.error))?
+            .value;
         Ok(Response::new(generation_message(&generation).await?))
     }
 
@@ -579,18 +603,38 @@ where
             ));
         }
         let generation = self.generation(request.generation).await?;
+        let cancellation = CancellationToken::new();
         let bytes = match request.range {
             Some(range) => {
                 if range.length > request.maximum_bytes {
                     return Err(Status::invalid_argument("range exceeds maximum_bytes"));
                 }
                 generation
-                    .read_range(&request.path, range.offset, range.length)
+                    .read_range(
+                        &request.path,
+                        range.offset,
+                        range.length,
+                        WorkBudget::UNBOUNDED,
+                        &cancellation,
+                    )
                     .await
+                    .map_err(|failure| status(&failure.error))?
+                    .value
+                    .bytes
             }
-            None => generation.read(&request.path, request.maximum_bytes).await,
-        }
-        .map_err(|error| status(&error))?;
+            None => {
+                generation
+                    .read(
+                        &request.path,
+                        request.maximum_bytes,
+                        WorkBudget::UNBOUNDED,
+                        &cancellation,
+                    )
+                    .await
+                    .map_err(|failure| status(&failure.error))?
+                    .value
+            }
+        };
         Ok(Response::new(wire::ReadResponse {
             contents: bytes.to_vec(),
         }))
@@ -605,9 +649,14 @@ where
         let value = self
             .generation(request.generation)
             .await?
-            .stat(&request.path)
+            .stat(
+                &request.path,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
             .await
-            .map_err(|error| status(&error))?;
+            .map_err(|failure| status(&failure.error))?
+            .value;
         Ok(Response::new(wire::StatResponse {
             stat: Some(stat_message(&value)),
         }))
@@ -626,9 +675,17 @@ where
         let generation = self.generation(request.generation).await?;
         let after = page.after.map(input_logical_name).transpose()?;
         let listed = generation
-            .list_directory(&request.path, after.as_ref(), page.maximum_items)
+            .list_directory(
+                &request.path,
+                after.as_ref(),
+                page.maximum_items,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
             .await
-            .map_err(|error| status(&error))?;
+            .map_err(|failure| status(&failure.error))?
+            .value
+            .0;
         let next = listed
             .has_more
             .then(|| listed.entries.last().map(|entry| logical_name(&entry.name)))
@@ -646,9 +703,10 @@ where
                 format!("{}/{name}", request.path.trim_end_matches('/'))
             };
             let stat = generation
-                .stat(&child)
+                .stat(&child, WorkBudget::UNBOUNDED, &CancellationToken::new())
                 .await
-                .map_err(|error| status(&error))?;
+                .map_err(|failure| status(&failure.error))?
+                .value;
             if stat.file_id != entry.file_id || stat.kind != entry.kind {
                 return Err(Status::data_loss(
                     "directory binding changed within immutable generation",
@@ -673,9 +731,15 @@ where
         let contents = self
             .generation(request.generation)
             .await?
-            .read_symbolic_link(&request.path)
+            .read_symbolic_link(
+                &request.path,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
             .await
-            .map_err(|error| status(&error))?;
+            .map_err(|failure| status(&failure.error))?
+            .value
+            .bytes;
         if u64::try_from(contents.len()).unwrap_or(u64::MAX) > request.maximum_bytes
             || request.maximum_bytes > self.limits.maximum_response_bytes
         {
@@ -752,23 +816,66 @@ where
         let base = self.generation(request.base).await?;
         let workspace = self.workspace(generation_ref(&base).workspace).await?;
         let mut transaction = workspace
-            .begin_transaction_at(&base, operation(request.operation)?)
+            .begin_transaction_at(
+                &base,
+                operation(request.operation)?,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
             .await
-            .map_err(|error| status(&error))?;
+            .map_err(|failure| status(&failure.error))?
+            .value;
         for mutation in request.mutations {
             apply_mutation(&mut transaction, mutation).await?;
         }
-        let first = transaction.commit().await.map_err(|error| status(&error))?;
+        let first = transaction
+            .commit(
+                None,
+                crate::PublicationPermit::Unrestricted,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+                |_| async {
+                    Ok::<_, crate::OperationFailure<WorkspaceError>>(crate::OperationReceipt {
+                        value: (),
+                        work: crate::WorkCounters::UNCHARGED,
+                    })
+                },
+            )
+            .await
+            .map_err(|failure| status(&failure.error))?
+            .value;
         if !matches!(first, TransactionCommit::Conflict { .. }) {
             return Ok(Response::new(commit_message(first)));
         }
         match transaction
-            .rebase(request.maximum_conflicts)
+            .rebase(
+                request.maximum_conflicts,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
             .await
-            .map_err(|error| status(&error))?
+            .map_err(|failure| status(&failure.error))?
+            .value
         {
             TransactionRebase::Rebased(_) => Ok(Response::new(commit_message(
-                transaction.commit().await.map_err(|error| status(&error))?,
+                transaction
+                    .commit(
+                        None,
+                        crate::PublicationPermit::Unrestricted,
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
+                        |_| async {
+                            Ok::<_, crate::OperationFailure<WorkspaceError>>(
+                                crate::OperationReceipt {
+                                    value: (),
+                                    work: crate::WorkCounters::UNCHARGED,
+                                },
+                            )
+                        },
+                    )
+                    .await
+                    .map_err(|failure| status(&failure.error))?
+                    .value,
             ))),
             TransactionRebase::Conflicted {
                 conflicts,
@@ -800,16 +907,27 @@ where
         let base = self.generation(request.base).await?;
         let workspace = self.workspace(generation_ref(&base).workspace).await?;
         let mut transaction = workspace
-            .begin_transaction_at(&base, operation(request.operation)?)
+            .begin_transaction_at(
+                &base,
+                operation(request.operation)?,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
             .await
-            .map_err(|error| status(&error))?;
+            .map_err(|failure| status(&failure.error))?
+            .value;
         for mutation in request.mutations {
             apply_mutation(&mut transaction, mutation).await?;
         }
         match transaction
-            .rebase(request.maximum_conflicts)
+            .rebase(
+                request.maximum_conflicts,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
             .await
-            .map_err(|error| status(&error))?
+            .map_err(|failure| status(&failure.error))?
+            .value
         {
             TransactionRebase::Rebased(generation) => {
                 Ok(Response::new(wire::RebaseTransactionResponse {
@@ -844,9 +962,22 @@ where
             None => options,
         };
         let destination = source_workspace
-            .fork(request.destination_name, options)
+            .fork::<_, _, WorkspaceError>(
+                request.destination_name,
+                options,
+                crate::PublicationPermit::Unrestricted,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+                &mut |_| {
+                    std::future::ready(Ok(crate::OperationReceipt {
+                        value: (),
+                        work: crate::WorkCounters::UNCHARGED,
+                    }))
+                },
+            )
             .await
-            .map_err(|error| status(&error))?;
+            .map_err(|failure| status(&failure.error))?
+            .value;
         Ok(Response::new(wire::WorkspaceResponse {
             workspace: Some(workspace_message(&destination).await?),
             status: wire::MutationStatus::Committed as i32,
@@ -867,9 +998,16 @@ where
         let to = self.generation(request.to).await?;
         let workspace = from.workspace.clone();
         let changes = workspace
-            .diff(&from, &to, request.maximum_changes)
+            .diff(
+                &from,
+                &to,
+                request.maximum_changes,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
             .await
-            .map_err(|error| status(&error))?;
+            .map_err(|failure| status(&failure.error))?
+            .value;
         Ok(Response::new(wire::DiffResponse {
             from: Some(generation_ref(changes.from())),
             to: Some(generation_ref(changes.to())),
@@ -939,15 +1077,17 @@ where
         let source_workspace = source.workspace.clone();
         let target_workspace = target.workspace.clone();
         if source_workspace
-            .head()
+            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
-            .map_err(|error| status(&error))?
+            .map_err(|failure| status(&failure.error))?
+            .value
             .id()
             != source.id()
             || target_workspace
-                .head()
+                .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
                 .await
-                .map_err(|error| status(&error))?
+                .map_err(|failure| status(&failure.error))?
+                .value
                 .id()
                 != target.id()
         {
@@ -963,9 +1103,10 @@ where
                 request.maximum_changes,
                 request.maximum_conflicts,
             )
-            .plan()
+            .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
-            .map_err(|error| status(&error))?;
+            .map_err(|failure| status(&failure.error))?
+            .value;
         if plan.source_head() != source.id() || plan.target_head() != target.id() {
             return Err(Status::failed_precondition(
                 "join endpoints changed while the plan was computed",
@@ -985,13 +1126,22 @@ where
             request.maximum_changes,
             request.maximum_conflicts,
         );
-        let changes = plan
-            .source_changes()
+        let changes = source_workspace
+            .volume
+            .fs
+            .workspace_join_changes(
+                plan.common_ancestor(),
+                &source,
+                request.maximum_changes,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
             .await
-            .map_err(|error| status(&error))?;
-        let file_changes = changes.value.files.iter().map(file_record_change).collect();
-        let binding_changes = changes
+            .map_err(|failure| status(&failure.error))?
             .value
+            .0;
+        let file_changes = changes.files.iter().map(file_record_change).collect();
+        let binding_changes = changes
             .bindings
             .iter()
             .map(directory_binding_change)
@@ -1002,7 +1152,7 @@ where
             expected_target: Some(target_ref),
             file_changes,
             conflicts: Vec::new(),
-            truncated: changes.value.truncated,
+            truncated: changes.truncated,
             common_ancestor: Some(base_ref),
             maximum_generations: request.maximum_generations,
             maximum_changes: request.maximum_changes,
@@ -1075,7 +1225,16 @@ where
                 supplied.maximum_changes,
                 supplied.maximum_conflicts,
             )
-            .plan_generations(source, target, target_authority_head)
+            .plan_generations(
+                source,
+                target,
+                target_authority_head,
+                &mut crate::kernel::KernelAccounting::standalone(
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                ),
+                &CancellationToken::new(),
+            )
             .await
             .map_err(|error| status(&error))?;
         let expected_base_ref =
@@ -1085,9 +1244,10 @@ where
             || base_ref != expected_base_ref
         {
             let actual = target_workspace
-                .head()
+                .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
                 .await
-                .map_err(|error| status(&error))?;
+                .map_err(|failure| status(&failure.error))?
+                .value;
             return Ok(Response::new(wire::JoinResponse {
                 status: wire::JoinStatus::StaleTarget as i32,
                 generation: Some(generation_ref(&actual)),
@@ -1096,10 +1256,14 @@ where
             }));
         }
         let outcome = plan
-            .apply(ApplyOptions {
-                if_target: target_id,
-                idempotency_key: operation,
-            })
+            .apply(
+                ApplyOptions {
+                    if_target: target_id,
+                    idempotency_key: operation,
+                },
+                std::collections::BTreeMap::new(),
+                crate::PublicationPermit::Unrestricted,
+            )
             .await
             .map_err(|error| status(&error))?;
         let outcome = if existing_operation
@@ -1146,12 +1310,15 @@ where
         let generation = self.generation(request.generation).await?;
         let checkout = generation
             .workspace
-            .engine_checkout(
+            .checkout(
                 crate::model::GenerationSelector::Exact(generation.id()),
                 crate::model::CheckoutMode::read_only_pinned(),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
             )
             .await
-            .map_err(|error| status(&error))?;
+            .map_err(|failure| status(&failure.error))?
+            .value;
         let manifest = checkout
             .export_manifest(crate::WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
@@ -1293,7 +1460,7 @@ where
             self.filesystem
                 .import_object(
                     object,
-                    Bytes::from(chunk.contents),
+                    chunk.contents,
                     crate::WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
                 )
@@ -1321,14 +1488,23 @@ where
             .map_err(|failure| Status::unavailable(failure.error.to_string()))?;
         let workspace = self
             .filesystem
-            .open_workspace(&workspace_ref.name)
+            .open_workspace(
+                &workspace_ref.name,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
             .await
-            .map_err(|error| status(&error))?;
+            .map_err(|failure| status(&failure.error))?
+            .value;
         Ok(Response::new(wire::ImportResponse {
             outcome: Some(mutation(
                 wire::MutationStatus::Committed,
                 Some(generation_ref(
-                    &workspace.head().await.map_err(|error| status(&error))?,
+                    &workspace
+                        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                        .await
+                        .map_err(|failure| status(&failure.error))?
+                        .value,
                 )),
                 None,
             )),
@@ -1497,7 +1673,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
                 }
                 generation
             }
-            None => workspace.head().await.map_err(|error| status(&error))?,
+            None => {
+                workspace
+                    .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                    .await
+                    .map_err(|failure| status(&failure.error))?
+                    .value
+            }
         };
         let issuer = self.credential_issuer.as_ref().ok_or_else(|| {
             Status::unimplemented("credential issuance is unavailable in this deployment")
@@ -1590,7 +1772,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
             let workspace = self
                 .workspace(generation_ref(&generation).workspace)
                 .await?;
-            let head = workspace.head().await.map_err(|error| status(&error))?;
+            let head = workspace
+                .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await
+                .map_err(|failure| status(&failure.error))?
+                .value;
             if head.id() != generation.id() {
                 return Err(Status::failed_precondition(
                     "checkpoint requires the current head",
@@ -1602,9 +1788,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
                 .map_err(|error| status(&error))?;
         } else {
             generation
-                .pin(&request.identity)
+                .pin(
+                    &request.identity,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
                 .await
-                .map_err(|error| status(&error))?;
+                .map_err(|failure| status(&failure.error))?;
         }
         Ok(Response::new(wire::RetainGenerationResponse {
             generation: Some(generation_ref(&generation)),
@@ -1619,6 +1809,7 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     value: wire::Mutation,
 ) -> Result<(), Status> {
     use wire::mutation::Mutation;
+    let cancellation = CancellationToken::new();
     match required(value.mutation, "mutation")? {
         Mutation::CreateFile(value) => {
             transaction
@@ -1626,44 +1817,91 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     &value.path,
                     Bytes::from(value.contents),
                     metadata(value.metadata)?,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
                 )
                 .await
         }
         Mutation::CreateDirectory(value) => {
             transaction
-                .create_directory(&value.path)
+                .create_directory(&value.path, WorkBudget::UNBOUNDED, &cancellation)
                 .await
-                .map_err(|error| status(&error))?;
+                .map_err(|failure| status(&failure.error))?;
             transaction
-                .set_metadata(&value.path, metadata(value.metadata)?)
+                .set_metadata(
+                    &value.path,
+                    metadata(value.metadata)?,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
                 .await
         }
         Mutation::CreateSymbolicLink(value) => {
             transaction
-                .create_symbolic_link(&value.path, Bytes::from(value.target))
+                .create_symbolic_link(
+                    &value.path,
+                    Bytes::from(value.target),
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
                 .await
-                .map_err(|error| status(&error))?;
+                .map_err(|failure| status(&failure.error))?;
             transaction
-                .set_metadata(&value.path, metadata(value.metadata)?)
+                .set_metadata(
+                    &value.path,
+                    metadata(value.metadata)?,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
                 .await
         }
-        Mutation::Remove(value) => transaction.remove(&value.path).await,
+        Mutation::Remove(value) => {
+            transaction
+                .remove(&value.path, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+        }
         Mutation::Rename(value) => {
             transaction
-                .rename_with_replace(&value.source, &value.destination, value.replace)
+                .rename(
+                    &value.source,
+                    &value.destination,
+                    value.replace,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
                 .await
         }
         Mutation::HardLink(value) => {
             transaction
-                .hard_link(&value.source, &value.destination)
+                .hard_link(
+                    &value.source,
+                    &value.destination,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
                 .await
         }
         Mutation::Write(value) => {
             transaction
-                .write_range(&value.path, value.offset, Bytes::from(value.contents))
+                .write_range(
+                    &value.path,
+                    value.offset,
+                    Bytes::from(value.contents),
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
                 .await
         }
-        Mutation::Resize(value) => transaction.resize(&value.path, value.logical_bytes).await,
+        Mutation::Resize(value) => {
+            transaction
+                .resize(
+                    &value.path,
+                    value.logical_bytes,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+        }
         Mutation::ZeroRange(value) => {
             let range = required(value.range, "range")?;
             transaction
@@ -1675,6 +1913,8 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     },
                     value.allocated,
                     value.extend,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
                 )
                 .await
         }
@@ -1688,6 +1928,8 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                         length: range.length,
                     },
                     value.keep_size,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
                 )
                 .await
         }
@@ -1699,23 +1941,49 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     &value.destination,
                     value.destination_offset,
                     value.length,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
                 )
                 .await
         }
         Mutation::SetMetadata(value) => {
             transaction
-                .set_metadata(&value.path, metadata(value.metadata)?)
+                .set_metadata(
+                    &value.path,
+                    metadata(value.metadata)?,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
                 .await
         }
-        Mutation::CreateDirectories(value) => transaction.create_dir_all(&value.path).await,
+        Mutation::CreateDirectories(value) => {
+            transaction
+                .create_dir_all(&value.path, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+        }
         Mutation::PutFile(value) => {
             transaction
-                .write(&value.path, Bytes::from(value.contents))
+                .write(
+                    &value.path,
+                    Bytes::from(value.contents),
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
                 .await
         }
-        Mutation::CopyFile(value) => transaction.copy(&value.source, &value.destination).await,
+        Mutation::CopyFile(value) => {
+            transaction
+                .copy(
+                    &value.source,
+                    &value.destination,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+        }
     }
-    .map_err(|error| status(&error))
+    .map(|_| ())
+    .map_err(|failure| status(&failure.error))
 }
 
 fn metadata(value: Option<wire::Metadata>) -> Result<FileMetadata, Status> {
@@ -1871,7 +2139,7 @@ fn join_common_ancestor_ref<A, O>(
     source: &Workspace<A, O>,
     target: &Workspace<A, O>,
 ) -> wire::GenerationRef {
-    let volume = plan.common_ancestor_volume();
+    let volume = plan.base.volume_id;
     let workspace = if volume == source.id().volume_id() {
         Some(workspace_ref(source))
     } else if volume == target.id().volume_id() {
@@ -1900,14 +2168,17 @@ fn observed_mutation<A, O>(
         return Ok(mutation(wire::MutationStatus::Committed, None, None));
     }
     let root = if let Ok(publication) =
-        crate::kernel::decode_published_generation(&commit.payload, MAXIMUM_EVENT_BYTES)
-    {
+        crate::kernel::decode_published_generation(&commit.payload, MAXIMUM_EVENT_BYTES, |_| {
+            Ok::<_, crate::kernel::CanonicalDecodeError>(())
+        }) {
         if publication.volume_id != expected {
             return Err(Status::data_loss("operation workspace identity mismatch"));
         }
         publication.generation_root
     } else if let Ok(created) =
-        crate::kernel::decode_volume_created(&commit.payload, MAXIMUM_EVENT_BYTES)
+        crate::kernel::decode_volume_created(&commit.payload, MAXIMUM_EVENT_BYTES, &mut |_| {
+            Ok::<_, crate::kernel::VolumeCreatedError>(())
+        })
     {
         if created.volume_id != expected {
             return Err(Status::data_loss("operation workspace identity mismatch"));
@@ -1931,7 +2202,11 @@ fn observed_mutation<A, O>(
 async fn workspace_message<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     workspace: &Workspace<A, O>,
 ) -> Result<wire::Workspace, Status> {
-    let head = workspace.head().await.map_err(|error| status(&error))?;
+    let head = workspace
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+        .map_err(|failure| status(&failure.error))?
+        .value;
     Ok(wire::Workspace {
         workspace: Some(workspace_ref(workspace)),
         name: workspace.name().as_str().to_owned(),
@@ -1947,9 +2222,10 @@ async fn generation_message<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let reference = generation_ref(generation);
     let workspace = reference.workspace.clone();
     let parents = generation
-        .parents()
+        .parents(WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .map_err(|error| status(&error))?
+        .map_err(|failure| status(&failure.error))?
+        .value
         .into_iter()
         .map(|id| wire::GenerationRef {
             workspace: workspace.clone(),
@@ -1989,11 +2265,11 @@ fn commit_message<A, O>(value: TransactionCommit<A, O>) -> wire::MutationRespons
 fn join_message<A, O>(value: JoinOutcome<A, O>) -> wire::JoinResponse {
     match value {
         JoinOutcome::Applied(generation) => {
-            join_response(wire::JoinStatus::Applied, Some(generation.generation()))
+            join_response(wire::JoinStatus::Applied, Some(&generation.generation))
         }
         JoinOutcome::AlreadyApplied(generation) => join_response(
             wire::JoinStatus::AlreadyApplied,
-            Some(generation.generation()),
+            Some(&generation.generation),
         ),
         JoinOutcome::NoChanges(generation) => {
             join_response(wire::JoinStatus::NoChanges, Some(&generation))
@@ -2245,19 +2521,19 @@ fn mutation_with_conflicts(
     }
 }
 
-fn transaction_conflict(value: TransactionConflict) -> wire::Conflict {
+fn transaction_conflict(value: RebaseConflict) -> wire::Conflict {
     use wire::conflict::Region;
     let region = match value.region {
-        TransactionConflictRegion::FileRecord(file_id) => Region::FileRecord(wire::FileConflict {
+        DependencyRegion::FileRecord(file_id) => Region::FileRecord(wire::FileConflict {
             file_id: file_id.into_bytes().to_vec(),
         }),
-        TransactionConflictRegion::Metadata(file_id) => Region::Metadata(wire::FileConflict {
+        DependencyRegion::Metadata(file_id) => Region::Metadata(wire::FileConflict {
             file_id: file_id.into_bytes().to_vec(),
         }),
-        TransactionConflictRegion::FileLength(file_id) => Region::FileLength(wire::FileConflict {
+        DependencyRegion::FileLength(file_id) => Region::FileLength(wire::FileConflict {
             file_id: file_id.into_bytes().to_vec(),
         }),
-        TransactionConflictRegion::ContentRange {
+        DependencyRegion::ContentRange {
             file_id,
             offset,
             length,
@@ -2265,7 +2541,7 @@ fn transaction_conflict(value: TransactionConflict) -> wire::Conflict {
             file_id: file_id.into_bytes().to_vec(),
             range: Some(wire::ByteRange { offset, length }),
         }),
-        TransactionConflictRegion::SparseSeek {
+        DependencyRegion::SparseSeek {
             file_id,
             offset,
             target,
@@ -2274,13 +2550,13 @@ fn transaction_conflict(value: TransactionConflict) -> wire::Conflict {
             offset,
             target: hosted_contract::sparse_target(target) as i32,
         }),
-        TransactionConflictRegion::DirectoryName { directory_id, name } => {
+        DependencyRegion::DirectoryName { directory_id, name } => {
             Region::DirectoryName(wire::DirectoryNameConflict {
                 directory_id: directory_id.into_bytes().to_vec(),
                 name: Some(logical_name(&name)),
             })
         }
-        TransactionConflictRegion::DirectoryRange {
+        DependencyRegion::DirectoryRange {
             directory_id,
             after,
             maximum_entries,
@@ -2293,12 +2569,14 @@ fn transaction_conflict(value: TransactionConflict) -> wire::Conflict {
     wire::Conflict {
         region: Some(region),
         r#use: hosted_contract::conflict_use(value.usage) as i32,
-        expected_digest: value
-            .expected
-            .map_or_else(Vec::new, |value| value.as_bytes().to_vec()),
-        actual_digest: value
-            .actual
-            .map_or_else(Vec::new, |value| value.as_bytes().to_vec()),
+        expected_digest: match value.expected {
+            DependencyState::Absent => Vec::new(),
+            DependencyState::Present(digest) => digest.as_bytes().to_vec(),
+        },
+        actual_digest: match value.actual {
+            DependencyState::Absent => Vec::new(),
+            DependencyState::Present(digest) => digest.as_bytes().to_vec(),
+        },
     }
 }
 
@@ -2439,6 +2717,7 @@ fn status(error: &WorkspaceError) -> Status {
         WorkspaceError::NotFound => Status::not_found(error.to_string()),
         WorkspaceError::Name(_)
         | WorkspaceError::Path(_)
+        | WorkspaceError::NamespacePath(_)
         | WorkspaceError::ReadLimitExceeded
         | WorkspaceError::InvalidMergeResolution
         | WorkspaceError::NotRegularFile
@@ -2447,6 +2726,7 @@ fn status(error: &WorkspaceError) -> Status {
         | WorkspaceError::ContentLengthOverflow => Status::invalid_argument(error.to_string()),
         WorkspaceError::ForeignGeneration
         | WorkspaceError::StaleGeneration
+        | WorkspaceError::StaleSource
         | WorkspaceError::StaleIdentity
         | WorkspaceError::IncompatibleWorkspace
         | WorkspaceError::ChangeSetContinuity
@@ -2458,8 +2738,12 @@ fn status(error: &WorkspaceError) -> Status {
         | WorkspaceError::ChangedPathLimit
         | WorkspaceError::NotFork => Status::failed_precondition(error.to_string()),
         WorkspaceError::Cancelled(_) => Status::cancelled(error.to_string()),
-        WorkspaceError::Work(_) => Status::resource_exhausted(error.to_string()),
-        WorkspaceError::Engine(_) => Status::unavailable(error.to_string()),
+        WorkspaceError::Work(_) | WorkspaceError::WorkMerge { .. } => {
+            Status::resource_exhausted(error.to_string())
+        }
+        WorkspaceError::Engine(_) | WorkspaceError::Filesystem(_) => {
+            Status::unavailable(error.to_string())
+        }
     }
 }
 

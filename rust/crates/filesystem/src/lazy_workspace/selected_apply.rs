@@ -1,0 +1,383 @@
+use super::*;
+pub(crate) struct SelectedImportEffects {
+    pub(crate) paths: Vec<String>,
+    pub(crate) records: Vec<(FileRecord, FileMetadata)>,
+    pub(crate) changes: Vec<NamespacePath>,
+    _allocation: KernelOwnedAllocation,
+}
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: LazyWorkspaceStore>
+    LazyWorkspace<A, O, D, S>
+{
+    /// Publishes a funded selected import without attaching a native mount.
+    pub async fn import_selected<F, Fut, E>(
+        &self,
+        destination: LazySnapshotRef,
+        input: (SelectedImportPlan, crate::NativeAllocation),
+        operation: crate::OperationId,
+        permit: crate::PublicationPermit,
+        work: &crate::NativeMaterializationWork,
+        mut before_publication: F,
+    ) -> Result<LazySnapshotRef, E>
+    where
+        F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static,
+        E: From<LazyWorkspaceError> + From<WorkspaceError> + From<crate::FsError> + Send + 'static,
+    {
+        work.remaining().map_err(LazyWorkspaceError::from)?;
+        if !input.1.work().shares_ledger(work)
+            || !input.1.work().shares_resource_allowance(work)
+            || input.1.bytes() < input.0.logical_owned_bytes()
+        {
+            return Err(LazyWorkspaceError::NativeLedgerMismatch.into());
+        }
+        before_publication(work).await?;
+        self.publish_selected_import(
+            destination,
+            &input.0,
+            operation,
+            permit,
+            work,
+            before_publication,
+        )
+        .await
+    }
+    async fn publish_selected_import<F, Fut, E>(
+        &self,
+        destination: LazySnapshotRef,
+        plan: &SelectedImportPlan,
+        operation: crate::OperationId,
+        permit: crate::PublicationPermit,
+        work: &crate::NativeMaterializationWork,
+        mut before_publication: F,
+    ) -> Result<LazySnapshotRef, E>
+    where
+        F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static,
+        E: From<LazyWorkspaceError> + From<WorkspaceError> + From<crate::FsError> + Send + 'static,
+    {
+        let key = IdempotencyKey::from_bytes(operation.into_bytes());
+        let mut ctx = KernelAccounting::NativeOriginal {
+            work,
+            cancellation: work.cancellation(),
+        };
+        let input = plan.input_digest(destination, &mut ctx)?;
+        if let Some(generation) = self.operation_generation(key, &mut ctx).await? {
+            return self
+                .finish_selected_import(
+                    operation,
+                    generation,
+                    destination,
+                    plan.source,
+                    plan.source_config,
+                    input,
+                    &mut ctx,
+                )
+                .await
+                .map_err(E::from);
+        }
+        self.recover_pending_remove(&mut ctx).await?;
+        let mut checkout = self
+            .workspace
+            .checkout_accounted(
+                crate::model::GenerationSelector::Head,
+                crate::model::CheckoutMode::tracking_transaction(),
+                &mut ctx,
+                work.cancellation(),
+            )
+            .await?;
+        let effects = self
+            .prepare_selected_import_into_checkout(
+                destination,
+                plan,
+                &mut checkout,
+                operation,
+                &mut ctx,
+            )
+            .await?;
+        self.prepare_mount_removals(&[], &effects.paths, &effects.records, key, &mut ctx)
+            .await?;
+        let cut = self.publication_cut(Some(operation), &mut ctx).await?;
+        let (context, evidence) = publication_evidence(
+            NativeSnapshotContext::Selected { cut, input },
+            operation,
+            permit,
+            &mut ctx,
+        )?;
+        let mut transaction =
+            crate::Transaction::from_checkout(&self.workspace, checkout, key, false);
+        let committed = transaction
+            .commit_with_native_work(
+                Some((context, evidence, permit)),
+                permit,
+                work,
+                work.cancellation(),
+                &mut before_publication,
+            )
+            .await?;
+        let (TransactionCommit::Committed(generation)
+        | TransactionCommit::AlreadyCommitted(generation)) = committed
+        else {
+            return Err(LazyWorkspaceError::Concurrent.into());
+        };
+        before_publication(work).await?;
+        self.finish_selected_import(
+            operation,
+            generation.id(),
+            destination,
+            plan.source,
+            plan.source_config,
+            input,
+            &mut ctx,
+        )
+        .await
+        .map_err(E::from)
+    }
+    pub(crate) async fn prepare_selected_import_into_checkout(
+        &self,
+        destination: LazySnapshotRef,
+        plan: &SelectedImportPlan,
+        checkout: &mut crate::Checkout<A, O>,
+        operation: crate::OperationId,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<SelectedImportEffects, LazyWorkspaceError> {
+        self.validate_snapshot(destination, ctx).await?;
+        if plan.source_used && plan.source.source != self.source.reference() {
+            return Err(LazyWorkspaceError::StaleSource);
+        }
+        if plan.source_config.profile != self.workspace.profile() {
+            return Err(LazyWorkspaceError::UnsupportedNode);
+        }
+        let current = self.snapshot(ctx).await?;
+        let (mut paths, _) = self.selected_paths(destination, &plan.roots, ctx).await?;
+        let baseline = self
+            .workspace
+            .checkout_accounted(
+                crate::model::GenerationSelector::Exact(destination.authored_generation),
+                crate::model::CheckoutMode::tracking_transaction(),
+                ctx,
+                cancellation(ctx),
+            )
+            .await?;
+        let mut baseline = crate::Transaction::from_checkout(
+            &self.workspace,
+            baseline,
+            IdempotencyKey::from_bytes(operation.into_bytes()),
+            false,
+        );
+        let candidate = checkout.private_candidate(ctx, cancellation(ctx))?;
+        let mut transaction = crate::Transaction::from_checkout(
+            &self.workspace,
+            candidate,
+            IdempotencyKey::from_bytes(operation.into_bytes()),
+            false,
+        );
+        let mut records: Owned<Vec<(FileRecord, FileMetadata)>> =
+            Owned::allocate(paths.value.len(), ctx)?;
+        let mut changes = Owned::allocate(paths.value.len() + plan.entries.len(), ctx)?;
+        let result = async {
+            for path in &paths.value {
+                self.stage_selected_path(&mut baseline, destination, path, ctx)
+                    .await?;
+                self.stage_selected_path(&mut transaction, current, path, ctx)
+                    .await?;
+                let before = self
+                    .authored_record(&mut baseline.checkout, path, ctx)
+                    .await?;
+                let actual = self
+                    .authored_record(&mut transaction.checkout, path, ctx)
+                    .await?;
+                ctx.charge(WorkCounters {
+                    items_examined: 1,
+                    ..WorkCounters::UNCHARGED
+                })?;
+                if !same_record(before, actual) {
+                    return Err(LazyWorkspaceError::StaleIdentity);
+                }
+                if let Some(actual) = actual {
+                    let mut duplicate = false;
+                    for (record, _) in &records.value {
+                        ctx.charge(WorkCounters {
+                            items_examined: 1,
+                            ..WorkCounters::UNCHARGED
+                        })?;
+                        if record.file_id == actual.0.file_id {
+                            duplicate = true;
+                            break;
+                        }
+                    }
+                    if !duplicate {
+                        records.value.push(actual);
+                    }
+                }
+            }
+            for entry in &plan.entries {
+                if !paths.value.iter().any(|path| path == &entry.path) {
+                    let before = self
+                        .authored_record(&mut baseline.checkout, &entry.path, ctx)
+                        .await?;
+                    let actual = self
+                        .authored_record(&mut transaction.checkout, &entry.path, ctx)
+                        .await?;
+                    if !same_record(before, actual) {
+                        return Err(LazyWorkspaceError::StaleIdentity);
+                    }
+                }
+                if entry.record.is_none() {
+                    continue;
+                }
+                for (end, _) in entry.path.match_indices('/').skip(1) {
+                    let (parent, _) = entry.path.split_at(end);
+                    if plan.entries.iter().any(|entry| {
+                        entry.path == parent
+                            && entry
+                                .record
+                                .is_some_and(|(record, _)| record.kind == FileKind::Directory)
+                    }) {
+                        continue;
+                    }
+                    if !self
+                        .stage_selected_path(&mut transaction, current, parent, ctx)
+                        .await?
+                        .is_some_and(|(record, _)| record.kind == FileKind::Directory)
+                    {
+                        return Err(LazyWorkspaceError::NotDirectory);
+                    }
+                }
+            }
+            for path in paths.value.iter().rev() {
+                if path == "/" {
+                    continue;
+                }
+                if self
+                    .authored_record(&mut transaction.checkout, path, ctx)
+                    .await?
+                    .is_some()
+                {
+                    accounted!(ctx, |work, cancel| transaction.remove(path, work, cancel))?;
+                }
+                let namespace = self.namespace_path(path, ctx)?;
+                crate::Transaction::<A, O>::push_mutation(&mut changes, namespace, ctx)?;
+            }
+            for (index, entry) in plan.entries.iter().enumerate() {
+                let Some((record, _)) = entry.record else {
+                    continue;
+                };
+                let alias = (record.kind != FileKind::Directory)
+                    .then(|| {
+                        plan.entries.iter().take(index).find(|entry| {
+                            entry
+                                .record
+                                .is_some_and(|(other, _)| other.file_id == record.file_id)
+                        })
+                    })
+                    .flatten();
+                if let Some(alias) = alias {
+                    accounted!(ctx, |work, cancel| transaction.hard_link(
+                        &alias.path,
+                        &entry.path,
+                        work,
+                        cancel
+                    ))?;
+                } else {
+                    let namespace = self.namespace_path(&entry.path, ctx)?;
+                    let compiled = transaction
+                        .checkout
+                        .compile_copied_record(namespace, record, ctx, cancellation(ctx))
+                        .await?;
+                    let operation =
+                        Owned::new(compiled.value.0, compiled.allocation, compiled.bytes);
+                    let mut operations = Owned::allocate(1, ctx)?;
+                    crate::Transaction::<A, O>::push_mutation(&mut operations, operation, ctx)?;
+                    transaction
+                        .checkout
+                        .apply_mutations(operations, ctx, cancellation(ctx))
+                        .await?;
+                }
+                let namespace = self.namespace_path(&entry.path, ctx)?;
+                crate::Transaction::<A, O>::push_mutation(&mut changes, namespace, ctx)?;
+            }
+            for root in &plan.roots {
+                if paths.value.iter().any(|path| path == root) {
+                    continue;
+                }
+                let path = self.canonical_path(root, ctx)?;
+                if let Err(error) = paths.ensure_for_push(usize::MAX, ctx) {
+                    path.retire(ctx)?;
+                    return Err(error.into());
+                }
+                crate::Transaction::<A, O>::push_mutation(&mut paths, path, ctx)?;
+            }
+            if plan.source_used && plan.source.source != self.source.reference() {
+                return Err(LazyWorkspaceError::StaleSource);
+            }
+            Ok::<_, LazyWorkspaceError>(())
+        }
+        .await;
+        drop(baseline);
+        if let Err(error) = result {
+            drop(transaction);
+            changes.retire(ctx)?;
+            records.retire(ctx)?;
+            paths.retire(ctx)?;
+            return Err(error);
+        }
+        *checkout = transaction.checkout;
+        paths.allocation.absorb(&mut records.allocation)?;
+        paths.allocation.absorb(&mut changes.allocation)?;
+        Ok(SelectedImportEffects {
+            paths: paths.value,
+            records: records.value,
+            changes: changes.value,
+            _allocation: paths.allocation,
+        })
+    }
+    async fn stage_selected_path(
+        &self,
+        transaction: &mut crate::Transaction<A, O>,
+        cut: LazySnapshotRef,
+        path: &str,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<Option<(FileRecord, FileMetadata)>, LazyWorkspaceError> {
+        if let Some(record) = self
+            .authored_record(&mut transaction.checkout, path, ctx)
+            .await?
+        {
+            return Ok(Some(record));
+        }
+        let (lookup, _, guard) = self.lookup_at_snapshot(cut, path, ctx).await?;
+        let Some(lookup) = lookup else {
+            crate::kernel::retire_allocation(guard, 0, ctx)?;
+            return Ok(None);
+        };
+        let result = async {
+            if matches!(&lookup,LazyLookup::Authored { path: original,.. } if original == path) {
+                return Err(LazyWorkspaceError::StaleIdentity);
+            }
+            let maximum = ctx.remaining()?.source_bytes_read;
+            if let Some(parent) = parent_path(path) {
+                accounted!(ctx, |work, cancel| transaction
+                    .create_dir_all(parent, work, cancel))?;
+            }
+            self.apply_resolved_promotion(transaction, path, &lookup, maximum, ctx)
+                .await?;
+            self.authored_record(&mut transaction.checkout, path, ctx)
+                .await
+        }
+        .await;
+        self.retire_lookup((lookup, guard), ctx)?;
+        result
+    }
+}
+fn same_record(
+    before: Option<(FileRecord, FileMetadata)>,
+    actual: Option<(FileRecord, FileMetadata)>,
+) -> bool {
+    match (before, actual) {
+        (None, None) => true,
+        (Some((before, metadata)), Some((mut actual, actual_metadata))) => {
+            actual.link_count = before.link_count;
+            actual == before && actual_metadata == metadata
+        }
+        _ => false,
+    }
+}

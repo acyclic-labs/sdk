@@ -1,6 +1,6 @@
 //! Generated portable MCP contract facade; all semantics remain in Rust.
 
-use super::{WasmModelToolDefinitionWire, from_js, js_error};
+use super::{from_js, js_error};
 use crate::mcp::McpCatalog;
 use serde::Serialize as _;
 use wasm_bindgen::prelude::*;
@@ -11,7 +11,31 @@ pub fn validate_mcp_stdio_request(
     #[wasm_bindgen(unchecked_param_type = "McpStdioRequest")] request: JsValue,
 ) -> Result<(), JsValue> {
     from_js::<crate::mcp::stdio::McpStdioRequest>(request)?
+        .exchange(None)
+        .map(drop)
+        .map_err(js_error)
+}
+
+/// Validates a pinned callback request without granting model/interaction authority.
+#[wasm_bindgen(js_name = validateMcpCallbackRequest)]
+pub fn validate_mcp_callback_request(
+    #[wasm_bindgen(unchecked_param_type = "McpCallbackRequest")] request: JsValue,
+) -> Result<(), JsValue> {
+    from_js::<crate::mcp::callbacks::McpCallbackRequest>(request)?
         .validate()
+        .map(|_| ())
+        .map_err(js_error)
+}
+
+/// Returns the same stable callback identity used by recorded runtime admission.
+#[wasm_bindgen(js_name = mcpCallbackOperation)]
+pub fn mcp_callback_operation(
+    #[wasm_bindgen(unchecked_param_type = "McpCallbackRequest")] request: JsValue,
+) -> Result<String, JsValue> {
+    let request: crate::mcp::callbacks::McpCallbackRequest = from_js(request)?;
+    request
+        .validate()
+        .map(|(operation, _)| operation.to_string())
         .map_err(js_error)
 }
 
@@ -27,10 +51,11 @@ pub fn validate_mcp_catalog(
         .map_err(js_error)
 }
 
+#[path = "mcp/browser.rs"]
 mod browser;
 
 /// Projects the host-selected schema exposure through the ordinary model wire.
-#[wasm_bindgen(js_name = mcpModelDefinitions, unchecked_return_type = "WasmModelToolDefinitionWire[]")]
+#[wasm_bindgen(js_name = mcpModelDefinitions, unchecked_return_type = "ToolDefinition[]")]
 pub fn mcp_model_definitions(
     #[wasm_bindgen(unchecked_param_type = "McpCatalog")] catalog: JsValue,
     #[wasm_bindgen(unchecked_param_type = "number")] maximum_tools: JsValue,
@@ -45,7 +70,7 @@ pub fn mcp_model_definitions(
 }
 
 /// Searches a pinned catalog without network I/O or authority changes.
-#[wasm_bindgen(js_name = searchMcpCatalog, unchecked_return_type = "WasmModelToolDefinitionWire[]")]
+#[wasm_bindgen(js_name = searchMcpCatalog, unchecked_return_type = "ToolDefinition[]")]
 pub fn search_mcp_catalog(
     #[wasm_bindgen(unchecked_param_type = "McpCatalog")] catalog: JsValue,
     query: String,
@@ -68,20 +93,7 @@ pub fn search_mcp_catalog(
 }
 
 fn definitions_to_js(definitions: Vec<crate::tool::ToolDefinition>) -> Result<JsValue, JsValue> {
-    let wire = definitions
-        .into_iter()
-        .map(|definition| WasmModelToolDefinitionWire {
-            name: definition.name,
-            revision: definition.revision,
-            description: definition.description,
-            input_schema: definition.input_schema,
-            output_schema: definition.output_schema,
-            projection_schema: definition.projection_schema,
-        })
-        .collect::<Vec<_>>();
-    // Definitions contain only admitted JavaScript JSON and added string/bool
-    // envelope fields. Preserve its number/object representation instead of
-    // converting JSON schema objects to Maps or integer literals to BigInts.
-    wire.serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+    definitions
+        .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }

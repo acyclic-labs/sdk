@@ -8,6 +8,7 @@ use crate::cancellation::CancellationToken;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::speculation::{ResidencyHint, ResidencyReason};
 use crate::storage::{ObjectId, ObjectStoreError};
+use std::ops::Bound;
 use thiserror::Error;
 
 /// One authenticated bounded directory page.
@@ -17,92 +18,61 @@ pub struct DirectoryPage {
     pub entries: Vec<TreeEntry>,
     /// Whether at least one additional entry exists.
     pub has_more: bool,
-    /// Exact unvisited successor object, when the authenticated traversal
-    /// exposed one without widening the requested listing.
+    /// Exact unvisited successor object, when the authenticated traversal exposed one without widening the requested listing.
     pub next_residency: Option<ResidencyHint>,
     /// Exact backend, traversal, copy, and logical-allocation work.
     pub work: WorkCounters,
 }
 
 /// Returns one bounded ordered directory page and an exact continuation fact.
-///
-/// The shared persistent-tree paginator reads only the cursor frontier and
-/// enough successors to prove `maximum_entries + 1`.
-///
-/// # Errors
-///
-/// Fails closed on invalid bounds, malformed routing, cycles, storage failure,
-/// or work outside the admitted budget.
-pub fn list_tree_entries<S: crate::ImmediateObjectStore>(
+pub async fn list_tree_entries<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     after: Option<&LogicalName>,
     maximum_entries: u32,
     limits: DecodeLimits,
     budget: WorkBudget,
+    cancellation: &CancellationToken,
 ) -> Result<DirectoryPage, DirectoryReadFailure> {
     persistent_pagination::paginate::<S, TreeFormat>(
         store,
-        root,
-        after,
-        maximum_entries,
-        limits,
-        budget,
-    )
-    .map(to_page)
-    .map_err(map_failure)
-}
-
-/// Asynchronously executes the same cursor machine as [`list_tree_entries`].
-///
-/// # Errors
-///
-/// Returns the same typed failures, including cancellation before every
-/// backend boundary.
-pub async fn list_tree_entries_async<S: AsyncObjectStore>(
-    store: &S,
-    root: ObjectId,
-    after: Option<&LogicalName>,
-    maximum_entries: u32,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<DirectoryPage, DirectoryReadFailure> {
-    persistent_pagination::paginate_async::<S, TreeFormat>(
-        store,
-        root,
-        after,
-        maximum_entries,
+        (
+            root,
+            after.map_or(Bound::Unbounded, Bound::Excluded),
+            maximum_entries,
+        ),
         limits,
         budget,
         cancellation,
+        None,
     )
     .await
     .map(to_page)
-    .map_err(map_failure)
 }
 
-pub(crate) async fn list_tree_entries_at_or_after_async<S: AsyncObjectStore>(
-    store: &S,
+pub(crate) async fn list_tree_entries_async_with_accounting<
+    'a,
+    'accounting,
+    S: AsyncObjectStore,
+>(
+    store: &'a S,
     root: ObjectId,
-    at: &LogicalName,
-    maximum_entries: u32,
+    page: (Bound<&'a LogicalName>, u32),
     limits: DecodeLimits,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<DirectoryPage, DirectoryReadFailure> {
-    persistent_pagination::paginate_async_at_or_after::<S, TreeFormat>(
+    accounting: &'a mut super::allocation::KernelAccounting<'accounting>,
+    cancellation: &'a CancellationToken,
+    data_custody: Option<&'a super::ProofDataCustody>,
+) -> Result<(DirectoryPage, super::allocation::KernelOwnedAllocation), crate::FsError> {
+    persistent_pagination::paginate_with_accounting::<S, TreeFormat>(
         store,
-        root,
-        at,
-        maximum_entries,
+        (root, page.0, page.1),
         limits,
-        budget,
+        accounting,
         cancellation,
+        data_custody,
     )
     .await
-    .map(to_page)
-    .map_err(map_failure)
+    .map(|(receipt, allocation)| (to_page(receipt), allocation))
 }
 
 fn to_page(receipt: persistent_pagination::Receipt<TreeEntry>) -> DirectoryPage {
@@ -117,34 +87,10 @@ fn to_page(receipt: persistent_pagination::Receipt<TreeEntry>) -> DirectoryPage 
     }
 }
 
-/// Bounded directory-read failure retaining exact spent work.
+/// Bounded page-listing failure retaining exact spent work.
 pub type DirectoryReadFailure = OperationFailure<DirectoryReadError>;
 
-fn map_failure(failure: persistent_pagination::Failure) -> DirectoryReadFailure {
-    OperationFailure::new(map_error(failure.error), *failure.work)
-}
-
-fn map_error(error: persistent_pagination::Error) -> DirectoryReadError {
-    match error {
-        persistent_pagination::Error::Cancelled => DirectoryReadError::Cancelled,
-        persistent_pagination::Error::ZeroLimit => DirectoryReadError::ZeroLimit,
-        persistent_pagination::Error::LimitOverflow => DirectoryReadError::LimitOverflow,
-        persistent_pagination::Error::WrongRootKind => DirectoryReadError::WrongRootKind,
-        persistent_pagination::Error::InvalidLimits => DirectoryReadError::InvalidLimits,
-        persistent_pagination::Error::HeightExceeded => DirectoryReadError::HeightExceeded,
-        persistent_pagination::Error::CycleOrAlias => DirectoryReadError::Cycle,
-        persistent_pagination::Error::ChildBoundsMismatch => {
-            DirectoryReadError::ChildBoundsMismatch
-        }
-        persistent_pagination::Error::TraversalState => DirectoryReadError::TraversalState,
-        persistent_pagination::Error::AllocationFailed => DirectoryReadError::AllocationFailed,
-        persistent_pagination::Error::Storage(error) => error.into(),
-        persistent_pagination::Error::Decode(error) => error.into(),
-        persistent_pagination::Error::Work(error) => error.into(),
-    }
-}
-
-/// Authenticated bounded directory-read failures.
+/// Authenticated bounded page-listing failures.
 #[derive(Debug, Error)]
 pub enum DirectoryReadError {
     /// Cooperative cancellation occurred before the next storage boundary.
@@ -159,8 +105,8 @@ pub enum DirectoryReadError {
     /// Page-bound allocation overflowed this target.
     #[error("directory page limit cannot be represented")]
     LimitOverflow,
-    /// Root is not a tree page.
-    #[error("directory root is not a tree page")]
+    /// Root kind does not match the listed pages.
+    #[error("listing root has the wrong page kind")]
     WrongRootKind,
     /// Decode/traversal limits are internally inconsistent.
     #[error("directory listing limits are invalid")]
@@ -180,7 +126,7 @@ pub enum DirectoryReadError {
     /// Immutable object backend failed.
     #[error(transparent)]
     Storage(#[from] ObjectStoreError),
-    /// Canonical tree page failed decoding.
+    /// Canonical page failed decoding.
     #[error(transparent)]
     Decode(#[from] CanonicalDecodeError),
     /// Exact work exceeded or overflowed its budget.

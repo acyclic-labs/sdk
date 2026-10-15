@@ -424,40 +424,6 @@ pub(crate) fn reject_original_root_references(
     }
 }
 
-pub(crate) async fn open_lazy_source(
-    root: &Path,
-    reference: Option<SourceReference>,
-    observer: Arc<dyn DemandDirectoryObserver>,
-) -> Result<Arc<LocalLazySource>, String> {
-    let limits = VolumeLimits::default();
-    let source = match reference {
-        Some(reference) => {
-            NativeDemandSource::open_with_reference_and_observer(
-                root,
-                native_filesystem_profile(),
-                limits,
-                reference,
-                observer,
-            )
-            .await
-        }
-        None => {
-            NativeDemandSource::open_with_observer(
-                root,
-                native_filesystem_profile(),
-                limits,
-                observer,
-            )
-            .await
-        }
-    }
-    .map_err(display)?;
-    Ok(Arc::new(FilteredDemandSource::new(
-        source,
-        reserved_root_paths()?,
-    )))
-}
-
 /// Host subtrees owned by version control or SDK state, never workspace
 /// content. The order is the watcher fence placement preference: an existing
 /// `.git` hosts fence cookies, and only a root without one gains `.acyclic-sdk`.
@@ -485,26 +451,6 @@ pub(crate) fn reserved_ignore_rules() -> String {
         .collect()
 }
 
-pub(crate) fn open_native_watcher(root: &Path) -> Result<Arc<Mutex<NativeWatch>>, String> {
-    let mut watcher = NativeWatch::open_with_profile(
-        root,
-        native_filesystem_profile(),
-        NativeWatchOptions {
-            limits: VolumeLimits::default(),
-            maximum_queued_changes: 65_536,
-            // Linux inotify has no constant-size recursive subscription.
-            // NativeDemandSource registers only demanded directories instead.
-            recursive: !cfg!(target_os = "linux"),
-        },
-    )
-    .map_err(display)?;
-    watcher
-        .exclude_subtrees(&reserved_root_paths()?)
-        .map_err(display)?;
-    watcher.accept_lazy_baseline().map_err(display)?;
-    Ok(Arc::new(Mutex::new(watcher)))
-}
-
 pub(crate) const fn native_filesystem_profile() -> FilesystemProfile {
     if cfg!(windows) {
         FilesystemProfile::Windows
@@ -524,7 +470,7 @@ pub(crate) fn verify_native_root_identity(
             path.display()
         ));
     }
-    let observed = source.inner().root_identity().to_bytes();
+    let observed = source.root_identity().to_bytes();
     if observed != expected {
         return Err(format!(
             "native root identity changed for {}; refusing to reuse its workspace",
@@ -537,8 +483,20 @@ pub(crate) fn verify_native_root_identity(
 pub(crate) async fn merge_drivers_for(
     workspace: &LocalLazyWorkspace,
 ) -> Result<Arc<MergeDriverRegistry>, String> {
-    let attributes = match workspace.read("/.gitattributes", 1024 * 1024).await {
-        Ok(bytes) => String::from_utf8(bytes.to_vec())
+    let attributes = match workspace
+        .read(
+            "/.gitattributes",
+            1024 * 1024,
+            &mut acyclic_fs::kernel::KernelAccounting::Standalone {
+                allocations: Default::default(),
+                work: acyclic_fs::WorkCounters::UNCHARGED,
+                budget: WorkBudget::UNBOUNDED,
+                cancellation: &CancellationToken::new(),
+            },
+        )
+        .await
+    {
+        Ok(chunk) => String::from_utf8(chunk.bytes.to_vec())
             .map_err(|_| ".gitattributes must be UTF-8".to_owned())?,
         Err(acyclic_fs::LazyWorkspaceError::NotFound) => String::new(),
         Err(error) => return Err(display(error)),
@@ -600,9 +558,13 @@ pub(crate) fn namespace_path_text(path: &NamespacePath) -> Result<String, String
         .components()
         .iter()
         .map(|name| {
-            name.unicode_text()
-                .map(|value| value.into_owned())
-                .ok_or_else(|| "non-Unicode path cannot be presented to an agent".to_owned())
+            name.unicode_text(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .ok()
+            .map(|receipt| receipt.value)
+            .ok_or_else(|| "non-Unicode path cannot be presented to an agent".to_owned())
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(format!("/{}", components.join("/")))

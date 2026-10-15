@@ -1,24 +1,18 @@
 //! Shared-frontier batch lookup for authenticated persistent B+trees.
 
-use super::allocation::{AllocationError, AllocationLedger, LogicalVecCapacity, VisitedObjectSet};
+use super::allocation::{KernelAccounting, KernelOwnedAllocation, VisitedObjectSet};
 use super::persistent_btree::{Child, Format, Page, children_within, leaf_within};
 use super::persistent_io;
-use super::search::{counted_binary_search, counted_partition_point};
+use super::persistent_point::{Owned, project_failure, query_error, split_allocation};
+use super::search::{binary_search_with_accounting, partition_point_with_accounting};
 use super::{CanonicalDecodeError, DecodeLimits};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
-use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
+use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectStoreError};
-use std::marker::PhantomData;
 use std::ops::Range;
 use thiserror::Error;
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Receipt<V> {
-    pub(crate) values: Vec<Option<V>>,
-    pub(crate) work: WorkCounters,
-}
 
 pub(crate) type Failure = OperationFailure<Error>;
 
@@ -59,39 +53,15 @@ struct IndexedKey<'a, K> {
 
 struct Request<K> {
     page: ObjectId,
-    lower: Option<K>,
-    upper: Option<K>,
+    lower: Option<Owned<K>>,
+    upper: Option<Owned<K>>,
     queries: Range<usize>,
     height: u16,
-    nested_bytes: u64,
 }
 
 struct Match {
     entry: usize,
     queries: Range<usize>,
-}
-
-pub(crate) fn lookup<S, F>(
-    store: &S,
-    root: ObjectId,
-    keys: &[F::Key],
-    maximum_queries: u32,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-) -> Result<Receipt<F::Value>, Failure>
-where
-    S: crate::ImmediateObjectStore,
-    F: Format,
-{
-    crate::async_storage::poll_immediate(lookup_async::<S, F>(
-        store,
-        root,
-        keys,
-        maximum_queries,
-        limits,
-        budget,
-        &CancellationToken::new(),
-    ))
 }
 
 pub(crate) async fn lookup_async<S, F>(
@@ -102,103 +72,149 @@ pub(crate) async fn lookup_async<S, F>(
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &CancellationToken,
-) -> Result<Receipt<F::Value>, Failure>
+) -> Result<OperationReceipt<Vec<Option<F::Value>>>, Failure>
 where
     S: AsyncObjectStore,
     F: Format,
 {
-    if cancellation.is_cancelled() {
-        return Err(OperationFailure::before_work(Error::Cancelled));
-    }
-    let mut machine = Machine::<F>::new(root, keys, maximum_queries, limits, budget)?;
-    while !machine.requests.is_empty() {
-        if cancellation.is_cancelled() {
-            return Err(failed(Error::Cancelled, machine.work));
-        }
-        let frontier_count = machine.requests.len();
-        let height = machine
-            .requests
-            .last()
-            .map(|request| request.height)
-            .ok_or_else(|| failed(Error::InvalidRouting, machine.work))?;
-        if machine
-            .requests
-            .iter()
-            .any(|request| request.height != height)
-        {
-            return Err(failed(Error::InvalidRouting, machine.work));
-        }
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "`frontier_count` is captured as `machine.requests.len()` immediately above \
-                      and nothing in this loop mutates `machine.requests`, so every `index` in \
-                      `0..frontier_count` stays `< machine.requests.len()`"
-        )]
-        for index in (0..frontier_count).rev() {
-            machine.visit(machine.requests[index].page)?;
-        }
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "`frontier_count == machine.requests.len()` here (captured above, unchanged \
-                      by the visit loop), so slicing `[..frontier_count]` is slicing to the full \
-                      length and cannot panic"
-        )]
-        let mut pages = persistent_io::read_pages::<S, F, _>(
-            store,
-            machine.requests[..frontier_count]
+    let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    let result = lookup_async_with_accounting::<S, F>(
+        store,
+        root,
+        keys,
+        maximum_queries,
+        limits,
+        &mut accounting,
+        cancellation,
+        None,
+    )
+    .await;
+    let work = accounting.spent();
+    result
+        .map(|(mut receipt, _)| {
+            receipt.work = work;
+            receipt
+        })
+        .map_err(|error| failed(project_failure(error), work))
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
+)]
+pub(crate) async fn lookup_async_with_accounting<S, F>(
+    store: &S,
+    root: ObjectId,
+    keys: &[F::Key],
+    maximum_queries: u32,
+    limits: DecodeLimits,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+    data_custody: Option<&super::ProofDataCustody>,
+) -> Result<
+    (
+        OperationReceipt<Vec<Option<F::Value>>>,
+        KernelOwnedAllocation,
+    ),
+    crate::FsError,
+>
+where
+    S: AsyncObjectStore,
+    F: Format,
+{
+    accounting.check()?;
+    let mut machine = Machine::<F>::new(root, keys, maximum_queries, limits, accounting)?;
+    let result = async {
+        while !machine.requests.value.is_empty() {
+            cancellation.check()?;
+            accounting.check()?;
+            let frontier_count = machine.requests.value.len();
+            let height = machine
+                .requests
+                .value
+                .last()
+                .ok_or_else(|| query_error(Error::InvalidRouting))?
+                .height;
+            if machine
+                .requests
+                .value
                 .iter()
-                .rev()
-                .map(|request| request.page),
-            limits,
-            budget,
-            cancellation,
-            &mut machine.allocations,
-            &mut machine.work,
-        )
-        .await
-        .map_err(|error| failed(map_io(error), machine.work))?;
-        for index in (0..frontier_count).rev() {
-            let decoded = pages
-                .next(
-                    limits,
-                    budget,
-                    cancellation,
-                    &mut machine.allocations,
-                    &mut machine.work,
-                )
-                .map_err(|error| failed(map_io(error), machine.work))?;
-            let request = machine.requests.swap_remove(index);
-            if let Err(failure) = machine.accept(request, decoded) {
-                let page_cleanup = pages.discard(&mut machine.allocations);
-                let cleanup = machine.abort_cleanup();
-                page_cleanup.map_err(|error| failed(map_io(error), *failure.work))?;
-                cleanup?;
-                return Err(failure);
+                .any(|request| request.height != height)
+            {
+                return Err(query_error(Error::InvalidRouting));
             }
+            for index in (0..frontier_count).rev() {
+                let page = machine
+                    .requests
+                    .value
+                    .get(index)
+                    .ok_or_else(|| query_error(Error::InvalidRouting))?
+                    .page;
+                machine.visit(page, accounting)?;
+            }
+            let mut pages = persistent_io::read_pages_with_accounting::<S, F, _>(
+                store,
+                machine
+                    .requests
+                    .value
+                    .iter()
+                    .rev()
+                    .map(|request| request.page),
+                limits,
+                accounting,
+                cancellation,
+                data_custody,
+            )
+            .await?;
+            for index in (0..frontier_count).rev() {
+                let (decoded, allocation) =
+                    match pages.next_with_accounting(limits, accounting, cancellation) {
+                        Ok(page) => page,
+                        Err(error) => {
+                            pages.discard_with_accounting(accounting, cancellation)?;
+                            return Err(error);
+                        }
+                    };
+                let request = machine.requests.value.swap_remove(index);
+                if let Err(error) = machine.accept(request, decoded, allocation, accounting) {
+                    pages.discard_with_accounting(accounting, cancellation)?;
+                    return Err(error);
+                }
+            }
+            pages.finish_with_accounting(accounting, cancellation)?;
         }
-        pages
-            .finish(&mut machine.allocations)
-            .map_err(|error| failed(map_io(error), machine.work))?;
+        Ok(())
     }
-    machine.finish()
+    .await;
+    match result {
+        Ok(()) => machine.finish(accounting).map(
+            |Owned {
+                 value, allocation, ..
+             }| {
+                (
+                    OperationReceipt {
+                        value,
+                        work: accounting.spent(),
+                    },
+                    allocation,
+                )
+            },
+        ),
+        Err(error) => {
+            machine.abort_cleanup(accounting)?;
+            Err(error)
+        }
+    }
 }
 
 struct Machine<'a, F: Format> {
-    ordered: Vec<IndexedKey<'a, F::Key>>,
-    ordered_bytes: u64,
-    values: Vec<Option<F::Value>>,
-    value_container_bytes: u64,
-    value_nested_bytes: u64,
-    requests: Vec<Request<F::Key>>,
-    request_capacity: LogicalVecCapacity,
-    matches: Vec<Match>,
-    match_bytes: u64,
-    visited: VisitedObjectSet,
+    ordered: Owned<Vec<IndexedKey<'a, F::Key>>>,
+    values: Owned<Vec<Option<F::Value>>>,
+    requests: Owned<Vec<Request<F::Key>>>,
+    matches: Owned<Vec<Match>>,
+    visited: Owned<VisitedObjectSet>,
     limits: DecodeLimits,
-    budget: WorkBudget,
-    allocations: AllocationLedger,
-    work: WorkCounters,
-    format: PhantomData<F>,
+    maximum_visited: usize,
 }
 
 impl<'a, F: Format> Machine<'a, F> {
@@ -207,429 +223,575 @@ impl<'a, F: Format> Machine<'a, F> {
         keys: &'a [F::Key],
         maximum_queries: u32,
         limits: DecodeLimits,
-        budget: WorkBudget,
-    ) -> Result<Self, Failure> {
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Self, crate::FsError> {
         if root.kind != F::kind() {
-            return Err(OperationFailure::before_work(Error::WrongRootKind));
+            return Err(query_error(Error::WrongRootKind));
         }
         if keys.is_empty() {
-            return Err(OperationFailure::before_work(Error::Empty));
+            return Err(query_error(Error::Empty));
         }
         if maximum_queries == 0 || u32::try_from(keys.len()).unwrap_or(u32::MAX) > maximum_queries {
-            return Err(OperationFailure::before_work(Error::TooManyQueries));
+            return Err(query_error(Error::TooManyQueries));
         }
         if !limits.page_limits_valid(1) {
-            return Err(OperationFailure::before_work(Error::InvalidLimits));
+            return Err(query_error(Error::InvalidLimits));
         }
         let maximum_visited = keys
             .len()
             .checked_mul(usize::from(limits.maximum_page_height))
-            .and_then(|value| value.checked_add(1))
-            .ok_or_else(|| OperationFailure::before_work(Error::InvalidLimits))?
+            .and_then(|count| count.checked_add(1))
+            .ok_or_else(|| query_error(Error::InvalidLimits))?
             .min(
                 usize::try_from(limits.maximum_visited_pages)
-                    .map_err(|_| OperationFailure::before_work(Error::InvalidLimits))?,
+                    .map_err(|_| query_error(Error::InvalidLimits))?,
             );
-        let mut allocations = AllocationLedger::default();
-        let mut work = WorkCounters::default();
-        let ordered_bytes = allocations
-            .claim_elements::<IndexedKey<'_, F::Key>>(keys.len(), &mut work, budget)
-            .map_err(|error| failed(map_allocation(error), work))?;
-        let mut ordered = Vec::new();
-        if ordered.try_reserve_exact(keys.len()).is_err() {
-            return Err(failed(Error::AllocationFailed, work));
+        let requests = Owned::allocate(0, accounting)?;
+        let mut ordered = Owned::allocate(keys.len(), accounting)?;
+        let initialized: Result<(), crate::FsError> = (|| {
+            let copied = WorkCounters {
+                bytes_copied: usize_to_u64(std::mem::size_of::<IndexedKey<'_, F::Key>>()),
+                ..WorkCounters::UNCHARGED
+            };
+            for (ordinal, key) in keys.iter().enumerate() {
+                accounting.admit(copied)?;
+                ordered.value.push(IndexedKey { ordinal, key });
+                accounting.record_completed(copied)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = initialized {
+            ordered.retire(accounting)?;
+            return Err(error);
         }
-        ordered.extend(
-            keys.iter()
-                .enumerate()
-                .map(|(ordinal, key)| IndexedKey { ordinal, key }),
-        );
-        sort_indexed(&mut ordered, &mut work, budget).map_err(|error| failed(error, work))?;
-
-        let value_container_bytes = allocations
-            .claim_elements::<Option<F::Value>>(keys.len(), &mut work, budget)
-            .map_err(|error| failed(map_allocation(error), work))?;
-        let mut values = Vec::new();
-        if values.try_reserve_exact(keys.len()).is_err() {
-            return Err(failed(Error::AllocationFailed, work));
+        let sorted = sort_indexed(&mut ordered.value, accounting);
+        if let Err(error) = sorted {
+            ordered.retire(accounting)?;
+            return Err(error);
         }
-        values.extend(std::iter::repeat_with(|| None).take(keys.len()));
-
-        let match_bytes = allocations
-            .claim_elements::<Match>(keys.len(), &mut work, budget)
-            .map_err(|error| failed(map_allocation(error), work))?;
-        let mut matches = Vec::new();
-        if matches.try_reserve_exact(keys.len()).is_err() {
-            return Err(failed(Error::AllocationFailed, work));
-        }
-        let visited = VisitedObjectSet::new(maximum_visited, &mut allocations, &mut work, budget)
-            .map_err(|error| failed(map_allocation(error), work))?;
+        let values = match Owned::allocate(keys.len(), accounting) {
+            Ok(mut values) => {
+                values
+                    .value
+                    .extend(std::iter::repeat_with(|| None).take(keys.len()));
+                values
+            }
+            Err(error) => {
+                ordered.retire(accounting)?;
+                return Err(error);
+            }
+        };
+        let matches = match Owned::allocate(keys.len(), accounting) {
+            Ok(matches) => matches,
+            Err(error) => {
+                values.retire(accounting)?;
+                ordered.retire(accounting)?;
+                return Err(error);
+            }
+        };
+        let visited = VisitedObjectSet::new_with_accounting(maximum_visited, accounting);
+        let visited = match visited {
+            Ok(visited) => visited,
+            Err(error) => {
+                matches.retire(accounting)?;
+                values.retire(accounting)?;
+                ordered.retire(accounting)?;
+                return Err(error);
+            }
+        };
         let mut machine = Self {
             ordered,
-            ordered_bytes,
             values,
-            value_container_bytes,
-            value_nested_bytes: 0,
-            requests: Vec::new(),
-            request_capacity: LogicalVecCapacity::default(),
             matches,
-            match_bytes,
             visited,
+            requests,
             limits,
-            budget,
-            allocations,
-            work,
-            format: PhantomData,
+            maximum_visited,
         };
-        machine.push_request(Request {
+        let initial = Request {
             page: root,
             lower: None,
             upper: None,
             queries: 0..keys.len(),
             height: 1,
-            nested_bytes: 0,
-        })?;
+        };
+        if let Err(error) = machine.push_request(initial, accounting) {
+            machine.abort_cleanup(accounting)?;
+            return Err(error);
+        }
         Ok(machine)
     }
 
-    fn push_request(&mut self, request: Request<F::Key>) -> Result<(), Failure> {
-        let maximum = usize::try_from(self.limits.maximum_visited_pages)
-            .map_err(|_| failed(Error::InvalidLimits, self.work))?;
-        self.request_capacity
-            .ensure_for_push(
-                &mut self.requests,
-                maximum,
-                &mut self.allocations,
-                &mut self.work,
-                self.budget,
-            )
-            .map_err(|error| failed(map_allocation(error), self.work))?;
-        self.requests.push(request);
-        Ok(())
+    fn push_request(
+        &mut self,
+        request: Request<F::Key>,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        if let Err(error) = self
+            .requests
+            .ensure_for_push(self.maximum_visited, accounting)
+        {
+            Self::retire_request(request, accounting)?;
+            return Err(error);
+        }
+        let copied = WorkCounters {
+            bytes_copied: usize_to_u64(std::mem::size_of::<Request<F::Key>>()),
+            ..WorkCounters::UNCHARGED
+        };
+        if let Err(error) = accounting.admit(copied) {
+            Self::retire_request(request, accounting)?;
+            return Err(error);
+        }
+        self.requests.value.push(request);
+        accounting.record_completed(copied)
     }
 
-    fn visit(&mut self, page: ObjectId) -> Result<(), Failure> {
-        let inserted = self
-            .visited
-            .insert(page, &mut self.allocations, &mut self.work, &self.budget)
-            .map_err(|error| failed(map_allocation(error), self.work))?;
+    fn visit(
+        &mut self,
+        page: ObjectId,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        let inserted =
+            VisitedObjectSet::insert_with_accounting(&mut self.visited, page, accounting)?;
         if !inserted.inserted {
-            return Err(failed(Error::CycleOrAlias, self.work));
+            return Err(query_error(Error::CycleOrAlias));
         }
         Ok(())
     }
 
     fn accept(
         &mut self,
-        mut request: Request<F::Key>,
+        request: Request<F::Key>,
         decoded: persistent_io::OwnedPage<F>,
-    ) -> Result<(), Failure> {
-        let (page, decoded_bytes) = decoded
-            .into_owned(self.budget, &mut self.allocations, &mut self.work)
-            .map_err(|error| failed(map_io(error), self.work))?;
-        let accepted = match page {
-            Page::Leaf(entries) => self.accept_leaf(&request, entries, decoded_bytes),
-            Page::Internal(children) => {
-                self.accept_internal(&mut request, &children, decoded_bytes)
+        allocation: KernelOwnedAllocation,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        let mut page = match decoded.into_owned_with_accounting(allocation, accounting) {
+            Ok(((page, bytes), allocation)) => Owned::new(page, allocation, bytes),
+            Err(error) => {
+                Self::retire_request(request, accounting)?;
+                return Err(error);
             }
         };
-        let request_bytes = request.nested_bytes;
-        drop(request);
-        if let Err(failure) = accepted {
-            self.allocations
-                .release(decoded_bytes)
-                .and_then(|()| self.allocations.release(request_bytes))
-                .map_err(|error| failed(map_allocation(error), self.work))?;
-            return Err(failure);
-        }
-        self.allocations
-            .release(request_bytes)
-            .map_err(|error| failed(map_allocation(error), self.work))?;
-        Ok(())
+        let accepted = match &mut page.value {
+            Page::Leaf(entries) => self.accept_leaf(
+                &request,
+                entries,
+                &mut page.allocation,
+                &mut page.bytes,
+                accounting,
+            ),
+            Page::Internal(children) => self.accept_internal(&request, children, accounting),
+        };
+        page.retire(accounting)?;
+        Self::retire_request(request, accounting)?;
+        accepted
     }
 
     #[allow(
-        clippy::indexing_slicing,
-        reason = "`self.ordered.len() == keys.len()` for the machine's whole lifetime (set once \
-                  in `Machine::new` and only cleared in `abort_cleanup`/after `finish`); every \
-                  `Request::queries` range is a subrange of the root request's `0..keys.len()` \
-                  by induction (`accept_internal` only ever narrows `query..end` within the \
-                  parent's `request.queries`), so `query` here (bounded by `request.queries`) \
-                  and `first` (from `found.queries`, itself a subrange of `request.queries` \
-                  produced by `equal_group`) are always `< self.ordered.len()`; `ordinal` is an \
-                  `IndexedKey::ordinal` assigned in `Machine::new` via `keys.iter().enumerate()`, \
-                  so it is always `< self.values.len() == keys.len()`"
+        clippy::too_many_lines,
+        reason = "Leaf selection and copying share the same admitted cursor and allocation guard."
     )]
     fn accept_leaf(
         &mut self,
         request: &Request<F::Key>,
-        mut entries: Vec<F::Value>,
-        decoded_bytes: u64,
-    ) -> Result<(), Failure> {
-        if !leaf_within::<F>(&entries, request.lower.as_ref(), request.upper.as_ref()) {
-            return Err(failed(Error::ChildBoundsMismatch, self.work));
+        entries: &mut Vec<F::Value>,
+        page_allocation: &mut KernelOwnedAllocation,
+        page_bytes: &mut u64,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        if !leaf_within::<F>(
+            entries,
+            request.lower.as_ref().map(|key| &key.value),
+            request.upper.as_ref().map(|key| &key.value),
+        ) {
+            return Err(query_error(Error::ChildBoundsMismatch));
         }
-        self.matches.clear();
+        self.matches.value.clear();
         let mut query = request.queries.start;
         while query < request.queries.end {
-            let (group_end, group_comparisons) =
-                equal_group(&self.ordered, query, request.queries.end);
-            self.charge(group_comparisons)?;
-            let (found, comparisons) = search::<F>(&entries, self.ordered[query].key);
-            self.charge(comparisons)?;
+            let group_end =
+                equal_group(&self.ordered.value, query, request.queries.end, accounting)?;
+            let key = self
+                .ordered
+                .value
+                .get(query)
+                .ok_or_else(|| query_error(Error::InvalidRouting))?
+                .key;
+            let found =
+                binary_search_with_accounting(entries, accounting, |value| F::key(value).cmp(key))?;
             if let Ok(entry) = found {
-                self.matches.push(Match {
+                let copied = WorkCounters {
+                    bytes_copied: usize_to_u64(std::mem::size_of::<Match>()),
+                    ..WorkCounters::UNCHARGED
+                };
+                accounting.admit(copied)?;
+                self.matches.value.push(Match {
                     entry,
                     queries: query..group_end,
                 });
+                accounting.record_completed(copied)?;
             }
             query = group_end;
         }
-        let mut moved_nested = 0_u64;
-        while let Some(found) = self.matches.pop() {
+        while let Some(found) = self.matches.value.pop() {
+            let copied = WorkCounters {
+                bytes_copied: usize_to_u64(
+                    std::mem::size_of::<F::Value>()
+                        * (1 + usize::from(found.entry + 1 != entries.len())),
+                ),
+                ..WorkCounters::UNCHARGED
+            };
+            accounting.admit(copied)?;
             let value = entries.swap_remove(found.entry);
-            let nested = F::value_nested_bytes(&value);
-            moved_nested = moved_nested
-                .checked_add(nested)
-                .ok_or_else(|| failed(Error::AllocationFailed, self.work))?;
-            let mut queries = found.queries;
-            let first = queries
-                .next()
-                .ok_or_else(|| failed(Error::InvalidRouting, self.work))?;
-            for query in queries {
-                self.clone_result(query, &value, nested)?;
+            let nested = F::value_owned_bytes(&value);
+            let allocation = split_allocation(page_allocation, nested)?;
+            *page_bytes = page_bytes
+                .checked_sub(nested)
+                .ok_or(crate::WorkError::Overflow)?;
+            let value = Owned::new(value, allocation, nested);
+            if let Err(error) = accounting.record_completed(copied) {
+                value.retire(accounting)?;
+                return Err(error);
             }
-            let ordinal = self.ordered[first].ordinal;
-            self.values[ordinal] = Some(value);
+            let transferred = (|| {
+                let mut queries = found.queries;
+                let first = queries
+                    .next()
+                    .ok_or_else(|| query_error(Error::InvalidRouting))?;
+                for query in queries {
+                    self.clone_result(query, &value.value, accounting)?;
+                }
+                let ordinal = self
+                    .ordered
+                    .value
+                    .get(first)
+                    .ok_or_else(|| query_error(Error::InvalidRouting))?
+                    .ordinal;
+                self.values
+                    .value
+                    .get_mut(ordinal)
+                    .ok_or_else(|| query_error(Error::InvalidRouting))?;
+                accounting.admit(WorkCounters {
+                    bytes_copied: usize_to_u64(std::mem::size_of::<F::Value>()),
+                    ..WorkCounters::UNCHARGED
+                })?;
+                Ok(ordinal)
+            })();
+            match transferred {
+                Ok(ordinal) => {
+                    let Owned {
+                        value,
+                        mut allocation,
+                        bytes,
+                    } = value;
+                    self.values.allocation.absorb(&mut allocation)?;
+                    self.values.bytes = self
+                        .values
+                        .bytes
+                        .checked_add(bytes)
+                        .ok_or(crate::WorkError::Overflow)?;
+                    *self
+                        .values
+                        .value
+                        .get_mut(ordinal)
+                        .ok_or_else(|| query_error(Error::InvalidRouting))? = Some(value);
+                    accounting.record_completed(WorkCounters {
+                        bytes_copied: usize_to_u64(std::mem::size_of::<F::Value>()),
+                        ..WorkCounters::UNCHARGED
+                    })?;
+                }
+                Err(error) => {
+                    value.retire(accounting)?;
+                    return Err(error);
+                }
+            }
         }
-        self.value_nested_bytes = self
-            .value_nested_bytes
-            .checked_add(moved_nested)
-            .ok_or_else(|| failed(Error::AllocationFailed, self.work))?;
-        self.allocations
-            .release(
-                decoded_bytes
-                    .checked_sub(moved_nested)
-                    .ok_or_else(|| failed(Error::InvalidRouting, self.work))?,
-            )
-            .map_err(|error| failed(map_allocation(error), self.work))
-    }
-
-    #[allow(
-        clippy::indexing_slicing,
-        reason = "`query` is only ever called with a value drawn from a `Match::queries` range \
-                  (see `accept_leaf`), which is a subrange of `request.queries` and therefore \
-                  `< self.ordered.len() == keys.len()`; the resulting `ordinal` is an \
-                  `IndexedKey::ordinal` from `Machine::new`'s `keys.iter().enumerate()`, so it is \
-                  always `< self.values.len() == keys.len()`"
-    )]
-    fn clone_result(&mut self, query: usize, value: &F::Value, nested: u64) -> Result<(), Failure> {
-        let next_nested = self
-            .value_nested_bytes
-            .checked_add(nested)
-            .ok_or_else(|| failed(Error::AllocationFailed, self.work))?;
-        let cloned = persistent_io::clone_value::<F>(
-            value,
-            self.limits.maximum_name_bytes,
-            self.budget,
-            &mut self.allocations,
-            &mut self.work,
-        )
-        .map_err(|error| failed(map_io(error), self.work))?;
-        self.value_nested_bytes = next_nested;
-        self.values[self.ordered[query].ordinal] = Some(cloned);
         Ok(())
     }
 
-    #[allow(
-        clippy::indexing_slicing,
-        reason = "`query` is bounded by `request.queries` and `end` by the `while end < \
-                  request.queries.end` loop condition directly above; every `Request::queries` \
-                  range is a subrange of the root request's `0..keys.len()` by induction (this \
-                  function only ever narrows `query..end` within `request.queries` when pushing \
-                  child requests), and `self.ordered.len() == keys.len()` for the machine's whole \
-                  lifetime, so both indices are always `< self.ordered.len()`"
-    )]
+    fn clone_result(
+        &mut self,
+        query: usize,
+        value: &F::Value,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        let ordinal = self
+            .ordered
+            .value
+            .get(query)
+            .ok_or_else(|| query_error(Error::InvalidRouting))?
+            .ordinal;
+        let destination = self
+            .values
+            .value
+            .get_mut(ordinal)
+            .ok_or_else(|| query_error(Error::InvalidRouting))?;
+        let (cloned, allocation) = persistent_io::clone_value::<F>(
+            value,
+            self.limits.maximum_name_bytes,
+            accounting,
+            None,
+            0,
+        )?;
+        let bytes = F::value_owned_bytes(&cloned);
+        let cloned = Owned::new(cloned, allocation, bytes);
+        let copied = WorkCounters {
+            bytes_copied: usize_to_u64(std::mem::size_of::<F::Value>()),
+            ..WorkCounters::UNCHARGED
+        };
+        if let Err(error) = accounting.admit(copied) {
+            cloned.retire(accounting)?;
+            return Err(error);
+        }
+        let Owned {
+            value: cloned,
+            mut allocation,
+            ..
+        } = cloned;
+        self.values.allocation.absorb(&mut allocation)?;
+        self.values.bytes = self
+            .values
+            .bytes
+            .checked_add(bytes)
+            .ok_or(crate::WorkError::Overflow)?;
+        *destination = Some(cloned);
+        accounting.record_completed(copied)?;
+        Ok(())
+    }
+
     fn accept_internal(
         &mut self,
-        request: &mut Request<F::Key>,
+        request: &Request<F::Key>,
         children: &[Child<F::Key>],
-        decoded_bytes: u64,
-    ) -> Result<(), Failure> {
-        if !children_within(children, request.lower.as_ref(), request.upper.as_ref()) {
-            return Err(failed(Error::ChildBoundsMismatch, self.work));
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        if !children_within(
+            children,
+            request.lower.as_ref().map(|key| &key.value),
+            request.upper.as_ref().map(|key| &key.value),
+        ) {
+            return Err(query_error(Error::ChildBoundsMismatch));
         }
         let next_height = request
             .height
             .checked_add(1)
-            .ok_or_else(|| failed(Error::HeightExceeded, self.work))?;
-        admit_height(next_height, self.limits.maximum_page_height)
-            .map_err(|error| failed(error, self.work))?;
+            .ok_or_else(|| query_error(Error::HeightExceeded))?;
+        admit_height(next_height, self.limits.maximum_page_height).map_err(query_error)?;
         let mut query = request.queries.start;
         while query < request.queries.end {
-            let (child_index, comparisons) = route(children, self.ordered[query].key);
-            self.charge(comparisons)?;
+            let key = self
+                .ordered
+                .value
+                .get(query)
+                .ok_or_else(|| query_error(Error::InvalidRouting))?
+                .key;
+            let child_index =
+                partition_point_with_accounting(children, accounting, |child| child.first <= *key)?
+                    .saturating_sub(1);
             let child = children
                 .get(child_index)
-                .ok_or_else(|| failed(Error::InvalidRouting, self.work))?;
+                .ok_or_else(|| query_error(Error::InvalidRouting))?;
             let upper_ref = children
                 .get(child_index + 1)
                 .map(|next| &next.first)
-                .or(request.upper.as_ref());
-            let mut end = next_index(query).map_err(|error| failed(error, self.work))?;
+                .or(request.upper.as_ref().map(|key| &key.value));
+            let mut end = next_index(query).map_err(query_error)?;
             while end < request.queries.end {
-                self.charge(1)?;
-                if upper_ref.is_some_and(|upper| self.ordered[end].key >= upper) {
+                let delta = WorkCounters {
+                    items_examined: 1,
+                    ..WorkCounters::UNCHARGED
+                };
+                accounting.admit(delta)?;
+                let past_upper = upper_ref.is_some_and(|upper| {
+                    self.ordered
+                        .value
+                        .get(end)
+                        .is_some_and(|query| query.key >= upper)
+                });
+                accounting.record_completed(delta)?;
+                if past_upper {
                     break;
                 }
                 end += 1;
             }
-            let lower = self.clone_key(&child.first)?;
-            let upper = upper_ref.map(|key| self.clone_key(key)).transpose()?;
-            let nested_bytes = F::key_nested_bytes(&lower)
-                .checked_add(upper.as_ref().map_or(0, F::key_nested_bytes))
-                .ok_or_else(|| failed(Error::AllocationFailed, self.work))?;
-            self.push_request(Request {
-                page: child.page,
-                lower: Some(lower),
-                upper,
-                queries: query..end,
-                height: next_height,
-                nested_bytes,
-            })?;
+            let (lower, lower_allocation) = persistent_io::clone_key::<F>(
+                &child.first,
+                self.limits.maximum_name_bytes,
+                accounting,
+                None,
+                0,
+            )?;
+            let lower_bytes = F::key_owned_bytes(&lower);
+            let lower = Owned::new(lower, lower_allocation, lower_bytes);
+            let upper = match upper_ref {
+                Some(key) => persistent_io::clone_key::<F>(
+                    key,
+                    self.limits.maximum_name_bytes,
+                    accounting,
+                    None,
+                    0,
+                )
+                .map(|(key, allocation)| {
+                    let bytes = F::key_owned_bytes(&key);
+                    Some(Owned::new(key, allocation, bytes))
+                }),
+                None => Ok(None),
+            };
+            let upper = match upper {
+                Ok(upper) => upper,
+                Err(error) => {
+                    lower.retire(accounting)?;
+                    return Err(error);
+                }
+            };
+            self.push_request(
+                Request {
+                    page: child.page,
+                    lower: Some(lower),
+                    upper,
+                    queries: query..end,
+                    height: next_height,
+                },
+                accounting,
+            )?;
             query = end;
-        }
-        self.allocations
-            .release(decoded_bytes)
-            .map_err(|error| failed(map_allocation(error), self.work))
-    }
-
-    fn clone_key(&mut self, key: &F::Key) -> Result<F::Key, Failure> {
-        persistent_io::clone_key::<F>(
-            key,
-            self.limits.maximum_name_bytes,
-            self.budget,
-            &mut self.allocations,
-            &mut self.work,
-        )
-        .map_err(|error| failed(map_io(error), self.work))
-    }
-
-    fn charge(&mut self, count: u64) -> Result<(), Failure> {
-        self.work
-            .charge_items(count, &self.budget)
-            .map_err(|error| failed(error.into(), self.work))
-    }
-
-    fn abort_cleanup(mut self) -> Result<(), Failure> {
-        let pending_nested = self.requests.iter().try_fold(0_u64, |total, request| {
-            total
-                .checked_add(request.nested_bytes)
-                .ok_or_else(|| failed(Error::AllocationFailed, self.work))
-        })?;
-        self.requests.clear();
-        self.values.clear();
-        self.ordered.clear();
-        self.matches.clear();
-        self.allocations
-            .release(pending_nested)
-            .and_then(|()| self.allocations.release(self.value_nested_bytes))
-            .and_then(|()| self.allocations.release(self.value_container_bytes))
-            .and_then(|()| self.allocations.release(self.ordered_bytes))
-            .and_then(|()| self.allocations.release(self.match_bytes))
-            .and_then(|()| self.visited.release(&mut self.allocations))
-            .and_then(|()| {
-                self.allocations
-                    .release(self.request_capacity.logical_bytes())
-            })
-            .map_err(|error| failed(map_allocation(error), self.work))?;
-        if self.allocations.live_bytes() != 0 {
-            return Err(failed(Error::InvalidRouting, self.work));
         }
         Ok(())
     }
 
-    fn finish(mut self) -> Result<Receipt<F::Value>, Failure> {
-        self.work.items_returned = usize_to_u64(self.values.len());
-        self.work
-            .verify(self.budget)
-            .map_err(|error| failed(error.into(), self.work))?;
-        self.allocations
-            .release(self.value_nested_bytes)
-            .and_then(|()| self.allocations.release(self.value_container_bytes))
-            .and_then(|()| self.allocations.release(self.ordered_bytes))
-            .and_then(|()| self.allocations.release(self.match_bytes))
-            .and_then(|()| self.visited.release(&mut self.allocations))
-            .and_then(|()| {
-                self.allocations
-                    .release(self.request_capacity.logical_bytes())
-            })
-            .map_err(|error| failed(map_allocation(error), self.work))?;
-        if self.allocations.live_bytes() != 0 {
-            return Err(failed(Error::InvalidRouting, self.work));
+    fn retire_request(
+        request: Request<F::Key>,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        if let Some(lower) = request.lower {
+            lower.retire(accounting)?;
         }
-        Ok(Receipt {
-            values: self.values,
-            work: self.work,
-        })
+        if let Some(upper) = request.upper {
+            upper.retire(accounting)?;
+        }
+        Ok(())
+    }
+
+    fn cleanup_scratch(
+        self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Owned<Vec<Option<F::Value>>>, crate::FsError> {
+        let Self {
+            ordered,
+            values,
+            mut requests,
+            matches,
+            visited,
+            ..
+        } = self;
+        let mut failure = None;
+        for request in requests.value.drain(..) {
+            if let Err(error) = Self::retire_request(request, accounting) {
+                failure.get_or_insert(error);
+            }
+        }
+        if let Err(error) = requests.retire(accounting) {
+            failure.get_or_insert(error);
+        }
+        if let Err(error) = matches.retire(accounting) {
+            failure.get_or_insert(error);
+        }
+        if let Err(error) = ordered.retire(accounting) {
+            failure.get_or_insert(error);
+        }
+        if let Err(error) = visited.retire(accounting) {
+            failure.get_or_insert(error);
+        }
+        match failure {
+            Some(error) => {
+                values.retire(accounting)?;
+                Err(error)
+            }
+            None => Ok(values),
+        }
+    }
+
+    fn abort_cleanup(self, accounting: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
+        self.cleanup_scratch(accounting)?.retire(accounting)
+    }
+
+    fn finish(
+        self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Owned<Vec<Option<F::Value>>>, crate::FsError> {
+        let returned = accounting.charge(WorkCounters {
+            items_returned: usize_to_u64(self.values.value.len()),
+            ..WorkCounters::UNCHARGED
+        });
+        if let Err(error) = returned {
+            self.abort_cleanup(accounting)?;
+            return Err(error);
+        }
+        self.cleanup_scratch(accounting)
     }
 }
 
 fn sort_indexed<K: Ord>(
     values: &mut [IndexedKey<'_, K>],
-    work: &mut WorkCounters,
-    budget: WorkBudget,
-) -> Result<(), Error> {
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(), crate::FsError> {
     let count = values.len();
     if count < 2 {
         return Ok(());
     }
-    let scan_bound = usize_to_u64(count - 1);
-    work.checked_add(WorkCounters {
-        items_examined: scan_bound,
-        ..WorkCounters::default()
-    })?
-    .verify(budget)?;
-    let mut scan_comparisons = 0_u64;
+    accounting.admit(WorkCounters {
+        items_examined: usize_to_u64(count - 1),
+        ..WorkCounters::UNCHARGED
+    })?;
+    let item = WorkCounters {
+        items_examined: 1,
+        ..WorkCounters::UNCHARGED
+    };
     let mut ordered = true;
     for adjacent in values.windows(2) {
-        scan_comparisons = scan_comparisons
-            .checked_add(1)
-            .ok_or(Error::Work(WorkError::Overflow))?;
         let [left, right] = adjacent else {
-            unreachable!("windows(2) always yields exactly two elements")
+            unreachable!("windows(2) yields two elements");
         };
-        if indexed_order(left, right).is_gt() {
+        accounting.admit(item)?;
+        let comparison = indexed_order(left, right);
+        accounting.record_completed(item)?;
+        if comparison.is_gt() {
             ordered = false;
             break;
         }
     }
-    *work = work.checked_add(WorkCounters {
-        items_examined: scan_comparisons,
-        ..WorkCounters::default()
-    })?;
     if ordered {
         return Ok(());
     }
-    let bound = sort_admission_bound(count)?;
-    work.checked_add(WorkCounters {
-        items_examined: bound,
-        ..WorkCounters::default()
-    })?
-    .verify(budget)?;
-    let mut comparisons = 0_u64;
-    for start in (0..heap_parent_count(count)).rev() {
-        sift_down(values, start, count, &mut comparisons)?;
+    accounting.admit(WorkCounters {
+        items_examined: sort_admission_bound(count).map_err(query_error)?,
+        ..WorkCounters::UNCHARGED
+    })?;
+    for start in (0..count / 2).rev() {
+        sift_down(values, start, count, accounting)?;
     }
     for end in (1..count).rev() {
-        values.swap(0, end);
-        sift_down(values, 0, end, &mut comparisons)?;
+        swap_indexed(values, 0, end, accounting)?;
+        sift_down(values, 0, end, accounting)?;
     }
-    *work = work.checked_add(WorkCounters {
-        items_examined: comparisons,
-        ..WorkCounters::default()
-    })?;
     Ok(())
+}
+
+fn swap_indexed<K>(
+    values: &mut [IndexedKey<'_, K>],
+    left: usize,
+    right: usize,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(), crate::FsError> {
+    let bytes = usize_to_u64(std::mem::size_of::<IndexedKey<'_, K>>() * 2);
+    let delta = WorkCounters {
+        bytes_copied: bytes,
+        ..WorkCounters::UNCHARGED
+    };
+    accounting.admit(delta)?;
+    values.swap(left, right);
+    accounting.record_completed(delta)
 }
 
 fn admit_height(next_height: u16, maximum_height: u16) -> Result<(), Error> {
@@ -652,25 +814,20 @@ fn sort_admission_bound(count: usize) -> Result<u64, Error> {
         .ok_or(Error::Work(WorkError::Overflow))
 }
 
-const fn heap_parent_count(count: usize) -> usize {
-    count >> 1
-}
-
 #[allow(
     clippy::indexing_slicing,
-    reason = "both callers in `sort_indexed` pass `end <= values.len()` (`values.len()` itself, \
-              or a value counting down from it) and an initial `root < end`; within the loop, \
-              `left` is filtered to `*left < end` (or the function returns early), `right` is \
-              only read behind an `if right < end` guard, and `root` is only ever reassigned to \
-              `greater` (one of `left`/`right`, both proven `< end`), so `root`, `left`, and \
-              `greater` are always `< end <= values.len()`"
+    reason = "heap indices stay below end <= values.len()"
 )]
 fn sift_down<K: Ord>(
     values: &mut [IndexedKey<'_, K>],
     mut root: usize,
     end: usize,
-    comparisons: &mut u64,
-) -> Result<(), Error> {
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(), crate::FsError> {
+    let item = WorkCounters {
+        items_examined: 1,
+        ..WorkCounters::UNCHARGED
+    };
     loop {
         let Some(left) = root
             .checked_mul(2)
@@ -682,20 +839,20 @@ fn sift_down<K: Ord>(
         let right = left + 1;
         let mut greater = left;
         if right < end {
-            *comparisons = comparisons
-                .checked_add(1)
-                .ok_or(Error::Work(WorkError::Overflow))?;
-            if indexed_order(&values[left], &values[right]).is_lt() {
+            accounting.admit(item)?;
+            let comparison = indexed_order(&values[left], &values[right]);
+            accounting.record_completed(item)?;
+            if comparison.is_lt() {
                 greater = right;
             }
         }
-        *comparisons = comparisons
-            .checked_add(1)
-            .ok_or(Error::Work(WorkError::Overflow))?;
-        if !indexed_order(&values[root], &values[greater]).is_lt() {
+        accounting.admit(item)?;
+        let comparison = indexed_order(&values[root], &values[greater]);
+        accounting.record_completed(item)?;
+        if !comparison.is_lt() {
             return Ok(());
         }
-        values.swap(root, greater);
+        swap_indexed(values, root, greater, accounting)?;
         root = greater;
     }
 }
@@ -711,62 +868,29 @@ fn indexed_order<K: Ord>(
 
 #[allow(
     clippy::indexing_slicing,
-    reason = "`cursor` is bounded by the `while cursor < end` loop condition directly above; its \
-              only caller (`accept_leaf`) always passes `start = query < self.ordered.len()` \
-              (see the invariant on `accept_leaf`) and `end <= self.ordered.len()`, so both \
-              `values[cursor]` and `values[start]` are in bounds"
+    reason = "start and cursor stay below end <= values.len()"
 )]
-fn equal_group<K: Eq>(values: &[IndexedKey<'_, K>], start: usize, end: usize) -> (usize, u64) {
+fn equal_group<K: Eq>(
+    values: &[IndexedKey<'_, K>],
+    start: usize,
+    end: usize,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<usize, crate::FsError> {
     let mut cursor = start + 1;
-    let mut comparisons = 0_u64;
+    let item = WorkCounters {
+        items_examined: 1,
+        ..WorkCounters::UNCHARGED
+    };
     while cursor < end {
-        comparisons = comparisons.saturating_add(1);
-        if values[cursor].key != values[start].key {
+        accounting.admit(item)?;
+        let equal = values[cursor].key == values[start].key;
+        accounting.record_completed(item)?;
+        if !equal {
             break;
         }
         cursor += 1;
     }
-    (cursor, comparisons)
-}
-
-#[allow(
-    clippy::indexing_slicing,
-    reason = "standard binary-search invariant: `right` starts at `values.len()` and only ever \
-              decreases (to `middle`), and the loop runs only while `left < right`, so `middle = \
-              left + (right - left) / 2` always satisfies `left <= middle < right <= \
-              values.len()`"
-)]
-fn search<F: Format>(values: &[F::Value], key: &F::Key) -> (Result<usize, usize>, u64) {
-    counted_binary_search(values, |value| F::key(value).cmp(key))
-}
-
-#[allow(
-    clippy::indexing_slicing,
-    reason = "standard binary-search invariant: `right` starts at `children.len()` and only ever \
-              decreases (to `middle`), and the loop runs only while `left < right`, so `middle = \
-              left + (right - left) / 2` always satisfies `left <= middle < right <= \
-              children.len()`"
-)]
-fn route<K: Ord>(children: &[Child<K>], key: &K) -> (usize, u64) {
-    let (after, comparisons) = counted_partition_point(children, |child| child.first <= *key);
-    (after.saturating_sub(1), comparisons)
-}
-
-fn map_allocation(error: AllocationError) -> Error {
-    match error {
-        AllocationError::Work(error) => error.into(),
-        _ => Error::AllocationFailed,
-    }
-}
-
-fn map_io(error: persistent_io::Error) -> Error {
-    match error {
-        persistent_io::Error::AllocationFailed => Error::AllocationFailed,
-        persistent_io::Error::Allocation(error) => map_allocation(error),
-        persistent_io::Error::Storage(error) => error.into(),
-        persistent_io::Error::Decode(error) => error.into(),
-        persistent_io::Error::Work(error) => error.into(),
-    }
+    Ok(cursor)
 }
 
 fn failed(error: Error, work: WorkCounters) -> Failure {
