@@ -1,3 +1,5 @@
+use super::*;
+
 #[test]
 fn native_candidates_wait_for_adoption_and_cancel_without_blocking_successors()
 -> Result<(), Box<dyn std::error::Error>> {
