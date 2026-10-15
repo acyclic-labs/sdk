@@ -1,0 +1,118 @@
+//! Typed external WebSocket destinations and host/port grant matching.
+use crate::contract::WebsocketConnectGrant;
+use std::net::IpAddr;
+
+/// Transport-validated DNS name or literal IP. CIDRs match only literal IP facts.
+#[derive(Clone, Copy, Debug)]
+pub enum Host<'a> {
+    /// ASCII DNS name (IDNs are converted to ASCII by the transport).
+    Dns(&'a str),
+    /// Literal IPv4 or IPv6 destination.
+    Ip(IpAddr),
+}
+
+/// External connection facts, independent of resource/RPC names.
+#[derive(Clone, Copy, Debug)]
+pub struct Destination<'a> {
+    /// Logical transport destination, prior to connection establishment.
+    pub host: Host<'a>,
+    /// Nonzero destination port.
+    pub port: u16,
+}
+
+#[derive(Clone, Copy)]
+enum Rule<'a> {
+    Dns(&'a str),
+    Suffix(&'a str),
+    Ip(IpAddr),
+    Network(IpAddr, u8),
+}
+fn dns(name: &str) -> Option<&str> {
+    let name = name.strip_suffix('.').unwrap_or(name);
+    (!name.is_empty()
+        && name.len() <= 253
+        && name.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label.as_bytes()[0].is_ascii_alphanumeric()
+                && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        }))
+    .then_some(name)
+}
+fn parse_rule(host: &str) -> Option<Rule<'_>> {
+    if let Some((network, prefix)) = host.split_once('/') {
+        let network = network.parse::<IpAddr>().ok()?;
+        if prefix.is_empty() || !prefix.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let prefix = prefix.parse::<u8>().ok()?;
+        (prefix <= if network.is_ipv4() { 32 } else { 128 })
+            .then_some(Rule::Network(network, prefix))
+    } else if let Some(suffix) = host.strip_prefix("*.") {
+        let suffix = dns(suffix)?;
+        if suffix.parse::<IpAddr>().is_ok() {
+            return None;
+        }
+        Some(Rule::Suffix(suffix))
+    } else if let Ok(ip) = host.parse::<IpAddr>() {
+        Some(Rule::Ip(ip))
+    } else {
+        Some(Rule::Dns(dns(host)?))
+    }
+}
+/// Whether a descriptor host rule has an admitted DNS, suffix, IP or CIDR form.
+pub fn valid_rule(host: &str) -> bool {
+    parse_rule(host).is_some()
+}
+fn network_contains(network: IpAddr, prefix: u8, ip: IpAddr) -> bool {
+    match (network, ip) {
+        (IpAddr::V4(network), IpAddr::V4(ip)) => {
+            let mask = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
+            u32::from(network) & mask == u32::from(ip) & mask
+        }
+        (IpAddr::V6(network), IpAddr::V6(ip)) => {
+            let mask = u128::MAX.checked_shl(128 - u32::from(prefix)).unwrap_or(0);
+            u128::from(network) & mask == u128::from(ip) & mask
+        }
+        _ => false,
+    }
+}
+fn host_matches(rule: Rule<'_>, host: Host<'_>) -> bool {
+    match (rule, host) {
+        (Rule::Dns(rule), Host::Dns(host)) => {
+            dns(host).is_some_and(|host| host.eq_ignore_ascii_case(rule))
+        }
+        (Rule::Suffix(rule), Host::Dns(host)) => dns(host).is_some_and(|host| {
+            host.len() > rule.len() + 1
+                && host.is_char_boundary(host.len() - rule.len())
+                && host[..host.len() - rule.len()].ends_with('.')
+                && host[host.len() - rule.len()..].eq_ignore_ascii_case(rule)
+        }),
+        (Rule::Ip(rule), Host::Ip(ip)) => rule == ip,
+        (Rule::Network(network, prefix), Host::Ip(ip)) => network_contains(network, prefix, ip),
+        _ => false,
+    }
+}
+/// Union of valid destination rules; empty ports means 443. Grant sets from
+/// different certificates and caveat blocks are intersected by authority::permits.
+/// No DNS lookup, allocation, or mutable state occurs during matching.
+pub fn allows(grant: &WebsocketConnectGrant, destination: Destination<'_>) -> bool {
+    if destination.port == 0
+        || matches!(destination.host, Host::Dns(host) if host.parse::<IpAddr>().is_ok())
+    {
+        return false;
+    }
+    grant.rules.iter().any(|rule| {
+        let port = u32::from(destination.port);
+        (if rule.ports.is_empty() {
+            port == 443
+        } else {
+            rule.ports.iter().any(|range| {
+                range.first > 0 && range.first <= port && port <= range.last && range.last <= 65535
+            })
+        }) && parse_rule(&rule.host).is_some_and(|rule| host_matches(rule, destination.host))
+    })
+}

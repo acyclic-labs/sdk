@@ -6,7 +6,7 @@ export type ResourcePattern = {
  */
 name: string,
 /**
- * Whether name is a byte prefix instead of an exact match.
+ * Whether canonical slash-delimited segments form a prefix of the target.
  */
 prefix: boolean, };
 export type ResourceGrant = {
@@ -349,7 +349,7 @@ reason: string,
  * Advisory issuer label.
  */
 label: string | null, };
-export type KeyringDelta = {
+export type KeyringSnapshot = {
 /**
  * Owning account.
  */
@@ -359,7 +359,7 @@ account_id: string,
  */
 sequence: bigint,
 /**
- * 32-byte digest of previous signed delta; zero for initial snapshot.
+ * 32-byte digest of previous signed snapshot; zero for initial snapshot.
  */
 previous_digest: Array<number>,
 /**
@@ -382,13 +382,13 @@ root_public_key: Array<number>,
  * Unix seconds, UTC.
  */
 issued_at_unix_seconds: bigint, };
-export type SignedKeyringDelta = {
+export type SignedKeyringSnapshot = {
 /**
  * Canonical published state.
  */
-delta: KeyringDelta,
+snapshot: KeyringSnapshot,
 /**
- * Ed25519 account-root signature over KEYRING_DOMAIN and canonical delta.
+ * Ed25519 account-root signature over KEYRING_DOMAIN and canonical snapshot.
  */
 signature: Array<number>, };
 export type AuditRecord = {
@@ -425,10 +425,16 @@ resource: string,
  */
 filter_hash: Array<number>,
 /**
- * allow, deny, mint, revoke or channel-open.
+ * Typed decision or lifecycle event.
  */
-decision: string,
+decision: AuditDecision,
 /**
  * Decision reason.
  */
 reason: string, };
+export type RecordAttributes = {
+/**
+ * Unique header names with opaque values.
+ */
+attributes: Array<Attribute>, };
+export type AuditDecision = "Unspecified" | "Allow" | "Deny" | "Mint" | "Revoke" | "ChannelOpen";

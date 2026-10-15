@@ -2,6 +2,7 @@
 pub mod authority;
 pub mod contract;
 mod resource;
+pub mod socket;
 mod validation;
 
 pub use resource::{

@@ -13,12 +13,24 @@ pub enum PolicyDecision {
     Deny,
 }
 
+/// Typed operation facts; resource grants never authorize socket destinations.
+#[derive(Clone, Copy, Debug)]
+pub enum Target<'a> {
+    /// Declared semantic action against an owner-canonicalized resource.
+    Resource {
+        /// Product action from the descriptor catalog.
+        action: &'a str,
+        /// Canonical product resource name.
+        resource: &'a str,
+    },
+    /// External WebSocket destination, checked against typed socket grants.
+    Websocket(crate::socket::Destination<'a>),
+}
+
 /// Immutable request facts, including usage charged against the root's ledger.
 pub struct Request<'a> {
-    /// Declared semantic product action.
-    pub action: &'a str,
-    /// Canonical resource after owner encoding.
-    pub resource: &'a str,
+    /// Resource operation or external socket destination.
+    pub target: Target<'a>,
     /// Exact authenticated recipient resource.
     pub audience: &'a str,
     /// Authenticated presenting account, if any.
@@ -27,8 +39,8 @@ pub struct Request<'a> {
     pub now_unix_seconds: u64,
     /// Every record key must satisfy all key filters.
     pub keys: &'a [Vec<u8>],
-    /// Authenticated record headers.
-    pub attributes: &'a [Attribute],
+    /// Decoded single-valued record headers, shared by every consumer.
+    pub attributes: &'a RecordAttributes,
     /// Usage measured against the shared root ledger.
     pub usage: &'a Limits,
     /// Requested CPU ceiling in milliseconds.
@@ -108,13 +120,20 @@ pub fn attenuate(
 
 fn resource_matches(pattern: &ResourcePattern, name: &str) -> bool {
     if pattern.prefix {
-        name.starts_with(&pattern.name)
+        let prefix = pattern.name.trim_end_matches('/');
+        name == prefix
+            || name
+                .strip_prefix(prefix)
+                .is_some_and(|tail| tail.starts_with('/'))
     } else {
         name == pattern.name
     }
 }
 fn grants_allow(set: &GrantSet, r: &Request<'_>) -> bool {
     set.grants.iter().any(|g| {
+        let Target::Resource { action, resource } = r.target else {
+            return matches!((&g.kind, r.target), (GrantKind::WebsocketConnect(grant), Target::Websocket(destination)) if crate::socket::allows(grant, destination));
+        };
         let grant = match &g.kind {
             GrantKind::Resource(g) => g,
             GrantKind::Execution(g)
@@ -131,7 +150,7 @@ fn grants_allow(set: &GrantSet, r: &Request<'_>) -> bool {
             }
             _ => return false,
         };
-        resource_matches(&grant.resource, r.resource) && grant.actions.iter().any(|a| a == r.action)
+        resource_matches(&grant.resource, resource) && grant.actions.iter().any(|a| a == action)
     })
 }
 fn limits_allow(ceiling: &Limits, usage: &Limits) -> bool {
@@ -188,7 +207,7 @@ fn filter_allows(f: &Filter, r: &Request<'_>, p: &Principal, blocks: &[Block], i
                     .any(|range| k >= &range.start && (range.end.is_empty() || k < &range.end))
             }))
         && f.attributes.iter().all(|clause| {
-            r.attributes.iter().any(|a| {
+            r.attributes.as_slice().iter().any(|a| {
                 a.name == clause.name
                     && (clause.any_of.contains(&a.value)
                         || clause.subjects.iter().any(|s| match &s.kind {
@@ -233,7 +252,7 @@ pub fn permits(blocks: &[Block], r: &Request<'_>, policy: PolicyDecision) -> boo
                 .as_deref()
                 .is_none_or(|account| r.holder == Some(account)),
             CaveatKind::Filter(f) => filter_allows(f, r, &leaf.key.principal, blocks, i),
-            CaveatKind::Pin(pin) => r.attributes.iter().any(|a| {
+            CaveatKind::Pin(pin) => r.attributes.as_slice().iter().any(|a| {
                 a.name == pin.name
                     && match &pin.value {
                         PinValue::Literal(v) => a.value == *v,

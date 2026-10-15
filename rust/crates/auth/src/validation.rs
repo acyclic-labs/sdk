@@ -27,7 +27,8 @@ pub(crate) fn principal(value: &Principal) -> Result<(), Error> {
     require(
         value.kind != PrincipalKind::Unspecified
             && !value.id.is_empty()
-            && value.lineage.iter().all(|id| !id.is_empty()),
+            && value.lineage.iter().all(|id| !id.is_empty())
+            && unique_attributes(&value.attributes),
     )
 }
 
@@ -119,8 +120,9 @@ pub(crate) fn certificates(v: &CertificateChain) -> Result<(), Error> {
         if i > 0 {
             let parent = &v.keys[i - 1].key;
             require(
-                cert.key.validity.not_before_unix_seconds
-                    >= parent.validity.not_before_unix_seconds
+                principal_narrows(&parent.principal, &cert.key.principal)
+                    && cert.key.validity.not_before_unix_seconds
+                        >= parent.validity.not_before_unix_seconds
                     && cert.key.validity.expires_at_unix_seconds
                         <= parent.validity.expires_at_unix_seconds
                     && parent
@@ -135,7 +137,7 @@ pub(crate) fn certificates(v: &CertificateChain) -> Result<(), Error> {
 pub(crate) fn revocation(v: &Revocation) -> Result<(), Error> {
     require(v.id.len() == 32 && v.expires_at_unix_seconds <= MAX_UNIX_SECONDS)
 }
-pub(crate) fn keyring(v: &KeyringDelta) -> Result<(), Error> {
+pub(crate) fn keyring_snapshot(v: &KeyringSnapshot) -> Result<(), Error> {
     require(
         v.previous_digest.len() == 32
             && v.root_public_key.len() == 32
@@ -143,6 +145,36 @@ pub(crate) fn keyring(v: &KeyringDelta) -> Result<(), Error> {
     )
 }
 
-pub(crate) fn signed_keyring(v: &SignedKeyringDelta) -> Result<(), Error> {
+pub(crate) fn signed_snapshot(v: &SignedKeyringSnapshot) -> Result<(), Error> {
     require(v.signature.len() == 64)
+}
+
+fn unique_attributes(values: &[Attribute]) -> bool {
+    let mut names = std::collections::HashSet::with_capacity(values.len());
+    values.iter().all(|value| names.insert(value.name.as_str()))
+}
+pub(crate) fn attributes(value: &RecordAttributes) -> Result<(), Error> {
+    require(unique_attributes(value.as_slice()))
+}
+pub(crate) fn socket_host(value: &SocketHostRule) -> Result<(), Error> {
+    require(crate::socket::valid_rule(&value.host))
+}
+
+fn principal_narrows(parent: &Principal, child: &Principal) -> bool {
+    child.kind == parent.kind
+        && child.id == parent.id
+        && child.lineage.starts_with(&parent.lineage)
+        && child
+            .groups
+            .iter()
+            .all(|claim| parent.groups.contains(claim))
+        && child.roles.iter().all(|claim| parent.roles.contains(claim))
+        && child
+            .attributes
+            .iter()
+            .all(|claim| parent.attributes.contains(claim))
+}
+
+pub(crate) fn audit(value: &AuditRecord) -> Result<(), Error> {
+    require(value.decision != AuditDecision::Unspecified)
 }
