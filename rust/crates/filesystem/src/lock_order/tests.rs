@@ -1,7 +1,10 @@
 use super::*;
 use proptest::prelude::*;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::{Arc, Barrier, LockResult};
+use std::sync::LockResult;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::{Arc, Barrier};
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 fn healthy<T>(result: LockResult<T>) -> T {
@@ -62,6 +65,7 @@ fn violation_names_both_acquisition_sites() {
     assert!(message.contains(&format!("{}:{requested_line}:", file!())));
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn demand_leaf_reentry_panics_before_locking() {
     let meter = crate::demand::NativeDemandReadMeter(std::sync::Mutex::new(
@@ -76,6 +80,7 @@ fn demand_leaf_reentry_panics_before_locking() {
     drop(meter.lock());
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn poison_recovery_keeps_rank_until_recovered_guard_drops() {
     let mutex = Arc::new(Mutex::<_, VIEW>::new(()));
@@ -98,6 +103,7 @@ fn poison_recovery_keeps_rank_until_recovered_guard_drops() {
     drop(healthy(lower.lock()));
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn condition_wait_restores_rank_and_rejects_descending_reacquisition() {
     let lower = Mutex::<_, OPERATION>::new(());
@@ -125,6 +131,7 @@ fn condition_wait_restores_rank_and_rejects_descending_reacquisition() {
     );
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn independent_threads_can_hold_equal_ranks() {
     let barrier = Arc::new(Barrier::new(2));

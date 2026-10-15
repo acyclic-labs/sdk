@@ -1,8 +1,8 @@
 use std::cell::RefCell;
 use std::ops::{Deref, DerefMut};
 use std::panic::Location;
-use std::sync::{LockResult, PoisonError, WaitTimeoutResult};
-use std::time::Duration;
+use std::sync::{LockResult, PoisonError};
+use std::time::{Duration, Instant};
 
 thread_local! {
     static HELD: RefCell<Vec<(u16, &'static Location<'static>)>> = const { RefCell::new(Vec::new()) };
@@ -130,7 +130,7 @@ impl Condvar {
         guard: MutexGuard<'a, T>,
         condition: impl FnMut(&mut T) -> bool,
     ) -> LockResult<MutexGuard<'a, T>> {
-        wait_plain(guard, |inner| self.0.wait_while(inner, condition))
+        while_locked(guard, condition, |guard| self.wait(guard))
     }
 
     #[track_caller]
@@ -139,7 +139,16 @@ impl Condvar {
         guard: MutexGuard<'a, T>,
         duration: Duration,
     ) -> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)> {
-        wait(guard, |inner| self.0.wait_timeout(inner, duration))
+        match wait(guard, |inner| self.0.wait_timeout(inner, duration)) {
+            Ok((guard, timeout)) => Ok((guard, WaitTimeoutResult(timeout.timed_out()))),
+            Err(error) => {
+                let (guard, timeout) = error.into_inner();
+                Err(PoisonError::new((
+                    guard,
+                    WaitTimeoutResult(timeout.timed_out()),
+                )))
+            }
+        }
     }
 
     #[cfg(test)]
@@ -150,10 +159,53 @@ impl Condvar {
         duration: Duration,
         condition: impl FnMut(&mut T) -> bool,
     ) -> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)> {
-        wait(guard, |inner| {
-            self.0.wait_timeout_while(inner, duration, condition)
+        while_timed(guard, duration, condition, |guard, remaining| {
+            match self.wait_timeout(guard, remaining) {
+                Ok((guard, _)) => Ok(guard),
+                Err(error) => Err(PoisonError::new(error.into_inner().0)),
+            }
         })
     }
+}
+
+#[derive(Debug)]
+pub(crate) struct WaitTimeoutResult(bool);
+
+impl WaitTimeoutResult {
+    pub(crate) fn timed_out(&self) -> bool {
+        self.0
+    }
+}
+
+#[track_caller]
+fn while_locked<G: DerefMut>(
+    mut guard: TrackedGuard<G>,
+    mut condition: impl FnMut(&mut G::Target) -> bool,
+    mut wait: impl FnMut(TrackedGuard<G>) -> LockResult<TrackedGuard<G>>,
+) -> LockResult<TrackedGuard<G>> {
+    while condition(&mut guard) {
+        guard = wait(guard)?;
+    }
+    Ok(guard)
+}
+
+#[cfg(test)]
+#[track_caller]
+fn while_timed<G: DerefMut>(
+    mut guard: TrackedGuard<G>,
+    duration: Duration,
+    mut condition: impl FnMut(&mut G::Target) -> bool,
+    mut wait: impl FnMut(TrackedGuard<G>, Duration) -> LockResult<TrackedGuard<G>>,
+) -> LockResult<(TrackedGuard<G>, WaitTimeoutResult)> {
+    let started = Instant::now();
+    while condition(&mut guard) {
+        let remaining = duration.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return Ok((guard, WaitTimeoutResult(true)));
+        }
+        guard = wait(guard, remaining)?;
+    }
+    Ok((guard, WaitTimeoutResult(false)))
 }
 
 #[track_caller]
