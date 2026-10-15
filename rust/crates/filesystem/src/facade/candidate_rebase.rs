@@ -3,8 +3,8 @@ use super::*;
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     pub(crate) async fn rebase_native_candidate(
         &self,
-        base: Self,
-        candidate: Self,
+        mut base: Self,
+        mut candidate: Self,
         maximum_changes: u32,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
@@ -60,10 +60,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         )
         .await?;
         let Some(table) = table else { return Ok(None) };
-        let base = self.private_candidate(accounting, cancellation)?;
-        // Keep the original candidate's dependency proof and its paid custody;
-        // copy canonical generation controls before changing the working table.
-        let mut candidate = self.replica(candidate.dependencies, self.mode, accounting)?;
+        base.root.set_file_table(self.root.file_table);
+        base.authored_operation_id = self.authored_operation_id;
+        if !self.candidate_base_unchanged(&base) {
+            return Ok(None);
+        }
+        // Reuse both paid root buffers and the original dependency proof.
         candidate.root.set_file_table(table);
         candidate.authored_operation_id = operation;
         cancellation.check()?;
