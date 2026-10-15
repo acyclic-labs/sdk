@@ -32,9 +32,18 @@ path = "tests/context_discovery.rs"
 required-features = ["filesystem"]
 
 [[test]]
+name = "mcp-durable"
+path = "tests/mcp_durable.rs"
+required-features = ["filesystem-local", "mcp-http"]
+
+[[test]]
 name = "client-commands"
 path = "tests/client_commands.rs"
 required-features = ["filesystem"]
+
+[[test]]
+name = "client-notifications"
+path = "tests/client_notifications.rs"
 
 [[test]]
 name = "task-workflow"

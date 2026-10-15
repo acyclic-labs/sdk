@@ -56,18 +56,33 @@ pub(super) async fn run(mut case: Scenario) -> TestResult {
     };
     let journal = storage.journal();
     let operation = input.operation_id;
-    if let Some(source) = source {
-        run_summary(
-            &executor,
-            provider.as_ref(),
-            journal.as_ref(),
-            input,
-            source,
-            &case,
-        )
-        .await?;
+    let executor = if let Some(discovery) = &case.discovery {
+        discovery
+            .stage(&storage)
+            .await
+            .and_then(|stage| executor.with_context_stage(Arc::new(stage)))
     } else {
-        run_turn(&executor, provider.as_ref(), journal.as_ref(), input, &case).await?;
+        Ok(executor)
+    };
+    match executor {
+        Err(error) => {
+            check_result::<()>(&case.expect, Err(error))?;
+        }
+        Ok(executor) => {
+            if let Some(source) = source {
+                run_summary(
+                    &executor,
+                    provider.as_ref(),
+                    journal.as_ref(),
+                    input,
+                    source,
+                    &case,
+                )
+                .await?;
+            } else {
+                run_turn(&executor, provider.as_ref(), journal.as_ref(), input, &case).await?;
+            }
+        }
     }
     check_provider(&case.expect, &provider, journal.as_ref()).await?;
     if let Some(config) = &case.search {
@@ -95,7 +110,7 @@ pub(super) async fn workspace(
 pub(super) async fn publish(
     storage: &MemoryHarnessStorage,
     files: &std::collections::BTreeMap<String, String>,
-) -> TestResult {
+) -> acyclic_harness::Result<()> {
     for (path, contents) in files {
         storage
             .stage(
@@ -276,12 +291,22 @@ async fn check_provider(
             return Err(format!("{label}: expected {expected:?}, got {actual}").into());
         }
     }
-    if let Some(expected) = &expected.requests {
+    if expected.requests.is_some() || !expected.not_requests.is_empty() {
         let requests = requests
             .iter()
             .map(serde_json::to_value)
             .collect::<Result<Vec<_>, _>>()?;
-        matchers::ordered(expected, &requests, "requests")?;
+        if let Some(expected) = &expected.requests {
+            matchers::ordered(expected, &requests, "requests")?;
+        }
+        for forbidden in &expected.not_requests {
+            if requests
+                .iter()
+                .any(|request| matchers::subset(forbidden, request))
+            {
+                return Err(format!("forbidden request: {forbidden}").into());
+            }
+        }
     }
     if let Some(expected) = &expected.request_files {
         if expected.len() != requests.len() {

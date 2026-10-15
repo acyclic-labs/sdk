@@ -1,0 +1,6 @@
+[
+  {"event":"task_settled","title":"Task settled","attention":false},
+  {"event":"task_failed","title":"Task failed","attention":true},
+  {"event":"task_blocked","title":"Task blocked","attention":true},
+  {"event":"goal_done","title":"Goal done","attention":true}
+]

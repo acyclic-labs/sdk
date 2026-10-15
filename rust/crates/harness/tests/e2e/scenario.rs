@@ -19,6 +19,7 @@ pub struct Scenario {
     pub turns: Vec<ScriptedTurn>,
     #[serde(default)]
     pub context: Vec<ModelMessage>,
+    pub discovery: Option<super::discovery::Discovery>,
     pub capacity: Option<ModelContextCapacity>,
     pub compaction: Option<CompactionPolicy>,
     pub max_output_tokens: Option<u32>,
@@ -56,6 +57,8 @@ pub struct Expectations {
     #[serde(default)]
     pub not_events: Vec<Value>,
     pub requests: Option<Vec<Value>>,
+    #[serde(default)]
+    pub not_requests: Vec<Value>,
     pub request_files: Option<Vec<Vec<String>>>,
     #[serde(default)]
     pub files: BTreeMap<String, Option<String>>,
@@ -96,7 +99,7 @@ impl Scenario {
 
     pub(super) fn from_value(value: Value) -> Result<Self, String> {
         let forbidden = match value.get("kind").and_then(Value::as_str) {
-            Some("summary") => &["prompt", "max_steps"][..],
+            Some("summary") => &["prompt", "max_steps", "discovery"][..],
             _ => &["instruction"][..],
         };
         for key in forbidden {
@@ -180,6 +183,11 @@ fn scenarios_reject_typos_and_vacuous_results() {
         r#"{"kind":"summary","instruction":"x","max_steps":null,"turns":[],"expect":{"text":"x"}}"#,
         r#"{"kind":"summary","instruction":"x","turns":[],"search":{"configured":true,"granted":true,"steps":[],"events":[]},"expect":{"text":"x"}}"#,
         r#"{"prompt":"x","turns":[],"search":{"configured":true,"granted":true,"steps":[],"events":[],"typo":1},"expect":{"text":"x"}}"#,
+        r#"{"kind":"summary","instruction":"x","discovery":null,"turns":[],"expect":{"text":"x"}}"#,
+        r#"{"prompt":"x","discovery":{"typo":true},"turns":[],"expect":{"text":"x"}}"#,
+        r#"{"prompt":"x","discovery":{"instructions":[{"typo":true}]},"turns":[],"expect":{"text":"x"}}"#,
+        r#"{"prompt":"x","discovery":{"reload":"typo"},"turns":[],"expect":{"text":"x"}}"#,
+        r#"{"prompt":"x","discovery":{"limits":{"entries":1,"typo":true}},"turns":[],"expect":{"text":"x"}}"#,
         r#"{"kind":"summary","turns":[],"expect":{"text":"x"}}"#,
         r#"{"kind":"turn","prompt":"x","instruction":"x","turns":[],"expect":{"text":"x"}}"#,
         r#"{"kind":"unknown","prompt":"x","turns":[],"expect":{"text":"x"}}"#,

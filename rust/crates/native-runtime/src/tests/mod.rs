@@ -55,7 +55,7 @@ fn complete<T>(future: impl Future<Output = io::Result<T>>) -> io::Result<T> {
 
 #[derive(Default)]
 pub(super) struct ReadBudgetMeter {
-    used_operations: AtomicU64,
+    pub(super) used_operations: AtomicU64,
     used_bytes: AtomicU64,
     used_allocations: AtomicU64,
     examined_items: AtomicU64,
