@@ -2,6 +2,5 @@
 
 /**
  * Published service error codes. Unknown numeric values stay visible through
- * `DomainError::UnknownErrorCode` instead of being coerced to `Unspecified`.
  */
 export type ErrorCode = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
