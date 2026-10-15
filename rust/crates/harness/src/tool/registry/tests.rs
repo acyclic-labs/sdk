@@ -62,7 +62,12 @@ proptest::proptest! {
                         proptest::prop_assert!(matches!(result, Err(Error::NotFound(message)) if message == format!("tool {name}")), "missing-tool error changed");
                     }
                 }
-                3 => registry = registry.clone(),
+                3 => {
+                    let copied = registry.clone();
+                    proptest::prop_assert!(registry.versions.keys().eq(copied.versions.keys()));
+                    proptest::prop_assert!(registry.selected.iter().eq(copied.selected.iter()));
+                    registry = copied;
+                }
                 _ => {
                     let mut additional = ToolRegistry::default();
                     let mut tool = prototype.clone();
@@ -87,6 +92,8 @@ proptest::proptest! {
                 peak_allocation_bytes: 16_777_216, ..WorkBudget::default()
             }, &token))?;
             let (mut copied, custody) = checked(registry.clone_with_native_work(&work))?;
+            proptest::prop_assert!(registry.versions.keys().eq(copied.versions.keys()));
+            proptest::prop_assert!(registry.selected.iter().eq(copied.selected.iter()));
             proptest::prop_assert!(indexed_names(&copied));
             let remaining = checked(work.remaining())?;
             for name in registry.selected.keys() {
