@@ -73,6 +73,13 @@ impl Layout {
             if symbol == "\n" {
                 row.end = offset;
                 rows.push(row);
+                if column == width {
+                    rows.push(Row {
+                        start: offset,
+                        end: offset,
+                        cells: vec![],
+                    });
+                }
                 row = Row {
                     start: end,
                     end,

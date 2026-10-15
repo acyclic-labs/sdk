@@ -1,7 +1,7 @@
 use acyclic_harness_tui::{Editor, Layout, Motion};
 use unicode_segmentation::UnicodeSegmentation;
 
-pub fn exercise(data: &[u8]) {
+pub fn exercise(data: &[u8]) -> Editor {
     let mut editor = Editor::default();
     for (step, chunk) in data.chunks(8).enumerate() {
         let op = chunk[0];
@@ -51,12 +51,14 @@ pub fn exercise(data: &[u8]) {
         let (row, _) = layout.position(editor.cursor());
         assert!(row < layout.rows.len());
         let snapshot = (editor.text().to_owned(), editor.collapsed_pastes().to_vec());
-        if editor.undo() {
-            assert!(editor.redo());
+        let mut round_trip = editor.clone();
+        if round_trip.undo() {
+            assert!(round_trip.redo());
             assert_eq!(
-                (editor.text(), editor.collapsed_pastes()),
+                (round_trip.text(), round_trip.collapsed_pastes()),
                 (snapshot.0.as_str(), snapshot.1.as_slice())
             );
         }
     }
+    editor
 }

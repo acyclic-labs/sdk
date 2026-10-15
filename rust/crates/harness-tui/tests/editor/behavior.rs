@@ -1,6 +1,53 @@
 use acyclic_harness_tui::{Editor, Motion, PromptHistory};
 
 #[test]
+fn continuation_removes_only_the_backslash_of_a_collapsed_paste() {
+    let paste = format!("{}\\", "x".repeat(1100));
+    let mut editor = Editor::default();
+    editor.paste(&paste, 0);
+    assert_eq!(editor.collapsed_pastes().len(), 1);
+    assert_eq!(editor.enter(false, 1), None);
+    assert_eq!(editor.text(), format!("{}\n", "x".repeat(1100)));
+    editor.undo();
+    assert_eq!(editor.text(), paste);
+    assert_eq!(editor.collapsed_pastes().len(), 1);
+    editor.redo();
+    assert_eq!(editor.text(), format!("{}\n", "x".repeat(1100)));
+}
+
+#[test]
+fn selecting_a_separator_or_word_never_crosses_the_other_class() {
+    for (offset, selected, replacement) in [
+        (0, "one", "! two"),
+        (3, " ", "one!two"),
+        (4, "two", "one !"),
+        (7, "two", "one !"),
+    ] {
+        let mut editor = Editor::new("one two");
+        editor.select_word(offset);
+        assert_eq!(editor.selected_text(), selected);
+        editor.insert("!", 0);
+        assert_eq!(editor.text(), replacement);
+    }
+}
+
+#[test]
+fn a_megabyte_paste_is_not_retained_again_for_each_following_edit() {
+    let mut editor = Editor::default();
+    let paste = "x".repeat(1024 * 1024);
+    editor.paste(&paste, 0);
+    for i in 0..8 {
+        editor.insert(" ", i + 1);
+    }
+    assert!(editor.retained_undo_bytes() <= paste.len() + 9 * 512);
+    for _ in 0..8 {
+        assert!(editor.undo());
+    }
+    assert_eq!(editor.text(), paste);
+    assert_eq!(editor.collapsed_pastes().len(), 1);
+}
+
+#[test]
 fn keymap_is_unambiguous_and_help_comes_from_the_bindings() {
     use acyclic_harness_tui::{Action, KEYMAP, keymap_help};
     let help = keymap_help(KEYMAP);

@@ -2,6 +2,29 @@ use acyclic_harness_tui::{Editor, PromptWidget, Viewport};
 use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, layout::Rect};
 
 #[test]
+fn exact_width_before_newline_has_a_visible_insertion_cursor()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut editor = Editor::new("abcd\nx");
+    editor.set_cursor(4, false);
+    let mut viewport = Viewport::default();
+    let mut terminal = Terminal::new(TestBackend::new(4, 3))?;
+    terminal.draw(|frame| {
+        frame.render_stateful_widget(PromptWidget::new(&editor), frame.area(), &mut viewport)
+    })?;
+    assert_eq!(
+        terminal.backend().buffer(),
+        &Buffer::with_lines(["abcd", "    ", "x   "])
+    );
+    assert_eq!(viewport.cursor, Some((0, 1)));
+    editor.set_cursor(5, false);
+    terminal.draw(|frame| {
+        frame.render_stateful_widget(PromptWidget::new(&editor), frame.area(), &mut viewport)
+    })?;
+    assert_eq!(viewport.cursor, Some((0, 2)));
+    Ok(())
+}
+
+#[test]
 fn unicode_snapshots_width_one_through_twelve() -> Result<(), Box<dyn std::error::Error>> {
     let editor = Editor::new("界👩‍💻e\u{301}");
     for width in 1..=12 {

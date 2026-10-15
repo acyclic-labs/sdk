@@ -42,6 +42,18 @@ fn operation() -> impl Strategy<Value = (u8, String)> {
 proptest! {
     #![proptest_config(ProptestConfig { cases: 96, ..ProptestConfig::default() })]
     #[test]
+    fn undo_storage_is_bounded_by_edits_independently_of_buffer_size(size in 0usize..8192, edits in 0usize..40) {
+        let initial = "界".repeat(size);
+        let mut editor = Editor::new(&initial);
+        for i in 0..edits { editor.insert(" ", i as u64); }
+        // Each space is a separate group. The bound includes allocated vector
+        // capacity and fold metadata, not just the payload strings' lengths.
+        prop_assert!(editor.retained_undo_bytes() <= edits * 512);
+        for _ in 0..edits { prop_assert!(editor.undo()); }
+        prop_assert_eq!(editor.text(), initial);
+        prop_assert!(editor.retained_undo_bytes() <= edits * 512);
+    }
+    #[test]
     fn random_edits_match_string_model(ops in prop::collection::vec(operation(), 0..80)) {
         let mut editor = Editor::default();
         let mut model = Model::default();
@@ -121,7 +133,7 @@ proptest! {
         for offset in points {
             let (row, column) = layout.position(offset);
             prop_assert!(row < layout.rows.len());
-            prop_assert!(column < width || column == width && text[offset..].starts_with('\n'));
+            prop_assert!(column < width);
         }
     }
 }

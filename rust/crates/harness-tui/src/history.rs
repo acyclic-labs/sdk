@@ -1,13 +1,161 @@
 use crate::buffer::Buffer;
+use std::{collections::BTreeSet, ops::Range};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Selection {
+    cursor: usize,
+    anchor: usize,
+}
+
+impl Selection {
+    fn of(buffer: &Buffer) -> Self {
+        Self {
+            cursor: buffer.cursor,
+            anchor: buffer.anchor,
+        }
+    }
+    fn restore(self, buffer: &mut Buffer) {
+        buffer.cursor = self.cursor;
+        buffer.anchor = self.anchor;
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct Delta {
+    start: usize,
+    removed: String,
+    inserted: String,
+    pub before: Selection,
+    pub after: Selection,
+    removed_folds: Vec<Range<usize>>,
+    added_folds: Vec<Range<usize>>,
+}
+
+impl Delta {
+    pub fn capture(buffer: &Buffer, range: Range<usize>, text: &str) -> Self {
+        Self {
+            start: range.start,
+            removed: buffer.text[range].to_owned(),
+            inserted: text.to_owned(),
+            before: Selection::of(buffer),
+            after: Selection::of(buffer),
+            removed_folds: buffer.folds.clone(),
+            added_folds: vec![],
+        }
+    }
+
+    pub fn finish(&mut self, buffer: &Buffer) {
+        self.after = Selection::of(buffer);
+        let after: BTreeSet<_> = buffer.folds.iter().map(|r| (r.start, r.end)).collect();
+        let mut preserved = BTreeSet::new();
+        self.removed_folds.retain(|range| {
+            let mapped = shift(range, self.start, self.removed.len(), self.inserted.len());
+            if let Some(mapped) = mapped.filter(|r| after.contains(&(r.start, r.end))) {
+                preserved.insert((mapped.start, mapped.end));
+                false
+            } else {
+                true
+            }
+        });
+        self.removed_folds.shrink_to_fit();
+        self.added_folds = buffer
+            .folds
+            .iter()
+            .filter(|r| !preserved.contains(&(r.start, r.end)))
+            .cloned()
+            .collect();
+    }
+
+    pub fn between(before: &Buffer, after: &Buffer) -> Self {
+        let prefix: usize = before
+            .text
+            .chars()
+            .zip(after.text.chars())
+            .take_while(|(a, b)| a == b)
+            .map(|(c, _)| c.len_utf8())
+            .sum();
+        let suffix: usize = before.text[prefix..]
+            .chars()
+            .rev()
+            .zip(after.text[prefix..].chars().rev())
+            .take_while(|(a, b)| a == b)
+            .map(|(c, _)| c.len_utf8())
+            .sum();
+        let mut delta = Self::capture(
+            before,
+            prefix..before.text.len() - suffix,
+            &after.text[prefix..after.text.len() - suffix],
+        );
+        delta.finish(after);
+        delta
+    }
+
+    pub fn apply(&self, buffer: &mut Buffer, backwards: bool) {
+        let (old, new, remove, restore, selection) = if backwards {
+            (
+                &self.inserted,
+                &self.removed,
+                &self.added_folds,
+                &self.removed_folds,
+                self.before,
+            )
+        } else {
+            (
+                &self.removed,
+                &self.inserted,
+                &self.removed_folds,
+                &self.added_folds,
+                self.after,
+            )
+        };
+        let remove: BTreeSet<_> = remove.iter().map(|r| (r.start, r.end)).collect();
+        buffer.folds = buffer
+            .folds
+            .iter()
+            .filter(|r| !remove.contains(&(r.start, r.end)))
+            .filter_map(|r| shift(r, self.start, old.len(), new.len()))
+            .chain(restore.iter().cloned())
+            .collect();
+        buffer.folds.sort_by_key(|r| r.start);
+        buffer
+            .text
+            .replace_range(self.start..self.start + old.len(), new);
+        buffer.rebuild_boundaries();
+        selection.restore(buffer);
+    }
+
+    fn heap_bytes(&self) -> usize {
+        self.removed.capacity()
+            + self.inserted.capacity()
+            + (self.removed_folds.capacity() + self.added_folds.capacity())
+                * size_of::<Range<usize>>()
+    }
+}
+
+fn shift(range: &Range<usize>, start: usize, old: usize, new: usize) -> Option<Range<usize>> {
+    if range.end <= start {
+        Some(range.clone())
+    } else if range.start >= start + old {
+        Some(range.start - old + new..range.end - old + new)
+    } else {
+        None
+    }
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct Edit {
-    pub before: Buffer,
-    pub after: Buffer,
+    pub changes: Vec<Delta>,
     pub at: u64,
     pub kind: u8,
     pub size: usize,
     pub boundary: bool,
+}
+
+impl Edit {
+    pub fn heap_bytes(&self) -> usize {
+        self.changes.capacity() * size_of::<Delta>()
+            + self.changes.iter().map(Delta::heap_bytes).sum::<usize>()
+    }
 }
 
 /// Submitted prompts, with a saved in-progress draft and reverse search.

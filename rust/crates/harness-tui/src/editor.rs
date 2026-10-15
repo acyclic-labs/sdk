@@ -4,7 +4,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::{
     Layout, PromptHistory,
     buffer::{Buffer, normalize},
-    history::Edit,
+    history::{Delta, Edit},
 };
 
 /// Cursor motion, independent of terminal key encodings.
@@ -55,14 +55,8 @@ impl Editor {
     /// Create an editor with the supplied text and its cursor at the end.
     pub fn new(text: &str) -> Self {
         let text = normalize(text);
-        let end = text.len();
         Self {
-            buffer: Buffer {
-                text,
-                cursor: end,
-                anchor: end,
-                folds: vec![],
-            },
+            buffer: Buffer::new(text),
             ..Self::default()
         }
     }
@@ -94,6 +88,18 @@ impl Editor {
     /// Mutable submitted-prompt history for the host to load or save.
     pub fn history(&mut self) -> &mut PromptHistory {
         &mut self.history
+    }
+
+    /// Heap bytes retained by undo and redo, including edit and fold metadata.
+    /// Working text, wrapping, prompt history and the kill ring are excluded.
+    pub fn retained_undo_bytes(&self) -> usize {
+        (self.undo.capacity() + self.redo.capacity()) * size_of::<Edit>()
+            + self
+                .undo
+                .iter()
+                .chain(&self.redo)
+                .map(Edit::heap_bytes)
+                .sum::<usize>()
     }
 
     /// Memoized display layout; changing selection does not rebuild wrapping.
@@ -129,13 +135,9 @@ impl Editor {
     /// Select the whitespace-delimited word at an offset.
     pub fn select_word(&mut self, offset: usize) {
         self.set_cursor(offset, false);
-        let at = self.cursor();
-        self.buffer.anchor = if at == 0 {
-            0
-        } else {
-            self.buffer.word_left(self.buffer.next(at))
-        };
-        self.buffer.cursor = self.buffer.word_right(at);
+        let range = self.buffer.word_range(self.cursor());
+        self.buffer.anchor = range.start;
+        self.buffer.cursor = range.end;
     }
 
     /// Select a logical line, including its trailing newline if present.
@@ -319,7 +321,13 @@ impl Editor {
             let before = self.buffer.clone();
             self.buffer = original.clone();
             self.buffer.replace(original.selection(), &text, false);
-            self.record(before, now_ms, 1, text.graphemes(true).count(), true);
+            self.record(
+                Delta::between(&before, &self.buffer),
+                now_ms,
+                1,
+                text.graphemes(true).count(),
+                true,
+            );
             self.yank = Some((original, index));
         }
     }
@@ -348,12 +356,13 @@ impl Editor {
         let boundary = atomic
             || text.chars().any(char::is_whitespace)
             || self.text()[range.clone()].chars().any(char::is_whitespace);
-        let before = self.buffer.clone();
+        let mut delta = Delta::capture(&self.buffer, range.clone(), text);
         self.buffer.replace(range, text, fold);
-        self.record(before, at, kind, size, boundary);
+        delta.finish(&self.buffer);
+        self.record(delta, at, kind, size, boundary);
     }
 
-    fn record(&mut self, before: Buffer, at: u64, kind: u8, size: usize, boundary: bool) {
+    fn record(&mut self, delta: Delta, at: u64, kind: u8, size: usize, boundary: bool) {
         self.invalidate_layout();
         let grouped = self.group_open
             && self.undo.last().is_some_and(|edit| {
@@ -363,25 +372,27 @@ impl Editor {
                     && edit.size + size <= 20
                     && at >= edit.at
                     && at - edit.at <= 300
-                    && edit.after == before
+                    && edit
+                        .changes
+                        .last()
+                        .is_some_and(|last| last.after == delta.before)
             });
         if grouped {
             if let Some(edit) = self.undo.last_mut() {
-                edit.after = self.buffer.clone();
+                edit.changes.push(delta);
                 edit.at = at;
                 edit.size += size;
             }
         } else {
             self.undo.push(Edit {
-                before,
-                after: self.buffer.clone(),
+                changes: vec![delta],
                 at,
                 kind,
                 size,
                 boundary,
             });
         }
-        self.redo.clear();
+        self.redo = vec![];
         self.break_group();
         self.group_open = !boundary;
         self.sticky = None;
@@ -392,7 +403,12 @@ impl Editor {
         self.break_group();
         self.sticky = None;
         if let Some(edit) = self.undo.pop() {
-            self.buffer = edit.before.clone();
+            if self.undo.is_empty() {
+                self.undo = vec![];
+            }
+            for delta in edit.changes.iter().rev() {
+                delta.apply(&mut self.buffer, true);
+            }
             self.invalidate_layout();
             self.redo.push(edit);
             true
@@ -406,7 +422,12 @@ impl Editor {
         self.break_group();
         self.sticky = None;
         if let Some(edit) = self.redo.pop() {
-            self.buffer = edit.after.clone();
+            if self.redo.is_empty() {
+                self.redo = vec![];
+            }
+            for delta in &edit.changes {
+                delta.apply(&mut self.buffer, false);
+            }
             self.invalidate_layout();
             self.undo.push(edit);
             true
@@ -451,7 +472,7 @@ impl Editor {
             && self.text().ends_with('\\')
         {
             self.replace(
-                self.buffer.previous(self.cursor())..self.cursor(),
+                self.cursor() - 1..self.cursor(),
                 "\n",
                 now_ms,
                 1,
