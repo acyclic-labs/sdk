@@ -1,4 +1,4 @@
-use super::{TestResult, composer::Composer, execution, scenario};
+use super::{TestResult, composer::Composer, execution, notifications::Notifications, scenario};
 use serde_json::Value;
 
 pub(super) async fn run(mut value: Value) -> TestResult {
@@ -10,6 +10,7 @@ pub(super) async fn run(mut value: Value) -> TestResult {
         None if driver.is_none() => execution::run(scenario::Scenario::from_value(value)?).await,
         Some("executor") => execution::run(scenario::Scenario::from_value(value)?).await,
         Some("composer") => Composer::parse(value)?.run().await,
+        Some("notifications") => Notifications::parse(value)?.run(),
         _ => Err("unknown scenario driver".into()),
     }
 }

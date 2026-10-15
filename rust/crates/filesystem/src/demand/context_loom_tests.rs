@@ -84,15 +84,27 @@ fn custody_inspection_completes_read_callback_and_invalidation() {
 #[cfg(feature = "native-watch")]
 #[test]
 fn previous_custody_inspection_deadlocks_the_real_leaf() {
-    let failure = std::panic::catch_unwind(|| read_and_invalidate(true))
-        .expect_err("the old weak upgrade must expose its recursive acquisition");
-    let message = failure
-        .downcast_ref::<String>()
-        .map(String::as_str)
-        .or_else(|| failure.downcast_ref::<&str>().copied())
-        .unwrap_or("");
+    const BROKEN: &str = "ACYCLIC_FS_LOOM_LEGACY_CUSTODY";
+    if std::env::var_os(BROKEN).is_some() {
+        read_and_invalidate(true);
+        return;
+    }
+    // A recursive destructor lock deadlocks Loom; unwinding that destructor
+    // can itself re-enter Loom after its scheduler has stopped. Isolate the
+    // broken path so its expected abort cannot hide the positive model result.
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "demand::context_loom_tests::previous_custody_inspection_deadlocks_the_real_leaf",
+            "--nocapture",
+        ])
+        .env(BROKEN, "1")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "the old weak upgrade must fail");
     assert!(
-        message.contains("deadlock") || message.contains("lock order"),
-        "{message}"
+        stderr.contains("deadlock; threads") || stderr.contains("lock order:"),
+        "{stderr}"
     );
 }

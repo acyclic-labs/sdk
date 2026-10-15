@@ -1,0 +1,45 @@
+[
+  {
+    "name": "create active goal with the ordinary write tool",
+    "seed": null,
+    "prompt": "Create a goal to ship the change",
+    "writes": ["Ship the change\n"],
+    "status": "active",
+    "markdown": "Ship the change\n"
+  },
+  {
+    "name": "edit active goal with the ordinary write tool",
+    "seed": "Ship the change\n",
+    "prompt": "Include tests in the goal",
+    "writes": ["---\nstatus: active\n---\nShip the change and its tests\n"],
+    "status": "active",
+    "markdown": "Ship the change and its tests\n"
+  },
+  {
+    "name": "complete goal with the ordinary write tool",
+    "seed": "Ship the change\n",
+    "prompt": "Complete the goal",
+    "writes": ["---\nstatus: done\n---\nShipped the change\n"],
+    "status": "done",
+    "markdown": "Shipped the change\n"
+  },
+  {
+    "name": "block goal with the ordinary write tool",
+    "seed": "Ship the change\n",
+    "prompt": "Block the goal until the service is available",
+    "writes": ["---\nstatus: blocked\n---\nWaiting for service\n"],
+    "status": "blocked",
+    "markdown": "Waiting for service\n"
+  },
+  {
+    "name": "unblock and complete using only ordinary writes",
+    "seed": "---\nstatus: blocked\n---\nWaiting for service\n",
+    "prompt": "The service is available; finish the goal",
+    "writes": [
+      "---\nstatus: active\n---\nVerify service\n",
+      "---\nstatus: done\n---\nService verified\n"
+    ],
+    "status": "done",
+    "markdown": "Service verified\n"
+  }
+]

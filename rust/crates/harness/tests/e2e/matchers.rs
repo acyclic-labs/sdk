@@ -1,5 +1,9 @@
 use serde_json::Value;
 
+#[cfg(test)]
+#[path = "matchers_properties.rs"]
+mod properties;
+
 // Objects are recursive subsets. Arrays are ordered subsequences with distinct
 // matches; an empty array asserts emptiness. Scalar values match exactly.
 // A sole $json key matches JSON-encoded text; $contains searches text recursively.

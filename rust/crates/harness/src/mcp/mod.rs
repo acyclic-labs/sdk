@@ -11,6 +11,16 @@ pub(crate) mod config;
     any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
 ))]
 pub use config::{McpConfig, McpServer, McpTransport};
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(feature = "mcp-stdio", feature = "mcp-http")
+))]
+mod install;
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(feature = "mcp-stdio", feature = "mcp-http")
+))]
+pub use install::{McpClientLimits, McpInstallation, McpServerFailure};
 pub mod http;
 #[cfg(all(feature = "mcp-oauth", not(target_arch = "wasm32")))]
 pub mod oauth;

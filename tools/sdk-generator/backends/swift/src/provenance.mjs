@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
 import { dirname, join, posix, resolve } from "node:path";
-import { canonical, readInput, sha256, within } from "../../../shared/authority.mjs";
+import { canonical, equalEntries, readInput, sha256, within } from "../../../shared/authority.mjs";
 
 export function tree(root, { gitMetadata = false } = {}) {
   const files = [], links = {};
@@ -22,7 +22,6 @@ export function tree(root, { gitMetadata = false } = {}) {
   walk();
   return { files: files.sort(), links };
 }
-const equal = (left, right) => JSON.stringify(Object.entries(left).sort()) === JSON.stringify(Object.entries(right).sort());
 
 export function verifyRuntime(root, inventoryBytes, pin) {
   if (sha256(inventoryBytes) !== pin.sdk_inventory_sha256) throw new Error("SDK inventory differs from pin");
@@ -30,7 +29,7 @@ export function verifyRuntime(root, inventoryBytes, pin) {
   if (inventory.archive_sha256 !== pin.sdk_archive_sha256 || Object.keys(inventory.files ?? {}).length !== pin.sdk_files
     || Object.keys(inventory.links ?? {}).length !== pin.sdk_links) throw new Error("SDK inventory metadata differs");
   const actual = tree(root);
-  if (JSON.stringify(actual.files) !== JSON.stringify(Object.keys(inventory.files).sort()) || !equal(actual.links, inventory.links)) throw new Error("SDK file or link inventory differs");
+  if (JSON.stringify(actual.files) !== JSON.stringify(Object.keys(inventory.files).sort()) || !equalEntries(actual.links, inventory.links)) throw new Error("SDK file or link inventory differs");
   for (const [name, digest] of Object.entries(inventory.files)) readInput(root, name, digest);
   return inventory;
 }
