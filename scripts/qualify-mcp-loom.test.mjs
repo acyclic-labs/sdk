@@ -16,8 +16,11 @@ test("qualification instruments only the selected target and executes its built 
     ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-harness", "--test", "mcp-loom", "--all-features", "--", "--cfg", "loom"]],
     ["model-binary", []],
   ]);
-  const gate = readFileSync("scripts/qualify-ci.sh", "utf8").match(/  gate\)\n([\s\S]*?);;/)?.[1];
+  const qualification = readFileSync("scripts/qualify-ci.sh", "utf8");
+  const gate = qualification.match(/  gate\)\n([\s\S]*?);;/)?.[1];
   assert.match(gate, /node scripts\/qualify-mcp-loom\.mjs --all-features/);
+  const policy = qualification.match(/  policy\)\n([\s\S]*?);;/)?.[1];
+  assert.match(policy, /node --test[^\n]*scripts\/qualify-mcp-loom\.test\.mjs/);
 });
 
 test("qualification rejects zero, skipped, filtered and failed model execution", () => {
