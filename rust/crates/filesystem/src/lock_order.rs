@@ -28,5 +28,5 @@ pub(crate) fn lock<T, const RANK: u16>(
     mutex.lock()
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 mod tests;

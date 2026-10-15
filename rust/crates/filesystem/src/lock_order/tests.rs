@@ -68,11 +68,9 @@ fn violation_names_both_acquisition_sites() {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn demand_leaf_reentry_panics_before_locking() {
-    let meter = crate::demand::NativeDemandReadMeter(std::sync::Mutex::new(
-        crate::demand::DemandWork::new(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        ),
+    let meter = crate::demand::NativeDemandReadMeter::new(crate::demand::DemandWork::new(
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
     ));
     let guard = meter.lock();
     assert!(catch_unwind(AssertUnwindSafe(|| meter.lock())).is_err());

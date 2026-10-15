@@ -1,205 +1,155 @@
 use super::*;
-use loom::sync::{Arc, Condvar, Mutex};
+use loom::sync::{Arc, mpsc};
+use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum Fault {
+    None,
+    MissingCheck,
+    MissingRestore,
+    UntrackedPredicate,
+}
+
 loom::thread_local! {
-    static MODEL_HELD: RefCell<Vec<(u16, &'static Location<'static>)>> = RefCell::new(Vec::new());
+    static FAULT: Cell<Fault> = Cell::new(Fault::None);
 }
 
-fn with_model_held(edit: &mut dyn FnMut(&mut Vec<(u16, &'static Location<'static>)>)) {
-    MODEL_HELD.with(|held| edit(&mut held.borrow_mut()));
+pub(super) fn fault() -> Fault {
+    FAULT.with(Cell::get)
 }
 
-fn healthy<T>(result: LockResult<T>) -> T {
-    result.unwrap_or_else(|error| std::panic::resume_unwind(Box::new(error.to_string())))
+fn set_fault(fault: Fault) {
+    FAULT.with(|value| value.set(fault));
+}
+
+fn rejects_lower() -> bool {
+    // An independent lock keeps the broken control from blocking on itself.
+    let lower = Mutex::<_, 10>::new(());
+    catch_unwind(AssertUnwindSafe(|| drop(lower.lock()))).is_err()
+}
+
+fn with_negative_control(fault: Fault, exercise: impl Fn(Fault) + std::panic::RefUnwindSafe) {
+    exercise(Fault::None);
+    assert!(catch_unwind(AssertUnwindSafe(|| exercise(fault))).is_err());
 }
 
 #[test]
 fn ordered_acquisition_and_out_of_order_drop() {
-    loom::model(|| {
-        let first = Arc::new(Mutex::new(0));
-        let second = Arc::new(Mutex::new(0));
-        let threads = (0..2)
-            .map(|_| {
-                let first = Arc::clone(&first);
-                let second = Arc::clone(&second);
-                loom::thread::spawn(move || {
-                    let mut first_guard = healthy(acquire(10, || first.lock(), with_model_held));
-                    let mut second_guard = healthy(acquire(20, || second.lock(), with_model_held));
-                    *first_guard += 1;
-                    *second_guard += 1;
-                    drop(first_guard);
-                    // The remaining high rank still forbids reacquiring the low lock.
-                    let attempted = std::cell::Cell::new(false);
-                    assert!(
-                        catch_unwind(AssertUnwindSafe(|| acquire(
-                            10,
-                            || {
-                                attempted.set(true);
-                                first.lock()
-                            },
-                            with_model_held
-                        )))
-                        .is_err()
-                    );
-                    assert!(!attempted.get());
-                    drop(second_guard);
-                    drop(healthy(acquire(10, || first.lock(), with_model_held)));
+    with_negative_control(Fault::MissingCheck, |fault| {
+        loom::model(move || {
+            let first = Arc::new(Mutex::<_, 10>::new(0));
+            let second = Arc::new(Mutex::<_, 20>::new(0));
+            let threads = (0..2)
+                .map(|_| {
+                    let first = Arc::clone(&first);
+                    let second = Arc::clone(&second);
+                    loom::thread::spawn(move || {
+                        set_fault(fault);
+                        let mut low = first.lock().unwrap();
+                        let mut high = second.lock().unwrap();
+                        *low += 1;
+                        *high += 1;
+                        drop(low);
+                        let rejected = rejects_lower();
+                        drop(high);
+                        drop(first.lock().unwrap());
+                        rejected
+                    })
                 })
-            })
-            .collect::<Vec<_>>();
-        for thread in threads {
-            assert!(thread.join().is_ok());
-        }
-        assert_eq!(*healthy(first.lock()), 2);
-        assert_eq!(*healthy(second.lock()), 2);
+                .collect::<Vec<_>>();
+            let rejected = threads
+                .into_iter()
+                .map(|thread| thread.join().unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(*first.lock().unwrap(), 2);
+            assert_eq!(*second.lock().unwrap(), 2);
+            assert!(rejected.into_iter().all(|rejected| rejected));
+        });
     });
 }
 
 #[test]
 fn condition_wait_removes_and_restores_rank_without_lost_wakeup() {
-    loom::model(|| {
-        let shared = Arc::new((Mutex::new(false), Condvar::new()));
-        let other = Arc::clone(&shared);
-        let waiter = loom::thread::spawn(move || {
-            let mut guard = healthy(acquire(20, || other.0.lock(), with_model_held));
-            while !*guard {
-                guard = healthy(wait_plain(guard, |raw| other.1.wait(raw)));
-            }
-            // Rank must be restored before returning a woken guard to its caller.
-            assert!(
-                catch_unwind(AssertUnwindSafe(|| {
-                    acquire(10, || other.0.lock(), with_model_held)
-                }))
-                .is_err()
-            );
+    with_negative_control(Fault::MissingRestore, |fault| {
+        loom::model(move || {
+            let shared = Arc::new((Mutex::<_, 20>::new(false), Condvar::new()));
+            let other = Arc::clone(&shared);
+            let (ready, started) = mpsc::channel();
+            let waiter = loom::thread::spawn(move || {
+                set_fault(fault);
+                let mut guard = other.0.lock().unwrap();
+                ready.send(()).unwrap();
+                while !*guard {
+                    guard = other.1.wait(guard).unwrap();
+                }
+                let rejected = rejects_lower();
+                drop(guard);
+                drop(other.0.lock().unwrap());
+                rejected
+            });
+            started.recv().unwrap();
+            let mut guard = shared.0.lock().unwrap();
+            *guard = true;
+            shared.1.notify_all();
             drop(guard);
-            drop(healthy(acquire(10, || other.0.lock(), with_model_held)));
+            assert!(waiter.join().unwrap());
         });
-        let mut guard = healthy(acquire(20, || shared.0.lock(), with_model_held));
-        *guard = true;
-        shared.1.notify_all();
-        drop(guard);
-        assert!(waiter.join().is_ok());
     });
 }
 
 #[test]
 fn both_while_predicates_keep_the_held_rank() {
     for timed in [false, true] {
-        loom::model(move || {
-            let high = Arc::new((Mutex::new(false), Condvar::new()));
-            let low = Arc::new(Mutex::new(()));
-            let other_high = Arc::clone(&high);
-            let other_low = Arc::clone(&low);
-            let waiter = loom::thread::spawn(move || {
-                let guard = healthy(acquire(20, || other_high.0.lock(), with_model_held));
-                let predicate = |ready: &mut bool| {
-                    let attempted = std::cell::Cell::new(false);
-                    assert!(
-                        catch_unwind(AssertUnwindSafe(|| acquire(
-                            10,
-                            || {
-                                attempted.set(true);
-                                other_low.lock()
-                            },
-                            with_model_held
-                        )))
-                        .is_err()
-                    );
-                    assert!(!attempted.get());
-                    !*ready
-                };
-                let wait = |guard| wait_plain(guard, |raw| other_high.1.wait(raw));
-                if timed {
-                    let (_, timeout) =
-                        healthy(while_timed(guard, Duration::MAX, predicate, |guard, _| {
-                            wait(guard)
-                        }));
-                    assert!(!timeout.timed_out());
-                } else {
-                    drop(healthy(while_locked(guard, predicate, wait)));
-                }
+        with_negative_control(Fault::UntrackedPredicate, |fault| {
+            loom::model(move || {
+                let shared = Arc::new((Mutex::<_, 20>::new(false), Condvar::new()));
+                let other = Arc::clone(&shared);
+                let (ready, started) = mpsc::channel();
+                let waiter = loom::thread::spawn(move || {
+                    set_fault(fault);
+                    let guard = other.0.lock().unwrap();
+                    ready.send(()).unwrap();
+                    let mut rejected = true;
+                    let predicate = |ready: &mut bool| {
+                        rejected &= rejects_lower();
+                        !*ready
+                    };
+                    let guard = if timed {
+                        let (guard, timeout) = other
+                            .1
+                            .wait_timeout_while(guard, Duration::MAX, predicate)
+                            .unwrap();
+                        assert!(!timeout.timed_out());
+                        guard
+                    } else {
+                        other.1.wait_while(guard, predicate).unwrap()
+                    };
+                    rejected &= rejects_lower();
+                    drop(guard);
+                    rejected
+                });
+                started.recv().unwrap();
+                let mut guard = shared.0.lock().unwrap();
+                *guard = true;
+                shared.1.notify_all();
+                drop(guard);
+                let rejected = waiter.join().unwrap();
+                // A timeout also evaluates its predicate with the mutex held.
+                set_fault(fault);
+                let guard = shared.0.lock().unwrap();
+                let mut timeout_rejected = false;
+                let (guard, timeout) = shared
+                    .1
+                    .wait_timeout_while(guard, Duration::ZERO, |_| {
+                        timeout_rejected = rejects_lower();
+                        true
+                    })
+                    .unwrap();
+                assert!(timeout.timed_out());
+                drop(guard);
+                assert!(rejected && timeout_rejected);
             });
-            let _low = healthy(acquire(10, || low.lock(), with_model_held));
-            let mut guard = healthy(acquire(20, || high.0.lock(), with_model_held));
-            *guard = true;
-            high.1.notify_all();
-            drop(guard);
-            assert!(waiter.join().is_ok());
-        });
-    }
-}
-
-#[test]
-fn timed_predicate_and_timeout_return_keep_the_held_rank() {
-    loom::model(|| {
-        let high = Mutex::new(());
-        let low = Mutex::new(());
-        let guard = healthy(acquire(20, || high.lock(), with_model_held));
-        let predicate = |_: &mut ()| {
-            assert!(
-                catch_unwind(AssertUnwindSafe(|| acquire(
-                    10,
-                    || low.lock(),
-                    with_model_held
-                )))
-                .is_err()
-            );
-            true
-        };
-        let (guard, timeout) = healthy(while_timed(guard, Duration::ZERO, predicate, |_, _| {
-            unreachable!("an elapsed timeout never releases the lock")
-        }));
-        assert!(timeout.timed_out());
-        assert!(
-            catch_unwind(AssertUnwindSafe(|| acquire(
-                10,
-                || low.lock(),
-                with_model_held
-            )))
-            .is_err()
-        );
-        drop(guard);
-        drop(healthy(acquire(10, || low.lock(), with_model_held)));
-    });
-}
-
-#[test]
-fn poisoned_while_waits_return_a_guard_with_its_rank() {
-    for timed in [false, true] {
-        loom::model(move || {
-            let high = Mutex::new(());
-            let low = Mutex::new(());
-            let guard = healthy(acquire(20, || high.lock(), with_model_held));
-            let guard = if timed {
-                let Err(error) = while_timed(
-                    guard,
-                    Duration::MAX,
-                    |_| true,
-                    |guard, _| Err(PoisonError::new((guard, WaitTimeoutResult(false)))),
-                ) else {
-                    unreachable!("the wait returned poison");
-                };
-                error.into_inner().0
-            } else {
-                let Err(error) =
-                    while_locked(guard, |_| true, |guard| Err(PoisonError::new(guard)))
-                else {
-                    unreachable!("the wait returned poison");
-                };
-                error.into_inner()
-            };
-            assert!(
-                catch_unwind(AssertUnwindSafe(|| acquire(
-                    10,
-                    || low.lock(),
-                    with_model_held
-                )))
-                .is_err()
-            );
-            drop(guard);
-            drop(healthy(acquire(10, || low.lock(), with_model_held)));
         });
     }
 }

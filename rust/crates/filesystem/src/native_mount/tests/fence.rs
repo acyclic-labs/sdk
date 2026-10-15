@@ -269,9 +269,9 @@ fn shared_destination_fence_retains_original_owner_after_denial()
     let destination = temporary.path().join("mount");
     std::fs::create_dir(&destination)?;
     let cancellation = crate::CancellationToken::new();
-    let original = Arc::new(crate::demand::NativeDemandReadMeter(std::sync::Mutex::new(
+    let original = Arc::new(crate::demand::NativeDemandReadMeter::new(
         crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation),
-    )));
+    ));
     let meter = NativeMaterializationWork::from_meter(Arc::clone(&original));
     let mut guard = None;
     MountDestinationGuard::acquire_with_work(&destination, false, &meter, &mut guard, false)?;

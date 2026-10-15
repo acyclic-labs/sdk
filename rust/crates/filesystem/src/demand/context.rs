@@ -1,11 +1,15 @@
 use super::*;
+use crate::sync::Mutex;
 use std::sync::{
-    Arc, Mutex,
+    Arc,
     atomic::{AtomicU64, Ordering},
 };
 
 pub(crate) struct NativeDemandReadMeter(pub(crate) Mutex<DemandWork>);
 impl NativeDemandReadMeter {
+    pub(crate) fn new(work: DemandWork) -> Self {
+        Self(Mutex::new(work))
+    }
     #[track_caller]
     pub(crate) fn lock(&self) -> crate::lock_order::MutexGuard<'_, DemandWork> {
         crate::lock_order::lock::<_, { crate::lock_order::LEAF }>(&self.0).unwrap_or_else(

@@ -4,6 +4,7 @@ use prost::Message;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rustc-check-cfg=cfg(kani)");
+    println!("cargo:rustc-check-cfg=cfg(loom)");
     let descriptors = prost_types::FileDescriptorSet::decode(
         include_bytes!("src/generated/acyclic-filesystem-v2.bin").as_slice(),
     )?;

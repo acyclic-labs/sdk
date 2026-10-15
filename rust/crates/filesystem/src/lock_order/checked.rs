@@ -1,3 +1,6 @@
+use crate::sync::{
+    Condvar as RawCondvar, Mutex as RawMutex, MutexGuard as RawMutexGuard, thread_local,
+};
 use std::cell::RefCell;
 use std::ops::{Deref, DerefMut};
 use std::panic::Location;
@@ -10,19 +13,21 @@ thread_local! {
     static HELD: RefCell<Vec<(u16, &'static Location<'static>)>> = const { RefCell::new(Vec::new()) };
 }
 
-type Registry = fn(&mut dyn FnMut(&mut Vec<(u16, &'static Location<'static>)>));
-
 fn with_held(edit: &mut dyn FnMut(&mut Vec<(u16, &'static Location<'static>)>)) {
-    HELD.with_borrow_mut(edit);
+    HELD.with(|held| edit(&mut held.borrow_mut()));
 }
 
-struct Held(u16, &'static Location<'static>, Registry);
+struct Held(u16, &'static Location<'static>);
 
 impl Held {
     #[track_caller]
-    fn check(rank: u16, registry: Registry) {
+    fn check(rank: u16) {
+        #[cfg(all(test, loom))]
+        if model::fault() == model::Fault::MissingCheck {
+            return;
+        }
         let requested = Location::caller();
-        registry(&mut |held| {
+        with_held(&mut |held| {
             if let Some((previous, site)) = held.iter().find(|(previous, _)| rank <= *previous) {
                 assert!(
                     rank > *previous,
@@ -34,14 +39,14 @@ impl Held {
     }
 
     fn enter(self) -> Self {
-        (self.2)(&mut |held| held.push((self.0, self.1)));
+        with_held(&mut |held| held.push((self.0, self.1)));
         self
     }
 }
 
 impl Drop for Held {
     fn drop(&mut self) {
-        (self.2)(&mut |held| {
+        with_held(&mut |held| {
             if let Some(index) = held.iter().position(|(rank, _)| *rank == self.0) {
                 held.remove(index);
             }
@@ -68,19 +73,15 @@ impl<G: DerefMut> DerefMut for TrackedGuard<G> {
     }
 }
 
-pub(crate) type MutexGuard<'a, T> = TrackedGuard<std::sync::MutexGuard<'a, T>>;
+pub(crate) type MutexGuard<'a, T> = TrackedGuard<RawMutexGuard<'a, T>>;
 
 #[track_caller]
-fn acquire<G>(
-    rank: u16,
-    acquire: impl FnOnce() -> LockResult<G>,
-    registry: Registry,
-) -> LockResult<TrackedGuard<G>> {
-    Held::check(rank, registry);
+fn acquire<G>(rank: u16, acquire: impl FnOnce() -> LockResult<G>) -> LockResult<TrackedGuard<G>> {
+    Held::check(rank);
     let site = Location::caller();
     let wrap = |inner| TrackedGuard {
         inner,
-        held: Held(rank, site, registry).enter(),
+        held: Held(rank, site).enter(),
     };
     match acquire() {
         Ok(inner) => Ok(wrap(inner)),
@@ -89,18 +90,21 @@ fn acquire<G>(
 }
 
 #[track_caller]
-pub(crate) fn lock<T, const RANK: u16>(
-    mutex: &std::sync::Mutex<T>,
-) -> LockResult<MutexGuard<'_, T>> {
-    acquire(RANK, || mutex.lock(), with_held)
+pub(crate) fn lock<T, const RANK: u16>(mutex: &RawMutex<T>) -> LockResult<MutexGuard<'_, T>> {
+    acquire(RANK, || mutex.lock())
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct Mutex<T, const RANK: u16>(std::sync::Mutex<T>);
+pub(crate) struct Mutex<T, const RANK: u16>(RawMutex<T>);
 
 impl<T, const RANK: u16> Mutex<T, RANK> {
+    #[cfg(not(loom))]
     pub(crate) const fn new(value: T) -> Self {
-        Self(std::sync::Mutex::new(value))
+        Self(RawMutex::new(value))
+    }
+    #[cfg(loom)]
+    pub(crate) fn new(value: T) -> Self {
+        Self(RawMutex::new(value))
     }
 
     #[track_caller]
@@ -110,11 +114,16 @@ impl<T, const RANK: u16> Mutex<T, RANK> {
 }
 
 #[derive(Default)]
-pub(crate) struct Condvar(std::sync::Condvar);
+pub(crate) struct Condvar(RawCondvar);
 
 impl Condvar {
+    #[cfg(not(loom))]
     pub(crate) const fn new() -> Self {
-        Self(std::sync::Condvar::new())
+        Self(RawCondvar::new())
+    }
+    #[cfg(loom)]
+    pub(crate) fn new() -> Self {
+        Self(RawCondvar::new())
     }
 
     pub(crate) fn notify_all(&self) {
@@ -173,15 +182,15 @@ impl Condvar {
 }
 
 #[cfg(not(test))]
-type WaitTimeoutResult = std::sync::WaitTimeoutResult;
+type WaitTimeoutResult = crate::sync::WaitTimeoutResult;
 
 #[cfg(test)]
 #[derive(Debug)]
 pub(crate) struct WaitTimeoutResult(bool);
 
 #[cfg(test)]
-impl From<std::sync::WaitTimeoutResult> for WaitTimeoutResult {
-    fn from(timeout: std::sync::WaitTimeoutResult) -> Self {
+impl From<crate::sync::WaitTimeoutResult> for WaitTimeoutResult {
+    fn from(timeout: crate::sync::WaitTimeoutResult) -> Self {
         Self(timeout.timed_out())
     }
 }
@@ -193,13 +202,24 @@ impl WaitTimeoutResult {
     }
 }
 
+fn predicate<T: ?Sized>(value: &mut T, condition: &mut impl FnMut(&mut T) -> bool) -> bool {
+    #[cfg(all(test, loom))]
+    if model::fault() == model::Fault::UntrackedPredicate {
+        let saved = HELD.with(|held| std::mem::take(&mut *held.borrow_mut()));
+        let result = condition(value);
+        HELD.with(|held| *held.borrow_mut() = saved);
+        return result;
+    }
+    condition(value)
+}
+
 #[track_caller]
 fn while_locked<G: DerefMut>(
     mut guard: TrackedGuard<G>,
     mut condition: impl FnMut(&mut G::Target) -> bool,
     mut wait: impl FnMut(TrackedGuard<G>) -> LockResult<TrackedGuard<G>>,
 ) -> LockResult<TrackedGuard<G>> {
-    while condition(&mut guard) {
+    while predicate(&mut guard, &mut condition) {
         guard = wait(guard)?;
     }
     Ok(guard)
@@ -214,7 +234,7 @@ fn while_timed<G: DerefMut>(
     mut wait: impl FnMut(TrackedGuard<G>, Duration) -> LockResult<(TrackedGuard<G>, WaitTimeoutResult)>,
 ) -> LockResult<(TrackedGuard<G>, WaitTimeoutResult)> {
     let started = Instant::now();
-    while condition(&mut guard) {
+    while predicate(&mut guard, &mut condition) {
         let remaining = duration.saturating_sub(started.elapsed());
         if remaining.is_zero() {
             return Ok((guard, WaitTimeoutResult(true)));
@@ -246,18 +266,20 @@ fn wait<G, R>(
     let TrackedGuard { inner, held } = guard;
     let rank = held.0;
     let site = held.1;
-    let registry = held.2;
     drop(held);
     // Waiting releases this lock, then acquires it again under all other held locks.
-    Held::check(rank, registry);
+    Held::check(rank);
     let wrap = |(inner, timeout)| {
-        (
-            TrackedGuard {
-                inner,
-                held: Held(rank, site, registry).enter(),
-            },
-            timeout,
-        )
+        let held = Held(rank, site);
+        #[cfg(all(test, loom))]
+        let held = if model::fault() == model::Fault::MissingRestore {
+            held
+        } else {
+            held.enter()
+        };
+        #[cfg(not(all(test, loom)))]
+        let held = held.enter();
+        (TrackedGuard { inner, held }, timeout)
     };
     match wait(inner) {
         Ok(result) => Ok(wrap(result)),
@@ -265,5 +287,5 @@ fn wait<G, R>(
     }
 }
 
-#[cfg(all(test, feature = "model-checking", not(target_arch = "wasm32")))]
+#[cfg(all(test, loom))]
 mod model;
