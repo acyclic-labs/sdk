@@ -14,6 +14,7 @@
   },
   "type": "module",
   "exports": {
+    "./observe": { "types": "./dist/observe.d.ts", "default": "./dist/observe.js" },
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
@@ -47,7 +48,7 @@
     "pack:dry": "bun pm pack --dry-run"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "2.15.0"
+    "@bufbuild/protobuf": "2.16.0"
   },
   "optionalDependencies": {
     "@acyclic-labs/actors-darwin-arm64": "0.2.0",
@@ -59,9 +60,9 @@
     "packageName": "@acyclic-labs/actors"
   },
   "devDependencies": {
-    "@connectrpc/connect": "2.1.1",
-    "@connectrpc/connect-node": "2.1.1",
+    "@connectrpc/connect": "2.2.0",
+    "@connectrpc/connect-node": "2.2.0",
     "typescript": "7.0.2",
-    "@types/node": "26.4.1"
+    "@types/node": "26.6.4"
   }
 }
