@@ -14,16 +14,16 @@ impl FileTool {
             projection,
         ) = match self {
             Self::Read => (
-                "acyclic.read_file",
-                "portable-5",
-                "Read exact bounded UTF-8 from an authorized immutable file",
+                "read",
+                "portable-6",
+                "Read exact UTF-8 from an authorized immutable file, optionally selecting [start, end) byte offsets",
                 schema::input::<ReadFileInput>()?,
                 schema::output::<String>()?,
                 mode.schema::<String>()?,
                 FileProjection::Read(mode),
             ),
             Self::Write => (
-                "acyclic.write_file",
+                "write",
                 "portable-5",
                 "Write bounded UTF-8 through the original owner-bound content publisher",
                 schema::input::<WriteFileInput>()?,
@@ -32,7 +32,7 @@ impl FileTool {
                 FileProjection::Publication(mode),
             ),
             Self::Edit => (
-                "acyclic.edit_file",
+                "edit",
                 "portable-5",
                 "Replace one exact UTF-8 match at an authorized pinned source generation",
                 schema::input::<EditFileInput>()?,

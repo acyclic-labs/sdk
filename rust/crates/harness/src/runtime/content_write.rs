@@ -1,4 +1,27 @@
 use super::*;
+
+#[cfg(feature = "filesystem")]
+impl AgentHarness {
+    pub(crate) fn bind_output(
+        &mut self,
+        writer: Arc<dyn crate::conversation::ContentPublisher>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        let binding = self.content.as_mut().ok_or_else(|| {
+            content_error(
+                io,
+                ErrorCode::Unsupported,
+                "root content reader is not bound",
+            )
+        })?;
+        let previous = binding.writer.replace(writer);
+        if let Err(error) = bound_content_writer(Some(binding), &self.scope, io) {
+            binding.writer = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+}
 use crate::conversation::{ContentIo, content_error};
 use crate::wire::ErrorCode;
 

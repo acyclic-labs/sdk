@@ -56,7 +56,7 @@ async fn fixed_custom_context_uses_its_full_message_allowance() -> Result<()> {
 async fn prepared_context_survives_recovery_before_model_dispatch() -> Result<()> {
     let journal = Journal::default();
     let source = Arc::new(ChangingContextSource(AtomicUsize::new(0)));
-    let provider = Arc::new(ScriptedModel::recoverable());
+    let provider = Arc::new(recoverable_model(1));
     let executor = uncompacted_executor(
         Model::new("test".into(), "model".into(), "1".into(), json!({}))?,
         provider.clone(),
@@ -81,7 +81,7 @@ async fn prepared_context_survives_recovery_before_model_dispatch() -> Result<()
         .prepared_response(&journal, &input, 0, &[])
         .await?;
     assert_eq!(source.0.load(Ordering::SeqCst), 1);
-    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(provider.request_count(), 0);
     let reopened = executor.clone();
     let recovered = StockExecution::ordinary(&reopened)
         .prepared_response(&journal, &input, 0, &[])
@@ -92,8 +92,8 @@ async fn prepared_context_survives_recovery_before_model_dispatch() -> Result<()
     let events = reopened.model_step(&journal, &input, 0, &[]).await?;
     assert_eq!(events.len(), 72);
     assert_eq!(source.0.load(Ordering::SeqCst), 1);
-    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
-    assert_eq!(provider.reconciliations.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.request_count(), 1);
+    assert_eq!(provider.reconciliation_count(), 1);
     assert_eq!(
         journal
             .0
@@ -109,7 +109,7 @@ async fn prepared_context_survives_recovery_before_model_dispatch() -> Result<()
 
 #[tokio::test]
 async fn operation_identity_rejects_changed_input() -> Result<()> {
-    let model = Arc::new(ScriptedModel::default());
+    let model = Arc::new(scripted_model());
     let executor = uncompacted_executor(
         Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
         model,
@@ -232,7 +232,7 @@ async fn interrupted_model_stream_reconciles_without_redispatch() -> Result<()> 
         claims: AtomicUsize::new(0),
         owned: std::sync::atomic::AtomicBool::new(true),
     });
-    let model = Arc::new(ScriptedModel::recoverable());
+    let model = Arc::new(recoverable_model(1));
     let executor = uncompacted_executor(
         Model::new(
             "example".into(),
@@ -269,8 +269,8 @@ async fn interrupted_model_stream_reconciles_without_redispatch() -> Result<()> 
 
     assert_eq!(recovered.text, format!("{}restored", "partial-".repeat(70)));
     assert_eq!(replayed, recovered);
-    assert_eq!(model.calls.load(Ordering::SeqCst), 1);
-    assert_eq!(model.reconciliations.load(Ordering::SeqCst), 1);
+    assert_eq!(model.request_count(), 1);
+    assert_eq!(model.reconciliation_count(), 1);
     assert_eq!(host.claims.load(Ordering::SeqCst), 1);
     assert_eq!(
         journal
@@ -321,8 +321,8 @@ async fn interrupted_model_stream_reconciles_without_redispatch() -> Result<()> 
         executor.execute(input, &journal).await,
         Err(Error::Conflict(_))
     ));
-    assert_eq!(model.calls.load(Ordering::SeqCst), 1);
-    assert_eq!(model.reconciliations.load(Ordering::SeqCst), 1);
+    assert_eq!(model.request_count(), 1);
+    assert_eq!(model.reconciliation_count(), 1);
     Ok(())
 }
 

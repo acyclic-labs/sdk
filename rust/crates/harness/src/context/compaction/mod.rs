@@ -28,6 +28,23 @@ impl Default for ThresholdCompaction {
 }
 
 impl ThresholdCompaction {
+    /// Selects default budgets that fit the provider's advertised capacity.
+    pub fn for_capacity(capacity: ModelContextCapacity) -> Result<Self> {
+        capacity.validate()?;
+        let mut policy = Self::default();
+        policy.response_reserve_tokens = policy
+            .response_reserve_tokens
+            .min(capacity.output_tokens)
+            .min(capacity.context_tokens.saturating_sub(2));
+        policy.recent_tokens = policy.recent_tokens.min(
+            capacity
+                .context_tokens
+                .saturating_sub(policy.response_reserve_tokens + 1),
+        );
+        policy.validate(capacity, None)?;
+        Ok(policy)
+    }
+
     /// Validates the defaults or replacement against the actual selected capacity.
     pub fn validate(
         &self,

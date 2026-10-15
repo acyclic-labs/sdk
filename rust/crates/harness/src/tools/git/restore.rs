@@ -1,12 +1,12 @@
 use super::*;
 
-impl PluginGitExecutor<'_> {
+impl WorkspaceGitExecutor<'_> {
     pub(super) async fn restore_paths(
         &self,
         operation_id: OperationId,
         tree: GitTreeRef,
         paths: &[String],
-    ) -> Result<GitFilesystemResult, PluginGitError> {
+    ) -> Result<GitFilesystemResult, GitError> {
         let source = self.generation(tree).await?;
         let current = self
             .current

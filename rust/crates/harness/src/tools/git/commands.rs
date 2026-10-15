@@ -1,20 +1,23 @@
 use super::*;
 
-pub(crate) fn git_requires_exact_workspace(argv: &[String]) -> bool {
+/// Whether a command needs an exact working tree.
+pub fn git_requires_exact_workspace(argv: &[String]) -> bool {
     matches!(
         argv.first().map(String::as_str),
         Some("status" | "diff" | "blame" | "grep" | "clean" | "archive" | "check-ignore")
     )
 }
 
-pub(crate) fn git_transition_command(argv: &[String]) -> bool {
+/// Whether a command resolves an outstanding transition.
+pub fn git_transition_command(argv: &[String]) -> bool {
     matches!(
         argv,
         [command, option] if command == "merge" && matches!(option.as_str(), "--continue" | "--abort")
     ) || argv.first().is_some_and(|command| command == "add")
 }
 
-pub(crate) async fn run_git_command<E: GitFilesystemExecutor>(
+/// Recovers a pending transition or executes one facade command.
+pub async fn run_git_command<E: GitFilesystemExecutor>(
     repository: &GitCompatRepository<LocalCoreStateStore>,
     argv: &[String],
     workspace_tree: GitTreeRef,
@@ -50,7 +53,8 @@ pub(crate) async fn run_git_command<E: GitFilesystemExecutor>(
     output.map(Some).map_err(display)
 }
 
-pub(crate) async fn git_apply_patch(
+/// Reads a patch file from the managed workspace.
+pub async fn git_apply_patch(
     workspace: &LocalLazyWorkspace,
     root: &Path,
     argv: &[String],
@@ -79,7 +83,8 @@ pub(crate) async fn git_apply_patch(
         .map_err(display)
 }
 
-pub(crate) async fn git_workspace_tree(
+/// Captures the lazy or exact tree required by the command.
+pub async fn git_workspace_tree(
     workspace: &LocalLazyWorkspace,
     argv: &[String],
     permit: Option<PublicationPermit>,
@@ -102,7 +107,8 @@ pub(crate) async fn git_workspace_tree(
     Ok(GitTreeRef::exact(workspace.workspace().id(), exact.id()))
 }
 
-pub(crate) async fn git_policy(
+/// Loads ignore and merge policies from the workspace.
+pub async fn git_policy(
     workspace: &LocalLazyWorkspace,
 ) -> Result<(GitIgnorePolicy, Arc<MergeDriverRegistry>), String> {
     Ok((
@@ -111,9 +117,8 @@ pub(crate) async fn git_policy(
     ))
 }
 
-pub(crate) async fn git_ignore_policy(
-    workspace: &LocalLazyWorkspace,
-) -> Result<GitIgnorePolicy, String> {
+/// Loads ignore rules, including reserved metadata directories.
+pub async fn git_ignore_policy(workspace: &LocalLazyWorkspace) -> Result<GitIgnorePolicy, String> {
     let ignore_text = match workspace
         .read(
             "/.gitignore",

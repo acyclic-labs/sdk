@@ -98,9 +98,9 @@ where
             storage.read_capability.clone(),
             storage.write_capability.clone(),
             "task:spawn:file_tool_case@1".into(),
-            "tool:call:acyclic.read_file".into(),
-            "tool:call:acyclic.write_file".into(),
-            "tool:call:acyclic.edit_file".into(),
+            "tool:call:read".into(),
+            "tool:call:write".into(),
+            "tool:call:edit".into(),
             "tool:call:acyclic.list_files".into(),
             "tool:call:acyclic.fork".into(),
             "tool:call:acyclic.merge".into(),
@@ -160,10 +160,10 @@ async fn memory_builder_replaces_or_disables_compaction() -> Result<()> {
             Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,
             Arc::new(TextModel(requests.clone())),
         )
-        .tools(storage.default_tools(Limits::default(), None)?)
-        .grant("tool:call:acyclic.read_file")
-        .grant("tool:call:acyclic.write_file")
-        .grant("tool:call:acyclic.edit_file")
+        .tool(storage.list_files_tool(Limits::default())?)?
+        .grant("tool:call:read")
+        .grant("tool:call:write")
+        .grant("tool:call:edit")
         .grant("tool:call:acyclic.list_files")
         .grant(capability::MODEL_GENERATE)
         .compaction(policy)
@@ -209,7 +209,13 @@ async fn default_recursive_tools_are_present_and_unbound_routes_are_unavailable(
         file_bytes: 65536,
         ..Default::default()
     };
-    let tools = storage.default_tools(limits, None)?;
+    let mut tools = crate::tools::defaults()?;
+    tools.extend(crate::filesystem::recursive_tools::<
+        MemoryStream,
+        MemoryAuthorityBackend,
+        MemoryObjectBackend,
+    >(None, limits.file_bytes)?)?;
+    tools.register((storage.list_files_tool(limits)?, None), &mut None, None)?;
     for name in ["acyclic.fork", "acyclic.merge"] {
         let tool = tools.get(name, None, None)?.unwrap().clone();
         run_admitted_file_case(&storage, limits, move |task| {
@@ -266,15 +272,14 @@ async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
         render_bytes,
         ..Limits::default()
     };
-    let tool = owner
-        .default_tools(limits, None)?
-        .get("acyclic.read_file", None, None)?
+    let tool = crate::tools::defaults()?
+        .get("read", None, None)?
         .ok_or_else(|| Error::NotFound("read tool".into()))?
         .clone();
     let invocation = ToolInvocation {
         operation_id: OperationId::new(),
         call_id: "read-1".into(),
-        name: "acyclic.read_file".into(),
+        name: "read".into(),
         arguments: json!({"file":file}),
     };
     let own_tool = tool.clone();
@@ -366,16 +371,15 @@ async fn default_write_reconciles_original_receipt_and_rejects_changed_retry() -
         render_bytes: 4_096,
         ..Limits::default()
     };
-    let tool = storage
-        .default_tools(limits, None)?
-        .get("acyclic.write_file", None, None)?
+    let tool = crate::tools::defaults()?
+        .get("write", None, None)?
         .ok_or_else(|| Error::NotFound("write tool".into()))?
         .clone();
     run_admitted_file_case(&storage, limits, move |task| {
         let tool = tool.clone();
         async move {
             let invocation = ToolInvocation {
-                operation_id: OperationId::new(), call_id: "write-1".into(), name: "acyclic.write_file".into(),
+                operation_id: OperationId::new(), call_id: "write-1".into(), name: "write".into(),
                 arguments: json!({"path":"notes/one.txt","text":"saved text","media_type":"text/plain","display_name":"one.txt"}),
             };
             let context = crate::runtime::ToolContext::new(Arc::new(task.clone()), invocation.operation_id, &invocation.call_id, None)?;
@@ -455,11 +459,7 @@ async fn owner_private_directory_is_lazy_paged_and_generation_pinned() -> Result
         render_bytes: 1_024,
         ..Limits::default()
     };
-    let tool = storage
-        .default_tools(limits, None)?
-        .get("acyclic.list_files", None, None)?
-        .ok_or_else(|| Error::NotFound("default list tool".into()))?
-        .clone();
+    let tool = storage.list_files_tool(limits)?;
     let invocation = ToolInvocation {
         operation_id: OperationId::new(),
         call_id: "list-1".into(),
@@ -531,7 +531,13 @@ async fn default_file_tools_require_caller_volume_grants() -> Result<()> {
         render_bytes: 4_096,
         ..Limits::default()
     };
-    let tools = storage.default_tools(limits, None)?;
+    let mut tools = crate::tools::defaults()?;
+    tools.extend(crate::filesystem::recursive_tools::<
+        MemoryStream,
+        MemoryAuthorityBackend,
+        MemoryObjectBackend,
+    >(None, limits.file_bytes)?)?;
+    tools.register((storage.list_files_tool(limits)?, None), &mut None, None)?;
     let file = storage
         .stage(
             OperationId::new(),
@@ -545,12 +551,12 @@ async fn default_file_tools_require_caller_volume_grants() -> Result<()> {
         let tools = tools.clone(); let file = file.clone();
         async move {
             let task = task.scoped(Capabilities::new([
-                "tool:call:acyclic.read_file", "tool:call:acyclic.write_file", "tool:call:acyclic.edit_file", "tool:call:acyclic.list_files",
+                "tool:call:read", "tool:call:write", "tool:call:edit", "tool:call:acyclic.list_files",
             ]), limits)?;
             for (name, arguments) in [
-                ("acyclic.read_file", json!({"file":file})),
-                ("acyclic.write_file", json!({"path":"notes/two.txt","text":"two","media_type":"text/plain","display_name":"two.txt"})),
-                ("acyclic.edit_file", json!({"file":file,"old_text":"one","new_text":"two"})),
+                ("read", json!({"file":file})),
+                ("write", json!({"path":"notes/two.txt","text":"two","media_type":"text/plain","display_name":"two.txt"})),
+                ("edit", json!({"file":file,"old_text":"one","new_text":"two"})),
             ] {
                 let invocation = ToolInvocation { operation_id: OperationId::new(), call_id: name.into(), name: name.into(), arguments };
                 let tool = tools.get(name, None, None)?.ok_or_else(|| Error::NotFound(name.into()))?;
@@ -599,16 +605,11 @@ impl ModelProvider for ReadFileModel {
                     "file was not staged before model generation".into(),
                 ))]));
             };
-            assert!(
-                request
-                    .tools
-                    .iter()
-                    .any(|tool| tool.name == "acyclic.read_file")
-            );
+            assert!(request.tools.iter().any(|tool| tool.name == "read"));
             Box::pin(stream::iter(vec![
                 Ok(ModelEvent::ToolCall {
                     call_id: "read".into(),
-                    name: "acyclic.read_file".into(),
+                    name: "read".into(),
                     arguments: json!({"file": file}),
                 }),
                 Ok(ModelEvent::Completed {
@@ -652,10 +653,10 @@ async fn memory_storage_advertises_and_executes_default_read_file() -> Result<()
             model.clone(),
         )
         .grant(capability::MODEL_GENERATE)
-        .tools(storage.default_tools(limits, None)?)
-        .grant("tool:call:acyclic.read_file")
-        .grant("tool:call:acyclic.write_file")
-        .grant("tool:call:acyclic.edit_file")
+        .tool(storage.list_files_tool(limits)?)?
+        .grant("tool:call:read")
+        .grant("tool:call:write")
+        .grant("tool:call:edit")
         .grant("tool:call:acyclic.list_files")
         .compaction(crate::context::CompactionPolicy::default())
         .limits(limits)
@@ -693,10 +694,10 @@ async fn memory_prompt_runs_with_attachments() -> Result<()> {
             Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,
             Arc::new(TextModel(requests.clone())),
         )
-        .tools(storage.default_tools(Limits::default(), None)?)
-        .grant("tool:call:acyclic.read_file")
-        .grant("tool:call:acyclic.write_file")
-        .grant("tool:call:acyclic.edit_file")
+        .tool(storage.list_files_tool(Limits::default())?)?
+        .grant("tool:call:read")
+        .grant("tool:call:write")
+        .grant("tool:call:edit")
         .grant("tool:call:acyclic.list_files")
         .grant(capability::MODEL_GENERATE)
         .compaction(crate::context::CompactionPolicy::default())

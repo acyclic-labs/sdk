@@ -1,22 +1,27 @@
 use super::*;
 
-pub(crate) struct RootMaterializingGitExecutor<'a> {
-    pub(crate) inner: PluginGitExecutor<'a>,
-    pub(crate) root: &'a Path,
-    pub(crate) source_root_identity: acyclic_fs::NativeRootIdentity,
+/// Publishes git facade mutations into the ordinary checkout.
+pub struct RootMaterializingGitExecutor<'a> {
+    /// Managed workspace executor.
+    pub inner: WorkspaceGitExecutor<'a>,
+    /// Ordinary checkout path.
+    pub root: &'a Path,
+    /// Pinned physical checkout identity.
+    pub source_root_identity: acyclic_fs::NativeRootIdentity,
 }
 
 impl RootMaterializingGitExecutor<'_> {
-    pub(crate) async fn materialize(
+    /// Publishes a generation transition into the checkout.
+    pub async fn materialize(
         &self,
         operation_id: OperationId,
         from: LocalGeneration,
-    ) -> Result<(), PluginGitError> {
+    ) -> Result<(), GitError> {
         let target = self
             .inner
             .switched
             .lock()
-            .map_err(|_| PluginGitExecutor::error("Git workspace switch lock is unavailable"))?
+            .map_err(|_| WorkspaceGitExecutor::error("Git workspace switch lock is unavailable"))?
             .as_ref()
             .map_or_else(
                 || self.inner.current.clone(),
@@ -33,7 +38,7 @@ impl RootMaterializingGitExecutor<'_> {
             return Ok(());
         }
         let operation_directory =
-            root_materialization_directory(self.root, operation_id).map_err(PluginGitError)?;
+            root_materialization_directory(self.root, operation_id).map_err(GitError)?;
         let options = MaterializeOptions {
             destination: operation_directory.join("target"),
             expected_root_identity: None,
@@ -70,7 +75,7 @@ impl RootMaterializingGitExecutor<'_> {
             .await
             .map_err(display)?;
         remove_tree_checked(
-            &root_materialization_root(self.root).map_err(PluginGitError)?,
+            &root_materialization_root(self.root).map_err(GitError)?,
             &operation_directory,
         )
         .map_err(display)?;
@@ -79,7 +84,7 @@ impl RootMaterializingGitExecutor<'_> {
 }
 
 impl GitFilesystemExecutor for RootMaterializingGitExecutor<'_> {
-    type Error = PluginGitError;
+    type Error = GitError;
 
     async fn execute(
         &self,

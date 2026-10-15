@@ -117,7 +117,7 @@ impl ControlPlane {
                 return Err(error);
             }
         };
-        let executor = PluginGitExecutor {
+        let executor = WorkspaceGitExecutor {
             fs: &self.fs,
             store: &self.store,
             current: workspace.clone(),
@@ -259,7 +259,7 @@ impl ControlPlane {
         );
         let (ignore, merge_drivers) = git_policy(lazy_workspace).await?;
         let executor = RootMaterializingGitExecutor {
-            inner: PluginGitExecutor {
+            inner: WorkspaceGitExecutor {
                 fs: &self.fs,
                 store: &self.store,
                 current: workspace.clone(),

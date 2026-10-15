@@ -22,9 +22,6 @@ use std::{
     sync::Arc,
 };
 
-#[path = "pi_owner_protection.rs"]
-mod protection;
-
 const OWNER_FILE: &str = "pi-owner.v1";
 
 const OWNER_DIAGNOSTIC_LABEL_BYTES: u64 =
@@ -128,7 +125,8 @@ impl PiOwnerConfig {
         let runtime = runtime
             .map(|runtime| runtime.clone_with_native_work(work))
             .transpose()?;
-        let mut key = protection::new_key().map_err(native_owner_io)?;
+        let mut key = [0; 32];
+        getrandom::fill(&mut key).map_err(|error| native_owner_io(io::Error::other(error)))?;
         let (runtime, runtime_custody) = match runtime {
             Some((runtime, custody)) => (Some(runtime), Some(custody)),
             None => (None, None),
@@ -395,7 +393,10 @@ impl PiOwnerConfig {
             bytes: plain.0,
             _custody: plain.1,
         };
-        let protected = protection::protect_with_copy(&plain.bytes, |bytes| work.copy_bytes(bytes));
+        let protected =
+            acyclic_native_runtime::protect_with_copy(&plain.bytes, MAXIMUM_OWNER_BYTES, |bytes| {
+                work.copy_bytes(bytes)
+            });
         drop(plain);
         let protected = protected?;
         let protected = NativeOwnerPlaintext {
@@ -524,7 +525,10 @@ impl PiOwnerConfig {
         if digest != blake3::hash(protected).as_bytes() {
             return Err(native_invalid("Pi owner configuration digest differs"));
         }
-        let plain = protection::unprotect_with_copy(protected, |bytes| work.copy_bytes(bytes))?;
+        let plain =
+            acyclic_native_runtime::unprotect_with_copy(protected, MAXIMUM_OWNER_BYTES, |bytes| {
+                work.copy_bytes(bytes)
+            })?;
         let plain = NativeOwnerPlaintext {
             bytes: plain.0,
             _custody: plain.1,

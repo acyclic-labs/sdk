@@ -211,14 +211,9 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-struct ScriptedModel {
-    calls: AtomicUsize,
-    requests: Mutex<Vec<ModelRequest>>,
-    dispatches: Mutex<Vec<crate::model::ModelDispatch>>,
-    reconciliations: AtomicUsize,
-    responses: Vec<Vec<std::result::Result<ModelEvent, String>>>,
-    recovery: Option<(Vec<ModelEvent>, Vec<ModelEvent>)>,
-}
+use crate::test_support::{
+    ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn,
+};
 
 fn echo_call(call_id: &str, arguments: Value) -> ModelEvent {
     ModelEvent::ToolCall {
@@ -228,77 +223,72 @@ fn echo_call(call_id: &str, arguments: Value) -> ModelEvent {
     }
 }
 
-impl Default for ScriptedModel {
-    fn default() -> Self {
-        Self {
-            calls: AtomicUsize::new(0),
-            requests: Mutex::new(Vec::new()),
-            dispatches: Mutex::new(Vec::new()),
-            reconciliations: AtomicUsize::new(0),
-            responses: vec![
-                vec![
-                    Ok(echo_call("call-1", json!({"value":"hello"}))),
-                    Ok(ModelEvent::Completed {
-                        metadata: Value::Null,
-                    }),
-                ],
-                vec![
-                    Ok(ModelEvent::Content {
-                        delta: "done".into(),
-                    }),
-                    Ok(ModelEvent::Completed {
-                        metadata: json!({"finish":"stop"}),
-                    }),
-                ],
-            ],
-            recovery: None,
-        }
-    }
+fn tool_turn(calls: impl IntoIterator<Item = ModelEvent>) -> ScriptedTurn {
+    let mut events: Vec<_> = calls.into_iter().map(ScriptedEvent::Event).collect();
+    events.push(ScriptedEvent::Event(ModelEvent::Completed {
+        metadata: Value::Null,
+    }));
+    ScriptedTurn::Events(events)
 }
 
-impl ScriptedModel {
-    fn slipping() -> Self {
-        let mut model = Self::default();
-        model.responses.insert(
-            0,
-            vec![
-                Ok(echo_call("call-1", json!({"parameters":{"value":"hello"}}))),
-                Ok(ModelEvent::Completed {
-                    metadata: Value::Null,
-                }),
-            ],
-        );
-        model.responses[1][0] = Ok(echo_call("call-2", json!({"value":"hello"})));
-        model
-    }
-
-    fn recoverable() -> Self {
-        let observed = vec![
-            ModelEvent::Content {
-                delta: "partial-".into()
-            };
-            70
-        ];
-        let mut response: Vec<_> = observed.iter().cloned().map(Ok).collect();
-        response.push(Err("stream interrupted".into()));
-        Self {
-            responses: vec![response],
-            recovery: Some((
-                observed,
-                vec![
-                    ModelEvent::Content {
-                        delta: "restored".into(),
-                    },
-                    ModelEvent::Completed {
-                        metadata: json!({"finish":"stop"}),
-                    },
-                ],
-            )),
-            ..Self::default()
-        }
-    }
+fn done_turn() -> ScriptedTurn {
+    ScriptedTurn::Events(vec![
+        ScriptedEvent::Event(ModelEvent::Content {
+            delta: "done".into(),
+        }),
+        ScriptedEvent::Event(ModelEvent::Completed {
+            metadata: json!({"finish":"stop"}),
+        }),
+    ])
 }
 
+fn scripted_model() -> ScriptedModelProvider {
+    ScriptedModelProvider::new([
+        tool_turn([echo_call("call-1", json!({"value":"hello"}))]),
+        done_turn(),
+    ])
+    .with_token_counter(fixture_token_count)
+}
+
+fn slipping_model() -> ScriptedModelProvider {
+    ScriptedModelProvider::new([
+        tool_turn([echo_call("call-1", json!({"parameters":{"value":"hello"}}))]),
+        tool_turn([echo_call("call-2", json!({"value":"hello"}))]),
+        done_turn(),
+    ])
+    .with_token_counter(fixture_token_count)
+}
+
+fn recoverable_model(attempts: usize) -> ScriptedModelProvider {
+    let observed = vec![
+        ModelEvent::Content {
+            delta: "partial-".into()
+        };
+        70
+    ];
+    let turns = (0..attempts)
+        .map(|_| {
+            let mut events: Vec<_> = observed.iter().cloned().map(ScriptedEvent::Event).collect();
+            events.push(ScriptedEvent::Error {
+                error: "stream interrupted".into(),
+            });
+            ScriptedTurn::Events(events)
+        })
+        .collect::<Vec<_>>();
+    ScriptedModelProvider::new(turns)
+        .with_reconciliations((0..attempts).map(|_| ScriptedReconciliation {
+            observed: observed.clone(),
+            continuation: Some(vec![
+                ModelEvent::Content {
+                    delta: "restored".into(),
+                },
+                ModelEvent::Completed {
+                    metadata: json!({"finish":"stop"}),
+                },
+            ]),
+        }))
+        .with_token_counter(fixture_token_count)
+}
 async fn capture_admitted_context(scope: RuntimeScope) -> Result<crate::runtime::TaskContext> {
     let captured = Arc::new(Mutex::new(None));
     let sink = captured.clone();
@@ -374,69 +364,6 @@ impl ToolExecutor for ContextOnlyTool {
             Ok(Some(ToolResult {
                 value: json!({"value":"hello"}),
             }))
-        })
-    }
-}
-
-impl ModelProvider for ScriptedModel {
-    fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
-        Ok(crate::context::ModelContextCapacity {
-            context_tokens: 131_072,
-            output_tokens: 4_096,
-        })
-    }
-
-    fn count_tokens(
-        &self,
-        request: &crate::model::PreparedModelRequest,
-    ) -> Result<crate::context::ModelTokenCount> {
-        fixture_token_count(request)
-    }
-
-    fn generate<'a>(
-        &'a self,
-        request: crate::model::PreparedModelRequest,
-        dispatch: crate::model::ModelDispatch,
-    ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
-        assert_eq!(
-            request.bytes(),
-            crate::contract::canonical_json_bytes(request.request()).unwrap_or_default()
-        );
-        assert_eq!(
-            request.request_digest(),
-            *blake3::hash(request.bytes()).as_bytes()
-        );
-        assert_eq!(dispatch.request_digest, request.request_digest());
-        self.dispatches.lock().unwrap().push(dispatch);
-        self.requests
-            .lock()
-            .unwrap()
-            .push(request.request().clone());
-        let call = self.calls.fetch_add(1, Ordering::SeqCst);
-        let events = &self.responses[call.min(self.responses.len() - 1)];
-        Box::pin(stream::iter(
-            events
-                .iter()
-                .cloned()
-                .map(|event| event.map_err(Error::Storage)),
-        ))
-    }
-
-    fn reconcile<'a>(
-        &'a self,
-        dispatch: crate::model::ModelDispatch,
-        observed: &'a [ModelEvent],
-    ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-        let Some((expected, response)) = &self.recovery else {
-            return Box::pin(async { Ok(None) });
-        };
-        assert!(self.dispatches.lock().unwrap().contains(&dispatch));
-        self.reconciliations.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async move {
-            if observed != expected {
-                return Err(Error::Conflict("unexpected model event prefix".into()));
-            }
-            Ok(Some(response.clone()))
         })
     }
 }

@@ -28,6 +28,14 @@ pub enum Error {
     /// An immutable identity or revision precondition failed.
     #[error("conflict: {0}")]
     Conflict(String),
+    /// A task reached a terminal failed outcome.
+    #[error("task {task} failed: {message}")]
+    TaskFailed {
+        /// The failed durable task.
+        task: crate::TaskId,
+        /// The task's retained failure diagnostic.
+        message: String,
+    },
     /// A required capability is unavailable.
     #[error("unsupported capability: {0}")]
     Unsupported(String),
@@ -297,7 +305,7 @@ impl Error {
                 ErrorCode::InteractionExpired
             }
             Self::InteractionRejected(InteractionRejection::Denied) => ErrorCode::InteractionDenied,
-            Self::Storage(_) | Self::Allocation(_) => ErrorCode::Storage,
+            Self::Storage(_) | Self::Allocation(_) | Self::TaskFailed { .. } => ErrorCode::Storage,
             Self::Indeterminate(_) => ErrorCode::Indeterminate,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeBoundary { code, .. }
@@ -348,6 +356,7 @@ impl Error {
                 | Self::InteractionRejected(_)
                 | Self::Storage(_)
                 | Self::Indeterminate(_)
+                | Self::TaskFailed { .. }
         )
     }
 }

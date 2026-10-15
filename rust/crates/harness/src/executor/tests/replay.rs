@@ -131,7 +131,7 @@ async fn stock_prefix_reaches_provider_and_is_pinned_by_replay() -> Result<()> {
 
 #[tokio::test]
 async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
-    let model = Arc::new(ScriptedModel::default());
+    let model = Arc::new(scripted_model());
     let tools = echo_tools(
         Arc::new(FakeTool(AtomicUsize::new(0))),
         json!({"type": "object"}),
@@ -169,13 +169,11 @@ async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
             .await,
         Err(Error::Invalid(_))
     ));
-    assert_eq!(model.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(model.request_count(), 0);
     let _ = base.execute(input.clone(), &journal).await?;
     assert!(
         model
-            .requests
-            .lock()
-            .unwrap()
+            .requests()
             .iter()
             .all(|request| request.max_output_tokens.is_none())
     );
@@ -293,7 +291,7 @@ async fn finite_canonical_replay_rejects_unmeasured_custom_journal_before_work()
 async fn prefix_replay_accepts_platform_maximum_counts() -> Result<()> {
     let mut executor = uncompacted_executor(
         Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
-        Arc::new(ScriptedModel::default()),
+        Arc::new(scripted_model()),
         ContextPipeline::default(),
         ToolRegistry::default(),
     );
@@ -380,24 +378,24 @@ async fn stock_file_authority_precedes_journal_replay() -> Result<()> {
         crate::Capabilities::new([
             "task:spawn:context-probe@1",
             "model:generate",
-            "tool:call:acyclic.write_file",
+            "tool:call:write",
         ]),
         Limits::default(),
     )?;
     let context = capture_admitted_context(scope.clone()).await?;
-    let tool = crate::tool::files::write_file()?;
+    let tool = crate::tool::files::write()?;
     let mut tools = ToolRegistry::default();
     tools.register((tool, None), &mut None, None)?;
     let operation = OperationId::new();
     let invocation = ToolInvocation {
         operation_id: OperationId::new(),
         call_id: "publication".into(),
-        name: "acyclic.write_file".into(),
+        name: "write".into(),
         arguments: json!({"path":"destination.txt","text":"body","media_type":"text/plain","display_name":"destination.txt"}),
     };
     let base = StockExecutor::new(
         Model::new("test".into(), "scoped".into(), "1".into(), Value::Null)?,
-        Arc::new(ScriptedModel::default()),
+        Arc::new(scripted_model()),
         ContextPipeline::new(Vec::<Arc<dyn crate::context::ContextStage>>::new()),
         tools,
     )

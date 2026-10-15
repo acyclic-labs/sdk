@@ -25,6 +25,7 @@ acyclic-native-runtime = { path = "../rust/crates/native-runtime", version = "=0
 base64 = "0.23.1"
 blake3.workspace = true
 fs2.workspace = true
+getrandom = { version = "0.3.4", features = ["std"] }
 hex.workspace = true
 libc = "0.2.177"
 notify.workspace = true
@@ -45,7 +46,6 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_Foundation",
   "Win32_Security",
   "Win32_Security_Authorization",
-  "Win32_Security_Cryptography",
   "Win32_Storage_FileSystem",
   "Win32_System_Memory",
   "Win32_System_Pipes",

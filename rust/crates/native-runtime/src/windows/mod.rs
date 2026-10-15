@@ -4,6 +4,8 @@
     reason = "native operations retain kernel-visible handles and buffers"
 )]
 
+mod protection;
+pub(crate) use protection::protect_with_copy;
 mod driver;
 mod io;
 mod service;

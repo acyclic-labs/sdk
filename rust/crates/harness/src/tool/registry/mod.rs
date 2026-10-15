@@ -26,6 +26,7 @@ pub struct ToolRegistry {
     catalog_revisions: BTreeMap<String, [u8; 32]>,
 }
 
+mod merge;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native;
 mod registration;

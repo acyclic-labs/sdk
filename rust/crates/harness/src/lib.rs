@@ -38,6 +38,8 @@ pub mod fork;
 pub mod grpc;
 pub mod interaction;
 pub mod live;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub mod local;
 #[cfg(feature = "machines")]
 pub mod machines;
 pub mod mcp;
@@ -62,7 +64,10 @@ pub mod runtime;
 pub mod scheduler;
 pub mod source_authorization;
 pub mod store;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 pub mod tool;
+pub mod tools;
 pub mod turn;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
@@ -142,6 +147,8 @@ pub use extension::{
     ExtensionIdentity, ExtensionLease, ExtensionRegistry, ExtensionRuntime, NativeExtension,
 };
 pub use live::{TaskGroup, TaskHandle, completion_stream, first_success, join_all, ordered_reduce};
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub use local::{LocalHarness, LocalHarnessConfig};
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use native_future::NativeFutureBundle;
 #[cfg(feature = "filesystem")]

@@ -99,7 +99,7 @@ impl PiWritebackRoot {
         }
         let key = work.display(key)?;
         let root_path = work.path(path, None)?;
-        let operation_directory = crate::util::root_materialization_directory_with_native_work(
+        let operation_directory = acyclic_harness::filesystem::native_paths::root_materialization_directory_with_native_work(
             path,
             acyclic_fs::OperationId::from_bytes(operation.into_bytes()),
             work,

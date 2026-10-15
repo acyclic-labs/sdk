@@ -212,10 +212,11 @@ pub(super) async fn runtime(
         )?;
         source.with_project_source_policy(issuer, policy)?;
     }
-    let toolset = acyclic_harness::filesystem::recursive_default_tools(
+    let mut toolset = acyclic_harness::tools::defaults()?;
+    toolset.extend(acyclic_harness::filesystem::recursive_tools(
         Some(source.clone()),
         MAX_FRAME_BYTES as u64,
-    )?;
+    )?)?;
     let stock = Arc::new(StockTurnMachine::new());
     let preparation = Arc::new(ForkPreparationMachine::new());
     let mailbox = Arc::new(MailboxModelMachine::default());

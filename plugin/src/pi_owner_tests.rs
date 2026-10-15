@@ -355,11 +355,12 @@ fn protected_owner_policy_rejects_malformed_or_widened_credentials() {
                         .unwrap()
                 )),
         }
-        let protected =
-            protection::protect_with_copy(&serde_json::to_vec(&value).unwrap(), |bytes| {
-                Ok::<_, std::io::Error>(bytes.to_vec())
-            })
-            .unwrap();
+        let protected = acyclic_native_runtime::protect_with_copy(
+            &serde_json::to_vec(&value).unwrap(),
+            MAXIMUM_OWNER_BYTES,
+            |bytes| Ok::<_, std::io::Error>(bytes.to_vec()),
+        )
+        .unwrap();
         let mut bytes = Vec::from(OWNER_MAGIC.as_slice());
         bytes.extend_from_slice(blake3::hash(&protected).as_bytes());
         bytes.extend_from_slice(&protected);

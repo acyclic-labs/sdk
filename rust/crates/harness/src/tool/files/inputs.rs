@@ -8,6 +8,9 @@ pub struct ReadFileInput {
     /// Owner-authorized immutable source.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
     pub file: FileRef,
+    /// Optional exact UTF-8 byte interval; omission reads the complete file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<super::text::TextRange>,
 }
 
 /// Single-operation UTF-8 publication arguments.
