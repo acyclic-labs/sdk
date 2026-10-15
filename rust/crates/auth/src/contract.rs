@@ -22,14 +22,14 @@ pub enum PrincipalKind {
     Anonymous = 5,
 }
 
-/// Canonical resource or byte prefix. Prefixes are literal bytes, never globs.
+/// Canonical exact resource or whole-segment prefix; never a glob.
 #[acyclic_contract_derive::message(error = Error, file = AuthFile, post = crate::validation::resource)]
 #[derive(Clone, Debug, PartialEq, TS)]
 pub struct ResourcePattern {
     /// Canonical `<product>:/<name>`, folded by the owning product.
     #[wire(tag = 1, string)]
     pub name: String,
-    /// Whether name is a byte prefix instead of an exact match.
+    /// Whether canonical slash-delimited segments form a prefix of the target.
     #[wire(tag = 2, bool)]
     pub prefix: bool,
 }
@@ -86,7 +86,7 @@ pub struct SocketPortRange {
 }
 
 /// External WebSocket host rule with the Actors contract shape.
-#[acyclic_contract_derive::message(error = Error, file = AuthFile)]
+#[acyclic_contract_derive::message(error = Error, file = AuthFile, post = crate::validation::socket_host)]
 #[derive(Clone, Debug, PartialEq, TS)]
 pub struct SocketHostRule {
     /// DNS name, wildcard suffix, IP or CIDR.
@@ -401,8 +401,8 @@ pub enum TipProof {
         KeyCertificateProto,
         CertificateChainProto,
         RevocationProto,
-        KeyringDeltaProto,
-        SignedKeyringDeltaProto,
+        KeyringSnapshotProto,
+        SignedKeyringSnapshotProto,
         AuditRecordProto,
         ResourcePatternProto,
         ResourceGrantProto,
@@ -414,6 +414,7 @@ pub enum TipProof {
         GrantProto,
         GrantSetProto,
         AttributeProto,
+        RecordAttributesProto,
         PrincipalProto,
         KeyRangeProto,
         AttributeMatchProto,
@@ -426,7 +427,7 @@ pub enum TipProof {
         SignedBlockProto,
         CapabilityProto
     ),
-    enums(PrincipalKind)
+    enums(PrincipalKind, AuditDecision)
 )]
 pub struct AuthFile;
 

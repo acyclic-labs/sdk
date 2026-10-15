@@ -1,6 +1,7 @@
 {
   "name": "@acyclic-labs/auth",
   "version": "0.2.0",
+  "private": false,
   "type": "module",
   "description": "Shared Acyclic capability chain contract",
   "license": "Apache-2.0",

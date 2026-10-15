@@ -69,7 +69,7 @@ proptest! {
         let attrs = vec![Attribute { name:"author".into(),value:author.into_bytes() }];
         let keys=vec![vec![key]];
         let resource=format!("fs:/{name}"); let audience=format!("workers:/{name}");
-        let r=Request { action:"fs/read",resource:&resource,audience:&audience,holder:Some(&name),now_unix_seconds:now,keys:&keys,attributes:&attrs,usage:&usage,cpu_millis:used,memory_bytes:used };
+        let r=Request { target:Target::Resource {action:"fs/read",resource:&resource},audience:&audience,holder:Some(&name),now_unix_seconds:now,keys:&keys,attributes:&RecordAttributes::try_new(attrs).unwrap(),usage:&usage,cpu_millis:used,memory_bytes:used };
         prop_assert!(!permits(&parent,&r,PolicyDecision::Deny));
         if let Ok(child)=attenuate(&parent,after,vec![6;32]) {
             prop_assert!(!permits(&child,&r,PolicyDecision::Allow) || permits(&parent,&r,PolicyDecision::Allow));
@@ -153,7 +153,7 @@ proptest! {
         let usage=limits(None);
         for author in ["issuer",child_id.as_str()] {
             let attrs=vec![Attribute {name:"author".into(),value:author.as_bytes().to_vec()}];
-            let r=Request { action:"fs/read",resource:"fs:/v",audience:"workers:/app",holder:None,now_unix_seconds:2,keys:&[],attributes:&attrs,usage:&usage,cpu_millis:0,memory_bytes:0 };
+            let r=Request { target:Target::Resource {action:"fs/read",resource:"fs:/v"},audience:"workers:/app",holder:None,now_unix_seconds:2,keys:&[],attributes:&RecordAttributes::try_new(attrs).unwrap(),usage:&usage,cpu_millis:0,memory_bytes:0 };
             prop_assert_eq!(permits(&parent,&r,PolicyDecision::Allow),author=="issuer");
             prop_assert_eq!(permits(&child,&r,PolicyDecision::Allow),author=="issuer");
         }
@@ -166,7 +166,7 @@ proptest! {
             Caveat {kind:CaveatKind::Pin(Pin {name:"author".into(),value:PinValue::SubjectId(SubjectId {})})},
             Caveat {kind:CaveatKind::Limits(limits(Some(ceiling)))}],vec![6;32]).unwrap();
         let attrs=vec![Attribute {name:"author".into(),value:child_id.into_bytes()}];let usage=limits(Some(used));
-        let r=Request {action:"fs/read",resource:"fs:/v",audience:"workers:/app",holder:None,now_unix_seconds:2,keys:&[],attributes:&attrs,usage:&usage,cpu_millis:0,memory_bytes:0};
+        let r=Request {target:Target::Resource {action:"fs/read",resource:"fs:/v"},audience:"workers:/app",holder:None,now_unix_seconds:2,keys:&[],attributes:&RecordAttributes::try_new(attrs).unwrap(),usage:&usage,cpu_millis:0,memory_bytes:0};
         prop_assert!(permits(&parent,&r,PolicyDecision::Allow));
         prop_assert_eq!(permits(&child,&r,PolicyDecision::Allow),used<=ceiling);
         prop_assert!(!permits(&child,&r,PolicyDecision::Deny));

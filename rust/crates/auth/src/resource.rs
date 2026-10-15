@@ -84,7 +84,7 @@ pub fn decode_component(value: &str) -> Result<Vec<u8>, crate::Error> {
 }
 
 /// Bucket and opaque key are separate components; slashes IN a key are %2F.
-/// An encoded key prefix remains a byte prefix of all encoded matching keys.
+/// Encoding preserves byte prefixes; grant matching still requires whole components.
 pub fn objects_resource(bucket: &[u8], key: &[u8]) -> String {
     format!(
         "objects:/{}/{}",

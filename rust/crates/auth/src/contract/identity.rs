@@ -157,16 +157,16 @@ pub struct Revocation {
 }
 
 /// Followed keyring state. Apply only after root signature, sequence and digest checks.
-#[acyclic_contract_derive::message(error = Error, file = AuthFile, post = crate::validation::keyring)]
+#[acyclic_contract_derive::message(error = Error, file = AuthFile, post = crate::validation::keyring_snapshot)]
 #[derive(Clone, Debug, PartialEq, TS)]
-pub struct KeyringDelta {
+pub struct KeyringSnapshot {
     /// Owning account.
     #[wire(tag = 1, string)]
     pub account_id: String,
     /// Strictly consecutive per account; gaps require resnapshot before acceptance.
     #[wire(tag = 2, uint64)]
     pub sequence: u64,
-    /// 32-byte digest of previous signed delta; zero for initial snapshot.
+    /// 32-byte digest of previous signed snapshot; zero for initial snapshot.
     #[wire(tag = 3, bytes)]
     pub previous_digest: Vec<u8>,
     /// Monotone epoch floor.
@@ -187,19 +187,19 @@ pub struct KeyringDelta {
 }
 
 /// Authenticated keyring publication.
-#[acyclic_contract_derive::message(error = Error, file = AuthFile, post = crate::validation::signed_keyring)]
+#[acyclic_contract_derive::message(error = Error, file = AuthFile, post = crate::validation::signed_snapshot)]
 #[derive(Clone, Debug, PartialEq, TS)]
-pub struct SignedKeyringDelta {
+pub struct SignedKeyringSnapshot {
     /// Canonical published state.
     #[wire(tag = 1, message)]
-    pub delta: KeyringDelta,
-    /// Ed25519 account-root signature over KEYRING_DOMAIN and canonical delta.
+    pub snapshot: KeyringSnapshot,
+    /// Ed25519 account-root signature over KEYRING_DOMAIN and canonical snapshot.
     #[wire(tag = 2, bytes)]
     pub signature: Vec<u8>,
 }
 
 /// Shared audit event for hosted and local runtimes.
-#[acyclic_contract_derive::message(error = Error, file = AuthFile)]
+#[acyclic_contract_derive::message(error = Error, file = AuthFile, post = crate::validation::audit)]
 #[derive(Clone, Debug, PartialEq, TS)]
 pub struct AuditRecord {
     /// Unix seconds, UTC.
@@ -226,10 +226,60 @@ pub struct AuditRecord {
     /// SHA-256 of effective canonical filter.
     #[wire(tag = 8, bytes)]
     pub filter_hash: Vec<u8>,
-    /// allow, deny, mint, revoke or channel-open.
-    #[wire(tag = 9, string)]
-    pub decision: String,
+    /// Typed decision or lifecycle event.
+    #[wire(tag = 9, enumeration)]
+    pub decision: AuditDecision,
     /// Decision reason.
     #[wire(tag = 10, string)]
     pub reason: String,
+}
+
+/// Single-valued record headers. Construction and wire admission reject every
+/// repeated name, even when its values agree. All authorization consumers share
+/// this validated type; callers cannot mutate its entries after admission.
+#[acyclic_contract_derive::message(error = Error, file = AuthFile, post = crate::validation::attributes)]
+#[derive(Clone, Debug, Default, PartialEq, TS)]
+pub struct RecordAttributes {
+    /// Unique header names with opaque values.
+    #[wire(tag = 1, message)]
+    attributes: Vec<Attribute>,
+}
+impl RecordAttributes {
+    /// Admit decoded record headers once, before any authorization consumer.
+    pub fn try_new(attributes: Vec<Attribute>) -> Result<Self, Error> {
+        let value = Self { attributes };
+        crate::validation::attributes(&value)?;
+        Ok(value)
+    }
+    /// Decode canonical record headers, rejecting duplicate names and unknown fields.
+    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        use prost::Message;
+        let wire = RecordAttributesProto::decode(bytes).map_err(|_| Error::Invalid)?;
+        if wire.encode_to_vec() != bytes {
+            return Err(Error::Invalid);
+        }
+        wire.try_into()
+    }
+    /// Immutable admitted record headers.
+    pub fn as_slice(&self) -> &[Attribute] {
+        &self.attributes
+    }
+}
+
+/// Stable audit decisions shared by local and hosted exports.
+#[acyclic_contract_derive::enumeration(error = Error, unknown = Error::UnknownEnum)]
+#[derive(TS)]
+pub enum AuditDecision {
+    /// Invalid unspecified audit outcome.
+    Unspecified = 0,
+    /// Request permitted.
+    Allow = 1,
+    /// Request denied.
+    Deny = 2,
+    /// Authority minted.
+    Mint = 3,
+    /// Authority revoked.
+    Revoke = 4,
+    /// Subscription or socket channel opened.
+    ChannelOpen = 5,
 }
