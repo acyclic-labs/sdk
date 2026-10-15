@@ -1,5 +1,6 @@
 use super::*;
 use crate::core::Authority;
+use acyclic_fs::{NativeWorkReservation, WorkCounters};
 
 /// Observes only a protected completion accepted under pre-action custody.
 pub(crate) struct AcceptedCompletionIo {
