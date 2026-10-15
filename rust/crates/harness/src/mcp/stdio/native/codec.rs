@@ -8,15 +8,25 @@ use std::sync::{
 };
 use tokio_util::codec::{Decoder, Encoder};
 
-pub(super) struct BoundedCodec<T> {
+pub(super) trait ByteLimit {
+    fn maximum(&self) -> u32;
+}
+
+impl ByteLimit for AtomicU32 {
+    fn maximum(&self) -> u32 {
+        self.load(Ordering::Acquire)
+    }
+}
+
+pub(super) struct BoundedCodec<T, L: ByteLimit = AtomicU32> {
     decoder: JsonRpcMessageCodec<T>,
-    maximum: Arc<AtomicU32>,
+    maximum: Arc<L>,
     decoder_maximum: u32,
 }
 
-impl<T> BoundedCodec<T> {
-    pub(super) fn new(maximum: Arc<AtomicU32>) -> Self {
-        let decoder_maximum = maximum.load(Ordering::Acquire);
+impl<T, L: ByteLimit> BoundedCodec<T, L> {
+    pub(super) fn new(maximum: Arc<L>) -> Self {
+        let decoder_maximum = maximum.maximum();
         Self {
             decoder: JsonRpcMessageCodec::new_with_max_length(decoder_maximum as usize),
             maximum,
@@ -25,7 +35,7 @@ impl<T> BoundedCodec<T> {
     }
 
     fn refresh_decoder_bound(&mut self) {
-        let maximum = self.maximum.load(Ordering::Acquire);
+        let maximum = self.maximum.maximum();
         if maximum != self.decoder_maximum {
             self.decoder = JsonRpcMessageCodec::new_with_max_length(maximum as usize);
             self.decoder_maximum = maximum;
@@ -33,7 +43,7 @@ impl<T> BoundedCodec<T> {
     }
 }
 
-impl<T: DeserializeOwned> Decoder for BoundedCodec<T> {
+impl<T: DeserializeOwned, L: ByteLimit> Decoder for BoundedCodec<T, L> {
     type Item = T;
     type Error = io::Error;
 
@@ -48,13 +58,13 @@ impl<T: DeserializeOwned> Decoder for BoundedCodec<T> {
     }
 }
 
-impl<T: Serialize> Encoder<T> for BoundedCodec<T> {
+impl<T: Serialize, L: ByteLimit> Encoder<T> for BoundedCodec<T, L> {
     type Error = io::Error;
 
     fn encode(&mut self, item: T, buffer: &mut BytesMut) -> io::Result<()> {
         let start = buffer.len();
         let maximum = start
-            .checked_add(self.maximum.load(Ordering::Acquire) as usize)
+            .checked_add(self.maximum.maximum() as usize)
             .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
         let result = serde_json::to_writer(
             BoundedWrite {
@@ -96,5 +106,40 @@ impl Write for BoundedWrite<'_> {
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use loom::sync::{atomic::AtomicU32 as ModelLimit, mpsc};
+
+    impl ByteLimit for ModelLimit {
+        fn maximum(&self) -> u32 {
+            self.load(Ordering::Acquire)
+        }
+    }
+
+    #[test]
+    fn catalog_to_tool_handoff_updates_the_real_encoder_and_decoder() {
+        loom::model(|| {
+            let limit = Arc::new(ModelLimit::new(16));
+            let follower_limit = Arc::clone(&limit);
+            let (ready_send, ready_receive) = mpsc::channel();
+            let (tool_send, tool_receive) = mpsc::channel();
+            let follower = loom::thread::spawn(move || {
+                let mut codec = BoundedCodec::<serde_json::Value, _>::new(follower_limit);
+                ready_send.send(()).unwrap();
+                tool_receive.recv().unwrap();
+                let value = serde_json::json!("x".repeat(32));
+                let mut bytes = BytesMut::new();
+                codec.encode(value.clone(), &mut bytes).unwrap();
+                assert_eq!(codec.decode(&mut bytes).unwrap(), Some(value));
+            });
+            ready_receive.recv().unwrap();
+            limit.store(64, Ordering::Release);
+            tool_send.send(()).unwrap();
+            follower.join().unwrap();
+        });
     }
 }

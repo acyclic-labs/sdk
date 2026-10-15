@@ -21,7 +21,7 @@ pub(super) async fn connect(
         #[cfg(feature = "mcp-stdio")]
         McpTransport::Stdio { .. } => {
             let child = command_for(server, workspace, |name| std::env::var_os(name))?;
-            let binding = command_binding(&child, server.dialect);
+            let binding = command_binding(&child, server);
             (
                 Connection::Stdio(
                     super::super::stdio::StdioMcpTransport::spawn(
@@ -118,11 +118,15 @@ fn hash_part(hasher: &mut blake3::Hasher, value: &[u8]) {
 }
 
 #[cfg(feature = "mcp-stdio")]
-pub(super) fn command_binding(command: &std::process::Command, dialect: Dialect) -> [u8; 32] {
+pub(super) fn command_binding(command: &std::process::Command, server: &McpServer) -> [u8; 32] {
+    let McpTransport::Stdio { env, env_vars, .. } = &server.transport else {
+        unreachable!("stdio binding")
+    };
+    let explicit: BTreeSet<_> = env.keys().chain(env_vars).map(String::as_str).collect();
     let mut hasher = binding_hasher(b"stdio");
     hash_part(
         &mut hasher,
-        if dialect == Dialect::Claude {
+        if server.dialect == Dialect::Claude {
             b"inherit"
         } else {
             b"clear"
@@ -138,11 +142,11 @@ pub(super) fn command_binding(command: &std::process::Command, dialect: Dialect)
         hash_part(&mut hasher, argument.as_encoded_bytes());
     }
     hash_part(&mut hasher, b"environment");
-    hash_part(
-        &mut hasher,
-        &(command.get_envs().len() as u64).to_le_bytes(),
-    );
     for (name, value) in command.get_envs() {
+        // Ambient environment is deliberately not part of a restart-stable identity.
+        if !name.to_str().is_some_and(|name| explicit.contains(name)) {
+            continue;
+        }
         hash_part(&mut hasher, name.as_encoded_bytes());
         hash_part(
             &mut hasher,
@@ -281,7 +285,27 @@ pub(super) fn command_for(
     };
     let expand_variables = server.dialect == Dialect::Claude;
     let command = expand(command, expand_variables, &environment)?;
-    let mut child = std::process::Command::new(command.as_ref());
+    let cwd = cwd
+        .as_ref()
+        .map_or_else(|| workspace.to_owned(), |cwd| workspace.join(cwd));
+    let configured_path = env
+        .iter()
+        .find(|(name, _)| {
+            if cfg!(windows) {
+                name.eq_ignore_ascii_case("PATH")
+            } else {
+                name.as_str() == "PATH"
+            }
+        })
+        .map(|(_, value)| expand(value, expand_variables, &environment))
+        .transpose()?;
+    let search_path = configured_path
+        .map(|value| std::ffi::OsString::from(value.as_ref()))
+        .or_else(|| environment("PATH"));
+    // Resolve once, then spawn this absolute executable; do not search PATH again at spawn.
+    let executable = super::executable::resolve(command.as_ref(), search_path, &cwd)
+        .map_err(Error::process_io)?;
+    let mut child = std::process::Command::new(executable);
     if server.dialect == Dialect::Codex {
         child.env_clear();
         for name in [
@@ -324,12 +348,7 @@ pub(super) fn command_for(
             expand(value, expand_variables, &environment)?.as_ref(),
         );
     }
-    child
-        .current_dir(
-            cwd.as_ref()
-                .map_or_else(|| workspace.to_owned(), |cwd| workspace.join(cwd)),
-        )
-        .env("CLAUDE_PROJECT_DIR", workspace);
+    child.current_dir(cwd).env("CLAUDE_PROJECT_DIR", workspace);
     Ok(child)
 }
 

@@ -13,7 +13,11 @@ use futures::future::join_all;
 use serde_json::json;
 use std::{path::Path, sync::Arc, time::Duration};
 
+mod cancellation;
+#[cfg(feature = "mcp-stdio")]
+mod executable;
 mod native;
+use cancellation::{CancelFlag as _, CancelOnDrop};
 
 /// Positive discovery and tool-exchange bounds, independent of task allowances.
 #[derive(Clone, Copy)]
@@ -121,8 +125,8 @@ impl McpConfig {
                 let result = match result {
                     Ok(connected) => {
                         let name = name.clone();
-                        register_before(deadline, move || {
-                            register(name, &server, connected, limits)
+                        register_before(deadline, move |check| {
+                            register(name, &server, connected, limits, check)
                         })
                         .await
                     }
@@ -162,15 +166,32 @@ fn startup_timeout() -> Error {
 
 async fn register_before<T: Send + 'static>(
     deadline: tokio::time::Instant,
-    register: impl FnOnce() -> Result<T> + Send + 'static,
+    register: impl FnOnce(&dyn Fn() -> Result<()>) -> Result<T> + Send + 'static,
 ) -> Result<T> {
-    tokio::time::timeout_at(deadline, tokio::task::spawn_blocking(register))
-        .await
-        .map_err(|_| startup_timeout())?
-        .map_err(|error| Error::Process {
-            kind: "worker",
-            message: error.to_string(),
-        })?
+    use std::sync::atomic::AtomicBool;
+    acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
+    let guard = CancelOnDrop(Arc::new(AtomicBool::new(false)));
+    let flag = Arc::clone(&guard.0);
+    let mut worker =
+        acyclic_native_runtime::run_blocking_io(move || cancellation::run(flag, register), None)
+            .map_err(Error::process_io)?;
+    match tokio::time::timeout_at(deadline, &mut worker).await {
+        Ok(result) if tokio::time::Instant::now() < deadline => {
+            result.map_err(Error::process_io)?
+        }
+        result => {
+            guard.0.cancel();
+            // Cancellation is cooperative at schema boundaries. Never return a timeout
+            // while its registration still owns a connection or a worker job.
+            if result.is_err() {
+                let completion = worker.await.map_err(Error::process_io)?;
+                drop(completion);
+            } else {
+                drop(result);
+            }
+            Err(startup_timeout())
+        }
+    }
 }
 
 fn register(
@@ -178,7 +199,9 @@ fn register(
     server: &McpServer,
     mut connected: Connected,
     limits: McpClientLimits,
+    check: &(impl Fn() -> Result<()> + ?Sized),
 ) -> Result<(ToolRegistry, Capabilities)> {
+    check()?;
     if connected.tools.len() as u64 > u64::from(limits.tools_per_server) {
         return Err(Error::Invalid("MCP discovery exceeds tool bound".into()));
     }
@@ -213,13 +236,13 @@ fn register(
     .to_string();
     let mut tools = ToolRegistry::default();
     let projection: Arc<dyn ToolProjection> = Arc::new(JsonToolProjection);
-    catalog.install(
+    catalog.install_checked(
         &mut tools,
         None,
         &connected.transport,
         &projection,
-        limits.tools_per_server,
-        limits.catalog_bytes,
+        (limits.tools_per_server, limits.catalog_bytes),
+        &check,
     )?;
     let mut capabilities = Capabilities::new(
         catalog
@@ -235,5 +258,7 @@ fn register(
     Ok((tools, capabilities))
 }
 
+#[cfg(all(test, feature = "mcp-stdio"))]
+mod path_tests;
 #[cfg(test)]
 mod tests;

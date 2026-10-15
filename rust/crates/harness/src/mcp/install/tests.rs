@@ -19,7 +19,7 @@ use std::{
 };
 
 #[derive(Default)]
-struct Remote(AtomicUsize);
+pub(super) struct Remote(AtomicUsize);
 
 impl McpToolTransport for Remote {
     fn call<'a>(
@@ -45,7 +45,7 @@ impl McpToolTransport for Remote {
     }
 }
 
-fn server(value: Value, dialect: Dialect) -> Result<McpServer> {
+pub(super) fn server(value: Value, dialect: Dialect) -> Result<McpServer> {
     let imported: ImportedServer =
         serde_json::from_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
     let mut config = McpConfig::default();
@@ -56,7 +56,7 @@ fn server(value: Value, dialect: Dialect) -> Result<McpServer> {
         .ok_or_else(|| Error::Invalid("server disabled".into()))
 }
 
-fn advertised(names: &[&str]) -> Vec<McpToolDefinition> {
+pub(super) fn advertised(names: &[&str]) -> Vec<McpToolDefinition> {
     names
         .iter()
         .map(|name| McpToolDefinition {
@@ -249,43 +249,53 @@ async fn reinstall_restores_saved_tool_revisions_and_approval_digests() -> Resul
     Ok(())
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn registration_uses_the_remaining_startup_deadline_off_the_runtime_thread() -> Result<()> {
-    let caller = std::thread::current().id();
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(100);
-    tokio::time::advance(Duration::from_millis(90)).await;
-    let (started, worker) = tokio::sync::oneshot::channel();
-    let (release, wait) = std::sync::mpsc::channel();
-    let (completed, completion) = tokio::sync::oneshot::channel();
-    let task = tokio::spawn(register_before(deadline, move || {
-        let _ = started.send(std::thread::current().id());
-        let result = wait
-            .recv()
-            .map_err(|error| Error::Invalid(error.to_string()));
-        let _ = completed.send(());
-        result
-    }));
-    assert_ne!(
-        worker
-            .await
-            .map_err(|error| Error::Invalid(error.to_string()))?,
-        caller
-    );
-    tokio::time::advance(Duration::from_millis(11)).await;
-    assert!(matches!(
-        task.await
-            .map_err(|error| Error::Invalid(error.to_string()))?,
-        Err(Error::Process {
-            kind: "timeout",
-            ..
-        })
-    ));
-    release
-        .send(())
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-    completion
-        .await
-        .map_err(|error| Error::Invalid(error.to_string()))?;
+    for _ in 0..8 {
+        let caller = std::thread::current().id();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let (started, worker) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let active = Arc::new(AtomicUsize::new(0));
+        let worker_active = active.clone();
+        let connection = Arc::new(Remote::default());
+        let worker_connection = connection.clone();
+        let task = tokio::spawn(register_before(deadline, move |check| {
+            let _connection = worker_connection;
+            worker_active.fetch_add(1, Ordering::SeqCst);
+            let _ = started.send(std::thread::current().id());
+            let result = wait
+                .recv()
+                .map_err(|error| Error::Invalid(error.to_string()));
+            worker_active.fetch_sub(1, Ordering::SeqCst);
+            check()?;
+            result
+        }));
+        assert_ne!(
+            worker
+                .await
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            caller
+        );
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(11)).await;
+        tokio::task::yield_now().await;
+        assert!(!task.is_finished(), "timeout must await worker retirement");
+        release
+            .send(())
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        assert!(matches!(
+            task.await
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            Err(Error::Process {
+                kind: "timeout",
+                ..
+            })
+        ));
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert_eq!(Arc::strong_count(&connection), 1);
+        tokio::time::resume();
+    }
     Ok(())
 }
 
@@ -492,8 +502,12 @@ async fn discovery_moves_schemas_and_rejects_cursor_count_and_byte_overruns() ->
 #[test]
 fn stdio_configuration_preserves_argv_scope_environment_and_project_root() -> Result<()> {
     let workspace = std::env::current_dir().map_err(Error::process_io)?;
+    let executable = std::env::current_exe()
+        .map_err(Error::process_io)?
+        .canonicalize()
+        .map_err(Error::process_io)?;
     let environment = |name: &str| match name {
-        "PROGRAM" => Some("server".into()),
+        "PROGRAM" => Some(executable.as_os_str().to_owned()),
         "TOKEN" => Some("secret".into()),
         _ => None,
     };
@@ -503,7 +517,7 @@ fn stdio_configuration_preserves_argv_scope_environment_and_project_root() -> Re
         Dialect::Claude,
     )?;
     let command = native::command_for(&claude, &workspace, environment)?;
-    assert_eq!(command.get_program(), "server");
+    assert_eq!(command.get_program(), executable.as_os_str());
     assert_eq!(
         command.get_args().collect::<Vec<_>>(),
         ["with spaces", "fallback"]
@@ -524,11 +538,12 @@ fn stdio_configuration_preserves_argv_scope_environment_and_project_root() -> Re
         Some(workspace.as_os_str())
     );
     let codex = server(
-        json!({"command":"${PROGRAM}", "env_vars":["TOKEN"], "env":{"TOKEN":"literal"}}),
+        json!({"command":executable, "args":["${PROGRAM}"], "env_vars":["TOKEN"], "env":{"TOKEN":"literal"}}),
         Dialect::Codex,
     )?;
     let command = native::command_for(&codex, &workspace, environment)?;
-    assert_eq!(command.get_program(), "${PROGRAM}");
+    assert_eq!(command.get_program(), executable.as_os_str());
+    assert_eq!(command.get_args().collect::<Vec<_>>(), ["${PROGRAM}"]);
     assert_eq!(
         command
             .get_envs()
@@ -544,6 +559,15 @@ fn stdio_configuration_preserves_argv_scope_environment_and_project_root() -> Re
 #[test]
 fn resolved_stdio_binding_tracks_arguments_environment_directory_and_dialect() -> Result<()> {
     let root = std::env::current_dir().map_err(Error::process_io)?;
+    let executable = std::env::current_exe().map_err(Error::process_io)?;
+    let alternate = tempfile::tempdir_in(executable.parent().expect("executable directory"))
+        .map_err(Error::process_io)?;
+    let other = alternate
+        .path()
+        .join(executable.file_name().expect("test executable"));
+    std::fs::hard_link(&executable, &other).map_err(Error::process_io)?;
+    let executable = executable.to_str().expect("test path UTF-8");
+    let other = other.to_str().expect("alternate path UTF-8");
     let config = server(
         json!({"command":"${PROGRAM}", "args":["${ARGUMENT}"], "env":{"KEY":"${TOKEN}"}}),
         Dialect::Claude,
@@ -556,24 +580,23 @@ fn resolved_stdio_binding_tracks_arguments_environment_directory_and_dialect() -
             _ => None,
         })
     };
-    let original = command("server", "argument", "secret", &root)?;
-    let binding = native::command_binding(&original, Dialect::Claude);
+    let original = command(executable, "argument", "secret", &root)?;
+    let binding = native::command_binding(&original, &config);
     assert_eq!(
         binding,
-        native::command_binding(
-            &command("server", "argument", "secret", &root)?,
-            Dialect::Claude
-        )
+        native::command_binding(&command(executable, "argument", "secret", &root)?, &config)
     );
     for changed in [
-        command("other", "argument", "secret", &root)?,
-        command("server", "different", "secret", &root)?,
-        command("server", "argument", "new-secret", &root)?,
-        command("server", "argument", "secret", &root.join("child"))?,
+        command(other, "argument", "secret", &root)?,
+        command(executable, "different", "secret", &root)?,
+        command(executable, "argument", "new-secret", &root)?,
+        command(executable, "argument", "secret", &root.join("child"))?,
     ] {
-        assert_ne!(binding, native::command_binding(&changed, Dialect::Claude));
+        assert_ne!(binding, native::command_binding(&changed, &config));
     }
-    assert_ne!(binding, native::command_binding(&original, Dialect::Codex));
+    let mut codex = config;
+    codex.dialect = Dialect::Codex;
+    assert_ne!(binding, native::command_binding(&original, &codex));
     Ok(())
 }
 

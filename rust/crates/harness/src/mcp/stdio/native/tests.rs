@@ -399,6 +399,38 @@ fn frame_limits_apply_both_directions_without_retaining_a_partial_request() -> R
     Ok(())
 }
 
+// Property: arbitrary admitted JSON survives every generated chunking and a bound
+// transition; rejected encoding never changes an already buffered prefix.
+proptest::proptest! {
+    #[test]
+    fn codec_round_trips_chunked_json_and_rejects_atomically(
+        text in ".{0,512}", number in proptest::prelude::any::<i64>(), chunk_size in 1usize..64,
+    ) {
+        let value = json!({"text":text,"number":number});
+        let size = serde_json::to_vec(&value).unwrap().len() as u32;
+        let bound = Arc::new(AtomicU32::new(1));
+        let mut codec = BoundedCodec::<Value>::new(Arc::clone(&bound));
+        bound.store(size, Ordering::Release);
+        let mut encoded = BytesMut::new();
+        codec.encode(value.clone(), &mut encoded).unwrap();
+        let mut pending = BytesMut::new();
+        let mut decoded = None;
+        for chunk in encoded.chunks(chunk_size) {
+            pending.extend_from_slice(chunk);
+            if let Some(message) = codec.decode(&mut pending).unwrap() {
+                proptest::prop_assert!(decoded.is_none());
+                decoded = Some(message);
+            }
+        }
+        proptest::prop_assert_eq!(decoded, Some(value.clone()));
+        bound.store(size - 1, Ordering::Release);
+        let prefix = BytesMut::from(b"prior\n".as_slice());
+        let mut rejected = prefix.clone();
+        proptest::prop_assert!(codec.encode(value, &mut rejected).is_err());
+        proptest::prop_assert_eq!(rejected, prefix);
+    }
+}
+
 #[tokio::test]
 async fn native_child_is_initialized_once_and_kept_until_the_transport_drops() -> Result<()> {
     if let Some(address) =
