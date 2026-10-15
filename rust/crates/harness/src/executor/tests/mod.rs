@@ -137,8 +137,6 @@ use crate::{
     tool::ToolExecutor,
 };
 
-use futures::stream;
-
 use std::collections::HashMap;
 
 use std::sync::{
