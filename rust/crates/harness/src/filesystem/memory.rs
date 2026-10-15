@@ -299,18 +299,18 @@ impl MemoryHarnessStorage {
     pub fn builder(&self) -> crate::bundle::HarnessBuilder {
         crate::bundle::HarnessBuilder::new()
             .journal(self.journal())
-            .content(self.content())
+            .content(ContentBindings {
+                reader: self.content_verifier.clone(),
+                writer: Some(self.publisher.clone()),
+            })
             .grant(self.read_capability.clone())
             .grant(self.write_capability.clone())
     }
 
-    /// Shares the owner-bound reader and writer with context and client adapters.
+    /// Borrows the authenticated reader for context and client adapters.
     #[must_use]
-    pub fn content(&self) -> ContentBindings {
-        ContentBindings {
-            reader: self.content_verifier.clone(),
-            writer: Some(self.publisher.clone()),
-        }
+    pub fn content_reader(&self) -> &dyn ContentResidencyVerifier {
+        self.content_verifier.as_ref()
     }
 
     /// Runs the shared canonical loop with this memory-backed journal.

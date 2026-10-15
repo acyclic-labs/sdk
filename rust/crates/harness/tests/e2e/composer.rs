@@ -83,7 +83,7 @@ impl Composer {
 
     pub(super) async fn run(self) -> TestResult {
         let storage = execution::workspace(&self.seed).await?;
-        let content = storage.content();
+        let reader = storage.content_reader();
         let root = |directory| ContextRoot {
             volume: storage.volume().clone(),
             directory,
@@ -98,7 +98,7 @@ impl Composer {
             .collect();
         let skills: Vec<_> = self.skills.into_iter().map(root).collect();
         let observed = match CommandCatalog::capture(
-            content.reader.as_ref(),
+            reader,
             &commands,
             &skills,
             self.discovery_limits,
@@ -130,7 +130,7 @@ impl Composer {
                         &self.prompt,
                         &root(self.workspace),
                         &generation,
-                        content.reader.as_ref(),
+                        reader,
                         self.maximum_bytes,
                     )
                     .await
