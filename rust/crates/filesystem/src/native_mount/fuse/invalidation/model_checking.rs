@@ -47,9 +47,10 @@ fn refused_tail_precedes_concurrent_callbacks_and_keeps_waiters_pending() {
                     queue = healthy(other.1.wait(queue));
                 }
                 let through = queue.notified;
-                let items = queue.take_deferred();
+                let mut items = queue.take_deferred();
                 drop(queue);
-                delivered.extend(items.map(Some));
+                delivered.extend((&mut *items).map(Some));
+                drop(items);
                 let mut queue = healthy(other.0.lock());
                 queue.finish(through);
                 if delivered.len() != 3 {
