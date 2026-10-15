@@ -10,6 +10,8 @@ description = "Public Actors v1 contract and validation"
 readme = "README.md"
 
 [dependencies]
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
+uuid.workspace = true
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 http-body = "1.1.0"
 prost.workspace = true

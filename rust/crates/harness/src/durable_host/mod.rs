@@ -60,13 +60,7 @@ struct MailLocation {
 
 const MAX_MAIL_LOCATION_BYTES: usize = 1024;
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TimerEvent {
-    task_id: TaskId,
-    operation_id: OperationId,
-    deadline_unix_ms: u64,
-}
+type TimerEvent = acyclic_actors::timers::TimerRecord<TaskId, OperationId>;
 
 #[derive(Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
