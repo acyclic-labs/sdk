@@ -6,13 +6,17 @@ use std::sync::{
 
 pub(crate) struct NativeDemandReadMeter(pub(crate) Mutex<DemandWork>);
 impl NativeDemandReadMeter {
-    pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, DemandWork> {
-        self.0.lock().unwrap_or_else(|poisoned| {
-            let mut state = poisoned.into_inner();
-            state.poison_native_original_work();
-            state
-        })
+    #[track_caller]
+    pub(crate) fn lock(&self) -> crate::lock_order::MutexGuard<'_, DemandWork> {
+        crate::lock_order::lock::<_, { crate::lock_order::LEAF }>(&self.0).unwrap_or_else(
+            |poisoned| {
+                let mut state = poisoned.into_inner();
+                state.poison_native_original_work();
+                state
+            },
+        )
     }
+    #[track_caller]
     pub(crate) fn with_original_leaf<T>(&self, operation: impl FnOnce(&mut DemandWork) -> T) -> T {
         operation(&mut self.lock())
     }
