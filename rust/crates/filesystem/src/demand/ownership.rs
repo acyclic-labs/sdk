@@ -109,6 +109,10 @@ impl Drop for SourcePayloadOwnership {
     }
 }
 
+// Arc retains two reference counters alongside the aligned gauge payload.
+pub(super) const GAUGE_ALLOCATION_BYTES: u64 =
+    std::mem::size_of::<([usize; 2], AtomicU64)>() as u64;
+
 /// Physical bytes retained by one native allocation owner.
 #[derive(Debug)]
 pub struct NativeMountAllocationCustody {
@@ -136,7 +140,7 @@ impl NativeMountAllocationCustody {
             work.admit_retained(std::mem::size_of::<Self>() as u64)?;
             // Like registry capacity and its dirty flag, this gauge is original
             // ledger metadata. It holds no invocation, resource or callbacks.
-            let counter_bytes = std::mem::size_of::<AtomicU64>() as u64;
+            let counter_bytes = GAUGE_ALLOCATION_BYTES;
             work.allocations
                 .claim_bytes(counter_bytes, 1, &mut work.work, work.budget)
                 .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;

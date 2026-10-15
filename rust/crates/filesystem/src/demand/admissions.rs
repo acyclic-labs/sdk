@@ -249,7 +249,7 @@ impl DemandWork {
         let mut released = 0;
         while owners.last().is_some_and(|entry| entry.1 == 0) {
             owners.pop();
-            released += std::mem::size_of::<AtomicU64>() as u64;
+            released += super::ownership::GAUGE_ALLOCATION_BYTES;
         }
         if deferred {
             if let Some(dirty) = &self.roots.native_mount_dirty {
@@ -264,10 +264,10 @@ impl DemandWork {
         while index < owners.len() {
             if owners[index].1 == 0 {
                 owners.swap_remove(index);
-                released += std::mem::size_of::<AtomicU64>() as u64;
+                released += super::ownership::GAUGE_ALLOCATION_BYTES;
                 while owners.last().is_some_and(|entry| entry.1 == 0) {
                     owners.pop();
-                    released += std::mem::size_of::<AtomicU64>() as u64;
+                    released += super::ownership::GAUGE_ALLOCATION_BYTES;
                 }
             } else {
                 index += 1;

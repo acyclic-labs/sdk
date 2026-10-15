@@ -67,6 +67,9 @@ proptest::proptest! {
         let mut original = NativeMaterializationWork::new(BUDGET, &cancellation)
             .map_err(|(error, _)| error).unwrap();
         let baseline = original.live_allocation_bytes();
+        let gauge_bytes = std::alloc::Layout::array::<usize>(2).unwrap()
+            .extend(std::alloc::Layout::new::<AtomicU64>()).unwrap().0
+            .pad_to_align().size() as u64;
         let mut owners: Vec<Option<(Arc<NativeMountAllocationCustody>, u64)>> = vec![None; 4];
         for (index, action, bytes) in actions {
             let slot = &mut owners[usize::from(index)];
@@ -94,7 +97,7 @@ proptest::proptest! {
             let expected = baseline + registry_bytes + u64::from(!live.is_empty())
                 + live.iter().map(|(_, retained)| {
                     std::mem::size_of::<NativeMountAllocationCustody>() as u64
-                        + std::mem::size_of::<AtomicU64>() as u64 + retained
+                        + gauge_bytes + retained
                 }).sum::<u64>();
             proptest::prop_assert_eq!(state.allocations.live_bytes(), expected);
             proptest::prop_assert_eq!(state.roots.native_mount_admissions.0.len(), live.len());
