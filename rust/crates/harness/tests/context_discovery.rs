@@ -18,7 +18,49 @@ use acyclic_harness::{
     model::ModelContent,
     resources::ProviderRef,
 };
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
+
+struct CountingReader<'a> {
+    inner: &'a dyn ContentResidencyVerifier,
+    reads: AtomicUsize,
+}
+
+impl ContentResidencyVerifier for CountingReader<'_> {
+    fn read_private_path<'a, 'io>(
+        &'a self,
+        volume: &'a VolumeRef,
+        granted_prefix: &'a str,
+        path: &'a str,
+        expected_generation: Option<&'a acyclic_harness::resources::GenerationRef>,
+        maximum_bytes: u64,
+        io: Option<&'io acyclic_harness::conversation::ContentIo>,
+    ) -> Result<
+        acyclic_harness::conversation::BoundedContentFuture<
+            'a,
+            (
+                acyclic_harness::conversation::FileRef,
+                acyclic_stream::OwnedBytes,
+                Option<acyclic_harness::conversation::ContentHold<'io>>,
+            ),
+        >,
+    >
+    where
+        'io: 'a,
+    {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        self.inner.read_private_path(
+            volume,
+            granted_prefix,
+            path,
+            expected_generation,
+            maximum_bytes,
+            io,
+        )
+    }
+}
 
 type TestJournal = acyclic_harness::filesystem::FilesystemExecutionJournal<
     acyclic_stream::MemoryStream,
@@ -329,17 +371,16 @@ async fn skill_invocation_loads_the_pinned_body_and_enforces_limits() -> Result<
         .put("skills/inspect/SKILL.md", b"replacement", "replacement")
         .await?;
     let skill = first_skill(&captured)?;
-    let message = skill.invoke(fixture.reader.as_ref(), 512).await?;
-    let acyclic_harness::model::ModelContent::Part(
-        acyclic_harness::model::ModelContentPart::File { file, .. },
-    ) = message.content
-    else {
-        return Err(Error::Invalid("expected skill file".into()));
+    let reader = CountingReader {
+        inner: fixture.reader.as_ref(),
+        reads: AtomicUsize::new(0),
     };
-    assert_eq!(
-        fixture.reader.read(&file, 512, None)?.await?.as_ref(),
-        original
-    );
+    let message = skill.invoke(&reader, 512).await?;
+    let ModelContent::Text(text) = message.content else {
+        return Err(Error::Invalid("expected skill text".into()));
+    };
+    assert_eq!(text.as_bytes(), original);
+    assert_eq!(reader.reads.load(Ordering::Relaxed), 1);
     assert!(skill.invoke(fixture.reader.as_ref(), 8).await.is_err());
     assert!(skill.invoke(fixture.reader.as_ref(), 0).await.is_err());
     for (key, byte) in [("nul-body", 0), ("invalid-body", 255)] {

@@ -17,6 +17,11 @@ build = "build.rs"
 name = "main"
 path = "tests/main.rs"
 
+[[test]]
+name = "context-discovery"
+path = "tests/context_discovery.rs"
+required-features = ["filesystem"]
+
 [lib]
 crate-type = ["rlib", "cdylib"]
 

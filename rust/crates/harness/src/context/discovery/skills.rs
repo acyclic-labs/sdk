@@ -24,18 +24,18 @@ impl SkillMetadata {
         maximum_bytes: u64,
     ) -> Result<ModelMessage> {
         self.validate(&mut None)?;
-        let (file, bytes) = self.source.read(reader, maximum_bytes).await?;
-        if std::str::from_utf8(&bytes).is_err() || bytes.contains(&0) {
-            return Err(Error::Invalid(
-                "skill body is oversized or invalid text".into(),
-            ));
+        let (_, bytes) = self.source.read(reader, maximum_bytes).await?;
+        let bytes = bytes
+            .try_into_ordinary_vec()
+            .unwrap_or_else(|bytes| bytes.to_vec());
+        let text = String::from_utf8(bytes)
+            .map_err(|_| Error::Invalid("skill body is invalid text".into()))?;
+        if text.contains('\0') {
+            return Err(Error::Invalid("skill body is invalid text".into()));
         }
         Ok(ModelMessage {
             role: ModelRole::System,
-            content: ModelContent::Part(ModelContentPart::File {
-                file,
-                policy: FileProjectionPolicy::BoundedFull,
-            }),
+            content: ModelContent::Text(text),
         })
     }
 

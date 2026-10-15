@@ -86,7 +86,7 @@ impl Default for CompactionPolicy {
     }
 }
 
-#[cfg(feature = "filesystem")]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl CompactionPolicy {
     /// Copies the policy on the optional original preparation ledger.
     pub(crate) fn copy(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Self> {
