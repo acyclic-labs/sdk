@@ -6,7 +6,13 @@ use crate::kernel::{
 };
 use std::sync::{Arc, Weak};
 
-type Observer = (Arc<ProofDataCustody>, u64, Option<u128>);
+struct Observer {
+    token: Arc<ProofDataCustody>,
+    paid: u64,
+    retired: u128,
+    native: bool,
+    non_native_bytes: u64,
+}
 pub(super) const SCAN: WorkCounters = WorkCounters {
     items_examined: 1,
     ..WorkCounters::UNCHARGED
@@ -50,25 +56,59 @@ pub(crate) struct Admissions {
     pub(crate) view_gates: crate::native_mount::ViewGateReadAdmissions,
 }
 fn observer_bytes(entry: &Observer) -> u64 {
-    if entry.2.is_some() {
-        entry.0.non_native_retained_payload_bytes()
+    if entry.native {
+        if entry.token.native_accounting_pending() {
+            entry.token.non_native_retained_payload_bytes()
+        } else {
+            entry.non_native_bytes
+        }
     } else {
-        entry.0.retained_payload_bytes()
+        entry.token.retained_payload_bytes()
     }
 }
 fn native_retired(entry: &Observer) -> u64 {
-    entry.2.map_or(0, |previous| {
-        let retired = entry
-            .0
-            .native_control_events()
-            .1
-            .checked_sub(previous)
-            .expect("monotonic retirement");
-        u64::try_from(retired).expect("bounded live native bytes")
-    })
+    if !entry.native || !entry.token.native_accounting_pending() {
+        return 0;
+    }
+    let retired = entry
+        .token
+        .native_control_events()
+        .1
+        .checked_sub(entry.retired)
+        .expect("monotonic retirement");
+    u64::try_from(retired).expect("bounded live native bytes")
 }
 fn mount_bytes(entry: &(Weak<NativeMountAllocationCustody>, u64)) -> u64 {
     entry.0.upgrade().map_or(0, |owner| owner.retained_bytes())
+}
+fn reconcile_native_observer(
+    entry: &mut Observer,
+    allocations: &mut AllocationLedger,
+) -> Result<(), crate::WorkError> {
+    if !entry.native {
+        return Ok(());
+    }
+    let Some((retired, non_native)) = entry.token.take_native_accounting_change()? else {
+        return Ok(());
+    };
+    let reconciled = (|| {
+        let released = u64::try_from(
+            retired
+                .checked_sub(entry.retired)
+                .ok_or(crate::WorkError::Overflow)?,
+        )
+        .map_err(|_| crate::WorkError::Overflow)?;
+        allocations
+            .release(released)
+            .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
+        entry.retired = retired;
+        entry.non_native_bytes = non_native;
+        Ok(())
+    })();
+    if reconciled.is_err() {
+        entry.token.retry_native_accounting();
+    }
+    reconciled
 }
 impl Admissions {
     pub(super) fn live_bytes(&self, live: u64) -> u64 {
@@ -76,7 +116,7 @@ impl Admissions {
             .observers
             .0
             .iter()
-            .map(|entry| (entry.1, observer_bytes(entry)))
+            .map(|entry| (entry.paid, observer_bytes(entry)))
             .chain(
                 self.native_mount_admissions
                     .0
@@ -125,26 +165,17 @@ impl DemandWork {
     }
     pub(crate) fn reconcile_native_controls(&mut self) -> Result<(), crate::WorkError> {
         for entry in &mut self.roots.observers.0 {
-            if entry.2.is_some() {
-                let (born, retired) = entry.0.native_control_events();
-                if retired > born {
-                    return Err(crate::WorkError::Overflow);
-                }
-                self.allocations
-                    .release(native_retired(entry))
-                    .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
-                entry.2 = Some(retired);
-            }
+            reconcile_native_observer(entry, &mut self.allocations)?;
         }
         let mut index = 0;
         while index < self.roots.observers.0.len() {
             let entry = &self.roots.observers.0[index];
-            if entry.2.is_some()
-                && Arc::strong_count(&entry.0) == 1
-                && entry.0.retained_payload_bytes() == 0
+            if entry.native
+                && Arc::strong_count(&entry.token) == 1
+                && entry.token.retained_payload_bytes() == 0
             {
                 let entry = self.roots.observers.0.swap_remove(index);
-                let bytes = entry.0.logical_owned_bytes() + entry.1;
+                let bytes = entry.token.logical_owned_bytes() + entry.paid;
                 drop(entry);
                 self.allocations
                     .release(bytes)
@@ -166,7 +197,7 @@ impl DemandWork {
         self.reconcile_native_controls()?;
         let observers = self.roots.observers.0.iter_mut().map(|entry| {
             let actual = observer_bytes(entry);
-            (&mut entry.1, actual)
+            (&mut entry.paid, actual)
         });
         let mounts = self
             .roots
@@ -208,13 +239,19 @@ impl DemandWork {
     ) -> Result<Option<usize>, DemandError> {
         for entry in &self.roots.observers.0 {
             self.work.charge(&SCAN, &self.budget)?;
-            if Arc::ptr_eq(&entry.0, &token) {
+            if Arc::ptr_eq(&entry.token, &token) {
                 return Ok(None);
             }
         }
         insert(
             &mut self.roots.observers,
-            (token, 0, None),
+            Observer {
+                token,
+                paid: 0,
+                retired: 0,
+                native: false,
+                non_native_bytes: 0,
+            },
             &mut self.allocations,
             &mut self.work,
             self.budget,
@@ -226,7 +263,7 @@ impl DemandWork {
             .observers
             .0
             .iter()
-            .any(|entry| entry.2.is_some() && Arc::ptr_eq(&entry.0, token))
+            .any(|entry| entry.native && Arc::ptr_eq(&entry.token, token))
     }
     pub(crate) fn prepare_cancelled(
         &mut self,
@@ -283,12 +320,14 @@ impl NativeDemandReadMeter {
             .map_err(crate::materializer::native_materialization_work_error)?
             .ok_or(Error::InvalidLayout)?;
         header.transfer_checkout_metadata(self, token.logical_owned_bytes())?;
-        work.roots
+        let entry = work
+            .roots
             .observers
             .0
             .get_mut(index)
-            .ok_or(Error::InvalidLayout)?
-            .2 = Some(0);
+            .ok_or(Error::InvalidLayout)?;
+        entry.native = true;
+        entry.retired = 0;
         Ok(token.clone())
     }
 }

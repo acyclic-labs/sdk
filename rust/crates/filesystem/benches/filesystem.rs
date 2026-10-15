@@ -11,8 +11,84 @@ use tokio::runtime::Runtime;
 
 type LocalWorkspace = Workspace<LocalAuthorityBackend, LocalObjectBackend>;
 
-fn main() {
+pub(crate) fn main() {
+    if std::env::var_os("ACYCLIC_BENCH_TRACE").is_some() {
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(std::io::sink)
+            .init();
+    }
     divan::main();
+}
+
+#[cfg(feature = "memory")]
+#[divan::bench(args = [0, 1, 16, 128], sample_count = 200, sample_size = 64)]
+fn accounting_reconcile(bencher: Bencher, observers: usize) {
+    accounting_bench(bencher, observers, false);
+}
+
+#[cfg(feature = "memory")]
+#[divan::bench(args = [0, 128], threads = [4], sample_count = 200, sample_size = 64)]
+fn accounting_shared(bencher: Bencher, observers: usize) {
+    accounting_bench(bencher, observers, true);
+}
+
+#[cfg(feature = "memory")]
+fn accounting_bench(bencher: Bencher, observers: usize, shared: bool) {
+    let runtime = Runtime::new().unwrap();
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+    let fs = Fs::memory();
+    let workspace = runtime
+        .block_on(Box::pin(fs.create_workspace(
+            "accounting",
+            budget,
+            &cancellation,
+        )))
+        .unwrap()
+        .value;
+    let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).unwrap();
+    let mut checkouts = Vec::with_capacity(observers);
+    for _ in 0..observers {
+        checkouts.push(
+            runtime
+                .block_on(Box::pin(workspace.checkout(
+                    acyclic_fs::model::GenerationSelector::Head,
+                    acyclic_fs::model::CheckoutMode::read_only_pinned(),
+                    &work,
+                    &cancellation,
+                )))
+                .unwrap(),
+        );
+    }
+    let delta = acyclic_fs::WorkCounters {
+        items_examined: 1,
+        ..acyclic_fs::WorkCounters::UNCHARGED
+    };
+    if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() {
+        eprintln!(
+            "observers={observers} live={} work={:?}",
+            work.live_allocation_bytes(),
+            work.receipt()
+        );
+    }
+    if shared {
+        bencher.bench(|| work.charge(delta).unwrap());
+    } else {
+        bencher.bench_local(|| work.charge(delta).unwrap());
+    }
+    if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() {
+        eprintln!("after observers={observers} work={:?}", work.receipt());
+    }
+    std::hint::black_box(checkouts);
+}
+
+#[divan::bench(sample_count = 200, sample_size = 64)]
+fn accounting_charge_local(bencher: Bencher) {
+    let mut work = acyclic_fs::WorkCounters::UNCHARGED;
+    let budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+    bencher.bench_local(|| work.charge_items(1, &budget).unwrap());
+    std::hint::black_box(work);
 }
 
 fn workspace(runtime: &Runtime) -> (tempfile::TempDir, LocalFs, LocalWorkspace) {
