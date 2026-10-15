@@ -14,10 +14,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = prost_build::Config::new();
     config.protoc_executable(protoc);
     config.boxed(".acyclic.harness.v2.ClientFrame.command");
-    config.file_descriptor_set_path(
-        std::path::PathBuf::from(std::env::var("OUT_DIR")?).join("harness_descriptor.bin"),
-    );
+    let descriptor =
+        std::path::PathBuf::from(std::env::var("OUT_DIR")?).join("harness_descriptor.bin");
+    config.file_descriptor_set_path(&descriptor);
     config.compile_protos(&[proto], &[include])?;
+    let digest = blake3::hash(&std::fs::read(descriptor)?);
+    println!(
+        "cargo:rustc-env=HARNESS_DESCRIPTOR_DIGEST={}",
+        digest.to_hex()
+    );
     #[cfg(feature = "grpc")]
     {
         // Tonic service glue reuses the canonical messages generated above;

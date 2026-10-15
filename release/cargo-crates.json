@@ -10,6 +10,7 @@
   "acyclic-workers",
   "acyclic-stream",
   "acyclic-fs",
+  "acyclic-harness-tui",
   "acyclic-harness",
   "acyclic-plugin"
 ]
