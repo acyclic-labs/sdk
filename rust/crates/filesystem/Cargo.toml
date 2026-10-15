@@ -8,19 +8,9 @@ license.workspace = true
 repository.workspace = true
 description = "Rust SDK for versioned workspaces and embedded native mounts"
 readme = "README.md"
-exclude = ["benches"]
 documentation = "https://docs.rs/acyclic-fs"
 keywords = ["filesystem", "copy-on-write", "versioned", "storage"]
 categories = ["filesystem", "data-structures"]
-
-[[test]]
-name = "main"
-path = "tests/main.rs"
-
-[[test]]
-name = "cloud_contract"
-path = "tests/cloud_contract.rs"
-required-features = ["memory"]
 
 [[test]]
 name = "projfs_profile"
@@ -32,10 +22,34 @@ name = "projfs_metadata"
 path = "tests/projfs_metadata.rs"
 required-features = ["local", "memory", "native-mount"]
 
-[[bench]]
-name = "filesystem"
-harness = false
-required-features = ["local"]
+[[test]]
+name = "main"
+path = "tests/main.rs"
+
+[[test]]
+name = "cloud_contract"
+path = "tests/cloud_contract.rs"
+required-features = ["memory"]
+
+[[test]]
+name = "native_owner_registry"
+path = "tests/native_owner_registry.rs"
+required-features = ["native-watch"]
+
+[[test]]
+name = "accounting_reconciliation"
+path = "tests/accounting_reconciliation.rs"
+required-features = ["memory"]
+
+[[test]]
+name = "workspace_reads"
+path = "tests/workspace_reads.rs"
+required-features = ["memory"]
+
+[[test]]
+name = "native_owner_notifications"
+path = "tests/native_owner_notifications.rs"
+required-features = ["native-watch"]
 
 [dependencies]
 async-trait.workspace = true
@@ -142,7 +156,6 @@ napi-types = ["dep:napi", "dep:napi-derive"]
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
 tracing-subscriber.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
-divan.workspace = true
 axum.workspace = true
 hmac = "0.13.0"
 http.workspace = true

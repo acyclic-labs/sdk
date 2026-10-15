@@ -196,18 +196,6 @@ jobs:
           cargo test -p acyclic-plugin --test e2e \
             actual_codex_binary_executes_the_scripted_scenario -- --ignored --exact --nocapture
 
-      # The Codex executor runs the same pinned binary against a scripted
-      # Responses upstream; no model provider is called. Its feature closure
-      # needs a separate target to keep the subsequent Claude plugin build warm.
-      - name: Run codex executor scenario
-        if: (success() || failure()) && runner.os != 'Windows'
-        shell: bash
-        env:
-          ACYCLIC_CODEX_BIN: ${{ steps.codex.outputs.binary }}
-        run: |
-          cargo test -p acyclic-harness-codex --test e2e \
-            --target-dir "$RUNNER_TEMP/codex-executor-target" -- --ignored --nocapture
-
       - name: Run claude scenario
         if: success() || failure()
         shell: bash

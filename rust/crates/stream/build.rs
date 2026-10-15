@@ -16,9 +16,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_client(grpc)
         .compile_with_config(
             prost,
-            &[std::path::Path::new("proto/stream/v1/stream.proto")],
+            &[
+                std::path::Path::new("proto/stream/v1/stream.proto"),
+                std::path::Path::new("proto/stream/v1/session.proto"),
+            ],
             &[std::path::Path::new("proto"), include.as_path()],
         )?;
     println!("cargo:rerun-if-changed=proto/stream/v1/stream.proto");
+    println!("cargo:rerun-if-changed=proto/stream/v1/session.proto");
     Ok(())
 }

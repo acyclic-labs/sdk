@@ -61,11 +61,13 @@ pub(super) struct ProjectionState {
     pub(super) inode_by_path: HashMap<FuseOwned<MountPath>, u64>,
     pub(super) inode_by_file: HashMap<crate::FileId, (u64, crate::NativeAllocation)>,
     pub(super) files: HashMap<u64, FileHandle>,
-    pub(super) implicit: HashMap<u64, (u64, crate::NativeAllocation)>,
     pub(super) streams: DirectoryStreams,
     pub(super) invalidation: InvalidationQueue,
     pub(super) superseded_attributes:
         FuseOwned<Vec<(u64, crate::materializer::NativeWorkReservation)>>,
+    /// Numbers listing replies, so a reply can tell an inode it already
+    /// carries (see [`InodeEntry::listed_in_reply`]).
+    pub(super) listing_replies: u64,
 }
 
 impl ProjectionState {
@@ -95,10 +97,10 @@ impl ProjectionState {
             inode_by_path: HashMap::new(),
             inode_by_file: HashMap::new(),
             files: HashMap::new(),
-            implicit: HashMap::new(),
             streams: DirectoryStreams::default(),
             invalidation: InvalidationQueue::default(),
             superseded_attributes: FuseOwned::default(),
+            listing_replies: 0,
         }
     }
 
@@ -231,12 +233,8 @@ impl ProjectionState {
         if inode == ROOT_INODE {
             return;
         }
-        let forgotten = self.by_inode.get_mut(&inode).is_some_and(|entry| {
+        if let Some(entry) = self.by_inode.get_mut(&inode) {
             entry.lookup_references = entry.lookup_references.saturating_sub(references);
-            entry.lookup_references == 0
-        });
-        if forgotten && let Some(implicit) = self.implicit.remove(&inode) {
-            let _ = self.discard_file_handle(inode, implicit.0);
         }
         if self
             .by_inode

@@ -52,7 +52,9 @@ impl HttpObjects {
                     line(
                         "PutObjectRequest",
                         &wire::PutObjectRequest {
-                            frame: Some(wire::put_object_request::Frame::Body(chunk?.to_vec())),
+                            frame: Some(wire::put_object_request::Frame::Body(upload::body_bytes(
+                                chunk?,
+                            ))),
                         },
                     )
                 });
@@ -116,7 +118,9 @@ impl HttpObjects {
                     line(
                         "UploadPartRequest",
                         &wire::UploadPartRequest {
-                            frame: Some(wire::upload_part_request::Frame::Body(chunk?.to_vec())),
+                            frame: Some(wire::upload_part_request::Frame::Body(
+                                upload::body_bytes(chunk?),
+                            )),
                         },
                     )
                 });

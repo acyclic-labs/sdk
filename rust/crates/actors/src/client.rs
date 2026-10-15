@@ -357,7 +357,9 @@ macro_rules! client_operations {
                             .map_err(|error| Error::Configuration(error.to_string()))?;
                         let input = domain::$input::try_from(input)
                             .map_err(|error| Error::Configuration(error.to_string()))?;
-                        let output = self.$method(&input).await?;
+                        let response = self.inner.clone().$method(wire::$input::from(input)).await
+                            .map(tonic::Response::into_inner).map_err(service_error)?;
+                        let output = domain::$output::try_from(response)?;
                         Ok(wire::$output::from(output).encode_to_vec())
                     }, )*
                     _ => Err(Error::Configuration("unknown Actors service method".into())),
@@ -561,3 +563,6 @@ mod tests {
         assert_eq!(Error::Cancelled.code_name(), "cancelled");
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod request_path_tests;

@@ -22,9 +22,8 @@ test('Linux host qualification uses the smallest registered runner and retains e
  const scenarios=[
   ['Build host scenario',undefined,'cargo test -p acyclic-plugin --test e2e --no-run --locked'],
   ['Run Pi installed diagnostics and native context qualification',undefined,
-   'suffix="" if [[ "$RUNNER_OS" == Windows ]]; then suffix=".exe"; fi ACYCLIC_BINARY="$CARGO_TARGET_DIR/debug/acyclic$suffix" node --experimental-strip-types --test plugin/tests/hosts/pi-context.test.ts plugin/tests/hosts/pi-bootstrap.test.ts plugin/tests/hosts/pi-installation.test.ts'],
+   'suffix="" if [[ "$RUNNER_OS" == Windows ]]; then suffix=".exe"; fi export ACYCLIC_BINARY="$CARGO_TARGET_DIR/debug/acyclic$suffix" cd plugin/tests/hosts bun run test:pi-context bun run test:pi-context-mail bun run test:pi-bootstrap bun run test:pi-session bun run test:pi-installation bun run test:pi-service bun run test:pi-native-recursive bun run test:pi-context-fresh bun run test:pi-context-pages bun run test:pi-builtin-paths'],
   ['Run codex scenario',undefined,'cargo test -p acyclic-plugin --test e2e actual_codex_binary_executes_the_scripted_scenario -- --ignored --exact --nocapture'],
-  ['Run codex executor scenario',"(success() || failure()) && runner.os != 'Windows'",'cargo test -p acyclic-harness-codex --test e2e --target-dir "$RUNNER_TEMP/codex-executor-target" -- --ignored --nocapture'],
   ['Run claude scenario','success() || failure()','cargo test -p acyclic-plugin --test e2e actual_claude_binary_executes_the_scripted_scenario -- --ignored --exact --nocapture'],
  ];
  /** @param {ReturnType<typeof YAML.parse>} document */

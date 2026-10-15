@@ -86,6 +86,7 @@ dependencies = [
  "axum",
  "blake3",
  "bytes",
+ "divan",
  "futures",
  "hex",
  "notify",
@@ -95,6 +96,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -130,7 +133,6 @@ dependencies = [
  "cc",
  "crc-fast",
  "diffy",
- "divan",
  "fs2",
  "fuser",
  "futures",
@@ -244,6 +246,7 @@ name = "acyclic-harness"
 version = "0.2.0"
 dependencies = [
  "acyclic-fs",
+ "acyclic-harness",
  "acyclic-machines",
  "acyclic-native-runtime",
  "acyclic-objects",
@@ -252,7 +255,6 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "bytes",
- "divan",
  "futures",
  "hex",
  "http",
@@ -285,29 +287,6 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
-]
-
-[[package]]
-name = "acyclic-harness-codex"
-version = "0.2.0"
-dependencies = [
- "acyclic-harness",
- "acyclic-native-runtime",
- "acyclic-stream",
- "axum",
- "blake3",
- "futures",
- "jsonschema",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]
@@ -428,7 +407,6 @@ dependencies = [
  "bytes",
  "compio-buf",
  "compio-driver",
- "divan",
  "futures-core",
  "libc",
  "pin-project-lite",
@@ -450,7 +428,6 @@ dependencies = [
  "axum",
  "blake3",
  "bytes",
- "divan",
  "fs2",
  "futures",
  "getrandom 0.4.3",
@@ -4599,15 +4576,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_spanned"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
-dependencies = [
- "serde_core",
-]
-
-[[package]]
 name = "serde_urlencoded"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5067,21 +5035,6 @@ dependencies = [
  "libc",
  "pin-project-lite",
  "tokio",
-]
-
-[[package]]
-name = "toml"
-version = "1.1.6+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "920602543f0911ab71da12c50d59701da54c196d1a2bf5cb4b75667f137a406a"
-dependencies = [
- "indexmap",
- "serde_core",
- "serde_spanned",
- "toml_datetime",
- "toml_parser",
- "toml_writer",
- "winnow",
 ]
 
 [[package]]

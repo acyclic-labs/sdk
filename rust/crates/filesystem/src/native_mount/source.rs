@@ -474,6 +474,16 @@ pub enum MountSourceError {
     /// Create-only operation found an existing object.
     #[error("filesystem object already exists")]
     AlreadyExists,
+    /// A directory may not take the place of a non-directory (`ENOTDIR`).
+    #[error("filesystem object is not a directory")]
+    NotDirectory,
+    /// A non-directory may not take the place of a directory (`EISDIR`).
+    #[error("filesystem object is a directory")]
+    IsDirectory,
+    /// The operation would remove or replace a directory that is not empty
+    /// (`ENOTEMPTY`).
+    #[error("directory is not empty")]
+    DirectoryNotEmpty,
     /// Operation is invalid for the resolved kind or profile.
     #[error("invalid filesystem operation: {0}")]
     Invalid(std::borrow::Cow<'static, str>),
@@ -628,6 +638,8 @@ pub(super) fn native_workspace_errno(error: &crate::WorkspaceError) -> i32 {
         WorkspaceError::NotDirectory | WorkspaceError::Filesystem(crate::FsError::NotDirectory) => {
             libc::ENOTDIR
         }
+        WorkspaceError::IsDirectory => libc::EISDIR,
+        WorkspaceError::DirectoryNotEmpty => libc::ENOTEMPTY,
         WorkspaceError::NamespacePath(crate::kernel::NamespacePathError::Work(_)) => libc::EIO,
         WorkspaceError::NamespacePath(crate::kernel::NamespacePathError::AllocationFailed)
         | WorkspaceError::Filesystem(crate::FsError::HandleAllocationFailed) => libc::ENOMEM,

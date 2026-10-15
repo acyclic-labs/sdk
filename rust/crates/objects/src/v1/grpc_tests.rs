@@ -447,7 +447,7 @@ async fn platform_roots_come_from_ssl_cert_file_and_a_declared_ca_replaces_them(
             })
             .await
     });
-    let client = GrpcObjects::connect(&endpoint, "exact-token", None).await?;
+    let client = GrpcObjects::connect(&endpoint, "exact-token", None, None).await?;
     client
         .create_bucket(wire::CreateBucketRequest {
             name: "platform.roots".into(),
@@ -456,9 +456,14 @@ async fn platform_roots_come_from_ssl_cert_file_and_a_declared_ca_replaces_them(
         .await?;
     let other = rcgen::generate_simple_self_signed(["localhost".to_owned()])?;
     assert!(
-        GrpcObjects::connect(&endpoint, "exact-token", Some(other.cert.pem().as_bytes()))
-            .await
-            .is_err(),
+        GrpcObjects::connect(
+            &endpoint,
+            "exact-token",
+            Some(other.cert.pem().as_bytes()),
+            None
+        )
+        .await
+        .is_err(),
         "a declared CA must be the whole trust"
     );
     let _ = shutdown_tx.send(());

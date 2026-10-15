@@ -57,6 +57,36 @@ test = false
 path = "src/bin/bench_objects.rs"
 required-features = ["local-runner"]
 
+[[bench]]
+name = "filesystem"
+harness = false
+required-features = ["local-runner"]
+
+[[bench]]
+name = "filesystem_alloc"
+harness = false
+required-features = ["local-runner"]
+
+[[bench]]
+name = "objects"
+harness = false
+required-features = ["local-runner"]
+
+[[bench]]
+name = "harness"
+harness = false
+required-features = ["local-runner"]
+
+[[bench]]
+name = "client_demand"
+harness = false
+required-features = ["local-runner"]
+
+[[bench]]
+name = "write_validation"
+harness = false
+required-features = ["local-runner"]
+
 [[bin]]
 name = "s3-fixture"
 test = false
@@ -87,4 +117,7 @@ test = false
 workspace = true
 
 [dev-dependencies]
+divan.workspace = true
 tempfile = "3.27.0"
+tracing.workspace = true
+tracing-subscriber.workspace = true

@@ -17,6 +17,28 @@ pub struct SkillMetadata {
 }
 
 impl SkillMetadata {
+    /// Loads the selected skill at its discovered generation under a finite body limit.
+    pub async fn invoke(
+        &self,
+        reader: &dyn ContentResidencyVerifier,
+        maximum_bytes: u64,
+    ) -> Result<ModelMessage> {
+        self.validate(&mut None)?;
+        let (_, bytes) = self.source.read(reader, maximum_bytes).await?;
+        let bytes = bytes
+            .try_into_ordinary_vec()
+            .unwrap_or_else(|bytes| bytes.to_vec());
+        let text = String::from_utf8(bytes)
+            .map_err(|_| Error::Invalid("skill body is invalid text".into()))?;
+        if text.contains('\0') {
+            return Err(Error::Invalid("skill body is invalid text".into()));
+        }
+        Ok(ModelMessage {
+            role: ModelRole::System,
+            content: ModelContent::Text(text),
+        })
+    }
+
     /// Validates restored metadata without performing reads.
     pub fn validate(
         &self,

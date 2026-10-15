@@ -128,6 +128,8 @@ mod attributes;
 mod authored_compile;
 mod authored_model;
 mod authored_records;
+#[cfg(feature = "native-mount")]
+mod candidate_rebase;
 mod candidates;
 mod checkout;
 mod collection;
@@ -139,6 +141,10 @@ mod diff;
 mod directory;
 mod error;
 mod extents;
+#[cfg(feature = "native-mount")]
+mod merged_names;
+#[cfg(feature = "native-mount")]
+mod rename_bindings;
 pub(crate) use extents::seek_record_extent_with_accounting;
 mod fork;
 mod fs;

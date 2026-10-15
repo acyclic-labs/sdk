@@ -72,16 +72,18 @@ where
         let installed = authored
             .shared_checkout()
             .install_candidate(
-                candidate,
+                (candidate, None),
                 carrier,
                 cancellation,
                 Some(authored.cancellation()),
-                |carrier| {
-                    adapter::record_view_change(
-                        &authored.shared_checkout().ledger,
-                        &ViewChange::Effect(&installed),
-                        carrier,
-                    )
+                |carrier, stamp| {
+                    if authored.shared_checkout().ledger.stamp() != stamp {
+                        return Err(MountSourceError::Stale);
+                    }
+                    authored
+                        .shared_checkout()
+                        .ledger
+                        .record_deferred(&ViewChange::Effect(&installed), carrier)
                 },
                 |checkout, candidate, prepared| {
                     cancellation

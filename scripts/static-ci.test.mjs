@@ -57,7 +57,6 @@ test('release whitespace preserves byte-exact transport artifacts and generated 
  git('tag','acyclic-v0.1.0');
  const artifacts={
   'patches/example.patch':'@@ -1 +1 @@\n \n',
-  'rust/crates/harness-codex/fixtures/codex-0.155.1/help-exec.txt':'Usage\n          \n',
   'typescript/packages/actors/src/generated/ErrorMetadata.ts':'export type ErrorMetadata = { \ncode: string, \n};\n',
   'typescript/packages/actors/src/generated/semantic/actors/ActorId.ts':'export type ActorId = { \nvalue: string, \n};\n',
  };

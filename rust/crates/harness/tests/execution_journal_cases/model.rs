@@ -7,7 +7,9 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
     let scope = scope(&issuer, &private, agent, &[])?;
     let stream = Arc::new(MemoryStream::default());
     let journal = journal(stream.clone(), host, &private, &issuer, &scope)?;
-    let model = Arc::new(TextModel(AtomicUsize::new(0)));
+    let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
+        "private answer".into(),
+    )]));
     let executor = StockExecutor::new(
         Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,
         model.clone(),
@@ -76,7 +78,7 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
     let again = executor.execute(input, &journal).await?;
     assert_eq!(first, again);
     assert_eq!(first.text, "private answer");
-    assert_eq!(model.0.load(Ordering::SeqCst), 1);
+    assert_eq!(model.requests().len(), 1);
     let records = journal.replay(operation_id, 0, 64, None)?.await?;
     assert_eq!(records.len(), 5);
     let stream = acyclic_stream::Stream::new(
