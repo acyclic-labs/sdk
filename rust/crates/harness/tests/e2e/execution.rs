@@ -19,18 +19,7 @@ use std::sync::Arc;
 
 pub(super) async fn run(mut case: Scenario) -> TestResult {
     let limits = case.execution_limits()?;
-    let storage = MemoryHarnessStorage::new(AgentId::new(), 1_048_576).await?;
-    for (path, contents) in &case.seed {
-        storage
-            .stage(
-                OperationId::new(),
-                path,
-                contents.as_bytes(),
-                "text/plain",
-                path.rsplit('/').next().unwrap_or_default(),
-            )
-            .await?;
-    }
+    let storage = workspace(&case.seed).await?;
     case.seed.clear();
     let (executor, provider, source) = configure(&mut case, limits)?;
     let input = TurnInput {
@@ -56,7 +45,33 @@ pub(super) async fn run(mut case: Scenario) -> TestResult {
     }
     check_provider(&case.expect, &provider, journal.as_ref()).await?;
     check_events(&case.expect, journal.as_ref(), operation).await?;
-    check_files(&case.expect, &storage).await
+    check_files(&case.expect.files, &storage).await
+}
+
+pub(super) async fn workspace(
+    seed: &std::collections::BTreeMap<String, String>,
+) -> TestResult<MemoryHarnessStorage> {
+    let storage = MemoryHarnessStorage::new(AgentId::new(), 1_048_576).await?;
+    publish(&storage, seed).await?;
+    Ok(storage)
+}
+
+pub(super) async fn publish(
+    storage: &MemoryHarnessStorage,
+    files: &std::collections::BTreeMap<String, String>,
+) -> TestResult {
+    for (path, contents) in files {
+        storage
+            .stage(
+                OperationId::new(),
+                path,
+                contents.as_bytes(),
+                "text/plain",
+                path.rsplit('/').next().unwrap_or_default(),
+            )
+            .await?;
+    }
+    Ok(())
 }
 
 fn configure(
@@ -299,11 +314,11 @@ async fn check_events(
     Ok(())
 }
 
-async fn check_files(
-    expected: &scenario::Expectations,
+pub(super) async fn check_files(
+    expected: &std::collections::BTreeMap<String, Option<String>>,
     storage: &MemoryHarnessStorage,
 ) -> TestResult {
-    for (path, expected) in &expected.files {
+    for (path, expected) in expected {
         let actual = storage
             .read_delegated_path(storage.owner_scope(), "", path, None)
             .await;

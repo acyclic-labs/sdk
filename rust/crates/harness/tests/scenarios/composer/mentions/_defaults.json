@@ -1,0 +1,4 @@
+{
+  "workspace": "project",
+  "seed": {"project/a.txt":"before","project/space name.txt":"spaces","project/λ.txt":"unicode"}
+}

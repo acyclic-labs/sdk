@@ -1,4 +1,6 @@
 //! Data-driven harness scenarios. `E2E_FILTER` selects a path substring.
+mod composer;
+mod drivers;
 mod execution;
 mod matchers;
 mod scenario;
@@ -202,7 +204,7 @@ async fn recovery_oracles_reject_wrong_prefixes_replies_counts_and_attempts() ->
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread")]
 async fn scenarios() -> TestResult {
     let started = Instant::now();
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
@@ -221,8 +223,8 @@ async fn scenarios() -> TestResult {
         async move {
             let case_path = path.clone();
             let result: TestResult = tokio::spawn(async move {
-                let case = Scenario::load(&root, &case_path)?;
-                tokio::time::timeout(Duration::from_secs(5), run(case)).await??;
+                let case = scenario::load_value(&root, &case_path)?;
+                tokio::time::timeout(Duration::from_secs(5), drivers::run(case)).await??;
                 Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
             })
             .await
@@ -230,7 +232,7 @@ async fn scenarios() -> TestResult {
             (path, result)
         }
     }))
-    .buffer_unordered(16);
+    .buffer_unordered(count);
     let mut failures = Vec::new();
     while let Some((path, result)) = results.next().await {
         let name = path.strip_prefix(&root)?.display();

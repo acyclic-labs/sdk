@@ -1,0 +1,4 @@
+{
+  "prompt": "/plan change",
+  "expect": {"error":"accepts no arguments"}
+}

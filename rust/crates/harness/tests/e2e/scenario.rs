@@ -70,31 +70,7 @@ impl Scenario {
     }
 
     pub fn load(root: &Path, path: &Path) -> Result<Self, String> {
-        let relative = path.strip_prefix(root).map_err(|e| e.to_string())?;
-        let mut merged = Value::Object(serde_json::Map::new());
-        let mut directory = root.to_path_buf();
-        let parents = relative.parent().ok_or("scenario has no parent")?;
-        for component in std::iter::once(None).chain(parents.components().map(Some)) {
-            if let Some(component) = component {
-                directory.push(component);
-            }
-            let defaults = directory.join("_defaults.json");
-            match std::fs::read(&defaults) {
-                Ok(bytes) => merge(
-                    &mut merged,
-                    serde_json::from_slice(&bytes)
-                        .map_err(|e| format!("{}: {e}", defaults.display()))?,
-                ),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(format!("{}: {error}", defaults.display())),
-            }
-        }
-        merge(
-            &mut merged,
-            serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
-                .map_err(|e| e.to_string())?,
-        );
-        Self::from_value(merged)
+        Self::from_value(load_value(root, path)?)
     }
 
     pub fn execution_limits(&self) -> Result<acyclic_harness::conversation::Limits, String> {
@@ -117,7 +93,7 @@ impl Scenario {
         Self::from_value(value)
     }
 
-    fn from_value(value: Value) -> Result<Self, String> {
+    pub(super) fn from_value(value: Value) -> Result<Self, String> {
         let forbidden = match value.get("kind").and_then(Value::as_str) {
             Some("summary") => &["prompt", "max_steps"][..],
             _ => &["instruction"][..],
@@ -150,6 +126,34 @@ impl Scenario {
         }
         Ok(scenario)
     }
+}
+
+pub(super) fn load_value(root: &Path, path: &Path) -> Result<Value, String> {
+    let relative = path.strip_prefix(root).map_err(|e| e.to_string())?;
+    let mut merged = Value::Object(serde_json::Map::new());
+    let mut directory = root.to_path_buf();
+    let parents = relative.parent().ok_or("scenario has no parent")?;
+    for component in std::iter::once(None).chain(parents.components().map(Some)) {
+        if let Some(component) = component {
+            directory.push(component);
+        }
+        let defaults = directory.join("_defaults.json");
+        match std::fs::read(&defaults) {
+            Ok(bytes) => merge(
+                &mut merged,
+                serde_json::from_slice(&bytes)
+                    .map_err(|e| format!("{}: {e}", defaults.display()))?,
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("{}: {error}", defaults.display())),
+        }
+    }
+    merge(
+        &mut merged,
+        serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?,
+    );
+    Ok(merged)
 }
 
 #[test]

@@ -1,0 +1,5 @@
+{
+  "prompt": "Read\n@a.txt",
+  "expect":{"mention_files":["before"],"result":{"kind":"prompt","text":"Read\n@a.txt","mentions":[{"start":5,"end":11}]
+    }}
+}
