@@ -3,6 +3,12 @@
 use crate::{Error, OperationId, Result, TaskId, conversation::VolumeClass};
 use serde::{Deserialize, Serialize};
 
+/// Maximum bytes in a JSON-quoted status reason, including its quotes.
+pub const GOAL_REASON_BYTES: usize = 128;
+/// Bytes reserved beyond the Markdown body for any canonical status rewrite.
+pub const GOAL_METADATA_HEADROOM: usize =
+    "---\nstatus: blocked\nreason: \n---\n".len() + GOAL_REASON_BYTES;
+
 /// Validated goal frontmatter status.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -78,9 +84,15 @@ impl GoalContinuationPolicy {
     ) -> Option<GoalContinuation> {
         let operation = goal.continuation_operation(task, settled_turn)?;
         Some(if admitted_continuations >= self.max_continuations {
-            GoalContinuation::Block(format!(
-                "---\nstatus: blocked\nreason: Maximum goal continuations reached (limit {}).\n---\n{}",
-                self.max_continuations, goal.markdown,
+            // This fixed ASCII reason, even at u32::MAX, fits GOAL_REASON_BYTES.
+            let reason = format!(
+                "\"Maximum goal continuations reached (limit {}).\"",
+                self.max_continuations,
+            );
+            GoalContinuation::Block(status_contents(
+                GoalStatus::Blocked,
+                Some(&reason),
+                &goal.markdown,
             ))
         } else {
             GoalContinuation::Continue(operation)
@@ -108,12 +120,27 @@ impl GoalView {
         let text = std::str::from_utf8(bytes)
             .map_err(|_| Error::Invalid("GOAL.md requires UTF-8".into()))?;
         let (frontmatter, markdown) = parse(text)?;
+        if maximum_bytes < GOAL_METADATA_HEADROOM as u64
+            || markdown.len() as u64 > maximum_bytes - GOAL_METADATA_HEADROOM as u64
+        {
+            return Err(Error::Invalid(
+                "goal body leaves no status metadata headroom".into(),
+            ));
+        }
+        encoded_reason(frontmatter.reason.as_deref())?;
         Ok(Self {
             source,
             status: frontmatter.status,
             reason: frontmatter.reason,
             markdown: markdown.to_owned(),
         })
+    }
+
+    /// Encodes an ordinary file rewrite, preserving the accepted Markdown body.
+    /// Reasons must fit the reserved metadata allowance after JSON escaping.
+    pub fn status_contents(&self, status: GoalStatus, reason: Option<&str>) -> Result<String> {
+        let reason = encoded_reason(reason)?;
+        Ok(status_contents(status, reason.as_deref(), &self.markdown))
     }
 
     /// Content revision, unaffected by unrelated writes to the same volume.
@@ -140,6 +167,39 @@ impl GoalView {
         let mut id = [0; 16];
         id.copy_from_slice(hash.finalize().as_bytes().get(..16)?);
         Some(OperationId::from_bytes(id))
+    }
+}
+
+fn encoded_reason(reason: Option<&str>) -> Result<Option<String>> {
+    reason
+        .map(|reason| {
+            // JSON escaping never shortens the input; reject before allocating.
+            if reason.len() > GOAL_REASON_BYTES.saturating_sub(2) {
+                return Err(Error::Invalid(
+                    "goal reason exceeds metadata allowance".into(),
+                ));
+            }
+            let encoded =
+                serde_json::to_string(reason).map_err(|error| Error::Invalid(error.to_string()))?;
+            if encoded.len() > GOAL_REASON_BYTES {
+                return Err(Error::Invalid(
+                    "goal reason exceeds metadata allowance".into(),
+                ));
+            }
+            Ok(encoded)
+        })
+        .transpose()
+}
+
+fn status_contents(status: GoalStatus, reason: Option<&str>, markdown: &str) -> String {
+    let status = match status {
+        GoalStatus::Active => "active",
+        GoalStatus::Blocked => "blocked",
+        GoalStatus::Done => "done",
+    };
+    match reason {
+        Some(reason) => format!("---\nstatus: {status}\nreason: {reason}\n---\n{markdown}"),
+        None => format!("---\nstatus: {status}\n---\n{markdown}"),
     }
 }
 
