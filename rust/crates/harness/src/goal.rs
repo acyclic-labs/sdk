@@ -1,4 +1,4 @@
-//! Read-only interpretation of an agent's ordinary GOAL.md file.
+//! File-driven goal state and bounded continuation decisions.
 
 use crate::{Error, OperationId, Result, TaskId, conversation::VolumeClass};
 use serde::{Deserialize, Serialize};
@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GoalStatus {
-    /// Continue after a settled turn when the goal revision has changed.
+    /// Continue after every settled turn, subject to the continuation policy.
     #[default]
     Active,
     /// Waiting for input or an external change.
@@ -24,6 +24,9 @@ pub struct GoalView {
     pub source: crate::conversation::FileRef,
     /// Frontmatter status; plain Markdown defaults to active.
     pub status: GoalStatus,
+    /// Explanation attached to a blocked or completed goal.
+    #[serde(default)]
+    pub reason: Option<String>,
     /// Markdown body, excluding frontmatter.
     pub markdown: String,
 }
@@ -33,6 +36,56 @@ pub struct GoalView {
 struct Frontmatter {
     #[serde(default)]
     status: GoalStatus,
+    reason: Option<String>,
+}
+
+/// Finite allowance for one goal loop; edits do not reset the allowance.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GoalContinuationPolicy {
+    /// Maximum unique automatic admissions; zero blocks at the first settle.
+    pub max_continuations: u32,
+}
+
+impl Default for GoalContinuationPolicy {
+    fn default() -> Self {
+        Self {
+            max_continuations: 32,
+        }
+    }
+}
+
+/// Action to publish through the existing task stream or ordinary file writer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GoalContinuation {
+    /// Admit once for this settled turn, reusing this identity on retry.
+    Continue(OperationId),
+    /// Write these GOAL.md contents before reporting the loop as blocked.
+    Block(String),
+}
+
+impl GoalContinuationPolicy {
+    /// Decides after a settle. The stream owner must reuse an existing admission
+    /// before evaluating this policy; retries never consume another allowance.
+    /// `admitted_continuations` counts unique automatic admissions in this loop.
+    #[must_use]
+    pub fn on_settle(
+        &self,
+        goal: &GoalView,
+        task: TaskId,
+        settled_turn: OperationId,
+        admitted_continuations: u32,
+    ) -> Option<GoalContinuation> {
+        let operation = goal.continuation_operation(task, settled_turn)?;
+        Some(if admitted_continuations >= self.max_continuations {
+            GoalContinuation::Block(format!(
+                "---\nstatus: blocked\nreason: Maximum goal continuations reached (limit {}).\n---\n{}",
+                self.max_continuations, goal.markdown,
+            ))
+        } else {
+            GoalContinuation::Continue(operation)
+        })
+    }
 }
 
 impl GoalView {
@@ -54,10 +107,11 @@ impl GoalView {
         source.descriptor().verify(bytes, &mut None)?;
         let text = std::str::from_utf8(bytes)
             .map_err(|_| Error::Invalid("GOAL.md requires UTF-8".into()))?;
-        let (status, markdown) = parse(text)?;
+        let (frontmatter, markdown) = parse(text)?;
         Ok(Self {
             source,
-            status,
+            status: frontmatter.status,
+            reason: frontmatter.reason,
             markdown: markdown.to_owned(),
         })
     }
@@ -68,35 +122,31 @@ impl GoalView {
         *self.source.descriptor().sha256()
     }
 
-    /// Stable admission identity for a settled turn and newly observed active goal.
-    /// The caller carries the admitted revision through continuation turns and
-    /// submits this identity through the existing durable task admission path.
+    /// Stable admission identity for one active goal's settled turn.
+    /// Goal edits and revisions do not change this identity.
     #[must_use]
     pub fn continuation_operation(
         &self,
         task: TaskId,
         settled_turn: OperationId,
-        admitted_revision: Option<[u8; 32]>,
     ) -> Option<OperationId> {
-        let revision = self.revision();
-        if self.status != GoalStatus::Active || admitted_revision == Some(revision) {
+        if self.status != GoalStatus::Active {
             return None;
         }
         let mut hash = blake3::Hasher::new();
-        hash.update(b"acyclic.goal.continue/v1\0");
+        hash.update(b"acyclic.goal.continue/v2\0");
         hash.update(&task.into_bytes());
         hash.update(&settled_turn.into_bytes());
-        hash.update(&revision);
         let mut id = [0; 16];
         id.copy_from_slice(hash.finalize().as_bytes().get(..16)?);
         Some(OperationId::from_bytes(id))
     }
 }
 
-fn parse(text: &str) -> Result<(GoalStatus, &str)> {
+fn parse(text: &str) -> Result<(Frontmatter, &str)> {
     let mut lines = text.split_inclusive('\n');
     if lines.next().map(|line| line.trim_end_matches(['\r', '\n'])) != Some("---") {
-        return Ok((GoalStatus::Active, text));
+        return Ok((Frontmatter::default(), text));
     }
     let start = text
         .find('\n')
@@ -130,14 +180,9 @@ fn parse(text: &str) -> Result<(GoalStatus, &str)> {
             let body = text
                 .get(end + line.len()..)
                 .ok_or_else(|| Error::Invalid("invalid goal body range".into()))?;
-            return Ok((frontmatter.status, body));
+            return Ok((frontmatter, body));
         }
         end += line.len();
     }
     Err(Error::Invalid("unclosed goal frontmatter".into()))
 }
-
-#[cfg(all(test, feature = "filesystem"))]
-mod scenarios;
-#[cfg(test)]
-mod tests;

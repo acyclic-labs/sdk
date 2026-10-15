@@ -1,5 +1,5 @@
 use super::*;
-use crate::{
+use acyclic_harness::{
     AgentId,
     context::CompactionPolicy,
     filesystem::MemoryHarnessStorage,
@@ -23,7 +23,7 @@ struct Case {
 
 #[tokio::test]
 async fn ordinary_goal_file_scenarios() -> Result<()> {
-    let cases: Vec<Case> = serde_json::from_str(include_str!("../../tests/goal_files.json"))
+    let cases: Vec<Case> = serde_json::from_str(include_str!("../goal_files.json"))
         .map_err(|error| Error::Invalid(error.to_string()))?;
     futures::future::try_join_all(cases.into_iter().map(run)).await?;
     Ok(())
@@ -32,7 +32,7 @@ async fn ordinary_goal_file_scenarios() -> Result<()> {
 async fn run(case: Case) -> Result<()> {
     let storage = MemoryHarnessStorage::new(
         AgentId::new(),
-        crate::conversation::Limits::default().file_bytes,
+        acyclic_harness::conversation::Limits::default().file_bytes,
     )
     .await?;
     let seed = match &case.seed {
