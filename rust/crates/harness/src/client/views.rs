@@ -42,6 +42,8 @@ pub struct ToolCallView {
 pub struct TaskView {
     /// Latest committed lifecycle.
     pub status: LifecycleState,
+    /// Operation that committed the latest lifecycle transition, if known.
+    pub lifecycle_operation_id: Option<String>,
     /// Optional diagnostic from the lifecycle transition.
     pub reason: Option<String>,
     /// Parent task, if this task was forked.
@@ -68,16 +70,23 @@ pub(super) fn authority_key(authority: &wire::Authority) -> String {
 }
 
 impl ClientViews {
-    pub(super) fn apply(&mut self, authority: &wire::Authority, payload: EventPayload) {
+    pub(super) fn apply(
+        &mut self,
+        authority: &wire::Authority,
+        operation_id: &str,
+        payload: EventPayload,
+    ) {
         let key = authority_key(authority);
         match payload {
             EventPayload::LifecycleTransitioned { to, reason, .. } => {
                 let view = self.tasks.entry(key).or_insert(TaskView {
                     status: to,
+                    lifecycle_operation_id: None,
                     reason: None,
                     parent: None,
                 });
                 view.status = to;
+                view.lifecycle_operation_id = Some(operation_id.to_owned());
                 view.reason = reason;
             }
             EventPayload::ConversationMessageAppended { message } => {
@@ -107,6 +116,7 @@ impl ClientViews {
                     .entry(authority_key(&encode_authority(&seed.child)))
                     .or_insert(TaskView {
                         status: LifecycleState::Pending,
+                        lifecycle_operation_id: None,
                         reason: None,
                         parent: None,
                     });

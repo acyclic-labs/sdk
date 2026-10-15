@@ -289,7 +289,10 @@ fn settlement<S: ClientStateStore>(
                 .owner
                 .as_ref()
                 .and_then(|owner| client.session().views().tasks.get(&authority_key(owner)));
-            if task.is_some_and(|task| task.status == LifecycleState::Waiting) {
+            if task.is_some_and(|task| {
+                task.status == LifecycleState::Waiting
+                    && task.lifecycle_operation_id.as_deref() == Some(target.operation_id.as_str())
+            }) {
                 return Ok(Some(HeadlessOutcome::Blocked));
             }
             if updates_ended {

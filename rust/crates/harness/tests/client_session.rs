@@ -637,3 +637,6 @@ mod headless;
 
 #[path = "client_session_recovery.rs"]
 mod recovery;
+
+#[path = "client_session_lifecycle.rs"]
+mod lifecycle;

@@ -171,36 +171,43 @@ impl HarnessWireApi for NativeSession {
                 &(binding.verifier()?),
                 &mut None,
             )?;
-            let pinned = reader.pin(cursor.revision, None).await?;
-            let page = reader
-                .read_page(
-                    &pinned,
+            let history = match reader
+                .follow(
+                    cursor.revision,
                     HistoryReadLimits {
                         maximum_events: MAX_PAGE_EVENTS as u32,
                         maximum_bytes: (MAX_FRAME_BYTES - 8192) as u64,
                     },
-                    None,
                 )
-                .await?;
-            if page.events.is_empty() {
-                return Ok(
-                    Box::pin(stream::empty()) as BoxProviderStream<'static, Result<wire::Delivery>>
-                );
-            }
-            let events = page
-                .events
-                .iter()
-                .map(|event| encode_event_envelope(&binding.authority, event, &mut None))
-                .collect::<Result<Vec<_>>>()?;
-            let delivery = wire::Delivery {
-                authority: cursor.authority,
-                generation: cursor.generation,
-                from_revision: cursor.revision,
-                through_revision: page.cursor.after_revision,
-                events,
-                live: false,
+                .await
+            {
+                Ok(history) => history,
+                // A pre-admission replay may precede creation of the owner stream.
+                // Admission invalidates this empty snapshot and opens replay again.
+                Err(Error::NotFound(_)) if cursor.revision == 0 => {
+                    return Ok(Box::pin(stream::empty())
+                        as BoxProviderStream<'static, Result<wire::Delivery>>);
+                }
+                Err(error) => return Err(error),
             };
-            Ok(Box::pin(stream::iter([Ok(delivery)]))
+            let owner = binding.authority.clone();
+            Ok(Box::pin(history.map(move |batch| {
+                let batch = batch?;
+                let from_revision = batch[0].revision - 1;
+                let through_revision = batch[batch.len() - 1].revision;
+                let events = batch
+                    .iter()
+                    .map(|event| encode_event_envelope(&owner, event, &mut None))
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(wire::Delivery {
+                    authority: cursor.authority.clone(),
+                    generation: cursor.generation.clone(),
+                    from_revision,
+                    through_revision,
+                    events,
+                    live: true,
+                })
+            }))
                 as BoxProviderStream<'static, Result<wire::Delivery>>)
         })
     }
@@ -300,3 +307,7 @@ impl HarnessWireApi for NativeSession {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "wire_tests.rs"]
+mod tests;

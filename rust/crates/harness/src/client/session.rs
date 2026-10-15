@@ -471,8 +471,8 @@ impl<S: ClientStateStore> ClientSession<S> {
         if persist {
             self.append_record(record)?;
         }
-        for payload in payloads {
-            self.views.apply(authority, payload);
+        for (event, payload) in delivery.events.iter().zip(payloads) {
+            self.views.apply(authority, &event.operation_id, payload);
         }
         if let Some(cursor) = self.cursors.get_mut(&key) {
             cursor.revision = revision;
