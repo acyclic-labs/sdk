@@ -1,21 +1,20 @@
-import type { AggregateKind, Authority, OperationId } from "./index.js";
-import type { FileRef, ReferencedAttachments } from "./conversation.js";
-import { NativeContracts } from "./native-contracts.js";
-import { isSafeAuthorityId } from "./rust-policy.js";
+import { type Authority, type OperationId } from "./index.js";
+import { type FileRef, type ReferencedAttachments } from "./conversation.js";
+import { type ClientCheckpoint, type OutboxStore, MemoryOutbox, type CursorStore, MemoryCursorStore, type AtomicClientStateStore, ClientCheckpointConflict } from "./client-store.js";
 import { SnapshotStore } from "./client-snapshot.js";
+import { RequestScheduler, requestBound, abortableWait } from "./client-requests.js";
+import { retainedDataBytes, assertOutboxSafe, cloneStructuredValue } from "./client-data.js";
 
 export interface ReplayCursor {
   readonly generation: string;
   readonly revision: bigint;
 }
-
 export interface ClientEvent<Event = unknown> {
   readonly authority: Authority;
   readonly revision: bigint;
   readonly operationId: OperationId;
   readonly event: Event;
 }
-
 export interface Delivery<Event = unknown> {
   readonly authority: Authority;
   readonly generation: string;
@@ -24,8 +23,6 @@ export interface Delivery<Event = unknown> {
   readonly events: readonly ClientEvent<Event>[];
   readonly live: boolean;
 }
-
-/** Only immutable addresses and bounded routing metadata may enter a retry outbox. */
 export interface OfflinePayload {
   readonly content?: FileRef;
   readonly attachments?: ReferencedAttachments;
@@ -34,260 +31,146 @@ export interface OfflinePayload {
   /** Numeric/boolean routing hints only; free-form strings could persist credentials. */
   readonly metadata?: Readonly<Record<string, number | boolean | bigint | null>>;
 }
-
-interface ClientCommandBase {
-  readonly operationId: OperationId;
-  readonly authority: Authority;
-  readonly kind: string;
-}
-
-export type ClientCommand<Payload = unknown> =
-  | (ClientCommandBase & Readonly<{ payload: OfflinePayload; offlineSafe: true }>)
-  | (ClientCommandBase & Readonly<{ payload: Payload; offlineSafe?: false }>);
-type OmitAuthority<Command> = Command extends unknown ? Omit<Command, "authority"> : never;
-
+export type ClientCommand = Readonly<{ operationId: OperationId; authority: Authority; kind: string }> & (
+  | Readonly<{ payload: OfflinePayload; offlineSafe: true }>
+  | Readonly<{ payload: unknown; offlineSafe?: false }>
+);
 export interface Connection<Event = unknown> extends AsyncIterable<Delivery<Event>> {
   send(command: ClientCommand): Promise<void>;
   close(): Promise<void> | void;
 }
-
 export interface Transport<Event = unknown> {
   connect(cursors: ReadonlyMap<string, ReplayCursor>, signal?: AbortSignal): Promise<Connection<Event>>;
 }
-
-export interface OutboxStore {
-  load(): Promise<readonly ClientCommand[]>;
-  put(command: ClientCommand): Promise<void>;
-  delete(operationId: OperationId): Promise<void>;
+export interface ProjectionRecovery<State> {
+  readonly authority: Authority;
+  /** Includes reducer, schema, adapter and security namespace identities. */
+  readonly identity: string;
+  /** Pure bounded encoder; large content remains immutable references. */
+  encode(state: State): unknown;
+  /** Validate data and its exact authority/generation/revision before restoring. */
+  decode(state: unknown, cursor: ReplayCursor): State;
+}
+interface RecoveryProjection<Event> {
+  checkpoint(): ClientCheckpoint;
+  prepare(event: ClientEvent<Event>): { checkpoint: ClientCheckpoint; publish(): void };
+  restore(checkpoint: ClientCheckpoint, cursor: ReplayCursor): () => void;
+}
+export interface ClientAdmissionLimits {
+  /** Includes the running mutation and callers waiting for it. */
+  readonly requests: number;
+  readonly bytes: number;
+  readonly commandBytes: number;
 }
 
-export interface CursorStore {
-  loadCursors(): Promise<ReadonlyMap<string, ReplayCursor>>;
-  putCursor(authority: Authority, cursor: ReplayCursor): Promise<void>;
-  deleteCursor(authority: Authority): Promise<void>;
-}
-
-export interface AtomicClientStateStore extends OutboxStore, CursorStore {
-  commit(authority: Authority, cursor: ReplayCursor, operationId?: OperationId): Promise<void>;
-}
-
-export class MemoryOutbox implements OutboxStore {
-  readonly #commands = new Map<OperationId, ClientCommand>();
-
-  async load(): Promise<readonly ClientCommand[]> {
-    return [...this.#commands.values()].map(command => cloneStructuredValue(command, new Set()) as ClientCommand);
-  }
-
-  async put(command: ClientCommand): Promise<void> {
-    const admitted = await assertOutboxSafe(command);
-    this.#commands.set(admitted.operationId, admitted);
-  }
-
-  async delete(operationId: OperationId): Promise<void> {
-    this.#commands.delete(operationId);
-  }
-}
-
-export class MemoryCursorStore implements CursorStore {
-  readonly #cursors = new Map<string, ReplayCursor>();
-
-  async loadCursors(): Promise<ReadonlyMap<string, ReplayCursor>> {
-    return new Map(this.#cursors);
-  }
-
-  async putCursor(authority: Authority, cursor: ReplayCursor): Promise<void> {
-    this.#cursors.set(authorityKey(authority), cursor);
-  }
-
-  async deleteCursor(authority: Authority): Promise<void> {
-    this.#cursors.delete(authorityKey(authority));
-  }
-}
-
-export interface IndexedDbClientStoreOptions {
-  /** Required tenant/application namespace. Never share this name across security boundaries. */
-  readonly databaseName: string;
-  readonly maximumCommands?: number;
-  readonly maximumBytes?: number;
-  readonly indexedDB?: IDBFactory;
-}
-
-/** Durable browser state with atomic cursor advancement and outbox acknowledgement. */
-export class IndexedDbClientStore implements AtomicClientStateStore {
-  readonly #database: Promise<IDBDatabase>;
-  readonly #maximumCommands: number;
-  readonly #maximumBytes: number;
-
-  constructor(options: IndexedDbClientStoreOptions) {
-    this.#maximumCommands = positiveBound(options.maximumCommands ?? Number.MAX_SAFE_INTEGER, "maximumCommands");
-    this.#maximumBytes = positiveBound(options.maximumBytes ?? Number.MAX_SAFE_INTEGER, "maximumBytes");
-    const factory = options.indexedDB ?? globalThis.indexedDB;
-    if (factory === undefined) throw new Error("IndexedDB is not available");
-    if (options.databaseName.trim() === "") throw new TypeError("databaseName is required");
-    this.#database = openClientDatabase(
-      factory,
-      options.databaseName,
-    );
-  }
-
-  async load(): Promise<readonly ClientCommand[]> {
-    const database = await this.#database;
-    const records = await request<Array<{ command: ClientCommand; sequence: number }>>(
-      database.transaction("outbox").objectStore("outbox").getAll(),
-    );
-    return Promise.all(records
-      .sort((left, right) => left.sequence - right.sequence)
-      .map(record => assertOutboxSafe(record.command)));
-  }
-
-  async put(command: ClientCommand): Promise<void> {
-    const storedCommand = await assertOutboxSafe(command);
-    const bytes = await structuredSize(storedCommand);
-    const database = await this.#database;
-    const transaction = database.transaction("outbox", "readwrite");
-    const store = transaction.objectStore("outbox");
-    const records = await request<Array<{ operationId: string; bytes: number; sequence: number }>>(store.getAll());
-    const existing = records.find(record => record.operationId === storedCommand.operationId);
-    const previous = existing?.bytes ?? 0;
-    if (records.length + (existing === undefined ? 1 : 0) > this.#maximumCommands ||
-      records.reduce((total, record) => total + record.bytes, bytes - previous) > this.#maximumBytes) {
-      transaction.abort();
-      throw new RangeError("IndexedDB outbox capacity exceeded");
-    }
-    const sequence = existing?.sequence ?? records.reduce(
-      (maximum, record) => Math.max(maximum, record.sequence),
-      0,
-    ) + 1;
-    store.put({ operationId: storedCommand.operationId, bytes, sequence, command: storedCommand });
-    await transactionDone(transaction);
-  }
-
-  async delete(operationId: OperationId): Promise<void> {
-    const database = await this.#database;
-    const transaction = database.transaction("outbox", "readwrite");
-    transaction.objectStore("outbox").delete(operationId);
-    await transactionDone(transaction);
-  }
-
-  async loadCursors(): Promise<ReadonlyMap<string, ReplayCursor>> {
-    const database = await this.#database;
-    const records = await request<Array<{ authority: string; generation: string; revision: bigint }>>(
-      database.transaction("cursors").objectStore("cursors").getAll(),
-    );
-    return new Map(records.map(record => [record.authority, {
-      generation: record.generation,
-      revision: record.revision,
-    }]));
-  }
-
-  async putCursor(authority: Authority, cursor: ReplayCursor): Promise<void> {
-    await this.commit(authority, cursor);
-  }
-
-  async deleteCursor(authority: Authority): Promise<void> {
-    const database = await this.#database;
-    const transaction = database.transaction("cursors", "readwrite");
-    transaction.objectStore("cursors").delete(authorityKey(authority));
-    await transactionDone(transaction);
-  }
-
-  async commit(authority: Authority, cursor: ReplayCursor, operationId?: OperationId): Promise<void> {
-    const database = await this.#database;
-    const transaction = database.transaction(["outbox", "cursors"], "readwrite");
-    if (operationId !== undefined) transaction.objectStore("outbox").delete(operationId);
-    transaction.objectStore("cursors").put({
-      authority: authorityKey(authority),
-      generation: cursor.generation,
-      revision: cursor.revision,
-    });
-    await transactionDone(transaction);
-  }
-}
-
-export type ClientListener<Event> = (event: ClientEvent<Event>) => void;
-
-/** Framework-neutral external store derived only from authoritative events. */
 export class ProjectionStore<State, Event = unknown> {
   readonly #store: SnapshotStore<State>;
   #unsubscribe: (() => void) | undefined;
   #disposed = false;
 
-  constructor(readonly client: Pick<HarnessClient<Event>, "subscribe">, initial: State,
-    readonly reduce: (state: State, event: ClientEvent<Event>) => State) {
+  constructor(readonly client: Pick<HarnessClient<Event>, "subscribe"> & Partial<Pick<HarnessClient<Event>, "registerProjection">>, initial: State,
+    readonly reduce: (state: State, event: ClientEvent<Event>) => State,
+    readonly recovery?: ProjectionRecovery<State>) {
     this.#store = new SnapshotStore(initial);
   }
 
   /** Explicitly attach before delivering events. Construction/SSR start no effects. */
   start(): void {
     if (this.#disposed) throw new Error("projection store is disposed");
-    this.#unsubscribe ??= this.client.subscribe(event => {
-      this.#store.publish(this.reduce(this.#store.getSnapshot(), event));
-    });
+    if (this.#unsubscribe !== undefined) return;
+    if (this.recovery !== undefined) {
+      const recovery = this.recovery;
+      if (this.client.registerProjection === undefined) throw new Error("client does not support projection recovery");
+      this.#unsubscribe = this.client.registerProjection(recovery.authority, {
+        checkpoint: () => ({ identity: recovery.identity, state: recovery.encode(this.#store.getSnapshot()) }),
+        prepare: event => {
+          const state = this.reduce(this.#store.getSnapshot(), event);
+          return { checkpoint: { identity: recovery.identity, state: recovery.encode(state) },
+            publish: () => this.#store.publish(state) };
+        },
+        restore: (checkpoint, cursor) => {
+          if (checkpoint.identity !== recovery.identity) throw new Error("projection checkpoint identity mismatch");
+          const state = recovery.decode(checkpoint.state, cursor);
+          return () => this.#store.publish(state);
+        },
+      });
+    } else {
+      this.#unsubscribe = this.client.subscribe(event => {
+        this.#store.publish(this.reduce(this.#store.getSnapshot(), event));
+      });
+    }
   }
 
   /** React-compatible immutable snapshot accessor. */
-  getSnapshot = (): State => this.#store.getSnapshot();
+  get getSnapshot() { return this.#store.getSnapshot; }
 
   /** Svelte/React-compatible subscription. */
-  subscribe = (listener: () => void): (() => void) => this.#store.subscribe(listener);
+  get subscribe() { return this.#store.subscribe; }
 
   /** Detaches the store from its client. */
   dispose(): void {
     if (this.#disposed) return;
-    this.#disposed = true;
     this.#unsubscribe?.();
+    this.#disposed = true;
     this.#unsubscribe = undefined;
     this.#store.dispose();
   }
 }
 
-/** Framework-neutral reconnecting client with authoritative cursor validation and a safe outbox. */
 export class HarnessClient<Event = unknown> {
-  readonly #cursors = new Map<string, ReplayCursor>();
-  readonly #listeners = new Set<ClientListener<Event>>();
+  readonly #cuts = new Map<string, { cursor?: ReplayCursor; checkpointVersion?: bigint }>();
+  readonly #listeners = new Set<(event: ClientEvent<Event>) => void>();
+  readonly #errors = new SnapshotStore<unknown | null>(null);
+  /** Latest replay/reconnect failure; retry does not hide it from the host. */
+  readonly failure = { getSnapshot: this.#errors.getSnapshot, subscribe: this.#errors.subscribe };
+  readonly #projections = new Map<string, RecoveryProjection<Event>>();
   #connection: Connection<Event> | undefined;
   #cursorsLoaded = false;
-  #stateMutation: Promise<void> = Promise.resolve();
+  readonly #mutations: RequestScheduler;
+  readonly admission: ClientAdmissionLimits;
   #replayEpoch = 0;
+  #disposed = false;
+  #runController: AbortController | undefined;
 
   constructor(
     readonly transport: Transport<Event>,
     readonly outbox: OutboxStore = new MemoryOutbox(),
     readonly cursorStore: CursorStore = isCursorStore(outbox) ? outbox : new MemoryCursorStore(),
-  ) {}
-
-  async handle(kind: AggregateKind, id: string): Promise<AggregateHandle<Event>> {
-    return new AggregateHandle(this, await authority(kind, id));
-  }
-
-  async agent(id: string): Promise<AgentHandle<Event>> {
-    return new AgentHandle(this, await authority("agent", id));
-  }
-
-  async conversation(id: string): Promise<ConversationHandle<Event>> {
-    return new ConversationHandle(this, await authority("conversation", id));
-  }
-
-  async session(id: string): Promise<SessionHandle<Event>> {
-    return new SessionHandle(this, await authority("session", id));
-  }
-
-  async turn(id: string): Promise<TurnHandle<Event>> {
-    return new TurnHandle(this, await authority("turn", id));
-  }
-
-  async task(id: string): Promise<TaskHandle<Event>> {
-    return new TaskHandle(this, await authority("task", id));
+    admission: ClientAdmissionLimits = { requests: 128, bytes: 16 * 1024 * 1024, commandBytes: 1024 * 1024 },
+  ) {
+    requestBound(admission.commandBytes, "commandBytes");
+    this.admission = Object.freeze({ ...admission });
+    this.#mutations = new RequestScheduler({ concurrent: 1, requests: admission.requests, bytes: admission.bytes });
   }
 
   /** Registers at-least-once projection delivery; callbacks must be idempotent. */
-  subscribe(listener: ClientListener<Event>): () => void {
+  subscribe(listener: (event: ClientEvent<Event>) => void): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
   }
 
-  async submit(command: ClientCommand): Promise<void> {
-    await this.#serializeState(async () => {
+  /** Attach all durable projections before the first replay/rebase. */
+  registerProjection(authority: Authority, projection: RecoveryProjection<Event>): () => void {
+    if (this.#cursorsLoaded) throw new Error("register projections before client recovery");
+    if (!isAtomicClientStateStore(this.outbox) || this.outbox !== this.cursorStore) {
+      throw new Error("durable projection requires one atomic recovery store");
+    }
+    const key = authorityKey(authority);
+    if (this.#projections.has(key)) throw new Error("duplicate durable projection authority");
+    if (this.#projections.size >= 64) throw new RangeError("projection capacity exceeded");
+    this.#projections.set(key, projection);
+    return () => {
+      if (this.#runController !== undefined && !this.#disposed) throw new Error("stop replay before disposing its durable projection");
+      this.#projections.delete(key);
+      this.#cursorsLoaded = false;
+      this.#cuts.clear();
+    };
+  }
+
+  async submit(input: ClientCommand): Promise<void> {
+    const bytes = retainedDataBytes(input, this.admission.commandBytes, true);
+    let command!: ClientCommand;
+    await this.#mutations.schedule(bytes, async () => {
       const safelyReplayable = command.offlineSafe && command.kind !== "interaction.resolve.approval";
       const admitted = safelyReplayable ? await assertOutboxSafe(command) : command;
       if (this.#connection !== undefined) {
@@ -305,21 +188,38 @@ export class HarnessClient<Event = unknown> {
         throw new Error("command is not safe for the offline outbox");
       }
       await this.outbox.put(admitted);
-    });
+    }, undefined, () => { command = cloneStructuredValue(input, new Set(), true) as ClientCommand; });
   }
 
   /** Installs an authoritative snapshot cursor after synchronously resetting projections. */
-  async rebase(authority: Authority, cursor: ReplayCursor, resetProjections: () => void): Promise<void> {
-    if (cursor.generation === "" || cursor.revision < 0n) throw new RangeError("invalid cursor");
+  async rebase(authority: Authority, cursor: ReplayCursor, resetProjections: (() => void) | ClientCheckpoint): Promise<void> {
+    validateCursor(cursor);
+    const bytes = retainedDataBytes({ authority, cursor,
+      checkpoint: typeof resetProjections === "function" ? null : resetProjections }, this.admission.commandBytes, true);
     let connection: Connection<Event> | undefined;
     try {
-      await this.#serializeState(async () => {
-        await this.#hydrateCursors();
+      await this.#mutations.schedule(bytes, async () => {
+        const recovered = await this.#hydrateCursors(typeof resetProjections === "function" ? undefined : authorityKey(authority));
         this.#replayEpoch += 1;
         connection = this.#connection;
         this.#connection = undefined;
         const key = authorityKey(authority);
-        const previous = this.#cursors.get(key);
+        const previous = this.#cuts.get(key)?.cursor ?? recovered;
+        const projection = this.#projections.get(key);
+        if (projection !== undefined) {
+          if (typeof resetProjections === "function") throw new Error("durable rebase requires an authoritative checkpoint");
+          const publish = projection.restore(resetProjections, cursor);
+          const version = await (this.outbox as AtomicClientStateStore).commit(authority, cursor, undefined,
+            resetProjections, previous ?? null, this.#cuts.get(key)?.checkpointVersion ?? null);
+          this.#cuts.set(key, { cursor, checkpointVersion: version });
+          this.#cursorsLoaded = true;
+          publish();
+          return;
+        }
+        if (isAtomicClientStateStore(this.outbox) && this.outbox === this.cursorStore) {
+          throw new Error("durable rebase requires a registered projection");
+        }
+        if (typeof resetProjections !== "function") throw new Error("checkpoint has no registered projection");
         await this.cursorStore.putCursor(authority, cursor);
         try {
           resetProjections();
@@ -328,7 +228,11 @@ export class HarnessClient<Event = unknown> {
           else await this.cursorStore.putCursor(authority, previous);
           throw error;
         }
-        this.#cursors.set(key, cursor);
+        this.#cuts.set(key, { ...this.#cuts.get(key), cursor });
+      }, undefined, () => {
+        authority = { ...authority };
+        cursor = { ...cursor };
+        if (typeof resetProjections !== "function") resetProjections = cloneStructuredValue(resetProjections, new Set(), true) as ClientCheckpoint;
       });
     } finally {
       await connection?.close();
@@ -337,142 +241,210 @@ export class HarnessClient<Event = unknown> {
 
   /** Runs reconnect/replay until aborted; transport failures use bounded exponential backoff. */
   async run(signal?: AbortSignal): Promise<void> {
-    await this.#serializeState(() => this.#hydrateCursors());
+    if (this.#disposed) throw new Error("client is disposed");
+    if (this.#runController !== undefined) throw new Error("client replay is already running");
+    const controller = new AbortController();
+    this.#runController = controller;
+    try { await this.#run(signal === undefined ? controller.signal : AbortSignal.any([signal, controller.signal])); }
+    finally { this.#runController = undefined; }
+  }
+
+  /** Cancel interest; started storage/send reservations last until settlement. */
+  dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    this.#runController?.abort();
+    this.#mutations.dispose();
+    this.#listeners.clear();
+    this.#errors.dispose();
+  }
+
+  async #run(signal: AbortSignal): Promise<void> {
+    await this.#mutations.schedule(256, () => this.#hydrateCursors());
     let delay = 50;
-    while (!signal?.aborted) {
+    while (!signal.aborted) {
+      let unreceived: Connection<Event> | undefined;
       try {
-        const { cursors, epoch } = await this.#serializeState(async () => ({
-          cursors: new Map(this.#cursors),
-          epoch: this.#replayEpoch,
-        }));
+        const { cursors, epoch } = await this.#mutations.schedule(256, async () => {
+          const cursors = new Map<string, ReplayCursor>();
+          for (const [key, cut] of this.#cuts) {
+            if (cut.cursor !== undefined) cursors.set(key, cut.cursor);
+          }
+          return { cursors, epoch: this.#replayEpoch };
+        });
         const connection = await this.transport.connect(cursors, signal);
-        const current = await this.#serializeState(async () => {
+        unreceived = connection;
+        if (signal.aborted) throw new DOMException("Client replay cancelled", "AbortError");
+        const current = await this.#mutations.schedule(256, async () => {
           if (epoch !== this.#replayEpoch) return false;
           this.#connection = connection;
           return true;
         });
         if (!current) {
           await connection.close();
-          throw new StaleReplayConnectionError();
+          unreceived = undefined;
+          throw new Error();
         }
-        await this.#flushOutbox(connection, epoch);
-        for await (const delivery of connection) await this.#accept(delivery, epoch);
+        unreceived = undefined;
+        await this.#flushOutbox(connection, epoch, signal);
+        for await (const delivery of connection) {
+          if (signal.aborted) break;
+          await this.#accept(delivery, epoch);
+        }
         delay = 50;
       } catch (error) {
-        if (signal?.aborted) break;
+        this.#errors.publish(error);
+        if (signal.aborted) break;
+        if (error instanceof ClientCheckpointConflict) throw error;
         if (error instanceof ReplayError) {
-          await this.#serializeState(async () => {
+          if (this.#projections.has(authorityKey(error.authority))) throw error;
+          await this.#mutations.schedule(256, async () => {
             await this.cursorStore.deleteCursor(error.authority);
-            this.#cursors.delete(authorityKey(error.authority));
+            const key = authorityKey(error.authority);
+            const cut = this.#cuts.get(key);
+            if (cut?.checkpointVersion === undefined) this.#cuts.delete(key);
+            else delete cut.cursor;
           });
         }
-        await abortableDelay(delay, signal);
+        await abortableWait(delay, signal);
         delay = Math.min(delay * 2, 5_000);
       } finally {
-        const connection = this.#connection;
+        const connection = this.#connection ?? unreceived;
         this.#connection = undefined;
         await connection?.close();
       }
     }
   }
 
-  async #flushOutbox(connection: Connection<Event>, epoch: number): Promise<void> {
-    for (const command of await this.outbox.load()) {
-      await this.#serializeState(async () => {
-        if (epoch !== this.#replayEpoch || connection !== this.#connection) {
-          throw new StaleReplayConnectionError();
-        }
-        try {
-          await connection.send(command);
-        } catch (error) {
-          if (error instanceof TerminalAdmissionError) {
-            await this.outbox.delete(command.operationId);
-            return;
+  async #flushOutbox(connection: Connection<Event>, epoch: number, signal: AbortSignal): Promise<void> {
+    let after = 0;
+    let through: number | undefined;
+    do {
+      if (signal.aborted) return;
+      const page = this.outbox.loadPage === undefined ? undefined : await this.outbox.loadPage(after, through);
+      const commands = page?.commands ?? await this.outbox.load();
+      for (const command of commands) {
+        await this.#mutations.schedule(256, async () => {
+          if (signal.aborted) throw new DOMException("Client replay cancelled", "AbortError");
+          if (epoch !== this.#replayEpoch || connection !== this.#connection) {
+            throw new Error();
           }
-          throw error;
-        }
-      });
-    }
+          try {
+            await connection.send(command);
+          } catch (error) {
+            if (error instanceof TerminalAdmissionError) {
+              await this.outbox.delete(command.operationId);
+              return;
+            }
+            throw error;
+          }
+        });
+      }
+      if (page === undefined) return;
+      after = page.afterSequence;
+      through = page.throughSequence;
+    } while (after < through);
   }
 
   async #accept(delivery: Delivery<Event>, epoch: number): Promise<void> {
-    await this.#serializeState(async () => {
-      if (epoch !== this.#replayEpoch) throw new StaleReplayConnectionError();
-      await this.#acceptSerialized(delivery);
-    });
+    const bytes = retainedDataBytes(delivery, this.admission.commandBytes, true);
+    await this.#mutations.schedule(bytes, async () => {
+      if (epoch !== this.#replayEpoch) throw new Error();
+      const key = authorityKey(delivery.authority);
+      const projection = this.#projections.get(key);
+      if (isAtomicClientStateStore(this.outbox) && this.outbox === this.cursorStore && projection === undefined) {
+        throw new ClientCheckpointConflict("durable delivery requires a registered recoverable projection");
+      }
+      const previous = this.#cuts.get(key)?.cursor;
+      const expected = previous?.revision ?? 0n;
+      if (previous !== undefined && previous.generation !== delivery.generation) {
+        throw new ReplayError(delivery.authority, "replay generation changed");
+      }
+      if (delivery.fromRevision !== expected || delivery.throughRevision < delivery.fromRevision) {
+        throw new ReplayError(delivery.authority, "non-contiguous delivery");
+      }
+      let revision = expected;
+      for (const event of delivery.events) {
+        revision += 1n;
+        if (authorityKey(event.authority) !== key || event.revision !== revision) {
+          throw new ReplayError(delivery.authority, "event authority or revision mismatch");
+        }
+      }
+      if (revision !== delivery.throughRevision) {
+        throw new ReplayError(delivery.authority, "delivery coverage mismatch");
+      }
+      for (const event of delivery.events) {
+        if (this.#disposed) return;
+        const cursor = { generation: delivery.generation, revision: event.revision };
+        const prepared = projection?.prepare(event);
+        // Listeners run before commit; throwing leaves the event retryable.
+        for (const listener of this.#listeners) listener(event);
+        const cut = { ...this.#cuts.get(key), cursor };
+        if (isAtomicClientStateStore(this.outbox) && this.outbox === this.cursorStore) {
+          cut.checkpointVersion = await this.outbox.commit(delivery.authority, cursor, event.operationId, prepared?.checkpoint,
+            prepared === undefined ? undefined : this.#cuts.get(key)?.cursor ?? null,
+            prepared === undefined ? undefined : this.#cuts.get(key)?.checkpointVersion ?? null);
+        } else {
+          await this.outbox.delete(event.operationId);
+          await this.cursorStore.putCursor(delivery.authority, cursor);
+        }
+        this.#cuts.set(key, cut);
+        if (this.#disposed) return;
+        prepared?.publish();
+      }
+      if (delivery.events.length === 0) {
+        const cursor = { generation: delivery.generation, revision };
+        const cut = { ...this.#cuts.get(key), cursor };
+        // Empty delivery cannot erase the checkpoint paired with an unchanged cursor.
+        if (previous?.generation !== cursor.generation || previous.revision !== cursor.revision) {
+          const projection = this.#projections.get(key);
+          if (projection !== undefined) {
+            cut.checkpointVersion = await (this.outbox as AtomicClientStateStore).commit(delivery.authority, cursor, undefined,
+              projection.checkpoint(), previous ?? null, this.#cuts.get(key)?.checkpointVersion ?? null);
+          } else await this.cursorStore.putCursor(delivery.authority, cursor);
+        }
+        this.#cuts.set(key, cut);
+      }
+    }, undefined, () => { delivery = cloneStructuredValue(delivery, new Set(), true) as Delivery<Event>; });
   }
 
-  async #acceptSerialized(delivery: Delivery<Event>): Promise<void> {
-    const key = authorityKey(delivery.authority);
-    const previous = this.#cursors.get(key);
-    const expected = previous?.revision ?? 0n;
-    if (previous !== undefined && previous.generation !== delivery.generation) {
-      throw new ReplayError(delivery.authority, "replay generation changed");
-    }
-    if (delivery.fromRevision !== expected || delivery.throughRevision < delivery.fromRevision) {
-      throw new ReplayError(delivery.authority, "non-contiguous delivery");
-    }
-    let revision = expected;
-    for (const event of delivery.events) {
-      revision += 1n;
-      if (authorityKey(event.authority) !== key || event.revision !== revision) {
-        throw new ReplayError(delivery.authority, "event authority or revision mismatch");
+  async #hydrateCursors(replacedAuthority?: string): Promise<ReplayCursor | undefined> {
+    if (this.#cursorsLoaded) return replacedAuthority === undefined ? undefined : this.#cuts.get(replacedAuthority)?.cursor;
+    if (isAtomicClientStateStore(this.outbox) && this.outbox === this.cursorStore) {
+      const records = await this.outbox.loadRecovery();
+      const publications: (() => void)[] = [];
+      for (const record of records) {
+        if (record.authority === replacedAuthority) continue;
+        const projection = this.#projections.get(record.authority);
+        if (projection === undefined || record.checkpoint === undefined) throw new Error("cursor has no matching recoverable projection");
+        publications.push(projection.restore(record.checkpoint, record.cursor));
       }
-    }
-    if (revision !== delivery.throughRevision) {
-      throw new ReplayError(delivery.authority, "delivery coverage mismatch");
-    }
-    let committed = expected;
-    for (const event of delivery.events) {
-      for (const listener of this.#listeners) listener(event);
-      committed = event.revision;
-      const cursor = { generation: delivery.generation, revision: committed };
-      if (isAtomicClientStateStore(this.outbox) && this.outbox === this.cursorStore) {
-        await this.outbox.commit(delivery.authority, cursor, event.operationId);
-      } else {
-        await this.outbox.delete(event.operationId);
-        await this.cursorStore.putCursor(delivery.authority, cursor);
+      for (const publish of publications) publish();
+      for (const record of records) {
+        this.#cuts.set(record.authority, {
+          ...this.#cuts.get(record.authority),
+          checkpointVersion: record.checkpointVersion,
+          ...(record.authority === replacedAuthority ? {} : { cursor: record.cursor }),
+        });
       }
-      this.#cursors.set(key, cursor);
+      // A replacement cut becomes resumable only after its checkpoint commits.
+      this.#cursorsLoaded = replacedAuthority === undefined;
+      return records.find(record => record.authority === replacedAuthority)?.cursor;
     }
-    if (delivery.events.length === 0) {
-      const cursor = { generation: delivery.generation, revision };
-      await this.cursorStore.putCursor(delivery.authority, cursor);
-      this.#cursors.set(key, cursor);
-    }
-  }
-
-  async #hydrateCursors(): Promise<void> {
-    if (this.#cursorsLoaded) return;
     for (const [key, cursor] of await this.cursorStore.loadCursors()) {
-      if (!this.#cursors.has(key)) this.#cursors.set(key, cursor);
+      if (this.#cuts.get(key)?.cursor === undefined) this.#cuts.set(key, { ...this.#cuts.get(key), cursor });
     }
     this.#cursorsLoaded = true;
   }
 
-  #serializeState<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.#stateMutation.then(operation, operation);
-    this.#stateMutation = result.then(() => undefined, () => undefined);
-    return result;
-  }
 }
 
-export class AggregateHandle<Event = unknown> {
-  constructor(
-    readonly client: HarnessClient<Event>,
-    readonly authority: Authority,
-  ) {}
-
-  submit<Payload>(command: OmitAuthority<ClientCommand<Payload>>): Promise<void> {
-    return this.client.submit({ ...command, authority: this.authority } as ClientCommand<Payload>);
+export function validateCursor(cursor: ReplayCursor): void {
+  if (typeof cursor.generation !== "string" || cursor.generation === "" ||
+      typeof cursor.revision !== "bigint" || cursor.revision < 0n || cursor.revision > 0xffff_ffff_ffff_ffffn) {
+    throw new RangeError("invalid cursor");
   }
 }
-
-export class AgentHandle<Event = unknown> extends AggregateHandle<Event> {}
-export class ConversationHandle<Event = unknown> extends AggregateHandle<Event> {}
-export class SessionHandle<Event = unknown> extends AggregateHandle<Event> {}
-export class TurnHandle<Event = unknown> extends AggregateHandle<Event> {}
-export class TaskHandle<Event = unknown> extends AggregateHandle<Event> {}
 
 export class ReplayError extends Error {
   constructor(
@@ -483,18 +455,10 @@ export class ReplayError extends Error {
   }
 }
 
-/** A command was authoritatively rejected and must never remain retryable. */
 export class TerminalAdmissionError extends Error {}
 
-class StaleReplayConnectionError extends Error {}
-
-function authorityKey(authority: Authority): string {
+export function authorityKey(authority: Authority): string {
   return `${authority.kind}:${authority.id}`;
-}
-
-async function authority(kind: AggregateKind, id: string): Promise<Authority> {
-  if (!(await isSafeAuthorityId(id))) throw new TypeError("aggregate identity is not a safe path segment");
-  return { kind, id };
 }
 
 function isCursorStore(store: OutboxStore): store is OutboxStore & CursorStore {
@@ -502,219 +466,5 @@ function isCursorStore(store: OutboxStore): store is OutboxStore & CursorStore {
 }
 
 function isAtomicClientStateStore(store: OutboxStore): store is AtomicClientStateStore {
-  return isCursorStore(store) && "commit" in store;
-}
-
-function positiveBound(value: number, name: string): number {
-  if (!Number.isSafeInteger(value) || value <= 0) throw new RangeError(`${name} must be a positive safe integer`);
-  return value;
-}
-
-/** An offline retry record may carry refs and routing metadata, never a bearer or inline body. */
-async function assertOutboxSafe(command: ClientCommand): Promise<ClientCommand> {
-  const admitted = cloneStructuredValue(command, new Set()) as ClientCommand;
-  if (admitted.offlineSafe !== true || admitted.kind === "interaction.resolve.approval") {
-    throw new TypeError("command is not safe for the offline outbox");
-  }
-  const fields = Object.keys(admitted);
-  if (fields.length !== 5 || fields.some(field => !["operationId", "authority", "kind", "payload", "offlineSafe"].includes(field))) {
-    throw new TypeError("offline outbox command contains an unsupported field");
-  }
-  if (admitted.authority === null || typeof admitted.authority !== "object"
-    || Object.getPrototypeOf(admitted.authority) !== Object.prototype
-    || Object.keys(admitted.authority).length !== 2
-    || !Object.keys(admitted.authority).every(field => field === "kind" || field === "id")) {
-    throw new TypeError("offline outbox authority contains an unsupported field");
-  }
-  if (!(await isSafeAuthorityId(admitted.authority.id))) {
-    throw new TypeError("offline outbox authority contains an unsafe identity");
-  }
-  const forbidden = /(?:token|authorization|credential|secret|password|api[_-]?key|(?:^|[_-])(?:scope|proof|body|text|bytes|base64|data)(?:$|[_-]))/i;
-  const visit = (value: unknown, ancestors: Set<object>): void => {
-    if (value === null || typeof value !== "object") return;
-    if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
-      throw new TypeError("offline outbox cannot persist inline bytes or credentials");
-    }
-    if (ancestors.has(value)) throw new TypeError("command contains a cycle");
-    ancestors.add(value);
-    try {
-      for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
-        if (!descriptor.enumerable) continue;
-        if (!("value" in descriptor)) throw new TypeError("command contains an accessor");
-        if (forbidden.test(key)) throw new TypeError("offline outbox cannot persist inline bytes or credentials");
-        visit(descriptor.value, ancestors);
-      }
-    } finally { ancestors.delete(value); }
-  };
-  visit(admitted, new Set());
-  const payload = admitted.payload;
-  if (payload === null || typeof payload !== "object" || Array.isArray(payload) ||
-      Object.getPrototypeOf(payload) !== Object.prototype) {
-    throw new TypeError("offline outbox payload must be a ref-only record");
-  }
-  for (const key of Object.keys(payload)) {
-    if (!["content", "attachments", "artifacts", "references", "metadata"].includes(key)) {
-      throw new TypeError("offline outbox payload contains an unsupported field");
-    }
-  }
-  const contracts = await NativeContracts.create();
-  if (payload.content !== undefined) contracts.validate("file_ref", payload.content);
-  if (payload.attachments !== undefined) contracts.validate("attachments", payload.attachments);
-  for (const refs of [payload.artifacts, payload.references]) {
-    if (refs === undefined) continue;
-    if (!Array.isArray(refs)) throw new TypeError("offline outbox references must be a list");
-    for (const reference of refs) contracts.validate("file_ref", reference);
-  }
-  if (payload.metadata !== undefined) {
-    if (payload.metadata === null || typeof payload.metadata !== "object" || Array.isArray(payload.metadata) ||
-        Object.getPrototypeOf(payload.metadata) !== Object.prototype) {
-      throw new TypeError("offline outbox metadata must be a record");
-    }
-    for (const [key, value] of Object.entries(payload.metadata)) {
-      if (forbidden.test(key) || !(value === null || ["number", "boolean", "bigint"].includes(typeof value))) {
-        throw new TypeError("offline outbox metadata contains an unsafe value");
-      }
-    }
-  }
-  return admitted;
-}
-
-async function structuredSize(value: unknown): Promise<number> {
-  const transportSafe = canonicalStructuredValue(value, new Set());
-  return (await NativeContracts.create()).encodeCanonicalJson(transportSafe).byteLength;
-}
-
-function cloneStructuredValue(value: unknown, ancestors: Set<object>): unknown {
-  if (
-    value === null || typeof value === "string" || typeof value === "boolean" ||
-    typeof value === "bigint"
-  ) return value;
-  if (typeof value === "number") {
-    if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))) {
-      throw new TypeError("command contains a non-finite number or inexact integer");
-    }
-    return value;
-  }
-  if (typeof value !== "object") throw new TypeError("command contains a non-data value");
-  if (ancestors.has(value)) throw new TypeError("command contains a cycle");
-  if (value instanceof ArrayBuffer) return value.slice(0);
-  if (value instanceof Uint8Array) return value.slice();
-  if (ArrayBuffer.isView(value)) {
-    throw new TypeError("command contains an unsupported binary view");
-  }
-  if (!Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) {
-    throw new TypeError("command contains a non-canonical structured value");
-  }
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  const keys = Reflect.ownKeys(descriptors);
-  if (keys.some(key => typeof key !== "string")) {
-    throw new TypeError("command contains symbol properties");
-  }
-  ancestors.add(value);
-  try {
-    if (Array.isArray(value)) {
-      const cloned = new Array<unknown>(value.length);
-      for (const key of keys as string[]) {
-        if (key === "length" || descriptors[key]?.enumerable !== true) continue;
-        const index = Number(key);
-        if (!Number.isSafeInteger(index) || index < 0 || index >= value.length || String(index) !== key) {
-          throw new TypeError("command array contains custom properties");
-        }
-        const descriptor = descriptors[key];
-        if (descriptor === undefined || !("value" in descriptor)) {
-          throw new TypeError("command contains an accessor");
-        }
-        cloned[index] = cloneStructuredValue(descriptor.value, ancestors);
-      }
-      return cloned;
-    }
-    const cloned: Record<string, unknown> = {};
-    for (const key of keys as string[]) {
-      const descriptor = descriptors[key];
-      if (descriptor?.enumerable !== true) continue;
-      if (!("value" in descriptor)) throw new TypeError("command contains an accessor");
-      Object.defineProperty(cloned, key, { value: cloneStructuredValue(descriptor.value, ancestors),
-        enumerable: true, configurable: true, writable: true });
-    }
-    return cloned;
-  } finally {
-    ancestors.delete(value);
-  }
-}
-
-function canonicalStructuredValue(value: unknown, ancestors: Set<object>): unknown {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
-  if (typeof value === "number") {
-    if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))) {
-      throw new TypeError("command contains a non-finite number or inexact integer");
-    }
-    return value;
-  }
-  if (typeof value === "bigint") return { $bigint: value.toString() };
-  if (typeof value !== "object") throw new TypeError("command contains a non-data value");
-  if (ancestors.has(value)) throw new TypeError("command contains a cycle");
-  if (value instanceof ArrayBuffer) return { $bytes: [...new Uint8Array(value)] };
-  if (ArrayBuffer.isView(value)) {
-    return { $bytes: [...new Uint8Array(value.buffer, value.byteOffset, value.byteLength)] };
-  }
-  if (!Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) {
-    throw new TypeError("command contains a non-canonical structured value");
-  }
-  ancestors.add(value);
-  try {
-    if (Array.isArray(value)) return value.map(child => canonicalStructuredValue(child, ancestors));
-    return Object.fromEntries(Object.entries(value).map(([key, child]) => [
-      key,
-      canonicalStructuredValue(child, ancestors),
-    ]));
-  } finally {
-    ancestors.delete(value);
-  }
-}
-
-function openClientDatabase(
-  factory: IDBFactory,
-  name: string,
-): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    let unsupportedState: Error | undefined;
-    const opening = factory.open(name, 3);
-    opening.onupgradeneeded = event => {
-      if ((event as IDBVersionChangeEvent).oldVersion !== 0) {
-        unsupportedState = new Error("pre-v2 Harness outbox state is unsupported");
-        opening.transaction?.abort();
-        return;
-      }
-      const database = opening.result;
-      database.createObjectStore("outbox", { keyPath: "operationId" });
-      database.createObjectStore("cursors", { keyPath: "authority" });
-    };
-    opening.onsuccess = () => resolve(opening.result);
-    opening.onerror = () => reject(unsupportedState ?? opening.error ?? new Error("IndexedDB open failed"));
-    opening.onblocked = () => reject(new Error("IndexedDB upgrade is blocked"));
-  });
-}
-
-function request<T>(operation: IDBRequest<T>): Promise<T> {
-  return new Promise((resolve, reject) => {
-    operation.onsuccess = () => resolve(operation.result);
-    operation.onerror = () => reject(operation.error ?? new Error("IndexedDB request failed"));
-  });
-}
-
-function transactionDone(transaction: IDBTransaction): Promise<void> {
-  return new Promise((resolve, reject) => {
-    transaction.oncomplete = () => resolve();
-    transaction.onabort = () => reject(transaction.error ?? new Error("IndexedDB transaction aborted"));
-    transaction.onerror = () => reject(transaction.error ?? new Error("IndexedDB transaction failed"));
-  });
-}
-
-async function abortableDelay(milliseconds: number, signal?: AbortSignal): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    if (signal?.aborted) { reject(signal.reason); return; }
-    const aborted = () => { clearTimeout(timeout); reject(signal?.reason); };
-    const timeout = setTimeout(() => { signal?.removeEventListener("abort", aborted); resolve(); }, milliseconds);
-    signal?.addEventListener("abort", aborted, { once: true });
-  });
+  return isCursorStore(store) && "commit" in store && "loadRecovery" in store;
 }

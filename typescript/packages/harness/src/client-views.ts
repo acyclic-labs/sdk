@@ -26,17 +26,14 @@ export interface ClientObservation<Value> {
   readonly operation: readonly [string, OperationOutcome] | null;
   readonly work: number;
 }
-/** Trusted in-process host adapter. Never accept a remote `verified: true` flag.
- * Callbacks must be pure, deterministic and bounded by work; reject stale evidence
- * using existing domain validation/reducers. bytes accounts all retained deep
- * values, assumptions, keys and operation clones, not just serialized wire size.
- * Values/assumptions must be transitively immutable; large bodies use references.
- */
+/** Trusted, pure, bounded validation of immutable refs, provenance and retained deep bytes. */
 export interface ClientDomain<Value, Assumption, Evidence> {
   readonly identity: string;
   validate(fact: ClientFact<Value>, predicted: Value, assumption: Assumption, work: number): { bytes: number; work: number };
   observe(evidence: Evidence, current: ClientFact<Value> | null, work: number): ClientObservation<Value>;
   corresponds(predicted: Value, canonical: Value, work: number): { matches: boolean; work: number };
+  /** Authenticate persisted provenance against the restored cut; omission makes restoration Unsupported. */
+  restore?(fact: ClientFact<Value>, hypothesis: ClientHypothesis<Value, Assumption>, work: number): { bytes: number; work: number };
 }
 export interface ClientPrediction<Value, Assumption> {
   readonly key: string;
@@ -46,6 +43,12 @@ export interface ClientPrediction<Value, Assumption> {
   readonly assumption: Assumption;
   readonly dependencies: readonly { readonly branch: BranchId; readonly requirement: "Prediction" | "Confirmed" }[];
   readonly expires: bigint;
+}
+export interface ClientHypothesis<Value, Assumption> extends ClientPrediction<Value, Assumption> {
+  readonly branch: BranchId;
+  readonly adapter: string;
+  readonly prediction: PredictionOutcome;
+  readonly outcome: OperationOutcome;
 }
 export interface ClientView<Value> {
   readonly value: Value;
@@ -69,23 +72,23 @@ function tick(value: bigint): void {
   if (typeof value !== "bigint" || value < 0n || value > 0xffff_ffff_ffff_ffffn) throw new RangeError("client tick must be u64");
 }
 
-/** Demand-scoped Rust-backed hypotheses. Construction starts no IO or timers.
- * Explicitly initialize the shared Harness WASM before constructing synchronously.
- */
+/** Rust-backed hypotheses; initialize shared WASM before effect-free construction. */
 export class ClientViews<Value, Assumption, Evidence> {
   readonly #kernel: WasmClientViews;
   readonly #selections = new Set<Selection<Value>>();
+  readonly #maximumSelections: number;
   #disposed = false;
-  readonly limits: ClientViewLimits;
 
   static async initialize(): Promise<void> { await ensureHarnessWasm(); }
 
   constructor(domain: ClientDomain<Value, Assumption, Evidence>, namespace: string, sequence: bigint,
     limits: ClientViewLimits) {
     tick(sequence);
-    this.limits = Object.freeze({ ...limits });
-    this.#kernel = new WasmClientViews(domain.identity, namespace, sequence, this.limits,
-      domain.validate.bind(domain), domain.observe.bind(domain), domain.corresponds.bind(domain));
+    const budget = Object.freeze({ ...limits });
+    this.#kernel = new WasmClientViews(domain.identity, namespace, sequence, budget,
+      domain.validate.bind(domain), domain.observe.bind(domain), domain.corresponds.bind(domain),
+      domain.restore?.bind(domain));
+    this.#maximumSelections = budget.records + budget.branches;
   }
 
   #live(): void { if (this.#disposed) throw new Error("client views are disposed"); }
@@ -94,6 +97,23 @@ export class ClientViews<Value, Assumption, Evidence> {
     this.#live();
     return this.#kernel.begin({ key: request.key, basis: request.basis, operation: request.operation,
       dependencies: request.dependencies, expires: request.expires }, request.predicted, request.assumption) as BranchId;
+  }
+
+  /** Save the allocation watermark alongside host checkpoint correspondence. */
+  sequence(): bigint { this.#live(); return this.#kernel.sequence(); }
+
+  /** Explicit bounded export; values remain immutable references, not facts. */
+  checkpoint(branch: BranchId): ClientHypothesis<Value, Assumption> {
+    this.#live();
+    const data = this.#kernel.checkpoint(branch) as ClientHypothesis<Value, Assumption>;
+    return Object.freeze({ ...data, dependencies: Object.freeze(data.dependencies.map(edge => Object.freeze(edge))) });
+  }
+
+  /** Restore records and time first, then hypotheses in parent order with the saved watermark. */
+  restore(hypothesis: ClientHypothesis<Value, Assumption>): void {
+    this.#live();
+    if (this.#selections.size !== 0) throw new Error("restore hypotheses before selecting client views");
+    this.#kernel.restore(hypothesis);
   }
 
   view(key: string, overlays: readonly BranchId[] = []): ClientView<Value> {
@@ -111,7 +131,7 @@ export class ClientViews<Value, Assumption, Evidence> {
   /** Explicit bounded selection; dispose releases its snapshot cache/listeners. */
   select(key: string, overlays: readonly BranchId[] = []): ClientViewStore<Value> {
     this.#live();
-    if (this.#selections.size >= this.limits.records + this.limits.branches) {
+    if (this.#selections.size >= this.#maximumSelections) {
       throw new RangeError("client selection capacity exceeded");
     }
     const initial = this.view(key, overlays);
@@ -175,7 +195,7 @@ export class ClientViews<Value, Assumption, Evidence> {
   residency(): readonly [records: number, branches: number, edges: number, bytes: number] {
     this.#live();
     const [bytes, records, branches, edges] = this.#kernel.residency() as [number, number, number, number];
-    return Object.freeze([Number(records), Number(branches), Number(edges), Number(bytes)]);
+    return Object.freeze([records, branches, edges, bytes]);
   }
 
   dispose(): void {

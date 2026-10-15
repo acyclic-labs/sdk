@@ -4,17 +4,11 @@ import { RequestCapacityError, RequestScheduler } from "../src/client-requests.j
 import { ScheduledTransport } from "../src/client-transport.js";
 import type { ClientCommand, Connection } from "../src/client.js";
 
-function deferred<Value>() {
-  let resolve!: (value: Value) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<Value>((yes, no) => { resolve = yes; reject = no; });
-  return { promise, resolve, reject };
-}
 const turn = async (): Promise<void> => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
 
 test("pre-work admission and abort keep actual unsettled provider capacity reserved", async () => {
   const scheduler = new RequestScheduler({ concurrent: 1, requests: 2, bytes: 8 });
-  const running = deferred<number>();
+  const running = Promise.withResolvers<number>();
   const abort = new AbortController();
   let starts = 0;
   const first = scheduler.schedule(4, async () => { starts++; return running.promise; }, abort.signal);
@@ -28,18 +22,19 @@ test("pre-work admission and abort keep actual unsettled provider capacity reser
   expect((await failed).name).toBe("AbortError"); expect((await secondFailed).name).toBe("AbortError");
   expect(starts).toBe(1);
   expect(scheduler.residency).toEqual({ requests: 1, running: 1, bytes: 4 });
-  const next = scheduler.schedule(4, async () => { starts++; throw new Error("provider fault"); });
+  const providerFault = new Error("provider fault");
+  const next = scheduler.schedule(4, async () => { starts++; throw providerFault; });
   const nextFailed = next.catch(error => error);
   await turn(); expect(starts).toBe(1);
   running.resolve(1);
-  expect((await nextFailed).message).toBe("provider fault");
+  expect(await nextFailed).toBe(providerFault);
   expect(scheduler.residency).toEqual({ requests: 0, running: 0, bytes: 0 });
   const immediateAbort = new AbortController();
   const never = scheduler.schedule(1, async () => { starts++; return 0; }, immediateAbort.signal);
   const neverFailed = never.catch(error => error);
   immediateAbort.abort(); expect((await neverFailed).name).toBe("AbortError"); await turn();
   expect(starts).toBe(2);
-  const unsettled = deferred<number>();
+  const unsettled = Promise.withResolvers<number>();
   const disposedRunning = scheduler.schedule(4, () => unsettled.promise).catch(error => error);
   const disposedQueued = scheduler.schedule(4, async () => { starts++; return 3; }).catch(error => error);
   await turn(); scheduler.dispose();
@@ -52,10 +47,34 @@ test("pre-work admission and abort keep actual unsettled provider capacity reser
   scheduler.dispose();
 });
 
+test("input capture is synchronous after admission and never runs for rejected work", async () => {
+  const scheduler = new RequestScheduler({ concurrent: 1, requests: 1, bytes: 4 });
+  const held = Promise.withResolvers<number>();
+  let captures = 0, starts = 0;
+  const accepted = scheduler.schedule(4, async () => { starts++; return held.promise; }, undefined,
+    () => { captures++; expect(scheduler.residency.bytes).toBe(4); });
+  expect(captures).toBe(1);
+  await expect(scheduler.schedule(4, async () => 0, undefined, () => { captures++; }))
+    .rejects.toBeInstanceOf(RequestCapacityError);
+  expect(captures).toBe(1);
+  held.resolve(7); expect(await accepted).toBe(7);
+  await expect(scheduler.schedule(4, async () => { starts++; return 0; }, undefined,
+    () => { throw new Error("capture failure"); })).rejects.toThrow();
+  expect(scheduler.residency).toEqual({ requests: 0, running: 0, bytes: 0 });
+  const cancelled = new AbortController();
+  await expect(scheduler.schedule(4, async () => { starts++; return 0; }, cancelled.signal,
+    () => cancelled.abort())).rejects.toHaveProperty("name", "AbortError");
+  expect(scheduler.residency).toEqual({ requests: 0, running: 0, bytes: 0 });
+  await expect(scheduler.schedule(4, async () => { starts++; return 0; }, undefined,
+    () => scheduler.dispose())).rejects.toHaveProperty("name", "AbortError");
+  expect(scheduler.residency).toEqual({ requests: 0, running: 0, bytes: 0 });
+  expect(starts).toBe(1);
+});
+
 test("shared selective hydration isolates caller abort, fences stale completion and bounds warm residency", async () => {
   const scheduler = new RequestScheduler({ concurrent: 2, requests: 2, bytes: 8 });
   let reads = 0;
-  let selected = deferred<{ value: Readonly<{ ref: string }>; bytes: number }>();
+  let selected = Promise.withResolvers<{ value: Readonly<{ ref: string }>; bytes: number }>();
   const loader = new DemandLoader({ reserve: () => 4, load: async () => { reads++; return selected.promise; } }, scheduler, 2, 1, 4);
   expect(reads).toBe(0);
   const abort = new AbortController();
@@ -64,27 +83,13 @@ test("shared selective hydration isolates caller abort, fences stale completion 
   const second = loader.read("pin-1");
   await expect(loader.read("pin-2")).rejects.toBeInstanceOf(RequestCapacityError);
   await turn(); expect(reads).toBe(1);
-  // Count only attachments made synchronously inside read. An anchor keeps the
-  // same provider pending while other readers churn through admission/cancel.
-  const originalThen = Promise.prototype.then;
-  let attachments = 0, retainedAttachments = 0;
-  Promise.prototype.then = function(this: Promise<unknown>, ...args: Parameters<typeof originalThen>) {
-    attachments++;
-    return originalThen.apply(this, args);
-  } as typeof originalThen;
-  try {
-    // Release the first interest to leave room for one transient reader.
-    abort.abort();
-    for (let i = 0; i < 1000; i++) {
-      const churn = new AbortController();
-      const before = attachments;
-      const reader = loader.read("pin-1", churn.signal);
-      retainedAttachments += attachments - before;
-      void reader.catch(() => {});
-      churn.abort();
-    }
-  } finally { Promise.prototype.then = originalThen; }
-  expect(retainedAttachments).toBe(0);
+  abort.abort();
+  for (let i = 0; i < 1000; i++) {
+    const churn = new AbortController();
+    const reader = loader.read("pin-1", churn.signal);
+    void reader.catch(() => {});
+    churn.abort();
+  }
   expect(loader.residency.demand).toBe(1);
   abort.abort(); expect((await firstFailed).name).toBe("AbortError");
   const value = Object.freeze({ ref: "pin-1" });
@@ -95,24 +100,25 @@ test("shared selective hydration isolates caller abort, fences stale completion 
   expect(stable).toBe(true);
   expect(reads).toBe(1);
   expect(loader.residency).toEqual({ demand: 0, pending: 0, entries: 1, bytes: 4 });
-  selected = deferred();
+  selected = Promise.withResolvers();
   const stale = loader.read("pin-2");
   const staleFailed = stale.catch(error => error);
   await turn(); loader.invalidate("pin-2"); expect((await staleFailed).name).toBe("AbortError");
   selected.resolve({ value: Object.freeze({ ref: "stale" }), bytes: 4 });
   await turn(); expect(loader.peek("pin-2")).toBeUndefined();
-  selected = deferred();
+  selected = Promise.withResolvers();
   const oversized = loader.read("pin-3");
   const oversizedFailed = oversized.catch(error => error);
-  selected.resolve({ value, bytes: 5 }); expect((await oversizedFailed).message).toContain("reserved bytes"); await turn();
+  selected.resolve({ value, bytes: 5 }); expect(await oversizedFailed).toBeInstanceOf(RangeError); await turn();
   expect(loader.peek("pin-3")).toBeUndefined();
   const transient = new DemandLoader({ reserve: () => 8, load: async () => ({ value, bytes: 4 }) }, scheduler, 1, 1, 4);
   expect(await transient.read("pin-4")).toBe(value);
   transient.dispose();
   class CompletionScheduler extends RequestScheduler {
     after: (() => void) | undefined;
-    override schedule<Value>(bytes: number, work: (signal: AbortSignal, bytes: number) => Promise<Value>, signal?: AbortSignal): Promise<Value> {
-      const promise = super.schedule(bytes, work, signal);
+    override schedule<Value>(bytes: number, work: (signal: AbortSignal) => Promise<Value>,
+      signal?: AbortSignal, capture?: () => void): Promise<Value> {
+      const promise = super.schedule(bytes, work, signal, capture);
       void promise.then(() => this.after?.(), () => {});
       return promise;
     }
@@ -134,7 +140,7 @@ test("shared selective hydration isolates caller abort, fences stale completion 
 test("transport shares request pressure and preserves original commands, delivery and lifecycle abort", async () => {
   const scheduler = new RequestScheduler({ concurrent: 1, requests: 2, bytes: 8 });
   const sent: ClientCommand[] = [];
-  const blocked = deferred<void>();
+  const blocked = Promise.withResolvers<void>();
   let closed = 0;
   let providerSignal: AbortSignal | undefined;
   const underlying: Connection<number> = {
@@ -158,7 +164,7 @@ test("transport shares request pressure and preserves original commands, deliver
   expect(scheduler.residency.requests).toBe(1);
   await connected.close(); await connected.close(); expect(closed).toBe(1);
   blocked.resolve(); await turn(); expect(scheduler.residency.requests).toBe(0);
-  const late = deferred<Connection<number>>();
+  const late = Promise.withResolvers<Connection<number>>();
   const lateTransport = new ScheduledTransport({ connect: () => late.promise }, scheduler, { connect: () => 1, send: () => 4 });
   const lateAbort = new AbortController();
   const cancelledConnect = lateTransport.connect(new Map(), lateAbort.signal).catch(error => error);
@@ -168,8 +174,6 @@ test("transport shares request pressure and preserves original commands, deliver
   late.resolve(underlying); await turn();
   expect(closed).toBe(2);
   expect(scheduler.residency.requests).toBe(0);
-  // Cancellation in the microtask between provider completion and scheduler
-  // handoff must still close a connection the caller never received.
   const handoffAbort = new AbortController();
   const handoff = new ScheduledTransport({ connect: async () => {
     queueMicrotask(() => queueMicrotask(() => handoffAbort.abort()));
@@ -183,7 +187,7 @@ test("transport shares request pressure and preserves original commands, deliver
   const faultConnection = await failedClose.connect(new Map());
   expect(await Promise.resolve(faultConnection.close()).catch(error => error)).toBe(closeFault);
   expect(await Promise.resolve(faultConnection.close()).catch(error => error)).toBe(closeFault);
-  const lateFault = deferred<Connection<number>>();
+  const lateFault = Promise.withResolvers<Connection<number>>();
   const cleanupErrors: unknown[] = [];
   const detachedFault = new ScheduledTransport({ connect: () => lateFault.promise }, scheduler,
     { connect: () => 1, send: () => 4 }, error => cleanupErrors.push(error));

@@ -1,4 +1,3 @@
-// Reuse the existing actual Chromium gate for the installed package consumer.
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";

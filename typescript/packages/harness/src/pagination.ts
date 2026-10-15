@@ -16,8 +16,7 @@ export type PageLoader<Item, Cursor> = (
 
 /** Bidirectional, deduplicating, single-flight page window. */
 export class PageWindow<Item, Cursor> {
-  readonly #items = new Map<string, Item>();
-  #ordered: string[] = [];
+  #items = new Map<string, Item>();
   #before: Cursor | undefined;
   #after: Cursor | undefined;
   #hasMoreBefore = true;
@@ -35,7 +34,7 @@ export class PageWindow<Item, Cursor> {
   }
 
   get items(): readonly Item[] {
-    return this.#ordered.map(key => this.#items.get(key) as Item);
+    return [...this.#items.values()];
   }
 
   get hasMoreBefore(): boolean {
@@ -51,10 +50,8 @@ export class PageWindow<Item, Cursor> {
     this.#epoch += 1;
     this.#inflight.clear();
     this.#items.clear();
-    this.#ordered = [];
     for (const item of page.items) {
       const key = this.key(item);
-      if (!this.#items.has(key)) this.#ordered.push(key);
       this.#items.set(key, item);
     }
     this.#before = page.before;
@@ -92,8 +89,8 @@ export class PageWindow<Item, Cursor> {
       if (!this.#items.has(key)) added.push(key);
       this.#items.set(key, item);
     }
-    this.#ordered = direction === "before" ? [...added, ...this.#ordered] : [...this.#ordered, ...added];
     if (direction === "before") {
+      this.#items = new Map([...added.map(key => [key, this.#items.get(key) as Item] as const), ...this.#items]);
       this.#before = page.before;
       this.#hasMoreBefore = page.hasMoreBefore;
     } else {
@@ -105,9 +102,9 @@ export class PageWindow<Item, Cursor> {
   }
 
   #evict(direction: PageDirection): void {
-    while (this.#ordered.length > this.maxItems) {
-      const evicted = direction === "before" ? this.#ordered.pop() : this.#ordered.shift();
-      if (evicted !== undefined) this.#items.delete(evicted);
-    }
+    const excess = this.#items.size - this.maxItems;
+    if (excess <= 0) return;
+    const keys = [...this.#items.keys()];
+    for (const key of direction === "before" ? keys.slice(-excess) : keys.slice(0, excess)) this.#items.delete(key);
   }
 }

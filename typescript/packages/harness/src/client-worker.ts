@@ -1,8 +1,6 @@
 import { SnapshotStore, type ClientSnapshot } from "./client-snapshot.js";
 
-/** Encode only the selected reference-oriented view. decode returns immutable data.
- * This is a same-host snapshot channel, never an evidence or journal transport.
- */
+/** Encode selected references and decode immutable data; carry no commands or evidence. */
 export interface SnapshotCodec<Value> {
   encode(value: Value): Uint8Array;
   decode(bytes: Uint8Array): Value;
@@ -13,10 +11,7 @@ function bound(maximumBytes: number): void {
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes <= 0) throw new RangeError("snapshot byte bound required");
 }
 
-/** Explicitly attach a publisher to an owned MessagePort. At most one in-flight
- * snapshot plus the latest source reference is retained; intermediate UI snapshots
- * may coalesce. Commands and authoritative evidence stay with the single kernel.
- */
+/** Publish bounded snapshots on an owned port; coalesce while one snapshot is in flight. */
 export function publishClientSnapshots<Value>(store: ClientSnapshot<Value>, port: MessagePort,
   codec: SnapshotCodec<Value>, maximumBytes: number, onError: (error: unknown) => void): () => void {
   bound(maximumBytes);
@@ -25,7 +20,6 @@ export function publishClientSnapshots<Value>(store: ClientSnapshot<Value>, port
   let inFlight = false;
   let latest = store.getSnapshot();
   let sent = latest;
-  let ready = false;
   const send = (): void => {
     if (stopped || inFlight) return;
     try {
@@ -44,27 +38,24 @@ export function publishClientSnapshots<Value>(store: ClientSnapshot<Value>, port
     inFlight = false;
     if (!Object.is(latest, sent)) send();
   };
-  let unsubscribe = () => {};
+  let unsubscribe: (() => void) | undefined;
   const stop = (): void => {
     if (stopped) return;
     stopped = true;
-    unsubscribe();
+    unsubscribe?.();
     port.removeEventListener("message", receive);
     port.close();
   };
   port.addEventListener("message", receive);
   port.start();
-  try { unsubscribe = store.subscribe(() => { latest = store.getSnapshot(); if (ready && !Object.is(latest, sent)) send(); }); }
+  try { unsubscribe = store.subscribe(() => { latest = store.getSnapshot(); if (unsubscribe !== undefined && !Object.is(latest, sent)) send(); }); }
   catch (error) { stop(); throw error; }
-  ready = true;
   latest = store.getSnapshot();
   send();
   return stop;
 }
 
-/** Explicitly attach a receiver, initialized with the same SSR/hydration snapshot.
- * No worker is created. Disposal closes the owned port and clears subscriptions.
- */
+/** Receive bounded snapshots on an owned port. */
 export function receiveClientSnapshots<Value>(initial: Value, port: MessagePort,
   codec: SnapshotCodec<Value>, maximumBytes: number, onError: (error: unknown) => void): ClientSnapshot<Value> & { dispose(): void } {
   bound(maximumBytes);
