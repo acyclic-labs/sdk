@@ -10,28 +10,27 @@ use crate::fork::{
     ForkSelection, ResourceRevision, StreamHistoryForkVerifier, SummaryForkSelection,
     prepare_summary_fork_context,
 };
+use crate::model::PreparedModelRequest;
 use crate::model::{Model, ModelProvider};
-use crate::model::{ModelDispatch, ModelEvent, PreparedModelRequest};
 use crate::resources::StreamRef;
 use crate::runtime::TaskSpawner;
 use crate::runtime::{TaskAdmissionRecord, TaskDefinition, TaskRegistry};
 use crate::store::{HistoryReadLimits, HistoryReader};
+use crate::test_support::{ScriptedModelProvider, ScriptedTurn};
 use crate::workflow::{
     MachineIdentity, MachineRegistry, MachineStatus, MachineTransition, ResumableMachine,
 };
-use std::sync::Mutex;
 
-#[derive(Default)]
-struct SummaryModel(Mutex<Vec<PreparedModelRequest>>);
-
-impl ModelProvider for SummaryModel {
-    fn context_capacity(&self, _: &Model) -> Result<ModelContextCapacity> {
-        Ok(ModelContextCapacity {
-            context_tokens: 131_072,
-            output_tokens: 4_096,
-        })
-    }
-    fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
+fn summary_model(turns: usize) -> ScriptedModelProvider {
+    ScriptedModelProvider::new(std::iter::repeat_n(
+        ScriptedTurn::Text("admitted summary or answer".into()),
+        turns,
+    ))
+    .with_context_capacity(ModelContextCapacity {
+        context_tokens: 131_072,
+        output_tokens: 4_096,
+    })
+    .with_token_counter(|request| {
         let message_tokens = request
             .request()
             .messages
@@ -50,37 +49,7 @@ impl ModelProvider for SummaryModel {
             fixed_tokens: 512,
             message_tokens,
         })
-    }
-    fn generate<'a>(
-        &'a self,
-        request: PreparedModelRequest,
-        dispatch: ModelDispatch,
-    ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
-        assert_eq!(dispatch.request_digest, request.request_digest());
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(request);
-        Box::pin(futures::stream::iter([
-            Ok(ModelEvent::Content {
-                delta: "admitted summary or answer".into(),
-            }),
-            Ok(ModelEvent::Completed {
-                metadata: Value::Null,
-            }),
-        ]))
-    }
-    fn reconcile<'a>(
-        &'a self,
-        _dispatch: crate::model::ModelDispatch,
-        _observed: &'a [crate::model::ModelEvent],
-    ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "fixture attempts settle immediately".into(),
-            ))
-        })
-    }
+    })
 }
 
 struct SummaryLeaseMachine {
