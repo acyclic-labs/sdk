@@ -1,4 +1,7 @@
-//! Borrowed Markdown task-list rendering; the file remains authoritative.
+//! Disposable Markdown task-list interpretation of an observed file.
+
+use pulldown_cmark::{CowStr, Event, Options, Parser, Tag, TagEnd, TextMergeStream};
+use std::borrow::Cow;
 
 /// A Markdown checkbox state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -22,75 +25,131 @@ impl TaskState {
     }
 }
 
-/// One checkbox borrowing its description from a Markdown file.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// One checkbox with its decoded inline description.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TaskItem<'a> {
     /// Checkbox state, without imposing an execution policy on the file.
     pub state: TaskState,
-    /// Description on the same line, preserving its whitespace.
-    pub text: &'a str,
+    /// Text borrows the original input when Markdown decoding permits it.
+    pub text: Cow<'a, str>,
 }
 
-/// Disposable interpretation of a file; no separate plan state is retained.
-#[derive(Clone, Copy, Debug)]
+/// Disposable interpretation; file contents remain authoritative.
+#[derive(Clone, Debug)]
 pub struct TaskList<'a> {
-    markdown: &'a str,
+    items: Vec<TaskItem<'a>>,
 }
 
 impl<'a> TaskList<'a> {
-    /// Checkboxes in source order, excluding fenced code blocks.
+    /// Checkboxes in source order, including nested and ordered list items.
     pub fn items(self) -> impl Iterator<Item = TaskItem<'a>> {
-        scan(self.markdown).filter_map(Result::ok)
+        self.items.into_iter()
     }
 }
 
-/// Reads conventional Markdown checkboxes with constant auxiliary memory.
-/// `None` means render the original file as raw text, including malformed lists.
+#[derive(Default)]
+struct Item<'a> {
+    state: Option<TaskState>,
+    text: Cow<'a, str>,
+    first_text: bool,
+}
+
+fn text(value: CowStr<'_>) -> Cow<'_, str> {
+    match value {
+        CowStr::Borrowed(value) => Cow::Borrowed(value),
+        value => Cow::Owned(value.into_string()),
+    }
+}
+
+/// Reads Markdown task lists; `None` requests raw-text rendering of the file.
 pub fn parse_task_list(markdown: &str) -> Option<TaskList<'_>> {
-    let mut found = false;
-    for item in scan(markdown) {
-        item.ok()?;
-        found = true;
-    }
-    found.then_some(TaskList { markdown })
-}
-
-fn scan(markdown: &str) -> impl Iterator<Item = Result<TaskItem<'_>, ()>> {
-    let mut fence = None;
-    markdown.lines().filter_map(move |line| {
-        let line = line.trim_start_matches([' ', '\t']);
-        let delimiter = line.as_bytes().first().copied();
-        let run = line
-            .bytes()
-            .take_while(|byte| Some(*byte) == delimiter)
-            .count();
-        if let Some((byte, length)) = fence {
-            if delimiter == Some(byte) && run >= length && line.get(run..)?.trim().is_empty() {
-                fence = None;
+    let mut items = Vec::<Item<'_>>::new();
+    let mut stack = Vec::new();
+    let mut code = false;
+    for event in TextMergeStream::new(Parser::new_ext(markdown, Options::ENABLE_TASKLISTS)) {
+        match event {
+            Event::Start(Tag::Item) => {
+                stack.push(items.len());
+                items.push(Item {
+                    first_text: true,
+                    ..Default::default()
+                });
             }
-            return None;
+            Event::End(TagEnd::Item) => {
+                stack.pop();
+            }
+            Event::Start(Tag::CodeBlock(_)) => {
+                code = true;
+                if stack
+                    .last()
+                    .is_some_and(|index| items[*index].state.is_some())
+                {
+                    return None;
+                }
+            }
+            Event::End(TagEnd::CodeBlock) => code = false,
+            event if !code => {
+                let Some(index) = stack.last() else { continue };
+                let item = &mut items[*index];
+                let value = match event {
+                    Event::TaskListMarker(done) => {
+                        item.state = Some(if done {
+                            TaskState::Completed
+                        } else {
+                            TaskState::Pending
+                        });
+                        continue;
+                    }
+                    Event::Text(value) => {
+                        let mut value = text(value);
+                        if item.first_text && item.state.is_none() {
+                            if let Some(tail) = value.strip_prefix("[~]") {
+                                if !tail.starts_with(char::is_whitespace) {
+                                    return None;
+                                }
+                                let offset = value.len() - tail.trim_start().len();
+                                value = match value {
+                                    Cow::Borrowed(value) => Cow::Borrowed(value.get(offset..)?),
+                                    Cow::Owned(mut value) => {
+                                        value.drain(..offset);
+                                        Cow::Owned(value)
+                                    }
+                                };
+                                item.state = Some(TaskState::InProgress);
+                            } else if value.starts_with('[') {
+                                return None;
+                            }
+                        }
+                        item.first_text = false;
+                        value
+                    }
+                    Event::Code(value) => {
+                        item.first_text = false;
+                        text(value)
+                    }
+                    Event::SoftBreak | Event::HardBreak => Cow::Borrowed("\n"),
+                    _ => continue,
+                };
+                if item.text.is_empty() {
+                    item.text = value;
+                } else {
+                    item.text.to_mut().push_str(&value);
+                }
+            }
+            _ => {}
         }
-        if matches!(delimiter, Some(b'`' | b'~')) && run >= 3 {
-            fence = Some((delimiter?, run));
-            return None;
+    }
+    let mut tasks = Vec::new();
+    for item in items {
+        if let Some(state) = item.state {
+            if item.text.trim().is_empty() {
+                return None;
+            }
+            tasks.push(TaskItem {
+                state,
+                text: item.text,
+            });
         }
-        let body = line.strip_prefix("- ")?;
-        if !body.starts_with('[') {
-            return None;
-        }
-        let state = match body.get(..3) {
-            Some("[ ]") => TaskState::Pending,
-            Some("[~]") => TaskState::InProgress,
-            Some("[x]" | "[X]") => TaskState::Completed,
-            _ => return Some(Err(())),
-        };
-        let Some(text) = body.get(3..).and_then(|tail| tail.strip_prefix(' ')) else {
-            return Some(Err(()));
-        };
-        Some(if text.trim().is_empty() {
-            Err(())
-        } else {
-            Ok(TaskItem { state, text })
-        })
-    })
+    }
+    (!tasks.is_empty()).then_some(TaskList { items: tasks })
 }

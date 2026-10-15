@@ -12,6 +12,7 @@ pub(super) async fn run(mut value: Value) -> TestResult {
         Some("composer") => Composer::parse(value)?.run().await,
         Some("notifications") => Notifications::parse(value)?.run(),
         Some("plans") => super::plans::Plans::parse(value)?.run().await,
+        Some("plan-query") => super::plan_query::PlanQuery::parse(value)?.run().await,
         _ => Err("unknown scenario driver".into()),
     }
 }

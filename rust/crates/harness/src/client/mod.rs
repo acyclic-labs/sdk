@@ -45,6 +45,12 @@ mod notifications;
 pub use notifications::*;
 mod task_list;
 pub use task_list::{TaskItem, TaskList, TaskState, parse_task_list};
+mod file_query;
+pub use file_query::FileQueryView;
+#[cfg(feature = "tui")]
+mod plan_panel;
+#[cfg(feature = "tui")]
+pub use plan_panel::PlanPanel;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
 

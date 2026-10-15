@@ -95,7 +95,7 @@ proptest! {
     #[test]
     fn pinning_is_exact_and_transactional(description in ".{0,80}", hide in any::<bool>(), tamper in any::<bool>()) {
         let mut tools = ToolRegistry::default();
-        let mut tool = crate::tool::plan::update_plan()?;
+        let mut tool = crate::tool::files::write_file()?;
         tool.definition.description = description;
         tools.register((tool, None), &mut None, None)?;
         let before = tools.definitions(None)?;

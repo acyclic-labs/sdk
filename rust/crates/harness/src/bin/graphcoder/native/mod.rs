@@ -178,7 +178,7 @@ pub(super) async fn runtime(
         Some(source.clone()),
         MAX_FRAME_BYTES as u64,
     )?;
-    let (toolset, context) = if let Some(reference) = &config.context_manifest {
+    let (toolset, context) = {
         let reader = FilesystemContentVerifier::new(
             files.clone(),
             &verifier,
@@ -186,12 +186,31 @@ pub(super) async fn runtime(
             MAX_FRAME_BYTES as u64,
             None,
         )?;
+        let reference = match &config.context_manifest {
+            Some(reference) => reference.clone(),
+            None => {
+                let manifest = ContextManifest::new(Default::default(), Vec::new(), &toolset)?;
+                let publisher = acyclic_harness::filesystem::FilesystemContentPublisher::new(
+                    files.clone(),
+                    &config.private_volume,
+                    &verifier,
+                    &config.owner.scope,
+                    config.limits.file_bytes,
+                    None,
+                )?;
+                manifest
+                    .publish(
+                        publisher.as_ref(),
+                        OperationId::new(),
+                        "context/default/manifest.json",
+                        config.limits,
+                    )
+                    .await?
+            }
+        };
         let (tools, stage) =
-            ContextManifest::bind(reference.clone(), reader.as_ref(), toolset, config.limits)
-                .await?;
+            ContextManifest::bind(reference, reader.as_ref(), toolset, config.limits).await?;
         (tools, ContextPipeline::new([stage]))
-    } else {
-        (toolset, ContextPipeline::default())
     };
     let stock = Arc::new(StockTurnMachine::new());
     let preparation = Arc::new(ForkPreparationMachine::new());

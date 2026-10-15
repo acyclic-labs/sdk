@@ -1,6 +1,6 @@
 //! Markdown task-list parsing and canonical round trips.
 
-use acyclic_harness::client::{TaskState, parse_task_list};
+use acyclic_harness::client::{TaskList, TaskState, parse_task_list};
 use proptest::prelude::*;
 
 #[test]
@@ -78,23 +78,82 @@ proptest! {
                 _ => TaskState::Completed,
             };
             // Descriptions must contain some non-whitespace text.
-            markdown.push_str(&format!("- {} Task {text}\n", state.marker()));
+            markdown.push_str(&format!("- {} {}\n", state.marker(), escaped(&format!("Task {text}"))));
         }
         let parsed = parse_task_list(&markdown).unwrap();
         let mut rendered = String::from("# Plan\n\n");
         for item in parsed.items() {
-            rendered.push_str(&format!("- {} {}\n", item.state.marker(), item.text));
+            rendered.push_str(&format!("- {} {}\n", item.state.marker(), escaped(&item.text)));
         }
         prop_assert_eq!(rendered, markdown);
     }
 
     #[test]
-    fn arbitrary_utf8_is_total_and_borrows_only_original_text(markdown in any::<String>()) {
+    fn arbitrary_utf8_is_total(markdown in any::<String>()) {
         if let Some(parsed) = parse_task_list(&markdown) {
             for item in parsed.items() {
                 prop_assert!(!item.text.trim().is_empty());
-                prop_assert!(markdown.contains(item.text));
             }
+        }
+    }
+}
+
+fn escaped(text: &str) -> String {
+    let mut result = String::new();
+    for character in text.chars() {
+        if character.is_ascii_punctuation() {
+            result.push('\\');
+        }
+        result.push(character);
+    }
+    result
+}
+
+fn code_block_oracle(parse: for<'a> fn(&'a str) -> Option<TaskList<'a>>) -> bool {
+    [
+        "    - [ ] Example",
+        "\t- [ ] Example",
+        "```\n- [ ] Example\n```",
+        "~~~\n- [~] Example\n~~~",
+    ]
+    .iter()
+    .all(|input| parse(input).is_none())
+}
+
+#[test]
+fn code_block_negative_control_rejects_indentation_blind_parsing() {
+    fn indentation_blind(input: &str) -> Option<TaskList<'_>> {
+        parse_task_list(input.trim_start())
+    }
+    assert!(code_block_oracle(parse_task_list));
+    assert!(!code_block_oracle(indentation_blind));
+}
+
+#[test]
+fn mixed_bullets_ordered_lists_and_inline_markdown_keep_every_task() {
+    let list = parse_task_list(
+        "- [ ] First\n* [x] **Second**\n+ [~] Third\n1. [ ] Fourth\n2. [x] `Fifth`\n",
+    )
+    .unwrap();
+    assert_eq!(
+        list.items()
+            .map(|item| (item.state, item.text.into_owned()))
+            .collect::<Vec<_>>(),
+        vec![
+            (TaskState::Pending, "First".into()),
+            (TaskState::Completed, "Second".into()),
+            (TaskState::InProgress, "Third".into()),
+            (TaskState::Pending, "Fourth".into()),
+            (TaskState::Completed, "Fifth".into()),
+        ]
+    );
+}
+
+proptest! {
+    #[test]
+    fn indented_and_fenced_code_never_becomes_work(text in "[a-zA-Z0-9 ]{1,80}") {
+        for markdown in [format!("    - [ ] {text}\n"), format!("\t- [~] {text}\n"), format!("```md\n* [x] {text}\n```\n")] {
+            prop_assert!(parse_task_list(&markdown).is_none());
         }
     }
 }

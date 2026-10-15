@@ -3,6 +3,7 @@
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rustc-check-cfg=cfg(acyclic_loom)");
+    println!("cargo:rustc-check-cfg=cfg(loom)");
     let protoc = protoc_bin_vendored::protoc_bin_path()?;
     // This checked mirror is generated from the repository's canonical schema.
     // Keeping the build input inside the crate makes crates.io archives

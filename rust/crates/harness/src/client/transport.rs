@@ -43,6 +43,38 @@ pub struct HarnessClient<S> {
 }
 
 impl<S: ClientStateStore> HarnessClient<S> {
+    /// Resolves a file-backed view selection and starts its atomic snapshot/follow.
+    /// The host folds returned records with `query_change` and redraws shared views.
+    pub async fn select_file_view<P: acyclic_stream::StreamProvider + ?Sized>(
+        &mut self,
+        selection: super::CommandQuery,
+        volume: &crate::task_volume::TaskVolume<P>,
+        maximum_files: usize,
+        maximum_bytes: usize,
+    ) -> Result<crate::task_volume::ChangeStream> {
+        let query = match selection {
+            super::CommandQuery::Plan => crate::task_volume::Query::Plans,
+            super::CommandQuery::Goal => {
+                crate::task_volume::Query::File(crate::task_volume::FileKey::Goal)
+            }
+            _ => {
+                return Err(Error::Unsupported(
+                    "view does not select a private file query".into(),
+                ));
+            }
+        };
+        let observation = volume
+            .observe(query.clone(), None, maximum_files)
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let snapshot = observation
+            .snapshot
+            .ok_or_else(|| Error::Conflict("initial file query has no snapshot".into()))?;
+        self.session
+            .query_snapshot(query, snapshot, maximum_files, maximum_bytes)?;
+        Ok(observation.changes)
+    }
+
     /// Negotiates before sending commands. Opening a client starts no task.
     pub async fn connect(api: Arc<dyn HarnessWireApi>, session: ClientSession<S>) -> Result<Self> {
         let request = wire::HandshakeRequest {
@@ -283,6 +315,23 @@ impl<S: ClientStateStore> HarnessClient<S> {
     /// Shared renderer state and outbox.
     pub fn session(&self) -> &ClientSession<S> {
         &self.session
+    }
+
+    /// Accepts an atomic snapshot from the volume query transport.
+    pub fn query_snapshot(
+        &mut self,
+        query: crate::task_volume::Query,
+        snapshot: crate::task_volume::Snapshot,
+        maximum_files: usize,
+        maximum_bytes: usize,
+    ) -> Result<()> {
+        self.session
+            .query_snapshot(query, snapshot, maximum_files, maximum_bytes)
+    }
+
+    /// Accepts one pushed volume record, without adding a semantic wire message.
+    pub fn query_change(&mut self, change: crate::task_volume::Change) -> Result<bool> {
+        self.session.query_change(change)
     }
 
     /// Negotiated service response, also emitted by JSONL runners.
