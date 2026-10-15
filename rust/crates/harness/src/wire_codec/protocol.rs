@@ -2,9 +2,7 @@ use super::*;
 pub(crate) fn protocol_identity() -> wire::ProtocolIdentity {
     wire::ProtocolIdentity {
         version: EVENT_WIRE_VERSION.into(),
-        descriptor_digest: blake3::hash(crate::FILE_DESCRIPTOR_SET)
-            .to_hex()
-            .to_string(),
+        descriptor_digest: env!("HARNESS_DESCRIPTOR_DIGEST").into(),
     }
 }
 pub(crate) fn validate_protocol(

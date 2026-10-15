@@ -77,6 +77,9 @@ cat >"$work/bin/cargo" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$FAKE_CARGO_LOG"
+if [[ "$1" == rustc ]]; then
+  printf '{"reason":"compiler-artifact","target":{"name":"mcp-loom"},"profile":{"test":true},"executable":"%s"}\n' "$FAKE_MCP_LOOM_BINARY"
+fi
 EOF
 
 chmod +x "$work/bin"/*
@@ -169,15 +172,21 @@ printf '%s
 ' 'cargo-nextest 0.9.146 (fake)'
 EOF
 chmod +x "$gate/bin/cargo-nextest"
+cat >"$gate/bin/mcp_loom" <<'EOF'
+#!/usr/bin/env bash
+printf 'test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\n'
+EOF
+chmod +x "$gate/bin/mcp_loom"
 (
   cd "$root"
   SDK_TEMP_DIR="$gate/temp" SDK_ARTIFACT_DIR="$gate/artifacts" TOOLS_DIR="$gate/tools" \
-    FAKE_CARGO_LOG="$gate/cargo.log" PATH="$gate/bin:$work/bin:$PATH" \
+    FAKE_CARGO_LOG="$gate/cargo.log" FAKE_MCP_LOOM_BINARY="$gate/bin/mcp_loom" PATH="$gate/bin:$work/bin:$PATH" \
     bash scripts/qualify-ci.sh gate
 )
 mapfile -t cargo_calls <"$gate/cargo.log"
-[[ "${#cargo_calls[@]}" -eq 1 ]]
-[[ "${cargo_calls[0]}" == 'nextest run --profile ci --workspace --all-features --locked' ]]
+[[ "${#cargo_calls[@]}" -eq 2 ]]
+[[ "${cargo_calls[0]}" == 'rustc --locked --message-format=json -p acyclic-harness --test mcp-loom --all-features -- --cfg loom' ]]
+[[ "${cargo_calls[1]}" == 'nextest run --profile ci --workspace --all-features --locked' ]]
 
 for lane in docs generation; do
   : >"$gate/cargo.log"

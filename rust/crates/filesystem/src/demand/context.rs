@@ -6,6 +6,12 @@ use std::sync::{
 };
 
 pub(crate) struct NativeDemandReadMeter(pub(crate) Mutex<DemandWork>);
+impl std::fmt::Debug for NativeDemandReadMeter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeDemandReadMeter")
+            .finish_non_exhaustive()
+    }
+}
 impl NativeDemandReadMeter {
     pub(crate) fn new(work: DemandWork) -> Self {
         Self(Mutex::new(work))

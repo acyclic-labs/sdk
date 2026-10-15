@@ -16,17 +16,17 @@ mod checked;
 pub(crate) use checked::{Condvar, Mutex, MutexGuard, lock};
 
 #[cfg(not(any(debug_assertions, test)))]
-pub(crate) type Mutex<T, const RANK: u16> = std::sync::Mutex<T>;
+pub(crate) type Mutex<T, const RANK: u16> = crate::sync::Mutex<T>;
 #[cfg(not(any(debug_assertions, test)))]
-pub(crate) use std::sync::{Condvar, MutexGuard};
+pub(crate) use crate::sync::{Condvar, MutexGuard};
 
 #[cfg(not(any(debug_assertions, test)))]
 #[inline(always)]
 pub(crate) fn lock<T, const RANK: u16>(
-    mutex: &std::sync::Mutex<T>,
+    mutex: &crate::sync::Mutex<T>,
 ) -> std::sync::LockResult<MutexGuard<'_, T>> {
     mutex.lock()
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(all(test, not(acyclic_fs_loom)))]
 mod tests;

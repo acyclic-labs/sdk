@@ -1,3 +1,7 @@
+use crate::mcp::sync::{
+    Arc,
+    atomic::{AtomicU32, Ordering},
+};
 use crate::{Error, OperationId, Result, mcp::McpToolTransport, runtime::ToolContext};
 use acyclic_native_runtime::{ProcessTree, run_blocking_io};
 use acyclic_stream::BoxProviderFuture;
@@ -27,10 +31,43 @@ use codec::BoundedCodec;
 pub struct StdioMcpTransport {
     service: RunningService<RoleClient, ClientConfig>,
     timeout: Duration,
+    maximum_bytes: Arc<AtomicU32>,
     _process: Option<ProcessOwner>,
 }
 
 impl StdioMcpTransport {
+    /// Selects the independent tool-exchange bounds after catalog discovery.
+    pub fn with_tool_limits(mut self, maximum_bytes: u32, timeout_ms: u32) -> Result<Self> {
+        validate_bounds(maximum_bytes, timeout_ms)?;
+        self.maximum_bytes.store(maximum_bytes, Ordering::Release);
+        self.timeout = Duration::from_millis(u64::from(timeout_ms));
+        Ok(self)
+    }
+
+    /// Lists one typed catalog page without an intermediate JSON representation.
+    pub async fn list_tools(
+        &self,
+        operation: OperationId,
+        cursor: Option<String>,
+    ) -> Result<rmcp::model::ListToolsResult> {
+        let request = rmcp::model::ListToolsRequest::with_param(
+            rmcp::model::PaginatedRequestParams::default().with_cursor(cursor),
+        );
+        match self
+            .exchange(
+                operation,
+                "tools/list",
+                ClientRequest::ListToolsRequest(request),
+            )
+            .await?
+        {
+            ServerResult::ListToolsResult(result) => Ok(result),
+            _ => Err(Error::Invalid(
+                "MCP tools/list returned another result type".into(),
+            )),
+        }
+    }
+
     /// Starts one host-selected executable and keeps it for the connection's lifetime.
     /// Arguments, environment and workspace are supplied through `command`.
     pub async fn spawn(mut command: Command, maximum_bytes: u32, timeout_ms: u32) -> Result<Self> {
@@ -91,15 +128,16 @@ impl StdioMcpTransport {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
+        let maximum_bytes = Arc::new(AtomicU32::new(maximum_bytes));
         let read = FramedRead::new(
             read,
-            BoundedCodec::<ServerJsonRpcMessage>::new(maximum_bytes as usize),
+            BoundedCodec::<ServerJsonRpcMessage>::new(Arc::clone(&maximum_bytes)),
         )
         .take_while(|message| std::future::ready(message.is_ok()))
         .filter_map(|message| std::future::ready(message.ok()));
         let write = FramedWrite::new(
             write,
-            BoundedCodec::<ClientJsonRpcMessage>::new(maximum_bytes as usize),
+            BoundedCodec::<ClientJsonRpcMessage>::new(Arc::clone(&maximum_bytes)),
         );
         let client = ClientConfig::new(
             Default::default(),
@@ -121,6 +159,7 @@ impl StdioMcpTransport {
         Ok(Self {
             service,
             timeout,
+            maximum_bytes,
             _process: process,
         })
     }

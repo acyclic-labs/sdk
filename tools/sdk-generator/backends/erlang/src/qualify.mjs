@@ -1,9 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, posix, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs } from "node:util";
-import { sha256, within } from "../../../shared/authority.mjs";
+import { inventory, sha256, within, runCli } from "../../../shared/authority.mjs";
 import { packageTemplates, pins, producerSources } from "./generate.mjs";
 import { expectedModules, readPackage } from "./package.mjs";
 import { verifyRuntime, verifyTools, verifyTree } from "./inventory.mjs";
@@ -11,8 +10,8 @@ import { verifyRuntime, verifyTools, verifyTree } from "./inventory.mjs";
 const directory = dirname(fileURLToPath(import.meta.url));
 const read = name => readFileSync(join(directory, name));
 const qualificationPins = JSON.parse(read("../toolchains/qualification.json"));
-export const targets = ["actors/v1/actors.proto", "stream/v1/stream.proto"];
-export const controls = ["rpc_route_control.erl", "compare_descriptor.erl", "installed_provenance.erl"];
+const targets = ["actors/v1/actors.proto", "stream/v1/stream.proto"];
+const controls = ["rpc_route_control.erl", "compare_descriptor.erl", "installed_provenance.erl"];
 const fixtures = controls.map(name => "../tests/fixtures/consumer/" + name);
 const sourceNames = [...new Set(["qualify.mjs", "package.mjs", "inventory.mjs", ...producerSources,
   "../../../../../scripts/archive-utils.mjs", "../toolchains/qualification.json", "../toolchains/dependency-files.json", ...fixtures,
@@ -25,16 +24,6 @@ export function verifyDependencies(root, bytes, pin = qualificationPins) {
     || JSON.stringify(index.packages) !== JSON.stringify(pin.packages) || Object.keys(index.files_sha256 ?? {}).length !== pin.dependency_files) throw new Error("dependency metadata differs");
   verifyTree(root, index);
   return index;
-}
-
-function files(root, prefix = "") {
-  return readdirSync(join(root, prefix), { withFileTypes: true }).flatMap(entry => {
-    const name = posix.join(prefix, entry.name);
-    if (entry.isSymbolicLink()) throw new Error("installed tree contains a link");
-    if (entry.isDirectory()) return files(root, name);
-    if (!entry.isFile()) throw new Error("installed tree contains a non-file");
-    return [name];
-  }).sort();
 }
 
 // Injected commands support offline lifecycle controls; CLI qualification is native.
@@ -109,7 +98,7 @@ export function qualify(args, { command = spawnSync, onProgress = () => {}, tool
   const expression = `{ok,_}=application:ensure_all_started(acyclic_sdk_transport),${provenance},ok=compare_descriptor:run(init:get_plain_arguments()),ok=rpc_route_control:run(),${provenance},halt(0).`;
   const native = run("installed-native-consumer", join(otp, "bin/erl"), ["-pa", join(gpb, "ebin"), "-pa", join(sdk, "ebin"), "-pa", join(consumer, "ebin"), "-noshell", "-noinput", "-eval", expression, "-extra",
     ...targets.map(name => join(sdk, "authority", admitted.approved.descriptors.get(name)))]);
-  for (const marker of ["PASS archive-installed Erlang clients: 19 populated native TCP RPC pairs", "actors_pb differing modeled file descriptor fields: []", "stream_pb differing modeled file descriptor fields: []"]) {
+  for (const marker of ["PASS archive-installed Erlang clients: 20 populated native TCP RPC pairs", "actors_pb differing modeled file descriptor fields: []", "stream_pb differing modeled file descriptor fields: []"]) {
     if (!native.includes(marker)) throw new Error("installed consumer completion marker missing: " + marker);
   }
   if (native.split("PASS installed SDK and loaded-module provenance").length !== 3) throw new Error("loaded-module provenance controls incomplete");
@@ -117,11 +106,11 @@ export function qualify(args, { command = spawnSync, onProgress = () => {}, tool
   guard(); privateDependencyGuard();
   for (const [name, bytes] of admitted.payload) if (!readFileSync(join(sdk, name)).equals(bytes)) throw new Error("installed package payload changed");
   for (const [name, digest] of Object.entries(compiled)) if (sha256(readFileSync(join(sdk, "ebin", name))) !== digest) throw new Error("compiled SDK changed");
-  if (JSON.stringify(files(sdk)) !== JSON.stringify([...admitted.payload.keys(), ...Object.keys(compiled).map(name => "ebin/" + name)].sort())) throw new Error("installed SDK tree differs");
+  if (JSON.stringify(inventory(sdk)) !== JSON.stringify([...admitted.payload.keys(), ...Object.keys(compiled).map(name => "ebin/" + name)].sort())) throw new Error("installed SDK tree differs");
   for (const name of controls) if (!readFileSync(join(consumer, name)).equals(sourceBytes.get("../tests/fixtures/consumer/" + name))) throw new Error("staged consumer source changed");
   for (const [name, digest] of Object.entries(consumerBeams)) if (sha256(readFileSync(join(consumer, "ebin", name))) !== digest) throw new Error("compiled consumer changed");
   const consumerFiles = [...controls, ...expectedConsumerBeams.map(name => "ebin/" + name), "actors_pb_route_fixture.erl", "stream_pb_route_fixture.erl"].sort();
-  if (JSON.stringify(files(consumer)) !== JSON.stringify(consumerFiles)) throw new Error("consumer tree differs");
+  if (JSON.stringify(inventory(consumer)) !== JSON.stringify(consumerFiles)) throw new Error("consumer tree differs");
   const receipt = { schema: "acyclic.sdk.erlang-installed-qualification.v1", authority: "rust", target: "erlang",
     source_revision: admitted.receipt.source_revision, authority_manifest_sha256: sha256(admitted.approved.bytes), archive_sha256: sha256(admitted.archiveBytes),
     generation_receipt_sha256: sha256(admitted.receiptBytes), runtime_inventory_sha256: sha256(runtimeBytes),
@@ -129,9 +118,9 @@ export function qualify(args, { command = spawnSync, onProgress = () => {}, tool
     qualifier_source_sha256: Object.fromEntries([...sourceBytes].map(([name, bytes]) => [name, sha256(bytes)])),
     payload_sha256: Object.fromEntries([...admitted.payload].map(([name, bytes]) => [name, sha256(bytes)])),
     compiled_sdk_sha256: compiled, compiled_consumer_sha256: consumerBeams,
-    consumer_source_sha256: Object.fromEntries(files(consumer).filter(name => name.endsWith(".erl")).map(name => [name, sha256(readFileSync(join(consumer, name)))])),
+    consumer_source_sha256: Object.fromEntries(inventory(consumer).filter(name => name.endsWith(".erl")).map(name => [name, sha256(readFileSync(join(consumer, name)))])),
     log_sha256: Object.fromEntries(logNames.map(name => [name, sha256(readFileSync(join(output, name)))])),
-    native_rpc_calls_executed: 19, unary_rpc_calls: 16, server_streaming_rpc_calls: 3, populated_rpc_message_pairs: 19, runtime_type_rejections: 2,
+    native_rpc_calls_executed: 20, unary_rpc_calls: 17, server_streaming_rpc_calls: 3, populated_rpc_message_pairs: 20, runtime_type_rejections: 2,
     compiled_sdk_provenance: true, modeled_file_descriptor_semantics: true,
     descriptor_normalization: ["source locations omitted", "source filename basename", "declared protobuf defaults", "default JSON names", "message and enum declaration order", "single-field proto3-optional synthetic oneof names"],
     unknown_descriptor_extensions_qualified: false, rust_backed_rpc_qualified: false, embedded_runtime_qualified: false };
@@ -139,9 +128,4 @@ export function qualify(args, { command = spawnSync, onProgress = () => {}, tool
   return receipt;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const options = Object.fromEntries(["package", "sha256", "receipt", "authority", "runtime-root", "runtime-inventory", "tool-home", "dependencies", "output"].map(name => [name, { type: "string" }]));
-  const { values } = parseArgs({ options });
-  if (Object.keys(options).some(name => !values[name])) throw new Error("all installed qualification arguments are required");
-  console.log(JSON.stringify(qualify(values), null, 2));
-}
+runCli(import.meta.url, qualify, ["package", "sha256", "receipt", "authority", "runtime-root", "runtime-inventory", "tool-home", "dependencies", "output"], "all installed qualification arguments are required");

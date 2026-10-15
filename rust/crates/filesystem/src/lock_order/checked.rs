@@ -1,20 +1,22 @@
-use crate::sync::{
-    Condvar as RawCondvar, Mutex as RawMutex, MutexGuard as RawMutexGuard, thread_local,
-};
+use crate::sync::{Condvar as RawCondvar, Mutex as RawMutex, MutexGuard as RawMutexGuard};
+#[cfg(acyclic_fs_loom)]
+use loom::thread_local;
 use std::cell::RefCell;
 use std::ops::{Deref, DerefMut};
 use std::panic::Location;
 use std::sync::{LockResult, PoisonError};
+#[cfg(not(acyclic_fs_loom))]
+use std::thread_local;
 use std::time::Duration;
 #[cfg(test)]
 use std::time::Instant;
 
-#[cfg(not(loom))]
+#[cfg(not(acyclic_fs_loom))]
 thread_local! {
     static HELD: RefCell<Vec<(u16, &'static Location<'static>)>> = const { RefCell::new(Vec::new()) };
 }
 
-#[cfg(loom)]
+#[cfg(acyclic_fs_loom)]
 thread_local! {
     static HELD: RefCell<Vec<(u16, &'static Location<'static>)>> = RefCell::new(Vec::new());
 }
@@ -28,7 +30,7 @@ struct Held(u16, &'static Location<'static>);
 impl Held {
     #[track_caller]
     fn check(rank: u16) {
-        #[cfg(all(test, loom))]
+        #[cfg(all(test, acyclic_fs_loom))]
         if model::fault() == model::Fault::MissingCheck {
             return;
         }
@@ -104,11 +106,11 @@ pub(crate) fn lock<T, const RANK: u16>(mutex: &RawMutex<T>) -> LockResult<MutexG
 pub(crate) struct Mutex<T, const RANK: u16>(RawMutex<T>);
 
 impl<T, const RANK: u16> Mutex<T, RANK> {
-    #[cfg(not(loom))]
+    #[cfg(not(acyclic_fs_loom))]
     pub(crate) const fn new(value: T) -> Self {
         Self(RawMutex::new(value))
     }
-    #[cfg(loom)]
+    #[cfg(acyclic_fs_loom)]
     pub(crate) fn new(value: T) -> Self {
         Self(RawMutex::new(value))
     }
@@ -123,11 +125,11 @@ impl<T, const RANK: u16> Mutex<T, RANK> {
 pub(crate) struct Condvar(RawCondvar);
 
 impl Condvar {
-    #[cfg(not(loom))]
+    #[cfg(not(acyclic_fs_loom))]
     pub(crate) const fn new() -> Self {
         Self(RawCondvar::new())
     }
-    #[cfg(loom)]
+    #[cfg(acyclic_fs_loom)]
     pub(crate) fn new() -> Self {
         Self(RawCondvar::new())
     }
@@ -209,7 +211,7 @@ impl WaitTimeoutResult {
 }
 
 fn predicate<T: ?Sized>(value: &mut T, condition: &mut impl FnMut(&mut T) -> bool) -> bool {
-    #[cfg(all(test, loom))]
+    #[cfg(all(test, acyclic_fs_loom))]
     if model::fault() == model::Fault::UntrackedPredicate {
         let saved = HELD.with(|held| std::mem::take(&mut *held.borrow_mut()));
         let result = condition(value);
@@ -277,13 +279,13 @@ fn wait<G, R>(
     Held::check(rank);
     let wrap = |(inner, timeout)| {
         let held = Held(rank, site);
-        #[cfg(all(test, loom))]
+        #[cfg(all(test, acyclic_fs_loom))]
         let held = if model::fault() == model::Fault::MissingRestore {
             held
         } else {
             held.enter()
         };
-        #[cfg(not(all(test, loom)))]
+        #[cfg(not(all(test, acyclic_fs_loom)))]
         let held = held.enter();
         (TrackedGuard { inner, held }, timeout)
     };
@@ -293,5 +295,5 @@ fn wait<G, R>(
     }
 }
 
-#[cfg(all(test, loom))]
+#[cfg(all(test, acyclic_fs_loom))]
 mod model;

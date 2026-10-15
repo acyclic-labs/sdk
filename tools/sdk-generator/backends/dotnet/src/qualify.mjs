@@ -1,10 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { copyFileSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs } from "node:util";
-import { canonical, loadAuthority, readInput, sha256, within } from "../../../shared/authority.mjs";
+import { canonical, inventory, loadAuthority, qualificationOutput, readInput, sha256, within, runCli } from "../../../shared/authority.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const pinned = JSON.parse(readFileSync(join(directory, "../toolchains/toolchain.json"))).qualification;
@@ -16,16 +15,6 @@ const targets = ["actors/v1/actors.proto", "stream/v1/stream.proto"];
 const negatives = { InvalidActorBytes: "Google.Protobuf.ByteString", InvalidOptionalInteger: "ulong" };
 const xml = value => value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
-function files(root, prefix = "") {
-  return readdirSync(join(root, prefix), { withFileTypes: true }).flatMap(entry => {
-    const name = prefix ? `${prefix}/${entry.name}` : entry.name;
-    if (entry.isSymbolicLink()) throw new Error("tool inventory contains a link");
-    if (entry.isDirectory()) return files(root, name);
-    if (!entry.isFile()) throw new Error("tool inventory contains a non-file");
-    return [name];
-  }).sort();
-}
-
 // Injected commands/pins support offline runner tests. The CLI uses the real tools.
 export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) {
   if (process.platform !== "win32" && command === spawnSync) throw new Error("installed qualification currently requires Windows NuGet.exe");
@@ -35,12 +24,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
   const dotnetHome = dirname(dotnet);
   const nuget = realpathSync(args.nuget);
   const cache = realpathSync(args.cache);
-  const output = join(realpathSync(dirname(resolve(args.output))), basename(resolve(args.output)));
-  try { lstatSync(output); throw new Error("qualification output must be absent"); }
-  catch (error) { if (error.code !== "ENOENT") throw error; }
-  for (const input of [packageRoot, authority, dotnetHome, nuget, cache, dirname(directory)]) {
-    if (within(input, output) || within(output, input)) throw new Error("qualification output overlaps an input");
-  }
+  const output = qualificationOutput(args.output, [packageRoot, authority, dotnetHome, nuget, cache, dirname(directory)]);
   const receiptBytes = readFileSync(join(packageRoot, "generation-receipt.json"));
   const receipt = JSON.parse(receiptBytes);
   if (receipt.schema !== "acyclic.sdk.dotnet-producer-receipt.v1" || receipt.authority !== "rust"
@@ -161,7 +145,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
     source_revision: receipt.source_revision, authority_manifest_sha256: sha256(approved.bytes), generation_receipt_sha256: sha256(receiptBytes),
     nuget_package_sha256: sha256(readFileSync(archive)), assembly_sha256: assemblyHash,
     dotnet_sdk: toolchain.dotnet_sdk, nuget_version: toolchain.nuget_version, deterministic_timestamp: toolchain.deterministic_timestamp,
-    tool_sha256: { nuget: sha256(readFileSync(nuget)), ...Object.fromEntries(files(dotnetHome).map(name => [`dotnet/${name}`, sha256(readFileSync(join(dotnetHome, name)))])) },
+    tool_sha256: { nuget: sha256(readFileSync(nuget)), ...Object.fromEntries(inventory(dotnetHome).map(name => [`dotnet/${name}`, sha256(readFileSync(join(dotnetHome, name)))])) },
     dependency_archive_sha256: Object.fromEntries([...archives].map(([name, bytes]) => [name, sha256(bytes)])),
     qualifier_sha256: sha256(readFileSync(fileURLToPath(import.meta.url))), authority_reader_sha256: sha256(readFileSync(join(directory, "../../../shared/authority.mjs"))),
     toolchain_sha256: sha256(JSON.stringify(toolchain)),
@@ -173,11 +157,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
   return result;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const options = Object.fromEntries(["package", "authority", "dotnet", "nuget", "cache", "output"].map(name => [name, { type: "string" }]));
-  const { values } = parseArgs({ options });
-  if (Object.keys(options).some(name => !values[name])) throw new Error("--package, --authority, --dotnet, --nuget, --cache and --output are required");
+runCli(import.meta.url, values => {
   const result = qualify(values);
-  console.log(JSON.stringify({ scope: result.scope, source_revision: result.source_revision, nuget_package_sha256: result.nuget_package_sha256,
-    qualification: resolve(values.output, "qualification.json") }, null, 2));
-}
+  return { scope: result.scope, source_revision: result.source_revision, nuget_package_sha256: result.nuget_package_sha256, qualification: resolve(values.output, "qualification.json") };
+}, ["package", "authority", "dotnet", "nuget", "cache", "output"]);

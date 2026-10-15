@@ -64,6 +64,8 @@ pub(crate) fn initialize_test_native_io() {
     });
 }
 
+mod sync;
+
 pub mod accounting;
 #[cfg(all(test, feature = "memory", feature = "distributed"))]
 #[path = "tests/accounting/mod.rs"]
@@ -108,7 +110,6 @@ pub mod mount;
 pub mod multi_root;
 mod numeric;
 mod obs;
-mod sync;
 pub use numeric::exact_u32_from_f64;
 #[cfg(kani)]
 mod kani_proofs;
