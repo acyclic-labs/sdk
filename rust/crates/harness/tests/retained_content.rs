@@ -19,13 +19,19 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
     let directory =
         tempfile::tempdir().map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
     let options = LocalOptions::new(directory.path());
-    let provider = ProviderRef::new("retention-test", "filesystem", "2")?;
+    let provider = ProviderRef::new(
+        "retention-test".into(),
+        "filesystem".into(),
+        "2".into(),
+        &mut None,
+    )?;
     let agent = AgentId::from_bytes([31; 16]);
     let volume = VolumeRef::new(
         provider.clone(),
-        "private",
+        "private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent),
+        &mut None,
     )?;
     let issuer = AuthorityIssuer::new(
         "retention-test",
@@ -35,22 +41,41 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             id: "retention".into(),
         },
     );
-    let scope = issuer.root_for_agent(
-        agent,
-        "agent",
-        Capabilities::new([
-            volume.capability(VolumeOperation::Read)?,
-            volume.capability(VolumeOperation::Write)?,
-        ]),
-    );
-    let write = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
-    let read = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Read)?;
+    let scope = issuer
+        .issue(
+            "agent",
+            &Capabilities::new([
+                volume.capability(VolumeOperation::Read, &mut None)?,
+                volume.capability(VolumeOperation::Write, &mut None)?,
+            ]),
+            Some(agent),
+            None,
+            &mut None,
+        )
+        .expect("scope proof");
+    let write = ContentGrant::verify(
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &scope,
+        &volume,
+        VolumeOperation::Write,
+        65_536,
+        &mut None,
+    )?;
+    let read = ContentGrant::verify(
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &scope,
+        &volume,
+        VolumeOperation::Read,
+        65_536,
+        &mut None,
+    )?;
 
     let host = FilesystemHost::new(
         Fs::local(options.clone())
             .await
             .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?,
-        provider.clone(),
+        &provider,
+        None,
     )?;
     host.create_volume(&volume).await?;
     let admitted = host
@@ -63,6 +88,8 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             "current.txt",
             64,
             &IdempotencyKey::new("admitted-content")?,
+            None,
+            None,
         )
         .await?;
     let orphan = host
@@ -75,37 +102,45 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             "current.txt",
             64,
             &IdempotencyKey::new("unpublished-content")?,
+            None,
+            None,
         )
         .await?;
-    // Sharing an exact ref or bounded subtree does not require a fork, a copied
-    // volume, or parent/child lineage; neither grants the reader a write.
     let attached = AgentId::from_bytes([33; 16]);
-    let attached_scope = issuer.root_for_agent(
-        attached,
-        "unrelated-reader",
-        Capabilities::new([
-            admitted.read_capability()?,
-            volume.directory_read_capability("messages")?,
-        ]),
-    );
-    let attached_read =
-        ContentGrant::verify_file_read(&issuer.verifier(), &attached_scope, &admitted)?;
+    let attached_scope = issuer
+        .issue(
+            "unrelated-reader",
+            &Capabilities::new([
+                admitted.read_capability(&mut None)?,
+                volume.directory_read_capability("messages", &mut None)?,
+            ]),
+            Some(attached),
+            None,
+            &mut None,
+        )
+        .expect("scope proof");
+    let attached_read = ContentGrant::verify_file_read(
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &attached_scope,
+        &admitted,
+    )?;
     assert_eq!(
-        host.read_content(&admitted, &attached_read, 64)
+        host.read_content(&admitted, &attached_read, 64, None)
             .await?
             .as_ref(),
         b"first"
     );
     assert!(
-        host.read_content(&orphan, &attached_read, 64)
+        host.read_content(&orphan, &attached_read, 64, None)
             .await
             .is_err()
     );
     let attached_directory = ContentGrant::verify_directory_read(
-        &issuer.verifier(),
+        &issuer.verifier(&mut None).expect("verifier copy"),
         &attached_scope,
         &volume,
         "messages",
+        &mut None,
     )?;
     let (listed_generation, page) = host
         .list_private_directory(&volume, &attached_directory, "messages", None, None, 10)
@@ -117,7 +152,8 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             &attached_directory,
             "messages/current.txt",
             Some(&listed_generation),
-            64
+            64,
+            None,
         )
         .await?
         .1
@@ -126,10 +162,12 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
     );
     assert!(
         ContentGrant::verify(
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             &attached_scope,
             &volume,
             VolumeOperation::Write,
+            65_536,
+            &mut None,
         )
         .is_err()
     );
@@ -142,6 +180,8 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
         "current.txt",
         64,
         &IdempotencyKey::new("advanced-head")?,
+        None,
+        None,
     )
     .await?;
     let retried = host
@@ -154,6 +194,8 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             "current.txt",
             64,
             &IdempotencyKey::new("admitted-content")?,
+            None,
+            None,
         )
         .await?;
     assert_eq!(retried, admitted);
@@ -167,6 +209,8 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             "current.txt",
             64,
             &IdempotencyKey::new("admitted-content")?,
+            None,
+            None
         )
         .await
         .is_err()
@@ -179,25 +223,31 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
     fs.collect_local_garbage(None, &CancellationToken::new())
         .await
         .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
-    let reopened = FilesystemHost::new(fs, provider)?;
+    let reopened = FilesystemHost::new(fs, &provider, None)?;
     assert_eq!(
-        reopened.read_content(&admitted, &read, 64).await?.as_ref(),
+        reopened
+            .read_content(&admitted, &read, 64, None)
+            .await?
+            .as_ref(),
         b"first"
     );
     assert_eq!(
-        reopened.read_content(&orphan, &read, 64).await?.as_ref(),
+        reopened
+            .read_content(&orphan, &read, 64, None)
+            .await?
+            .as_ref(),
         b"second"
     );
     assert_eq!(
         reopened
-            .read_content(&admitted, &attached_read, 64)
+            .read_content(&admitted, &attached_read, 64, None)
             .await?
             .as_ref(),
         b"first"
     );
     assert!(
         reopened
-            .read_content(&orphan, &attached_read, 64)
+            .read_content(&orphan, &attached_read, 64, None)
             .await
             .is_err()
     );
@@ -220,7 +270,8 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
                 &attached_directory,
                 "messages/current.txt",
                 Some(&listed_generation),
-                64
+                64,
+                None,
             )
             .await?
             .1
@@ -234,7 +285,8 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
                 &attached_directory,
                 "messages/current.txt",
                 None,
-                64
+                64,
+                None,
             )
             .await?
             .1
