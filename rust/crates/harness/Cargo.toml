@@ -79,6 +79,7 @@ required-features = ["filesystem"]
 
 [features]
 test-support = []
+model-checking = ["dep:loom"]
 browser = ["wasm", "filesystem", "acyclic-fs/browser"]
 # Native presentation only; this does not select providers or grant authority.
 terminal = ["dep:hex"]
@@ -92,7 +93,7 @@ native-execution = ["filesystem", "acyclic-fs/native-mount", "hooks", "mcp-stdio
 hooks = ["dep:regex-lite", "dep:toml"]
 # Optional native HTTP I/O. Browser hosts implement the same portable boundary.
 mcp-http = ["dep:reqwest", "dep:toml"]
-mcp-stdio = ["tokio/process", "tokio/io-util", "dep:toml"]
+mcp-stdio = ["tokio/process", "tokio/io-util", "dep:toml", "dep:which"]
 mcp-oauth = ["rmcp/auth", "rmcp/reqwest"]
 objects = ["dep:acyclic-objects"]
 machines = ["dep:acyclic-machines"]
@@ -140,8 +141,10 @@ protoc-bin-vendored.workspace = true
 tonic-prost-build = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+loom = { version = "=0.7.2", optional = true }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 reqwest = { workspace = true, optional = true }
+which = { version = "8.0.6", optional = true }
 tracing.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["signal"] }
 
@@ -153,6 +156,7 @@ acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = 
 allocation-counter = "=0.8.1"
 tracing-subscriber.workspace = true
 proptest.workspace = true
+loom = "0.7.2"
 acyclic-stream = { version = "=0.2.0", path = "../stream" }
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["test-util"] }

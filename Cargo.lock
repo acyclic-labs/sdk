@@ -145,6 +145,7 @@ dependencies = [
  "indexed_db_futures",
  "js-sys",
  "libc",
+ "loom",
  "napi",
  "napi-derive",
  "notify",
@@ -262,6 +263,7 @@ dependencies = [
  "http",
  "js-sys",
  "jsonschema",
+ "loom",
  "proptest",
  "prost",
  "prost-build",
@@ -291,6 +293,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
+ "which",
 ]
 
 [[package]]
@@ -5706,6 +5709,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a"
 dependencies = [
  "rustls-pki-types",
+]
+
+[[package]]
+name = "which"
+version = "8.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bae2f2b2b816647a1cab1acc91f5bd20812d53cb344382635ec2181940c8034f"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
