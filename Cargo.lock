@@ -428,6 +428,7 @@ dependencies = [
  "bytes",
  "compio-buf",
  "compio-driver",
+ "divan",
  "futures-core",
  "libc",
  "pin-project-lite",
