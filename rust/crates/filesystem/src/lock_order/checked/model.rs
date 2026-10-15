@@ -31,7 +31,17 @@ fn rejects_lower() -> bool {
 
 fn with_negative_control(fault: Fault, exercise: impl Fn(Fault) + std::panic::RefUnwindSafe) {
     exercise(Fault::None);
-    assert!(catch_unwind(AssertUnwindSafe(|| exercise(fault))).is_err());
+    let error = catch_unwind(AssertUnwindSafe(|| exercise(fault)))
+        .expect_err("the broken variant escaped the model");
+    let message = error
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| error.downcast_ref::<&str>().copied())
+        .expect("the negative control must report an invariant failure");
+    assert!(
+        message.contains("rank invariant"),
+        "unexpected failure: {message}"
+    );
 }
 
 #[test]
@@ -64,7 +74,10 @@ fn ordered_acquisition_and_out_of_order_drop() {
                 .collect::<Vec<_>>();
             assert_eq!(*first.lock().unwrap(), 2);
             assert_eq!(*second.lock().unwrap(), 2);
-            assert!(rejected.into_iter().all(|rejected| rejected));
+            assert!(
+                rejected.into_iter().all(|rejected| rejected),
+                "rank invariant: descending acquisition reached the raw lock"
+            );
         });
     });
 }
@@ -93,7 +106,10 @@ fn condition_wait_removes_and_restores_rank_without_lost_wakeup() {
             *guard = true;
             shared.1.notify_all();
             drop(guard);
-            assert!(waiter.join().unwrap());
+            assert!(
+                waiter.join().unwrap(),
+                "rank invariant: a woken guard lost its rank"
+            );
         });
     });
 }
@@ -127,7 +143,7 @@ fn both_while_predicates_keep_the_held_rank() {
                     };
                     rejected &= rejects_lower();
                     drop(guard);
-                    rejected
+                    rejected && before_lock
                 });
                 started.recv().unwrap();
                 let mut guard = shared.0.lock().unwrap();
@@ -148,7 +164,56 @@ fn both_while_predicates_keep_the_held_rank() {
                     .unwrap();
                 assert!(timeout.timed_out());
                 drop(guard);
-                assert!(rejected && timeout_rejected);
+                assert!(
+                    rejected && timeout_rejected,
+                    "rank invariant: a predicate or returned guard lost its rank"
+                );
+            });
+        });
+    }
+}
+
+#[test]
+fn poisoned_while_waits_return_a_guard_with_its_rank() {
+    for timed in [false, true] {
+        with_negative_control(Fault::MissingRestore, |fault| {
+            loom::model(move || {
+                set_fault(fault);
+                let high = Mutex::<_, 20>::new(());
+                let guard = high.lock().unwrap();
+                // Loom does not implement mutex poisoning. Inject the raw wait
+                // error into production's restoration and while-loop paths.
+                let guard = if timed {
+                    let error = while_timed(
+                        guard,
+                        Duration::MAX,
+                        |_| true,
+                        |guard, _| {
+                            wait(guard, |raw| {
+                                Err(PoisonError::new((raw, WaitTimeoutResult(false))))
+                            })
+                        },
+                    )
+                    .err()
+                    .expect("the raw wait returned poison");
+                    error.into_inner().0
+                } else {
+                    let error = while_locked(
+                        guard,
+                        |_| true,
+                        |guard| wait_plain(guard, |raw| Err(PoisonError::new(raw))),
+                    )
+                    .err()
+                    .expect("the raw wait returned poison");
+                    error.into_inner()
+                };
+                let rejected = rejects_lower();
+                drop(guard);
+                drop(high.lock().unwrap());
+                assert!(
+                    rejected,
+                    "rank invariant: a poison-returned guard lost its rank"
+                );
             });
         });
     }
