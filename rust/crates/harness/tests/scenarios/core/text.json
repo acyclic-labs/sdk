@@ -1,0 +1,6 @@
+{
+  "prompt": "Say hello",
+  "turns": ["Hello from mock LLM!"],
+  "expect": {"text":"Hello from mock LLM!", "requests":[{"messages":[{"role":"user","content":"Say hello"}],"tools":[]}],
+    "events":[{"kind":"model_started","step":0},{"kind":"model","event":{"kind":"content","delta":"Hello from mock LLM!"}},{"kind":"model","event":{"kind":"completed"}}]}
+}

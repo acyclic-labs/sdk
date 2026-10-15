@@ -1,0 +1,6 @@
+{
+  "prompt":"Stream an answer once.",
+  "turns":[[{"type":"event","kind":"reasoning","delta":"reason"},{"type":"event","kind":"content","delta":"a"},{"type":"event","kind":"content","delta":"b"},{"type":"event","kind":"completed","metadata":{"finish":"stop"}}]],
+  "replay":true,
+  "expect":{"text":"ab","result":{"steps":1,"metadata":{"finish":"stop"}}}
+}

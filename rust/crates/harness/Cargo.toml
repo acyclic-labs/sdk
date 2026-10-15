@@ -41,6 +41,11 @@ name = "task-workflow"
 path = "tests/task_workflow.rs"
 required-features = ["filesystem-local"]
 
+[[test]]
+name = "e2e"
+path = "tests/e2e/main.rs"
+required-features = ["filesystem", "test-support"]
+
 [lib]
 crate-type = ["rlib", "cdylib"]
 

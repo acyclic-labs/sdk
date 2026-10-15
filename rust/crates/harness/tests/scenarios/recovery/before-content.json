@@ -1,0 +1,2 @@
+{"turns":[[{"type":"error","error":"offline"}]],"recoveries":[{"observed":[],"continuation":[{"kind":"content",
+  "delta":"restored"},{"kind":"completed","metadata":null}]}],"replay":true,"expect":{"text":"restored"}}

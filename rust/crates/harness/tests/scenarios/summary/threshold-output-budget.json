@@ -1,0 +1,6 @@
+{"capacity":{"context_tokens":100},"turns":["summary"],"replay":true,"expect":{"text":"summary",
+  "result":{"source_messages":2,"step":0},"requests":[{"max_output_tokens":10,"tools":[],"messages":[{"role":"user",
+  "content":"original request"},{"role":"assistant","content":"original response"},{"role":"user",
+  "content":"Summarize this context."}]}],"events":[{"kind":"model_started","purpose":"summary"},{"kind":"model",
+  "purpose":"summary","event":{"kind":"completed"}}]},"compaction":{"kind":"threshold",
+  "config":{"response_reserve_tokens":10,"recent_tokens":30,"retention":{"roles":["system"],"native_media":true}}}}

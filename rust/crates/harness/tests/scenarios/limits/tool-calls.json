@@ -1,0 +1,6 @@
+{
+  "prompt":"Bound tool calls before dispatch.",
+  "limits":{"tool_calls_per_step":1},
+  "turns":[[{"type":"event","kind":"tool_call","call_id":"one","name":"read","arguments":{}},{"type":"event","kind":"tool_call","call_id":"two","name":"read","arguments":{}},{"type":"event","kind":"completed","metadata":null}]],
+  "expect":{"error":"model tool call limit exceeded or identity repeated","not_events":[{"kind":"tool_started"}]}
+}
