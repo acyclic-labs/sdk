@@ -19,6 +19,7 @@ async fn read_close_after_rename_does_not_block_publication()
         root: directory.path().to_path_buf(),
         metadata_root: HostRoot::open(directory.path(), &mut &work)?,
         staging: Mutex::new(None),
+        creating_name: RwLock::new((MountPath::root(), None)),
         writable: true,
         metadata_baselines: Mutex::new(HashMap::new()),
         projection: Mutex::new(HashMap::new()),
