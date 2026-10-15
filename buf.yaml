@@ -2,6 +2,8 @@ version: v2
 modules:
   - path: proto
   - path: rust/crates/stream/proto
+    excludes:
+      - rust/crates/stream/proto/validation
 deps:
   - buf.build/googleapis/googleapis
 lint:
