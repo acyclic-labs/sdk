@@ -65,3 +65,31 @@ test("Cargo timing CLI logs only observed phases and writes the uploaded JSON su
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a malformed report retains its HTML while later builds still produce JSON and logged summaries", () => {
+  const root = mkdtempSync(".tools/cargo-timing-partial-");
+  try {
+    for (const build of ["product", "qualifier", "install"]) {
+      mkdirSync(join(root, build, "cargo-timings"), { recursive: true });
+      writeFileSync(join(root, build, "cargo-timings", "cargo-timing.html"), build === "qualifier"
+        ? "<html>incomplete Cargo report</html>"
+        : html([{ name: build, target: "", start: 0, duration: 25 }]));
+    }
+    const output = join(root, "out");
+    const summary = join(root, "summary.md");
+    const result = spawnSync(process.execPath, ["scripts/cargo-timings-summary.mjs", output,
+      ...["product", "qualifier", "install"].map(build => `${build}=${join(root, build)}`)],
+      { encoding: "utf8", timeout: 60000, env: { ...process.env, GITHUB_STEP_SUMMARY: summary } });
+    assert.ifError(result.error);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /qualifier: Cargo timings missing UNIT_DATA/);
+    assert.equal(readFileSync(join(output, "qualifier-cargo-timing.html"), "utf8"), "<html>incomplete Cargo report</html>");
+    for (const build of ["product", "install"]) {
+      assert.equal(JSON.parse(readFileSync(join(output, `${build}-cargo-timings.json`), "utf8")).build, build);
+      assert.ok(result.stdout.includes(`### ${build}`));
+    }
+    assert.equal(readFileSync(summary, "utf8"), result.stdout);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

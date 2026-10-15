@@ -26,29 +26,36 @@ const phase = (unit, name) => {
 export function summarizeCargoTimings(output, builds) {
   mkdirSync(output, { recursive: true });
   const reports = [];
+  const errors = [];
   const lines = ["## Native Cargo unit timings", "",
     "Unit durations are elapsed wall time, not CPU-seconds. Stable Cargo may omit binary phase boundaries; a final binary unit includes compilation/codegen/link, not linker-only time.", ""];
   for (const [name, target] of builds) {
     if (!/^[a-z]+$/.test(name)) throw new Error("invalid build label");
     const path = join(target, "cargo-timings", "cargo-timing.html");
     if (!existsSync(path)) continue;
-    const data = readCargoTimings(readFileSync(path, "utf8"));
     copyFileSync(path, join(output, `${name}-cargo-timing.html`));
-    const slowest = [...data.units].sort((a, b) => b.duration - a.duration).slice(0, 5);
-    const finalBinaryUnits = data.units.filter(unit => unit.name === "acyclic-plugin" && /\bbin\b/.test(unit.target));
-    const report = { build: name, runId: process.env.GITHUB_RUN_ID ?? null,
-      source: process.env.SDK_SOURCE_SHA ?? null, ...data, slowest, finalBinaryUnits };
-    writeFileSync(join(output, `${name}-cargo-timings.json`), JSON.stringify(report, null, 2) + "\n");
-    reports.push(report);
-    lines.push(`### ${name}`, "", "| Unit | Total | Reported codegen | Reported link |",
-      "| --- | ---: | ---: | ---: |",
-      ...slowest.map(unit => `| ${cell(unit.name + unit.target)} | ${seconds(unit.duration)} | ${seconds(phase(unit, "codegen"))} | ${seconds(phase(unit, "link"))} |`), "",
-      ...finalBinaryUnits.map(unit => `Final plugin binary ${cell(unit.target)}: combined compilation/codegen/link ${seconds(unit.duration)}; reported codegen ${seconds(phase(unit, "codegen"))}; reported link ${seconds(phase(unit, "link"))}.`), "");
+    try {
+      const data = readCargoTimings(readFileSync(path, "utf8"));
+      const slowest = [...data.units].sort((a, b) => b.duration - a.duration).slice(0, 5);
+      const finalBinaryUnits = data.units.filter(unit => unit.name === "acyclic-plugin" && /\bbin\b/.test(unit.target));
+      const report = { build: name, runId: process.env.GITHUB_RUN_ID ?? null,
+        source: process.env.SDK_SOURCE_SHA ?? null, ...data, slowest, finalBinaryUnits };
+      writeFileSync(join(output, `${name}-cargo-timings.json`), JSON.stringify(report, null, 2) + "\n");
+      reports.push(report);
+      lines.push(`### ${name}`, "", "| Unit | Total | Reported codegen | Reported link |",
+        "| --- | ---: | ---: | ---: |",
+        ...slowest.map(unit => `| ${cell(unit.name + unit.target)} | ${seconds(unit.duration)} | ${seconds(phase(unit, "codegen"))} | ${seconds(phase(unit, "link"))} |`), "",
+        ...finalBinaryUnits.map(unit => `Final plugin binary ${cell(unit.target)}: combined compilation/codegen/link ${seconds(unit.duration)}; reported codegen ${seconds(phase(unit, "codegen"))}; reported link ${seconds(phase(unit, "link"))}.`), "");
+    } catch (error) {
+      errors.push(`${name}: ${error.message}`);
+      lines.push(`### ${name}`, "", `Report retained, summary failed: ${cell(error.message)}`, "");
+    }
   }
-  if (reports.length === 0) throw new Error("no Cargo timing reports were produced");
   const markdown = lines.join("\n") + "\n";
   process.stdout.write(markdown);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, markdown);
+  if (errors.length) throw new Error(errors.join("\n"));
+  if (reports.length === 0) throw new Error("no Cargo timing reports were produced");
   return reports;
 }
 
