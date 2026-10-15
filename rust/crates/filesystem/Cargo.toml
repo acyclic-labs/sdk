@@ -37,6 +37,11 @@ path = "tests/native_owner_registry.rs"
 required-features = ["native-watch"]
 
 [[test]]
+name = "projfs_names"
+path = "tests/projfs_names.rs"
+required-features = ["native-mount"]
+
+[[test]]
 name = "accounting_reconciliation"
 path = "tests/accounting_reconciliation.rs"
 required-features = ["memory"]
