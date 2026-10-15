@@ -1,0 +1,4 @@
+{
+  "prompt": "@",
+  "expect": {"error":"empty file mention"}
+}

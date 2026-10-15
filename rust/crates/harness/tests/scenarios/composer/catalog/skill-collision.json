@@ -1,0 +1,6 @@
+{
+  "prompt": "/plan",
+  "seed": {".claude/commands/audit.md":"command","skills/a/SKILL.md":"---\nname: audit\ndescription: Audit\n---\nbody"},
+  "skills": ["skills"],
+  "expect": {"error":"skill/command collision"}
+}

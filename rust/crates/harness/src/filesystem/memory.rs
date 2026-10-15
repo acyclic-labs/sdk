@@ -134,6 +134,7 @@ impl MemoryHarnessStorage {
             observed: tokio::sync::Mutex::new(BTreeMap::new()),
         });
         Tool {
+            hook_names: &[],
             definition: ToolDefinition {
                 name: "acyclic.list_files".into(),
                 revision: "2".into(),
@@ -305,6 +306,12 @@ impl MemoryHarnessStorage {
             })
             .grant(self.read_capability.clone())
             .grant(self.write_capability.clone())
+    }
+
+    /// Borrows the authenticated reader for context and client adapters.
+    #[must_use]
+    pub fn content_reader(&self) -> &dyn ContentResidencyVerifier {
+        self.content_verifier.as_ref()
     }
 
     /// Runs the shared canonical loop with this memory-backed journal.

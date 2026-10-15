@@ -1,0 +1,6 @@
+{
+  "seed": {"src/lib.rs":"pub fn answer() -> u8 { 42 }\n","notes/空.txt":"seed\n"},
+  "prompt": "Do not modify the workspace.",
+  "turns": ["done"],
+  "expect": {"text":"done", "files":{"src/lib.rs":"pub fn answer() -> u8 { 42 }\n","notes/空.txt":"seed\n"}}
+}

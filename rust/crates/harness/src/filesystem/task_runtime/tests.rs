@@ -411,6 +411,7 @@ impl Fixture {
         tools.register(
             (
                 Tool {
+                    hook_names: &[],
                     definition: ToolDefinition {
                         name: "test.deadline".into(),
                         revision: "1".into(),

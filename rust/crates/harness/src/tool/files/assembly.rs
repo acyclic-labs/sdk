@@ -88,6 +88,12 @@ impl FileTool {
         };
         definition.validate(&mut None)?;
         Ok(Tool {
+            hook_names: match self {
+                Self::Read | Self::ReadRange { .. } => &["Read"],
+                Self::Write => &["Write"],
+                Self::Edit | Self::Patch { .. } => &["Edit"],
+                Self::Search { .. } => &[],
+            },
             definition,
             executor: Arc::new(self),
             projection: Arc::new(projection),

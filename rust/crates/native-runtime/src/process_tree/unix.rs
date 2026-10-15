@@ -141,6 +141,7 @@ pub(super) fn write_pipe(
             recorded?;
             Err(io::Error::from(io::ErrorKind::WriteZero))
         }
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok((Some(0), recorded)),
         Err(error) => {
             recorded?;
             Err(error)

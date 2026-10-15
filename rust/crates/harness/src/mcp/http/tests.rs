@@ -87,7 +87,9 @@ async fn json_and_every_sse_chunk_width_preserve_session_identity() -> Result<()
         for width in 1..=message(operation).len() + 50 {
             let (provider, transport) = provider(200, sse, width, Some("session"))?;
             assert!(provider.requests.lock().unwrap().is_empty());
-            let result = transport.call(operation, "echo", json!({}), None).await?;
+            let result =
+                serde_json::to_value(transport.call(operation, "echo", json!({}), None).await?)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
             assert_eq!(result["content"][0]["text"], "hello 🦀");
             let requests = provider
                 .requests

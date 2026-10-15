@@ -1,0 +1,5 @@
+{
+  "prompt":"Tool names must not escape their component.",
+  "turns":[[{"type":"event","kind":"tool_call","call_id":"read-1","name":"../read","arguments":{}},{"type":"event","kind":"completed","metadata":null}]],
+  "expect":{"error":"tool name is invalid","not_events":[{"kind":"tool_started"}]}
+}

@@ -406,6 +406,7 @@ async fn custom_executor_owns_complete_turn_input_output_without_stock_events() 
             model.clone(),
         )
         .tool(Tool {
+            hook_names: &[],
             definition: example_tool().definition,
             executor: tools.clone(),
             projection: tools.clone(),
@@ -659,6 +660,7 @@ impl ToolProjection for EchoProjection {
 
 fn example_tool() -> Tool {
     Tool {
+        hook_names: &[],
         definition: ToolDefinition {
             name: "example.echo".into(),
             revision: "1".into(),

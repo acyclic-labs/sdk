@@ -1,0 +1,4 @@
+{"context":[],"message_tokens":60,"compaction":{"config":{"response_reserve_tokens":10,"recent_tokens":30,
+  "retention":{"roles":["system"],"native_media":true}}},"turns":[],
+  "expect":{"error":"no older source fits the compaction policy","reconciliation_count":0,
+  "not_events":[{"kind":"model_started","purpose":"response"}]}}

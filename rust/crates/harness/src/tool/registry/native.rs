@@ -52,6 +52,7 @@ impl ToolRegistry {
             copied.versions.insert(
                 key,
                 Tool {
+                    hook_names: tool.hook_names,
                     definition,
                     executor: tool.executor.clone(),
                     projection: tool.projection.clone(),
