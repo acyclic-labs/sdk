@@ -4,17 +4,18 @@ use std::io::{Read as _, Write as _};
 #[test]
 fn a_staged_replacement_keeps_the_identity_guard_and_existing_reader()
 -> Result<(), Box<dyn std::error::Error>> {
-    replace_with_reader(false, b"old contents", b"new contents")
+    replace_with_reader(false, true, b"old contents", b"new contents")
 }
 
 #[test]
 fn a_read_only_replacement_keeps_the_identity_guard_and_existing_reader()
 -> Result<(), Box<dyn std::error::Error>> {
-    replace_with_reader(true, b"old contents", b"new contents")
+    replace_with_reader(true, false, b"old contents", b"new contents")
 }
 
 fn replace_with_reader(
-    read_only: bool,
+    destination_read_only: bool,
+    replacement_read_only: bool,
     old_contents: &[u8],
     new_contents: &[u8],
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -37,14 +38,14 @@ fn replace_with_reader(
         permissions.set_readonly(value);
         std::fs::set_permissions(path, permissions)
     };
-    set_read_only(&target.join("leaf"), read_only)?;
+    set_read_only(&target.join("leaf"), destination_read_only)?;
     let mut reader = std::fs::File::open(target.join("leaf"))?;
     let identity = handle_state(&reader)?;
     let guard = held_while(&target.join("leaf"), identity)?.ok_or("target identity changed")?;
     let mut replacement =
         create_ordinary_file(&from.directory, std::ffi::OsStr::new("new"), &work)?;
     replacement.write_all(new_contents)?;
-    set_read_only(&staging.join("new"), read_only)?;
+    set_read_only(&staging.join("new"), replacement_read_only)?;
     publish_ordinary_file(
         &replacement,
         &from.directory,
@@ -64,7 +65,7 @@ fn replace_with_reader(
         std::fs::metadata(target.join("leaf"))?
             .permissions()
             .readonly(),
-        read_only
+        replacement_read_only
     );
     let mut old = Vec::new();
     reader.read_to_end(&mut old)?;
@@ -77,14 +78,15 @@ fn replace_with_reader(
 }
 
 proptest::proptest! {
-    // For arbitrary old/new payloads and either source attribute, replacement
+    // For arbitrary payloads and independent destination/source attributes, replacement
     // preserves old readers and guarded metadata while publishing the new bytes.
     #[test]
     fn replacement_preserves_readers_and_publishes_exact_source_bytes(
         old in proptest::collection::vec(proptest::num::u8::ANY, 0..256),
         new in proptest::collection::vec(proptest::num::u8::ANY, 0..256),
-        read_only in proptest::bool::ANY,
+        destination_read_only in proptest::bool::ANY,
+        replacement_read_only in proptest::bool::ANY,
     ) {
-        replace_with_reader(read_only, &old, &new).unwrap();
+        replace_with_reader(destination_read_only, replacement_read_only, &old, &new).unwrap();
     }
 }
