@@ -137,7 +137,7 @@ impl NativeMountAllocationCustody {
         let original = work.native_source_work().map(|work| work.allocation_work());
         work.with_original_leaf(|work| {
             // Reject an unavailable owner footprint before allocating its gauge.
-            work.admit_retained(std::mem::size_of::<Self>() as u64)?;
+            work.admit_allocation(std::mem::size_of::<Self>() as u64, 1)?;
             // Like registry capacity and its dirty flag, this gauge is original
             // ledger metadata. It holds no invocation, resource or callbacks.
             let counter_bytes = GAUGE_ALLOCATION_BYTES;
