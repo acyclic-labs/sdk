@@ -133,6 +133,7 @@ web-sys = { version = "0.3.94", features = [
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "warn"
 missing_docs = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(acyclic_loom)"] }
 
 [workspace.lints.clippy]
 unwrap_used = "deny"

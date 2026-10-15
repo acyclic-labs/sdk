@@ -4,6 +4,17 @@ use crate::native_mount::{
     run_native_mount_handler, run_native_mount_handler_on_meter, view_ledger::same_work,
 };
 use crate::{NativeAllocation, NativeMaterializationWork as Work, WorkCounters};
+// The projection state and its condition are the invalidator's only
+// synchronization with callbacks and controls, so the loom model of the
+// invalidator swaps in loom's versions of exactly these two.
+#[cfg(acyclic_loom)]
+pub(super) use loom::sync::{
+    Condvar as StateCondvar, Mutex as StateMutex, MutexGuard as StateMutexGuard,
+};
+#[cfg(not(acyclic_loom))]
+pub(super) use std::sync::{
+    Condvar as StateCondvar, Mutex as StateMutex, MutexGuard as StateMutexGuard,
+};
 
 pub(super) fn callback_errno(error: &NativeMountError) -> i32 {
     match error {
@@ -38,7 +49,7 @@ thread_local! {
 }
 
 pub(super) struct StateGuard<'a> {
-    state: Option<MutexGuard<'a, ProjectionState>>,
+    state: Option<StateMutexGuard<'a, ProjectionState>>,
     core: &'a ProjectionCore,
 }
 
@@ -64,7 +75,7 @@ impl std::ops::DerefMut for StateGuard<'_> {
 impl StateGuard<'_> {
     pub(super) fn wait_timeout(
         mut self,
-        condition: &Condvar,
+        condition: &StateCondvar,
         duration: Duration,
     ) -> Result<Self, NativeMountError> {
         let Some(state) = self.state.take() else {
@@ -135,9 +146,9 @@ fn verify_guard(
 
 pub(super) struct ProjectionCore {
     pub(super) source: Arc<dyn MountFilesystem>,
-    pub(super) state: Mutex<ProjectionState>,
+    pub(super) state: StateMutex<ProjectionState>,
     pub(super) names: RwLock<()>,
-    pub(super) invalidation: Condvar,
+    pub(super) invalidation: StateCondvar,
     pub(super) notifier: OnceLock<Notifier>,
     pub(super) stopping: AtomicBool,
     pub(super) origin: ViewOrigin,
@@ -221,9 +232,9 @@ impl ProjectionCore {
         )?;
         Ok(Arc::new(Self {
             source,
-            state: Mutex::new(state),
+            state: StateMutex::new(state),
             names: RwLock::new(()),
-            invalidation: Condvar::new(),
+            invalidation: StateCondvar::new(),
             notifier: OnceLock::new(),
             stopping: AtomicBool::new(false),
             origin: ViewOrigin::new(),

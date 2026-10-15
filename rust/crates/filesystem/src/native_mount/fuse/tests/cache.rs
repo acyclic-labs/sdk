@@ -390,6 +390,7 @@ pub(super) fn directory_streams_wait_at_their_offset_and_evict_the_oldest() {
 }
 
 #[test]
+#[cfg(not(acyclic_loom))]
 pub(super) fn releasing_deferred_items_wakes_the_invalidator()
 -> Result<(), Box<dyn std::error::Error>> {
     use std::sync::PoisonError;

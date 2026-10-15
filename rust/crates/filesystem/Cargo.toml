@@ -200,3 +200,8 @@ required-features = ["local"]
 [[example]]
 name = "record_cloud_contract"
 required-features = ["memory"]
+
+# The FUSE invalidator's loom model swaps loom's primitives into the library;
+# see native_mount/fuse/tests/model.rs.
+[target.'cfg(acyclic_loom)'.dependencies]
+loom = "0.7.2"

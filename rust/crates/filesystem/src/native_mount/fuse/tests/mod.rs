@@ -51,6 +51,8 @@ fn projection_core(
 }
 
 mod cache;
+#[cfg(acyclic_loom)]
+mod model;
 mod mount;
 mod native;
 

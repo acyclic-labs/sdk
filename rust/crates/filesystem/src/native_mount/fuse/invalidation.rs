@@ -273,8 +273,61 @@ impl KernelCacheNotifier for Notifier {
     }
 }
 
+/// When a pass the kernel refused transiently runs again. Nothing else need
+/// change for it to run, since the kernel may otherwise keep serving the
+/// entries it refused to drop for as long as their TTL.
+struct Backoff {
+    delay: Duration,
+    due: std::time::Instant,
+}
+
+impl Backoff {
+    const FIRST: Duration = Duration::from_millis(1);
+    const LONGEST: Duration = Duration::from_secs(1);
+
+    fn after(previous: Option<Self>) -> Self {
+        let delay = previous.map_or(Self::FIRST, |previous| {
+            previous.delay.saturating_mul(2).min(Self::LONGEST)
+        });
+        Self {
+            delay,
+            due: std::time::Instant::now() + delay,
+        }
+    }
+
+    /// The loom model has no clock, so it checks every backoff as elapsed.
+    fn elapsed(&self) -> bool {
+        cfg!(acyclic_loom) || std::time::Instant::now() >= self.due
+    }
+
+    fn wait<'a>(
+        &self,
+        condition: &StateCondvar,
+        state: StateMutexGuard<'a, ProjectionState>,
+    ) -> StateMutexGuard<'a, ProjectionState> {
+        let remaining = self
+            .due
+            .saturating_duration_since(std::time::Instant::now());
+        condition
+            .wait_timeout(state, remaining)
+            .unwrap_or_else(PoisonError::into_inner)
+            .0
+    }
+}
+
+fn is_transient(error: &NativeMountError) -> bool {
+    matches!(
+        error,
+        NativeMountError::Io(error) if matches!(
+            error.kind(),
+            std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock
+        )
+    )
+}
+
 pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &impl KernelCacheNotifier) {
     let mut blocked = None;
+    let mut backoff: Option<Backoff> = None;
     loop {
         let mut state = core.state.lock().unwrap_or_else(PoisonError::into_inner);
         let mut wait_key = loop {
@@ -293,15 +346,20 @@ pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &impl KernelCache
             );
             drop(activation);
             if state.invalidation.is_pending(state.invalidation.notified)
-                && (blocked != Some(key) || state.invalidation.retry)
+                && (blocked != Some(key)
+                    || state.invalidation.retry
+                    || backoff.as_ref().is_some_and(Backoff::elapsed))
             {
                 state.invalidation.retry = false;
                 break key;
             }
-            state = core
-                .invalidation
-                .wait(state)
-                .unwrap_or_else(PoisonError::into_inner);
+            state = match &backoff {
+                Some(backoff) => backoff.wait(&core.invalidation, state),
+                None => core
+                    .invalidation
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner),
+            };
         };
         drop(state);
         let mut through = None;
@@ -345,7 +403,11 @@ pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &impl KernelCache
         let denied = result.is_err();
         // A failed pass does not fail the mount. It is logged, nothing new is
         // cached until a pass succeeds, and the pass is retried once its
-        // inputs change.
+        // inputs change, or after a backoff if the kernel refused transiently.
+        backoff = match &result {
+            Err((cause, _)) if is_transient(cause) => Some(Backoff::after(backoff.take())),
+            _ => None,
+        };
         if let Err((cause, _)) = &result {
             tracing::warn!(
                 error = %sdk_failure.as_ref().unwrap_or(cause),
