@@ -35,6 +35,10 @@ pub mod jsonl;
 pub use journal::FileClientState;
 mod headless;
 pub use headless::{HeadlessOutcome, run_headless, run_jsonl};
+mod commands;
+pub use commands::*;
+mod mentions;
+pub use mentions::*;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
 

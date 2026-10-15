@@ -6,6 +6,7 @@ use std::sync::Barrier;
 mod common;
 use common::*;
 mod metadata;
+mod metadata_errors;
 mod mutations;
 mod notifications;
 mod projection;

@@ -45,6 +45,11 @@ path = "tests/client_terminal.rs"
 required-features = ["terminal"]
 
 [[test]]
+name = "client-commands"
+path = "tests/client_commands.rs"
+required-features = ["filesystem"]
+
+[[test]]
 name = "task-workflow"
 path = "tests/task_workflow.rs"
 required-features = ["filesystem-local"]
@@ -90,6 +95,7 @@ machines = ["dep:acyclic-machines"]
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
 
 [dependencies]
+arrayvec = { version = "0.7.8", default-features = false }
 async-trait.workspace = true
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, optional = true }
 acyclic-machines = { version = "=0.2.0", path = "../machines", optional = true }
@@ -135,6 +141,7 @@ tracing.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["signal"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+allocation-counter = "=0.8.1"
 tracing-subscriber.workspace = true
 proptest.workspace = true
 acyclic-stream = { version = "=0.2.0", path = "../stream" }

@@ -1,5 +1,61 @@
 use super::*;
-use crate::contract::canonical_json_bytes;
+
+struct DigestWriter {
+    buffer: arrayvec::ArrayVec<u8, 4096>,
+    hasher: Option<blake3::Hasher>,
+}
+
+impl std::io::Write for DigestWriter {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.write_all(bytes)?;
+        Ok(bytes.len())
+    }
+
+    #[inline]
+    fn write_all(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        if self.buffer.try_extend_from_slice(bytes).is_err() {
+            self.spill(bytes)?;
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl DigestWriter {
+    fn spill(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        let hasher = self.hasher.get_or_insert_with(blake3::Hasher::new);
+        hasher.update(&self.buffer);
+        self.buffer.clear();
+        if bytes.len() >= self.buffer.capacity() {
+            hasher.update(bytes);
+        } else {
+            self.buffer
+                .try_extend_from_slice(bytes)
+                .map_err(|_| std::io::ErrorKind::WriteZero)?;
+        }
+        Ok(())
+    }
+}
+
+// Keep the encoding buffer out of accounting-enabled stack frames.
+#[inline(never)]
+fn canonical_value_digest(value: &serde_json::Value) -> Result<[u8; 32]> {
+    let mut writer = DigestWriter {
+        buffer: arrayvec::ArrayVec::new(),
+        hasher: None,
+    };
+    serde_json::to_writer(&mut writer, value).map_err(|error| Error::Invalid(error.to_string()))?;
+    Ok(*match writer.hasher {
+        Some(mut hasher) => hasher.update(&writer.buffer).finalize(),
+        None => blake3::hash(&writer.buffer),
+    }
+    .as_bytes())
+}
+
 /// Counts compact JSON under its byte limit and optional original ledger.
 pub(crate) fn json_byte_length<T: Serialize + ?Sized>(
     value: &T,
@@ -86,7 +142,10 @@ pub(crate) fn canonical_json_digest<T: Serialize + ?Sized>(
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<[u8; 32]> {
     if work.is_none() {
-        return Ok(*blake3::hash(&canonical_json_bytes(value)?).as_bytes());
+        let mut value =
+            serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
+        value.sort_all_objects();
+        return canonical_value_digest(&value);
     }
     let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
     let bytes =
