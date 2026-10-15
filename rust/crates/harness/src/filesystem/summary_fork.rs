@@ -259,7 +259,7 @@ async fn publish<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             IdempotencyKey(crate::executor::stock_string_copy(key.as_str(), io)?),
             io,
             preparation,
-        )
+        )?
         .await?;
     fsio::retain(&generation, io).await?;
     fsio::generation_ref(&controller.host.provider, generation.id(), io)

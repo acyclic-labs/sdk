@@ -91,7 +91,7 @@ pub(super) async fn write_record<A: AsyncAuthorityStore, O: AsyncObjectStore, T:
             IdempotencyKey(stock_string_copy(key.as_str(), io)?),
             io,
             preparation,
-        )
+        )?
         .await;
     drop(hold);
     match result {

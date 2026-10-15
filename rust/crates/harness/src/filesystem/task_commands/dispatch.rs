@@ -1,4 +1,5 @@
 use super::*;
+use crate::conversation::BoundedContentFuture;
 
 impl<P, A, O> FilesystemTaskCommands<'_, P, A, O>
 where
@@ -78,7 +79,7 @@ where
         };
         self.verify_command_owner(owner.as_deref(), invocation)
             .await?;
-        let progress = self.dispatch_command(invocation, payload).await;
+        let progress = self.dispatch_command(invocation, payload)?.await;
         #[cfg(not(target_arch = "wasm32"))]
         let progress = match progress {
             Err(error) if error.is_native_failure() => return Err(error),
@@ -120,11 +121,11 @@ where
         }
     }
 
-    async fn dispatch_command(
-        &self,
-        invocation: CommandInvocation<'_>,
+    fn dispatch_command<'a>(
+        &'a self,
+        invocation: CommandInvocation<'a>,
         payload: Value,
-    ) -> Result<TaskCommandProgress> {
+    ) -> Result<BoundedContentFuture<'a, TaskCommandProgress>> {
         use crate::filesystem::task_runtime::observed::boundary;
         use crate::wire::ErrorCode;
         let CommandInvocation {
@@ -137,19 +138,25 @@ where
         } = invocation;
         let task = admission.task_id();
         match command.kind.as_str() {
-            TOOL_TASK_COMMAND_KIND => self.tool_command(invocation, payload).await,
-            MODEL_TASK_COMMAND_KIND => self.model_command(invocation, payload).await,
-            EFFECT_TASK_COMMAND_KIND => self.effect_command(invocation, payload).await,
+            TOOL_TASK_COMMAND_KIND => {
+                BoundedContentFuture::new(io, || self.tool_command(invocation, payload))
+            }
+            MODEL_TASK_COMMAND_KIND => {
+                BoundedContentFuture::new(io, || self.model_command(invocation, payload))
+            }
+            EFFECT_TASK_COMMAND_KIND => {
+                BoundedContentFuture::new(io, || self.effect_command(invocation, payload))
+            }
             MAIL_SEND_TASK_COMMAND_KIND | MAIL_RECEIVE_TASK_COMMAND_KIND => {
-                self.mail_command(invocation, payload).await
+                BoundedContentFuture::new(io, || self.mail_command(invocation, payload))
             }
             TASK_ADMIT_COMMAND_KIND | TASK_OBSERVE_COMMAND_KIND => {
-                self.task_command(invocation, payload).await
+                BoundedContentFuture::new(io, || self.task_command(invocation, payload))
             }
             FORK_PREPARE_TASK_COMMAND_KIND if !reconciliation_only || io.is_some() => {
-                self.prepare_fork_command(invocation, payload).await
+                BoundedContentFuture::new(io, || self.prepare_fork_command(invocation, payload))
             }
-            TASK_ADMIT_PREPARED_COMMAND_KIND => {
+            TASK_ADMIT_PREPARED_COMMAND_KIND => BoundedContentFuture::new(io, || async move {
                 let input: PreparedTaskAdmitCommand = mail::decode_command(payload, io)?;
                 self.admit(
                     task,
@@ -160,33 +167,36 @@ where
                     io,
                 )
                 .await
-            }
+            }),
             TASK_CANCEL_COMMAND_KIND if !reconciliation_only => {
-                self.cancel_child_command(task, fence, command, payload, io)
-                    .await
+                BoundedContentFuture::new(io, || {
+                    self.cancel_child_command(task, fence, command, payload, io)
+                })
             }
 
             TIMER_TASK_COMMAND_KIND if !reconciliation_only => {
-                let input: TimerTaskCommand = mail::decode_command(payload, io)?;
-                let elapsed = self
-                    .runtime
-                    .task_host()
-                    .poll_timer(
-                        task,
-                        fence,
-                        command.operation_id,
-                        input.deadline_unix_ms,
-                        io,
-                    )
-                    .await?;
-                if elapsed {
-                    ready(Outcome::Succeeded(Value::Null), io)
-                } else {
-                    Ok(TaskCommandProgress::Pending)
-                }
+                BoundedContentFuture::new(io, || async move {
+                    let input: TimerTaskCommand = mail::decode_command(payload, io)?;
+                    let elapsed = self
+                        .runtime
+                        .task_host()
+                        .poll_timer(
+                            task,
+                            fence,
+                            command.operation_id,
+                            input.deadline_unix_ms,
+                            io,
+                        )
+                        .await?;
+                    if elapsed {
+                        ready(Outcome::Succeeded(Value::Null), io)
+                    } else {
+                        Ok(TaskCommandProgress::Pending)
+                    }
+                })
             }
             TIMER_TASK_COMMAND_KIND | TASK_CANCEL_COMMAND_KIND if reconciliation_only => {
-                mail::reconciled(io)
+                BoundedContentFuture::new(io, || async move { mail::reconciled(io) })
             }
             _ => Err(boundary(
                 io,

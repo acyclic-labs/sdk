@@ -256,6 +256,8 @@ where
 
 mod source;
 pub use source::*;
+mod path;
+pub use path::MountPath;
 mod callbacks;
 pub use callbacks::*;
 mod filesystem;

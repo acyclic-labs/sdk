@@ -80,3 +80,70 @@ fn checkpoint_proof_binds_issuer_key_identity_audience_and_format() -> Result<()
     assert_eq!(restored.schemas, expanded);
     Ok(())
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+fn canonical_component_peak(value: &impl Serialize) -> Result<u64> {
+    let mut converted = None;
+    let allocation = allocation_counter::measure(|| {
+        converted = Some(serde_json::to_value(value).map(|mut value| {
+            value.sort_all_objects();
+            value
+        }));
+    });
+    std::hint::black_box(converted.expect("conversion ran"))
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    Ok(allocation.bytes_max)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn snapshot_digest_peak_is_bounded_by_one_canonical_component() -> Result<()> {
+    for (events, reason_bytes) in [(1_u64, 262_144), (128, 256), (1000, 0)] {
+        let mut reducer = reducer_fixture();
+        for revision in 0..events {
+            reducer.apply(&command(
+                OperationId::from_bytes(u128::from(revision + 1).to_be_bytes()),
+                revision,
+                Action::TransitionLifecycle {
+                    to: if revision % 2 == 0 {
+                        LifecycleState::Active
+                    } else {
+                        LifecycleState::Waiting
+                    },
+                    reason: Some("\n\0\"Ã©".repeat(reason_bytes / 5)),
+                },
+            ))?;
+        }
+        let snapshot = reducer.snapshot(usize::MAX, &mut None)?.0;
+        let tuple = (
+            snapshot.format_version,
+            &snapshot.authority,
+            snapshot.revision,
+            &snapshot.events,
+            &snapshot.projection,
+        );
+        let bytes = crate::contract::canonical_json_bytes(&tuple)?;
+        let expected = *blake3::hash(&bytes).as_bytes();
+        let mut peak = canonical_component_peak(&snapshot.format_version)?
+            .max(canonical_component_peak(&snapshot.authority)?)
+            .max(canonical_component_peak(&snapshot.revision)?)
+            .max(canonical_component_peak(&snapshot.projection)?);
+        for event in &snapshot.events {
+            peak = peak.max(canonical_component_peak(event)?);
+        }
+        let mut digest = None;
+        let allocation = allocation_counter::measure(|| {
+            digest = Some(snapshot.digest_with_work(&mut None));
+        });
+        assert_eq!(digest.expect("digest ran")?, expected);
+        assert_eq!(snapshot.state_digest, expected);
+        assert_eq!(allocation.bytes_current, 0);
+        assert_eq!(allocation.count_current, 0);
+        assert!(
+            allocation.bytes_max <= peak,
+            "{events} events: digest peak {} exceeds component peak {peak}",
+            allocation.bytes_max
+        );
+    }
+    Ok(())
+}
