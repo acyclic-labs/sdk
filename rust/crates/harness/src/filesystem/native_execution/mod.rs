@@ -23,6 +23,7 @@ mod allocation;
 mod completion;
 pub(super) mod journal;
 mod journal_allocation;
+pub(crate) mod journal_encoding;
 #[cfg(test)]
 mod journal_properties;
 #[cfg(test)]

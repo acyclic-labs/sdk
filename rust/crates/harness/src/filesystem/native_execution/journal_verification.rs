@@ -47,6 +47,10 @@ pub(crate) fn verify_decode(input: &[u8]) {
         let mut value = serde_json::to_value(&journal).unwrap();
         value.sort_all_objects();
         let legacy = serde_json::to_vec(&value).unwrap();
+        assert_eq!(
+            serde_json::to_vec(&super::journal_encoding::Canonical(&journal)).unwrap(),
+            legacy
+        );
         let reread: MaterializationJournal = serde_json::from_slice(&legacy).unwrap();
         assert_eq!(journal, reread);
     }

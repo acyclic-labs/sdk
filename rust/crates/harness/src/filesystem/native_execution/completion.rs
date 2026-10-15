@@ -20,14 +20,22 @@ impl NativePreparationCompletionTemplate {
     ) -> Result<Self> {
         let io = PreparationIo::from_native_work(work)?;
         let original = intent(&journal, &io)?;
-        let bytes = io.encode(&journal, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
+        let bytes = io.encode(
+            &super::journal_encoding::Canonical(&journal),
+            acyclic_stream::MAX_RECORD_BYTES as u64,
+            false,
+        )?;
         let key = super::journal::key(&bytes, work)?;
         // Reserve the widest scalar encoding before the physical action.
         let revision = journal.revision;
         let counters = journal.work;
         journal.revision = revision.checked_add(1).ok_or_else(invalid)?;
         journal.work = WorkCounters::UNBOUNDED;
-        let largest = io.encode(&journal, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
+        let largest = io.encode(
+            &super::journal_encoding::Canonical(&journal),
+            acyclic_stream::MAX_RECORD_BYTES as u64,
+            false,
+        )?;
         journal.revision = revision;
         journal.work = counters;
         let mut output = crate::model::vec_with_capacity::<u8>(largest.len(), Some(&io))?;

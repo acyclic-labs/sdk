@@ -270,7 +270,11 @@ impl<P: StreamProvider> acyclic_fs::MaterializationJournalStore for Store<P> {
         }
         replacement.work = self.work.journal_work()?;
         let io = PreparationIo::from_native_work(&self.work)?;
-        let bytes = io.encode(&replacement, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
+        let bytes = io.encode(
+            &super::journal_encoding::Canonical(&replacement),
+            acyclic_stream::MAX_RECORD_BYTES as u64,
+            false,
+        )?;
         let key = key(&bytes, &self.work)?;
         let committed = self
             .owner
