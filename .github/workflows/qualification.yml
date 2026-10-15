@@ -27,7 +27,6 @@ env:
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: sccache
   CI_HEAD_SHA: ${{ inputs.source_ref || github.event.pull_request.head.sha || github.sha }}
-  FORCE: 'true'
 
 jobs:
   plan:

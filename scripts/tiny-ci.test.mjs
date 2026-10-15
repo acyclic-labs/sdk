@@ -146,7 +146,6 @@ test('all publishers use the one qualified source and explicit artifacts',()=>{
   assert.match(publisher,/id-token: write/);
  }
  const qualification=YAML.parse(read('qualification.yml'));
- assert.equal(qualification.env.FORCE,'true');
  assert.equal(qualification.on.workflow_call.inputs.force,undefined);
  assert.deepEqual(Object.keys(qualification.jobs),['plan','qualification','gate']);
  assert.deepEqual(qualification.jobs.plan.steps.filter(step=>step.uses?.startsWith('actions/cache/restore@')).map(step=>step.name),['Restore preflight tools']);
