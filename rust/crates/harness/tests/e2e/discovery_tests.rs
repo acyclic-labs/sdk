@@ -1,4 +1,4 @@
-use super::{TestResult, drivers, scenario};
+use crate::{TestResult, drivers, scenario};
 use serde_json::{Value, json};
 use std::path::Path;
 
