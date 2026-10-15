@@ -13,8 +13,8 @@ fn codec(version: &str, readable: Vec<CodecIdentity>) -> CheckpointCodec<Vec<u8>
     CheckpointCodec {
         identity: identity(version),
         readable,
-        encode: |state| Ok(state.clone()),
-        decode: |checkpoint| Ok(checkpoint.bytes.clone()),
+        encode: |state| Ok(state.clone().into()),
+        decode: |checkpoint| Ok(checkpoint.bytes.to_vec()),
     }
 }
 
@@ -38,7 +38,7 @@ proptest! {
         let mut installed = GuestInstallation {
             configuration,
             subscriptions,
-            checkpoint: Some(Checkpoint { codec: identity("1"), bytes }),
+            checkpoint: Some(Checkpoint { codec: identity("1"), bytes: bytes.into() }),
         };
         let prior = installed.clone();
         let mut candidate = codec("2", vec![identity("2")]);
@@ -54,7 +54,7 @@ proptest! {
     fn compatible_update_decodes_prior_format_without_rewriting_checkpoint(
         bytes in prop::collection::vec(any::<u8>(), 0..512),
     ) {
-        let checkpoint = Checkpoint { codec: identity("1"), bytes: bytes.clone() };
+        let checkpoint = Checkpoint { codec: identity("1"), bytes: bytes.clone().into() };
         let mut installed = GuestInstallation {
             configuration: "old", subscriptions: vec![1], checkpoint: Some(checkpoint.clone()),
         };
@@ -81,20 +81,33 @@ proptest! {
             0 => GuestEvent::Stream { subscription: identity.clone(), stream: identity.clone(),
                 sequence: number.to_string(), committed_at_micros: number.to_string(),
                 value: identity.clone(), commit_id: identity.clone() },
-            1 => GuestEvent::Invoke { payload: bytes.clone() },
+            1 => GuestEvent::Invoke { payload: bytes.clone().into() },
             2 => GuestEvent::Fetch { request: GuestRequest { url: identity.clone(), method: identity.clone(),
-                headers: vec![(identity.clone(), identity.clone())], body: bytes.clone() } },
+                headers: vec![(identity.clone(), identity.clone())], body: bytes.clone().into() } },
             3 => GuestEvent::Timer { timer_id: identity.clone(), deadline_unix_ms: number.to_string() },
             kind => GuestEvent::Socket { connection_id: identity.clone(), event: match kind {
-                4 => GuestSocketEvent::Open { protocol: identity.clone() },
-                5 => GuestSocketEvent::Message { offset: number.to_string(), data: bytes.clone(), text: number % 2 == 0 },
-                6 => GuestSocketEvent::Close { code: (number % 65536) as u16, reason: identity.clone() },
-                7 => GuestSocketEvent::Error { code: identity.clone() },
-                _ => GuestSocketEvent::Reconnecting,
+                4 => GuestSocketEvent::Open { actor_id: identity.clone(), app_channel: Some(identity.clone()), subprotocols: vec![identity.clone()], headers: vec![], resume_after: number.to_string(), reconnected: false, transport: Some(SocketTransport::Internal) },
+                5 => GuestSocketEvent::Message { offset: number.to_string(), payload: if number % 2 == 0 { SocketPayload::Text { text: identity.clone() } } else { SocketPayload::Binary { binary: bytes.clone().into() } } },
+                6 => GuestSocketEvent::Close { offset: number.to_string(), code: (number % 65536) as u16, reason: identity.clone(), initiator: SocketCloseInitiator::Runtime },
+                7 => GuestSocketEvent::Error { offset: number.to_string(), code: identity.clone(), message: identity.clone() },
+                _ => GuestSocketEvent::Reconnecting { attempt: 1, delay_ms: number.to_string() },
             } },
         };
         let encoded = serde_json::to_vec(&event)?;
         prop_assert_eq!(serde_json::from_slice::<GuestEvent>(&encoded)?, event);
+    }
+
+    #[test]
+    fn older_guest_accepts_new_host_fields_and_unknown_event_types(
+        timer in ".{0,64}", future_field in "[a-z]{1,24}", value in any::<u64>(),
+    ) {
+        let mut newer = serde_json::json!({"type":"timer", "timerId":timer, "deadlineUnixMs":value.to_string()});
+        newer[format!("future_{future_field}")] = serde_json::json!({"nested":[value,true]});
+        prop_assert_eq!(serde_json::from_value::<GuestEvent>(newer)?, GuestEvent::Timer { timer_id: timer, deadline_unix_ms: value.to_string() });
+        let socket = serde_json::json!({"type":"socket", "connectionId":"app", "future":"added", "event":{"type":"close", "offset":"2", "code":1013, "reason":"backpressure", "initiator":"runtime", "future":value}});
+        prop_assert!(matches!(serde_json::from_value::<GuestEvent>(socket)?, GuestEvent::Socket { event: GuestSocketEvent::Close { .. }, .. }), "extended socket Close must decode");
+        prop_assert_eq!(serde_json::from_value::<GuestEvent>(serde_json::json!({"type":format!("future_{future_field}"),"body":value}))?, GuestEvent::Unknown);
+        prop_assert_eq!(serde_json::from_value::<GuestSocketEvent>(serde_json::json!({"type":format!("future_{future_field}"),"body":value}))?, GuestSocketEvent::Unknown);
     }
 
     #[test]
@@ -103,6 +116,89 @@ proptest! {
             prop_assert_eq!(serde_json::from_slice::<GuestEvent>(&serde_json::to_vec(&event)?)?, event);
         }
     }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+    #[test]
+    fn socket_admission_results_round_trip(attachment in prop::collection::vec(any::<u8>(), 0..2048), tag in ".{0,64}") {
+        for result in [
+            GuestEventResult::SocketAccept { subprotocol: Some("chat".into()), attachment: attachment.clone().into(), tags: vec![tag.clone()] },
+            GuestEventResult::SocketReject { status: 403, reason: tag.clone() },
+            GuestEventResult::Reply { payload: attachment.into() },
+        ] {
+            prop_assert_eq!(serde_json::from_slice::<GuestEventResult>(&serde_json::to_vec(&result)?)?, result);
+        }
+    }
+
+    #[test]
+    fn admitted_caller_projection_accepts_extensions_and_round_trips(principal in ".{0,64}", handle in ".{0,64}", expiry in any::<u64>()) {
+        let caller: AdmittedCaller = serde_json::from_value(serde_json::json!({
+            "accountId":"account", "orgId":"org", "principal":principal,
+            "credentialId":"credential", "actorId":"actor", "expiresAtMs":expiry.to_string(),
+            "capability":{"version":1,"handle":handle,"future":true}, "future":true
+        }))?;
+        prop_assert_eq!(serde_json::from_slice::<AdmittedCaller>(&serde_json::to_vec(&caller)?)?, caller);
+    }
+}
+
+#[test]
+fn artifact_handshake_and_context_defaults_are_explicit() {
+    assert_eq!(negotiate_abi(GUEST_ABI_VERSION), Ok(()));
+    for version in [0, 2, u32::MAX] {
+        assert_eq!(
+            negotiate_abi(version),
+            Err(GuestError::UnsupportedAbi(version))
+        );
+    }
+    let lifecycle = GuestContext::builder((), Box::new(|| 42)).build();
+    assert!(lifecycle.admitted_identity.is_none());
+    assert!(lifecycle.actor.alarms.is_none());
+    assert!((lifecycle.retry_key)("effect").is_err());
+    let delivery = GuestContext::builder((), Box::new(|| 42))
+        .delivery("stable".into())
+        .build();
+    assert_eq!(
+        (delivery.retry_key)("effect"),
+        retry_key("stable", "effect")
+    );
+}
+
+#[tokio::test]
+async fn native_fetch_supports_lazy_chunks_and_buffered_adaptation()
+-> Result<(), Box<dyn std::error::Error>> {
+    use bytes::Bytes;
+    use futures::StreamExt as _;
+    let bytes = Bytes::from_static(b"data: first\n\n");
+    let buffered = GuestResponse {
+        status: 200,
+        headers: vec![("x-test".into(), "a".into()), ("x-test".into(), "b".into())],
+        body: bytes.clone(),
+    }
+    .into_streaming()?;
+    assert_eq!(buffered.headers().get_all("x-test").iter().count(), 2);
+    if let GuestBody::Buffered(body) = buffered.into_body() {
+        assert_eq!(body.as_ptr(), bytes.as_ptr());
+    } else {
+        return Err("buffered body changed representation".into());
+    }
+    let stream = futures::stream::iter([Ok(bytes), Ok(Bytes::from_static(b"data: second\n\n"))]);
+    let response = http::Response::builder()
+        .header("content-type", "text/event-stream")
+        .body(GuestBody::Stream(Box::pin(stream)))?;
+    if let GuestBody::Stream(mut body) = response.into_body() {
+        assert_eq!(
+            body.next().await.transpose()?,
+            Some(Bytes::from_static(b"data: first\n\n"))
+        );
+        assert_eq!(
+            body.next().await.transpose()?,
+            Some(Bytes::from_static(b"data: second\n\n"))
+        );
+    } else {
+        return Err("stream was buffered".into());
+    }
+    Ok(())
 }
 
 #[test]
@@ -135,7 +231,11 @@ fn absent_checkpoint_still_requires_valid_codec_and_never_calls_decoder() {
         Err(GuestError::IncompatibleCodec)
     );
     candidate.readable.push(identity("1"));
-    candidate.decode = |_| panic!("absent checkpoint must not be decoded");
+    candidate.decode = |_| {
+        Err(GuestError::Decode(
+            "absent checkpoint must not be decoded".into(),
+        ))
+    };
     assert_eq!(prepare_update(None, &candidate), Ok(None));
     assert!(retry_key("", "effect").is_err());
     assert!(retry_key("delivery", "").is_err());
@@ -147,7 +247,7 @@ fn every_event_round_trips_with_a_single_discriminant() -> Result<(), Box<dyn st
         url: "https://example.test/".into(),
         method: "POST".into(),
         headers: vec![],
-        body: vec![0, 255],
+        body: vec![0, 255].into(),
     };
     let events = [
         GuestEvent::Stream {
@@ -159,7 +259,7 @@ fn every_event_round_trips_with_a_single_discriminant() -> Result<(), Box<dyn st
             commit_id: "ab".repeat(16),
         },
         GuestEvent::Invoke {
-            payload: vec![0, 255],
+            payload: vec![0, 255].into(),
         },
         GuestEvent::Fetch { request },
         GuestEvent::Timer {
@@ -168,7 +268,10 @@ fn every_event_round_trips_with_a_single_discriminant() -> Result<(), Box<dyn st
         },
         GuestEvent::Socket {
             connection_id: "app-1".into(),
-            event: GuestSocketEvent::Reconnecting,
+            event: GuestSocketEvent::Reconnecting {
+                attempt: 1,
+                delay_ms: "10".into(),
+            },
         },
     ];
     for event in events {

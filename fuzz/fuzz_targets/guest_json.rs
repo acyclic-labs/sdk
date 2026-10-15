@@ -1,9 +1,23 @@
 #![no_main]
 
-use acyclic_actors::guest::{Checkpoint, GuestEvent};
+use acyclic_actors::guest::{AdmittedCaller, Checkpoint, GuestEvent, GuestEventResult};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|input: &[u8]| {
+    if let Ok(result) = serde_json::from_slice::<GuestEventResult>(input) {
+        let encoded = serde_json::to_vec(&result).expect("event result must encode");
+        assert_eq!(
+            serde_json::from_slice::<GuestEventResult>(&encoded).expect("result round trip"),
+            result
+        );
+    }
+    if let Ok(caller) = serde_json::from_slice::<AdmittedCaller>(input) {
+        let encoded = serde_json::to_vec(&caller).expect("caller projection must encode");
+        assert_eq!(
+            serde_json::from_slice::<AdmittedCaller>(&encoded).expect("caller round trip"),
+            caller
+        );
+    }
     if let Ok(event) = serde_json::from_slice::<GuestEvent>(input) {
         let encoded = serde_json::to_vec(&event).expect("accepted event must encode");
         assert_eq!(

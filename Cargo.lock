@@ -21,7 +21,11 @@ dependencies = [
  "acyclic-contract-derive",
  "acyclic-grpc-observability",
  "acyclic-tonic-web-wasm-client",
+ "bytes",
+ "futures",
+ "http",
  "http-body",
+ "loom",
  "proptest",
  "prost",
  "prost-reflect",
@@ -978,6 +982,9 @@ name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "bytestring"

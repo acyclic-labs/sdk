@@ -1,5 +1,6 @@
 //! Guest ABI v1. Artifacts own their codec; hosts own admission and publication.
 
+use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use ts_rs::{Config, TS};
 
@@ -7,6 +8,14 @@ mod authoring;
 pub use authoring::*;
 mod update;
 pub use update::*;
+mod runtime;
+pub use runtime::*;
+mod sockets;
+pub use sockets::*;
+mod body;
+pub use body::*;
+mod state;
+pub use state::GuestState;
 
 /// Required named export and its lifecycle hooks; HTTP enters through default.fetch.
 pub const ACTOR_EXPORT: &str = "actor";
@@ -16,10 +25,23 @@ pub const ACTOR_HOOKS: &[&str] = &["restore", "event", "checkpoint"];
 pub const FETCH_EXPORT: &str = "fetch";
 /// Frozen guest ABI version, independent of artifact codec versions.
 pub const GUEST_ABI_VERSION: u32 = 1;
+/// Artifact version handshake export, checked before guest restore or delivery.
+pub const ABI_VERSION_EXPORT: &str = "abiVersion";
+/// Artifact codec export, inspected before attempting an update.
+pub const CODEC_EXPORT: &str = "codec";
+
+/// Admit only explicitly supported artifact ABI versions before touching its heap.
+pub fn negotiate_abi(version: u32) -> Result<(), GuestError> {
+    if version == GUEST_ABI_VERSION {
+        Ok(())
+    } else {
+        Err(GuestError::UnsupportedAbi(version))
+    }
+}
 
 /// Portable HTTP input; header order and duplicate header names are preserved.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct GuestRequest {
     /// Original absolute URL.
     pub url: String,
@@ -28,53 +50,21 @@ pub struct GuestRequest {
     /// Ordered header pairs.
     pub headers: Vec<(String, String)>,
     /// Bounded request body bytes.
-    pub body: Vec<u8>,
+    #[ts(type = "Uint8Array")]
+    pub body: Bytes,
 }
 
 /// Portable HTTP output, adapted by the host to its HTTP implementation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct GuestResponse {
     /// HTTP status code.
     pub status: u16,
     /// Ordered header pairs.
     pub headers: Vec<(String, String)>,
     /// Bounded response body bytes.
-    pub body: Vec<u8>,
-}
-
-/// App-only socket lifecycle. Harness packages never consume these events.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
-pub enum GuestSocketEvent {
-    /// Connection admitted by the runtime.
-    Open {
-        /// Negotiated subprotocol.
-        protocol: String,
-    },
-    /// One ordered frame.
-    Message {
-        /// Decimal u64 frame offset.
-        offset: String,
-        /// Frame bytes.
-        data: Vec<u8>,
-        /// Whether this is a text frame.
-        text: bool,
-    },
-    /// Connection closed.
-    Close {
-        /// WebSocket close code.
-        code: u16,
-        /// Close reason.
-        reason: String,
-    },
-    /// Runtime-reported connection failure.
-    Error {
-        /// Stable error code, without credentials.
-        code: String,
-    },
-    /// Runtime is attempting the declared reconnect policy.
-    Reconnecting,
+    #[ts(type = "Uint8Array")]
+    pub body: Bytes,
 }
 
 /// The single event union. Each delivered event has a stable context deliveryId.
@@ -82,9 +72,9 @@ pub enum GuestSocketEvent {
 #[serde(
     tag = "type",
     rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
+    rename_all_fields = "camelCase"
 )]
+#[non_exhaustive]
 pub enum GuestEvent {
     /// Stream subscription delivery; projection matches the Cloud bridge.
     Stream {
@@ -104,7 +94,8 @@ pub enum GuestEvent {
     /// Public Invoke payload, distinct from HTTP fetch.
     Invoke {
         /// Opaque invocation input bytes.
-        payload: Vec<u8>,
+        #[ts(type = "Uint8Array")]
+        payload: Bytes,
     },
     /// HTTP input, routed through default.fetch using the same context.
     Fetch {
@@ -125,6 +116,9 @@ pub enum GuestEvent {
         /// Socket event.
         event: GuestSocketEvent,
     },
+    /// Future host event; ignore it when the negotiated ABI does not define it.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Derive an unambiguous effect retry key from a stable delivery and effect name.
@@ -142,7 +136,9 @@ pub fn retry_key(delivery_id: &str, effect: &str) -> Result<String, GuestError> 
 /// Generate one self-contained authoring contract directly from Rust declarations.
 pub fn typescript() -> String {
     let config = Config::default();
-    let mut output = String::from("// Generated from acyclic_actors::guest. Do not edit.\n");
+    let mut output = format!(
+        "// Generated from acyclic_actors::guest. Do not edit.\nexport const GUEST_ABI_VERSION = {GUEST_ABI_VERSION} as const;\n"
+    );
     macro_rules! declarations {
         ($($ty:ty),+ $(,)?) => {$(
             output.push_str("export ");
@@ -150,9 +146,11 @@ pub fn typescript() -> String {
             output.push('\n');
         )+};
     }
-    declarations!(GuestRequest, GuestResponse, GuestSocketEvent, GuestEvent,
+    declarations!(GuestRequest, GuestResponse, SocketPayload, SocketCloseInitiator,
+        SocketTransport, GuestSocketEvent, GuestEvent, GuestEventResult,
         CodecIdentity, Checkpoint, GuestError, CheckpointCodec<()>,
-        GuestContext<(), ()>, ActorDefinition<(), ()>);
+        CallerCapability, AdmittedCaller, RuntimeHandle, ActorRuntime,
+        GuestState<()>, GuestContext<()>, ActorDefinition<(), ()>);
     output
         .lines()
         .map(str::trim_end)

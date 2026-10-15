@@ -1,51 +1,75 @@
 # Authoring an Actor guest
 
-`acyclic_actors::guest` owns ABI v1. TypeScript declarations in
-`@acyclic-labs/actors` are generated from those Rust declarations. This surface
-defines authoring hooks only; the actor runtime supplies execution and admission.
-The existing `scripts/generate-actors.mjs` generation and drift check includes
-this surface alongside the RPC declarations.
+`acyclic_actors::guest` owns ABI v1; `scripts/generate-actors.mjs` emits and checks
+the TypeScript projection. This package declares guest hooks and shared-state
+mutation; it does not implement actor scheduling, storage, sockets or HTTP serving.
 
-Rust authors use `define_actor(ActorDefinition { restore, event, checkpoint,
+Export `actor.abiVersion = GUEST_ABI_VERSION`, `actor.codec`, `actor.restore`,
+`actor.event`, `actor.checkpoint`, and `default.fetch`. Rust authors use
+`define_actor(ActorDefinition { abi_version, codec, restore, event, checkpoint,
 fetch })`; TypeScript authors use `defineActor<State, Bindings>({...})`.
-Export the lifecycle hooks as `actor.restore`, `actor.event`, and
-`actor.checkpoint`, and expose the HTTP hook as `default.fetch`. The typed hooks
-take explicit state; a host adapter retains that state between calls.
+Hosts negotiate the artifact version before restore or update admission, reject
+unsupported versions without changing the installed boundary, and project only
+events defined by the negotiated version. Inbound structures ignore added fields;
+unknown event discriminants decode to `Unknown` and may be ignored by old guests.
+The event/socket enums and context are non-exhaustive Rust APIs.
 
-`restore(checkpoint, context)` produces state from either an absent checkpoint
-or artifact-owned bytes. `event(state, event, context)` handles the single
-`GuestEvent` union: stream subscription record, Invoke, fetch, timer, or app-only
-socket event. `checkpoint(state, context)` captures logical state after admitted
-handlers quiesce. `fetch(state, request, context)` is the HTTP adapter for the
-fetch event. Portable requests/responses preserve ordered header pairs and byte
-arrays; the host converts its native HTTP objects at that boundary.
+The artifact exports its codec identity (name/version), readable identities and
+encode/decode hooks as `actor.codec`. It is absent from context. Checkpoints carry
+that identity and opaque `Bytes`/`Uint8Array`. An update checks codec compatibility
+and decodes prior bytes before replacing configuration or subscriptions.
+`GuestInstallation::update` preserves configuration, checkpoint and subscriptions
+on incompatible identity or decode failure. Successful updates retain original
+checkpoint bytes until a new capture commits. Hosts must fence and publish the
+boundary atomically. Public CheckpointActor requests a capture, not a codec change.
 
-Every hook receives the same `GuestContext<Bindings, State>`: scoped `env`
-handles, an injectable Unix millisecond `clock`, a stable `deliveryId`, artifact
-`codec` hooks, and `retryKey(effect)` (`retry_key` in Rust). Clock results are
-`u64` in Rust and `bigint` in TypeScript. Restore and checkpoint have no delivery
-identity and cannot derive effect keys. Hosts supply the same delivery identity
-on every retry. The retry-key format length-prefixes the UTF-8 delivery identity
-before the effect name. Arbitrary external services still need their own
-idempotency support; there is no cross-service transaction guarantee.
+Every hook uses `GuestContext<Bindings>`: manifest-owned `env`, an injected clock
+(Rust u64/TS bigint Unix milliseconds), stable nullable deliveryId, retryKey(effect),
+host-supplied admittedIdentity, and a separate runtime-owned `actor` namespace.
+Construct Rust contexts through `GuestContext::builder`. The identity projection
+contains accountId, orgId, principal, credentialId, actorId, expiry and an optional
+versioned opaque capability handle for S1 forwarding/attenuation. It is neither
+a bearer token nor a second auth chain. The host authenticates it; public request
+headers cannot install it. It is null for Stream, timer, restore and checkpoint.
+The runtime namespace reserves actor id/class and optional versioned handles for
+sockets, auto-response, alarms (setAlarm/schedule), SQL over the fs volume, and
+waitUntil. Their implementations belong to their feature/runtime owners, not env.
 
-Stream fields preserve the Cloud bridge projection: decimal u64 sequence and
-commit timestamp, base64 value, and hexadecimal commit identity. Timers arrive
-through idempotent appends to the target inbox, keyed by timer ID. The harness
-uses StreamProvider and fs/volume only; socket events are for apps.
+Restore produces logical state. The host wraps it in `GuestState`; event, fetch
+and checkpoint receive shared handles. `state.with` permits only a synchronous
+mutation and releases its mutex before returning. Rust cannot borrow that state
+across an await; TS callbacks must return undefined, not a Promise. Hosts implement
+the same synchronous operation and reject nested operations. Lock order: no nested
+state mutation locks, even for distinct states; a checker rejects nesting before
+locking. The actual Rust mutation path is exercised by loom with two handlers and
+an intervening yield, plus same-state and distinct-state lock-order violations.
+Cloud orders handlers per subscription only. Other subscriptions and Invokes can
+interleave across awaits; a read before an await does not isolate a later mutation.
+Capture happens only after admitted handlers quiesce. Handler failure discards the
+heap and restores the committed boundary.
 
-Each checkpoint carries its artifact codec name/version and opaque bytes. The
-candidate codec must explicitly list its own identity and every older format it
-can decode. `GuestInstallation::update` validates compatibility and decodes the
-retained checkpoint before changing configuration or subscriptions. Rejected
-compatibility or decoding preserves all three installed values exactly. Accepted
-updates retain the original checkpoint until a new capture commits. The host
-must fence and publish the resulting boundary atomically under its authority.
-Public `CheckpointActor` requests a host capture; it does not select a codec or
-permit callers to replace artifact state. Public Invoke enters the invoke event;
-HTTP requests enter fetch. This contract adds no service RPCs.
+One event union covers Stream, Invoke, fetch, timer and app-only sockets. Stream
+fields retain the Cloud projection: decimal u64 sequence/time, base64 record value
+and hex commit ID. Retry keys length-prefix the UTF-8 stable delivery identity;
+lifecycle hooks without a delivery cannot derive keys. Arbitrary external effects
+still require service-specific idempotency. Timer fires are inbox appends keyed by
+timer ID, never Invoke. The harness uses StreamProvider and fs/volume only.
 
-The `guest_contract` property suite checks serialization round-trip, retry-key
-injectivity, successful migration and preservation on incompatible or failed
-decode. The parser fuzz target is `fuzz/guest_json`, with a checked seed corpus;
-run `cargo fuzz run guest_json -- -max_total_time=5` from `fuzz/`.
+Socket Open requests include offered subprotocols, allowlisted headers, application
+channel, resume position and reconnect diagnostics. The enclosing event supplies
+connection identity. Return SocketAccept(subprotocol, attachment, tags) or
+SocketReject(status, reason). Message uses text or binary payload; Close includes
+offset and peer/actor/runtime initiator; Error includes offset, code and message.
+Close/error advance application delivery offsets. Ping/pong, channel-0 keepalive,
+keepalive templates and auto-response matches never wake guests, produce events or
+advance those offsets. Only events delivered to event count as messages_in/wakes.
+
+TS fetch uses native WHATWG Request/Response, including ReadableStream bodies and
+SSE. Rust fetch uses `http::Request<GuestBody>` and `http::Response<GuestBody>` with
+buffered Bytes or a lazy fallible chunk stream. Portable buffered GuestRequest and
+GuestResponse remain available with into_streaming adapters preserving duplicate
+headers and byte allocations. Hosts own backpressure and cancellation on drop.
+
+Focused verification: guest_contract properties/corpus/drift; loom state models;
+Actors check:types (included in root check:types); and debug cargo-fuzz guest_json
+with checked seeds (`cargo +nightly fuzz run --dev guest_json -- -max_total_time=5`).
