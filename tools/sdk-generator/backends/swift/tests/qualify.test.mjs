@@ -135,6 +135,11 @@ test("receipt coverage matches the probe's checked and invoked method inventory"
   assert.deepEqual([...calls].sort(), expected);
   assert.deepEqual([...probe.matchAll(/func (\w+)\(request:/g)].map(([, name]) => name).sort(), expected);
   assert.deepEqual([...probe.matchAll(/try schema.check\("([^"]+)"/g)].map(([, path]) => path).sort(), canonicalRPCs().map(method => method.path).sort());
+  for (const [service, prefix] of [["Actors", "acyclic.actors.v1.ActorsService/"], ["Stream", "acyclic.stream.v1.StreamService/"]]) {
+    const line = probe.split("\n").find(line => line.includes(`Acyclic_${service}_V1_${service}Service.Method.descriptors.map`)) ?? assert.fail(`missing ${service} descriptor inventory`);
+    const paths = [...line.matchAll(/"(acyclic\.[^"]+)"/g)].map(([, path]) => path).sort();
+    assert.deepEqual(paths, canonicalRPCs().map(method => method.path).filter(path => path.startsWith(prefix)).sort());
+  }
   assert.equal(calls.length, count);
   assert.equal(new Set(calls).size, count);
   const f = installedFixture(t);
