@@ -1,0 +1,3 @@
+{"seed":{"AGENTS.md":"root","src/file.rs":"source","other/CLAUDE.md":"ignore"},"discovery":{"instructions":[{
+  "active_directory":"src"}]},"expect":{"request_files":[["root"]],"requests":[{"messages":[{"role":"system","content"
+  :{"kind":"file","file":{"path":"AGENTS.md"},"policy":"bounded_full"}},{"role":"user","content":"Inspect files"}]}]}}

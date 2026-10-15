@@ -1,8 +1,11 @@
 //! Data-driven harness scenarios. `E2E_FILTER` selects a path substring.
 mod composer;
+mod discovery;
 mod drivers;
 mod execution;
 mod matchers;
+mod notification_history;
+mod notifications;
 mod scenario;
 use acyclic_harness::context::CompactionPolicy;
 use execution::run;
@@ -37,6 +40,7 @@ async fn scenario_oracles_reject_wrong_text_context_events_files_and_unused_turn
     for field in [
         "text",
         "requests",
+        "not_requests",
         "empty_requests",
         "events",
         "empty_events",
@@ -55,6 +59,9 @@ async fn scenario_oracles_reject_wrong_text_context_events_files_and_unused_turn
             "requests" => {
                 case.expect.requests =
                     Some(vec![serde_json::json!({"messages":[{"content":"wrong"}]})]);
+            }
+            "not_requests" => {
+                case.expect.not_requests = vec![serde_json::json!({"messages":[{"role":"user"}]})];
             }
             "empty_requests" => case.expect.requests = Some(vec![]),
             "events" => case.expect.events = Some(vec![serde_json::json!({"kind":"wrong"})]),

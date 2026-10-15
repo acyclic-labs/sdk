@@ -1,0 +1,1 @@
+{"seed":{"skills/a/SKILL.md/child":"nested"},"expect":{"error":"skill entry is not a file"}}

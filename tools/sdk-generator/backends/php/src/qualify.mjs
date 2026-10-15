@@ -1,37 +1,23 @@
 import { spawnSync } from "node:child_process";
-import { lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
-import { basename, delimiter, dirname, join, resolve } from "node:path";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { parseArgs } from "node:util";
 import { gunzipSync } from "node:zlib";
 import { tarEntries } from "../../../../../scripts/archive-utils.mjs";
-import { canonical, loadAuthority, readInput, sha256, within } from "../../../shared/authority.mjs";
+import { canonical, inventory, loadAuthority, qualificationOutput, readInput, sha256, verifyInstalledPayload, runCli } from "../../../shared/authority.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const read = name => readFileSync(join(directory, name));
-const inventory = JSON.parse(read("../toolchains/runtime-files.json"));
-if (!Array.isArray(inventory) || !inventory.length || inventory.some(entry => !entry || !canonical(entry.path) || !/^[a-f0-9]{64}$/.test(entry.sha256))
-  || new Set(inventory.map(entry => entry.path.toLowerCase())).size !== inventory.length) throw new Error("invalid runtime inventory pins");
-const pinned = { ...JSON.parse(read("../toolchains/qualification.json")), runtime_files: Object.fromEntries(inventory.map(entry => [entry.path, entry.sha256])) };
+const runtimeInventory = JSON.parse(read("../toolchains/runtime-files.json"));
+if (!Array.isArray(runtimeInventory) || !runtimeInventory.length || runtimeInventory.some(entry => !entry || !canonical(entry.path) || !/^[a-f0-9]{64}$/.test(entry.sha256))
+  || new Set(runtimeInventory.map(entry => entry.path.toLowerCase())).size !== runtimeInventory.length) throw new Error("invalid runtime inventory pins");
+const pinned = { ...JSON.parse(read("../toolchains/qualification.json")), runtime_files: Object.fromEntries(runtimeInventory.map(entry => [entry.path, entry.sha256])) };
 const targets = ["actors/v1/actors.proto", "stream/v1/stream.proto"];
 const negatives = { InvalidActorBytes: "InvalidArgumentException: Expect string.", InvalidOptionalInteger: "Exception: Expect integer." };
 const marker = "PASS: installed PHP descriptors, bytes, unsigned bits, optional zero, oneof and client RPC shapes";
 const nativeMarker = "PASS: native PHP gRPC client creation and shutdown";
 const packageName = "acyclic-sdk-transport-0.2.0-alpha.1.tar.gz";
 
-function files(root, prefix = "") {
-  return readdirSync(join(root, prefix), { withFileTypes: true }).flatMap(entry => {
-    const name = prefix ? `${prefix}/${entry.name}` : entry.name;
-    if (entry.isSymbolicLink()) throw new Error("inventory contains a link");
-    if (entry.isDirectory()) return files(root, name);
-    if (!entry.isFile()) throw new Error("inventory contains a non-file");
-    return [name];
-  }).sort();
-}
-function verifyPayload(root, payload) {
-  if (JSON.stringify(files(root)) !== JSON.stringify([...payload.keys()].sort())) throw new Error("installed payload inventory differs");
-  for (const [name, bytes] of payload) readInput(root, name, sha256(bytes));
-}
 function archivePayload(bytes) {
   if (!bytes.length || bytes.length > 32 * 1024 * 1024) throw new Error("archive exceeds size bound");
   const entries = tarEntries(gunzipSync(bytes, { maxOutputLength: 64 * 1024 * 1024 })), seen = new Set(), payload = new Map();
@@ -69,12 +55,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
   if (process.platform !== "win32" && command === spawnSync) throw new Error("PHP qualification requires the admitted Windows runtime");
   const packageRoot = realpathSync(args.package), authorityRoot = realpathSync(args.authority), runtime = realpathSync(args["php-home"]);
   const composer = realpathSync(args.composer), extension = realpathSync(args["grpc-extension"]), archiver = realpathSync(args.archiver), cache = realpathSync(args.cache);
-  const output = join(realpathSync(dirname(resolve(args.output))), basename(resolve(args.output)));
-  try { lstatSync(output); throw new Error("qualification output must be absent"); }
-  catch (error) { if (error.code !== "ENOENT") throw error; }
-  for (const input of [packageRoot, authorityRoot, runtime, composer, extension, archiver, cache, dirname(directory)]) {
-    if (within(input, output) || within(output, input)) throw new Error("qualification output overlaps an input");
-  }
+  const output = qualificationOutput(args.output, [packageRoot, authorityRoot, runtime, composer, extension, archiver, cache, dirname(directory)]);
   const receiptBytes = readFileSync(join(packageRoot, "generation-receipt.json")), receipt = JSON.parse(receiptBytes), approved = loadAuthority(authorityRoot);
   if (receipt.schema !== "acyclic.sdk.php-producer-receipt.v1" || receipt.target !== "php" || receipt.authority !== "rust" || !Array.isArray(receipt.outputs)) throw new Error("unsupported generation receipt");
   if (sha256(approved.bytes) !== receipt.authority_manifest_sha256 || approved.manifest.source_revision !== receipt.source_revision) throw new Error("generation authority differs");
@@ -92,7 +73,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
     if (!payload.has(`src/GPBMetadata/${family}/${version}/${family}.php`) || !payload.has(`src/Acyclic/${family}/${version}/${service}ServiceClient.php`)) throw new Error("package lacks tested family bindings");
   }
   const verifyRuntime = () => {
-    if (!toolchain.runtime_files || !Object.keys(toolchain.runtime_files).length || JSON.stringify(files(runtime)) !== JSON.stringify(Object.keys(toolchain.runtime_files).sort())) throw new Error("runtime inventory differs");
+    if (!toolchain.runtime_files || !Object.keys(toolchain.runtime_files).length || JSON.stringify(inventory(runtime)) !== JSON.stringify(Object.keys(toolchain.runtime_files).sort())) throw new Error("runtime inventory differs");
     for (const [name, digest] of Object.entries(toolchain.runtime_files)) readInput(runtime, name, digest);
   };
   verifyRuntime();
@@ -182,13 +163,13 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
   const vendor = join(project, "vendor"), installed = join(vendor, ...sdk.name.split("/"));
   const installedPackages = JSON.parse(readFileSync(join(vendor, "composer/installed.json")));
   checkPackages(installedPackages.packages);
-  const loaderPayload = new Map(["autoload.php", ...files(join(vendor, "composer")).map(name => `composer/${name}`)].map(name => [name, readFileSync(join(vendor, name))]));
+  const loaderPayload = new Map(["autoload.php", ...inventory(join(vendor, "composer")).map(name => `composer/${name}`)].map(name => [name, readFileSync(join(vendor, name))]));
   const vendorInventory = [...loaderPayload.keys(), ...[...payload.keys()].map(name => `${sdk.name}/${name}`),
     ...dependencies.flatMap(({ pin, contents }) => [...contents.keys()].map(name => `${pin.name}/${name}`))].sort();
   const verifyInstallation = () => {
-    if (JSON.stringify(files(vendor)) !== JSON.stringify(vendorInventory)) throw new Error("installed vendor inventory differs");
-    verifyPayload(installed, payload);
-    for (const { pin, contents } of dependencies) verifyPayload(join(vendor, ...pin.name.split("/")), contents);
+    if (JSON.stringify(inventory(vendor)) !== JSON.stringify(vendorInventory)) throw new Error("installed vendor inventory differs");
+    verifyInstalledPayload(installed, payload);
+    for (const { pin, contents } of dependencies) verifyInstalledPayload(join(vendor, ...pin.name.split("/")), contents);
     for (const [name, bytes] of loaderPayload) readInput(vendor, name, sha256(bytes));
   };
   verifyInstallation();
@@ -215,17 +196,15 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
     package_payload_sha256: Object.fromEntries([...payload].map(([name, bytes]) => [name, sha256(bytes)])),
     dependency_archive_sha256: Object.fromEntries([...archives].map(([name, bytes]) => [name, sha256(bytes)])),
     autoloader_file_sha256: Object.fromEntries([...loaderPayload].map(([name, bytes]) => [name, sha256(bytes)])),
-    installed_dependency_file_sha256: Object.fromEntries(dependencies.map(({ pin }) => [pin.name, Object.fromEntries(files(join(vendor, ...pin.name.split("/"))).map(name => [name, sha256(readFileSync(join(vendor, ...pin.name.split("/"), name)))]))])),
-    project_sha256: Object.fromEntries(files(project).filter(name => !name.startsWith("vendor/")).map(name => [name, sha256(readFileSync(join(project, name)))])),
+    installed_dependency_file_sha256: Object.fromEntries(dependencies.map(({ pin }) => [pin.name, Object.fromEntries(inventory(join(vendor, ...pin.name.split("/"))).map(name => [name, sha256(readFileSync(join(vendor, ...pin.name.split("/"), name)))]))])),
+    project_sha256: Object.fromEntries(inventory(project).filter(name => !name.startsWith("vendor/")).map(name => [name, sha256(readFileSync(join(project, name)))])),
     log_sha256: Object.fromEntries(logs.map(name => [name, sha256(readFileSync(join(output, name)))])), positive_controls_passed: true,
     independent_negative_runtime_type_controls_rejected: Object.keys(negatives).length, native_client_creation_shutdown_passed: true,
     complete_file_descriptor_comparison: true, descriptor_normalization: ["source_code_info", "Buf image tag 8042"], rust_backed_rpc_qualified: false, embedded_runtime_qualified: false };
   put("qualification.json", JSON.stringify(result, null, 2) + "\n");
   return result;
 }
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const options = Object.fromEntries(["package", "authority", "php-home", "composer", "grpc-extension", "archiver", "cache", "output"].map(name => [name, { type: "string" }]));
-  const { values } = parseArgs({ options });
-  if (Object.keys(options).some(name => !values[name])) throw new Error("all qualification paths are required");
-  const result = qualify(values); console.log(JSON.stringify({ scope: result.scope, archive_sha256: result.archive_sha256, qualification: join(resolve(values.output), "qualification.json") }, null, 2));
-}
+runCli(import.meta.url, values => {
+  const result = qualify(values);
+  return { scope: result.scope, archive_sha256: result.archive_sha256, qualification: join(resolve(values.output), "qualification.json") };
+}, ["package", "authority", "php-home", "composer", "grpc-extension", "archiver", "cache", "output"], "all qualification paths are required");

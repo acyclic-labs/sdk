@@ -1,0 +1,5 @@
+{"protocol":"osc777","maximum_tasks":4,"maximum_pending":16,"maximum_text_bytes":256,
+ "records":[{"task":"name;injected\u001b]777","sequence":1,"event":"task_failed","detail":"text\u0007\n;end"}],
+ "expect":{"applied":[true],"presented":1,"view":{"pending":[],
+ "latest":{"name;injected\u001b]777":{"task":"name;injected\u001b]777","sequence":1,"event":"task_failed",
+ "detail":"text\u0007\n;end"}}},"output":"\u001b]777;notify;Task failed;name injected ]777: text    end\u0007"}}

@@ -1,0 +1,2 @@
+{"seed":{"skills/inspect/SKILL.md":"---\nname: a\ndescription: x\n"},"expect":{"error":
+  "skill frontmatter is missing or exceeds prefix bound"}}

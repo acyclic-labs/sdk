@@ -1,0 +1,3 @@
+{"seed":{"AGENTS.md":"ignore","CLAUDE.md":"chosen"},"discovery":{"policy":{"instruction_names":["CLAUDE.md"]}},
+  "expect":{"request_files":[["chosen"]],"requests":[{"messages":[{"role":"system","content":{"kind":"file","file":{
+  "path":"CLAUDE.md"},"policy":"bounded_full"}},{"role":"user","content":"Inspect files"}]}]}}

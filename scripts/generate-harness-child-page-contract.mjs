@@ -1,17 +1,13 @@
-const fields = ["default_page"];
-
 export const rust = [["acyclic-harness", "example", "child-page-contract"]];
 
 export function render([stdout]) {
   const contract = JSON.parse(stdout);
   const actual = Object.keys(contract).sort();
-  if (JSON.stringify(actual) !== JSON.stringify([...fields].sort())) {
-    throw new Error(`Harness child-page contract field inventory drift: expected ${fields.join(",")}, got ${actual.join(",")}`);
+  if (actual.length !== 1 || actual[0] !== "default_page") {
+    throw new Error(`Harness child-page contract field inventory drift: expected default_page, got ${actual.join(",")}`);
   }
-  for (const field of fields) {
-    if (!Number.isSafeInteger(contract[field]) || contract[field] <= 0) {
-      throw new Error(`Harness child-page contract has invalid ${field}`);
-    }
+  if (!Number.isSafeInteger(contract.default_page) || contract.default_page <= 0) {
+    throw new Error("Harness child-page contract has invalid default_page");
   }
   return {
     "typescript/packages/harness/src/child-page-contract.ts": [

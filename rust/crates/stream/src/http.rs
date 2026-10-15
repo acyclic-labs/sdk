@@ -95,6 +95,15 @@ impl HttpStream {
         })
     }
     async fn request(&self, route: &'static str, bytes: Vec<u8>) -> Result<Value, StreamError> {
+        self.request_json(route, move || http_codec::encode(route, &bytes))
+            .await
+    }
+
+    async fn request_json(
+        &self,
+        route: &'static str,
+        encode: impl FnOnce() -> Result<String, &'static str> + Send,
+    ) -> Result<Value, StreamError> {
         let mut observation = HttpObservation {
             span: obs::OperationSpan::new(tracing::info_span!(
                 "acyclic.stream.http.call",
@@ -108,7 +117,10 @@ impl HttpStream {
         };
         let result = observation
             .span
-            .scope(self.request_inner(route, bytes, &observation.span))
+            .scope(async {
+                let body = encode().map_err(contract_error)?;
+                self.request_inner(route, body, &observation.span).await
+            })
             .await;
         observation.finished = true;
         obs::finish(&observation.span, result)
@@ -117,10 +129,9 @@ impl HttpStream {
     async fn request_inner(
         &self,
         route: &'static str,
-        bytes: Vec<u8>,
+        body: String,
         span: &Span,
     ) -> Result<Value, StreamError> {
-        let body = http_codec::encode(route, &bytes).map_err(contract_error)?;
         let url = self
             .endpoint
             .join(&format!("v1/stream/{route}"))
@@ -442,9 +453,11 @@ impl StreamProvider for HttpStream {
         })
     }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        let mut bytes = Vec::with_capacity(wire_codec::requests::append_len(&request));
-        wire_codec::requests::append(&mut bytes, &request);
-        parse_append(&self.request("append", bytes).await?)
+        parse_append(
+            &self
+                .request_json("append", move || http_codec::encode_append(&request))
+                .await?,
+        )
     }
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
         let source = request.source.clone();
@@ -650,5 +663,4 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "http_follow_tests.rs"]
-mod follow_tests;
+mod http_follow_tests;

@@ -77,47 +77,54 @@ pub(super) fn spec(operation_id: OperationId, cpu: u64) -> Result<OperationSpec>
     })
 }
 
-pub(super) async fn declare<P: StreamProvider>(
-    coordinator: &mut DistributedCoordinator<P>,
+#[inline(never)]
+pub(super) fn declare<'a, P: StreamProvider>(
+    coordinator: &'a mut DistributedCoordinator<P>,
     spec: OperationSpec,
-    key: &str,
-) -> Result<bool> {
-    let owner = spec.owner.authority().clone();
-    let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-    let scope = grant(&issuer, "declare", &["operation:declare"])?;
-    coordinator
-        .declare_operation(
-            &owner,
-            &scope,
-            &issuer.verifier(&mut None)?,
-            spec,
-            IdempotencyKey::new(key)?,
-            None,
-            &mut None,
-        )
-        .await
+    key: &'a str,
+) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<bool>> + 'a>> {
+    Box::pin(async move {
+        let owner = spec.owner.authority().clone();
+        let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
+        let scope = grant(&issuer, "declare", &["operation:declare"])?;
+        coordinator
+            .declare_operation(
+                &owner,
+                &scope,
+                &issuer.verifier(&mut None)?,
+                spec,
+                IdempotencyKey::new(key)?,
+                None,
+                &mut None,
+            )
+            .await
+    })
 }
 
-pub(super) async fn start<P: StreamProvider>(
-    coordinator: &mut DistributedCoordinator<P>,
-    worker: &Worker,
-    key: &str,
-) -> Result<WorkLease> {
-    let lease = coordinator
-        .pull(worker)
-        .await?
-        .ok_or_else(|| Error::NotFound("lease".into()))?;
-    coordinator
-        .apply(
-            IdempotencyKey::new(key)?,
-            SchedulerEvent::Started {
-                operation_id: lease.operation.operation_id,
-                fence: LeaseFence::from(&lease.reservation),
-            },
-            &mut None,
-        )
-        .await?;
-    Ok(lease)
+#[inline(never)]
+pub(super) fn start<'a, P: StreamProvider>(
+    coordinator: &'a mut DistributedCoordinator<P>,
+    worker: &'a Worker,
+    key: &'a str,
+) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<Box<WorkLease>>> + 'a>> {
+    Box::pin(async move {
+        let lease = match coordinator.pull(worker).await {
+            Ok(Some(lease)) => Box::new(lease),
+            Ok(None) => return Err(Error::NotFound("lease".into())),
+            Err(error) => return Err(error),
+        };
+        coordinator
+            .apply(
+                IdempotencyKey::new(key)?,
+                SchedulerEvent::Started {
+                    operation_id: lease.operation.operation_id,
+                    fence: LeaseFence::from(&lease.reservation),
+                },
+                &mut None,
+            )
+            .await?;
+        Ok(lease)
+    })
 }
 
 #[derive(Default)]
@@ -152,14 +159,17 @@ impl ContentResidencyVerifier for TestContentVerifier {
     }
 }
 
-pub(super) async fn publish<P: StreamProvider>(
-    coordinator: &mut DistributedCoordinator<P>,
-    key: &str,
+#[inline(never)]
+pub(super) fn publish<'a, P: StreamProvider>(
+    coordinator: &'a mut DistributedCoordinator<P>,
+    key: &'a str,
     event: SchedulerEvent,
-) -> Result<bool> {
-    coordinator
-        .apply(IdempotencyKey::new(key)?, event, &mut None)
-        .await
+) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<bool>> + 'a>> {
+    Box::pin(async move {
+        coordinator
+            .apply(IdempotencyKey::new(key)?, event, &mut None)
+            .await
+    })
 }
 
 pub(super) fn grant(issuer: &AuthorityIssuer, id: &str, capabilities: &[&str]) -> Result<Scope> {

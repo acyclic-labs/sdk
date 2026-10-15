@@ -25,6 +25,8 @@ mod platform;
 mod platform;
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, windows))]
+mod wait_tests;
 
 /// One child and descendants that remain in its operating-system containment.
 pub struct ProcessTree {
@@ -335,6 +337,12 @@ impl ProcessTree {
                     return Err(io::Error::other("process output was already collected"));
                 }
                 self.close_stdin();
+                #[cfg(windows)]
+                return platform::wait_for_exit(
+                    self.child.as_mut().ok_or(io::ErrorKind::NotFound)?,
+                    deadline,
+                );
+                #[cfg(unix)]
                 loop {
                     if let Some(status) = self.try_wait(None)? {
                         return Ok(status);
