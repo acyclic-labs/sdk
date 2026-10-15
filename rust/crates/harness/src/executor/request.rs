@@ -56,7 +56,8 @@ impl StockExecution<'_> {
                 span.scope(async move {
                     let result = self
                         .dispatch_model_step(journal, input, step, prior_messages, purpose)
-                        .await;
+                        .await
+                        .and_then(|events| completed_model_events(events, input.operation_id));
                     operation.record("outcome", if result.is_ok() { "ok" } else { "err" });
                     if let Err(error) = &result {
                         operation.record("error.kind", error.kind());
@@ -67,7 +68,12 @@ impl StockExecution<'_> {
             #[cfg(target_arch = "wasm32")]
             {
                 let _ = span;
-                self.dispatch_model_step(journal, input, step, prior_messages, purpose)
+                async move {
+                    let events = self
+                        .dispatch_model_step(journal, input, step, prior_messages, purpose)
+                        .await?;
+                    completed_model_events(events, input.operation_id)
+                }
             }
         })
     }
@@ -213,4 +219,14 @@ impl StockExecution<'_> {
             max_output_tokens: self.output_budget()?,
         })
     }
+}
+
+fn completed_model_events(
+    events: Vec<ModelEvent>,
+    operation_id: OperationId,
+) -> Result<Vec<ModelEvent>> {
+    if !matches!(events.last(), Some(ModelEvent::Completed { .. })) {
+        return Err(Error::Indeterminate(operation_id));
+    }
+    Ok(events)
 }

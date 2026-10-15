@@ -86,6 +86,7 @@ dependencies = [
  "axum",
  "blake3",
  "bytes",
+ "divan",
  "futures",
  "hex",
  "notify",
@@ -95,6 +96,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -130,7 +133,6 @@ dependencies = [
  "cc",
  "crc-fast",
  "diffy",
- "divan",
  "fs2",
  "fuser",
  "futures",
@@ -253,7 +255,6 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "bytes",
- "divan",
  "futures",
  "hex",
  "http",
@@ -407,7 +408,6 @@ dependencies = [
  "bytes",
  "compio-buf",
  "compio-driver",
- "divan",
  "futures-core",
  "libc",
  "pin-project-lite",
@@ -429,7 +429,6 @@ dependencies = [
  "axum",
  "blake3",
  "bytes",
- "divan",
  "fs2",
  "futures",
  "getrandom 0.4.3",

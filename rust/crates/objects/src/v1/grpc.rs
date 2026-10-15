@@ -21,14 +21,14 @@ fn put_frame(chunk: Result<OwnedBytes, Error>) -> wire::PutObjectRequest {
     wire::PutObjectRequest {
         frame: chunk
             .ok()
-            .map(|chunk| wire::put_object_request::Frame::Body(chunk.to_vec())),
+            .map(|chunk| wire::put_object_request::Frame::Body(upload::body_bytes(chunk))),
     }
 }
 fn part_frame(chunk: Result<OwnedBytes, Error>) -> wire::UploadPartRequest {
     wire::UploadPartRequest {
         frame: chunk
             .ok()
-            .map(|chunk| wire::upload_part_request::Frame::Body(chunk.to_vec())),
+            .map(|chunk| wire::upload_part_request::Frame::Body(upload::body_bytes(chunk))),
     }
 }
 
