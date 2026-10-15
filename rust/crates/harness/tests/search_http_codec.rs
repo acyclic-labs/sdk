@@ -59,6 +59,10 @@ fn corpus(exa: bool) {
         let bytes = std::fs::read(entry.unwrap().path()).unwrap();
         runtime.block_on(support::check(support::fuzz_response(&bytes), exa));
     }
+    runtime.block_on(support::check(
+        support::response(0, 1_047_552, 1, &serde_json::Value::String(String::new())),
+        exa,
+    ));
     for length in [1_048_575, 1_048_576, 1_048_577] {
         let mut bytes = support::response(0, 0, 0, &serde_json::Value::Null);
         bytes.resize(length, b' ');

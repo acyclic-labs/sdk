@@ -181,8 +181,12 @@ pub fn fuzz_response(data: &[u8]) -> Vec<u8> {
         data.get(3).copied().unwrap_or(0),
         data.get(4).copied().unwrap_or(0),
         data.get(5).copied().unwrap_or(0),
-    ]) as usize
-        % 1_048_578;
+    ]) as usize;
+    let size = if size > 1_048_576 {
+        1_048_577
+    } else {
+        size % 16_385
+    };
     response(
         depth,
         size,
