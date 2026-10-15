@@ -32,11 +32,6 @@ path = "tests/context_discovery.rs"
 required-features = ["filesystem"]
 
 [[test]]
-name = "web-search"
-path = "tests/web_search.rs"
-required-features = ["filesystem"]
-
-[[test]]
 name = "client-commands"
 path = "tests/client_commands.rs"
 required-features = ["filesystem"]

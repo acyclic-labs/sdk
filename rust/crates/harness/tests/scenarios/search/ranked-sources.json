@@ -1,0 +1,72 @@
+{
+  "prompt": "Find the current Rust release",
+  "turns": [
+    [
+      {
+        "type": "event",
+        "kind": "tool_call",
+        "call_id": "search-1",
+        "name": "web_search",
+        "arguments": {
+          "query": "Rust release",
+          "max_results": 2
+        }
+      },
+      {
+        "type": "event",
+        "kind": "completed",
+        "metadata": null
+      }
+    ],
+    "Found two sources."
+  ],
+  "max_steps": 4,
+  "replay": true,
+  "search": {
+    "configured": true,
+    "granted": true,
+    "steps": [
+      {
+        "request": {
+          "query": "Rust release",
+          "max_results": 2
+        },
+        "response": {
+          "results": [
+            {
+              "url": "https://example.com/release",
+              "title": "Release",
+              "snippet": "Current release"
+            },
+            {
+              "url": "https://example.com/notes",
+              "title": "Notes",
+              "snippet": "Release notes"
+            }
+          ]
+        }
+      }
+    ],
+    "events": [
+      "started",
+      "completed"
+    ],
+    "response": {
+      "results": [
+        {
+          "url": "https://example.com/release",
+          "title": "Release",
+          "snippet": "Current release"
+        },
+        {
+          "url": "https://example.com/notes",
+          "title": "Notes",
+          "snippet": "Release notes"
+        }
+      ]
+    }
+  },
+  "expect": {
+    "text": "Found two sources."
+  }
+}

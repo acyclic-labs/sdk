@@ -3,15 +3,16 @@ use super::{
     scenario::{self, Scenario},
 };
 use acyclic_harness::{
-    AgentId, OperationId,
+    AgentId, Capabilities, OperationId,
     context::{
         CompactionPolicy, Context, ContextPipeline, ContextPlacement, ContextStage,
         ModelTokenCount, SourceStage,
     },
-    executor::{ExecutionEvent, Executor, StockExecutor, TurnInput},
+    executor::{ExecutionEvent, ExecutionRecord, Executor, StockExecutor, TurnInput},
     filesystem::MemoryHarnessStorage,
     model::{Model, ModelContent},
-    test_support::ScriptedModelProvider,
+    runtime::RuntimeScope,
+    test_support::{ScriptedModelProvider, ScriptedSearchProvider},
     tool::ToolRegistry,
 };
 use serde_json::Value;
@@ -21,7 +22,32 @@ pub(super) async fn run(mut case: Scenario) -> TestResult {
     let limits = case.execution_limits()?;
     let storage = workspace(&case.seed).await?;
     case.seed.clear();
-    let (executor, provider, source) = configure(&mut case, limits)?;
+    let mut tools = ToolRegistry::default();
+    let search = if let Some(config) = &mut case.search {
+        let backend = Arc::new(ScriptedSearchProvider::new(std::mem::take(
+            &mut config.steps,
+        ))?);
+        if config.configured {
+            tools.register(
+                (acyclic_harness::search::web_search(backend.clone())?, None),
+                &mut None,
+                None,
+            )?;
+        }
+        Some(backend)
+    } else {
+        None
+    };
+    let (mut executor, provider, source) = configure(&mut case, limits, tools)?;
+    if let Some(config) = &case.search {
+        let grants = if config.granted {
+            vec!["tool:call:web_search"]
+        } else {
+            vec![]
+        };
+        executor = executor
+            .with_tool_authority(RuntimeScope::new(Capabilities::new(grants), limits)?, None)?;
+    }
     let input = TurnInput {
         operation_id: OperationId::new(),
         input: ModelContent::Text(case.take_instruction()?),
@@ -44,6 +70,16 @@ pub(super) async fn run(mut case: Scenario) -> TestResult {
         run_turn(&executor, provider.as_ref(), journal.as_ref(), input, &case).await?;
     }
     check_provider(&case.expect, &provider, journal.as_ref()).await?;
+    if let Some(config) = &case.search {
+        super::search::check(
+            config,
+            search.as_deref().ok_or("missing search backend")?,
+            &provider,
+            journal.as_ref(),
+            operation,
+        )
+        .await?;
+    }
     check_events(&case.expect, journal.as_ref(), operation).await?;
     check_files(&case.expect.files, &storage).await
 }
@@ -77,6 +113,7 @@ pub(super) async fn publish(
 fn configure(
     case: &mut Scenario,
     limits: acyclic_harness::conversation::Limits,
+    tools: ToolRegistry,
 ) -> acyclic_harness::Result<(StockExecutor, Arc<ScriptedModelProvider>, Option<Context>)> {
     let mut provider = ScriptedModelProvider::new(std::mem::take(&mut case.turns))
         .with_reconciliations(std::mem::take(&mut case.recoveries));
@@ -122,7 +159,7 @@ fn configure(
         )?,
         provider.clone(),
         context,
-        ToolRegistry::default(),
+        tools,
     )
     .with_compaction_policy(case.compaction.take().unwrap_or(CompactionPolicy::Disabled))
     .with_limits(limits);
@@ -283,21 +320,13 @@ async fn check_events(
 ) -> TestResult {
     if expected.events.is_some() || !expected.not_events.is_empty() {
         let mut events = Vec::new();
-        let mut after = 0;
-        loop {
-            let records = journal.replay(operation, after, 64, None)?.await?;
-            if records.is_empty() {
-                break;
+        for record in records(journal, operation).await? {
+            let mut value = serde_json::to_value(&record.event)?;
+            if let ExecutionEvent::Model { event, .. } = &record.event {
+                *value.get_mut("event").ok_or("missing model event")? =
+                    serde_json::from_slice(&journal.load(event, None)?.await?)?;
             }
-            for record in records {
-                after = record.sequence;
-                let mut value = serde_json::to_value(&record.event)?;
-                if let ExecutionEvent::Model { event, .. } = &record.event {
-                    *value.get_mut("event").ok_or("missing model event")? =
-                        serde_json::from_slice(&journal.load(event, None)?.await?)?;
-                }
-                events.push(value);
-            }
+            events.push(value);
         }
         if let Some(expected) = &expected.events {
             matchers::ordered(expected, &events, "events")?;
@@ -312,6 +341,22 @@ async fn check_events(
         }
     }
     Ok(())
+}
+
+pub(super) async fn records(
+    journal: &dyn acyclic_harness::executor::ExecutionJournal,
+    operation: OperationId,
+) -> TestResult<Vec<ExecutionRecord>> {
+    let mut records = Vec::new();
+    let mut after = 0;
+    loop {
+        let page = journal.replay(operation, after, 64, None)?.await?;
+        if page.is_empty() {
+            return Ok(records);
+        }
+        after = page.last().ok_or("empty event page")?.sequence;
+        records.extend(page);
+    }
 }
 
 pub(super) async fn check_files(

@@ -4,6 +4,7 @@ mod drivers;
 mod execution;
 mod matchers;
 mod scenario;
+mod search;
 use acyclic_harness::context::CompactionPolicy;
 use execution::run;
 use futures::{StreamExt as _, stream};

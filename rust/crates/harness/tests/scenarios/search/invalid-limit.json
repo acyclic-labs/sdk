@@ -1,0 +1,33 @@
+{
+  "prompt": "Search",
+  "turns": [
+    [
+      {
+        "type": "event",
+        "kind": "tool_call",
+        "call_id": "invalid",
+        "name": "web_search",
+        "arguments": {
+          "query": "test",
+          "max_results": 0
+        }
+      },
+      {
+        "type": "event",
+        "kind": "completed",
+        "metadata": null
+      }
+    ]
+  ],
+  "max_steps": 4,
+  "replay": false,
+  "search": {
+    "configured": true,
+    "granted": true,
+    "steps": [],
+    "events": []
+  },
+  "expect": {
+    "error": "tool input failed validation"
+  }
+}

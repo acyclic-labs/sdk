@@ -1,0 +1,17 @@
+{
+  "prompt": "What tools are available?",
+  "turns": [
+    "Search is unavailable."
+  ],
+  "max_steps": 4,
+  "replay": true,
+  "search": {
+    "configured": false,
+    "granted": true,
+    "steps": [],
+    "events": []
+  },
+  "expect": {
+    "text": "Search is unavailable."
+  }
+}
