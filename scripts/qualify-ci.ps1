@@ -179,3 +179,39 @@ cargo build --offline --locked -p acyclic-actors --example conformance-certifica
 bun test --isolate --reporter=junit `
     --reporter-outfile="$env:SDK_TEMP_DIR/observability/bun-test.xml" typescript/packages
 bun run --filter '@acyclic-labs/fs' test:composition
+
+# The installed host creates the real local provider scenario; pipes here are
+# process E2E evidence, not a claim that an interactive PTY was exercised.
+$GraphcoderInstall = Join-Path $env:SDK_TEMP_DIR 'graphcoder-installed'
+$GraphcoderScenario = Join-Path $env:SDK_TEMP_DIR ("graphcoder-" + [Guid]::NewGuid().ToString('N'))
+cargo install --path rust/crates/harness --locked `
+    --features terminal,filesystem-local,native-execution --bin graphcoder `
+    --root $GraphcoderInstall --target-dir "$CargoTargetDir-release"
+node scripts/test-graphcoder.mjs (Join-Path $GraphcoderInstall 'bin/graphcoder.exe') `
+    --full $GraphcoderScenario
+node scripts/test-graphcoder-pty.mjs (Join-Path $GraphcoderInstall 'bin/graphcoder.exe') `
+    --fresh "$GraphcoderScenario-pty" --evidence "$GraphcoderScenario-pty-output"
+
+# Exact external-host lockfile inputs; every test uses this source-built CLI.
+$PiHosts = (Resolve-Path 'plugin/tests/hosts').Path
+cargo build -p acyclic-plugin --bin acyclic --locked
+$env:ACYCLIC_BINARY = Join-Path $CargoTargetDir 'debug/acyclic.exe'
+$env:ACYCLIC_PI_TEST_NODE = (Get-Command node).Source
+$env:ACYCLIC_PI_TEST_CLI = Join-Path $PiHosts 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js'
+$env:ACYCLIC_PI_TEST_PROVIDER_DIR = $PiHosts
+Push-Location $PiHosts
+try {
+    npm ci --ignore-scripts --no-audit --no-fund
+    bun run test:pi-context
+    bun run test:pi-context-mail
+    bun run test:pi-bootstrap
+    bun run test:pi-session
+    bun run test:pi-installation
+    bun run test:pi-service
+    bun run test:pi-native-recursive
+    bun run test:pi-context-fresh
+    bun run test:pi-context-pages
+    bun run test:pi-builtin-paths
+} finally {
+    Pop-Location
+}

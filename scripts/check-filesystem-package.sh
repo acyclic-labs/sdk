@@ -17,6 +17,10 @@ trap 'status=$?; rm -rf -- "$work"; exit "$status"' EXIT
 
 npm_stage="$work/npm-package"
 bash "$root/scripts/stage-npm-package.sh" "$root/typescript/packages/filesystem" "$npm_stage"
+observer_stage="$work/observer-package"
+bash "$root/scripts/stage-npm-package.sh" "$root/typescript/packages/actors" "$observer_stage"
+(cd "$observer_stage" && bun pm pack --ignore-scripts --filename acyclic-observe.tgz --quiet)
+mv "$observer_stage/acyclic-observe.tgz" "$work/acyclic-observe.tgz"
 cd "$npm_stage"
 # The caller already compiled and tested these JavaScript/WASM files; pack those exact bytes.
 bun pm pack --ignore-scripts --filename "$work/acyclic-fs.tgz" --quiet
@@ -27,6 +31,7 @@ cd "$work/package"
 # The archive is tested as an isolated npm consumer. Install its declared
 # runtime dependencies before importing the generated adapters; the repository
 # workspace's node_modules is intentionally outside this extracted package.
+bun -e 'const fs = require("node:fs"); const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")); manifest.overrides = { ...manifest.overrides, "@acyclic-labs/actors": "file:../acyclic-observe.tgz" }; fs.writeFileSync("package.json", JSON.stringify(manifest));'
 bun install --ignore-scripts --no-save --no-progress
 timeout 30s bun test/node-memory.mjs
 # Prove that the isolated consumer used the archived WASM, not a workspace fallback.
@@ -43,15 +48,16 @@ cd "$root"
 metadata="$(cargo metadata --locked --no-deps --format-version 1)"
 package_target="$work/package-target"
 cargo package --locked --all-features --no-verify --allow-dirty --target-dir "$package_target" \
-  -p acyclic-native-runtime -p acyclic-objects -p acyclic-stream -p acyclic-fs
+  -p acyclic-native-runtime -p acyclic-grpc-observability -p acyclic-objects -p acyclic-stream -p acyclic-fs
 archives="$(printf '%s' "$metadata" | bun -e '
 const metadata = await Bun.stdin.json();
-for (const name of ["acyclic-native-runtime", "acyclic-objects", "acyclic-stream", "acyclic-fs"]) {
+for (const name of ["acyclic-native-runtime", "acyclic-grpc-observability", "acyclic-objects", "acyclic-stream", "acyclic-fs"]) {
   const packages = metadata.packages.filter(item => item.name === name);
   if (packages.length !== 1) throw new Error(`ambiguous package ${name}`);
   console.log(`${name}-${packages[0].version}.crate`);
 }')"
 runtime_version="$(printf '%s' "$metadata" | bun -e 'const m=await Bun.stdin.json(); console.log(m.packages.find(p=>p.name==="acyclic-native-runtime").version)')"
+observability_version="$(printf '%s' "$metadata" | bun -e 'const m=await Bun.stdin.json(); console.log(m.packages.find(p=>p.name==="acyclic-grpc-observability").version)')"
 objects_version="$(printf '%s' "$metadata" | bun -e 'const m=await Bun.stdin.json(); console.log(m.packages.find(p=>p.name==="acyclic-objects").version)')"
 stream_version="$(printf '%s' "$metadata" | bun -e 'const m=await Bun.stdin.json(); console.log(m.packages.find(p=>p.name==="acyclic-stream").version)')"
 fs_version="$(printf '%s' "$metadata" | bun -e 'const m=await Bun.stdin.json(); console.log(m.packages.find(p=>p.name==="acyclic-fs").version)')"
@@ -61,16 +67,19 @@ while IFS= read -r archive; do
 done <<< "$archives"
 mkdir -p "$work/crates/.cargo"
 runtime_path="$work/crates/acyclic-native-runtime-$runtime_version"
+observability_path="$work/crates/acyclic-grpc-observability-$observability_version"
 objects_path="$work/crates/acyclic-objects-$objects_version"
 stream_path="$work/crates/acyclic-stream-$stream_version"
 if [[ "$(bun -e 'process.stdout.write(process.platform)')" == "win32" ]]; then
   runtime_path="$(bash "$root/scripts/native-tool-path.sh" "$runtime_path")"
+  observability_path="$(bash "$root/scripts/native-tool-path.sh" "$observability_path")"
   objects_path="$(bash "$root/scripts/native-tool-path.sh" "$objects_path")"
   stream_path="$(bash "$root/scripts/native-tool-path.sh" "$stream_path")"
 fi
 cat >"$work/crates/.cargo/config.toml" <<EOF
 [patch.crates-io]
 acyclic-native-runtime = { path = "$runtime_path" }
+acyclic-grpc-observability = { path = "$observability_path" }
 acyclic-objects = { path = "$objects_path" }
 acyclic-stream = { path = "$stream_path" }
 EOF

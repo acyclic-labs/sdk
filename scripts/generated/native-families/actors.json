@@ -19,7 +19,7 @@
     "buf.yaml",
     "bun.lock",
     "package.json",
-    "patches/napi-rs-cli-3.10.5.patch",
+    "patches/napi-rs-cli-3.10.8.patch",
     "rust-toolchain.toml",
     "rust/crates/actors",
     "rust/crates/actors-napi",

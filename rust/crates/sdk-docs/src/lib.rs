@@ -293,14 +293,8 @@ impl From<serde_json::Error> for Error {
     }
 }
 
-/// Build a stable public data projection from one or more typed rustdoc JSON files.
-pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
-    build_data_inner(input, None, &[])
-}
-
-/// Project Cargo-owned binary guides alongside public library APIs, retaining
-/// the current source's candidate publication status.
-pub fn build_data_with_binaries(
+/// Projects public library APIs and Cargo-owned binary guides.
+pub fn build_data(
     input: &BuildInput,
     binaries: &[historical::BinaryInput],
 ) -> Result<DocsData, Error> {
@@ -3314,7 +3308,7 @@ mod tests {
             generated_sources: Vec::new(),
             mark_latest: false,
         };
-        let data = build_data(&input).expect("inherited local trait fixture should build");
+        let data = build_data(&input, &[]).expect("inherited local trait fixture should build");
         let family = &data.families[0];
         let inherited = family
             .items
@@ -3352,7 +3346,7 @@ mod tests {
             serde_json::to_vec(&external_trait).expect("negative fixture should serialize"),
         )
         .expect("negative fixture should be writable");
-        let error = build_data(&input).expect_err("foreign inherited member must be rejected");
+        let error = build_data(&input, &[]).expect_err("foreign inherited member must be rejected");
         let message = error.to_string();
         assert!(message.contains("does not resolve to the crate root"));
         assert!(message.contains("String::default"));
@@ -4050,8 +4044,8 @@ mod tests {
             generated_sources: Vec::new(),
             mark_latest: false,
         };
-        let first = build_data(&input).expect("typed fixture should build");
-        let second = build_data(&input).expect("typed fixture should build deterministically");
+        let first = build_data(&input, &[]).expect("typed fixture should build");
+        let second = build_data(&input, &[]).expect("typed fixture should build deterministically");
         assert_eq!(first, second);
         assert_eq!(
             first.packages.entries,
@@ -4067,26 +4061,26 @@ mod tests {
         preview_input.channel = Channel::Preview;
         preview_input.source_state = "working-tree".into();
         preview_input.source_sha256 = None;
-        let preview = build_data(&preview_input).expect("preview fixture should build");
+        let preview = build_data(&preview_input, &[]).expect("preview fixture should build");
         assert_eq!(preview.version, "feature-preview");
         assert_eq!(preview.packages.entries[0].version, "1.0.0");
         let mut escaped_source_root = input.clone();
         escaped_source_root.package_metadata[0].rustdoc_source_root =
             Some(root.parent().unwrap().to_path_buf());
-        let error = build_data(&escaped_source_root)
+        let error = build_data(&escaped_source_root, &[])
             .expect_err("an explicit owner source root must stay inside captured source");
         assert!(error.to_string().contains("source root escapes"));
         let mut mismatched_metadata = input.clone();
         mismatched_metadata.package_metadata[0].crate_name = "different-crate".into();
         let error =
-            build_data(&mismatched_metadata).expect_err("Cargo crate identity mismatch must fail");
+            build_data(&mismatched_metadata, &[]).expect_err("Cargo crate identity mismatch must fail");
         assert!(error
             .to_string()
             .contains("Cargo metadata names different-crate"));
         let mut missing_metadata = input.clone();
         missing_metadata.package_metadata[0].version.clear();
         let error =
-            build_data(&missing_metadata).expect_err("missing Cargo package version must fail");
+            build_data(&missing_metadata, &[]).expect_err("missing Cargo package version must fail");
         assert!(error
             .to_string()
             .contains("requires package name, crate name, and version"));
@@ -4102,7 +4096,7 @@ mod tests {
             .any(|entry| entry.id == "item:demo:4" && entry.text.contains("links")));
         let mut changed_source = input.clone();
         changed_source.source_sha256 = Some(format!("sha256:{}", "c".repeat(64)));
-        let changed = build_data(&changed_source).expect("source identity should be retained");
+        let changed = build_data(&changed_source, &[]).expect("source identity should be retained");
         assert_ne!(first.source.source_sha256, changed.source.source_sha256);
 
         let mut alias_graph = fixture.clone();
@@ -4279,7 +4273,7 @@ mod tests {
         let mut missing_version_input = input.clone();
         missing_version_input.rustdoc_files = vec![missing_version_path.clone()];
         missing_version_input.package_metadata[0].rustdoc_file = missing_version_path;
-        let error = build_data(&missing_version_input)
+        let error = build_data(&missing_version_input, &[])
             .expect_err("release rustdoc without crate version must fail");
         assert!(error.to_string().contains("does not declare crate version"));
         let family = &first.families[0];
@@ -4382,7 +4376,7 @@ mod tests {
         let mut mismatched_input = input;
         mismatched_input.rustdoc_files = vec![mismatched_path.clone()];
         mismatched_input.package_metadata[0].rustdoc_file = mismatched_path;
-        let error = build_data(&mismatched_input).expect_err("crate version mismatch must fail");
+        let error = build_data(&mismatched_input, &[]).expect_err("crate version mismatch must fail");
         assert!(error.to_string().contains("reports crate version 9.9.9"));
         fs::remove_dir_all(root).expect("fixture directory should be removable");
     }

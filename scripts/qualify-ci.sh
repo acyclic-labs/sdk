@@ -139,6 +139,45 @@ fork_join_conformance() {
     --ignored --test-threads=1 --skip support::
 }
 
+# Exercise the installed native host against its real local providers, not a
+# test-only coordinator. The script records binary, suite and scenario evidence.
+installed_graphcoder() {
+  local install_root="$SDK_TEMP_DIR/graphcoder-installed" scenario_parent
+  scenario_parent="$(mktemp -d "$SDK_TEMP_DIR/graphcoder.XXXXXXXX")"
+  cargo install --path rust/crates/harness --locked \
+    --features terminal,filesystem-local,native-execution --bin graphcoder \
+    --root "$install_root" --target-dir "$target_dir-release"
+  node scripts/test-graphcoder.mjs "$install_root/bin/graphcoder" \
+    --full "$scenario_parent/scenario"
+  node scripts/test-graphcoder-pty.mjs "$install_root/bin/graphcoder" \
+    --fresh "$scenario_parent/pty-scenario" --evidence "$scenario_parent/pty-output"
+}
+
+# Keep external-host inputs pinned and exercise the source-built CLI, including
+# native lost-ack recovery and cancellation against the real installed Pi host.
+pinned_pi() {
+  local hosts="$PWD/plugin/tests/hosts" binary="$target_dir/debug/acyclic"
+  cargo build -p acyclic-plugin --bin acyclic --locked
+  export ACYCLIC_BINARY="$binary"
+  export ACYCLIC_PI_TEST_NODE="$(command -v node)"
+  export ACYCLIC_PI_TEST_CLI="$hosts/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"
+  export ACYCLIC_PI_TEST_PROVIDER_DIR="$hosts"
+  (
+    cd "$hosts"
+    npm ci --ignore-scripts --no-audit --no-fund
+    bun run test:pi-context
+    bun run test:pi-context-mail
+    bun run test:pi-bootstrap
+    bun run test:pi-session
+    bun run test:pi-installation
+    bun run test:pi-service
+    bun run test:pi-native-recursive
+    bun run test:pi-context-fresh
+    bun run test:pi-context-pages
+    bun run test:pi-builtin-paths
+  )
+}
+
 case "$lane" in
   gate)
     nextest --workspace --all-features --locked
@@ -234,6 +273,8 @@ case "$lane" in
     bash scripts/check-inference-package.sh "$SDK_ARTIFACT_DIR/packages/inference"
     bash scripts/check-machines-package.sh "$SDK_ARTIFACT_DIR/packages/machines"
     finish napi
+    installed_graphcoder
+    pinned_pi
     stream_binding
     client_bindings
     # Warm the three isolated WASM targets concurrently; the complete workspace
@@ -343,6 +384,18 @@ case "$lane" in
       [[ "$(wasm-bindgen-test-runner --version)" == "wasm-bindgen-test-runner 0.2.117" ]]
     fi
     export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner
+    harness_tests() {
+      cargo test -p acyclic-harness --locked "$@" 2>&1 | tee "$observability/harness-tests.log"
+      grep -Eq 'test result: ok\. [1-9][0-9]* passed;' "$observability/harness-tests.log"
+    }
+    for suite in filesystem::default_tools::tests:: memory_store::tests::; do
+      CHROMEDRIVER="$(command -v chromedriver)" \
+        harness_tests --features browser --target wasm32-unknown-unknown --lib "$suite"
+    done
+    CHROMEDRIVER="$(command -v chromedriver)" \
+      harness_tests --features wasm,filesystem --target wasm32-unknown-unknown \
+        --test client_public_consumer identical_public_harness_trace
+    harness_tests --features filesystem --test client_public_consumer identical_public_harness_trace
     CHROMEDRIVER="$(command -v chromedriver)" \
       cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked
     CHROMEDRIVER="$(command -v chromedriver)" \
@@ -377,6 +430,7 @@ case "$lane" in
     browser_pids=()
     # Each driver owns its server and profile; overlap their browser cleanup.
     browser_qualification fs bun run --filter '@acyclic-labs/fs' test:browser & browser_pids+=("$!")
+    browser_qualification compaction bun typescript/packages/filesystem/test/browser-qualify.mjs ../harness/test/browser-compaction.html & browser_pids+=("$!")
     browser_qualification mcp bun run --filter '@acyclic-labs/harness' test:browser:mcp & browser_pids+=("$!")
     browser_qualification client bun run --filter '@acyclic-labs/harness' test:client:browser & browser_pids+=("$!")
     browser_status=0
@@ -384,6 +438,22 @@ case "$lane" in
       if wait "$browser_pid"; then :; else browser_status=1; fi
     done
     if (( browser_status != 0 )); then exit "$browser_status"; fi
+    ;;
+  typescript)
+    # Family admission resolves the locked Cargo graph offline before WASM
+    # compilation, so a cold runner needs the dependency index and crates first.
+    cargo fetch --locked
+    # Pull requests and main pushes only; full runs cover this in the linux
+    # lane. As there, check:generated runs after `bun run test` has built the
+    # uncommitted packages. It compares tracked surfaces with immutable HEAD
+    # blobs and validates freshly generated runtimes for all six packages.
+    source scripts/ensure-bun.sh
+    wasm_bindgen_bin="$(bash scripts/ensure-wasm-bindgen.sh)"
+    export PATH="$(dirname "$wasm_bindgen_bin"):$PATH"
+    bun install --frozen-lockfile
+    client_bindings
+    bun run test
+    bun run check:generated
     ;;
   linux-arm64)
     if ! command -v cc >/dev/null || ! command -v unzip >/dev/null || \
@@ -397,6 +467,8 @@ case "$lane" in
     nextest --workspace --all-features --locked
     cargo test --workspace --all-features --locked --doc
     native_mount_tests
+    installed_graphcoder
+    pinned_pi
     ;;
   linux-arm64-bindings)
     if ! command -v cc >/dev/null || ! command -v unzip >/dev/null || \
@@ -432,6 +504,8 @@ case "$lane" in
     CARGO_BUILD_JOBS=8 nextest --workspace --all-features --locked
     CARGO_BUILD_JOBS=8 cargo test --workspace --all-features --locked --doc
     finish_macos
+    installed_graphcoder
+    pinned_pi
     stream_binding
     client_bindings
     native_mount_tests
