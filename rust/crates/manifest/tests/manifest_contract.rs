@@ -49,14 +49,21 @@ proptest! {
 
     /// Canonical Rust values survive JSON admission with identical grants and selections.
     #[test]
-    fn admitted_rust_json_round_trip(count in 1usize..=64, expiry in any::<u64>()) {
+    fn admitted_rust_json_round_trip(count in 1usize..=64, expiry in any::<u64>(), worker in any::<bool>(), quota in 1u32..=u32::MAX) {
         let mut manifest = scaled(count).map_err(|e| TestCaseError::fail(e.to_string()))?;
         manifest.environments[0].grants[0].limits = Some(Limits {
             rps: Some(expiry), burst: None, bytes_per_s: None, channels: None,
             concurrency: None, bytes: None, spend_micros: None, tokens: None,
         }.into());
+        if worker {
+            manifest.environments[0].entries[0].runtime = EntryRuntime::Worker { limits: WorkerLimits { cpu_millis:quota, memory_bytes:quota, timeout_millis:quota } };
+        }
         validate(&manifest)?;
-        prop_assert_eq!(parse(&serde_json::to_vec(&manifest)?)?, manifest);
+        prop_assert_eq!(parse(&serde_json::to_vec(&manifest)?)?, &manifest);
+        if worker {
+            manifest.environments[0].entries[0].runtime = EntryRuntime::Worker { limits: WorkerLimits { cpu_millis:0, memory_bytes:quota, timeout_millis:quota } };
+            prop_assert!(validate(&manifest).is_err());
+        }
     }
 
     /// The real validator's visited-byte/node/edge count grows at most linearly.
