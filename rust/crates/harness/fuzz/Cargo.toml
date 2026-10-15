@@ -7,13 +7,24 @@ edition = "2024"
 [package.metadata]
 cargo-fuzz = true
 
+[workspace]
+
+[profile.dev]
+opt-level = 3
+debug-assertions = true
+
 [dependencies]
 libfuzzer-sys = "0.4"
 acyclic-harness = { path = "..", features = ["filesystem", "search-http", "test-support"] }
 acyclic-fs = { path = "../../filesystem", default-features = false, features = ["memory"] }
 acyclic-stream = { path = "../../stream" }
+bytes = "1"
+rmcp = { version = "=3.5.1", default-features = false, features = ["client", "transport-async-rw"] }
+serde = "1"
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "time", "net"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+which = "=8.0.6"
 
 [[bin]]
 name = "search_http_codec"
@@ -22,4 +33,16 @@ test = false
 doc = false
 bench = false
 
-[workspace]
+[[bin]]
+name = "mcp_stdio_codec"
+path = "fuzz_targets/mcp_stdio_codec.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mcp_executable"
+path = "fuzz_targets/mcp_executable.rs"
+test = false
+doc = false
+bench = false

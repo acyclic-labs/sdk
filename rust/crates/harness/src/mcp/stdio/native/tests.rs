@@ -291,12 +291,7 @@ async fn one_session_discovers_installs_calls_and_reconciles_without_replay() ->
     let (transport, server) = fixture("success").await?;
     let transport = Arc::new(transport);
     let listed = transport
-        .rpc(
-            OperationId::from_bytes([1; 16]),
-            "tools/list",
-            json!({}),
-            None,
-        )
+        .list_tools(OperationId::from_bytes([1; 16]), None)
         .await?;
     let catalog = McpCatalog {
         server: "configured".into(),
@@ -304,13 +299,7 @@ async fn one_session_discovers_installs_calls_and_reconciles_without_replay() ->
         schema_exposure: McpSchemaExposure::Eager,
         discovery: McpDiscoveryPolicy::Disabled,
         projection_schema: crate::tool::json_projection_schema(json!({})),
-        tools: serde_json::from_value(
-            listed
-                .get("tools")
-                .cloned()
-                .ok_or_else(|| invalid("tools missing"))?,
-        )
-        .map_err(invalid)?,
+        tools: listed.tools.into_iter().map(Into::into).collect(),
     };
     let remote: Arc<dyn McpToolTransport> = transport.clone();
     let projection: Arc<dyn ToolProjection> = Arc::new(JsonToolProjection);
@@ -392,7 +381,7 @@ async fn lost_invalid_oversize_and_late_responses_never_redispatch() -> Result<(
 
 #[test]
 fn frame_limits_apply_both_directions_without_retaining_a_partial_request() -> Result<()> {
-    let mut codec = BoundedCodec::<Value>::new(16);
+    let mut codec = BoundedCodec::<Value>::new(Arc::new(AtomicU32::new(16)));
     let mut bytes = BytesMut::from(b"prior\n".as_slice());
     assert!(codec.encode(json!("x".repeat(32)), &mut bytes).is_err());
     assert_eq!(bytes.as_ref(), b"prior\n");
@@ -408,6 +397,38 @@ fn frame_limits_apply_both_directions_without_retaining_a_partial_request() -> R
     bytes.extend_from_slice(&[b'x'; 17]);
     assert!(codec.decode(&mut bytes).is_err());
     Ok(())
+}
+
+// Property: arbitrary admitted JSON survives every generated chunking and a bound
+// transition; rejected encoding never changes an already buffered prefix.
+proptest::proptest! {
+    #[test]
+    fn codec_round_trips_chunked_json_and_rejects_atomically(
+        text in ".{0,512}", number in proptest::prelude::any::<i64>(), chunk_size in 1usize..64,
+    ) {
+        let value = json!({"text":text,"number":number});
+        let size = serde_json::to_vec(&value).unwrap().len() as u32;
+        let bound = Arc::new(AtomicU32::new(1));
+        let mut codec = BoundedCodec::<Value>::new(Arc::clone(&bound));
+        bound.store(size, Ordering::Release);
+        let mut encoded = BytesMut::new();
+        codec.encode(value.clone(), &mut encoded).unwrap();
+        let mut pending = BytesMut::new();
+        let mut decoded = None;
+        for chunk in encoded.chunks(chunk_size) {
+            pending.extend_from_slice(chunk);
+            if let Some(message) = codec.decode(&mut pending).unwrap() {
+                proptest::prop_assert!(decoded.is_none());
+                decoded = Some(message);
+            }
+        }
+        proptest::prop_assert_eq!(decoded, Some(value.clone()));
+        bound.store(size - 1, Ordering::Release);
+        let prefix = BytesMut::from(b"prior\n".as_slice());
+        let mut rejected = prefix.clone();
+        proptest::prop_assert!(codec.encode(value, &mut rejected).is_err());
+        proptest::prop_assert_eq!(rejected, prefix);
+    }
 }
 
 #[tokio::test]

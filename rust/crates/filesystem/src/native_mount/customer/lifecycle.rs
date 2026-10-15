@@ -1,5 +1,8 @@
 use super::*;
 
+/// Runs one session control on the source's original meter, which its
+/// callbacks share. A control on any other meter cannot run the invalidator,
+/// so it could never see its changes settle.
 pub(crate) fn with_session_work(
     session: &Mutex<Option<NativeMountSession>>,
     source: &dyn MountFilesystem,

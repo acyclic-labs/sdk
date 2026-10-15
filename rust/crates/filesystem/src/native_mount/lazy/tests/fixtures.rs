@@ -235,6 +235,8 @@ pub(super) async fn keeps_a_reused_identity_apart(
     }
     if !reused {
         eprintln!("the host did not reuse the identity ({watched:?}); nothing to check");
+        // An open handle keeps the mount busy, so unmount would only detach it.
+        drop(held);
         live.unmount().await?;
         return Ok(());
     }

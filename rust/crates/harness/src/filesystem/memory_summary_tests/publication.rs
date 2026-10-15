@@ -8,7 +8,7 @@ use super::*;
 async fn summary_fork_captures_private_payloads_and_binds_publication() -> Result<()> {
     let agent = AgentId::new();
     let storage = MemoryHarnessStorage::new(agent, 262_144).await?;
-    let model = Arc::new(SummaryModel::default());
+    let model = Arc::new(summary_model(5));
     let limits = Limits {
         context_messages: 8,
         ..Limits::default()
@@ -43,14 +43,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
             .run_conversation(&bundle, last, input, Vec::new(), 1)
             .await?;
     }
-    assert_eq!(
-        model
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len(),
-        3
-    );
+    assert_eq!(model.dispatches().len(), 3);
     {
         let aggregate = storage.journal.conversation_projection(limits).await?;
         let conversation = aggregate
@@ -83,6 +76,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     storage
         .run_conversation(&bundle, later, later_input, Vec::new(), 1)
         .await?;
+    assert_eq!(model.remaining(), 0);
     let later_checkpoint = crate::executor::canonical_checkpoint_for_operation(
         storage.journal.as_ref(),
         later,
@@ -688,7 +682,7 @@ async fn assert_summary_child_import(
         )
         .await?,
     );
-    let model = Arc::new(SummaryModel::default());
+    let model = Arc::new(summary_model(1));
     let executor = StockExecutor::new(
         Model::new(
             "synthetic".into(),
@@ -723,22 +717,22 @@ async fn assert_summary_child_import(
         max_steps: 1,
     };
     let output = executor.execute(input.clone(), &journal).await?;
-    let completed_requests = model
-        .0
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .len();
+    let completed_requests = model.dispatches().len();
     assert_eq!(executor.execute(input.clone(), &journal).await?, output);
-    let requests = model
-        .0
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut requests = model.requests();
     assert_eq!(requests.len(), completed_requests);
-    let request = requests
-        .last()
-        .ok_or_else(|| Error::Invalid("child made no model request".into()))?;
+    assert_eq!(model.remaining(), 0);
+    let request = PreparedModelRequest::prepare(
+        requests
+            .pop()
+            .ok_or_else(|| Error::Invalid("child made no model request".into()))?,
+        limits,
+        None,
+    )?;
     let capacity = model.context_capacity(&request.request().model)?;
-    let input_tokens = model.count_tokens(request)?.validate(request, &mut None)?;
+    let input_tokens = model
+        .count_tokens(&request)?
+        .validate(&request, &mut None)?;
     assert!(input_tokens + u64::from(capacity.output_tokens) <= u64::from(capacity.context_tokens));
     assert_eq!(
         request.request().messages.get(..captured.messages.len()),

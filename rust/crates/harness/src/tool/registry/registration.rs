@@ -21,6 +21,17 @@ impl ToolRegistry {
         custody: &mut crate::NativeCustody,
         work: crate::NativeWork<'_>,
     ) -> Result<()> {
+        self.register_checked(tool, custody, work, &|| Ok(()))
+    }
+
+    pub(crate) fn register_checked(
+        &mut self,
+        tool: (Tool, crate::NativeCustody),
+        custody: &mut crate::NativeCustody,
+        work: crate::NativeWork<'_>,
+        check: &impl Fn() -> Result<()>,
+    ) -> Result<()> {
+        check()?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut tool = tool;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -37,7 +48,10 @@ impl ToolRegistry {
             let io = owned_io.as_ref();
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
             let io: Option<&crate::executor::PreparationIo> = None;
-            crate::executor::with_history_io(io, |work| tool.definition.validate(work))?;
+            crate::executor::with_history_io(io, |work| {
+                tool.definition.validate_checked(work, check)
+            })?;
+            check()?;
             self.admit_version_slot(io)?;
             let key = (
                 crate::executor::stock_string_copy(&tool.definition.name, io)?,
