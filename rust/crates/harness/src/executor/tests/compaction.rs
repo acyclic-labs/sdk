@@ -602,7 +602,7 @@ async fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled()
 
 #[tokio::test]
 async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<()> {
-    let provider = Arc::new(ScriptedModel::recoverable());
+    let provider = Arc::new(recoverable_model(1));
     let executor = uncompacted_executor(
         Model::new("test".into(), "summary".into(), "1".into(), Value::Null)?,
         provider.clone(),
@@ -635,7 +635,7 @@ async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<(
             .await
             .is_err()
     );
-    assert_eq!(provider.reconciliations.load(Ordering::SeqCst), 0);
+    assert_eq!(provider.reconciliations().len(), 0);
     let summary = executor
         .summarize(&journal, operation, source.clone(), instruction.clone())
         .await?;
@@ -653,14 +653,14 @@ async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<(
             .await?,
         summary
     );
-    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
-    assert_eq!(provider.reconciliations.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.requests().len(), 1);
+    assert_eq!(provider.reconciliations().len(), 1);
     Ok(())
 }
 
 #[tokio::test]
 async fn summary_and_response_reconcile_inside_one_parent_execution() -> Result<()> {
-    let provider = Arc::new(ScriptedModel::recoverable());
+    let provider = Arc::new(recoverable_model(2));
     let executor = uncompacted_executor(
         Model::new("test".into(), "summary".into(), "1".into(), Value::Null)?,
         provider.clone(),
@@ -710,7 +710,7 @@ async fn summary_and_response_reconcile_inside_one_parent_execution() -> Result<
             .await
             .is_err()
     );
-    assert_eq!(provider.reconciliations.load(Ordering::SeqCst), 0);
+    assert_eq!(provider.reconciliations().len(), 0);
     let summary = executor
         .summarize_in_turn(&journal, &parent, 0, source.clone(), instruction.clone())
         .await?;
@@ -733,8 +733,8 @@ async fn summary_and_response_reconcile_inside_one_parent_execution() -> Result<
             .await?,
         summary
     );
-    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
-    assert_eq!(provider.reconciliations.load(Ordering::SeqCst), 2);
+    assert_eq!(provider.requests().len(), 2);
+    assert_eq!(provider.reconciliations().len(), 2);
     let (_, admissions, _) = replay_execution(
         &journal,
         parent.operation_id,

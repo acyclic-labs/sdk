@@ -4,10 +4,7 @@ use super::HistoryIo;
 
 use crate::{Error, Result};
 
-use acyclic_fs::{
-    NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError,
-    NativeWorkReservation, WorkCounters,
-};
+use acyclic_fs::{NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError};
 
 /// Moves an actual SDK output claim into this observer without another claim or a cancellation check.
 pub(crate) fn adopt_native_sdk_output<T>(
@@ -76,9 +73,9 @@ pub(crate) fn native_sdk_result<T>(
     }
 }
 
-#[cfg(feature = "native-execution")]
+#[cfg(any(feature = "native-execution", test))]
 mod completion;
-#[cfg(feature = "native-execution")]
+#[cfg(any(feature = "native-execution", test))]
 pub(crate) use completion::AcceptedCompletionIo;
 #[cfg(test)]
 mod tests;

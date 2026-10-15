@@ -23,6 +23,8 @@ pub struct HostStat {
     pub volume_serial_number: u32,
     #[cfg(unix)]
     created: Option<cap_std::time::SystemTime>,
+    #[cfg(unix)]
+    handle: Option<[u8; 32]>,
 }
 #[cfg(unix)]
 impl std::fmt::Debug for HostStat {
@@ -146,7 +148,11 @@ impl HostStat {
         let created = None;
         #[cfg(target_os = "macos")]
         let created = unix_time(raw.st_birthtime, raw.st_birthtime_nsec).ok();
-        Ok(Self { raw, created })
+        Ok(Self {
+            raw,
+            created,
+            handle: None,
+        })
     }
     #[cfg(target_os = "linux")]
     pub(super) fn from_statx(stat: rustix::fs::Statx) -> Self {
@@ -171,7 +177,25 @@ impl HostStat {
         } else {
             None
         };
-        Self { raw, created }
+        Self {
+            raw,
+            created,
+            handle: None,
+        }
+    }
+    /// A digest of the object's kernel file handle, which names its inode
+    /// and, unlike the inode number, that inode's generation: a file
+    /// created on a removed one's inode gets another, even within one tick
+    /// of the birth time. `None` where the file system issues no handles.
+    #[cfg(unix)]
+    #[must_use]
+    pub const fn handle(&self) -> Option<&[u8; 32]> {
+        self.handle.as_ref()
+    }
+    #[cfg(target_os = "linux")]
+    pub(super) const fn with_handle(mut self, handle: Option<[u8; 32]>) -> Self {
+        self.handle = handle;
+        self
     }
     #[cfg(windows)]
     pub(super) fn from_stat_information(

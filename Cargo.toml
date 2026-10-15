@@ -14,7 +14,6 @@ members = [
   "rust/crates/grpc-observability",
   "rust/crates/harness",
   "rust/crates/harness-conformance",
-  "rust/crates/harness-codex",
   "rust/crates/inference",
   "rust/crates/inference-wasm",
   "rust/crates/machines",
@@ -92,7 +91,6 @@ thiserror = "2.0.17"
 subtle = "2.6.1"
 sync_wrapper = { version = "=1.0.2", features = ["futures"] }
 time = "0.3.55"
-toml = "1.1.6"
 # Libraries depend on tracing only for non-wasm32 targets and never install a
 # subscriber; hosts and tests do. See docs/observability.md.
 tracing = { version = "0.1.44", default-features = false, features = ["std", "attributes"] }
@@ -173,6 +171,8 @@ undocumented_unsafe_blocks = "deny"
 # slower; basic optimization costs little more to compile and keeps backtraces.
 [profile.dev]
 opt-level = 1
+# Keep panic/backtrace file:line information without full type/variable debuginfo.
+debug = "line-tables-only"
 
 # The CLI hashes its own executable to name its service. Unoptimized, that
 # takes ~20 s for a Linux debug binary and outlasts the client's readiness wait.

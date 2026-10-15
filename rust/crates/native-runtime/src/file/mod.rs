@@ -1,12 +1,14 @@
 use crate::*;
-pub(crate) use operations::{validate_write_batch, write_bounded_in_place};
+pub(crate) use operations::write_bounded_in_place;
 pub(crate) use range::validate_prepared_read_range;
 pub(crate) use scope::{with_file_admission, with_file_scope};
+pub(crate) use write_validation::validate_write_batch;
 
 mod capability;
 mod operations;
 mod range;
 mod scope;
+mod write_validation;
 pub use capability::{NativeFile, NativeFileMeter};
 #[cfg(windows)]
 pub use operations::device_control_in_place;

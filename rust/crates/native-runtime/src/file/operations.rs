@@ -283,31 +283,6 @@ pub(crate) fn write_bounded_in_place(
     Ok(())
 }
 
-pub(crate) fn validate_write_batch(writes: &[OwnedWrite]) -> io::Result<()> {
-    let mut ranges = Vec::new();
-    ranges.try_reserve_exact(writes.len())?;
-    for write in writes {
-        let end = write
-            .offset
-            .checked_add(write.bytes.len() as u64)
-            .ok_or(io::ErrorKind::InvalidInput)?;
-        if write.offset == u64::MAX {
-            return Err(io::ErrorKind::InvalidInput.into());
-        }
-        if !write.bytes.is_empty() {
-            ranges.push((write.offset, end));
-        }
-    }
-    ranges.sort_unstable();
-    if ranges
-        .windows(2)
-        .any(|pair| matches!(pair, [left, right] if left.1 > right.0))
-    {
-        return Err(io::ErrorKind::InvalidInput.into());
-    }
-    Ok(())
-}
-
 #[cfg(target_vendor = "apple")]
 #[allow(
     unsafe_code,

@@ -410,7 +410,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget.finish(result, &accounting)
     }
 
-    pub(super) async fn read_record_range_with_accounting(
+    pub(crate) async fn read_record_range_with_accounting(
         &mut self,
         record: FileRecord,
         range: ByteRange,

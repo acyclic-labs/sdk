@@ -47,6 +47,46 @@ fn capability_reads_do_not_change_owned_access_times() -> std::io::Result<()> {
     }
     Ok(())
 }
+/// Every way of stating one file reports one handle, so its identity does
+/// not depend on which query saw it, and another file reports another.
+#[cfg(target_os = "linux")]
+#[test]
+fn every_stat_of_a_file_reports_its_one_handle() -> std::io::Result<()> {
+    let temporary = tempfile::tempdir()?;
+    std::fs::write(temporary.path().join("file"), b"body")?;
+    std::fs::write(temporary.path().join("other"), b"body")?;
+    let root = test_root(temporary.path())?;
+    let mut work = ordinary_work();
+
+    let named = root
+        .stat(Path::new("file"), &mut work)
+        .map_err(ordinary_error)?;
+    let opened = root
+        .stat_file(&File::open(temporary.path().join("file"))?, &mut work)
+        .map_err(ordinary_error)?;
+    let (mut reader, _) = root
+        .read_dir_stats(Path::new(""), &mut work)
+        .map_err(ordinary_error)?;
+    let mut listed = None;
+    while let Some((entry, _)) = reader.next(&mut work).map_err(ordinary_error)? {
+        if entry.is_named("file") {
+            listed = entry.stat;
+        }
+    }
+    let listed = listed.ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+    let handle = named.handle();
+    assert_eq!(opened.handle(), handle);
+    assert_eq!(listed.handle(), handle);
+    let other = root
+        .stat(Path::new("other"), &mut work)
+        .map_err(ordinary_error)?;
+    // A file system without handles (an overlay without exports) reports
+    // none for either.
+    if handle.is_some() {
+        assert_ne!(other.handle(), handle);
+    }
+    Ok(())
+}
 #[test]
 fn held_root_rejects_intermediate_symlink_escape_for_reads_and_writes() -> std::io::Result<()> {
     use std::os::unix::fs::symlink;

@@ -193,6 +193,8 @@ impl ProjectionState {
     ) -> (Result<(), NativeMountError>, bool) {
         let mut listed = false;
         let mut unlisted_reference = None;
+        self.listing_replies = self.listing_replies.wrapping_add(1);
+        let reply = self.listing_replies;
         let result = (|| -> Result<(), NativeMountError> {
             let counts_lookups =
                 matches!(listing.as_ref().ok_or(libc::EIO)?, DirectoryReply::Plus(_));
@@ -280,6 +282,23 @@ impl ProjectionState {
                 )?;
                 if counts_lookups {
                     unlisted_reference = Some(child_inode);
+                    // The kernel applies a reply's entries under the one
+                    // attribute version its request was sent at, so of two
+                    // entries for one inode it keeps the first's attributes
+                    // and drops the second's: a file listed under a staged
+                    // name and again under the name it was renamed to would
+                    // keep the staged size. Its second entry starts the next
+                    // reply instead.
+                    if self
+                        .by_inode
+                        .get(&child_inode)
+                        .is_some_and(|entry| entry.listed_in_reply == reply)
+                    {
+                        if let Some(inode) = unlisted_reference.take() {
+                            self.release_lookup_reference(inode, 1);
+                        }
+                        return Ok(());
+                    }
                 }
                 let attr = self.attr(child_inode, &lookup)?;
                 let handed = self
@@ -311,6 +330,9 @@ impl ProjectionState {
                     return Ok(());
                 }
                 work.record_admitted(Copy.delta(entry.name.len() as u64))?;
+                if counts_lookups && let Some(handed) = self.by_inode.get_mut(&child_inode) {
+                    handed.listed_in_reply = reply;
+                }
                 unlisted_reference = None;
                 listed = true;
                 stream.emitted = next;
