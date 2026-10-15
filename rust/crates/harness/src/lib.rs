@@ -18,6 +18,8 @@
 #![doc = include_str!("../README.md")]
 
 pub mod agent_loop;
+#[cfg(feature = "tui")]
+pub use acyclic_harness_tui as tui;
 pub mod bundle;
 pub mod client;
 pub mod context;
@@ -70,6 +72,7 @@ pub mod runtime;
 pub mod scheduler;
 pub mod source_authorization;
 pub mod store;
+pub mod task_volume;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 pub mod tool;

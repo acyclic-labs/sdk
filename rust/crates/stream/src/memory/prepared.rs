@@ -5,7 +5,7 @@ use acyclic_native_runtime::{
 };
 
 struct CapacityReservation {
-    counters: Arc<std::sync::Mutex<(usize, usize)>>,
+    counters: Arc<crate::query_sync::SyncMutex<(usize, usize)>>,
     bytes: usize,
 }
 impl Drop for CapacityReservation {
@@ -57,7 +57,7 @@ impl MemoryStream {
                     if !state.paths.contains_key(condition_path(condition)) {
                         return Err(StreamError::NotFound);
                     }
-                    if condition_conflict(&state, condition).is_some() {
+                    if self.condition_conflict(&state, condition)?.is_some() {
                         return Err(StreamError::OutOfRange);
                     }
                 }
@@ -269,7 +269,7 @@ impl PreparedCommit {
                 return Err(StreamError::PrefixNotRetained);
             }
             for condition in &self.conditions {
-                if let Some(conflict) = condition_conflict(&state, condition) {
+                if let Some(conflict) = self.provider.condition_conflict(&state, condition)? {
                     cached.push(conflict.clone());
                     conflicts.push(conflict);
                 }
@@ -286,20 +286,7 @@ impl PreparedCommit {
                             .saturating_mul(1_000),
                     );
                     let id = commit_identity(decision, digest);
-                    for value in [&mut self.plan.result, &mut self.plan.cached] {
-                        append_mut(value)
-                            .records
-                            .first_mut()
-                            .ok_or(StreamError::Unavailable)?
-                            .value = body.clone();
-                    }
-                    history_record(
-                        self.plan
-                            .histories
-                            .first_mut()
-                            .ok_or(StreamError::Unavailable)?,
-                    )?
-                    .value = body;
+                    bind_body(&mut self.plan, body)?;
                     self.plan.bind(id, time)?;
                     let _ = work.record(work.meter.record_codec(
                         0,
@@ -336,6 +323,18 @@ impl PreparedCommit {
             .take();
         result
     }
+}
+
+fn bind_body(plan: &mut CommitPlan, body: Bytes) -> Result<(), StreamError> {
+    for value in [&mut plan.result, &mut plan.cached] {
+        append_mut(value)
+            .records
+            .first_mut()
+            .ok_or(StreamError::Unavailable)?
+            .value = body.clone();
+    }
+    history_record(plan.histories.first_mut().ok_or(StreamError::Unavailable)?)?.value = body;
+    Ok(())
 }
 
 fn append(value: &CommitOutcome) -> &crate::CommittedAppend {
