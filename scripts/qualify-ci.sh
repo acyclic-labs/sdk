@@ -181,6 +181,7 @@ pinned_pi() {
 case "$lane" in
   gate)
     nextest --workspace --all-features --locked
+    cargo test -p acyclic-harness --all-features --locked --example approved-native-process
     ;;
   docs)
     # Independent workspaces qualify alongside the root workspace.

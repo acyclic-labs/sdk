@@ -315,6 +315,7 @@ async fn verify_pending_task(
         seed.results_volume.clone(),
         &issuer,
         &seed.scope,
+        None,
     )
     .await?;
     task.task_host()

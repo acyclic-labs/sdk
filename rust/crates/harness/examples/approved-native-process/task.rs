@@ -10,6 +10,57 @@ impl ResumableMachine for Machine {
     fn identity(&self) -> &MachineIdentity {
         &self.identity
     }
+    fn supports_native_work(&self) -> bool {
+        true
+    }
+    fn identity_with_native_work<'a>(
+        &'a self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<&'a MachineIdentity> {
+        work.remaining()
+            .map_err(|cause| acyclic_harness::Error::NativeWork {
+                cause,
+                custody: None,
+            })?;
+        Ok(&self.identity)
+    }
+    fn initialize_with_native_work(
+        &self,
+        input: &Value,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+        let custody = work.claim(
+            std::mem::size_of::<Value>() as u64,
+            1,
+            acyclic_fs::WorkCounters::UNCHARGED,
+        )?;
+        let Value::Number(number) = input else {
+            return Err(acyclic_harness::Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Invalid,
+                reason: "example state must be an integer",
+            });
+        };
+        Ok((Value::Number(number.clone()), custody))
+    }
+    fn transition_with_native_work(
+        &self,
+        state: &Value,
+        _: Value,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(MachineTransition, acyclic_fs::NativeAllocation)> {
+        let (state, mut custody) = self.initialize_with_native_work(state, work)?;
+        custody.grow(
+            (std::mem::size_of::<MachineTransition>() - std::mem::size_of::<Value>()) as u64,
+        )?;
+        Ok((
+            MachineTransition {
+                state,
+                commands: vec![],
+                status: MachineStatus::Suspended,
+            },
+            custody,
+        ))
+    }
     fn state_schema(&self) -> &Value {
         &self.schema
     }
@@ -31,6 +82,7 @@ pub(super) async fn open<P, A, O>(
     volume: VolumeRef,
     issuer: &AuthorityIssuer,
     scope: &Scope,
+    work: Option<&acyclic_fs::NativeMaterializationWork>,
 ) -> Result<Runtime<P, A, O>>
 where
     P: StreamProvider,
@@ -50,6 +102,10 @@ where
         json!({"type":"integer"}),
         json!({"type":"object"}),
     )?;
+    let definition = match work {
+        Some(work) => definition.publish(work)?,
+        None => definition,
+    };
     let identity = definition.identity().clone();
     let machine_identity = machine.identity.clone();
     let mut tasks = TaskRegistry::default();
@@ -57,6 +113,9 @@ where
     let mut machines = MachineRegistry::default();
     machines.register(machine, &mut None)?;
     let runtime_scope = RuntimeScope::new(scope.capabilities().clone(), Limits::default())?;
+    let io = work
+        .map(acyclic_harness::filesystem::PreparationIo::from_native_work)
+        .transpose()?;
     let runtime = Runtime::open(
         stream,
         files,
@@ -79,7 +138,7 @@ where
         None,
         &[],
         &Default::default(),
-        None,
+        io.as_ref(),
     )
     .await?;
     runtime
@@ -102,4 +161,46 @@ where
         })
         .await?;
     Ok(runtime)
+}
+
+#[cfg(test)]
+pub(super) fn verify_native_state(work: &acyclic_fs::NativeMaterializationWork) {
+    use proptest::prelude::*;
+    let machine = Machine {
+        identity: MachineIdentity {
+            name: "example.native".into(),
+            version: "1".into(),
+            digest: [7; 32],
+        },
+        schema: json!({"type":"integer"}),
+    };
+    // Every integer state is preserved, with custody for exactly the returned value.
+    let integer = prop_oneof![
+        any::<i64>().prop_map(Value::from),
+        any::<u64>().prop_map(Value::from),
+    ];
+    proptest::test_runner::TestRunner::new(proptest::test_runner::Config {
+        cases: 32,
+        failure_persistence: None,
+        ..Default::default()
+    })
+    .run(&(integer.clone(), integer), |(state, input)| {
+        let (initialized, held) = machine.initialize_with_native_work(&state, work).unwrap();
+        prop_assert_eq!(initialized, machine.initialize(&state).unwrap());
+        prop_assert_eq!(held.bytes(), std::mem::size_of::<Value>() as u64);
+        drop(held);
+        let (transition, held) = machine
+            .transition_with_native_work(&state, input.clone(), work)
+            .unwrap();
+        let ordinary = machine.transition(&state, &input).unwrap();
+        prop_assert_eq!(transition.state, ordinary.state);
+        prop_assert_eq!(transition.commands, ordinary.commands);
+        prop_assert_eq!(transition.status, ordinary.status);
+        prop_assert_eq!(
+            held.bytes(),
+            std::mem::size_of::<MachineTransition>() as u64
+        );
+        Ok(())
+    })
+    .unwrap();
 }
