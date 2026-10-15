@@ -1,3 +1,4 @@
+import { canonicalRPCs } from "../../../shared/tests/proto-rpcs.mjs";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -29,7 +30,7 @@ function fixture(t, fault) {
     }
     for (const name of ["actors", "stream"]) writeFileSync(join(consumer, name + "_pb_route_fixture.erl"), "dynamic fixture " + name);
     fault?.({ ...f, root, sdk, consumer, libs });
-    return { status: 0, stdout: ["PASS installed SDK and loaded-module provenance", "PASS archive-installed Erlang clients: 19 populated native TCP RPC pairs",
+    return { status: 0, stdout: ["PASS installed SDK and loaded-module provenance", "PASS archive-installed Erlang clients: 20 populated native TCP RPC pairs",
       ...["actors", "stream"].map(name => name + "_pb differing modeled file descriptor fields: []"), "PASS installed SDK and loaded-module provenance"].join("\n") };
   };
   const options = { command, runtimePin: { ...pins.runtime["linux-x64"], inventory_sha256: sha256(runtimeBytes), otp_archive_sha256: rt.otp_archive_sha256, files: 1, links: 0 },
@@ -80,4 +81,16 @@ test("reject output that overlaps original dependencies before executing command
   const f = fixture(t); f.args.output = join(f.args.dependencies, "output");
   assert.throws(() => qualify(f.args, f.options), /overlaps protected/);
   assert.equal(f.calls.length, 0);
+});
+
+test("native Erlang coverage matches every canonical method and streaming shape", t => {
+  const methods = canonicalRPCs();
+  const consumer = readFileSync(new URL("./fixtures/consumer/rpc_route_control.erl", import.meta.url), "utf8");
+  assert.ok(consumer.includes(`${methods.length}=lists:sum(Counts),${methods.length}=ets:info(rpc_route_counts,size)`));
+  const f = fixture(t);
+  const receipt = qualify(f.args, f.options);
+  assert.equal(receipt.native_rpc_calls_executed, methods.length);
+  assert.equal(receipt.populated_rpc_message_pairs, methods.length);
+  assert.equal(receipt.unary_rpc_calls, methods.filter(method => !method.clientStreaming && !method.serverStreaming).length);
+  assert.equal(receipt.server_streaming_rpc_calls, methods.filter(method => method.serverStreaming).length);
 });
