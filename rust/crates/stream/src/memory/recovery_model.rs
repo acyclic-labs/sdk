@@ -3,6 +3,12 @@ use futures::StreamExt as _;
 use loom::thread;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+impl UnixMillisClock for loom::sync::atomic::AtomicU64 {
+    fn now_unix_millis(&self) -> u64 {
+        self.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
 /// Owns the real async state machine on the heap, outside Loom's coroutine stack.
 pub fn block_on<F: std::future::Future>(future: F) -> F::Output {
     loom::future::block_on(Box::pin(future))
@@ -33,6 +39,9 @@ fn seed(provider: &MemoryStream) -> Result<(StreamPath, CommitId)> {
 }
 
 /// Checks every schedule; actor and publication counts bound the state.
+///
+/// # Panics
+/// Panics on a violated model invariant.
 pub fn check(run: impl Fn() -> Result + Send + Sync + 'static) {
     let mut builder = loom::model::Builder::new();
     builder.preemption_bound = None;
@@ -45,6 +54,9 @@ pub fn check(run: impl Fn() -> Result + Send + Sync + 'static) {
 }
 
 /// Exhausts one producer and checked subscriber through the real provider.
+///
+/// # Panics
+/// Panics on a violated model invariant.
 pub fn subscription_and_append_have_no_lost_wakeup() {
     check(|| {
         let provider = MemoryStream::default();
@@ -74,6 +86,9 @@ pub fn subscription_and_append_have_no_lost_wakeup() {
 }
 
 /// Exhausts checked subscription against real state replacement.
+///
+/// # Panics
+/// Panics on a violated model invariant.
 pub fn subscription_and_recovery_never_wait_for_a_missing_anchor() {
     check(|| {
         let provider = MemoryStream::default();
@@ -105,6 +120,9 @@ pub fn subscription_and_recovery_never_wait_for_a_missing_anchor() {
 }
 
 /// Exhausts Head publication against real state replacement.
+///
+/// # Panics
+/// Panics on a violated model invariant.
 pub fn head_fence_and_recovery_cannot_publish_an_obsolete_generation() {
     check(|| {
         let provider = MemoryStream::default();

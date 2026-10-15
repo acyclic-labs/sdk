@@ -6,11 +6,11 @@ use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+#[cfg(not(loom))]
+use std::sync::Mutex;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, PoisonError};
-#[cfg(not(loom))]
-use std::sync::Mutex;
 
 #[cfg(test)]
 use crate::OwnedBytes as Bytes;

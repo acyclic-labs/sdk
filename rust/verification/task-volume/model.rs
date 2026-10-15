@@ -2,7 +2,10 @@ use acyclic_query_verification::{
     Component, Error, FileKey, Query, Snapshot, TaskFile, TaskVolume, Write,
 };
 use acyclic_stream::verification::{block_on, check as model};
-use acyclic_stream::{MemoryStream, OwnedBytes, StreamPath};
+use acyclic_stream::{
+    AppendRequest, CommitCondition, MemoryLimits, MemoryStream, OwnedBytes, StreamError,
+    StreamPath, StreamProvider,
+};
 use futures::StreamExt as _;
 use loom::thread;
 use std::sync::Arc;
@@ -207,4 +210,87 @@ fn recovery_and_append_acknowledgement_cannot_corrupt_the_rebuilt_index() {
         assert_eq!(current.files, new.files);
         Ok(())
     });
+}
+
+#[test]
+fn lease_expiry_and_authority_changes_fence_the_atomic_publication() {
+    use loom::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    for expiry in [false, true] {
+        model(move || {
+            let clock = Arc::new(AtomicU64::new(1));
+            let provider = Arc::new(MemoryStream::new_with_clock(
+                MemoryLimits::default(),
+                clock.clone(),
+            ));
+            let volume = block_on(TaskVolume::open(
+                provider.clone(),
+                StreamPath::new("model")?,
+            ))?;
+            let expected = block_on(volume.snapshot(&Query::Root, 0))?.generation;
+            let actor = StreamPath::new("actor")?;
+            block_on(provider.append(AppendRequest {
+                path: actor.clone(),
+                records: vec![OwnedBytes::from_static(b"owner")],
+                if_tail: Some(0),
+                idempotency_key: None,
+            }))?;
+            let lost = Arc::new(AtomicBool::new(false));
+            let worker = thread::spawn({
+                let lost = lost.clone();
+                let provider = provider.clone();
+                let actor = actor.clone();
+                move || {
+                    block_on(async {
+                        if expiry {
+                            clock.store(3, Ordering::SeqCst);
+                        } else {
+                            provider
+                                .append(AppendRequest {
+                                    path: actor,
+                                    records: vec![OwnedBytes::from_static(b"new owner")],
+                                    if_tail: Some(1),
+                                    idempotency_key: None,
+                                })
+                                .await?;
+                        }
+                        lost.store(true, Ordering::SeqCst);
+                        Ok(()) as Result
+                    })
+                }
+            });
+            let lost_at_entry = lost.load(Ordering::SeqCst);
+            let file = Write::new(FileKey::Goal, OwnedBytes::from_static(b"publish"));
+            let result = block_on(volume.append_if(
+                expected,
+                &file,
+                vec![CommitCondition::Tail {
+                    path: actor,
+                    expected: 1,
+                }],
+                expiry.then_some(2),
+            ));
+            worker.join().map_err(|_| "owner panicked")??;
+            let committed = result.is_ok();
+            assert!(
+                committed
+                    || matches!(
+                        result,
+                        Err(Error::FenceConflict | Error::Storage(StreamError::DeadlineElapsed))
+                    )
+            );
+            if lost_at_entry {
+                assert!(!committed);
+            }
+            let snapshot = block_on(volume.snapshot(&Query::Root, 1))?;
+            assert_eq!(
+                snapshot.generation.position,
+                expected.position + u64::from(committed)
+            );
+            assert_eq!(
+                snapshot.files,
+                if committed { vec![file] } else { Vec::new() }
+            );
+            Ok(())
+        });
+    }
 }
