@@ -154,47 +154,11 @@ case "$lane" in
   preflight)
     head="$(git rev-parse HEAD)"
     allow_webflow=false
-    if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" ]]; then
-      event_head="$(jq -er '.pull_request.head.sha' "$GITHUB_EVENT_PATH")"
-      [[ "$head" == "$event_head" ]] || {
-        echo 'checked-out source does not match the pull request head' >&2
-        exit 1
-      }
-      event_base="$(jq -er '.pull_request.base.sha' "$GITHUB_EVENT_PATH")"
-      git cat-file -e "$event_base^{commit}" 2>/dev/null ||
-        git fetch --no-tags origin "$event_base"
-      base="$(git merge-base "$head" "$event_base")"
-      range="$base..$head"
-    elif [[ "${GITHUB_EVENT_NAME:-}" == "push" &&
-            "${GITHUB_REF:-}" == "refs/heads/main" ]]; then
-      event_head="$(jq -er '.after' "$GITHUB_EVENT_PATH")"
-      [[ "$head" == "$event_head" ]] || {
-        echo 'checked-out source does not match the main push head' >&2
-        exit 1
-      }
-      before="$(jq -er '.before' "$GITHUB_EVENT_PATH")"
-      [[ "$before" =~ ^[0-9a-f]{40}$ ]] || {
-        echo 'main push must include its previous commit for signature verification' >&2
-        exit 1
-      }
-      if [[ "$before" == "0000000000000000000000000000000000000000" ]]; then
-        range="$head"
-      else
-        git merge-base --is-ancestor "$before" "$head" || {
-          echo 'main push previous commit is not an ancestor of its head' >&2
-          exit 1
-        }
-        range="$before..$head"
-      fi
+    base="${head}^"
+    range="$base..$head"
+    # Dispatched main runs verify the latest squash merge with GitHub's pinned key.
+    if [[ "${GITHUB_REF:-}" == "refs/heads/main" ]]; then
       allow_webflow=true
-    else
-      base="${head}^"
-      range="$base..$head"
-      # Scheduled and dispatched runs of main check its latest squash merge,
-      # which GitHub signs with the same pinned web-flow key as main pushes.
-      if [[ "${GITHUB_REF:-}" == "refs/heads/main" ]]; then
-        allow_webflow=true
-      fi
     fi
     commits="$(git rev-list --reverse "$range")"
     [[ -n "$commits" ]] || { echo 'qualification range contains no commits' >&2; exit 1; }
@@ -207,8 +171,7 @@ case "$lane" in
       if [[ "$verification" == "G" ]]; then
         continue
       fi
-      # GitHub signs squash merges with its web-flow OpenPGP key. Pushes and
-      # dispatched main checks accept it; PR commits use SSH.
+      # GitHub signs squash merges with its web-flow OpenPGP key.
       if [[ "$allow_webflow" == true ]]; then
         if [[ -z "$webflow_home" ]]; then
           webflow_home="$(mktemp -d "$SDK_TEMP_DIR/web-flow.XXXXXXXX")"

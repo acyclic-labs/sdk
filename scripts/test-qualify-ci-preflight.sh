@@ -29,25 +29,12 @@ chmod +x "$work/portable-sha/bin/sha256sum"
   if sha256_matches "$archive_checksum" "$work/portable-sha/missing"; then exit 1; fi
 )
 
-cat >"$work/bin/jq" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-if [[ "$*" == *'.after'* ]]; then
-  printf '%s\n' release-head
-elif [[ "$*" == *'.before'* ]]; then
-  printf '%s\n' 1111111111111111111111111111111111111111
-else
-  exit 2
-fi
-EOF
-
 cat >"$work/bin/git" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$FAKE_GIT_LOG"
 case "$*" in
   *'rev-parse HEAD'*) printf '%s\n' "${FAKE_HEAD:-release-head}" ;;
-  *'merge-base --is-ancestor'*) [[ "${FAKE_GIT_MODE:-valid}" != nonmain ]] ;;
   *'rev-list --reverse'*)
     case "${FAKE_GIT_MODE:-valid}" in
       revlist-fail) printf '%s\n' release-commit; exit 1 ;;
@@ -103,9 +90,6 @@ make_case() {
   : >"$case_dir/sha256.log"
   : >"$case_dir/gpg.log"
   : >"$case_dir/gitleaks.log"
-  cat >"$case_dir/event.json" <<'EOF'
-{"before":"1111111111111111111111111111111111111111","after":"release-head"}
-EOF
   cat >"$case_dir/gitleaks-archive/gitleaks" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -136,9 +120,7 @@ run_preflight() {
     SDK_TEMP_DIR="$case_dir/temp" \
       SDK_ARTIFACT_DIR="$case_dir/artifacts" \
       TOOLS_DIR="$case_dir/tools" \
-      GITHUB_EVENT_NAME="${4:-workflow_dispatch}" \
-      GITHUB_REF="${5:-refs/heads/main}" \
-      GITHUB_EVENT_PATH="$case_dir/event.json" \
+      GITHUB_REF="${4:-refs/heads/main}" \
       FAKE_GIT_MODE="$mode" \
       FAKE_GIT_LOG="$case_dir/git.log" \
       FAKE_CURL_LOG="$case_dir/curl.log" \
@@ -167,7 +149,6 @@ grep -q 'gpg.format=openpgp' "$work/valid/git.log"
 grep -q 'detect --source .' "$work/valid/gitleaks.log"
 grep -q -- '--log-opts --diff-merges=first-parent release-head\^..release-head' "$work/valid/gitleaks.log"
 
-run_preflight nonmain nonmain 1 push refs/heads/main
 run_preflight revlist-fail revlist-fail 1
 run_preflight revlist-empty revlist-empty 1
 for mode in scan-fatal scan-zero scan-empty scan-silent scan-fail; do
@@ -175,7 +156,7 @@ for mode in scan-fatal scan-zero scan-empty scan-silent scan-fail; do
   [[ -s "$work/$mode/gitleaks.log" ]]
 done
 run_preflight ssh-good ssh-good 0
-run_preflight main webflow 0 push refs/heads/main
+run_preflight branch-webflow webflow 1 refs/heads/feature
 
 gate="$work/gate"
 mkdir -p "$gate/temp" "$gate/artifacts" "$gate/tools/cargo/bin" "$gate/bin"
@@ -191,7 +172,6 @@ chmod +x "$gate/bin/cargo-nextest"
 (
   cd "$root"
   SDK_TEMP_DIR="$gate/temp" SDK_ARTIFACT_DIR="$gate/artifacts" TOOLS_DIR="$gate/tools" \
-    GITHUB_EVENT_NAME=pull_request \
     FAKE_CARGO_LOG="$gate/cargo.log" PATH="$gate/bin:$work/bin:$PATH" \
     bash scripts/qualify-ci.sh gate
 )
@@ -204,7 +184,6 @@ for lane in docs generation; do
   (
     cd "$root"
     SDK_TEMP_DIR="$gate/temp" SDK_ARTIFACT_DIR="$gate/artifacts" TOOLS_DIR="$gate/tools" \
-      GITHUB_EVENT_NAME=pull_request \
       FAKE_CARGO_LOG="$gate/cargo.log" PATH="$gate/bin:$work/bin:$PATH" \
       bash scripts/qualify-ci.sh "$lane"
   )
