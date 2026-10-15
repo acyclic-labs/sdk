@@ -81,8 +81,9 @@ impl AsyncObjectStore for PausedObjects {
     }
 }
 
-#[test]
-fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::Error>> {
+type PausedSource = CheckoutMountSource<crate::memory::MemoryAuthorityStore, Arc<PausedObjects>>;
+
+fn paused_source() -> Result<(PausedSource, Arc<PausedObjects>), Box<dyn std::error::Error>> {
     let objects = Arc::new(PausedObjects::default());
     let fs = Fs::new(
         crate::memory::MemoryAuthorityStore::default(),
@@ -118,6 +119,34 @@ fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::E
         )),
         config,
     )?;
+    Ok((source, objects))
+}
+
+async fn write(
+    source: &PausedSource,
+    file: FileId,
+    offset: u64,
+    bytes: &'static [u8],
+    work: &crate::NativeMaterializationWork,
+) -> Result<(), MountSourceError> {
+    source
+        .checkout
+        .change_file_content(
+            file,
+            ContentChange::Write {
+                offset,
+                bytes: OwnedBytes::from_static(bytes),
+            },
+            work,
+            source.cancellation(),
+            None,
+        )
+        .await
+}
+
+#[test]
+fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::Error>> {
+    let (source, objects) = paused_source()?;
     let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
     let paths = ["left", "right"].map(native_test_path);
     let left = source
@@ -130,19 +159,8 @@ fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::E
         .file_id;
     objects.paused.store(true, Ordering::Release);
     source.runtime.wait(|| async {
-        let write = |file, bytes| {
-            let checkout = &source.checkout;
-            let work = &work;
-            let cancellation = source.cancellation();
-            async move {
-                let candidate = staged_write(checkout, file, bytes, work).await?;
-                checkout
-                    .install_change(candidate, ViewChange::Node(file), work, cancellation, None)
-                    .await
-            }
-        };
-        let left_write = write(left, b"left");
-        let right_write = write(right, b"right");
+        let left_write = write(&source, left, 0, b"left", &work);
+        let right_write = write(&source, right, 0, b"right", &work);
         tokio::pin!(left_write, right_write);
         assert!(futures::poll!(left_write.as_mut()).is_pending());
         assert_eq!(objects.entered.load(Ordering::Acquire), 1);
@@ -162,6 +180,91 @@ fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::E
     assert_eq!(
         source.open_file(&paths[1])?.read_up_to(0, 16)?.as_ref(),
         b"right"
+    );
+    Ok(())
+}
+
+#[test]
+fn same_file_writes_wait_and_both_land_in_order() -> Result<(), Box<dyn std::error::Error>> {
+    for (offset, expected) in [(4, b"lefttail".as_slice()), (0, b"tail".as_slice())] {
+        let (source, objects) = paused_source()?;
+        let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+        let path = native_test_path("shared");
+        let file = source
+            .create_file(&path, metadata(), None, &work)?
+            .node
+            .file_id;
+        objects.paused.store(true, Ordering::Release);
+        source.runtime.wait(|| async {
+            let first = write(&source, file, 0, b"left", &work);
+            let second = write(&source, file, offset, b"tail", &work);
+            tokio::pin!(first, second);
+            assert!(futures::poll!(first.as_mut()).is_pending());
+            assert_eq!(objects.entered.load(Ordering::Acquire), 1);
+            assert!(futures::poll!(second.as_mut()).is_pending());
+            assert_eq!(
+                objects.entered.load(Ordering::Acquire),
+                1,
+                "same-file successor must wait before staging"
+            );
+            objects.release();
+            futures::try_join!(first, second).map(|_| ())
+        })?;
+        assert_eq!(
+            source.open_file(&path)?.read_up_to(0, 16)?.as_ref(),
+            expected
+        );
+        assert!(
+            source
+                .checkout
+                .file_mutations
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .entries
+                .is_empty()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn cancelling_a_same_file_waiter_keeps_the_next_write_live()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (source, objects) = paused_source()?;
+    let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+    let path = native_test_path("cancelled-waiter");
+    let file = source
+        .create_file(&path, metadata(), None, &work)?
+        .node
+        .file_id;
+    let cancellation = CancellationToken::new();
+    let waiting_work = capture_meter(BOUNDARY_BUDGET, &cancellation)?;
+    objects.paused.store(true, Ordering::Release);
+    source.runtime.wait(|| async {
+        let first = write(&source, file, 0, b"left", &work);
+        let cancelled = write(&source, file, 4, b"lost", &waiting_work);
+        tokio::pin!(first, cancelled);
+        assert!(futures::poll!(first.as_mut()).is_pending());
+        assert!(futures::poll!(cancelled.as_mut()).is_pending());
+        assert_eq!(objects.entered.load(Ordering::Acquire), 1);
+        cancellation.cancel();
+        assert!(matches!(cancelled.await, Err(MountSourceError::Cancelled)));
+        objects.release();
+        first.await?;
+        write(&source, file, 4, b"tail", &work).await
+    })?;
+    assert_eq!(
+        source.open_file(&path)?.read_up_to(0, 16)?.as_ref(),
+        b"lefttail"
+    );
+    assert!(
+        source
+            .checkout
+            .file_mutations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entries
+            .is_empty()
     );
     Ok(())
 }

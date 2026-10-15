@@ -1,6 +1,44 @@
 use super::*;
 
+mod observers;
 mod overlap;
+
+#[test]
+fn file_mutation_admission_denies_unfunded_registry_growth()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (source, _) = sources(
+        FilesystemProfile::Portable,
+        ConsistencyMode::Pinned,
+        MountPublication::Manual,
+    )?;
+    let work = crate::NativeMaterializationWork::new(
+        WorkBudget {
+            allocation_operations: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+        source.cancellation(),
+    )
+    .map_err(|(error, _)| error)?;
+    assert!(matches!(
+        source.checkout.file_mutation(FileId::new(), &work),
+        Err(MountSourceError::NativeWork(
+            crate::NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
+                counter: "allocation_operations",
+                ..
+            })
+        ))
+    ));
+    assert!(
+        source
+            .checkout
+            .file_mutations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entries
+            .is_empty()
+    );
+    Ok(())
+}
 
 async fn candidate_now<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &'a SharedCheckout<A, O>,
@@ -138,7 +176,7 @@ fn native_publication_waits_for_in_flight_candidate() -> Result<(), Box<dyn std:
 }
 
 #[test]
-fn overlapping_native_writes_remain_fenced() -> Result<(), Box<dyn std::error::Error>> {
+fn deleting_a_file_conflicts_with_its_staged_write() -> Result<(), Box<dyn std::error::Error>> {
     let (source, _) = sources(
         FilesystemProfile::Portable,
         ConsistencyMode::Pinned,
@@ -146,28 +184,30 @@ fn overlapping_native_writes_remain_fenced() -> Result<(), Box<dyn std::error::E
     )?;
     let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
     let path = native_test_path("overlap");
+    let name = source.path(&path)?;
     let file = source
         .create_file(&path, metadata(), None, &work)?
         .node
         .file_id;
     source.runtime.wait(|| async {
-        let first = staged_write(&source.checkout, file, b"first", &work).await?;
-        let second = staged_write(&source.checkout, file, b"other", &work).await?;
+        let write = staged_write(&source.checkout, file, b"pending", &work).await?;
+        let removal = candidate_now(&source.checkout, &work).await?;
         source
-            .checkout
-            .install_change(
-                first,
-                ViewChange::Node(file),
+            .mutate(
+                removal,
+                AuthoredMutation::Remove {
+                    path: name.clone(),
+                    expected_file_id: Some(file),
+                },
+                ViewChange::Entry(&name, file),
                 &work,
-                source.cancellation(),
-                None,
             )
             .await?;
         assert!(matches!(
             source
                 .checkout
                 .install_change(
-                    second,
+                    write,
                     ViewChange::Node(file),
                     &work,
                     source.cancellation(),
@@ -178,19 +218,23 @@ fn overlapping_native_writes_remain_fenced() -> Result<(), Box<dyn std::error::E
         ));
         Ok(())
     })?;
-    assert_eq!(
-        source.open_file(&path)?.read_up_to(0, 64)?.as_ref(),
-        b"first"
-    );
+    assert!(source.lookup(&path)?.is_none());
     Ok(())
 }
 
 #[test]
 fn native_create_adoption_compares_exact_names_without_coalescing_identities()
 -> Result<(), Box<dyn std::error::Error>> {
-    for (first_name, second_name, disjoint) in [("same", "same", false), ("Name", "name", true)] {
-        let (source, _) = sources(
-            FilesystemProfile::Portable,
+    for (first_name, second_name, sensitivity, disjoint) in [
+        ("same", "same", CaseSensitivity::Sensitive, false),
+        ("Name", "name", CaseSensitivity::Sensitive, true),
+        ("Name", "name", CaseSensitivity::ProfileFolded, false),
+    ] {
+        let (source, _) = configured_sources(
+            VolumeConfig {
+                case_sensitivity: sensitivity,
+                ..VolumeConfig::portable(Lifecycle::Ephemeral)
+            },
             ConsistencyMode::Pinned,
             MountPublication::Manual,
         )?;

@@ -40,13 +40,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
                 cancellation,
                 Some(&self.cancellation),
                 |carrier, _| {
-                    self.with_capture_observer_dispatch(|| {
-                        record_view_change(
-                            &self.checkout.ledger,
-                            &ViewChange::Bound(&path),
-                            carrier,
-                        )
-                    })
+                    let (recorded, notify) = self
+                        .checkout
+                        .ledger
+                        .record_deferred(&ViewChange::Bound(&path), carrier)?;
+                    Ok((recorded, move || {
+                        self.with_capture_observer_dispatch(notify)
+                    }))
                 },
                 |checkout, candidate, prepared| {
                     let gate = self

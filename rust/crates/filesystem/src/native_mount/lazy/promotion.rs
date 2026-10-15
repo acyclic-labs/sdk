@@ -80,11 +80,10 @@ where
                     if authored.shared_checkout().ledger.stamp() != stamp {
                         return Err(MountSourceError::Stale);
                     }
-                    adapter::record_view_change(
-                        &authored.shared_checkout().ledger,
-                        &ViewChange::Effect(&installed),
-                        carrier,
-                    )
+                    authored
+                        .shared_checkout()
+                        .ledger
+                        .record_deferred(&ViewChange::Effect(&installed), carrier)
                 },
                 |checkout, candidate, prepared| {
                     cancellation

@@ -138,11 +138,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
                     if self.checkout.ledger.stamp() != stamp {
                         return Err(MountSourceError::Stale);
                     }
-                    self.with_capture_observer_dispatch(|| {
-                        self.checkout
-                            .ledger
-                            .record(&ViewChange::Effect(&effect), carrier)
-                    })
+                    let (recorded, notify) = self
+                        .checkout
+                        .ledger
+                        .record_deferred(&ViewChange::Effect(&effect), carrier)?;
+                    Ok((recorded, move || {
+                        self.with_capture_observer_dispatch(notify)
+                    }))
                 },
                 |checkout, candidate, prepared| {
                     let gate = self

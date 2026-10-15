@@ -141,6 +141,8 @@ mod diff;
 mod directory;
 mod error;
 mod extents;
+#[cfg(feature = "native-mount")]
+mod merged_names;
 pub(crate) use extents::seek_record_extent_with_accounting;
 mod fork;
 mod fs;

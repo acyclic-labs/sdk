@@ -56,13 +56,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         )
         .await?;
         let Some(table) = table else { return Ok(None) };
-        base.root.set_file_table(self.root.file_table);
+        base.root.set_file_table(self.root.file_table)?;
         base.authored_operation_id = self.authored_operation_id;
         if !self.candidate_base_unchanged(&base) {
             return Ok(None);
         }
         // Reuse both paid root buffers and the original dependency proof.
-        candidate.root.set_file_table(table);
+        candidate.root.set_file_table(table)?;
+        match candidate
+            .admit_rebased_bindings(
+                self.root.file_table,
+                maximum_changes,
+                accounting,
+                cancellation,
+            )
+            .await
+        {
+            Err(FsError::NameCollision) => return Ok(None),
+            result => result?,
+        }
         candidate.authored_operation_id = operation;
         cancellation.check()?;
         Ok(Some((base, candidate)))

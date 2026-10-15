@@ -252,11 +252,10 @@ where
                     if self.authored.shared_checkout().ledger.stamp() != stamp {
                         return Err(MountSourceError::Stale);
                     }
-                    adapter::record_view_change(
-                        &self.authored.shared_checkout().ledger,
-                        &ViewChange::Effect(installed),
-                        carrier,
-                    )
+                    self.authored
+                        .shared_checkout()
+                        .ledger
+                        .record_deferred(&ViewChange::Effect(installed), carrier)
                 },
                 |checkout, candidate, prepared| {
                     cancellation

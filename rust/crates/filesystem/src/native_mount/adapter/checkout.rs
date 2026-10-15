@@ -2,6 +2,7 @@
 pub struct SharedCheckout<A, O> {
     state: tokio::sync::RwLock<SharedCheckoutState<A, O>>,
     publication_fence: tokio::sync::RwLock<()>,
+    file_mutations: StdMutex<FileMutationEntries>,
     pub(super) ledger: Arc<ViewLedger>,
     view_gate: Arc<ViewGate>,
     publishing: AtomicBool,
@@ -49,6 +50,7 @@ impl<A, O> SharedCheckout<A, O> {
         let ledger = Arc::new(ViewLedger::default());
         Self {
             publication_fence: tokio::sync::RwLock::new(()),
+            file_mutations: StdMutex::new(FileMutationEntries::default()),
             state: tokio::sync::RwLock::new(SharedCheckoutState {
                 recorded_view: checkout.root().file_table,
                 checkout,
@@ -82,6 +84,7 @@ impl<A, O> SharedCheckout<A, O> {
         let view_gate = ViewGate::new_with_native_work(work)?;
         Ok(Arc::new(Self {
             publication_fence: tokio::sync::RwLock::new(()),
+            file_mutations: StdMutex::new(FileMutationEntries::default()),
             state: tokio::sync::RwLock::new(SharedCheckoutState {
                 recorded_view: checkout.root().file_table,
                 checkout,

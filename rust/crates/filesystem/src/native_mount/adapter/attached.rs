@@ -46,6 +46,14 @@ where
         let mut carrier = NativeDemandCarrier::Native(work);
         let mut inputs = InputBuffers::new(&mut carrier)?;
         let name = inputs.attribute_name(name, self.profile, self.limits)?;
+        let mutation = self.checkout.file_mutation(self.file_id, work)?;
+        let _file_lease = await_lock(
+            mutation.entry.mutex.lock(),
+            inputs.carrier,
+            cancellation,
+            Some(&self.cancellation),
+        )
+        .await?;
         let mut candidate = self
             .checkout
             .candidate(None, inputs.carrier, cancellation, Some(&self.cancellation))
@@ -71,37 +79,14 @@ where
         change: ContentChange<FileId>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        invoke(&self.runtime, work, || async {
-            let cancellation = work.cancellation();
-            let mut candidate = self
-                .checkout
-                .candidate(
-                    None,
-                    &mut NativeDemandCarrier::Native(work),
-                    cancellation,
-                    Some(&self.cancellation),
-                )
-                .await?;
-            candidate
-                .checkout
-                .change_content(
-                    self.file_id,
-                    change,
-                    ContentTimes::Stamp(content_change_time()?),
-                    work,
-                    cancellation,
-                )
-                .await?;
-            self.checkout
-                .install_change(
-                    candidate,
-                    ViewChange::Node(self.file_id),
-                    work,
-                    &self.cancellation,
-                    self.native_callback_guard.clone(),
-                )
-                .await?;
-            Ok(())
+        invoke(&self.runtime, work, || {
+            self.checkout.change_file_content(
+                self.file_id,
+                change,
+                work,
+                &self.cancellation,
+                self.native_callback_guard.clone(),
+            )
         })
     }
 }
@@ -286,6 +271,14 @@ where
         sparse::validate_sparse_allocation(&range.1, work)?;
         invoke(&self.runtime, work, || async {
             let cancellation = work.cancellation();
+            let mutation = self.checkout.file_mutation(self.file_id, work)?;
+            let _file_lease = await_lock(
+                mutation.entry.mutex.lock(),
+                &mut NativeDemandCarrier::Native(work),
+                cancellation,
+                Some(&self.cancellation),
+            )
+            .await?;
             let mut candidate = self
                 .checkout
                 .candidate(
@@ -382,6 +375,14 @@ where
     ) -> Result<(), MountSourceError> {
         invoke(&self.runtime, work, || async {
             let cancellation = work.cancellation();
+            let mutation = self.checkout.file_mutation(self.file_id, work)?;
+            let _file_lease = await_lock(
+                mutation.entry.mutex.lock(),
+                &mut NativeDemandCarrier::Native(work),
+                cancellation,
+                Some(&self.cancellation),
+            )
+            .await?;
             let mut candidate = self
                 .checkout
                 .candidate(

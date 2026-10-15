@@ -14,7 +14,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 &mut NativeDemandCarrier::Native(work),
                 cancellation,
                 Some(lifetime),
-                |carrier, _| record_view_change(&self.ledger, &change, carrier),
+                |carrier, _| self.ledger.record_deferred(&change, carrier),
                 |checkout, candidate, prepared| {
                     cancellation
                         .commit_if_both_live(lifetime, || {
@@ -44,13 +44,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         Ok(())
     }
 
-    pub(super) async fn install_candidate<'a>(
+    pub(super) async fn install_candidate<'a, N: FnOnce()>(
         &self,
         candidate: CheckoutCandidate<'a, A, O>,
         carrier: &mut NativeDemandCarrier<'_>,
         cancellation: &CancellationToken,
         lifetime: Option<&CancellationToken>,
-        record: impl FnOnce(&mut NativeDemandCarrier<'_>, ViewStamp) -> Result<(), MountSourceError>,
+        record: impl FnOnce(
+            &mut NativeDemandCarrier<'_>,
+            ViewStamp,
+        ) -> Result<(Result<(), MountSourceError>, N), MountSourceError>,
         commit: impl FnOnce(
             &mut Checkout<A, O>,
             CheckoutCandidate<'a, A, O>,
@@ -61,66 +64,75 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         if self.view_gate.generation() != candidate.epoch {
             return Ok(None);
         }
-        // Observers may reenter the source, so dispatch before taking its write lease.
-        record(carrier, candidate.stamp)?;
-        let mut state = await_lock(self.lock(), carrier, cancellation, lifetime).await?;
-        if self.view_gate.generation() != candidate.epoch
-            || state.publication_operation.is_some()
-                && state.publication_operation != candidate.operation
-        {
-            return Ok(None);
-        }
-        let original = carrier
-            .original_native_work()
-            .ok_or(MountSourceError::NativeWork(
-                crate::NativeTreeMaterializationError::InvalidLayout,
-            ))?;
-        let CheckoutCandidate {
-            base,
-            checkout,
-            operation,
-            epoch,
-            stamp,
-            _publication,
-        } = candidate;
-        let Some((base, checkout)) = state
-            .checkout
-            .rebase_native_candidate(
+        let (recorded, notify) = record(carrier, candidate.stamp)?;
+        // Record invalidation before adoption, then dispatch only after every lease drops.
+        let result = async move {
+            recorded?;
+            let mut state = await_lock(self.lock(), carrier, cancellation, lifetime).await?;
+            if self.view_gate.generation() != candidate.epoch
+                || state.publication_operation.is_some()
+                    && state.publication_operation != candidate.operation
+            {
+                return Ok(None);
+            }
+            let original = carrier
+                .original_native_work()
+                .ok_or(MountSourceError::NativeWork(
+                    crate::NativeTreeMaterializationError::InvalidLayout,
+                ))?;
+            let CheckoutCandidate {
                 base,
                 checkout,
-                MAXIMUM_EXACT_INSTALL_CHANGES,
+                operation,
+                epoch,
+                stamp,
+                _publication,
+            } = candidate;
+            let Some((base, checkout)) = state
+                .checkout
+                .rebase_native_candidate(
+                    base,
+                    checkout,
+                    MAXIMUM_EXACT_INSTALL_CHANGES,
+                    &mut crate::kernel::allocation::KernelAccounting::native(
+                        &original,
+                        cancellation,
+                    ),
+                    cancellation,
+                )
+                .await?
+            else {
+                return Ok(None);
+            };
+            let candidate = CheckoutCandidate {
+                base,
+                checkout,
+                operation,
+                epoch,
+                stamp,
+                _publication,
+            };
+            let prepared = state.checkout.prepare_candidate_adoption(
+                &candidate.base,
+                &candidate.checkout,
                 &mut crate::kernel::allocation::KernelAccounting::native(&original, cancellation),
-                cancellation,
-            )
-            .await?
-        else {
-            return Ok(None);
-        };
-        let candidate = CheckoutCandidate {
-            base,
-            checkout,
-            operation,
-            epoch,
-            stamp,
-            _publication,
-        };
-        let prepared = state.checkout.prepare_candidate_adoption(
-            &candidate.base,
-            &candidate.checkout,
-            &mut crate::kernel::allocation::KernelAccounting::native(&original, cancellation),
-        )?;
-        let Some(prepared) = prepared else {
-            return Ok(None);
-        };
-        carrier.check(cancellation, lifetime)?;
-        let operation = candidate.operation;
-        if !commit(&mut state.checkout, candidate, prepared)? {
-            return Ok(None);
+            )?;
+            let Some(prepared) = prepared else {
+                return Ok(None);
+            };
+            carrier.check(cancellation, lifetime)?;
+            let operation = candidate.operation;
+            if !commit(&mut state.checkout, candidate, prepared)? {
+                return Ok(None);
+            }
+            if let Some(operation) = operation {
+                state.retain_operation_id(operation)?;
+            }
+            state.recorded_view = state.checkout.root().file_table;
+            Ok(Some(state.publication))
         }
-        if let Some(operation) = operation {
-            state.retain_operation_id(operation)?;
-        }
-        state.recorded_view = state.checkout.root().file_table;
-        Ok(Some(state.publication))
+        .await;
+        notify();
+        result
     }
 }
