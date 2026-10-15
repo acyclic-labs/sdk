@@ -62,9 +62,19 @@ fn ordered_acquisition_and_out_of_order_drop() {
                         *high += 1;
                         drop(low);
                         let rejected = rejects_lower();
+                        let fresh = crate::sync::Mutex::new(());
+                        let attempted = Cell::new(false);
+                        let before_lock = catch_unwind(AssertUnwindSafe(|| {
+                            acquire(10, || {
+                                attempted.set(true);
+                                fresh.lock()
+                            })
+                        }))
+                        .is_err()
+                            && !attempted.get();
                         drop(high);
                         drop(first.lock().unwrap());
-                        rejected
+                        rejected && before_lock
                     })
                 })
                 .collect::<Vec<_>>();
