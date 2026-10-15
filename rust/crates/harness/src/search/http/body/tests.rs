@@ -20,9 +20,17 @@ impl AsyncRead for Reader<'_> {
         buffer: &mut [u8],
     ) -> Poll<std::io::Result<usize>> {
         let remaining = self.work.remaining().expect("read must remain admitted");
-        assert!(buffer.len() as u64 <= remaining.source_bytes_read);
-        assert!(buffer.len() as u64 * 2 <= remaining.bytes_copied);
-        assert!(remaining.items_examined >= 1);
+        let budget = self.work.budget();
+        let spent = self.work.receipt();
+        assert!(
+            buffer.len() as u64
+                <= budget.source_bytes_read - spent.source_bytes_read - remaining.source_bytes_read
+        );
+        assert!(
+            buffer.len() as u64 * 2
+                <= budget.bytes_copied - spent.bytes_copied - remaining.bytes_copied
+        );
+        assert!(budget.items_examined - spent.items_examined - remaining.items_examined >= 1);
         self.polls.set(self.polls.get() + 1);
         let count = buffer.len().min(self.bytes.len());
         buffer[..count].copy_from_slice(&self.bytes[..count]);
