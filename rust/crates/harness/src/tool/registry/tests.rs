@@ -1,5 +1,11 @@
 use super::*;
 
+fn checked<T, E: std::fmt::Debug>(
+    result: std::result::Result<T, E>,
+) -> std::result::Result<T, proptest::test_runner::TestCaseError> {
+    result.map_err(|error| proptest::test_runner::TestCaseError::fail(format!("{error:?}")))
+}
+
 fn prototype() -> Result<Tool> {
     Ok(Tool {
         hook_names: &[],
@@ -33,7 +39,7 @@ proptest::proptest! {
         revisions in proptest::collection::vec("[a-z]{1,32}", 3),
         actions in proptest::collection::vec((0u8..6, 0usize..3, 0usize..3), 0..32),
     ) {
-        let prototype = prototype().unwrap();
+        let prototype = checked(prototype())?;
         let mut registry = ToolRegistry::default();
         for (action, name_index, revision_index) in actions {
             let name = &names[name_index];
@@ -62,7 +68,7 @@ proptest::proptest! {
                     let mut tool = prototype.clone();
                     tool.definition.name.clone_from(name);
                     tool.definition.revision.clone_from(revision);
-                    additional.register((tool, None), &mut None, None).unwrap();
+                    checked(additional.register((tool, None), &mut None, None))?;
                     let combined = registry.clone().extend(additional);
                     proptest::prop_assert_eq!(combined.is_ok(), !existed);
                     if let Ok(combined) = combined { registry = combined; }
@@ -74,19 +80,19 @@ proptest::proptest! {
         {
             use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
             let token = CancellationToken::new();
-            let work = NativeMaterializationWork::new(WorkBudget {
+            let work = checked(NativeMaterializationWork::new(WorkBudget {
                 bytes_copied: 16_777_216, bytes_encoded: 16_777_216,
                 bytes_hashed: 16_777_216, source_bytes_read: 16_777_216,
                 items_examined: 1_000_000, allocation_operations: 100_000,
                 peak_allocation_bytes: 16_777_216, ..WorkBudget::default()
-            }, &token).unwrap();
-            let (mut copied, custody) = registry.clone_with_native_work(&work).unwrap();
+            }, &token))?;
+            let (mut copied, custody) = checked(registry.clone_with_native_work(&work))?;
             proptest::prop_assert!(indexed_names(&copied));
-            let remaining = work.remaining().unwrap();
+            let remaining = checked(work.remaining())?;
             for name in registry.selected.keys() {
-                copied.remove_from_model(name).unwrap();
+                checked(copied.remove_from_model(name))?;
             }
-            proptest::prop_assert_eq!(work.remaining().unwrap(), remaining);
+            proptest::prop_assert_eq!(checked(work.remaining())?, remaining);
             proptest::prop_assert!(indexed_names(&copied));
             drop(copied);
             drop(custody);
@@ -129,7 +135,7 @@ fn hiding_requires_no_allocation_or_payload_copy() -> Result<()> {
                         result = Some(registry.remove_from_model(&name));
                     });
                     times.push(started.elapsed());
-                    result.expect("removal ran")?;
+                    result.ok_or_else(|| Error::Invalid("removal did not run".into()))??;
                     let actual = (
                         allocation.count_total,
                         allocation.bytes_total,
