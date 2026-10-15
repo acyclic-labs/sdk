@@ -17,9 +17,16 @@ fn journal(original: Vec<u8>, edits: Vec<MaterializationEdit>) -> Materializatio
             },
             edits,
         },
-        root_identity: None,
-        preparation_identity: None,
-        preparation_progress: None,
+        root_identity: Some([1; 16]),
+        preparation_identity: Some(acyclic_fs::MaterializationPreparationIdentity {
+            operation: [2; 16],
+            target: [3; 16],
+            backup: [4; 16],
+        }),
+        preparation_progress: Some(acyclic_fs::MaterializationPreparationProgress {
+            parent: [5; 16],
+            pending: false,
+        }),
         work: WorkCounters::default(),
         preimages: Vec::new(),
         phase: MaterializationPhase::Preparing,
@@ -63,6 +70,15 @@ proptest! {
             };
         }
         journal.revision = counter;
+        journal.phase = match counter % 7 {
+            0 => MaterializationPhase::Preparing,
+            1 => MaterializationPhase::Prepared,
+            2 => MaterializationPhase::Applying,
+            3 => MaterializationPhase::Applied,
+            4 => MaterializationPhase::RollingBack,
+            5 => MaterializationPhase::RolledBack,
+            _ => MaterializationPhase::Preparing,
+        };
         let mut counters = serde_json::to_value(WorkCounters::default()).unwrap();
         for value in counters.as_object_mut().unwrap().values_mut() { *value = counter.into(); }
         journal.work = serde_json::from_value(counters).unwrap();
@@ -100,7 +116,11 @@ fn opaque_journal_bytes_fit_the_existing_one_megabyte_ledger() -> Result<()> {
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&work)?;
-    let bytes = io.encode(&expected, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
+    let bytes = io.encode(
+        &super::journal_encoding::Canonical(&expected),
+        acyclic_stream::MAX_RECORD_BYTES as u64,
+        false,
+    )?;
     let (actual, custody) = crate::filesystem::native_decoded(io.decode(
         std::marker::PhantomData::<MaterializationJournal>,
         &bytes,
