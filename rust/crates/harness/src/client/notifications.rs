@@ -133,8 +133,12 @@ impl NotificationView {
             ));
         }
         let notification = Arc::new(notification);
-        self.latest
-            .insert(notification.task.clone(), Arc::clone(&notification));
+        if let Some(previous) = self.latest.get_mut(&notification.task) {
+            *previous = Arc::clone(&notification);
+        } else {
+            self.latest
+                .insert(notification.task.clone(), Arc::clone(&notification));
+        }
         self.pending.push_back(notification);
         Ok(true)
     }

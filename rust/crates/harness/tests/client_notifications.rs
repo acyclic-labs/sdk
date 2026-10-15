@@ -258,6 +258,39 @@ fn queue_insertion_cost_is_independent_of_payload_size() -> Result<()> {
 }
 
 #[test]
+fn existing_task_updates_allocate_only_shared_record_metadata() -> Result<()> {
+    let mut previous_bytes = None;
+    for task_bytes in [8, 1_048_576] {
+        let mut view = NotificationView::new(1, 1, 1_048_640)?;
+        view.apply(AttentionNotification {
+            task: "t".repeat(task_bytes),
+            ..notice(1, AttentionEvent::TaskSettled)
+        })?;
+        view.pop();
+        let next = AttentionNotification {
+            task: "t".repeat(task_bytes),
+            ..notice(2, AttentionEvent::TaskFailed)
+        };
+        let mut result = Ok(false);
+        let allocation = allocation_counter::measure(|| {
+            result = view.apply(next);
+        });
+        assert!(result?);
+        assert_eq!(allocation.count_total, 1);
+        if let Some(previous) = previous_bytes {
+            assert_eq!(allocation.bytes_total, previous);
+        }
+        previous_bytes = Some(allocation.bytes_total);
+        assert_eq!(
+            view.front()
+                .map(|record| (record.task.len(), record.sequence)),
+            Some((task_bytes, 2))
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn full_queue_preserves_attention_for_replay() -> Result<()> {
     let mut view = NotificationView::new(2, 1, 1024)?;
     let first = notice(3, AttentionEvent::TaskBlocked);
