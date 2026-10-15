@@ -83,12 +83,16 @@ impl ProofDataCustody {
         original: &Arc<crate::demand::NativeDemandReadMeter>,
     ) -> bool {
         let mut completed = self.completed_data_work.lock();
-        if let Some(bound) = completed.native_original.as_ref() {
+        let bound = if let Some(bound) = completed.native_original.as_ref() {
             bound.as_ptr() == Arc::as_ptr(original)
         } else {
             completed.native_original = Some(Arc::downgrade(original));
             true
+        };
+        if bound {
+            self.retry_native_accounting();
         }
+        bound
     }
 
     #[cfg(not(target_arch = "wasm32"))]

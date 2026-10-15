@@ -328,6 +328,11 @@ impl NativeDemandReadMeter {
             .ok_or(Error::InvalidLayout)?;
         entry.native = true;
         entry.retired = 0;
+        entry.token.retry_native_accounting();
         Ok(token.clone())
     }
 }
+
+#[cfg(all(test, feature = "memory"))]
+#[path = "admissions_tests.rs"]
+mod tests;
