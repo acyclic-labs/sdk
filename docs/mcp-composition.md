@@ -1,9 +1,9 @@
 # MCP composition
 
-Slice F extends the ordinary versioned `ToolRegistry`; it does not add a tool
-scheduler, registry, process owner, or effect journal. MCP is explicitly selected
-and construction performs no I/O. The current source is **unqualified work in
-progress** until the evidence table below is completed on its final revision.
+F/G extends the ordinary versioned `ToolRegistry`; it does not add a tool
+scheduler, registry, process owner, OAuth engine, or effect journal. MCP is
+explicitly selected and construction performs no I/O. Final-source qualification
+is required; the historical receipts below do not qualify subsequent changes.
 
 `McpCatalog::install` validates the entire replacement before publishing it. Its
 consumer-selected server namespace is one component (no dots), independent of
@@ -58,11 +58,12 @@ HTTP has no remote receipt API: reconcile returns `None` without network I/O.
 Expired sessions and interrupted calls remain indeterminate; future setup can
 admit a new session but cannot resubmit the old uncertain call.
 
-G owns credential/OAuth flows, resources, prompts, sampling, elicitation and
-server request routing. This client advertises no callback capabilities and
-rejects server requests requiring such a router. Ordinary notifications do not
-cause an implicit reload. G's future routing uses its own ordinary model and
-interaction admission; F's client does not advertise those capabilities.
+G adds typed resources/prompts, reusable maintained-library OAuth primitives and
+opt-in sampling/form elicitation. Callback capabilities remain absent by default.
+`McpRuntimeCallbacks` routes enabled requests through the original scoped task,
+`StockExecutor::model_step` and `TaskContext::interact`; it does not introduce a
+callback scheduler, retry worker or journal. Ordinary notifications never
+implicitly reload a catalog. Stdio advertises no asynchronous callback route.
 
 PR5's landed native request uses null stdin and bounded one-shot output capture.
 An approved MCP stdio exchange needs a small extension of that existing admitted
@@ -78,18 +79,36 @@ completion. It keeps the same intent, output, deadline and cleanup owner;
 completion closes stdin and terminates containment before bounded output drain.
 No writer thread or separate process loop was introduced. The existing admitted
 provider validates the descriptor and uses this input branch. Each approved
-process effect initializes one MCP session and performs one discovery page or
-tool call; this does not claim a persistent server supervisor. A stopped capture
+process effect initializes one MCP session and performs one requested tool,
+catalog, resource or prompt operation; this does not claim a persistent server
+supervisor. A stopped capture
 remains uncertain. Complete native receipts use the same codec/typed response
 boundary without performing its writes, including after provider recovery.
 `McpStdioExchange` wraps `rmcp`'s bounded newline codec for that extension.
 It validates initialization before emitting the initialized notification and
 one request, pins distinct IDs, and fails permanently after malformed output.
 Its parser state is transient; it does not substitute for native durable receipts.
+The finite native path uses those same RPC and seven-method service validators.
+RPC envelope and UUID checks borrow or move the original value; they do not
+clone a response or infer host authority from its fields. Closed typed DTO
+validation reserves a logical quota on the original operation ledger before
+Serde runs, including nested tagged/untagged content and owned diagnostics.
+Typed temporaries drop before that reservation; a decode error retains its
+actual Serde cause and reservation until physical error drop. This is a logical
+storage bound, not allocator metadata, RSS, or an observed allocation count.
 The ingress adapter validates bounded complete frames as `RawValue` before the
 library codec sees them, preventing its malformed-input debug event from logging
-private stdout. The codec decodes raw JSON; Harness then hydrates it using its
-existing unbounded-depth JSON contract. A retained scan offset visits incomplete
+private stdout. The codec decodes raw JSON; ordinary Harness hydration retains
+its existing depth policy. The native-work entry points use the same phases and
+seven methods, with bounded lexical admission (maximum depth 256), an audited
+RawValue/Value quota before trusted serde, and the original operation's live
+allocation ledger. First/follow-up write guards and the final result guard move
+to the process caller; that caller must physically drop payloads before guards.
+Partial stdout and parser storage retain custody until physical exchange drop.
+Cumulative stdout denial precedes copying, and accounting-mode/ledger mismatch,
+malformed output, or cancellation permanently fails the exchange. These APIs do
+not create a meter, launch owner, callback route, retry, or process continuation.
+A retained scan offset visits incomplete
 prefix bytes once. Development controls exercise 192-level JSON, split BOM/CRLF,
 and malformed private input, with an unguarded library log as a negative control.
 Native MCP tool-journal binding, receipt fault/restart and actual host-death
@@ -741,3 +760,158 @@ Strict example Clippy passes without a new suppression. The final rebuild used
 one Cargo job after 34% CPU/40,432 MiB free-memory headroom and completed in
 3m05s; the exact final batch completed in 7.83 seconds. Formatting and whitespace
 checks pass. These are development receipts; full final qualification stays open.
+
+## F/G source controls and final qualification
+
+Resources and prompts share the maintained `rmcp` contracts, bounded decoder and
+explicit per-operation transport admission. Rust exposes typed
+`list_resources`, `list_resource_templates`, `read_resource`, `list_prompts` and
+`get_prompt`; `service_with_context` also supplies ordinary task authority to
+enabled callbacks. WASM exposes `serviceJson` for the same allowlist and runtime
+input/result validation. Stdio uses the existing approved `ProcessTree` owner for
+all five methods. Returned content is external data, never a system instruction,
+context insertion, publication or permission by itself.
+
+`HttpMcpTransport::with_callbacks` binds an explicit `McpCallbackPolicy` before
+negotiation. Catalog installation rejects a different callback namespace or
+revision before publication. The transport and retained tool revision keep that
+policy immutable. `McpCallbackRequest` pins the full JSON-RPC input and enclosing
+operation; its derived operation excludes the payload so changing a replayed
+request conflicts in the existing execution journal rather than creating a new
+attempt. Generated `validateMcpCallbackRequest` and `mcpCallbackOperation` are
+inert contract/identity primitives, not executable task authority.
+
+The concrete `McpRuntimeCallbacks` adapter takes the existing executor and
+execution journal, an explicit model name and `McpSamplingPolicy`. Sampling
+requires `model:generate`; context construction uses ordinary context admission.
+Remote system prompts remain external user data. Transcript order and assistant
+roles are retained; an assistant-final transcript uses the host's explicit
+continuation input, not a fabricated fallback. Image/audio sampling requires an
+explicit native-media policy and normal scoped `stage_file_once` publication;
+decoded bytes and native-model work are bounded before dispatch. The adapter
+removes the supplied executor's ordinary tool registry: no sampling tool
+capability is advertised, and returned tool calls are unsupported.
+Form elicitation requires `interaction:route`, compiled schema validation and
+the ordinary recorded interaction answer. URL elicitation is not advertised.
+
+The same HTTP SSE reader remains active while an ordinary callback admission is
+pending. A matching cancellation drops that future and leaves its recorded
+prefix recoverable. Callback replies have strict identity/result validation and
+one response POST. A lost ACK stays indeterminate without retrying that POST or
+model dispatch; a retained ordinary model/interaction result can be reconciled
+on restart. HTTP still invents no server receipt or GET-resume guarantee.
+The one-shot stdio provider has no asynchronous server-request admission
+boundary, so it explicitly rejects such requests rather than bypassing
+ordinary admission or advertising unsupported capabilities.
+
+Native `mcp-oauth` reuses `rmcp::auth` discovery, registration, PKCE, issuer/state
+validation, refresh guards and credential restoration. `authorize` opens an
+ordinary scoped approval before a mandatory private `McpOAuthInteraction`.
+Hosts supply private `CredentialStore`, persistent `StateStore` and
+`OAuthHttpClient` capabilities. The latter must use the host's existing admitted
+network-effect owner for token/refresh effects; the bare maintained default
+HTTP client is not a durable receipt owner. Store deletion must reject an
+already consumed state, including concurrent consumers. `recover` uses the
+original private client configuration, authorization URL and callback receipt;
+it never manufactures replacement PKCE state or an independent recovery ledger.
+An uncertain token exchange remains indeterminate and cannot resubmit a consumed
+authorization code. Optional `OAuthMcpHttpProvider` reuses the existing bounded
+native HTTP provider, requires an exact HTTPS authority, installs sensitive
+Bearer headers privately, and performs no 401 retry. Credentials, approval URLs,
+callbacks and internal OAuth error text are not model context or default
+environment variables.
+
+New controls are authored in `tests/mcp_cases/{services,oauth}.rs`, included by
+the existing durable MCP suite. They exercise real HTTP endpoints, persistent
+execution/interaction journals, ordinary live-task stock model/tool/callback
+execution and physical reopen; typed resources/prompts, cancellation during a
+started model effect, lost callback ACK, changed replay pins, policy/grant/schema
+combinations, source ordering, scoped native media and bounded ingress fuzzing.
+OAuth controls use real discovery/authorization/token endpoints and persistent
+private host stores; independently verify the PKCE SHA-256 challenge, reject
+forged/missing issuer and state before token POST, refresh, recover a retained
+pre-token callback and prohibit uncertain token replay. Model providers and
+participant choices are deterministic fixtures using production admission, not
+claims of a remote model tokenizer or a real external authorization service.
+The existing approved native subprocess batch now covers all five G services;
+the shared real Node/Chromium page/worker/reload consumer and installed public
+package also exercise the shipped WASM service boundary.
+
+No build, test, linter or formatter was run for this source update. These controls
+are **authored, unrun**, not waived qualification or a replacement for required
+final-main CI. Integrate the optional protocol feature/dependency and generated
+WASM/public facade before running:
+
+```sh
+cargo test -p acyclic-harness --no-default-features --features filesystem-local,native-execution,mcp-http,mcp-oauth --lib --tests --examples --locked
+cargo clippy -p acyclic-harness --no-default-features --features filesystem-local,native-execution,mcp-http,mcp-oauth --all-targets --locked -- -D warnings
+bun scripts/build-wasm.mjs harness
+bun test typescript/packages/harness/test
+bun run --cwd typescript/packages/harness test:browser:mcp
+bash scripts/check-harness-package.sh /tmp/harness-mcp-qualified
+```
+
+The package output must be an absent absolute path. The required native CI lane
+must enable `mcp-http,mcp-oauth`; default features do not execute these optional
+endpoint/OAuth controls. Required platform, installed-artifact, browser,
+formal/fault and final-main CI gates remain distinct evidence obligations;
+historical skipped or syntax-only runs do not satisfy them.
+
+## Maintained protocol library 3.5.1 cutover
+
+The required root dependency is exact `rmcp = "=3.5.1"`, replacing 3.3.0 without
+a retained dependency alias or fallback. The audited published crate hashes to
+SHA-256 `ab5023804cbe0304cbe06197ac16e645a0a0d0ffa2953bf735c15c2fa0213350`.
+Upstream [release notes](https://docs.rs/crate/rmcp/3.5.1/source/CHANGELOG.md),
+[model contracts](https://docs.rs/crate/rmcp/3.5.1/source/src/model.rs) and
+[OAuth contracts](https://docs.rs/crate/rmcp/3.5.1/source/src/transport/auth.rs)
+define the consumer changes below.
+
+Library version and admitted wire/session version are different pins.
+`ProtocolVersion::LATEST` now denotes bootstrap-neutral `2026-07-28`, while
+`LATEST_WITH_INITIALIZE` is `2025-11-25`. This initialized-session composition
+deliberately retains its explicit `2025-11-25` wire contract, matching the latter;
+it does not use the dependency's default/latest version to silently change an
+admitted session. The maintained codec/model/OAuth APIs are upgraded; no
+deprecated `ServerInfo` or `ClientInfo` aliases are used. Its autonomous
+discovery/session workers are not introduced into the existing admitted owner.
+
+Upstream `CallToolResult` distinguishes present `"structuredContent": null`
+from an omitted field. The Harness result envelope now preserves that same
+distinction through HTTP, stdio decoding, output-schema validation, serialization
+and durable replay: present null is `Some(Value::Null)`; omission remains `None`.
+A nullable output contract can therefore accept explicit null, while missing
+required structured output still fails. Public result types and their complete
+runtime schema validation remain unchanged.
+
+OAuth 3.5.1 adds definitive `TokenRefreshRejected` for `invalid_grant`.
+`get_access_token` classifies that as `AuthorizationRequired`; Harness maps
+both to a sanitized unauthorized result, not uncertain completion or an automatic
+authorization/refresh retry. Transport/token-exchange/unknown refresh failures
+still preserve the enclosing operation as indeterminate. The supplied host
+`CredentialStore::on_refresh_token_rejected` receives the attempted credentials
+under the existing refresh guard. A host that clears or quarantines rejected
+credentials must compare that attempt with its current private credentials and
+must not reacquire the held guard or delete a concurrent replacement. The
+maintained default hook leaves credentials unchanged; hosts requiring explicit
+reauthorization must implement their own selected private-store policy. No SDK
+credential owner, callback journal, retry loop or default environment is added.
+
+The library also fixes float decoding through `serde_json::Number`. Sampling
+continues to validate against the maintained request contracts before ordinary
+model admission, preserving the complete request pin rather than converting
+unknown JSON into fake compile-time declarations. HTTP/resource/prompt APIs,
+bounded stdio codec and supplied OAuth HTTP-client capability remain compatible.
+The existing native reqwest 0.12 provider and the maintained auth client's 0.13
+dependency remain separate; this source cutover does not alter their resolver,
+Serde versions, shared manifests or lockfiles.
+
+No build, test, linter or formatter was run for this migration. Parent-owned
+qualification must use the commands above with the exact 3.5.1 lockfile and fresh
+WASM. Required migration controls are real endpoint/disk-reopen preservation of
+explicit null versus omission under nullable and nonnullable output schemas,
+definitive OAuth `invalid_grant` notification under the held guard without
+clearing newer credentials, lost/5xx refresh remaining uncertain without a
+second POST, fractional sampling temperature decoding, and unchanged initialized
+session negotiation against `LATEST_WITH_INITIALIZE`. Historical receipts do
+not qualify this dependency/source revision.

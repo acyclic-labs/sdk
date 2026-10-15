@@ -47,6 +47,19 @@ publication for an admitted caller workflow. Effectful policy observations and
 recovery belong to that workflow's journal; an in-memory resolution cache is not
 durable evidence.
 
+## Recursive preparation
+
+The ordinary recursive workflow commits its bounded selected-source intent
+before staging a source checkpoint or admitting preparation. Recovery loads that
+exact authenticated canonical cut, and the operation-only publication receipt
+recovers the original immutable checkpoint instead of selecting a newer source.
+`content_budget` bounds measured receipt observation, checkpoint reads and
+publication with their actual remaining work. Explicit `input_files` authorize
+only the exact launch files; referenced child messages use the configured outer
+and inner JSON pointers, not recursive descriptor guessing. Source checkpoints
+are recovery data, not automatically delegated launch-file authority.
+
+
 ## Validation scope
 
 | Invariant | Production mechanism | Assumptions | Verification and evidence |
