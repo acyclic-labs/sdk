@@ -164,12 +164,22 @@ fn rebinding_with_live_request_capacity_preserves_both_ledgers() -> TestResult {
     let cancellation = CancellationToken::new();
     let first = NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
     let second = NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
+    let denied = second.native_volume_work(WorkBudget {
+        allocation_operations: 0,
+        ..BUDGET
+    })?;
     let baseline = first.live_allocation_bytes();
     let second_baseline = second.live_allocation_bytes();
     let mut work = AuthorityWork::native(&first, &cancellation);
     let bytes = work.vec::<u8>(16)?;
     let initial = work.native_meter()?;
     let retained = first.live_allocation_bytes();
+    work.original = Some(&denied);
+    let second_spent = second.receipt();
+    assert!(work.native_meter().is_err());
+    assert_eq!(first.live_allocation_bytes(), retained);
+    assert_eq!(work.request_allocation.as_ref().unwrap().bytes(), 16);
+    assert_eq!(second.receipt(), second_spent);
     work.original = Some(&second);
     let rebound = work.native_meter()?;
     assert!(!Arc::ptr_eq(&initial, &rebound));
