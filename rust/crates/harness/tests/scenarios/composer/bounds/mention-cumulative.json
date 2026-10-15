@@ -1,0 +1,6 @@
+{
+  "prompt": "@a @b",
+  "seed": {"a":"1234","b":"5678"},
+  "maximum_bytes": 5,
+  "expect": {"error":"bound"}
+}

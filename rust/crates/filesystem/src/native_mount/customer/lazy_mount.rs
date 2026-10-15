@@ -123,11 +123,7 @@ where
 
     /// Publishes pending authored effects with an unrestricted permit.
     pub async fn sync(&self) -> Result<(), MountLifecycleError> {
-        let work = NativeMaterializationWork::new(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .map_err(|(cause, _)| MountLifecycleError::Materialization(cause))?;
+        let work = self.native_work()?;
         self.sync_with_permit(PublicationPermit::Unrestricted, &work, |_| {
             std::future::ready(Ok::<(), MountLifecycleError>(()))
         })

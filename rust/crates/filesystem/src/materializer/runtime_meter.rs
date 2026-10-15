@@ -96,6 +96,18 @@ macro_rules! demand_meter {
             fn record_examination(&self, items: u64, copied: u64) -> std::io::Result<()> {
                 self.io(|state| state.record(crate::WorkCounters { items_examined: items, bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }))
             }
+            fn reserve_examination(&self, items: u64) -> std::io::Result<()> {
+                self.io(|state| state.reserve(crate::WorkCounters { items_examined: items, ..crate::WorkCounters::UNCHARGED }))
+            }
+            fn cancel_reserved_examination(&self, items: u64) {
+                self.cancel(|state| state.refund(crate::WorkCounters { items_examined: items, ..crate::WorkCounters::UNCHARGED }));
+            }
+            fn record_reserved_examination(&self, items: u64) -> std::io::Result<()> {
+                self.io(|state| {
+                    let probe = crate::WorkCounters { items_examined: items, ..crate::WorkCounters::UNCHARGED };
+                    state.complete(probe, probe)
+                })
+            }
             fn examine(&self, items: u64, copied: u64) -> std::io::Result<()> {
                 self.io(|state| state.charge(crate::WorkCounters { items_examined: items, bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }))
             }

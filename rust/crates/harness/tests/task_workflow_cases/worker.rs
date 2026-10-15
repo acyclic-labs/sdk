@@ -214,6 +214,7 @@ pub(super) async fn worker_restart_with_options(
     tools.register(
         (
             Tool {
+                hook_names: &[],
                 definition: ToolDefinition {
                     name: "test.restore".into(),
                     revision: "1".into(),

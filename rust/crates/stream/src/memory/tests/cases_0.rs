@@ -278,6 +278,37 @@ async fn single_record_reads_seek_deep_history_and_prefixes() -> Result<(), Stre
         assert_eq!(record.sequence, expected_tail - 1);
         assert_eq!(record.value.as_ref(), expected);
     }
+    let child = path("seek/header-cut")?;
+    provider
+        .fork(ForkRequest {
+            source: source.clone(),
+            destination: child.clone(),
+            at_tail: Some(1),
+            idempotency_key: None,
+        })
+        .await?;
+    provider
+        .append(AppendRequest {
+            path: child.clone(),
+            records: vec![Bytes::from_static(b"child")],
+            if_tail: Some(1),
+            idempotency_key: None,
+        })
+        .await?;
+    for (path, expected) in [(child, b"child".as_slice()), (source, b"1".as_slice())] {
+        let record = provider
+            .read(ReadRequest {
+                path,
+                from: 1,
+                limit: 1,
+            })
+            .await?
+            .next()
+            .await
+            .ok_or(StreamError::Unavailable)??;
+        assert_eq!(record.sequence, 1);
+        assert_eq!(record.value.as_ref(), expected);
+    }
     Ok(())
 }
 

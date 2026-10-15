@@ -15,13 +15,13 @@ pub(super) struct RemoteTool {
     pub(super) transport: Arc<dyn McpToolTransport>,
 }
 impl RemoteTool {
-    pub(super) fn result(&self, result: Value) -> Result<ToolResult> {
-        let mut value = super::services::validate_result("tools/call", result, None)?;
-        if value.get("isError").and_then(Value::as_bool) != Some(true)
+    pub(super) fn result(&self, mut result: rmcp::model::CallToolResult) -> Result<ToolResult> {
+        if result.is_error != Some(true)
             && let Some(schema) = &self.output_schema
         {
-            let structured = value
-                .get("structuredContent")
+            let structured = result
+                .structured_content
+                .as_ref()
                 .ok_or_else(|| Error::Invalid("MCP structured result missing".into()))?;
             crate::executor::validate_json_schema_value(
                 schema,
@@ -30,6 +30,9 @@ impl RemoteTool {
                 &mut None,
             )?;
         }
+        let structured = result.structured_content.take();
+        let mut value =
+            serde_json::to_value(result).map_err(|error| Error::Invalid(error.to_string()))?;
         let fields = value
             .as_object_mut()
             .ok_or_else(|| Error::Invalid("MCP tool result must be an object".into()))?;
@@ -40,6 +43,9 @@ impl RemoteTool {
             ) && (key != "_meta" || !value.is_null())
         });
         fields.entry("isError").or_insert(Value::Bool(false));
+        if let Some(structured) = structured {
+            fields.insert("structuredContent".into(), structured);
+        }
         Ok(ToolResult { value })
     }
 }

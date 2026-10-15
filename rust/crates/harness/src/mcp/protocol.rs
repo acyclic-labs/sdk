@@ -42,12 +42,12 @@ pub trait McpToolTransport: acyclic_stream::ProviderPlatform {
         name: &'a str,
         arguments: Value,
         context: Option<ToolContext>,
-    ) -> BoxProviderFuture<'a, Result<Value>>;
+    ) -> BoxProviderFuture<'a, Result<rmcp::model::CallToolResult>>;
 
     /// Queries the exact prior operation without redispatching it.
     fn reconcile<'a>(
         &'a self,
         operation: OperationId,
         context: Option<ToolContext>,
-    ) -> BoxProviderFuture<'a, Result<Option<Value>>>;
+    ) -> BoxProviderFuture<'a, Result<Option<rmcp::model::CallToolResult>>>;
 }

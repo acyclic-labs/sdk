@@ -10,6 +10,7 @@ pub(super) async fn publish_generation_async_inner<O, E, F, Fut, G, Dispatch, R>
     request: PublishGenerationRequest,
     intent: PublicationIntent,
     closure_limits: ClosureLimits,
+    cache: Option<&Mutex<CachedProofs>>,
     cancellation: &CancellationToken,
     accounting: &mut KernelAccounting<'_>,
     before_publication: &mut F,
@@ -58,7 +59,7 @@ where
                     cancellation,
                 },
             )
-            .prove(request.generation_root)
+            .prove(request.generation_root, cache)
             .await
             .map_err(E::from)?
         }
@@ -89,7 +90,7 @@ where
                     ))
                 })?;
             match crate::kernel::closure::ProofContext::new(objects, closure_limits, meter.clone())
-                .prove(request.generation_root)
+                .prove(request.generation_root, cache)
                 .await
             {
                 Ok((proof, guard)) => {
@@ -159,9 +160,13 @@ where
             output.1,
         ));
     }
-    let scope = crate::PublicationScope::Closure {
-        objects: &output.0.objects,
-        proven_at,
+    let scope = if cache.is_some() && objects.collection().is_none() {
+        crate::PublicationScope::Everything
+    } else {
+        crate::PublicationScope::Closure {
+            objects: &output.0.objects,
+            proven_at,
+        }
     };
     let _publication_hold = match accounting {
         #[cfg(not(target_arch = "wasm32"))]

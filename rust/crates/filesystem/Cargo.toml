@@ -13,6 +13,21 @@ keywords = ["filesystem", "copy-on-write", "versioned", "storage"]
 categories = ["filesystem", "data-structures"]
 
 [[test]]
+name = "projfs_enumeration"
+path = "tests/projfs_enumeration.rs"
+required-features = ["local", "native-mount"]
+
+[[test]]
+name = "projfs_profile"
+path = "tests/projfs_profile.rs"
+required-features = ["local", "native-mount"]
+
+[[test]]
+name = "projfs_metadata"
+path = "tests/projfs_metadata.rs"
+required-features = ["local", "memory", "native-mount"]
+
+[[test]]
 name = "main"
 path = "tests/main.rs"
 
@@ -25,6 +40,11 @@ required-features = ["memory"]
 name = "native_owner_registry"
 path = "tests/native_owner_registry.rs"
 required-features = ["native-watch"]
+
+[[test]]
+name = "projfs_names"
+path = "tests/projfs_names.rs"
+required-features = ["native-mount"]
 
 [[test]]
 name = "accounting_reconciliation"

@@ -106,7 +106,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         cancellation,
                     },
                 )
-                .prove(generation_root)
+                .prove(generation_root, None)
                 .await?;
                 (
                     proof,

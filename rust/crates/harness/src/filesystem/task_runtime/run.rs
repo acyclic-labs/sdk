@@ -102,7 +102,7 @@ where
         let task = TaskId::from_bytes(operation_id.into_bytes());
         let admission = self.admission_observed(task, io).await?;
         let fence = observed::lease_fence(lease, io)?;
-        let run = async {
+        let run = || async {
             let fence = &fence;
             #[cfg(not(target_arch = "wasm32"))]
             let context = if let Some(io) = io {
@@ -311,12 +311,15 @@ where
                     io.preflight(hashed)?;
                     io.charge(hashed)?;
                 }
-                let mut digest = blake3::Hasher::new();
-                digest.update(b"harness/v2/task-worker-step\0");
-                digest.update(&task.into_bytes());
-                digest.update(&revision.to_be_bytes());
-                let mut bytes = [0; 16];
-                bytes.copy_from_slice(&digest.finalize().as_bytes()[..16]);
+                let bytes = {
+                    let mut digest = blake3::Hasher::new();
+                    digest.update(b"harness/v2/task-worker-step\0");
+                    digest.update(&task.into_bytes());
+                    digest.update(&revision.to_be_bytes());
+                    let mut bytes = [0; 16];
+                    bytes.copy_from_slice(&digest.finalize().as_bytes()[..16]);
+                    bytes
+                };
                 #[cfg(not(target_arch = "wasm32"))]
                 let native_input = if let Some(CommandDispatch::Ready {
                     custody: Some(primary),

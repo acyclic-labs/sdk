@@ -27,6 +27,8 @@ mod effects;
 mod mail;
 mod model;
 mod preparation;
+#[cfg(test)]
+mod tests;
 mod tool;
 use tool::was_dispatched;
 

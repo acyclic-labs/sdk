@@ -1,5 +1,7 @@
 use super::*;
 
+const MAX_TASK_RUNTIME_FUTURE_BYTES: usize = 4096;
+
 #[tokio::test]
 async fn stock_model_deadline_preserves_original_attempt_and_never_dispatches_expired_work()
 -> Result<()> {
@@ -124,7 +126,14 @@ async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlemen
         acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&work)?;
-    let runtime = fixture.runtime(Some(&io)).await?;
+    let opening = fixture.runtime(Some(&io));
+    let bytes = std::mem::size_of_val(&opening);
+    eprintln!("native runtime open future: {bytes} bytes");
+    assert!(
+        bytes <= MAX_TASK_RUNTIME_FUTURE_BYTES,
+        "native runtime open future is {bytes} bytes"
+    );
+    let runtime = opening.await?;
     let input = super::super::super::ModelTaskCommand {
         input: crate::model::ModelContent::Text("question".into()),
         selected_context: None,
@@ -152,9 +161,14 @@ async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlemen
             &work,
         )?),
     )?;
-    let (attempt, custody) = runtime
-        .resume_task_with_native_work(lease, custody, &commands, 2, &work)
-        .await?;
+    let recovery = runtime.resume_task_with_native_work(lease, custody, &commands, 2, &work);
+    let bytes = std::mem::size_of_val(&recovery);
+    eprintln!("native resume future: {bytes} bytes");
+    assert!(
+        bytes <= MAX_TASK_RUNTIME_FUTURE_BYTES,
+        "native resume future is {bytes} bytes"
+    );
+    let (attempt, custody) = recovery.await?;
     let lease = match attempt {
         TaskWorkerAttempt::Unresolved {
             lease,
@@ -176,7 +190,14 @@ async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlemen
     let before = work.receipt();
     drop(commands);
     drop(runtime);
-    let reopened = fixture.runtime(Some(&io)).await?;
+    let opening = fixture.runtime(Some(&io));
+    let bytes = std::mem::size_of_val(&opening);
+    eprintln!("native runtime reopen future: {bytes} bytes");
+    assert!(
+        bytes <= MAX_TASK_RUNTIME_FUTURE_BYTES,
+        "native runtime reopen future is {bytes} bytes"
+    );
+    let reopened = opening.await?;
     let commands = reopened.commands().with_model(
         &model,
         provider.clone(),
@@ -186,9 +207,15 @@ async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlemen
             &work,
         )?),
     )?;
-    let (attempt, custody) = reopened
-        .reconcile_task_with_native_work(lease, custody, &commands, 1, 1_000, &work)
-        .await?;
+    let recovery =
+        reopened.reconcile_task_with_native_work(lease, custody, &commands, 1, 1_000, &work);
+    let bytes = std::mem::size_of_val(&recovery);
+    eprintln!("native reconciliation future: {bytes} bytes");
+    assert!(
+        bytes <= MAX_TASK_RUNTIME_FUTURE_BYTES,
+        "native reconciliation future is {bytes} bytes"
+    );
+    let (attempt, custody) = recovery.await?;
     if let TaskWorkerAttempt::Unresolved { error, .. } = attempt {
         return Err(error);
     }

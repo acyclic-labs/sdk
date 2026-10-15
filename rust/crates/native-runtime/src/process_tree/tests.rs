@@ -1,6 +1,61 @@
 use super::ProcessTree;
 
 use std::io;
+
+#[test]
+fn early_stdin_closure_preserves_literal_capture_but_rejects_incomplete_exchange() {
+    use std::process::Stdio;
+    let input = vec![b'x'; 1_048_576];
+    for literal in [true, false] {
+        #[cfg(windows)]
+        let mut command = crate::shell_command(
+            "echo fixture-output&echo fixture-error 1>&2&exit /b 7",
+            Some("cmd"),
+        );
+        #[cfg(not(windows))]
+        let mut command = crate::shell_command(
+            "exec 0<&-; printf fixture-output; printf fixture-error >&2; exit 7",
+            Some("sh"),
+        );
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut tree = ProcessTree::spawn(&mut command).expect("spawn early-closing child");
+        let input = if literal {
+            crate::CaptureInput::Literal(&input)
+        } else {
+            crate::CaptureInput::Exchange {
+                initial: &input,
+                maximum: input.len(),
+            }
+        };
+        let result = tree.wait_with_output(
+            std::time::Duration::from_secs(5),
+            4096,
+            Some(input),
+            || Ok(()),
+            |_| Ok(crate::ProcessInput::default()),
+            None,
+            None,
+        );
+        if literal {
+            let output = result.expect("literal input may be closed early");
+            assert_eq!(output.status.code(), Some(7));
+            assert!(String::from_utf8_lossy(&output.stdout).starts_with("fixture-output"));
+            assert!(String::from_utf8_lossy(&output.stderr).starts_with("fixture-error"));
+        } else {
+            assert_eq!(
+                result
+                    .expect_err("exchange input must be delivered")
+                    .error
+                    .kind(),
+                io::ErrorKind::BrokenPipe
+            );
+        }
+        assert!(tree.is_reaped());
+    }
+}
 #[cfg(unix)]
 #[test]
 fn prepared_closed_spawn_uses_owned_birth_environment_and_no_late_allocation() -> std::io::Result<()>

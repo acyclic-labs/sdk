@@ -206,6 +206,7 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
     tools.register(
         (
             Tool {
+                hook_names: &[],
                 definition: definition.clone(),
                 executor: projector.clone(),
                 projection: projector.clone(),

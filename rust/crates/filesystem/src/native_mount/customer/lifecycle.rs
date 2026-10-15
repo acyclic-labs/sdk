@@ -6,17 +6,17 @@ use super::*;
 pub(crate) fn with_session_work(
     session: &Mutex<Option<NativeMountSession>>,
     source: &dyn MountFilesystem,
-    operation: fn(&NativeMountSession, &NativeMaterializationWork) -> Result<(), NativeMountError>,
+    operation: impl FnOnce(
+        &NativeMountSession,
+        &NativeMaterializationWork,
+    ) -> Result<(), NativeMountError>,
 ) -> Result<(), MountLifecycleError> {
     with_live_session(session, |session| {
-        let work = match source.native_original_work()? {
-            Some(work) => work,
-            None => NativeMaterializationWork::new(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
-            .map_err(|(error, _)| NativeMountError::from(error))?,
-        };
+        let work = source
+            .native_original_work()?
+            .ok_or(NativeMountError::Lifecycle(
+                "mounted volume has no original native work",
+            ))?;
         operation(session, &work)
     })
 }
