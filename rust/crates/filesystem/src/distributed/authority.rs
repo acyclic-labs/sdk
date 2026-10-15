@@ -112,31 +112,26 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         authority: AuthorityId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<AuthoritySnapshot, AuthorityStoreError> {
-        self.fork_snapshot_record::<false>(authority, work)
+        self.fork_snapshot_payload::<false>(authority, work)
             .await
             .map(|(snapshot, _)| snapshot)
     }
 
-    pub(super) async fn fork_snapshot_record<const RETAIN: bool>(
+    pub(super) async fn fork_snapshot_payload<const RETAIN: bool>(
         &self,
         authority: AuthorityId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<
         (
             AuthoritySnapshot,
-            Option<(
-                DurableCommit,
-                acyclic_stream::Record,
-                ProviderAllocation,
-                usize,
-            )>,
+            Option<(acyclic_stream::Record, ProviderAllocation, usize)>,
         ),
         AuthorityStoreError,
     > {
         let baseline = work.allocations.live_bytes();
         let result = async {
             self.authority_require_live(authority, work).await?;
-            self.snapshot_record::<RETAIN>(authority, work).await
+            self.snapshot_payload::<RETAIN>(authority, work).await
         }
         .await;
         if result.is_err() && !work.is_native() {
@@ -155,24 +150,19 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         authority: AuthorityId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<AuthoritySnapshot, AuthorityStoreError> {
-        self.snapshot_record::<false>(authority, work)
+        self.snapshot_payload::<false>(authority, work)
             .await
             .map(|(snapshot, _)| snapshot)
     }
 
-    async fn snapshot_record<const RETAIN: bool>(
+    async fn snapshot_payload<const RETAIN: bool>(
         &self,
         authority: AuthorityId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<
         (
             AuthoritySnapshot,
-            Option<(
-                DurableCommit,
-                acyclic_stream::Record,
-                ProviderAllocation,
-                usize,
-            )>,
+            Option<(acyclic_stream::Record, ProviderAllocation, usize)>,
         ),
         AuthorityStoreError,
     > {
@@ -222,8 +212,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             // Keep provider custody until the bounded payload copy is admitted.
             // Decoding authenticates a complete suffix; its offset needs no copy.
             let offset = record.0.value.len() - durable.payload.len();
-            let latest = durable_commit(durable, record.0.committed_at_micros, Bytes::new());
-            Some((latest, record.0, record.1, offset))
+            Some((record.0, record.1, offset))
         } else {
             None
         };

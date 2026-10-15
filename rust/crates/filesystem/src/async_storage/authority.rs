@@ -100,14 +100,14 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
         work: &mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<Head, crate::AuthorityStoreError>> + ProviderTask;
 
-    /// Reads the head and its bounded, authenticated last record together.
+    /// Reads the head and its bounded, authenticated last payload together.
     /// Genesis has no durable record. Backends may reuse the head's exact read.
-    fn head_record(
+    fn head_payload(
         &self,
         authority: AuthorityId,
         maximum_payload_bytes: u64,
         work: &mut AuthorityWork<'_>,
-    ) -> impl Future<Output = Result<(Head, Option<crate::DurableCommit>), crate::AuthorityStoreError>>
+    ) -> impl Future<Output = Result<(Head, Option<bytes::Bytes>), crate::AuthorityStoreError>>
     + ProviderTask {
         async move {
             let head = self.head(authority, work).await?;
@@ -120,9 +120,9 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
                 ReplayLimit { records: 1, payload_bytes: maximum_payload_bytes },
                 work,
             ).await?;
-            let record = records.into_iter().next();
+            let payload = records.into_iter().next().map(|record| record.payload);
             drop(allocation);
-            Ok((head, record))
+            Ok((head, payload))
         }
     }
 
@@ -234,7 +234,7 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
         _authority: AuthorityId,
         _operation: OperationId,
         _work: &mut AuthorityWork<'_>,
-    ) -> impl Future<Output = Result<Option<crate::DurableCommit>, crate::AuthorityStoreError>>
+    ) -> impl Future<Output = Result<Option<bytes::Bytes>, crate::AuthorityStoreError>>
     + ProviderTask {
         std::future::ready(Err(crate::AuthorityStoreError::Retired))
     }

@@ -58,19 +58,26 @@ pub(super) fn generation_from_record(
     volume_id: VolumeId,
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
 ) -> Result<ObjectId, FsError> {
+    generation_from_payload(record.sequence, &record.payload, volume_id, accounting)
+}
+
+fn generation_from_payload(
+    sequence: Sequence,
+    payload: &[u8],
+    volume_id: VolumeId,
+    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+) -> Result<ObjectId, FsError> {
     let mut observer = crate::kernel::OriginalReadAccounting::new(accounting)?;
-    let (record_volume, root) = if record.sequence == Sequence::new(1) {
-        let created =
-            decode_volume_created(&record.payload, MAXIMUM_VOLUME_EVENT_BYTES, &mut |step| {
-                observer.observe(step)
-            })?;
+    let (record_volume, root) = if sequence == Sequence::new(1) {
+        let created = decode_volume_created(payload, MAXIMUM_VOLUME_EVENT_BYTES, &mut |step| {
+            observer.observe(step)
+        })?;
         (created.volume_id, created.initial_generation_root)
     } else {
-        let published = decode_published_generation(
-            &record.payload,
-            MAXIMUM_VOLUME_EVENT_BYTES,
-            &mut |step| observer.observe(step),
-        )?;
+        let published =
+            decode_published_generation(payload, MAXIMUM_VOLUME_EVENT_BYTES, &mut |step| {
+                observer.observe(step)
+            })?;
         (published.volume_id, published.generation_root)
     };
     let _allocation = observer.into_allocation();
@@ -193,7 +200,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
             .fs
             .inner
             .authority
-            .head_record(authority_id, MAXIMUM_VOLUME_EVENT_BYTES, &mut authority)
+            .head_payload(authority_id, MAXIMUM_VOLUME_EVENT_BYTES, &mut authority)
             .await;
         record_authority_work(accounting, &authority)?;
         let (head, latest) = result?;
@@ -202,7 +209,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         }
         let latest = latest.ok_or(FsError::InvalidAuthorityHistory)?;
         Ok((
-            generation_from_head_record_value(&latest, self.id, accounting)?,
+            generation_from_head_payload(head.sequence, &latest, self.id, accounting)?,
             head,
         ))
     }
@@ -213,11 +220,20 @@ pub(super) fn generation_from_head_record_value(
     volume_id: VolumeId,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<ObjectId, FsError> {
-    if let Ok(deleted) = decode_workspace_deleted(&record.payload, MAXIMUM_VOLUME_EVENT_BYTES) {
+    generation_from_head_payload(record.sequence, &record.payload, volume_id, accounting)
+}
+
+fn generation_from_head_payload(
+    sequence: Sequence,
+    payload: &[u8],
+    volume_id: VolumeId,
+    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+) -> Result<ObjectId, FsError> {
+    if let Ok(deleted) = decode_workspace_deleted(payload, MAXIMUM_VOLUME_EVENT_BYTES) {
         if deleted != volume_id {
             return Err(FsError::VolumeMismatch);
         }
         return Err(FsError::WorkspaceDeleted);
     }
-    generation_from_record(record, volume_id, accounting)
+    generation_from_payload(sequence, payload, volume_id, accounting)
 }

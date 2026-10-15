@@ -57,22 +57,44 @@ async fn created_with(
     Ok(store)
 }
 
+async fn single_record(
+    store: &StreamAuthorityStore<MemoryStream>,
+) -> Result<DurableCommit, Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let (records, _allocation) = store
+        .replay(
+            AUTHORITY,
+            Sequence::GENESIS,
+            ReplayLimit {
+                records: 1,
+                payload_bytes: STREAM_RECORD_LIMIT,
+            },
+            &mut AuthorityWork::new(BUDGET, &cancellation),
+        )
+        .await?;
+    records
+        .into_iter()
+        .next()
+        .ok_or_else(|| "missing source record".into())
+}
+
 #[tokio::test]
 async fn exact_head_record_is_authenticated_once_with_default_fallback_equivalence() -> TestResult {
     let store = created().await?;
+    let fixture = single_record(&store).await?;
+    let encoded =
+        crate::streams_record::StreamsDurableRecord::encode(&fixture, STREAM_RECORD_LIMIT)?;
     let cancel = CancellationToken::new();
     let mut old = AuthorityWork::new(BUDGET, &cancel);
     let expected = Fallback(&store)
-        .head_record(AUTHORITY, 4096, &mut old)
+        .head_payload(AUTHORITY, 4096, &mut old)
         .await?;
     let mut work = AuthorityWork::new(BUDGET, &cancel);
     let actual = Arc::new(store)
-        .head_record(AUTHORITY, 4096, &mut work)
+        .head_payload(AUTHORITY, 4096, &mut work)
         .await?;
     assert_eq!(actual, expected);
-    let record = actual.1.ok_or("missing head record")?;
-    let encoded =
-        crate::streams_record::StreamsDurableRecord::encode(&record, STREAM_RECORD_LIMIT)?;
+    let record = actual.1.ok_or("missing head payload")?;
     assert_eq!(old.spent().authority_records_read, 3);
     assert_eq!(work.spent().authority_records_read, 2);
     assert_eq!(
@@ -82,7 +104,7 @@ async fn exact_head_record_is_authenticated_once_with_default_fallback_equivalen
     assert_eq!(old.spent().bytes_hashed, work.spent().bytes_hashed * 2);
     assert!(work.spent().bytes_copied < old.spent().bytes_copied);
     assert!(work.spent().allocation_operations < old.spent().allocation_operations);
-    assert_eq!(record.payload.as_ref(), b"generation-payload");
+    assert_eq!(record.as_ref(), b"generation-payload");
     Ok(())
 }
 
@@ -94,9 +116,9 @@ async fn bounded_head_record_preserves_genesis_payload_limits_and_cancellation()
         let mut old = AuthorityWork::new(BUDGET, &cancel);
         let mut work = AuthorityWork::new(BUDGET, &cancel);
         let expected = Fallback(&store)
-            .head_record(AUTHORITY, maximum, &mut old)
+            .head_payload(AUTHORITY, maximum, &mut old)
             .await;
-        let actual = store.head_record(AUTHORITY, maximum, &mut work).await;
+        let actual = store.head_payload(AUTHORITY, maximum, &mut work).await;
         match (actual, expected) {
             (Ok(actual), Ok(expected)) => assert_eq!(actual, expected),
             (Err(actual), Err(expected)) => assert_eq!(actual.to_string(), expected.to_string()),
@@ -109,7 +131,7 @@ async fn bounded_head_record_preserves_genesis_payload_limits_and_cancellation()
         .create_authority(genesis, Epoch::GENESIS, &mut work, None::<&mut ()>)
         .await?;
     assert_eq!(
-        store.head_record(genesis, 0, &mut work).await?,
+        store.head_payload(genesis, 0, &mut work).await?,
         (Head::genesis(Epoch::GENESIS), None)
     );
     for native in [false, true] {
@@ -130,12 +152,22 @@ async fn bounded_head_record_preserves_genesis_payload_limits_and_cancellation()
                 &cancel,
             )
         };
-        assert!(store.head_record(AUTHORITY, 4096, &mut work).await.is_err());
+        assert!(
+            store
+                .head_payload(AUTHORITY, 4096, &mut work)
+                .await
+                .is_err()
+        );
         assert!(work.spent().authority_records_read <= 1);
     }
     cancel.cancel();
     let mut work = AuthorityWork::new(BUDGET, &cancel);
-    assert!(store.head_record(AUTHORITY, 4096, &mut work).await.is_err());
+    assert!(
+        store
+            .head_payload(AUTHORITY, 4096, &mut work)
+            .await
+            .is_err()
+    );
     assert_eq!(work.spent(), WorkCounters::UNCHARGED);
     Ok(())
 }
@@ -148,9 +180,9 @@ async fn native_head_record_retains_exact_payload_custody_and_resource_charges()
     let resource = original.native_volume_work(BUDGET)?;
     let baseline = original.live_allocation_bytes();
     let mut work = AuthorityWork::native(&resource, &cancel);
-    let (_, record) = store.head_record(AUTHORITY, 4096, &mut work).await?;
+    let (_, record) = store.head_payload(AUTHORITY, 4096, &mut work).await?;
     let record = record.ok_or("missing native record")?;
-    assert_eq!(record.payload.as_ref(), b"generation-payload");
+    assert_eq!(record.as_ref(), b"generation-payload");
     assert_eq!(original.receipt().authority_records_read, 2);
     drop(work);
     assert!(original.live_allocation_bytes() > baseline);
@@ -163,7 +195,12 @@ async fn native_head_record_retains_exact_payload_custody_and_resource_charges()
         ..BUDGET
     })?;
     let mut work = AuthorityWork::native(&denied, &cancel);
-    assert!(store.head_record(AUTHORITY, 4096, &mut work).await.is_err());
+    assert!(
+        store
+            .head_payload(AUTHORITY, 4096, &mut work)
+            .await
+            .is_err()
+    );
     assert_eq!(denied.receipt().bytes_copied, spent.bytes_copied);
     Ok(())
 }
@@ -172,10 +209,7 @@ async fn native_head_record_retains_exact_payload_custody_and_resource_charges()
 async fn retained_head_record_still_rejects_corrupt_digest_and_stream_sequence() -> TestResult {
     let good = created().await?;
     let cancel = CancellationToken::new();
-    let (_, record) = good
-        .head_record(AUTHORITY, 4096, &mut AuthorityWork::new(BUDGET, &cancel))
-        .await?;
-    let record = record.ok_or("missing source record")?;
+    let record = single_record(&good).await?;
     for corrupt_sequence in [false, true] {
         let store = StreamAuthorityStore::new(Arc::new(MemoryStream::default()));
         store
@@ -227,7 +261,7 @@ async fn retained_head_record_still_rejects_corrupt_digest_and_stream_sequence()
                 AuthorityWork::new(BUDGET, &cancel)
             };
             assert!(matches!(
-                store.head_record(AUTHORITY, 4096, &mut work).await,
+                store.head_payload(AUTHORITY, 4096, &mut work).await,
                 Err(AuthorityStoreError::Corrupt(_) | AuthorityStoreError::CorruptStatic(_))
             ));
         }
@@ -249,9 +283,9 @@ proptest::proptest! {
             let store = created_with((!genesis).then(|| Bytes::from(payload))).await.unwrap();
             let cancellation = CancellationToken::new();
             let mut old = AuthorityWork::new(BUDGET, &cancellation);
-            let expected = Fallback(&store).head_record(AUTHORITY, u64::from(maximum), &mut old).await;
+            let expected = Fallback(&store).head_payload(AUTHORITY, u64::from(maximum), &mut old).await;
             let mut work = AuthorityWork::new(BUDGET, &cancellation);
-            let actual = store.head_record(AUTHORITY, u64::from(maximum), &mut work).await;
+            let actual = store.head_payload(AUTHORITY, u64::from(maximum), &mut work).await;
             match (actual, expected) {
                 (Ok(actual), Ok(expected)) => proptest::prop_assert_eq!(actual, expected),
                 (Err(actual), Err(expected)) => proptest::prop_assert_eq!(actual.to_string(), expected.to_string()),
