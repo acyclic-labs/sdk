@@ -66,13 +66,30 @@ proptest! {
     fn ordered_matches_equal_exhaustive_slot_choices(
         expected in proptest::collection::vec(value(), 0..5),
         actual in proptest::collection::vec(value(), 0..7),
+        selected in any::<u8>(),
     ) {
         let possible = subsequence(&expected, &actual);
         prop_assert_eq!(subset(&Value::Array(expected.clone()), &Value::Array(actual.clone())), possible);
         prop_assert_eq!(ordered(&expected, &actual, "generated observations").is_ok(), possible);
         let mut overfull = actual.clone();
         overfull.push(Value::Null);
-        prop_assert!(!subset(&Value::Array(overfull), &Value::Array(actual)));
+        prop_assert!(!subset(&Value::Array(overfull), &Value::Array(actual.clone())));
+
+        // Unique indices make selected positive matches and reversed-order
+        // failures independent of repeated or mutually matching payloads.
+        let frames: Vec<_> = actual.into_iter().enumerate()
+            .map(|(index, payload)| json!({"index": index, "payload": payload}))
+            .collect();
+        let mut expected: Vec<_> = frames.iter().enumerate()
+            .filter(|(index, _)| selected & (1 << index) != 0 || *index == 0)
+            .map(|(_, frame)| frame.clone()).collect();
+        prop_assert!(subset(&json!(expected), &json!(frames)));
+        prop_assert!(ordered(&expected, &frames, "selected observations").is_ok());
+        if expected.len() > 1 {
+            expected.reverse();
+            prop_assert!(!subset(&json!(expected), &json!(frames)));
+            prop_assert!(ordered(&expected, &frames, "reversed observations").is_err());
+        }
     }
 
     // The sentinel must be detected inside arbitrary surrounding Unicode text,
