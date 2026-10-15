@@ -372,8 +372,10 @@ pub(super) fn source(
     }
     let charge = RefCell::new(charge);
     let mut lexical = Lexical::default();
+    charge.borrow_mut()(JsonCodecCharge::Read {
+        bytes: bytes.len() as u64,
+    })?;
     for byte in bytes {
-        charge.borrow_mut()(JsonCodecCharge::Read { bytes: 1 })?;
         lexical.byte(*byte, bounds, code, &charge)?;
     }
     if lexical.string || lexical.depth != 0 {

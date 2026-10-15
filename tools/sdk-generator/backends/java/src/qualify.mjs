@@ -1,24 +1,13 @@
 import { spawnSync } from "node:child_process";
 import { copyFileSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
-import { basename, delimiter, dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs } from "node:util";
-import { canonical, loadAuthority, readInput, sha256, within } from "../../../shared/authority.mjs";
+import { canonical, inventory, loadAuthority, qualificationOutput, readInput, sha256, within, runCli } from "../../../shared/authority.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const targets = ["actors/v1/actors.proto", "stream/v1/stream.proto"];
 const negatives = { "InvalidActorBytes.java": "ByteString", "InvalidOptionalInteger.java": "long" };
 const artifact = "sdk-java-transport-0.2.0-alpha.1";
-
-function files(root, prefix = "") {
-  return readdirSync(join(root, prefix), { withFileTypes: true }).flatMap(entry => {
-    const name = prefix ? `${prefix}/${entry.name}` : entry.name;
-    if (entry.isSymbolicLink()) throw new Error("tool/cache inventory contains a link");
-    if (entry.isDirectory()) return files(root, name);
-    if (!entry.isFile()) throw new Error("tool/cache inventory contains a non-file");
-    return [name];
-  }).sort();
-}
 
 export function qualify(args, command = spawnSync) {
   const packageRoot = realpathSync(args.package);
@@ -26,12 +15,7 @@ export function qualify(args, command = spawnSync) {
   const javaHome = realpathSync(args["java-home"]);
   const mavenHome = realpathSync(args["maven-home"]);
   const cache = realpathSync(args.cache);
-  const output = join(realpathSync(dirname(resolve(args.output))), basename(resolve(args.output)));
-  try { lstatSync(output); throw new Error("qualification output must be absent"); }
-  catch (error) { if (error.code !== "ENOENT") throw error; }
-  for (const input of [packageRoot, authority, javaHome, mavenHome, cache, dirname(directory)]) {
-    if (within(input, output) || within(output, input)) throw new Error("qualification output overlaps an input");
-  }
+  const output = qualificationOutput(args.output, [packageRoot, authority, javaHome, mavenHome, cache, dirname(directory)]);
   const receiptBytes = readFileSync(join(packageRoot, "generation-receipt.json"));
   const receipt = JSON.parse(receiptBytes);
   if (receipt.schema !== "acyclic.sdk.java-producer-receipt.v1" || receipt.authority !== "rust"
@@ -75,7 +59,7 @@ export function qualify(args, command = spawnSync) {
     throw new Error("installed controls require Maven 3.9.9");
   }
   // The cache is caller-owned and must remain exclusive throughout the run.
-  const cacheHashes = Object.fromEntries(files(cache).filter(name => /\.(jar|pom)$/.test(name)
+  const cacheHashes = Object.fromEntries(inventory(cache).filter(name => /\.(jar|pom)$/.test(name)
     && !name.startsWith("dev/acyclic/sdk-java-transport/")).map(name => [name, sha256(readFileSync(join(cache, name)))]));
   mkdirSync(output);
   const project = join(output, "project");
@@ -149,7 +133,7 @@ export function qualify(args, command = spawnSync) {
     java_version: versionText(javaVersion).trim(), javac_version: versionText(javacVersion).trim(), maven_version: versionText(mavenVersion).trim(),
     tool_sha256: { java: sha256(readFileSync(java)), javac: sha256(readFileSync(javac)),
       java_modules: sha256(readFileSync(join(javaHome, "lib", "modules"))), java_release: sha256(readFileSync(join(javaHome, "release"))),
-      ...Object.fromEntries(files(mavenHome).filter(name => /\.(jar|conf)$/.test(name)).map(name => [`maven/${name}`, sha256(readFileSync(join(mavenHome, name)))])) },
+      ...Object.fromEntries(inventory(mavenHome).filter(name => /\.(jar|conf)$/.test(name)).map(name => [`maven/${name}`, sha256(readFileSync(join(mavenHome, name)))])) },
     build_cache_sha256: cacheHashes, dependency_sha256: Object.fromEntries(dependencies.map(path => [path, sha256(readFileSync(path))])),
     qualifier_sha256: sha256(readFileSync(fileURLToPath(import.meta.url))), authority_reader_sha256: sha256(readFileSync(join(directory, "../../../shared/authority.mjs"))),
     control_sha256: Object.fromEntries(controlNames.map(name => [name, sha256(readFileSync(join(controls, name)))])),
@@ -166,11 +150,7 @@ function lstatExists(path) {
   catch (error) { if (error.code === "ENOENT") return false; throw error; }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const options = Object.fromEntries(["package", "authority", "java-home", "maven-home", "cache", "output"].map(name => [name, { type: "string" }]));
-  const { values } = parseArgs({ options });
-  if (Object.keys(options).some(name => !values[name])) throw new Error("--package, --authority, --java-home, --maven-home, --cache and --output are required");
+runCli(import.meta.url, values => {
   const result = qualify(values);
-  console.log(JSON.stringify({ scope: result.scope, source_revision: result.source_revision,
-    installed_jar_sha256: result.installed_jar_sha256, qualification: resolve(values.output, "qualification.json") }, null, 2));
-}
+  return { scope: result.scope, source_revision: result.source_revision, installed_jar_sha256: result.installed_jar_sha256, qualification: resolve(values.output, "qualification.json") };
+}, ["package", "authority", "java-home", "maven-home", "cache", "output"]);

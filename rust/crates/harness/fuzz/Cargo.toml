@@ -8,6 +8,7 @@ edition = "2024"
 cargo-fuzz = true
 
 [workspace]
+members = ["."]
 
 [profile.dev]
 opt-level = 3
@@ -36,6 +37,13 @@ bench = false
 [[bin]]
 name = "search_http_codec_tinyfish"
 path = "fuzz_targets/search_http_codec_tinyfish.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "goal_parser"
+path = "fuzz_targets/goal_parser.rs"
 test = false
 doc = false
 bench = false
