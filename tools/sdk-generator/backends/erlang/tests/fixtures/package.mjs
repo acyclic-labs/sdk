@@ -1,9 +1,8 @@
-import { tar } from "../../../../shared/tests/archive.mjs";
+import { packageFixture } from "../../../../shared/tests/package-fixture.mjs";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { gzipSync } from "node:zlib";
 import { packageTemplates, pins, producerSources } from "../../src/generate.mjs";
 import { expectedModules } from "../../src/package.mjs";
 import { loadAuthority, sha256 } from "../../../../shared/authority.mjs";
@@ -38,10 +37,5 @@ export function fixture(t) {
     otp_version: runtime.otp_version, runtime_inventory_sha256: runtime.inventory_sha256,
     template_sha256: Object.fromEntries([...templates].map(([name, bytes]) => [name, sha256(bytes)])),
     outputs: [...payload.keys()].sort(), output_sha256: Object.fromEntries([...payload].map(([name, bytes]) => [name, sha256(bytes)])) };
-  const args = { authority, receipt: join(root, "receipt.json"), package: join(root, "package.tar.gz") };
-  const saveReceipt = () => writeFileSync(args.receipt, JSON.stringify(receipt));
-  const entries = () => [...payload].map(([name, bytes]) => ({ name, bytes }));
-  const saveArchive = (members = entries()) => { const bytes = gzipSync(tar(members)); writeFileSync(args.package, bytes); args.sha256 = sha256(bytes); };
-  saveReceipt(); saveArchive();
-  return { args, receipt, payload, saveReceipt, saveArchive, entries };
+  return packageFixture(root, authority, receipt, payload);
 }

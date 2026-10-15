@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -171,7 +172,7 @@ func TestSuccessfulStaging(t *testing.T) {
 		"--go-grpc_opt=Mvalidation/v1/options.proto=github.com/acyclic-labs/sdk/go/gen/validation/v1",
 	}
 	for _, want := range wantFlags {
-		if !contains(args, want) {
+		if !slices.Contains(args, want) {
 			t.Errorf("missing generation argument: %s", want)
 		}
 	}
@@ -186,15 +187,6 @@ func TestSuccessfulStaging(t *testing.T) {
 			}
 		}
 	}
-}
-
-func contains(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }
 
 func TestStagedSourcesAreAttestedSnapshots(t *testing.T) {

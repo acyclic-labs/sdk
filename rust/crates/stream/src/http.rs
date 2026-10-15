@@ -663,5 +663,4 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "http_follow_tests.rs"]
-mod follow_tests;
+mod http_follow_tests;

@@ -1,3 +1,9 @@
+import { gzipSync } from "node:zlib";
+
+export function gzipArchive(payload) {
+  return gzipSync(tar(Object.entries(payload).map(([name, body]) => ({ name, bytes: Buffer.from(body) }))));
+}
+
 export function tar(entries) {
   const blocks = [];
   for (const { name, bytes, type = "0" } of entries) {

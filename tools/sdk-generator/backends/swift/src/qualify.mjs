@@ -1,9 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { parseArgs } from "node:util";
-import { readInput, sha256, within } from "../../../shared/authority.mjs";
+import { qualificationOutput, readInput, sha256, within, runCli } from "../../../shared/authority.mjs";
 import { readPackage, targets } from "./package.mjs";
 import { tree, verifyRuntime, verifySource } from "./provenance.mjs";
 
@@ -20,12 +19,7 @@ const negatives = { InvalidActorBytes: "Data", InvalidOptionalInteger: "UInt64" 
 export function qualify(args, { command = spawnSync, toolchain = pinned, onProgress = () => {} } = {}) {
   if (command === spawnSync && (process.platform !== "linux" || process.arch !== "x64")) throw new Error("Swift installed qualification requires the admitted Linux x86_64 runtime");
   const inputs = Object.fromEntries(["package", "receipt", "authority", "swift-home", "sdk-inventory", "dependencies", "git"].map(name => [name, realpathSync(args[name])]));
-  const output = join(realpathSync(dirname(resolve(args.output))), basename(resolve(args.output)));
-  try { lstatSync(output); throw new Error("qualification output must be absent"); }
-  catch (error) { if (error.code !== "ENOENT") throw error; }
-  for (const input of [...Object.values(inputs), realpathSync(join(directory, "../../.."))]) {
-    if (within(input, output) || within(output, input)) throw new Error("qualification output overlaps an input");
-  }
+  const output = qualificationOutput(args.output, [...Object.values(inputs), realpathSync(join(directory, "../../.."))]);
   onProgress("Verify archive and producer inputs");
   const admitted = readPackage({ ...args, ...inputs });
   const sourceNames = ["qualify.mjs", "package.mjs", "provenance.mjs", "generate.mjs",
@@ -160,9 +154,4 @@ export function qualify(args, { command = spawnSync, toolchain = pinned, onProgr
   return result;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const options = Object.fromEntries(["package", "sha256", "receipt", "authority", "swift-home", "sdk-inventory", "dependencies", "git", "output"].map(name => [name, { type: "string" }]));
-  const { values } = parseArgs({ options });
-  if (Object.keys(options).some(name => !values[name])) throw new Error("all installed Swift qualification arguments are required");
-  console.log(JSON.stringify(qualify(values, { onProgress: message => console.error(message) }), null, 2));
-}
+runCli(import.meta.url, values => qualify(values, { onProgress: message => console.error(message) }), ["package", "sha256", "receipt", "authority", "swift-home", "sdk-inventory", "dependencies", "git", "output"], "all installed Swift qualification arguments are required");
