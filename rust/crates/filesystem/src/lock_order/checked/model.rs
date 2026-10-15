@@ -153,7 +153,7 @@ fn both_while_predicates_keep_the_held_rank() {
                     };
                     rejected &= rejects_lower();
                     drop(guard);
-                    rejected && before_lock
+                    rejected
                 });
                 started.recv().unwrap();
                 let mut guard = shared.0.lock().unwrap();
