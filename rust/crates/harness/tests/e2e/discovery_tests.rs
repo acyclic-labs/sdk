@@ -67,7 +67,7 @@ async fn discovery_oracles_distinguish_pinned_and_reloaded_generations() -> Test
 async fn skill_oracles_reject_missing_metadata_wrong_descriptions_and_body_injection() -> TestResult
 {
     let initial = baseline("discovery/skills/lazy.json").await?;
-    for field in ["description", "source", "disabled", "forbidden", "body"] {
+    for field in ["description", "source", "disabled", "forbidden"] {
         let mut case = initial.clone();
         match field {
             "description" => {
@@ -82,10 +82,6 @@ async fn skill_oracles_reject_missing_metadata_wrong_descriptions_and_body_injec
             "forbidden" => {
                 case["expect"]["not_requests"] = json!([{"messages":[{"role":"system"}]}])
             }
-            "body" => {
-                case["expect"]["requests"][0]["messages"][0]["content"] =
-                    case["seed"]["skills/inspect/SKILL.md"].clone()
-            }
             _ => return Err("unknown mutation".into()),
         }
         assert!(drivers::run(case).await.is_err(), "accepted wrong {field}");
@@ -96,6 +92,37 @@ async fn skill_oracles_reject_missing_metadata_wrong_descriptions_and_body_injec
         drivers::run(pinned).await.is_err(),
         "accepted reloaded metadata as pinned"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn skill_body_guards_reject_plain_wrapped_and_structured_text() -> TestResult {
+    let initial = baseline("discovery/skills/lazy.json").await?;
+    let file = initial["seed"]["skills/inspect/SKILL.md"]
+        .as_str()
+        .ok_or("missing skill")?;
+    for content in [
+        json!("SECRET BODY"),
+        json!(format!("before {file} after")),
+        json!({"kind":"text","text":"before SECRET BODY after"}),
+        json!([{"kind":"text","text":"before SECRET BODY after"}]),
+    ] {
+        let mut injected = initial.clone();
+        injected["context"] = json!([{"role":"system","content":content}]);
+        let mut observable = injected.clone();
+        observable["expect"]["not_requests"] = json!([]);
+        observable["expect"]["requests"][0]["messages"] = json!([
+            {"role":"system","content":{"$json":[{"name":"inspect"}]}},
+            {"role":"system","content":content},
+            {"role":"user","content":"Inspect files"}
+        ]);
+        // With the guard removed, the exact injected content reaches the recorded request.
+        drivers::run(observable).await?;
+        let error = drivers::run(injected)
+            .await
+            .expect_err("accepted leaked skill body");
+        assert!(error.to_string().contains("forbidden request"), "{error}");
+    }
     Ok(())
 }
 

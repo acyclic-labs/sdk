@@ -2,6 +2,5 @@
   "---\nname: project\ndescription: Inspect files\n---\nSECRET BODY"},"discovery":{"skills":["repo","home"]},"expect":
   {"requests":[{"messages":[{"role":"system","content":{"$json":[{"name":"project","description":"Inspect files",
   "source":{"path":"repo/x/SKILL.md"}},{"name":"home","description":"Inspect files","source":{"path":"home/x/SKILL.md"
-  }}]}},{"role":"user","content":"Inspect files"}]}],"not_requests":[{"messages":[{"content":
-  "---\nname: home\ndescription: Inspect files\n---\nSECRET BODY"}]},{"messages":[{"content":
-  "---\nname: project\ndescription: Inspect files\n---\nSECRET BODY"}]}],"request_files":[[]]}}
+  }}]}},{"role":"user","content":"Inspect files"}]}],"not_requests":[{"messages":[{"content":{"$contains":
+  "SECRET BODY"}}]},{"messages":[{"content":{"$contains":"SECRET BODY"}}]}],"request_files":[[]]}}

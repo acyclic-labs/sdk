@@ -2,8 +2,15 @@ use serde_json::Value;
 
 // Objects are recursive subsets. Arrays are ordered subsequences with distinct
 // matches; an empty array asserts emptiness. Scalar values match exactly.
-// A sole $json key applies the same matcher to JSON-encoded text.
+// A sole $json key matches JSON-encoded text; $contains searches text recursively.
 pub fn subset(expected: &Value, actual: &Value) -> bool {
+    if let Some(expected) = expected.as_object().filter(|object| object.len() == 1)
+        && let Some(needle) = expected.get("$contains")
+    {
+        return needle
+            .as_str()
+            .is_some_and(|needle| !needle.is_empty() && contains_text(actual, needle));
+    }
     match (expected, actual) {
         (Value::Object(expected), Value::String(actual)) if expected.len() == 1 => {
             expected.get("$json").is_some_and(|expected| {
@@ -23,6 +30,17 @@ pub fn subset(expected: &Value, actual: &Value) -> bool {
                 .all(|expected| remaining.any(|actual| subset(expected, actual)))
         }
         _ => expected == actual,
+    }
+}
+
+fn contains_text(actual: &Value, needle: &str) -> bool {
+    match actual {
+        Value::String(text) => text.contains(needle),
+        Value::Array(values) => values.iter().any(|value| contains_text(value, needle)),
+        Value::Object(values) => values
+            .iter()
+            .any(|(key, value)| key.contains(needle) || contains_text(value, needle)),
+        _ => false,
     }
 }
 
@@ -106,6 +124,27 @@ fn json_text_matchers_keep_subset_order_and_reject_invalid_encodings() {
         (json!({"$json":{"name":"a"}}), json!({"name":"a"})),
         (json!({"$json":[],"extra":true}), json!("[]")),
         (json!({"name":"a"}), json!(r#"{"name":"a"}"#)),
+    ] {
+        assert!(!subset(&expected, &actual), "{expected} matched {actual}");
+    }
+}
+
+#[test]
+fn text_matchers_find_fragments_in_nested_content_without_vacuous_matches() {
+    use serde_json::json;
+    for actual in [
+        json!("SECRET BODY"),
+        json!("before SECRET BODY after"),
+        json!([{"kind":"text","text":"before SECRET BODY after"}]),
+        json!({"content":{"nested":["before SECRET BODY after"]}}),
+    ] {
+        assert!(subset(&json!({"$contains":"SECRET BODY"}), &actual));
+    }
+    for (expected, actual) in [
+        (json!({"$contains":"SECRET BODY"}), json!("public metadata")),
+        (json!({"$contains":"SECRET BODY"}), json!(null)),
+        (json!({"$contains":""}), json!("anything")),
+        (json!({"$contains":7}), json!("7")),
     ] {
         assert!(!subset(&expected, &actual), "{expected} matched {actual}");
     }

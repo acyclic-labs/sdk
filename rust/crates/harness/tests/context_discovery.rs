@@ -272,6 +272,33 @@ impl Fixture {
 }
 
 #[tokio::test]
+async fn production_default_policy_loads_both_instruction_names_in_ancestor_order() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let paths = [
+        "AGENTS.md",
+        "CLAUDE.md",
+        "project/AGENTS.md",
+        "project/CLAUDE.md",
+    ];
+    for path in paths {
+        fixture.put(path, path.as_bytes(), path).await?;
+    }
+    let mut declaration = fixture.declaration();
+    declaration.policy = ContextDiscoveryPolicy::default();
+    declaration.skills.clear();
+    let captured = declaration.capture(fixture.reader.as_ref()).await?;
+    assert_eq!(
+        captured
+            .instructions
+            .iter()
+            .map(|file| file.path())
+            .collect::<Vec<_>>(),
+        paths
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn skill_invocation_loads_the_pinned_body_and_enforces_limits() -> Result<()> {
     let fixture = Fixture::new().await?;
     let original = b"---\nname: inspect\ndescription: Inspect files\n---\noriginal body";
