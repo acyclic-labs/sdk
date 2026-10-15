@@ -6,61 +6,19 @@ use proptest::prelude::*;
 use prost::Message;
 use std::net::{IpAddr, Ipv4Addr};
 
-fn request<'a>(
-    resource: &'a str,
-    audience: &'a str,
-    attributes: &'a RecordAttributes,
-    usage: &'a Limits,
-) -> Request<'a> {
-    Request {
-        target: Target::Resource {
-            action: "fs/read",
-            resource,
-        },
-        audience,
-        holder: None,
-        now_unix_seconds: 2,
-        keys: &[],
-        attributes,
-        usage,
-        cpu_millis: 0,
-        memory_bytes: 0,
-    }
-}
-
-fn invalid_name() -> impl Strategy<Value = String> {
-    (
-        "[a-z]{1,12}",
-        prop::sample::select(vec![
-            "../secret",
-            "./secret",
-            "a//b",
-            "report?.txt",
-            "%2f",
-            "%41",
-            "a%b",
-            "λ",
-        ]),
-    )
-        .prop_map(|(name, tail)| format!("fs:/{name}/{tail}"))
-}
+#[path = "common/dns_hardening.rs"]
+mod dns_properties;
+#[path = "common/request_hardening.rs"]
+mod request_properties;
+use dns_properties::numeric_name;
+use request_properties::{invalid_name, request};
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
 
     #[test]
     fn noncanonical_resources_and_audiences_never_match(name in invalid_name(), child in any::<bool>()) {
-        prop_assert!(!valid_resource(&name));
-        let root = vec![root()];
-        let blocks = if child { attenuate(&root, vec![], vec![6;32]).unwrap() } else { root };
-        let attributes = RecordAttributes::default(); let usage = limits(None);
-        let canonical = request("fs:/a", "workers:/app", &attributes, &usage);
-        prop_assert_eq!(permits(&blocks, &canonical, PolicyDecision::Allow), Ok(()));
-        prop_assert_eq!(permits(&blocks, &canonical, PolicyDecision::Deny), Err(Deny::OwnerPolicy));
-        for policy in [PolicyDecision::Allow, PolicyDecision::Deny] {
-            prop_assert_eq!(permits(&blocks, &request(&name, "workers:/app", &attributes, &usage), policy), Err(Deny::NonCanonicalResource));
-            prop_assert_eq!(permits(&blocks, &request("fs:/a", &name, &attributes, &usage), policy), Err(Deny::NonCanonicalAudience));
-        }
+        request_properties::request_property(&name, child, permits)?;
     }
 
     #[test]
@@ -72,13 +30,16 @@ proptest! {
     }
 
     #[test]
+    fn syntax_validation_and_component_decoding_agree(component in any::<String>().prop_filter("single component", |value| !value.contains('/'))) {
+        let resource = format!("fs:/{component}");
+        prop_assert_eq!(valid_resource(&resource), acyclic_auth::decode_component(&component).is_ok());
+    }
+
+    #[test]
     fn numeric_dns_names_are_rejected_by_socket_and_egress_admission(
-        values in prop::collection::vec(any::<u32>(), 1..5), notation in 0..3u8, trailing in any::<bool>(),
+        name in numeric_name(),
     ) {
-        let labels = values.iter().map(|value| match notation { 0 => value.to_string(), 1 => format!("0{value:o}"), _ => format!("0x{value:x}") }).collect::<Vec<_>>();
-        let name = labels.join(".");
-        let name = if trailing { format!("{name}.") } else { name };
-        prop_assert!(!valid_dns_name(&name));
+        dns_properties::dns_property(&name, valid_dns_name)?;
         // A plain canonical IP is an explicit IP rule; every other numeric
         // spelling must fail rather than falling through to the DNS branch.
         prop_assert_eq!(valid_rule(&name), name.parse::<IpAddr>().is_ok());
@@ -133,4 +94,29 @@ fn numeric_regression_spellings_never_enter_dns_grants() {
     }
     assert!(valid_dns_name("0x1234.example"));
     assert!(valid_dns_name("127.example"));
+}
+
+#[test]
+fn large_component_lists_validate_without_decoding_buffers() {
+    let resource = format!("fs:/{}", vec!["a%2Eb"; 8192].join("/"));
+    assert!(valid_resource(&resource));
+    let attributes = RecordAttributes::default();
+    let usage = limits(None);
+    assert_eq!(
+        permits(
+            &[root()],
+            &request(&resource, "workers:/app", &attributes, &usage),
+            PolicyDecision::Deny
+        ),
+        Err(Deny::OwnerPolicy)
+    );
+    let invalid = format!("{resource}/%61");
+    assert_eq!(
+        permits(
+            &[root()],
+            &request(&invalid, "workers:/app", &attributes, &usage),
+            PolicyDecision::Allow
+        ),
+        Err(Deny::NonCanonicalResource)
+    );
 }

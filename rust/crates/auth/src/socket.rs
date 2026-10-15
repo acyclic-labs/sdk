@@ -28,17 +28,23 @@ enum Rule<'a> {
     Network(IpAddr, u8),
 }
 fn dns(name: &str) -> Option<&str> {
-    let name = name.strip_suffix('.').unwrap_or(name);
+    let name = dns_labels(name)?;
     let last = name.rsplit('.').next()?;
     let hex = last.strip_prefix("0x").or_else(|| last.strip_prefix("0X"));
     // URL/resolver IPv4 syntax also admits shorthand, octal, hex and integer
     // hosts. A numeric final label must never enter the DNS grant alternative.
     let numeric = last.bytes().all(|b| b.is_ascii_digit())
         || hex.is_some_and(|digits| digits.bytes().all(|b| b.is_ascii_hexdigit()));
-    (!name.is_empty()
-        && !numeric
-        && name.len() <= 253
-        && name.split('.').all(|label| {
+    (!numeric).then_some(name)
+}
+fn dns_labels(name: &str) -> Option<&str> {
+    let name = name.strip_suffix('.').unwrap_or(name);
+    // The byte length check is constant-time and precedes every character scan.
+    if name.is_empty() || name.len() > 253 {
+        return None;
+    }
+    name.split('.')
+        .all(|label| {
             !label.is_empty()
                 && label.len() <= 63
                 && label.as_bytes()[0].is_ascii_alphanumeric()
@@ -46,8 +52,8 @@ fn dns(name: &str) -> Option<&str> {
                 && label
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-        }))
-    .then_some(name)
+        })
+        .then_some(name)
 }
 
 /// Shared DNS admission for socket and egress host grants. IP literals belong
@@ -96,15 +102,13 @@ fn network_contains(network: IpAddr, prefix: u8, ip: IpAddr) -> bool {
 }
 fn host_matches(rule: Rule<'_>, host: Host<'_>) -> bool {
     match (rule, host) {
-        (Rule::Dns(rule), Host::Dns(host)) => {
-            dns(host).is_some_and(|host| host.eq_ignore_ascii_case(rule))
-        }
-        (Rule::Suffix(rule), Host::Dns(host)) => dns(host).is_some_and(|host| {
+        (Rule::Dns(rule), Host::Dns(host)) => host.eq_ignore_ascii_case(rule),
+        (Rule::Suffix(rule), Host::Dns(host)) => {
             host.len() > rule.len() + 1
                 && host.is_char_boundary(host.len() - rule.len())
                 && host[..host.len() - rule.len()].ends_with('.')
                 && host[host.len() - rule.len()..].eq_ignore_ascii_case(rule)
-        }),
+        }
         (Rule::Ip(rule), Host::Ip(ip)) => rule == ip,
         (Rule::Network(network, prefix), Host::Ip(ip)) => network_contains(network, prefix, ip),
         _ => false,
@@ -114,12 +118,24 @@ fn host_matches(rule: Rule<'_>, host: Host<'_>) -> bool {
 /// different certificates and caveat blocks are intersected by authority::permits.
 /// No DNS lookup, allocation, or mutable state occurs during matching.
 pub fn allows(grant: &WebsocketConnectGrant, destination: Destination<'_>) -> bool {
-    if destination.port == 0
-        || matches!(destination.host, Host::Dns(host) if host.parse::<IpAddr>().is_ok())
-    {
+    allows_rules(&grant.rules, destination, dns)
+}
+fn allows_rules<'a>(
+    rules: &[crate::contract::SocketHostRule],
+    destination: Destination<'a>,
+    mut validate_dns: impl FnMut(&'a str) -> Option<&'a str>,
+) -> bool {
+    if destination.port == 0 {
         return false;
     }
-    grant.rules.iter().any(|rule| {
+    let host = match destination.host {
+        Host::Dns(name) => match validate_dns(name) {
+            Some(name) => Host::Dns(name),
+            None => return false,
+        },
+        Host::Ip(ip) => Host::Ip(ip),
+    };
+    rules.iter().any(|rule| {
         let port = u32::from(destination.port);
         (if rule.ports.is_empty() {
             port == 443
@@ -127,6 +143,9 @@ pub fn allows(grant: &WebsocketConnectGrant, destination: Destination<'_>) -> bo
             rule.ports.iter().any(|range| {
                 range.first > 0 && range.first <= port && port <= range.last && range.last <= 65535
             })
-        }) && parse_rule(&rule.host).is_some_and(|rule| host_matches(rule, destination.host))
+        }) && parse_rule(&rule.host).is_some_and(|rule| host_matches(rule, host))
     })
 }
+
+#[cfg(test)]
+mod tests;

@@ -300,3 +300,6 @@ fn permits_canonical(blocks: &[Block], r: &Request<'_>) -> bool {
         })
     })
 }
+
+#[cfg(test)]
+mod tests;
