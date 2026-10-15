@@ -50,6 +50,11 @@ impl ContextManifest {
             }
         }
         for skill in &self.discovery.skills {
+            if skill.source.path.len() > limits.path_bytes {
+                return Err(Error::Invalid(
+                    "manifest skill path exceeds path bound".into(),
+                ));
+            }
             names.remove(&skill.name);
         }
         if !names.is_empty() {

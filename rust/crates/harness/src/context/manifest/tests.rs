@@ -2,6 +2,33 @@ use super::*;
 use proptest::prelude::*;
 use serde_json::json;
 
+fn skill(path: String) -> Result<SkillMetadata> {
+    use crate::{
+        conversation::{VolumeClass, VolumeOwner, VolumeRef},
+        resources::{GenerationRef, ProviderRef},
+    };
+    let provider = ProviderRef::new("test".into(), "filesystem".into(), "1".into(), &mut None)?;
+    Ok(SkillMetadata {
+        name: "inspect".into(),
+        description: "Inspect files".into(),
+        fields: BTreeMap::new(),
+        source: PinnedContextPath {
+            generation: GenerationRef::new(&provider, &[1], None, None)?.0,
+            root: ContextRoot {
+                volume: VolumeRef::new(
+                    provider,
+                    "v".into(),
+                    VolumeClass::Project,
+                    VolumeOwner::Project("test".into()),
+                    &mut None,
+                )?,
+                directory: "skills".into(),
+            },
+            path,
+        },
+    })
+}
+
 fn definition(name: String, description: String) -> ToolDefinition {
     ToolDefinition {
         name,
@@ -16,6 +43,36 @@ fn definition(name: String, description: String) -> ToolDefinition {
 // Property: canonical encoding is idempotent, preserves array order and round-trips
 // arbitrary descriptions; byte admission rejects before accepting an oversized manifest.
 proptest! {
+    // Property: every declared skill path fits its UTF-8 byte bound, whether
+    // selected or lazy. Validation, publication encoding and decoding agree at
+    // arbitrary bounds and immediately below/at/above the exact byte length.
+    #[test]
+    fn skill_paths_obey_byte_limits(
+        component in "[a-zé猫]{1,48}",
+        bound in 1usize..256,
+        selected in any::<bool>(),
+    ) {
+        let path = format!("skills/{component}/SKILL.md");
+        let length = path.len();
+        let manifest = ContextManifest {
+            discovery: DiscoveredContext {
+                instructions: Vec::new(),
+                skills: vec![skill(path)?],
+            },
+            selected_skills: if selected { vec!["inspect".into()] } else { Vec::new() },
+            tools: Vec::new(),
+        };
+        let limits = Limits { render_bytes: 32_768, ..Default::default() };
+        let bytes = manifest.encode(limits)?;
+        for path_bytes in [bound, length - 1, length, length + 1] {
+            let limits = Limits { path_bytes, ..limits };
+            let admitted = length <= path_bytes;
+            prop_assert_eq!(manifest.validate(limits).is_ok(), admitted);
+            prop_assert_eq!(manifest.encode(limits).is_ok(), admitted);
+            prop_assert_eq!(ContextManifest::decode(&bytes, limits).is_ok(), admitted);
+        }
+    }
+
     #[test]
     fn bounded_manifest_round_trip(descriptions in prop::collection::vec(".{0,80}", 0..8)) {
         let manifest = ContextManifest {

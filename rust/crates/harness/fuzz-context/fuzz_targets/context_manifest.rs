@@ -13,8 +13,21 @@ fuzz_target!(|input: &[u8]| {
     if input.len() > limits.render_bytes as usize {
         return;
     }
-    if let Ok(manifest) = ContextManifest::decode(input, limits) {
-        let bytes = manifest.encode(limits).unwrap();
-        assert_eq!(ContextManifest::decode(&bytes, limits).unwrap(), manifest);
+    for path_bytes in [1, 16, 64, 4096] {
+        let limits = Limits {
+            path_bytes,
+            ..limits
+        };
+        if let Ok(manifest) = ContextManifest::decode(input, limits) {
+            assert!(
+                manifest
+                    .discovery
+                    .skills
+                    .iter()
+                    .all(|skill| skill.source.path.len() <= path_bytes)
+            );
+            let bytes = manifest.encode(limits).unwrap();
+            assert_eq!(ContextManifest::decode(&bytes, limits).unwrap(), manifest);
+        }
     }
 });

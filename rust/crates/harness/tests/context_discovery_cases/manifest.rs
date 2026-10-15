@@ -336,6 +336,65 @@ async fn skill_order_is_explicit_and_cached_and_empty_tools_allow_sampling() -> 
 }
 
 #[tokio::test]
+async fn skill_path_bounds_reject_before_any_body_read_at_a_short_manifest_path() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    for (path, name) in [
+        ("skills/a/SKILL.md", "first"),
+        ("skills/long-name/SKILL.md", "inspect"),
+    ] {
+        fixture
+            .put(
+                path,
+                format!("---\nname: {name}\ndescription: Inspect files\n---\nbody").as_bytes(),
+                name,
+            )
+            .await?;
+    }
+    let mut declaration = fixture.declaration();
+    declaration.instructions.clear();
+    let manifest = ContextManifest::new(
+        declaration.capture(fixture.reader.as_ref()).await?,
+        vec!["first".into(), "inspect".into()],
+        &ToolRegistry::default(),
+    )?;
+    let limits = Limits {
+        render_bytes: 32_768,
+        file_bytes: 32_768,
+        ..Default::default()
+    };
+    let (publisher, reader, _, _) = storage(&fixture).await?;
+    let reference = manifest
+        .publish(publisher.as_ref(), OperationId::new(), "m", limits)
+        .await?;
+    let counted = CountingReader {
+        inner: reader.as_ref(),
+        reads: AtomicUsize::new(0),
+    };
+    assert!(matches!(
+        ContextManifest::bind(
+            reference.clone(),
+            &counted,
+            ToolRegistry::default(),
+            Limits { path_bytes: 16, ..limits },
+        ).await,
+        Err(Error::Invalid(message)) if message == "manifest skill path exceeds path bound"
+    ));
+    assert_eq!(counted.reads.load(Ordering::Relaxed), 0);
+    ContextManifest::bind(
+        reference,
+        &counted,
+        ToolRegistry::default(),
+        Limits {
+            path_bytes: "skills/long-name/SKILL.md".len(),
+            ..limits
+        },
+    )
+    .await?;
+    assert_eq!(counted.reads.load(Ordering::Relaxed), 2);
+    Ok(())
+}
+
+#[tokio::test]
 async fn invalid_tool_bindings_and_bounds_fail_before_skill_reads() -> Result<()> {
     let fixture = Fixture::new().await?;
     fixture
