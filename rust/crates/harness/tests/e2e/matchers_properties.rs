@@ -50,11 +50,11 @@ proptest! {
         prop_assert!(subset(&value, &value));
         let encoded = serde_json::to_string(&value).unwrap();
         prop_assert_eq!(serde_json::from_str::<Value>(&encoded).unwrap(), value.clone());
-        prop_assert!(subset(&json!({"$json": value}), &Value::String(encoded)));
+        prop_assert!(subset(&json!({"$json": value}), &Value::String(encoded)), "encoded JSON subset");
         let expected = json!({"required": value});
         let actual = json!({"required": value, "extra": extra});
         prop_assert!(subset(&expected, &actual));
-        prop_assert!(!subset(&expected, &json!({"extra": extra})));
+        prop_assert!(!subset(&expected, &json!({"extra": extra})), "required key is absent");
         for actual in [Value::Null, Value::Bool(false), json!(0), json!("text"), json!([])] {
             prop_assert!(!subset(&expected, &actual));
         }
