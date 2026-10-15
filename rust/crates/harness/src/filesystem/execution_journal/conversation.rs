@@ -2,7 +2,10 @@
 
 use super::*;
 use crate::{
-    conversation::{Attachment, ConversationMessage, MessageKind, ReferencedAttachments},
+    conversation::{
+        Attachment, ConversationMessage, MessageKind, ReferencedAttachments, assistant_message_id,
+        derived_operation_id,
+    },
     core::{Action, Command},
     executor::{TurnInput, TurnOutput},
     filesystem::InternalContentClass,
@@ -353,8 +356,8 @@ where
             attachment.validate(&mut None)?;
             limits.validate_file(&attachment.file, &mut None)?;
         }
-        let assistant_operation = derived_operation_id(operation_id, b"conversation-assistant");
-        let assistant_id = Uuid::from_bytes(assistant_operation.into_bytes());
+        let assistant_id = assistant_message_id(operation_id);
+        let assistant_operation = OperationId::from_bytes(*assistant_id.as_bytes());
         let content = self
             .stage_conversation(
                 operation_id,
@@ -557,14 +560,6 @@ where
         }
         Ok(())
     }
-}
-fn derived_operation_id(turn: OperationId, domain: &[u8]) -> OperationId {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(domain);
-    hasher.update(&turn.into_bytes());
-    let mut bytes = [0; 16];
-    bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-    OperationId::from_bytes(bytes)
 }
 
 #[cfg(all(test, feature = "filesystem-local", not(target_arch = "wasm32")))]

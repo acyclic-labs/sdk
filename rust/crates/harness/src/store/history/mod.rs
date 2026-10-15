@@ -489,6 +489,7 @@ pub(crate) fn canonical_bytes_for_bounds_with_work<T: Serialize + ?Sized>(
 }
 
 mod conversation;
+mod follow;
 mod forks;
 mod pages;
 pub(in crate::store) use pages::project_effect;

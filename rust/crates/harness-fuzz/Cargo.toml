@@ -1,0 +1,21 @@
+[package]
+name = "acyclic-harness-fuzz"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+acyclic-harness = { path = "../harness", features = ["terminal", "filesystem-local", "grpc"] }
+libfuzzer-sys = "0.4"
+prost.workspace = true
+tempfile = "3.27.0"
+
+[[bin]]
+name = "client_recovery"
+path = "fuzz_targets/client_recovery.rs"
+test = false
+doc = false
+bench = false
