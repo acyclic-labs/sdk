@@ -5,16 +5,7 @@ import { once } from "node:events";
 import { createServer as createHttpServer, request as httpRequest } from "node:http";
 import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
 
-async function bounded(promise) {
-  let timer;
-  try {
-    await Promise.race([promise, new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error("fixture retained its transport")), 3000);
-    })]);
-  } finally { clearTimeout(timer); }
-}
-
-test("fixture shutdown drains a retained HTTP/2 stream after another RPC completes", { timeout: 10000 }, async () => {
+test("fixture shutdown drains a retained HTTP/2 stream after another RPC completes", { timeout: 3000 }, async () => {
   const server = createServer();
   const close = ownFixtureServer(server);
   server.on("stream", (stream, headers) => {
@@ -40,8 +31,8 @@ test("fixture shutdown drains a retained HTTP/2 stream after another RPC complet
     await once(request, "end");
     assert.equal(body, "complete");
     assert.equal(peer.destroyed, false);
-    await bounded(close());
-    await bounded(closed);
+    await close();
+    await closed;
     assert.equal(peer.destroyed, true);
   } finally { peer.destroy(); await close(); }
 });
@@ -51,7 +42,7 @@ test("fixture shutdown also handles an unstarted server", async () => {
   await ownFixtureServer(server)();
   assert.equal(server.listening, false);
 });
-test("fixture failure drains an unfinished HTTP response without masking the failure", { timeout: 10000 }, async () => {
+test("fixture failure drains an unfinished HTTP response without masking the failure", { timeout: 3000 }, async () => {
   const server = createHttpServer((_request, response) => { response.writeHead(200); response.write("partial"); });
   const close = ownFixtureServer(server);
   server.listen(0, "127.0.0.1");
@@ -71,9 +62,9 @@ test("fixture failure drains an unfinished HTTP response without masking the fai
     const failure = new Error("fixture assertion failed");
     await assert.rejects(async () => {
       try { throw failure; }
-      finally { await bounded(close()); }
+      finally { await close(); }
     }, error => error === failure);
-    await bounded(closed);
-    assert.equal(response.complete, false);
+    await closed;
+    assert.equal(response.destroyed, true);
   } finally { request.destroy(); await close(); }
 });
