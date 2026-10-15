@@ -132,7 +132,8 @@ impl<P: StreamProvider + 'static> VolumeCallback<P> {
             }
             self.context
                 .require_volume(&self.owner, &self.volume, self.writable, work)?;
-            let io = PreparationIo::from_native_work(&work.recheck_admitted())?;
+            let io =
+                PreparationIo::from_native_work(&self.context.native_work()?.recheck_admitted())?;
             self.owner
                 .verify(false, &mut Some(&mut io.history_io()))
                 .await?;

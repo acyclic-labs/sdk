@@ -26,7 +26,10 @@ async fn verify_binding<P: StreamProvider + 'static, A, O>(
             &mut Some(&mut io.history_io()),
         )?;
     }
-    owner.verify(false, &mut Some(&mut io.history_io())).await
+    let owner_io = PreparationIo::from_native_work(guard.native_work()?)?;
+    owner
+        .verify(false, &mut Some(&mut owner_io.history_io()))
+        .await
 }
 
 impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send + Sync + 'static>

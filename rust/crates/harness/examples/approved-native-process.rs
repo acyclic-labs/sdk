@@ -281,6 +281,8 @@ where
     let context = runtime
         .task_context_with_native_work(task_id, &fence, &work)
         .await?;
+    #[cfg(test)]
+    task::verify_volume_callbacks(&context, &owner, &source, &work, work_per_volume);
     let preparation_directory = tempfile::tempdir_in(
         directory
             .path()
