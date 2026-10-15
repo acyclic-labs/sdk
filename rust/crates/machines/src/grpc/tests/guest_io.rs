@@ -62,7 +62,12 @@ async fn fixture() -> (
         watch: WatchReply::Items(vec![]),
     };
     let (machines, shutdown, task) = serve_operation_service(service).await.unwrap();
-    (Machine::new(machines, machine), io, shutdown, task)
+    (
+        Machine::new(Machines::new(Arc::new(machines)), machine),
+        io,
+        shutdown,
+        task,
+    )
 }
 
 async fn stop(shutdown: tokio::sync::oneshot::Sender<()>, task: ServerTask) {

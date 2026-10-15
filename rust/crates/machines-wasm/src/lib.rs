@@ -1,8 +1,4 @@
 //! Thin WebAssembly boundary over the canonical Machines simulator.
-//!
-//! Requests use the serde representation of `acyclic-machines`.  The only
-//! convenience added here is identity normalization: callers may use labels,
-//! which are deterministically mapped to non-nil UUIDs before entering Rust.
 
 #![cfg(target_arch = "wasm32")]
 
@@ -19,19 +15,14 @@ mod public;
 /// Largest integer a JavaScript number represents exactly.
 pub(crate) const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
-/// Builds every error thrown across the JavaScript boundary: an `Error` named
-/// `MachinesError` whose string `code` names a stable failure category.
+/// Builds a Machines error with a stable failure code.
 pub(crate) fn js_error(code: &str, message: impl AsRef<str>) -> JsValue {
     let error = js_sys::Error::new(message.as_ref());
     error.set_name("MachinesError");
-    // Defining a data property on a fresh, unfrozen `Error` cannot fail.
     let _ = js_sys::Reflect::set(&error, &JsValue::from_str("code"), &JsValue::from_str(code));
     error.into()
 }
 
-// Keep the hosted transport route/output relationship in one Rust declaration.
-// The macro emits the runtime route table and the TypeScript declarations from
-// the same entries, so a route cannot silently drift between those boundaries.
 macro_rules! define_http_routes {
     ($( $name:ident => $route:literal => $request:literal => $response:literal ),+ $(,)?) => {
         pub(crate) mod http_route {
