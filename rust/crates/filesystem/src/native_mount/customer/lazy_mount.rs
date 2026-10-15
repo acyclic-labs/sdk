@@ -123,11 +123,7 @@ where
 
     /// Publishes pending authored effects with an unrestricted permit.
     pub async fn sync(&self) -> Result<(), MountLifecycleError> {
-        let work = NativeMaterializationWork::new(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .map_err(|(cause, _)| MountLifecycleError::Materialization(cause))?;
+        let work = self.native_work()?;
         self.sync_with_permit(PublicationPermit::Unrestricted, &work, |_| {
             std::future::ready(Ok::<(), MountLifecycleError>(()))
         })
@@ -282,19 +278,31 @@ where
     /// Advances a clean checkout and settles its native visibility.
     pub async fn advance_to_head(&self) -> Result<(), MountLifecycleError> {
         let advanced = self.source.advance_to_head_async().await;
-        with_session_work(&self.session, NativeMountSession::revalidate)?;
+        with_session_work(
+            &self.session,
+            self.source.as_ref(),
+            NativeMountSession::revalidate,
+        )?;
         advanced.map_err(Into::into)
     }
 
     /// Makes source-side changes beneath the supplied paths visible.
     pub fn changed_outside(&self, paths: &[String]) -> Result<(), MountLifecycleError> {
         self.source.changed_outside(paths)?;
-        with_session_work(&self.session, NativeMountSession::revalidate)
+        with_session_work(
+            &self.session,
+            self.source.as_ref(),
+            NativeMountSession::revalidate,
+        )
     }
 
     /// Settles all source changes reported before this call.
     pub fn revalidate(&self) -> Result<(), MountLifecycleError> {
-        with_session_work(&self.session, NativeMountSession::revalidate)
+        with_session_work(
+            &self.session,
+            self.source.as_ref(),
+            NativeMountSession::revalidate,
+        )
     }
 
     fn settle(&self, work: &NativeMaterializationWork) -> Result<(), MountLifecycleError> {
