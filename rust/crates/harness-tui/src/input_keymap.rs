@@ -4,6 +4,8 @@ use std::{collections::BTreeMap, io, path::Path};
 
 /// User remapping data. JSON maps canonical source chords to default action
 /// chords, e.g. `{"Ctrl+l":"Home","Home":""}`. An empty target disables a key.
+/// Super character shortcuts share Ctrl's canonical action chord. Conflicting
+/// aliases are rejected, so generated help and dispatch always agree.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct InputKeymap {
     overrides: BTreeMap<String, String>,

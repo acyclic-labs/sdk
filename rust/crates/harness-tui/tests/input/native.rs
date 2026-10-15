@@ -1,6 +1,8 @@
+#[cfg(unix)]
+use acyclic_harness_tui::edit_external;
 use acyclic_harness_tui::{
-    ClipboardContent, Editor, InputKeymap, edit_external, load_draft, load_history, prepare_image,
-    save_draft, save_history,
+    ClipboardContent, Editor, InputKeymap, load_draft, load_history, prepare_image, save_draft,
+    save_history,
 };
 
 #[test]

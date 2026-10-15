@@ -112,7 +112,7 @@ fn exercise_variant(data: &[u8], broken: bool) {
                     15 => KeyCode::Esc,
                     16 => KeyCode::Home,
                     17 => KeyCode::End,
-                    _ => KeyCode::Char(char::from(op)),
+                    _ => KeyCode::Char(char::from(chunk.get(4).copied().unwrap_or(op))),
                 };
                 let mods = KeyModifiers::from_bits_truncate(chunk.get(2).copied().unwrap_or(0));
                 let mut key = KeyEvent::new(code, mods);
