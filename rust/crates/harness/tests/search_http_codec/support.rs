@@ -168,6 +168,31 @@ async fn records(journal: &dyn ExecutionJournal, operation: OperationId) -> Vec<
     }
 }
 
+pub fn fuzz_response(data: &[u8]) -> Vec<u8> {
+    let Some(data) = data.strip_prefix(&[0xff]) else {
+        return data.to_vec();
+    };
+    let depth = u16::from_le_bytes([
+        data.first().copied().unwrap_or(0),
+        data.get(1).copied().unwrap_or(0),
+    ]) as usize;
+    let size = u32::from_le_bytes([
+        data.get(2).copied().unwrap_or(0),
+        data.get(3).copied().unwrap_or(0),
+        data.get(4).copied().unwrap_or(0),
+        data.get(5).copied().unwrap_or(0),
+    ]) as usize
+        % 1_048_578;
+    response(
+        depth,
+        size,
+        data.get(6).copied().unwrap_or(0),
+        &serde_json::Value::String(
+            String::from_utf8_lossy(data.get(7..).unwrap_or_default()).into_owned(),
+        ),
+    )
+}
+
 // Iterative construction explores depth independently of allocation/stack
 // limits in serde_json::Value. Scalar size includes the HTTP byte boundary.
 pub fn response(depth: usize, size: usize, shape: u8, leaf: &serde_json::Value) -> Vec<u8> {

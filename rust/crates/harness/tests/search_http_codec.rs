@@ -57,7 +57,7 @@ fn corpus(exa: bool) {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/corpus/search_http_codec");
     for entry in std::fs::read_dir(corpus).unwrap() {
         let bytes = std::fs::read(entry.unwrap().path()).unwrap();
-        runtime.block_on(support::check(bytes, exa));
+        runtime.block_on(support::check(support::fuzz_response(&bytes), exa));
     }
     for length in [1_048_575, 1_048_576, 1_048_577] {
         let mut bytes = support::response(0, 0, 0, &serde_json::Value::Null);
