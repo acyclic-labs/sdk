@@ -146,6 +146,15 @@ test('all publishers use the one qualified source and explicit artifacts',()=>{
   assert.match(publisher,/id-token: write/);
  }
  const qualification=YAML.parse(read('qualification.yml'));
+ for(const name of ['qualification','agent-host-qualification']){
+  const workflow=YAML.parse(read(name+'.yml'));
+  assert.deepEqual(workflow.on.workflow_call.inputs.source_ref,{...(name==='qualification'?{description:'Exact commit SHA to qualify'}:{}),type:'string',required:true});
+  const caller=YAML.parse(read('release-acyclic.yml')).jobs[name==='qualification'?'sdk-qualification':name];
+  assert.equal(caller.with.source_ref,'${{ inputs.source_sha }}');
+  for(const job of Object.values(workflow.jobs))for(const step of job.steps??[]){
+   if(step.uses?.startsWith('actions/checkout@'))assert.equal(step.with.ref,'${{ inputs.source_ref }}');
+  }
+ }
  assert.equal(qualification.on.workflow_call.inputs.force,undefined);
  assert.deepEqual(Object.keys(qualification.jobs),['plan','qualification','gate']);
  assert.deepEqual(qualification.jobs.plan.steps.filter(step=>step.uses?.startsWith('actions/cache/restore@')).map(step=>step.name),['Restore preflight tools']);
