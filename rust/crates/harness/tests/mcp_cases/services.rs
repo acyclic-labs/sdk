@@ -305,7 +305,6 @@ async fn endpoint_sampling_lost_ack_reopens_without_model_redispatch_and_pins_re
         let observed = transport
             .call(tool.operation_id(), "echo", json!({}), Some(tool.clone()))
             .await;
-        let _ = settled.send(());
         if lose_ack {
             assert!(matches!(observed, Err(Error::Indeterminate(_))));
         } else {
@@ -318,13 +317,14 @@ async fn endpoint_sampling_lost_ack_reopens_without_model_redispatch_and_pins_re
             );
         }
         assert!(transport.reconcile(operation, None).await?.is_none());
+        drop(registry);
+        drop(transport);
+        let _ = settled.send(());
         server
             .await
             .map_err(|error| Error::Storage(error.to_string()))??;
         assert_eq!(model.dispatches().len(), 1);
         assert_sampling_text(&model)?;
-        drop(registry);
-        drop(transport);
         drop(callback);
         drop(disk);
         drop(tool);
@@ -651,6 +651,7 @@ async fn remote_callback_cancellation_drops_recorded_model_without_replay() -> R
     let observed = transport
         .call(tool.operation_id(), "echo", json!({}), Some(tool.clone()))
         .await;
+    drop(transport);
     let _ = settled.send(());
     server
         .await

@@ -50,10 +50,14 @@ async fn no_more_requests(
     mut settled: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<()> {
     let mut connections = FuturesUnordered::new();
+    let mut completed = false;
     loop {
+        if completed && connections.is_empty() {
+            return Ok(());
+        }
         tokio::select! {
             biased;
-            accepted = listener.accept() => {
+            accepted = listener.accept(), if !completed => {
                 let (mut socket, _) = accepted.map_err(|error| Error::Storage(error.to_string()))?;
                 connections.push(async move { request_or_eof(&mut socket).await });
             }
@@ -62,7 +66,11 @@ async fn no_more_requests(
                     return Err(Error::Invalid(format!("unexpected repeated HTTP request: {message}")));
                 }
             }
-            done = &mut settled => return done.map_err(|error| Error::Storage(error.to_string())),
+            done = &mut settled, if !completed => {
+                done.map_err(|error| Error::Storage(error.to_string()))?;
+                // Completion closes admission, not the accepted request readers.
+                completed = true;
+            }
         }
     }
 }
@@ -671,24 +679,47 @@ mod oauth_cases;
 
 #[tokio::test]
 async fn replay_oracle_rejects_requests_behind_an_idle_connection() -> Result<()> {
+    for completed in [false, true] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let address = listener
+            .local_addr()
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let _idle = tokio::net::TcpStream::connect(address)
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let mut duplicate = tokio::net::TcpStream::connect(address)
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        duplicate
+            .write_all(b"POST /mcp HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}")
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let (settled, completion) = tokio::sync::oneshot::channel();
+        if completed {
+            settled.send(()).expect("completion receiver is live");
+        }
+        assert!(matches!(no_more_requests(listener, completion).await,
+        Err(Error::Invalid(message)) if message == "unexpected repeated HTTP request: {}"));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn replay_oracle_drains_idle_connections_after_completion() -> Result<()> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(|error| Error::Storage(error.to_string()))?;
-    let address = listener
-        .local_addr()
-        .map_err(|error| Error::Storage(error.to_string()))?;
-    let _idle = tokio::net::TcpStream::connect(address)
-        .await
-        .map_err(|error| Error::Storage(error.to_string()))?;
-    let mut duplicate = tokio::net::TcpStream::connect(address)
-        .await
-        .map_err(|error| Error::Storage(error.to_string()))?;
-    duplicate
-        .write_all(b"POST /mcp HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}")
-        .await
-        .map_err(|error| Error::Storage(error.to_string()))?;
-    let (_settled, completion) = tokio::sync::oneshot::channel();
-    assert!(matches!(no_more_requests(listener, completion).await,
-        Err(Error::Invalid(message)) if message == "unexpected repeated HTTP request: {}"));
-    Ok(())
+    let idle = tokio::net::TcpStream::connect(
+        listener
+            .local_addr()
+            .map_err(|error| Error::Storage(error.to_string()))?,
+    )
+    .await
+    .map_err(|error| Error::Storage(error.to_string()))?;
+    let (settled, completion) = tokio::sync::oneshot::channel();
+    settled.send(()).expect("completion receiver is live");
+    drop(idle);
+    no_more_requests(listener, completion).await
 }
