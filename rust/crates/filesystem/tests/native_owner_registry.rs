@@ -99,3 +99,29 @@ async fn interior_retirement_compacts_once_and_defers_when_copy_budget_is_full()
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn failed_owner_admission_retires_its_pending_slot_and_preserves_spent_work() -> TestResult {
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let root = tempfile::tempdir()?;
+    let cancellation = CancellationToken::new();
+    let reference = NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
+    let source = open(root.path(), &reference).await?;
+    let successful_allocations = reference.receipt().allocation_operations;
+    drop(source);
+    for allowed in 1..successful_allocations {
+        let budget = WorkBudget {
+            allocation_operations: allowed,
+            ..BUDGET
+        };
+        let work = NativeMaterializationWork::new(budget, &cancellation).map_err(|(e, _)| e)?;
+        let baseline = work.live_allocation_bytes();
+        assert!(open(root.path(), &work).await.is_err());
+        let spent = work.receipt();
+        spent.verify(budget)?;
+        work.charge(WorkCounters::UNCHARGED)?;
+        assert_eq!(work.receipt(), spent);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+    }
+    Ok(())
+}
