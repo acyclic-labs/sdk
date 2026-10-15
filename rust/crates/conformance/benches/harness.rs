@@ -187,3 +187,69 @@ fn snapshot_hash_floor(bencher: Bencher, events: u64) {
         .counter(divan::counter::BytesCount::new(bytes.len()))
         .bench_local(|| blake3::hash(divan::black_box(&bytes)));
 }
+
+#[divan::bench(args = [1, 4, 16, 64, 256, 1024])]
+fn reducer_restore(bencher: Bencher, events: u64) {
+    let (mut reducer, commands) = workload(events);
+    for command in commands {
+        reducer.apply(&command).unwrap();
+    }
+    let snapshot = reducer.snapshot(usize::MAX, &mut None).unwrap().0;
+    let issuer = AuthorityIssuer::new("bench", [7; 32], authority());
+    bencher
+        .counter(ItemsCount::new(usize::try_from(events).unwrap()))
+        .with_inputs(|| {
+            (
+                snapshot.copy(&mut None).unwrap(),
+                issuer.verifier(&mut None).unwrap(),
+            )
+        })
+        .bench_local_values(|(snapshot, verifier)| {
+            Reducer::restore(snapshot, verifier, SchemaRegistry::new(), &mut None).unwrap()
+        });
+}
+
+#[cfg(feature = "harness-accounting")]
+#[divan::bench(args = [1, 4])]
+fn reducer_restore_accounted(bencher: Bencher, events: u64) {
+    use acyclic_harness::filesystem::PreparationIo;
+    use acyclic_harness::store::HistoryWork;
+    let (mut reducer, commands) = workload(events);
+    for command in commands {
+        reducer.apply(&command).unwrap();
+    }
+    let snapshot = reducer.snapshot(usize::MAX, &mut None).unwrap().0;
+    let issuer = AuthorityIssuer::new("bench", [7; 32], authority());
+    bencher
+        .with_inputs(|| {
+            (
+                snapshot.copy(&mut None).unwrap(),
+                issuer.verifier(&mut None).unwrap(),
+                HistoryWork::new(
+                    PreparationIo::from_budget(
+                        acyclic_fs::WorkBudget {
+                            allocation_operations: 1_000_000,
+                            peak_allocation_bytes: 64 * 1024 * 1024,
+                            bytes_copied: 64 * 1024 * 1024,
+                            bytes_encoded: 64 * 1024 * 1024,
+                            bytes_hashed: 64 * 1024 * 1024,
+                            items_examined: 1_000_000,
+                            ..Default::default()
+                        },
+                        &acyclic_fs::CancellationToken::default(),
+                    )
+                    .unwrap(),
+                ),
+            )
+        })
+        .bench_local_values(|(snapshot, verifier, mut work)| {
+            let reducer = Reducer::restore(
+                snapshot,
+                verifier,
+                SchemaRegistry::new(),
+                &mut Some(&mut work),
+            )
+            .unwrap();
+            (reducer, work)
+        });
+}
