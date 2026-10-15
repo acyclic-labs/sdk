@@ -9,7 +9,7 @@ struct LocalInner {
     synced: watch::Sender<u64>,
     // None is terminal; publication and failure share one synchronized push state.
     changed: watch::Sender<Option<u64>>,
-    /// Lock order: visibility -> durable_tails, after releasing provider state and journal.
+    // Lock order: visibility -> durable_tails, after releasing provider state and journal.
     durable_tails: Mutex<std::collections::BTreeMap<StreamPath, u64>>,
 }
 
