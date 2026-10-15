@@ -121,7 +121,16 @@ test("pinned Cargo's real Windows ARM report selects the binary and preserves re
     assert.equal(report.finalBinaryUnits[0].sections, null);
     assert.match(result.stdout, /combined compilation\/codegen\/link 283\.35s; reported codegen not reported; reported link not reported/);
     assert.match(result.stdout, /acyclic-fs \| 86\.28s \| 0\.00s \| not reported/);
-    assert.deepEqual(report.cpuUsage, parsed.cpuUsage);
+    assert.deepEqual(report.cpuUsage, [
+      [6.0088253, 27.272727272727266], [6.1500796, 97.22222222222223],
+      [563.0982845, 38.28125], [563.5992267, 32.8125],
+    ]);
+    assert.deepEqual(report.concurrency, [
+      { t: 6.01, active: 4, waiting: 0, inactive: 407 },
+      { t: 6.08, active: 5, waiting: 3, inactive: 403 },
+      { t: 280.4, active: 1, waiting: 0, inactive: 0 },
+      { t: 563.75, active: 0, waiting: 0, inactive: 0 },
+    ]);
     assert.equal(readFileSync(join(output, "product-cargo-timing.html"), "utf8"), fixture);
   } finally {
     rmSync(root, { recursive: true, force: true });
