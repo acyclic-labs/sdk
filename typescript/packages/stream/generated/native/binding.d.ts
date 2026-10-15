@@ -19,13 +19,13 @@ export declare class NativeStreamCancellation {
   get cancelled(): boolean
 }
 
-/** Native Stream client backed directly by `StreamClient<grpc::Client>`. */
+/** Native Stream client and its authenticated gRPC transport. */
 export declare class NativeStreamClient {
   /** Connects using the canonical Rust native gRPC transport. */
   static connect(endpoint: string, token: string, cancellation?: NativeStreamCancellation | undefined | null): Promise<NativeStreamClient>
   /** Connects and returns a structured success/error envelope. */
   static connectResult(endpoint: string, token: string, cancellation?: NativeStreamCancellation | undefined | null): Promise<NativeStreamConnectResult>
-  /** Connects with one caller-pinned private CA certificate. */
+  /** Connects trusting exclusively the caller-pinned private PEM CA certificate. */
   static connectWithCa(endpoint: string, token: string, caCertificatePem: Buffer, cancellation?: NativeStreamCancellation | undefined | null): Promise<NativeStreamClient>
   /** Connects with a pinned CA and returns a structured result. */
   static connectWithCaResult(endpoint: string, token: string, caCertificatePem: Buffer, cancellation?: NativeStreamCancellation | undefined | null): Promise<NativeStreamConnectResult>

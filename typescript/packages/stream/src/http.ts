@@ -1,17 +1,23 @@
-import { pathValue, validateAppend } from "./client.js";
-import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
+import { validateAppend } from "./client.js";
+import { toBinary } from "@bufbuild/protobuf";
+import { AcknowledgeDeliveryRequestSchema, StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import { is_stream_error_code, publicHttpErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 import type { AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommittedEnvelope, CommitId, CommitOptions, CommitResult, CreateTokenRequest, EncodedRecord, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence, StreamProvider } from "./types.js";
 import { StreamError, type StreamFailureCode } from "./types.js";
 import { decodeHttpResponseFor } from "./http-contract.js";
 import type { HttpResponseFor, HttpRoute } from "./http-contract.js";
-import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "./observe.js";
-import { encodeHttpRequest, ensureStreamWasm, normalizeWireCommitBytes, validateWireRequest, wireAppendRequest, wireCreateTokenRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/actors/observe";
+import { encodeHttpRequest, ensureStreamWasm, normalizeWireCommitBytes, validatePathValue, validateWireRequest, wireAppendRequest, wireCreateTokenRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 
 export interface HttpStreamProviderOptions { readonly endpoint: string; readonly token: string; readonly fetcher?: typeof fetch; readonly maximumResponseBytes?: number; readonly observer?: AcyclicObserver }
 
 /** Authenticated JSON transport. Mutation retries are deliberately the caller's decision. */
 export class HttpStreamProvider implements StreamProvider {
+  /** Acknowledges an opaque hosted transport receipt. */
+  async acknowledgeDelivery(deliveryToken: Uint8Array): Promise<void> {
+    const input = toBinary(AcknowledgeDeliveryRequestSchema, { $typeName: "acyclic.stream.v1.AcknowledgeDeliveryRequest", deliveryToken: deliveryToken.slice() });
+    await this.#request("delivery/acknowledge", await encodeHttpRequest("delivery/acknowledge", input));
+  }
   readonly #endpoint: string;
   readonly #token: string;
   readonly #fetcher: typeof fetch;
@@ -39,9 +45,7 @@ export class HttpStreamProvider implements StreamProvider {
     if (signal?.aborted) return;
     const tail = await this.#tail(path, signal);
     if (from > tail) throw new StreamError("out_of_range", "follow cursor is beyond the stream tail");
-    // The HTTP API has no long-poll or streaming read, so follow polls. Back
-    // off from 25 ms after the last record to 1 s while idle: new records
-    // after activity arrive sooner, and an idle follower costs 1 request/s.
+    // Poll from 25 ms after activity to 1 s while idle.
     let next = from;
     let idle = 25;
     while (!signal?.aborted) {
@@ -51,12 +55,11 @@ export class HttpStreamProvider implements StreamProvider {
       else { await delay(idle, signal); idle = Math.min(idle * 2, 1000); }
     }
   }
-  async *children(parent: string | undefined, limit: number): AsyncIterable<{ readonly path: string }> { await validateWireRequest({ kind: "children", limit, ...(parent === undefined ? {} : { parent }) }); const input = wireRequest({ kind: "children", limit, ...(parent === undefined ? {} : { parent }) }); for (const item of await this.#request("children", await encodeHttpRequest("children", input))) yield item; }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     if (request === null || typeof request !== "object") throw new StreamError("invalid_argument", "children page request must be an object");
-    if (request.parent !== undefined) pathValue(request.parent);
+    if (request.parent !== undefined) validatePathValue(request.parent);
     if (request.after !== undefined) {
-      pathValue(request.after);
+      validatePathValue(request.after);
       if (request.hierarchyVersion === undefined || directParent(request.after) !== (request.parent ?? "")) {
         throw new StreamError("invalid_cursor", "child continuation must name a direct child and its hierarchy revision");
       }
@@ -130,12 +133,7 @@ export class HttpStreamProvider implements StreamProvider {
   }
 }
 
-/**
- * Decode the small error envelope shared by hosted Stream endpoints. Rust
- * owns the error-code set and its public projection. Unknown or malformed
- * bodies stay transport failures so arbitrary server strings cannot become
- * typed domain errors.
- */
+/** Unknown peer error codes remain transport failures. */
 async function hostedError(route: string, text: string, status: number): Promise<StreamError> {
   const fallback = text || `HTTP ${status}`;
   const details = parseHostedError(text);

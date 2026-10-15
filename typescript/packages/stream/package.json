@@ -47,6 +47,8 @@
     "stage:native": "node ../../../scripts/build-stream-native.mjs stage",
     "check:native": "node ../../../scripts/build-stream-native.mjs check",
     "test": "bun run build && bun test test",
+    "test:grpc:node": "node test/grpc-provider-conformance.mjs --node-only",
+    "test:grpc:bun": "node test/grpc-provider-conformance.mjs --bun-only",
     "example": "bun run build && tsc --ignoreConfig --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --pretty false examples/quickstart.ts && bun examples/quickstart.ts"
   },
   "napi": {
@@ -59,12 +61,13 @@
     ]
   },
   "dependencies": {
-    "@bufbuild/protobuf": "2.15.0",
-    "@connectrpc/connect": "2.1.1",
-    "@connectrpc/connect-node": "2.1.1"
+    "@acyclic-labs/actors": "0.2.0",
+    "@bufbuild/protobuf": "2.16.0",
+    "@connectrpc/connect": "2.2.0",
+    "@connectrpc/connect-node": "2.2.0"
   },
   "devDependencies": {
-    "@types/node": "26.4.1",
+    "@types/node": "26.6.4",
     "typescript": "7.0.2"
   }
 }

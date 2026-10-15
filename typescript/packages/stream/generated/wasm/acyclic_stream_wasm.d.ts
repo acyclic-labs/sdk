@@ -5,9 +5,6 @@ export type StreamErrorCode = "invalid_path" | "invalid_argument" | "limit_excee
 
 /**
  * One Rust-backed live follow cursor.
- *
- * `next` releases the state lock before awaiting the stream, so `close` can
- * always signal a pending call and promptly release its cursor.
  */
 export class WasmFollow {
     private constructor();
@@ -25,11 +22,6 @@ export class WasmFollow {
 
 /**
  * Browser ABI over canonical Rust memory or durable providers.
- *
- * Unary operations use `dispatch(operation, request_bytes)` and return the
- * corresponding protobuf response bytes. `read` and `children` return arrays
- * of encoded stream response messages because protobuf streams have no single
- * finite response envelope.
  */
 export class WasmStream {
     free(): void;
@@ -64,106 +56,61 @@ export function __streamErrorCodeContract(value: StreamErrorCode): StreamErrorCo
 
 /**
  * Validate and project one hosted HTTP JSON success response into the public
- * JavaScript shape. Rust owns the scalar widths and tagged response schema:
- * decimal uint64 strings become `bigint`, base64 bytes become `Uint8Array`,
- * and token timestamps become `Date` values before the value crosses the
- * browser boundary.
  */
 export function decodeHttpResponse(route: string, response_json: string): unknown;
 
 /**
  * Decode one `ReadResponse` frame's fields to its encoded `RecordBatch`.
- *
- * The shared Rust decoder bounds the declared length before decompressing and
- * requires the decoded length to match it exactly.
  */
 export function decodeReadResponse(codec: number, data: Uint8Array, decoded_length: bigint): Uint8Array;
 
 /**
  * Encode one protobuf request into the hosted Stream HTTP JSON shape.
- *
- * Protobuf remains the only request contract crossing from TypeScript into
- * Rust.  Rust owns the conversion of uint64 values and opaque bytes to the
- * decimal and base64 spellings required by the hosted API, keeping the HTTP
- * adapter from maintaining a second scalar conversion table.
  */
 export function encodeHttpRequest(route: string, input: Uint8Array): string;
 
 /**
  * Return whether a code can be emitted by this WASM adapter.
- *
- * Keeping this validator beside the Rust error mapping prevents the TypeScript adapter from
- * maintaining a second, potentially stale list of base Stream error codes.
  */
 export function is_stream_error_code(value: string): boolean;
 
 /**
  * Normalize and encode canonical protobuf bytes for one commit request.
- *
- * The returned bytes use the same deterministic ordering as the in-memory
- * provider. Validation failures are thrown as stable error codes.
  */
 export function normalizeCommitRequest(input: Uint8Array): Uint8Array;
 
 /**
  * Decode one unary memory-provider response from canonical protobuf bytes
- * into the public JavaScript result shape. Rust owns the response oneofs,
- * scalar widths, copied byte buffers, and camelCase projection at this
- * boundary; TypeScript keeps only request adaptation and cursor lifecycle.
  */
 export function projectMemoryResponse(operation: string, input: Uint8Array): unknown;
 
 /**
  * Project a hosted HTTP error code onto the public Stream error vocabulary.
- *
- * The hosted API may report either the Rust-owned wire code or a public alias.
- * Unknown values and a commit-only alias on another route return no value.
  */
 export function publicHttpErrorCode(raw: string, route: string): string | undefined;
 
 /**
  * Validate canonical protobuf bytes for one append request.
- *
- * The empty string means that the request passed the same domain validators as
- * the in-memory provider. Otherwise this returns one stable error code.
  */
 export function validateAppendRequest(input: Uint8Array): string;
 
 /**
  * Validate one hosted HTTP JSON success response using the same path, width,
- * identity, and tagged-union rules as the canonical Stream domain.
- *
- * The HTTP adapter keeps its intentionally simple JSON representation (u64
- * values are decimal strings and opaque bytes are base64). This entry point
- * validates that representation using the same Rust projection used by
- * `decodeHttpResponse`, without crossing a second scalar schema boundary.
  */
 export function validateHttpResponse(route: string, response_json: string): void;
 
 /**
  * Validate one canonical Stream path using the same parser used by every
- * provider and wire decoder.
- *
- * The empty string means success; failures use the stable Stream error code
- * consumed by the TypeScript adapter.
  */
 export function validatePath(path: string): string;
 
 /**
  * Validate one canonical protobuf request at the browser boundary.
- *
- * `kind` is deliberately a small closed set so callers cannot accidentally
- * select a different validator after adding a new wire message. The empty
- * string means success; failures use the same stable codes as the append and
- * commit entry points.
  */
 export function validateRequest(kind: string, input: Uint8Array): string;
 
 /**
  * Validate one JavaScript representation of a canonical Stream sequence.
- *
- * JavaScript passes the decimal spelling of its `bigint`; Rust owns the
- * unsigned 64-bit range accepted by every Stream wire field.
  */
 export function validateSequence(value: string): string;
 

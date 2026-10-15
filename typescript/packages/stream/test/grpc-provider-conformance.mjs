@@ -2,21 +2,108 @@ import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
 import assert from "node:assert/strict";
 import { createSecureServer } from "node:http2";
 import { spawn, spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
+import { join } from "node:path";
 import { zstdCompressSync } from "node:zlib";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { createClient, ConnectError, Code } from "@connectrpc/connect";
 import { createGrpcTransport, Http2SessionManager, connectNodeAdapter } from "@connectrpc/connect-node";
-import { GrpcStreamProvider } from "../dist/grpc.js";
-import { idempotencyKey, commitId, StreamError } from "../dist/types.js";
-import { ensureStreamWasm } from "../dist/contract.js";
-import { WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
-import { Codec, ReadResponseSchema, RecordBatchSchema, StreamService } from "../generated/proto/stream/v1/stream_pb.js";
+const installed = process.argv.includes("--installed");
+const installedRequire = createRequire(pathToFileURL(join(process.cwd(), "package.json")));
+const grpcUrl = installed ? pathToFileURL(installedRequire.resolve("@acyclic-labs/stream/grpc")) : new URL("../dist/grpc.js", import.meta.url);
+const packageUrl = new URL("../", grpcUrl);
+if (installed && grpcUrl.href === new URL("../dist/grpc.js", import.meta.url).href) throw new Error("--installed requires a freshly packed consumer, not the workspace package");
+const { createStreamGrpcClient, GrpcStreamProvider } = await import(grpcUrl.href);
+const { idempotencyKey, commitId, StreamError } = await import(installed ? pathToFileURL(installedRequire.resolve("@acyclic-labs/stream")).href : new URL("../dist/types.js", import.meta.url).href);
+const { ensureStreamWasm } = await import(new URL("dist/contract.js", packageUrl).href);
+const { WasmStream } = await import(new URL("generated/wasm/acyclic_stream_wasm.js", packageUrl).href);
+const { Codec, ReadResponseSchema, RecordBatchSchema, StreamService } = await import(installed ? pathToFileURL(installedRequire.resolve("@acyclic-labs/stream/proto")).href : new URL("../generated/proto/stream/v1/stream_pb.js", import.meta.url).href);
 
 const file = fileURLToPath(import.meta.url);
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 const key = text => idempotencyKey(new TextEncoder().encode(text));
 const body = text => new TextEncoder().encode(text);
+
+async function validateFrames(options, prefix) {
+  const provider = new GrpcStreamProvider(options);
+  const state = (mode, field) => provider.tail(`frame-state/${prefix}/${mode}/${field}`);
+  const waitFor = async (mode, field, minimum = 1n) => {
+    const deadline = Date.now() + 2000;
+    while (await state(mode, field) < minimum) {
+      assert.ok(Date.now() < deadline, `missing ${mode} ${field}`);
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+  };
+  const first = async iterator => {
+    let timer;
+    try {
+      return await Promise.race([iterator.next(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("record delivery stalled")), 250); })]);
+    } finally { clearTimeout(timer); }
+  };
+  const open = (mode, client = provider, follow = false, signal) => (follow
+    ? client.follow(`frame-test/${prefix}/${mode}`, { from: 0n, ...(signal === undefined ? {} : { signal }) })
+    : client.read(`frame-test/${prefix}/${mode}`, { from: 0n, limit: mode === "pressure" ? 64 : 2 }))[Symbol.asyncIterator]();
+  const receive = async (client, mode) => {
+    const records = [];
+    for await (const record of client.read(`frame-test/${prefix}/${mode}`, { from: 0n, limit: 2 })) records.push(record.sequence);
+    assert.deepEqual(records, [0n, 1n]);
+  };
+  await receive(provider, "ack");
+  assert.equal(await state("ack", "attempts"), 1n);
+  await receive(new GrpcStreamProvider({ ...options, acknowledgeDeliveries: false }), "ack");
+  assert.equal(await state("ack", "attempts"), 1n);
+  await receive(provider, "ackFail");
+  assert.equal(await state("ackFail", "attempts"), 1n);
+  await receive(provider, "ackMalformed");
+  assert.equal(await state("ackMalformed", "attempts"), 0n);
+  await assert.rejects(receive(provider, "ackInvalid"), error => error.code === "invalid_response");
+  assert.equal(await state("ackInvalid", "attempts"), 0n);
+  await assert.rejects(provider.acknowledgeDelivery(new Uint8Array(31)), error => error.code === "invalid_argument");
+  await assert.rejects(provider.acknowledgeDelivery(new Uint8Array(32)), error => error.code === "unsupported");
+  for (const mode of ["cursor", "identity", "count", "codec"]) {
+    const iterator = mode === "count"
+      ? provider.read(`frame-test/${prefix}/${mode}`, { from: 0n, limit: 1 })[Symbol.asyncIterator]()
+      : open(mode);
+    await assert.rejects(iterator.next(), error => error.code === "invalid_response");
+    if (mode !== "count") await assert.rejects(open(mode, provider, true).next(), error => error.code === "invalid_response");
+  }
+  const ordinary = open("ordinary");
+  assert.equal((await first(ordinary)).value.sequence, 0n);
+  assert.equal((await first(ordinary)).value.sequence, 1n);
+  assert.equal((await ordinary.next()).done, true);
+  for (const [mode, follow] of [["dropRead", false], ["dropFollow", true]]) {
+    const iterator = open(mode, provider, follow);
+    await first(iterator);
+    await waitFor(mode, "started");
+    await iterator.return();
+    await waitFor(mode, "cancelled");
+  }
+  const controller = new AbortController();
+  const signalled = open("signal", provider, true, controller.signal);
+  await first(signalled);
+  await waitFor("signal", "started");
+  controller.abort();
+  await waitFor("signal", "cancelled");
+  assert.equal((await signalled.next()).done, true);
+  const pressured = open("pressure");
+  for (let sequence = 0; sequence < 64; sequence++) assert.equal((await first(pressured)).value.sequence, BigInt(sequence));
+  await pressured.return();
+  await waitFor("pressure", "cancelled");
+  if (process.argv.includes("--native")) {
+    const nativeUrl = installed ? pathToFileURL(installedRequire.resolve("@acyclic-labs/stream/native")) : new URL("../dist/native.js", import.meta.url);
+    const { NativeStreamProvider } = await import(nativeUrl.href);
+    const native = await NativeStreamProvider.connect(options.endpoint, options.token, body(options.caCertificate));
+    const iterator = open("dropFollow", native, true);
+    assert.equal((await first(iterator)).value.sequence, 0n);
+    await waitFor("dropFollow", "started", 2n);
+    await iterator.return();
+    await waitFor("dropFollow", "cancelled", 2n);
+    const records = [];
+    for await (const record of native.read(`frame-test/${prefix}/ordinary`, { from: 0n, limit: 2 })) records.push(record.sequence);
+    assert.deepEqual(records, [0n, 1n]);
+  }
+}
 if (process.argv.includes("--client")) {
   let config = "";
   for await (const chunk of process.stdin) config += chunk;
@@ -76,7 +163,8 @@ if (process.argv.includes("--client")) {
   }
   const bounded = new GrpcStreamProvider({ ...options, maximumMessageBytes: 64 });
   await assert.rejects(async () => { for await (const _ of bounded.read("oversize", { from: 0n, limit: 1 })) {} }, error => error instanceof StreamError && error.code === "capacity_exhausted");
-  console.log(`${prefix}: Stream provider replay, follow cancellation, forks, multi-path Commit, idempotency, authentication, errors and bounds passed`);
+  await validateFrames(options, prefix);
+  console.log(`${prefix}: Stream provider replay, follow cancellation, forks, Commit, frame validation and cleanup passed (${installed ? "installed archive" : "workspace"}${process.argv.includes("--native") ? ", N-API bridge" : ""})`);
   process.exit(0);
 }
 
@@ -97,12 +185,48 @@ function canonicalError(error) {
   const codes = { not_found: Code.NotFound, invalid_path: Code.InvalidArgument, invalid_argument: Code.InvalidArgument, out_of_range: Code.OutOfRange, already_exists: Code.AlreadyExists, limit_exceeded: Code.InvalidArgument, idempotency_mismatch: Code.FailedPrecondition, prefix_not_retained: Code.FailedPrecondition };
   return new ConnectError(error.code ?? String(error), codes[error.code] ?? Code.Unavailable);
 }
-const adapter = connectNodeAdapter({ routes(router) {
+
+const frameStates = new Map();
+const deliveryTokens = new Map();
+function frameState(prefix, mode) {
+  const key = `${prefix}/${mode}`;
+  if (!frameStates.has(key)) frameStates.set(key, { started: 0n, cancelled: 0n, attempts: 0n });
+  return frameStates.get(key);
+}
+function aborted(signal) {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise(resolve => signal.addEventListener("abort", resolve, { once: true }));
+}
+function createAdapter() { return connectNodeAdapter({ routes(router) {
   const implementation = {};
   for (const method of StreamService.methods) {
     if (method.methodKind === "server_streaming") {
       implementation[method.localName] = async function* (request, context) {
         authenticate(context);
+        if (request.path.startsWith("frame-test/")) {
+          const [, prefix, mode] = request.path.split("/");
+          const state = frameState(prefix, mode);
+          state.started++;
+          try {
+            const records = [0n, 1n].map(sequence => ({ sequence, value: body("frame"), commitId: new Uint8Array(32).fill(7), committedAtMicros: 1n }));
+            if (mode === "cursor") records[1].sequence = 9n;
+            if (mode === "identity" || mode === "ackInvalid") records[1].commitId = new Uint8Array(31);
+            if (mode === "pressure") {
+              for (let index = 0; index < 64; index++) yield readFrame([{ ...records[0], sequence: BigInt(index) }], true);
+            } else {
+              const frame = readFrame(records, true);
+              if (mode === "codec") frame.codec = 3;
+              if (mode.startsWith("ack")) {
+                frame.deliveryToken = new Uint8Array(mode === "ackMalformed" ? 31 : 32).fill(mode.charCodeAt(3) || 9);
+                deliveryTokens.set(Buffer.from(frame.deliveryToken).toString("hex"), { state, mode });
+              }
+              yield frame;
+            }
+            if (mode === "ordinary" || mode.startsWith("ack")) return;
+            await aborted(context.signal);
+          } finally { if (context.signal.aborted) state.cancelled++; }
+          return;
+        }
         if (request.path === "invalid-codec-0" || request.path === "invalid-codec-3") {
           const frame = readFrame([{ sequence: 0n, value: new Uint8Array([1]), commitId: new Uint8Array(32) }], false);
           frame.codec = request.path === "invalid-codec-0" ? 0 : 3;
@@ -135,19 +259,32 @@ const adapter = connectNodeAdapter({ routes(router) {
     } else {
       implementation[method.localName] = async (request, context) => {
         authenticate(context);
+        if (method.localName === "acknowledgeDelivery") {
+          const delivery = deliveryTokens.get(Buffer.from(request.deliveryToken).toString("hex"));
+          if (!delivery) throw new ConnectError("unsupported_capability", Code.Unimplemented);
+          delivery.state.attempts++;
+          if (delivery.mode === "ackFail") throw new ConnectError("lost ACK", Code.Unavailable);
+          return {};
+        }
+        if (method.localName === "tail" && request.path.startsWith("frame-state/")) {
+          const [, prefix, mode, field] = request.path.split("/");
+          return { tail: frameState(prefix, mode)[field] };
+        }
         try { return fromBinary(method.output, await memory.dispatch(operation(method.localName), toBinary(method.input, request))); }
         catch (error) { throw canonicalError(error); }
       };
     }
   }
   router.service(StreamService, implementation);
-} });
-const server = createSecureServer({ key: tls.key, cert: tls.certificate }, adapter);
+} }); }
+const server = createSecureServer({ key: tls.key, cert: tls.certificate }, createAdapter());
 const closeServer = ownFixtureServer(server);
 try {
   await new Promise(resolve => server.listen(0, "localhost", resolve));
-  for (const runtime of [process.execPath, "bun"]) await new Promise((resolve, reject) => {
-    const child = spawn(runtime, [file, "--client"], { cwd: root, stdio: ["pipe", "inherit", "inherit"] });
+  const runtimes = process.argv.includes("--node-only") ? [process.execPath] : process.argv.includes("--bun-only") ? ["bun"] : [process.execPath, "bun"];
+  for (const runtime of runtimes) await new Promise((resolve, reject) => {
+    const flags = ["--client", ...(installed ? ["--installed"] : []), ...(process.argv.includes("--native") ? ["--native"] : [])];
+    const child = spawn(runtime, [file, ...flags], { cwd: installed ? process.cwd() : root, stdio: ["pipe", "inherit", "inherit"], windowsHide: true });
     child.stdin.end(JSON.stringify({ endpoint: `https://localhost:${server.address().port}`, token: "conformance", caCertificate: tls.certificate }));
     child.on("error", reject);
     child.on("exit", code => code === 0 ? resolve() : reject(new Error(`Stream provider conformance exited ${code}`)));

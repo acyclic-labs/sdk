@@ -4,12 +4,12 @@ import { fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
-import { normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
-import { StreamError, commitId, type StreamFailureCode } from "./types.js";
+import { encodeHttpRequest, checkedRecord, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { StreamError, type StreamFailureCode } from "./types.js";
 import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, EncodedRecord, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation } from "./types.js";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import { StreamService } from "../generated/proto/stream/v1/stream_pb.js";
-import { observeInterceptors, resolveObserver, type AcyclicObserver } from "./observe.js";
+import { observeInterceptors, resolveObserver, type AcyclicObserver } from "@acyclic-labs/actors/observe";
 
 export interface StreamGrpcOptions {
   readonly endpoint: string;
@@ -17,6 +17,8 @@ export interface StreamGrpcOptions {
   readonly caCertificate?: string;
   readonly maximumMessageBytes?: number;
   readonly observer?: AcyclicObserver;
+  /** Translating servers acknowledge their own downstream receipt. */
+  readonly acknowledgeDeliveries?: boolean;
 }
 
 /** Complete Stream v1 gRPC client, including streaming reads/follow and atomic Commit. */
@@ -37,8 +39,17 @@ export function createStreamGrpcClient(options: StreamGrpcOptions) {
 /** Existing Stream provider API over native HTTP/2 gRPC in Node and Bun. */
 export class GrpcStreamProvider implements StreamProvider {
   readonly #client: ReturnType<typeof createStreamGrpcClient>;
-  constructor(options: StreamGrpcOptions) { this.#client = createStreamGrpcClient(options); }
-
+  readonly #acknowledgeDeliveries: boolean;
+  constructor(options: StreamGrpcOptions) {
+    this.#client = createStreamGrpcClient(options);
+    this.#acknowledgeDeliveries = options.acknowledgeDeliveries !== false;
+  }
+  /** Acknowledges an opaque hosted transport receipt. */
+  async acknowledgeDelivery(deliveryToken: Uint8Array): Promise<void> {
+    const request = { $typeName: "acyclic.stream.v1.AcknowledgeDeliveryRequest" as const, deliveryToken: deliveryToken.slice() };
+    await encodeHttpRequest("delivery/acknowledge", toBinary(wire.AcknowledgeDeliveryRequestSchema, request));
+    await this.#call("acknowledge_delivery", () => this.#client.acknowledgeDelivery(request, { timeoutMs: 500 }));
+  }
   async #call<T>(operation: string, call: () => Promise<T>): Promise<T> {
     try { return await call(); } catch (error) { throw providerError(error, operation); }
   }
@@ -73,36 +84,41 @@ export class GrpcStreamProvider implements StreamProvider {
   async *read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> {
     const request = { kind: "read" as const, path, from: options.from, limit: options.limit };
     await validateWireRequest(request);
-    let next = request.from;
-    let count = 0;
+    const controller = new AbortController();
     try {
-      for await (const response of this.#client.read(fromBinary(wire.ReadRequestSchema, wireRequest(request)))) {
-        for (const value of readResponseRecords(response)) {
-          if (++count > request.limit) throw new StreamError("invalid_response", "read exceeds requested limit");
-          const record = checkedRecord(value, next);
-          next = record.sequence + 1n;
-          yield record;
-        }
-      }
-    } catch (error) { throw providerError(error, "read"); }
+      yield* this.#frames("read", this.#client.read(fromBinary(wire.ReadRequestSchema, wireRequest(request)), { signal: controller.signal }), request.from, request.limit);
+    } finally { controller.abort(); }
   }
   async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
     const request = { kind: "follow" as const, path, from: options.from };
     await validateWireRequest(request);
     if (options.signal?.aborted) return;
-    let next = request.from;
+    const controller = new AbortController();
+    const signal = options.signal === undefined ? controller.signal : AbortSignal.any([options.signal, controller.signal]);
     try {
-      for await (const response of this.#client.follow(fromBinary(wire.FollowRequestSchema, wireRequest(request)), options.signal === undefined ? {} : { signal: options.signal })) {
-        for (const value of readResponseRecords(response)) {
-          if (options.signal?.aborted) return;
-          const record = checkedRecord(value, next);
-          next = record.sequence + 1n;
+      yield* this.#frames("follow", this.#client.follow(fromBinary(wire.FollowRequestSchema, wireRequest(request)), { signal }), request.from, undefined, signal);
+    } finally { controller.abort(); }
+  }
+  async *#frames(operation: string, frames: AsyncIterable<wire.ReadResponse>, next: bigint,
+    remaining?: number, signal?: AbortSignal): AsyncIterable<EncodedRecord> {
+    try {
+      for await (const response of frames) {
+        if (signal?.aborted) return;
+        const values = readResponseRecords(response);
+        if (remaining !== undefined && values.length > remaining) throw new StreamError("invalid_response", "read exceeds requested limit");
+        const records = values.map((value, index) => checkedRecord(value, next + BigInt(index)));
+        if (this.#acknowledgeDeliveries && response.deliveryToken.length === 32) {
+          try { await this.acknowledgeDelivery(response.deliveryToken); } catch { /* Receipt failure preserves records. */ }
+        }
+        next += BigInt(records.length);
+        if (remaining !== undefined) remaining -= records.length;
+        for (const record of records) {
+          if (signal?.aborted) return;
           yield record;
         }
       }
     } catch (error) {
-      if (options.signal?.aborted) return;
-      throw providerError(error, "follow");
+      if (!signal?.aborted) throw providerError(error, operation);
     }
   }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
@@ -131,11 +147,6 @@ export class GrpcStreamProvider implements StreamProvider {
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
-function checkedRecord(record: wire.Record | undefined, expected: bigint): EncodedRecord {
-  if (record === undefined || record.sequence !== expected || record.value.length > wire.StreamLimit.MAX_RECORD_BYTES) throw new StreamError("invalid_response", "stream response contains an invalid record cursor or body");
-  try { return { sequence: record.sequence, value: record.value, commitId: commitId(record.commitId), committedAtMicros: record.committedAtMicros }; }
-  catch { throw new StreamError("invalid_response", "stream record omitted its canonical commit identity"); }
-}
 /** Matches the Rust gRPC status mapping; unknown peer statuses remain unavailable. */
 function providerError(error: unknown, operation: string): Error {
   if (error instanceof StreamError) return error;
@@ -149,10 +160,10 @@ function providerError(error: unknown, operation: string): Error {
     case Code.OutOfRange: code = "out_of_range"; break;
     case Code.PermissionDenied: case Code.Unauthenticated: code = "access_denied"; break;
     case Code.ResourceExhausted: code = "capacity_exhausted"; break;
+    case Code.Unimplemented: if (reason === "unsupported_capability") code = "unsupported"; break;
     case Code.FailedPrecondition:
       if (reason === "hierarchy_changed" || reason === "idempotency_mismatch" || reason === "prefix_not_retained" || reason === "deadline_elapsed") code = reason;
       break;
-    case Code.Unimplemented: if (reason === "unsupported_capability") code = "unsupported"; break;
   }
   if (code === "prefix_not_retained" && operation === "commit") code = "invalid_argument";
   return new StreamError(code, reason);
