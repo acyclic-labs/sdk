@@ -482,6 +482,14 @@ async fn connect_native(
 
 #[napi]
 impl NativeStreamClient {
+    /// Uses a request-local credential while retaining the existing TLS channel.
+    #[napi(js_name = "withCredential")]
+    pub fn with_credential(&self, token: String) -> Result<Self> {
+        self.provider.with_credential(&token)
+            .map(Self::from_client)
+            .map_err(|error| napi_error(&connect_error(&error)))
+    }
+
     /// Connects using the canonical Rust native gRPC transport.
     #[napi(factory)]
     pub async fn connect(

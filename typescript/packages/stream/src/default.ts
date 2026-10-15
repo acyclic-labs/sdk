@@ -1,4 +1,5 @@
 import { HttpStreamProvider } from "./http.js";
+import { credentialProvider } from "@acyclic-labs/actors/credential";
 import type { StreamEnvironment, StreamProvider } from "./types.js";
 
 type ProviderSelection = {
@@ -16,7 +17,8 @@ export class DefaultStreamProvider implements StreamProvider {
   constructor(options: StreamEnvironment) {
     this.#options = {
       endpoint: options.endpoint,
-      token: options.token,
+      ...(options.token === undefined ? {} : { token: options.token }),
+      ...(options.credential === undefined ? {} : { credential: options.credential }),
       ...(options.caCertificate === undefined ? {} : { caCertificate: options.caCertificate.slice() }),
     };
   }
@@ -89,7 +91,8 @@ export class DefaultStreamProvider implements StreamProvider {
     if (!await native.nativeStreamAvailable()) return new HttpStreamProvider(this.#options);
     const cancellation = await native.createNativeStreamCancellation();
     registerCancel(() => cancellation.cancel());
-    return native.NativeStreamProvider.connect(this.#options.endpoint, this.#options.token, this.#options.caCertificate, cancellation);
+    const token = await credentialProvider(this.#options)();
+    return native.NativeStreamProvider.connect(this.#options.endpoint, token, this.#options.caCertificate, cancellation, this.#options.credential);
   }
 
   inspectIdempotency(key: Parameters<StreamProvider["inspectIdempotency"]>[0]) {

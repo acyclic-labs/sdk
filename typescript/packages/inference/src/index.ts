@@ -255,7 +255,7 @@ function requireFixed(value: Uint8Array, length: number, name: string): void {
   }
 }
 
-export type AuthorizationHeaders = () => HeadersInit | Promise<HeadersInit>;
+export type AuthorizationHeaders = (signal?: AbortSignal) => HeadersInit | Promise<HeadersInit>;
 
 const utf8 = new TextEncoder();
 
@@ -437,7 +437,9 @@ export class HttpInferenceTransport implements InferenceTransport {
     if (length > this.maximumMessageBytes) {
       throw new InferenceTransportError(0, "request exceeds configured bound");
     }
-    const headers = new Headers(await this.authorization());
+    signal?.throwIfAborted();
+    const headers = new Headers(await this.authorization(signal));
+    signal?.throwIfAborted();
     // Headers already rejects CR, LF, and NUL; also bound the credential size.
     const authorization = headers.get("authorization") ?? "";
     if (authorization.trim().length === 0 || utf8Length(authorization) > MAX_BEARER_TOKEN_BYTES + "Bearer ".length) {

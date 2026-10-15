@@ -1,6 +1,7 @@
 import { isExpectedNativeAbsence } from "./generated/native-absence.js";
 import { create, fromBinary, toBinary, type MessageShape } from "@bufbuild/protobuf";
 import { observed, resolveObserver, type AcyclicObserver } from "./observe.js";
+import { credentialProvider, type CredentialOptions, type CredentialProvider } from "./credential.js";
 import {
   canonicalSemantic,
   requireBigIntCodec,
@@ -29,6 +30,7 @@ export type ActorsRustClient = {
   readonly [K in Operation]: (request: Uint8Array, signal?: AbortSignal) => Promise<Uint8Array>;
 } & {
   readonly transport?: string;
+  readonly withCredential?: (method: string, request: Uint8Array, token: string, signal?: AbortSignal) => Promise<Uint8Array>;
 };
 
 /** Bridge factory supplied by the generated WASM or native package. */
@@ -40,9 +42,8 @@ export interface ActorsCallOptions {
   readonly signal?: AbortSignal;
 }
 
-export interface ActorsOptions {
+export interface ActorsOptions extends CredentialOptions {
   readonly endpoint: string;
-  readonly token: string;
   /** Exclusive native PEM trust; omitted uses the operating system's roots. */
   readonly caCertificate?: Uint8Array;
   /** Native callers may inject the built N-API binding. */
@@ -61,7 +62,8 @@ export class ActorsTransportError extends Error {
 /** Typed Actors client backed by one Rust implementation on every platform. */
 export class ActorsClient {
   readonly #endpoint: string;
-  readonly #token: string;
+  readonly #credential: CredentialProvider;
+  readonly #renewable: boolean;
   readonly #caCertificate: Uint8Array | undefined;
   readonly #binding: ActorsRustBinding;
   #client: Promise<ActorsRustClient> | undefined;
@@ -72,13 +74,14 @@ export class ActorsClient {
   constructor(options: ActorsOptions) {
     this.#observer = resolveObserver(options.observer);
     this.#endpoint = options.endpoint;
-    this.#token = options.token;
+    this.#credential = credentialProvider(options);
+    this.#renewable = options.credential !== undefined;
     this.#caCertificate = options.caCertificate;
     this.#binding = options.binding ?? (isNodeRuntime() ? nativeBinding() : wasmBinding());
     installActorsMethods(this, (method, request, callOptions) => this.#call(method, request, callOptions));
   }
 
-  get transport(): Promise<string | undefined> { return this.#connection().then(client => client.transport); }
+  get transport(): Promise<string | undefined> { return Promise.resolve(this.#credential()).then(token => this.#connection(token)).then(client => client.transport); }
 
   async #call(method: ActorsMethod, request: unknown, options?: ActorsCallOptions): Promise<unknown> {
     const operation = method.localName as Operation;
@@ -87,19 +90,25 @@ export class ActorsClient {
     return observed(this.#observer, "actors", operation, async sizes => {
       if (sizes) sizes.requestBytes = encoded.byteLength;
       throwIfAborted(options?.signal);
-      const client = await this.#connection(options?.signal);
-      const response = await abortable(client[operation](encoded, options?.signal), options?.signal);
+      const token = await this.#credential(options?.signal);
+      const client = await this.#connection(token, options?.signal);
+      if (this.#renewable && client.withCredential === undefined) {
+        throw new ActorsTransportError("Actors binding does not support per-request credentials", "configuration");
+      }
+      const response = await abortable(this.#renewable
+        ? client.withCredential!(method.name, encoded, token, options?.signal)
+        : client[operation](encoded, options?.signal), options?.signal);
       if (sizes) sizes.responseBytes = response.byteLength;
       return canonicalSemantic(fromBinary(method.output, response));
     });
   }
 
-  #connection(signal?: AbortSignal): Promise<ActorsRustClient> {
+  #connection(token: string, signal?: AbortSignal): Promise<ActorsRustClient> {
     throwIfAborted(signal);
     if (this.#client === undefined) {
       const controller = new AbortController();
       let pending!: Promise<ActorsRustClient>;
-      pending = this.#binding.connect(this.#endpoint, this.#token, controller.signal, this.#caCertificate)
+      pending = this.#binding.connect(this.#endpoint, token, controller.signal, this.#caCertificate)
         .then(client => {
           if (this.#client === pending) this.#connectAbort = undefined;
           return client;
@@ -162,7 +171,15 @@ function nativeBinding(): ActorsRustBinding {
         }];
       }));
       const transport = typeof inner.transport === "function" ? inner.transport() : inner.transport;
-      return { ...client, transport } as ActorsRustClient;
+      const withCredential = (method: string, request: Uint8Array, token: string, signal?: AbortSignal) => {
+        if (typeof inner.callWithCredentialResult !== "function") {
+          throw new ActorsTransportError("native Actors companion does not support per-request credentials", "configuration");
+        }
+        const cancellation = nativeCancellation(module, signal);
+        return nativeResult(abortable(inner.callWithCredentialResult(method, request, token, cancellation?.handle), signal))
+          .finally(() => cancellation?.cleanup());
+      };
+      return { ...client, transport, withCredential } as ActorsRustClient;
     },
   };
 }
@@ -179,6 +196,7 @@ type NativeActorsMethods = {
 
 interface NativeActorsClient extends NativeActorsMethods {
   readonly transport: string | (() => string);
+  callWithCredentialResult(method: string, request: Uint8Array, token: string, cancellation?: { cancel(): void }): Promise<NativeActorsResult<Uint8Array>>;
 }
 
 interface NativeActorsModule extends Partial<ActorsNominalBinding> {
@@ -240,7 +258,14 @@ function wasmBinding(): ActorsRustBinding {
           return abortable(invoke.call(wasm, request, signal) as Promise<Uint8Array>, signal);
         }];
       }));
-      return { ...client, transport: wasm.transport } as ActorsRustClient;
+      const withCredential = (method: string, request: Uint8Array, token: string, signal?: AbortSignal) => {
+        if (typeof wasm.call_with_credential !== "function") {
+          throw new ActorsTransportError("WASM Actors bridge does not support per-request credentials", "configuration");
+        }
+        throwIfAborted(signal);
+        return abortable(wasm.call_with_credential(method, request, token, signal), signal);
+      };
+      return { ...client, transport: wasm.transport, withCredential } as ActorsRustClient;
     },
   };
 }
@@ -301,6 +326,7 @@ function isNodeRuntime(): boolean {
 
 interface WasmActorsClient {
   readonly transport: string;
+  call_with_credential(method: string, request: Uint8Array, token: string, signal?: AbortSignal): Promise<Uint8Array>;
 }
 
 function throwIfAborted(signal?: AbortSignal): void {

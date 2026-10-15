@@ -34,6 +34,8 @@ mod client;
 mod server;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod credential_tests;
 
 const OPERATION_DEADLINE: Duration = Duration::from_secs(10);
 const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(1);
@@ -98,6 +100,13 @@ impl<P> Clone for Service<P> {
 }
 
 impl Client {
+    /// Uses a request-local credential while retaining this client's TLS channel.
+    pub fn with_credential(&self, bearer_token: &str) -> Result<Self, ConnectError> {
+        let mut client = self.clone();
+        client.authorization = authorization(bearer_token)?;
+        Ok(client)
+    }
+
     /// Connects eagerly through TLS and HTTP/2 trusting the platform roots.
     pub async fn connect_eager(
         endpoint: impl AsRef<str>,

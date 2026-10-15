@@ -28,9 +28,10 @@ impl tonic::service::Interceptor for BearerAuth {
         &mut self,
         mut request: tonic::Request<()>,
     ) -> Result<tonic::Request<()>, tonic::Status> {
+        let authorization = request.extensions_mut().remove::<Self>().unwrap_or_else(|| self.clone());
         request
             .metadata_mut()
-            .insert("authorization", self.0.clone());
+            .insert("authorization", authorization.0);
         Ok(request)
     }
 }
@@ -348,6 +349,15 @@ macro_rules! client_operations {
 
             /// Dispatches bounded protobuf bytes through the semantic client.
             pub async fn call(&self, method: &str, bytes: &[u8]) -> Result<Vec<u8>, Error> {
+                self.call_with_authorization(method, bytes, None).await
+            }
+
+            /// Dispatches one request with a fresh credential without changing connection state.
+            pub async fn call_with_credential(&self, method: &str, bytes: &[u8], token: &str) -> Result<Vec<u8>, Error> {
+                self.call_with_authorization(method, bytes, Some(BearerAuth::new(token)?)).await
+            }
+
+            async fn call_with_authorization(&self, method: &str, bytes: &[u8], authorization: Option<BearerAuth>) -> Result<Vec<u8>, Error> {
                 if bytes.len() > MAX_MESSAGE_BYTES {
                     return Err(Error::Configuration("request exceeds message ceiling".into()));
                 }
@@ -357,7 +367,9 @@ macro_rules! client_operations {
                             .map_err(|error| Error::Configuration(error.to_string()))?;
                         let input = domain::$input::try_from(input)
                             .map_err(|error| Error::Configuration(error.to_string()))?;
-                        let response = self.inner.clone().$method(wire::$input::from(input)).await
+                        let mut input = tonic::Request::new(wire::$input::from(input));
+                        if let Some(authorization) = authorization { input.extensions_mut().insert(authorization); }
+                        let response = self.inner.clone().$method(input).await
                             .map(tonic::Response::into_inner).map_err(service_error)?;
                         let output = domain::$output::try_from(response)?;
                         Ok(wire::$output::from(output).encode_to_vec())
@@ -566,3 +578,6 @@ mod tests {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod request_path_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod credential_tests;

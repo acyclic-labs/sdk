@@ -30,6 +30,7 @@ dependencies = [
  "proptest",
  "prost",
  "prost-reflect",
+ "proptest",
  "protoc-bin-vendored",
  "rcgen",
  "reqwest 0.12.28",
