@@ -46,17 +46,14 @@ where
         let mut carrier = NativeDemandCarrier::Native(work);
         let mut inputs = InputBuffers::new(&mut carrier)?;
         let name = inputs.attribute_name(name, self.profile, self.limits)?;
-        let mutation = self.checkout.file_mutation(self.file_id, work)?;
-        let _file_lease = await_lock(
-            mutation.entry.mutex.lock(),
-            inputs.carrier,
-            cancellation,
-            Some(&self.cancellation),
-        )
-        .await?;
         let mut candidate = self
             .checkout
-            .candidate(None, inputs.carrier, cancellation, Some(&self.cancellation))
+            .file_candidate(
+                self.file_id,
+                inputs.carrier,
+                cancellation,
+                Some(&self.cancellation),
+            )
             .await?;
         candidate
             .checkout
@@ -271,18 +268,10 @@ where
         sparse::validate_sparse_allocation(&range.1, work)?;
         invoke(&self.runtime, work, || async {
             let cancellation = work.cancellation();
-            let mutation = self.checkout.file_mutation(self.file_id, work)?;
-            let _file_lease = await_lock(
-                mutation.entry.mutex.lock(),
-                &mut NativeDemandCarrier::Native(work),
-                cancellation,
-                Some(&self.cancellation),
-            )
-            .await?;
             let mut candidate = self
                 .checkout
-                .candidate(
-                    None,
+                .file_candidate(
+                    self.file_id,
                     &mut NativeDemandCarrier::Native(work),
                     cancellation,
                     Some(&self.cancellation),
@@ -375,18 +364,10 @@ where
     ) -> Result<(), MountSourceError> {
         invoke(&self.runtime, work, || async {
             let cancellation = work.cancellation();
-            let mutation = self.checkout.file_mutation(self.file_id, work)?;
-            let _file_lease = await_lock(
-                mutation.entry.mutex.lock(),
-                &mut NativeDemandCarrier::Native(work),
-                cancellation,
-                Some(&self.cancellation),
-            )
-            .await?;
             let mut candidate = self
                 .checkout
-                .candidate(
-                    None,
+                .file_candidate(
+                    self.file_id,
                     &mut NativeDemandCarrier::Native(work),
                     cancellation,
                     Some(&self.cancellation),

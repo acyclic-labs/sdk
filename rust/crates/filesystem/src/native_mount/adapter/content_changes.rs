@@ -32,16 +32,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                     .file_id
             }
         };
-        let mutation = self.file_mutation(file_id, work)?;
-        let _file_lease = await_lock(
-            mutation.entry.mutex.lock(),
-            &mut carrier,
-            cancellation,
-            Some(lifetime),
-        )
-        .await?;
         let mut candidate = self
-            .candidate(None, &mut carrier, cancellation, Some(lifetime))
+            .file_candidate(file_id, &mut carrier, cancellation, Some(lifetime))
             .await?;
         if let crate::facade::ContentAddress::Path(path) = file.address() {
             let current = candidate

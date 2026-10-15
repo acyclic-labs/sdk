@@ -29,17 +29,9 @@ where
                 .node
                 .file_id;
             drop(observation);
-            let mutation = self.checkout.file_mutation(file, work)?;
-            let _file_lease = await_lock(
-                mutation.entry.mutex.lock(),
-                &mut carrier,
-                cancellation,
-                Some(&self.cancellation),
-            )
-            .await?;
             let mut candidate = self
                 .checkout
-                .candidate(None, &mut carrier, cancellation, Some(&self.cancellation))
+                .file_candidate(file, &mut carrier, cancellation, Some(&self.cancellation))
                 .await?;
             let lookup = self
                 .lookup_in(&candidate.checkout, path, &mut carrier)

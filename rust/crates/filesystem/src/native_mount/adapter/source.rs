@@ -149,17 +149,9 @@ impl<A, O> CheckoutMountSource<A, O> {
             .node
             .file_id;
         drop(observation);
-        let mutation = self.checkout.file_mutation(file, work)?;
-        let _file_lease = await_lock(
-            mutation.entry.mutex.lock(),
-            inputs.carrier,
-            cancellation,
-            Some(&self.cancellation),
-        )
-        .await?;
         let mut candidate = self
             .checkout
-            .candidate(None, inputs.carrier, cancellation, Some(&self.cancellation))
+            .file_candidate(file, inputs.carrier, cancellation, Some(&self.cancellation))
             .await?;
         let lookup = self
             .lookup_in(&candidate.checkout, path, inputs.carrier)

@@ -4,10 +4,8 @@ struct FileMutationEntries {
     allocation: Option<crate::NativeAllocation>,
 }
 
-struct FileMutation {
-    mutex: tokio::sync::Mutex<()>,
-    _allocation: crate::NativeAllocation,
-}
+// An owned mutex guard retains the allocation for its own storage.
+type FileMutation = tokio::sync::Mutex<crate::NativeAllocation>;
 
 struct FileMutationLease<'a> {
     entries: &'a StdMutex<FileMutationEntries>,
@@ -115,10 +113,7 @@ impl<A, O> SharedCheckout<A, O> {
                         crate::WorkCounters::UNCHARGED,
                     )
                     .map_err(MountSourceError::NativeWork)?;
-                let mutation = Arc::new(FileMutation {
-                    mutex: tokio::sync::Mutex::new(()),
-                    _allocation: allocation,
-                });
+                let mutation = Arc::new(tokio::sync::Mutex::new(allocation));
                 entries.entries.insert(file, Arc::downgrade(&mutation));
                 mutation
             }
@@ -128,5 +123,32 @@ impl<A, O> SharedCheckout<A, O> {
             file,
             entry: mutation,
         })
+    }
+}
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
+    async fn file_candidate(
+        &self,
+        file: FileId,
+        carrier: &mut NativeDemandCarrier<'_>,
+        cancellation: &CancellationToken,
+        lifetime: Option<&CancellationToken>,
+    ) -> Result<CheckoutCandidate<'_, A, O>, MountSourceError> {
+        let work = carrier
+            .original_native_work()
+            .ok_or(MountSourceError::OriginalSnapshotUnavailable)?;
+        let lease = self.file_mutation(file, &work)?;
+        let guard = await_lock(
+            Arc::clone(&lease.entry).lock_owned(),
+            carrier,
+            cancellation,
+            lifetime,
+        )
+        .await?;
+        let mut candidate = self
+            .candidate(None, carrier, cancellation, lifetime)
+            .await?;
+        candidate._file_mutation = Some((guard, lease));
+        Ok(candidate)
     }
 }

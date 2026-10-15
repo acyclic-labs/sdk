@@ -193,6 +193,7 @@ impl<A, O> SharedCheckout<A, O> {
             ))?;
         Ok(CheckoutCandidate {
             _publication: publication,
+            _file_mutation: None,
             base: state
                 .checkout
                 .private_candidate(

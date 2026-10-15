@@ -87,6 +87,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 epoch,
                 stamp,
                 _publication,
+                _file_mutation,
             } = candidate;
             let Some((base, checkout)) = state
                 .checkout
@@ -111,6 +112,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 epoch,
                 stamp,
                 _publication,
+                _file_mutation,
             };
             let prepared = state.checkout.prepare_candidate_adoption(
                 &candidate.base,
