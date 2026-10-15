@@ -1,7 +1,7 @@
 use super::*;
 use acyclic_harness::{
     AgentId, Capabilities, IdempotencyKey,
-    conversation::{VolumeClass, VolumeOwner},
+    conversation::{VolumeClass, VolumeOperation, VolumeOwner},
     core::{Action, AggregateKind, Command, LifecycleState},
 };
 use futures::FutureExt;
@@ -14,19 +14,24 @@ async fn replay_follows_owner_waiting_without_scheduler_changes() -> Result<()> 
         id: "live-replay".into(),
     };
     let issuer = AuthorityIssuer::new("test", [7; 32], authority.clone());
-    let scope = issuer.issue(
-        "owner",
-        &Capabilities::new(["lifecycle:manage"]),
-        None,
-        None,
-        &mut None,
-    )?;
     let provider = ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let agent = AgentId::new();
     let private = VolumeRef::new(
         provider.clone(),
         "private".into(),
         VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(AgentId::new()),
+        VolumeOwner::Agent(agent),
+        &mut None,
+    )?;
+    let scope = issuer.issue(
+        "owner",
+        &Capabilities::new([
+            "lifecycle:manage".into(),
+            private.capability(VolumeOperation::Read, &mut None)?,
+            private.capability(VolumeOperation::Write, &mut None)?,
+        ]),
+        Some(agent),
+        None,
         &mut None,
     )?;
     let host = NativeSession::open(Config {
