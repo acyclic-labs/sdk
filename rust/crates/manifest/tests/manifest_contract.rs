@@ -81,8 +81,11 @@ proptest! {
             json["environments"][0]["secrets"][0]["reference"] = value.into();
             prop_assert!(parse(&serde_json::to_vec(&json)?).is_err());
         }
-        let reference = SecretReference::new(format!("secrets:/models/{payload}"))?;
-        prop_assert_eq!(serde_json::from_str::<SecretReference>(&serde_json::to_string(&reference)?)?, reference);
+        let reference = SecretReference::new(format!("secrets:/models/{payload}"));
+        prop_assert_eq!(reference.is_ok(), payload.len() <= 63);
+        if let Ok(reference) = reference {
+            prop_assert_eq!(serde_json::from_str::<SecretReference>(&serde_json::to_string(&reference)?)?, reference);
+        }
     }
 
     #[test]
@@ -165,9 +168,16 @@ fn review_regressions_fail_before_publication() -> Result<(), Box<dyn std::error
     ];
     for (pointer, invalid) in cases {
         let mut candidate = base.clone();
-        *candidate
-            .pointer_mut(pointer)
-            .ok_or("missing regression pointer")? = invalid;
+        if let Some(field) = candidate.pointer_mut(pointer) {
+            *field = invalid;
+        } else {
+            let (parent, field) = pointer.rsplit_once('/').ok_or("invalid pointer")?;
+            candidate
+                .pointer_mut(parent)
+                .and_then(Value::as_object_mut)
+                .ok_or("missing regression object")?
+                .insert(field.into(), invalid);
+        }
         assert!(
             parse(&serde_json::to_vec(&candidate)?).is_err(),
             "admitted {pointer}"
@@ -286,13 +296,26 @@ async fn cron_inbox_append_reaches_lowered_actor_wake_subscription()
     let subscription = &request.subscriptions()[0];
     let path = StreamPath::new(subscription.stream_path())?;
     let stream = MemoryStream::default();
+    stream
+        .append(AppendRequest {
+            path: path.clone(),
+            records: vec![bytes::Bytes::from_static(b"deployed").into()],
+            if_tail: None,
+            idempotency_key: None,
+        })
+        .await?;
     let mut wake = stream
         .follow(
             path.clone(),
             subscription.start().cursor_value().ok_or("cursor")?,
         )
         .await?;
-    // Append after the subscription is registered. No Invoke, timer polling or socket.
+    let initialized = wake.next().await.ok_or("missing initialization")??;
+    assert_eq!(initialized.sequence, 0);
+    let pending = wake.next();
+    futures::pin_mut!(pending);
+    assert!(futures::poll!(pending.as_mut()).is_pending());
+    // The actor subscription is waiting before the cron appends. No Invoke or polling.
     let record = bytes::Bytes::from_static(b"cron-fire:tick:123");
     let append = AppendRequest {
         path,
@@ -304,7 +327,7 @@ async fn cron_inbox_append_reaches_lowered_actor_wake_subscription()
     };
     stream.append(append.clone()).await?;
     stream.append(append).await?;
-    let delivered = tokio::time::timeout(std::time::Duration::from_secs(1), wake.next())
+    let delivered = tokio::time::timeout(std::time::Duration::from_secs(1), pending)
         .await?
         .ok_or("no wake")??;
     assert_eq!(delivered.value, record.into());
