@@ -1,10 +1,10 @@
 //! Generate the Rust-owned deployment declarations and optional selected-entry env type.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use acyclic_workers::manifest;
+    use acyclic_manifest as manifest;
     let mut args = std::env::args().skip(1);
     let output = std::path::PathBuf::from(args.next().ok_or("output directory required")?);
     std::fs::create_dir_all(&output)?;
-    std::fs::write(output.join("manifest.ts"), manifest::typescript())?;
+    std::fs::write(output.join("manifest.ts"), manifest::typescript()?)?;
     std::fs::write(
         output.join("manifest.schema.json"),
         manifest::json_schema()?,

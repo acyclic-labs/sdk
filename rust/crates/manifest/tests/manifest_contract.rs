@@ -1,0 +1,435 @@
+//! Downstream admission, authorization, bounded-work and generated contract properties.
+use acyclic_manifest::*;
+use proptest::prelude::*;
+use serde_json::{Value, json};
+
+fn fixture() -> Result<DeploymentManifest, ManifestError> {
+    parse(include_bytes!("../fuzz/corpus/manifest_json/valid.json"))
+}
+fn scaled(count: usize) -> Result<DeploymentManifest, Box<dyn std::error::Error>> {
+    let mut manifest = fixture()?;
+    let env = &mut manifest.environments[0];
+    env.crons.clear();
+    if let EntryRuntime::Actor {
+        subscriptions,
+        timer_inbox,
+        ..
+    } = &mut env.entries[0].runtime
+    {
+        subscriptions.clear();
+        *timer_inbox = None;
+    }
+    env.bindings.clear();
+    env.grants.clear();
+    env.entries[0].bindings.clear();
+    for index in 0..count {
+        let name = format!("B{index}");
+        let resource = format!("streams:/inboxes/{index}");
+        env.bindings
+            .push(Binding::new(name.clone(), name.clone(), resource.clone())?.into());
+        env.grants.push(BindingGrant {
+            name: name.clone(),
+            grant: ResourceGrant {
+                resource: ResourcePattern {
+                    name: resource,
+                    prefix: false,
+                },
+                actions: vec!["streams/read".into()],
+            }
+            .into(),
+            limits: None,
+        });
+        env.entries[0].bindings.push(name);
+    }
+    Ok(manifest)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// Canonical Rust values survive JSON admission with identical grants and selections.
+    #[test]
+    fn admitted_rust_json_round_trip(count in 1usize..=64, expiry in any::<u64>()) {
+        let mut manifest = scaled(count).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        manifest.environments[0].grants[0].limits = Some(Limits {
+            rps: Some(expiry), burst: None, bytes_per_s: None, channels: None,
+            concurrency: None, bytes: None, spend_micros: None, tokens: None,
+        }.into());
+        validate(&manifest)?;
+        prop_assert_eq!(parse(&serde_json::to_vec(&manifest)?)?, manifest);
+    }
+
+    /// The real validator's visited-byte/node/edge count grows at most linearly.
+    #[test]
+    fn validation_work_is_linear(count in 1usize..=16) {
+        let small = scaled(count).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let large = scaled(count * 4).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let small_work = validate_work(&small)?;
+        let large_work = validate_work(&large)?;
+        prop_assert!(large_work <= small_work * 5);
+        prop_assert!(environment_typescript(&large, "production", "agent")?.contains("B0: Streams"));
+    }
+
+    /// Plain API keys, bearer credentials and credential-bearing URLs never become refs.
+    #[test]
+    fn plaintext_credentials_are_never_secret_references(payload in "[A-Za-z0-9_-]{1,120}") {
+        for value in [format!("sk-ant-api03-{payload}"), format!("Bearer {payload}"),
+            format!("https://user:{payload}@provider.example/"), format!("secrets:/user:{payload}"),
+            format!("secrets:/{payload}@provider"), format!("{payload}"), format!("secrets:/{payload}?token=key")] {
+            prop_assert!(SecretReference::new(value.clone()).is_err());
+            let mut json: Value = serde_json::from_slice(include_bytes!("../fuzz/corpus/manifest_json/valid.json"))?;
+            json["environments"][0]["secrets"][0]["reference"] = value.into();
+            prop_assert!(parse(&serde_json::to_vec(&json)?).is_err());
+        }
+        let reference = SecretReference::new(format!("secrets:/models/{payload}"))?;
+        prop_assert_eq!(serde_json::from_str::<SecretReference>(&serde_json::to_string(&reference)?)?, reference);
+    }
+
+    #[test]
+    fn accepted_untrusted_json_round_trips(bytes in prop::collection::vec(any::<u8>(), 0..4096)) {
+        if let Ok(manifest) = parse(&bytes) { prop_assert_eq!(parse(&serde_json::to_vec(&manifest)?)?, manifest); }
+    }
+}
+
+#[test]
+fn review_regressions_fail_before_publication() -> Result<(), Box<dyn std::error::Error>> {
+    let base: Value =
+        serde_json::from_slice(include_bytes!("../fuzz/corpus/manifest_json/valid.json"))?;
+    let cases = [
+        (
+            "/environments/0/bindings/0/resource",
+            json!("objects:/billing/ledger"),
+        ),
+        (
+            "/environments/0/grants/0/grant/actions",
+            json!(["objects/get"]),
+        ),
+        (
+            "/environments/0/grants/0/grant/resource/name",
+            json!("streams:/agents/a/*"),
+        ),
+        ("/environments/0/entries/0/runtime/subscriptions", json!([])),
+        (
+            "/environments/0/entries/0/runtime/limits/memoryBytes",
+            json!("0"),
+        ),
+        ("/environments/0/entries/0/runtime/homeRegion", json!("")),
+        (
+            "/environments/0/entries/0/runtime/subscriptions/0/start",
+            json!({"currentHead":false}),
+        ),
+        (
+            "/environments/0/entries/0/runtime",
+            json!({"kind":"worker","limits":{"cpuMillis":1,"memoryBytes":1024,"timeoutMillis":10}}),
+        ),
+        (
+            "/environments/0/crons/0/inbox/name",
+            json!("streams:/billing/ledger"),
+        ),
+        ("/environments/0/crons/0/inbox/prefix", json!(true)),
+        (
+            "/environments/0/entries/0/runtime/timerInbox/stream/name",
+            json!("streams:/unwatched"),
+        ),
+        ("/environments/0/name", json!("Prod_Main")),
+        ("/environments/0/name", json!("-production")),
+        ("/environments/0/crons/0/schedule", json!("0 0 31 2 *")),
+        ("/environments/0/crons/0/schedule", json!("*/0 * * * *")),
+        ("/environments/0/entries/0/bindings", json!(["missing"])),
+        ("/environments/0/entries/0/secrets", json!(["missing"])),
+        ("/environments/0/bindings/0/name", json!("1binding")),
+        (
+            "/environments/0/secrets/0/reference",
+            json!("sk-ant-api03-secret"),
+        ),
+        (
+            "/environments/0/routes",
+            json!([{"host":"app.run.acyclic.dev","pathPrefix":"/","entry":"agent"}]),
+        ),
+        (
+            "/environments/0/routes",
+            json!([{"host":"app.example.com","pathPrefix":"/a/../b","entry":"agent"}]),
+        ),
+        (
+            "/environments/0/routes",
+            json!([{"host":"app.example.com","pathPrefix":"/api/","entry":"agent"}]),
+        ),
+        (
+            "/environments/0/assets",
+            json!([{"entry":"agent","binding":"INBOX","bundleSha256":"11".repeat(32),"spaFallback":true,"cache":"immutable"}]),
+        ),
+        (
+            "/environments/0/entries/0/bindings",
+            json!(["INBOX", "INBOX"]),
+        ),
+    ];
+    for (pointer, invalid) in cases {
+        let mut candidate = base.clone();
+        *candidate
+            .pointer_mut(pointer)
+            .ok_or("missing regression pointer")? = invalid;
+        assert!(
+            parse(&serde_json::to_vec(&candidate)?).is_err(),
+            "admitted {pointer}"
+        );
+    }
+    for host in [
+        "127.1",
+        "169.254.169.0xfe",
+        "0x7f.1",
+        "127.0.0.01",
+        "2130706433",
+        "LOCALHOST",
+        "example.com.",
+    ] {
+        let mut candidate = base.clone();
+        candidate["environments"][0]["entries"][0]["fetch"] =
+            json!({"name":"HTTP","egress":[{"host":host,"port":443}]});
+        assert!(
+            parse(&serde_json::to_vec(&candidate)?).is_err(),
+            "admitted {host}"
+        );
+    }
+    let mut routes = fixture()?;
+    routes.environments[0].routes.push(RouteSpec {
+        host: "app.example.com".into(),
+        path_prefix: "/api".into(),
+        entry: "agent".into(),
+    });
+    let mut staging = routes.environments[0].clone();
+    staging.name = "staging".into();
+    routes.environments.push(staging);
+    assert_eq!(
+        validate(&routes).err().map(|e| e.rule),
+        Some("duplicate-route-across-environments".into())
+    );
+    Ok(())
+}
+
+#[test]
+fn all_binding_products_and_fetch_are_scoped_to_selected_entry()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut manifest = fixture()?;
+    let env = &mut manifest.environments[0];
+    for product in [
+        "fs",
+        "objects",
+        "actors",
+        "workers",
+        "machines",
+        "execution",
+        "infer",
+    ] {
+        let name = product.to_ascii_uppercase();
+        let resource = format!("{product}:/sandbox");
+        env.bindings
+            .push(Binding::new(name.clone(), name.clone(), resource.clone())?.into());
+        env.grants.push(BindingGrant {
+            name: name.clone(),
+            grant: ResourceGrant {
+                resource: ResourcePattern {
+                    name: resource,
+                    prefix: false,
+                },
+                actions: vec![format!(
+                    "{product}/{}",
+                    if product == "fs" { "read" } else { "get" }
+                )],
+            }
+            .into(),
+            limits: None,
+        });
+        env.entries[0].bindings.push(name);
+    }
+    env.entries[0].fetch = Some(FetchBinding {
+        name: "HTTP".into(),
+        egress: vec![EgressRule {
+            host: "api.example.com".into(),
+            port: 8443,
+        }],
+    });
+    let mut worker = env.entries[0].clone();
+    worker.name = "web".into();
+    worker.bindings.clear();
+    worker.secrets.clear();
+    worker.fetch = None;
+    worker.runtime = EntryRuntime::Worker {
+        limits: WorkerLimits {
+            cpu_millis: 1,
+            memory_bytes: 1024,
+            timeout_millis: 10,
+        },
+    };
+    env.entries.push(worker);
+    let actor = environment_typescript(&manifest, "production", "agent")?;
+    let worker = environment_typescript(&manifest, "production", "web")?;
+    assert!(
+        actor.contains("INFER: Infer")
+            && actor.contains("EXECUTION: Execution")
+            && actor.contains("HTTP: Fetch")
+    );
+    assert!(!worker.contains("HTTP:") && !worker.contains("MODEL_KEY:"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn cron_inbox_append_reaches_lowered_actor_wake_subscription()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_stream::{AppendRequest, IdempotencyKey, MemoryStream, StreamPath, StreamProvider};
+    use futures::StreamExt;
+    let manifest = fixture()?;
+    let env = &manifest.environments[0];
+    let request = lower_actor(env, &env.entries[0], "project-production-agent")?;
+    assert_eq!(request.home_region(), "eu");
+    assert_eq!(request.limits().handler_timeout_millis(), 1000);
+    assert_eq!(request.bindings()[0].resource(), "streams:/agents/a/inbox");
+    let subscription = &request.subscriptions()[0];
+    let path = StreamPath::new(subscription.stream_path())?;
+    let stream = MemoryStream::default();
+    let mut wake = stream
+        .follow(
+            path.clone(),
+            subscription.start().cursor_value().ok_or("cursor")?,
+        )
+        .await?;
+    // Append after the subscription is registered. No Invoke, timer polling or socket.
+    let record = bytes::Bytes::from_static(b"cron-fire:tick:123");
+    let append = AppendRequest {
+        path,
+        records: vec![record.clone().into()],
+        if_tail: None,
+        idempotency_key: Some(IdempotencyKey::new(bytes::Bytes::from_static(
+            b"cron:tick:123",
+        ))?),
+    };
+    stream.append(append.clone()).await?;
+    stream.append(append).await?;
+    let delivered = tokio::time::timeout(std::time::Duration::from_secs(1), wake.next())
+        .await?
+        .ok_or("no wake")??;
+    assert_eq!(delivered.value, record.into());
+    Ok(())
+}
+
+#[test]
+fn version_bounds_and_error_location_are_stable() -> Result<(), Box<dyn std::error::Error>> {
+    let valid = std::str::from_utf8(include_bytes!("../fuzz/corpus/manifest_json/valid.json"))?;
+    assert!(parse(valid.as_bytes()).is_ok());
+    assert!(
+        parse(
+            valid
+                .replace(
+                    "\"schemaVersion\":1",
+                    "\"schemaVersion\":1,\"schemaVersion\":1"
+                )
+                .as_bytes()
+        )
+        .is_err()
+    );
+    let error = parse(br#"{"schemaVersion":2,"future":true}"#)
+        .err()
+        .ok_or("accepted v2")?;
+    assert_eq!(
+        (error.path.as_str(), error.rule.as_str()),
+        ("$.schemaVersion", "unsupported-version")
+    );
+    assert!(parse(&vec![b' '; MAX_JSON_BYTES + 1]).is_err());
+    let mut manifest = fixture()?;
+    manifest.environments[0].entries[0].module = "x".repeat(MAX_STRING_BYTES + 1);
+    assert!(validate(&manifest).is_err());
+    manifest = fixture()?;
+    manifest.environments[0].bindings =
+        vec![manifest.environments[0].bindings[0].clone(); MAX_ITEMS + 1];
+    assert!(validate(&manifest).is_err());
+    let mut value: Value =
+        serde_json::from_slice(include_bytes!("../fuzz/corpus/manifest_json/valid.json"))?;
+    value["environments"][0]["grants"][0]["grant"]["future"] = json!(true);
+    assert!(parse(&serde_json::to_vec(&value)?).is_err());
+    Ok(())
+}
+
+#[test]
+fn asset_bundle_requires_immutable_digest_and_matching_objects_grant()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut manifest = fixture()?;
+    let env = &mut manifest.environments[0];
+    env.bindings.push(
+        Binding::new(
+            "ASSETS".into(),
+            "assetsGrant".into(),
+            "objects:/static/".into(),
+        )?
+        .into(),
+    );
+    env.grants.push(BindingGrant {
+        name: "assetsGrant".into(),
+        grant: ResourceGrant {
+            resource: ResourcePattern {
+                name: "objects:/static/".into(),
+                prefix: true,
+            },
+            actions: vec!["objects/get".into()],
+        }
+        .into(),
+        limits: None,
+    });
+    env.entries[0].bindings.push("ASSETS".into());
+    env.assets.push(AssetSpec {
+        entry: "agent".into(),
+        binding: "ASSETS".into(),
+        bundle_sha256: "ab".repeat(32),
+        spa_fallback: true,
+        cache: AssetCache::Immutable,
+    });
+    validate(&manifest)?;
+    manifest.environments[0].grants[1].grant.0.resource.prefix = false;
+    assert!(validate(&manifest).is_err());
+    Ok(())
+}
+
+#[test]
+fn generated_artifacts_have_no_drift() -> Result<(), Box<dyn std::error::Error>> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    for (path, generated) in [
+        (
+            "typescript/packages/workers/src/generated/manifest.ts",
+            typescript()?,
+        ),
+        (
+            "typescript/packages/workers/src/generated/manifest.schema.json",
+            json_schema()?,
+        ),
+        (
+            "typescript/packages/workers/test/generated/env.ts",
+            environment_typescript(&fixture()?, "production", "agent")?,
+        ),
+    ] {
+        let path = root.join(path);
+        if std::env::var_os("ACYCLIC_WRITE_MANIFEST").is_some() {
+            std::fs::create_dir_all(path.parent().ok_or("parent")?)?;
+            std::fs::write(&path, &generated)?;
+        }
+        assert_eq!(std::fs::read_to_string(path)?, generated);
+    }
+    Ok(())
+}
+
+#[test]
+fn checked_fuzz_corpus_contains_valid_and_invalid_inputs() -> Result<(), Box<dyn std::error::Error>>
+{
+    let mut accepted = 0;
+    let mut rejected = 0;
+    for file in std::fs::read_dir(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/corpus/manifest_json"),
+    )? {
+        match parse(&std::fs::read(file?.path())?) {
+            Ok(manifest) => {
+                assert_eq!(parse(&serde_json::to_vec(&manifest)?)?, manifest);
+                accepted += 1;
+            }
+            Err(_) => rejected += 1,
+        }
+    }
+    assert!(accepted > 0 && rejected > 0);
+    Ok(())
+}

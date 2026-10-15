@@ -5,4 +5,4 @@
 pub mod deployment;
 
 /// Rust-owned deployment manifest, validation and language generation.
-pub mod manifest;
+pub use acyclic_manifest as manifest;
