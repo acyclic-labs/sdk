@@ -18,54 +18,6 @@ fn notice(sequence: u64, event: AttentionEvent) -> AttentionNotification {
 }
 
 #[test]
-fn event_mapping_and_terminal_protocols() -> Result<()> {
-    use AttentionEvent::*;
-    use NotificationMode::*;
-    use TerminalNotificationProtocol::*;
-    #[derive(serde::Deserialize)]
-    struct Case {
-        event: AttentionEvent,
-        title: String,
-        attention: bool,
-    }
-    let cases: Vec<Case> = serde_json::from_str(include_str!("client_notification_cases.json"))
-        .expect("notification catalog");
-    for Case {
-        event,
-        title,
-        attention,
-    } in cases
-    {
-        let notification = notice(1, event);
-        assert_eq!(notification.title(), title);
-        for (protocol, expected) in [
-            (Osc9, format!("\x1b]9;{title}: task-1: Ready\x07")),
-            (Osc777, format!("\x1b]777;notify;{title};task-1: Ready\x07")),
-            (Bell, "\x07".into()),
-        ] {
-            assert_eq!(
-                terminal_notification(&notification, On, protocol, false),
-                expected
-            );
-            assert!(terminal_notification(&notification, Off, protocol, false).is_empty());
-            assert!(terminal_notification(&notification, On, protocol, true).is_empty());
-            assert_eq!(
-                !terminal_notification(&notification, AttentionOnly, protocol, false).is_empty(),
-                attention
-            );
-        }
-    }
-    let mut untrusted = notice(1, TaskFailed);
-    untrusted.task = "name;injected\x1b]777".into();
-    untrusted.detail = "text\x07\n\u{009c};end".into();
-    assert_eq!(
-        terminal_notification(&untrusted, On, Osc777, false),
-        "\x1b]777;notify;Task failed;name injected ]777: text    end\x07"
-    );
-    Ok(())
-}
-
-#[test]
 fn lifecycle_mapping_uses_semantics_and_not_diagnostic_strings() {
     use acyclic_harness::core::LifecycleState::*;
     for (state, expected) in [

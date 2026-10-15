@@ -14,6 +14,9 @@ members = ["."]
 opt-level = 3
 debug-assertions = true
 
+[features]
+notifications = ["acyclic-harness/test-support", "acyclic-harness/filesystem-local", "acyclic-harness/mcp-http"]
+
 [dependencies]
 libfuzzer-sys = "0.4"
 acyclic-harness = { path = "..", features = ["filesystem", "search-http", "test-support"] }
@@ -21,7 +24,7 @@ acyclic-fs = { path = "../../filesystem", default-features = false, features = [
 acyclic-stream = { path = "../../stream" }
 bytes = "1"
 rmcp = { version = "=3.5.1", default-features = false, features = ["client", "transport-async-rw"] }
-serde = "1"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "time", "net"] }
 tokio-util = { version = "0.7", features = ["codec"] }
@@ -58,6 +61,14 @@ bench = false
 [[bin]]
 name = "mcp_executable"
 path = "fuzz_targets/mcp_executable.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "notification_scenario"
+path = "fuzz_targets/notification_scenario.rs"
+required-features = ["notifications"]
 test = false
 doc = false
 bench = false

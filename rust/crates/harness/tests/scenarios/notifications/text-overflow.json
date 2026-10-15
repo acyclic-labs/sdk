@@ -1,0 +1,3 @@
+{"records":[{"task":"task-1","sequence":1,"event":"task_failed","detail":"Ready"}],
+ "expect":{"applied":["invalid attention record"],"presented":0,"output":"","view":{"latest":{}}},
+ "maximum_text_bytes":10}

@@ -4,6 +4,8 @@ mod discovery;
 mod drivers;
 mod execution;
 mod matchers;
+mod notification_history;
+mod notifications;
 mod scenario;
 mod search;
 use acyclic_harness::context::CompactionPolicy;
