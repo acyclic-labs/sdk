@@ -4,7 +4,7 @@ use acyclic_native_runtime::OwnedWrite;
 use bytes::Bytes;
 use divan::{AllocProfiler, Bencher, black_box};
 
-#[path = "../src/file/write_validation.rs"]
+#[path = "../../native-runtime/src/file/write_validation.rs"]
 mod write_validation;
 
 #[global_allocator]

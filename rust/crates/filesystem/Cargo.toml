@@ -8,7 +8,6 @@ license.workspace = true
 repository.workspace = true
 description = "Rust SDK for versioned workspaces and embedded native mounts"
 readme = "README.md"
-exclude = ["benches"]
 documentation = "https://docs.rs/acyclic-fs"
 keywords = ["filesystem", "copy-on-write", "versioned", "storage"]
 categories = ["filesystem", "data-structures"]
@@ -21,16 +20,6 @@ path = "tests/main.rs"
 name = "cloud_contract"
 path = "tests/cloud_contract.rs"
 required-features = ["memory"]
-
-[[bench]]
-name = "filesystem"
-harness = false
-required-features = ["local"]
-
-[[bench]]
-name = "filesystem_alloc"
-harness = false
-required-features = ["local"]
 
 [[test]]
 name = "workspace_reads"
@@ -142,7 +131,6 @@ napi-types = ["dep:napi", "dep:napi-derive"]
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
 tracing-subscriber.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
-divan.workspace = true
 axum.workspace = true
 hmac = "0.13.0"
 http.workspace = true

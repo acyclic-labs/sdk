@@ -161,7 +161,6 @@ fn read_small(bencher: Bencher, native_accounting: bool) {
     });
 }
 
-#[cfg(feature = "memory")]
 #[divan::bench(args = [false, true], threads = [1, 4])]
 fn read_memory_small(bencher: Bencher, native_accounting: bool) {
     let runtime = Runtime::new().unwrap();
