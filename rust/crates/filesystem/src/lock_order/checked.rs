@@ -140,13 +140,10 @@ impl Condvar {
         duration: Duration,
     ) -> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)> {
         match wait(guard, |inner| self.0.wait_timeout(inner, duration)) {
-            Ok((guard, timeout)) => Ok((guard, WaitTimeoutResult(timeout.timed_out()))),
+            Ok((guard, timeout)) => Ok((guard, WaitTimeoutResult::from(timeout))),
             Err(error) => {
                 let (guard, timeout) = error.into_inner();
-                Err(PoisonError::new((
-                    guard,
-                    WaitTimeoutResult(timeout.timed_out()),
-                )))
+                Err(PoisonError::new((guard, WaitTimeoutResult::from(timeout))))
             }
         }
     }
@@ -168,9 +165,21 @@ impl Condvar {
     }
 }
 
+#[cfg(not(test))]
+type WaitTimeoutResult = std::sync::WaitTimeoutResult;
+
+#[cfg(test)]
 #[derive(Debug)]
 pub(crate) struct WaitTimeoutResult(bool);
 
+#[cfg(test)]
+impl From<std::sync::WaitTimeoutResult> for WaitTimeoutResult {
+    fn from(timeout: std::sync::WaitTimeoutResult) -> Self {
+        Self(timeout.timed_out())
+    }
+}
+
+#[cfg(test)]
 impl WaitTimeoutResult {
     pub(crate) fn timed_out(&self) -> bool {
         self.0
