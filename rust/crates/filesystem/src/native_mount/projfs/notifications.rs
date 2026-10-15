@@ -314,11 +314,13 @@ pub(super) unsafe fn notification(
                 && binding.host == host
                 && host.links == Some(1)
                 && let Ok(_view_lease) = source.acquire_view_lease()
-                && binding.basis.still_describes(
-                    source.as_ref(),
-                    &capture_path,
-                    Some(binding.file_id),
-                )
+                && (source.reports_changes_to(binding.file_id)
+                    && ReadBasis::sample(source.as_ref()) == Some(binding.basis)
+                    || binding.basis.still_describes(
+                        source.as_ref(),
+                        &capture_path,
+                        Some(binding.file_id),
+                    ))
             {
                 return Ok(());
             }
