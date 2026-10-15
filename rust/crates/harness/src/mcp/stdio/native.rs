@@ -31,6 +31,37 @@ pub struct StdioMcpTransport {
 }
 
 impl StdioMcpTransport {
+    /// Changes the per-request deadline after startup negotiation.
+    pub fn with_request_timeout(mut self, timeout_ms: u32) -> Result<Self> {
+        validate_bounds(1, timeout_ms)?;
+        self.timeout = Duration::from_millis(u64::from(timeout_ms));
+        Ok(self)
+    }
+
+    /// Lists one typed catalog page without an intermediate JSON representation.
+    pub async fn list_tools(
+        &self,
+        operation: OperationId,
+        cursor: Option<String>,
+    ) -> Result<rmcp::model::ListToolsResult> {
+        let request = rmcp::model::ListToolsRequest::with_param(
+            rmcp::model::PaginatedRequestParams::default().with_cursor(cursor),
+        );
+        match self
+            .exchange(
+                operation,
+                "tools/list",
+                ClientRequest::ListToolsRequest(request),
+            )
+            .await?
+        {
+            ServerResult::ListToolsResult(result) => Ok(result),
+            _ => Err(Error::Invalid(
+                "MCP tools/list returned another result type".into(),
+            )),
+        }
+    }
+
     /// Starts one host-selected executable and keeps it for the connection's lifetime.
     /// Arguments, environment and workspace are supplied through `command`.
     pub async fn spawn(mut command: Command, maximum_bytes: u32, timeout_ms: u32) -> Result<Self> {

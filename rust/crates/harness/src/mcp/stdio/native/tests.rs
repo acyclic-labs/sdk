@@ -291,12 +291,7 @@ async fn one_session_discovers_installs_calls_and_reconciles_without_replay() ->
     let (transport, server) = fixture("success").await?;
     let transport = Arc::new(transport);
     let listed = transport
-        .rpc(
-            OperationId::from_bytes([1; 16]),
-            "tools/list",
-            json!({}),
-            None,
-        )
+        .list_tools(OperationId::from_bytes([1; 16]), None)
         .await?;
     let catalog = McpCatalog {
         server: "configured".into(),
@@ -304,13 +299,7 @@ async fn one_session_discovers_installs_calls_and_reconciles_without_replay() ->
         schema_exposure: McpSchemaExposure::Eager,
         discovery: McpDiscoveryPolicy::Disabled,
         projection_schema: crate::tool::json_projection_schema(json!({})),
-        tools: serde_json::from_value(
-            listed
-                .get("tools")
-                .cloned()
-                .ok_or_else(|| invalid("tools missing"))?,
-        )
-        .map_err(invalid)?,
+        tools: listed.tools.into_iter().map(Into::into).collect(),
     };
     let remote: Arc<dyn McpToolTransport> = transport.clone();
     let projection: Arc<dyn ToolProjection> = Arc::new(JsonToolProjection);

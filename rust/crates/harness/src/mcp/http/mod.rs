@@ -75,6 +75,30 @@ pub struct HttpMcpTransport {
 }
 
 impl HttpMcpTransport {
+    /// Changes the per-request deadline after startup negotiation.
+    pub fn with_request_timeout(mut self, timeout_ms: u32) -> Result<Self> {
+        if timeout_ms == 0 {
+            return Err(Error::Invalid(
+                "MCP request deadline must be positive".into(),
+            ));
+        }
+        self.timeout_ms = timeout_ms;
+        Ok(self)
+    }
+
+    /// Lists one typed catalog page at the transport's validation boundary.
+    pub async fn list_tools(
+        &self,
+        operation: OperationId,
+        cursor: Option<String>,
+    ) -> Result<rmcp::model::ListToolsResult> {
+        let params = cursor.map_or_else(|| json!({}), |cursor| json!({"cursor":cursor}));
+        let request = self.request("POST", request(operation, "tools/list", params)?)?;
+        let response = self.provider.exchange(operation, request).await?;
+        serde_json::from_value(self.response(operation, response, None).await?)
+            .map_err(|error| Error::Invalid(error.to_string()))
+    }
+
     /// Binds a host-selected endpoint and optional session.
     pub fn new(
         provider: Arc<dyn McpHttpProvider>,
