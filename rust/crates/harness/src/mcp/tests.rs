@@ -628,3 +628,30 @@ fn every_selected_exposure_reload_is_atomic_including_empty_visibility() -> Resu
     ));
     Ok(())
 }
+
+// Property: cancellation at any registration checkpoint leaves the previous
+// selection intact; a completed registration publishes the entire catalog.
+#[cfg(not(target_arch = "wasm32"))]
+proptest::proptest! {
+    #[test]
+    fn cancellation_never_publishes_a_partial_catalog(cancel_at in 0usize..64) {
+        let transport: Arc<dyn McpToolTransport> = Arc::new(Transport::default());
+        let projection: Arc<dyn ToolProjection> = Arc::new(JsonToolProjection);
+        let mut registry = ToolRegistry::default();
+        let checks = AtomicUsize::new(0);
+        let check = || {
+            if checks.fetch_add(1, Ordering::SeqCst) >= cancel_at {
+                Err(Error::process_io(std::io::ErrorKind::Interrupted.into()))
+            } else { Ok(()) }
+        };
+        let result = catalog("1", &["a","b"]).install_checked(
+            &mut registry, None, &transport, &projection, (8, 8192), &check,
+        );
+        let definitions = registry.definitions(None).unwrap();
+        if result.is_err() {
+            proptest::prop_assert!(definitions.is_empty());
+        } else {
+            proptest::prop_assert_eq!(definitions.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>(), ["mcp.fixture.a", "mcp.fixture.b"]);
+        }
+    }
+}
