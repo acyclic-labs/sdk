@@ -3,10 +3,8 @@ use super::*;
 #[tokio::test]
 async fn fixed_custom_context_uses_its_full_message_allowance() -> Result<()> {
     let journal = Journal::default();
-    let provider = Arc::new(CountedModel {
-        capacity: 65_536,
-        ..CountedModel::default()
-    });
+    let (provider, _accounting_calls) =
+        counted_model(65_536, None, [ScriptedTurn::Text("answer".into())], []);
     let source = crate::context::Context {
         messages: vec![ModelMessage {
             role: ModelRole::System,
@@ -42,7 +40,7 @@ async fn fixed_custom_context_uses_its_full_message_allowance() -> Result<()> {
     };
     let output = executor.execute(input.clone(), &journal).await?;
     assert_eq!(executor.execute(input, &journal).await?, output);
-    let requests = provider.requests.lock().unwrap();
+    let requests = provider.requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].messages.len(), 2);
     assert_eq!(
