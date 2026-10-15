@@ -67,6 +67,11 @@ async fn search_native_http_rejections_are_not_uncertain_transport_failures() ->
             (401, "test-only-placeholder"),
         ] {
             let work = work(&CancellationToken::new())?;
+            let baseline = work.live_allocation_bytes();
+            assert_eq!(
+                baseline,
+                NativeMaterializationWork::accounting_state_bytes()
+            );
             let (endpoint, server) = super::tests::serve(status, body.into()).await?;
             let provider: Arc<dyn SearchProvider> = if exa {
                 Arc::new(Exa::with_endpoint("test-only-placeholder", &endpoint)?)
@@ -84,8 +89,43 @@ async fn search_native_http_rejections_are_not_uncertain_transport_failures() ->
             assert_eq!(error.code(), crate::wire::ErrorCode::Invalid, "{error:?}");
             assert!(!error.to_string().contains("test-only-placeholder"));
             drop(error);
-            assert_eq!(work.live_allocation_bytes(), 0);
+            assert_eq!(
+                work.live_allocation_bytes(),
+                baseline,
+                "exa={exa}, status={status}, body={body}"
+            );
             server.await.map_err(|e| Error::Storage(e.to_string()))??;
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn search_native_decode_errors_release_their_original_custody() -> Result<()> {
+    for exa in [true, false] {
+        for body in [
+            "{}",
+            "invalid json",
+            r#"{"results":"test-only-placeholder"}"#,
+        ] {
+            let work = work(&CancellationToken::new())?;
+            let baseline = work.live_allocation_bytes();
+            assert_eq!(
+                baseline,
+                NativeMaterializationWork::accounting_state_bytes()
+            );
+            let error = if exa {
+                codec::exa(body.as_bytes(), 1, Some(&work)).unwrap_err()
+            } else {
+                codec::tinyfish(body.as_bytes(), 1, Some(&work)).unwrap_err()
+            };
+            assert_eq!(error.code(), crate::wire::ErrorCode::Invalid);
+            drop(error);
+            assert_eq!(
+                work.live_allocation_bytes(),
+                baseline,
+                "exa={exa}, body={body}"
+            );
         }
     }
     Ok(())
