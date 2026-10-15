@@ -11,6 +11,10 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     let Ok(value) = serde_json::from_slice(bytes) else {
         return;
     };
+    let _ = matchers::subset(
+        &serde_json::json!({"$json": &value}),
+        &serde_json::Value::String(std::str::from_utf8(bytes).unwrap().into()),
+    );
     let Ok(case) = notifications::Notifications::parse(value) else {
         return;
     };
