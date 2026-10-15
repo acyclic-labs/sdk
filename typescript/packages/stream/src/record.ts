@@ -9,4 +9,3 @@ export function checkedRecord(record: WireRecord | undefined, expected: bigint):
   try { return { sequence: record.sequence, value: record.value, commitId: commitId(record.commitId), committedAtMicros: record.committedAtMicros }; }
   catch { throw new StreamError("invalid_response", "stream record omitted its canonical commit identity"); }
 }
-

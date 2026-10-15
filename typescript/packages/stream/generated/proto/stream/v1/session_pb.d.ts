@@ -635,4 +635,3 @@ export declare const StreamSessionService: GenService<{
     output: typeof SessionFrameSchema;
   },
 }>;
-
