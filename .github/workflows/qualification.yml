@@ -8,11 +8,6 @@ on:
         required: false
         type: string
         default: ''
-      release_tag:
-        description: Release tag whose exact source is being qualified
-        required: false
-        type: string
-        default: ''
 
 permissions:
   contents: read
@@ -62,22 +57,7 @@ jobs:
           SDK_TEMP_DIR: ${{ runner.temp }}/sdk
           SDK_ARTIFACT_DIR: ${{ runner.temp }}/artifacts
           TOOLS_DIR: ${{ runner.temp }}/tools/preflight-${{ runner.arch }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: |
-          set -euo pipefail
-          if [[ -n "${RELEASE_TAG:-}" ]]; then
-            release_event="$SDK_TEMP_DIR/release-event.json"
-            mkdir -p "$SDK_TEMP_DIR"
-            RELEASE_TAG="$RELEASE_TAG" node -e \
-              'process.stdout.write(JSON.stringify({release:{tag_name:process.env.RELEASE_TAG}}))' \
-              >"$release_event"
-            GITHUB_EVENT_NAME=release \
-              GITHUB_REF="refs/tags/$RELEASE_TAG" \
-              GITHUB_EVENT_PATH="$release_event" \
-              bash scripts/qualify-ci.sh preflight
-          else
-            bash scripts/qualify-ci.sh preflight
-          fi
+        run: bash scripts/qualify-ci.sh preflight
 
       - name: Select lanes to execute
         id: select

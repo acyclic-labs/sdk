@@ -291,7 +291,6 @@ jobs:
       pull-requests: read
     with:
       source_ref: ${{ inputs.source_sha }}
-      release_tag: ""
 
   agent-host-qualification:
     name: Agent host qualification
