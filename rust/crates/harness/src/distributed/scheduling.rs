@@ -58,7 +58,8 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     /// Pulls and atomically admits one dependency- and resource-ready operation.
     pub async fn pull(&mut self, worker: &Worker) -> Result<Option<WorkLease>> {
         let mut work = None;
-        let future = self.pull_for(worker, None, None, None, &mut work)?;
+        let mut frame = CodecQuota::new(&mut work, 0)?;
+        let future = self.pull_for(worker, None, None, None, &mut frame)?;
         match future.await {
             Ok(WorkPull::Idle) => Ok(None),
             Ok(WorkPull::Claimed(lease)) => Ok(Some(lease)),
@@ -75,7 +76,14 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let bytes = crate::contract::canonical_json_bytes(worker)?;
         let fingerprint = blake3::hash(&bytes).to_hex().to_string();
         let mut work = None;
-        let future = self.pull_for(worker, None, None, Some((identity, fingerprint)), &mut work)?;
+        let mut frame = CodecQuota::new(&mut work, 0)?;
+        let future = self.pull_for(
+            worker,
+            None,
+            None,
+            Some((identity, fingerprint)),
+            &mut frame,
+        )?;
         match future.await? {
             WorkPull::Idle => Ok(None),
             WorkPull::Claimed(lease) => Ok(Some(lease)),
@@ -103,26 +111,30 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 "owned pull requires operation:declare and operation:observe",
             ));
         }
-        let future = self.pull_for(worker, Some((owner, verifier)), operation_id, None, work)?;
-        let bytes = future.frame_bytes();
-        let result = future.await;
-        let _frame = CodecQuota::from_retained(work, bytes);
-        result
+        let mut frame = CodecQuota::new(work, 0)?;
+        let future = self.pull_for(
+            worker,
+            Some((owner, verifier)),
+            operation_id,
+            None,
+            &mut frame,
+        )?;
+        future.await
     }
 
     #[allow(
         clippy::too_many_lines,
         reason = "The admitted lease and unresolved append error retain original custody through same-key resolution."
     )]
-    fn pull_for<'a, 'w: 'a>(
+    fn pull_for<'a, 'q, 'w: 'a>(
         &'a mut self,
         worker: &'a Worker,
         authorization: Option<(&'a Authority, &'a AuthorityVerifier)>,
         target: Option<OperationId>,
         identity: Option<(IdempotencyKey, String)>,
-        work: &'a mut Option<&'w mut dyn HistoryIo>,
+        frame: &'a mut CodecQuota<'q, 'w>,
     ) -> Result<crate::store::HistoryContentFuture<'a, WorkPull>> {
-        crate::store::HistoryContentFuture::new(work, |work| async move {
+        crate::store::HistoryContentFuture::with_quota(frame, |work| async move {
             let owner = authorization.map(|(owner, _)| owner);
             self.refresh(work).await?;
             if worker.id.trim().is_empty() {

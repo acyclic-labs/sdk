@@ -38,12 +38,11 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
 
     /// Replays commits made by other coordinator instances from the exact observed revision.
     pub async fn refresh(&mut self, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
-        let future =
-            crate::store::HistoryContentFuture::new(work, |work| self.refresh_history(work))?;
-        let bytes = future.frame_bytes();
-        let result = future.await;
-        let _frame = CodecQuota::from_retained(work, bytes);
-        result
+        let mut frame = CodecQuota::new(work, 0)?;
+        let future = crate::store::HistoryContentFuture::with_quota(&mut frame, |work| {
+            self.refresh_history(work)
+        })?;
+        future.await
     }
 
     async fn refresh_history(&mut self, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
@@ -158,7 +157,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         }
     }
 
-    async fn verify_published_result(
+    pub(super) async fn verify_published_result(
         &self,
         event: &SchedulerEvent,
         work: &mut Option<&mut dyn HistoryIo>,
@@ -183,74 +182,73 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let crate::Outcome::Succeeded(reference) = outcome else {
             return Ok(());
         };
-        let future = crate::store::HistoryContentFuture::new(work, |work| async move {
-            let mut custody = CodecQuota::new(work, 0)?;
-            let (value, value_bytes) = self.load_json(reference, custody.work()).await?;
-            custody.adopt(value_bytes)?;
-            if let SchedulerEvent::Orchestrated {
-                operation_id,
-                reducer: None,
-                ..
-            } = event
-            {
-                let decision = self
-                    .scheduler
-                    .orchestration(*operation_id, custody.work())?;
-                let decision_bytes = if custody.work().is_some() {
-                    decision.logical_owned_bytes()?
-                } else {
-                    0
-                };
-                custody.adopt(decision_bytes)?;
-                if let OrchestrationDecision::Assemble {
-                    assembly, values, ..
-                } = &decision
+        let mut frame = CodecQuota::new(work, 0)?;
+        let future =
+            crate::store::HistoryContentFuture::with_quota(&mut frame, |work| async move {
+                let mut custody = CodecQuota::new(work, 0)?;
+                let (value, value_bytes) = self.load_json(reference, custody.work()).await?;
+                custody.adopt(value_bytes)?;
+                if let SchedulerEvent::Orchestrated {
+                    operation_id,
+                    reducer: None,
+                    ..
+                } = event
                 {
-                    let (expected, expected_bytes) = self
-                        .assemble_values(*assembly, values, custody.work())
-                        .await?;
-                    custody.adopt(expected_bytes)?;
-                    let differs = value != expected;
-                    drop(expected);
-                    custody.relinquish(expected_bytes)?;
-                    if differs {
-                        return Err(guarded_boundary(
-                            custody.work(),
-                            wire::ErrorCode::Invalid,
-                            "assembled scheduler result differs from pinned children",
-                        ));
+                    let decision = self
+                        .scheduler
+                        .orchestration(*operation_id, custody.work())?;
+                    let decision_bytes = if custody.work().is_some() {
+                        decision.logical_owned_bytes()?
+                    } else {
+                        0
+                    };
+                    custody.adopt(decision_bytes)?;
+                    if let OrchestrationDecision::Assemble {
+                        assembly, values, ..
+                    } = &decision
+                    {
+                        let (expected, expected_bytes) = self
+                            .assemble_values(*assembly, values, custody.work())
+                            .await?;
+                        custody.adopt(expected_bytes)?;
+                        let differs = value != expected;
+                        drop(expected);
+                        custody.relinquish(expected_bytes)?;
+                        if differs {
+                            return Err(guarded_boundary(
+                                custody.work(),
+                                wire::ErrorCode::Invalid,
+                                "assembled scheduler result differs from pinned children",
+                            ));
+                        }
                     }
+                    drop(decision);
+                    custody.relinquish(decision_bytes)?;
                 }
-                drop(decision);
-                custody.relinquish(decision_bytes)?;
-            }
-            let operation = self.scheduler.operation(operation_id).ok_or_else(|| {
-                guarded_boundary(
-                    custody.work(),
-                    wire::ErrorCode::NotFound,
-                    "scheduler result operation is absent",
-                )
+                let operation = self.scheduler.operation(operation_id).ok_or_else(|| {
+                    guarded_boundary(
+                        custody.work(),
+                        wire::ErrorCode::NotFound,
+                        "scheduler result operation is absent",
+                    )
+                })?;
+                for schema in [
+                    Some(&operation.spec.entrypoint.result_schema),
+                    reducer.map(|item| &item.result_schema),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    crate::executor::validate_json_schema_value(
+                        schema,
+                        &value,
+                        "scheduler result",
+                        custody.work(),
+                    )?;
+                }
+                Ok(())
             })?;
-            for schema in [
-                Some(&operation.spec.entrypoint.result_schema),
-                reducer.map(|item| &item.result_schema),
-            ]
-            .into_iter()
-            .flatten()
-            {
-                crate::executor::validate_json_schema_value(
-                    schema,
-                    &value,
-                    "scheduler result",
-                    custody.work(),
-                )?;
-            }
-            Ok(())
-        })?;
-        let bytes = future.frame_bytes();
-        let result = future.await;
-        let _frame = CodecQuota::from_retained(work, bytes);
-        result
+        future.await
     }
 
     /// Returns the deterministic scheduler projection.
@@ -304,175 +302,175 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         verified_revision: Option<u64>,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<bool> {
-        let future = crate::store::HistoryContentFuture::new(work, |work| async move {
-            self.refresh(work).await?;
-            if verified_revision.is_some_and(|revision| revision != self.revision) {
-                return Err(guarded_boundary(
-                    work,
-                    wire::ErrorCode::Conflict,
-                    "coordinator changed after owner verification",
-                ));
-            }
-            self.validate_parent_owner(&event, parent_fence, work)?;
-            validate_idempotency_key(idempotency_key.as_str(), work)?;
-            let key = idempotency_key.as_str();
-            let operation_id = event.operation_id();
-            let mut custody = CodecQuota::new(work, 0)?;
-            let canonical = crate::store::history::canonical_bytes_with_work(
-                &event,
-                acyclic_stream::MAX_RECORD_BYTES as u64,
-                custody.work(),
-            )?;
-            if custody.work().is_some() {
-                custody.adopt(canonical.capacity() as u64)?;
-            }
-            if let Some(work) = custody.work().as_deref_mut() {
-                work.hashed_bytes(canonical.len() as u64)?;
-            }
-            let digest = *blake3::hash(&canonical).as_bytes();
-            if let Some(matches) = self
-                .intent_matches(key, &event, &digest, custody.work())
-                .await?
-            {
-                return if matches {
-                    self.validate_command_wait(&event, waiting_command, true, custody.work())?;
-                    self.validate_replay(&event, custody.work()).map(|()| false)
-                } else {
-                    Err(guarded_boundary(
-                        custody.work(),
+        let mut frame = CodecQuota::new(work, 0)?;
+        let future =
+            crate::store::HistoryContentFuture::with_quota(&mut frame, |work| async move {
+                self.refresh(work).await?;
+                if verified_revision.is_some_and(|revision| revision != self.revision) {
+                    return Err(guarded_boundary(
+                        work,
                         wire::ErrorCode::Conflict,
-                        "coordinator retry identity reused",
-                    ))
-                };
-            }
-            self.validate_command_wait(&event, waiting_command, false, custody.work())?;
-            if let SchedulerEvent::Declared { spec } = &event {
-                self.verify_content(&spec.state, custody.work()).await?;
-            }
-            self.verify_published_result(&event, custody.work()).await?;
-            self.scheduler.validate_event(&event, custody.work())?;
-            let revision = next_revision(self.revision)?;
-            let committed_at_ms = self.next_commit_time(custody.work())?;
-            custody.transfer();
-            let bytes = encode(
-                revision,
-                operation_id,
-                key,
-                digest,
-                canonical,
-                committed_at_ms,
-                custody.work(),
-            )?;
-            let (record, retained) =
-                operations::owned_bytes_from_retained_vec(bytes, custody.work())?;
-            custody.adopt(retained)?;
-            let current_revision = self.revision;
-            let digits = |value: u64| {
-                value
-                    .checked_ilog10()
-                    .map_or(1, |digits| digits as usize + 1)
-            };
-            let (stream_key, retained) = if parent_fence.is_some() {
-                stream_key(
-                    key.len() + ":owned-parent:".len() + digits(current_revision),
-                    format_args!("{key}:owned-parent:{current_revision}"),
-                    custody.work(),
-                )
-            } else if waiting_command.is_some() {
-                stream_key(
-                    key.len() + ":owned-wait:".len() + digits(current_revision),
-                    format_args!("{key}:owned-wait:{current_revision}"),
-                    custody.work(),
-                )
-            } else if let Some((execution, tail)) = idle_execution {
-                stream_key(
-                    key.len()
-                        + ":idle-execution:".len()
-                        + 36
-                        + 2
-                        + digits(tail)
-                        + digits(current_revision),
-                    format_args!("{key}:idle-execution:{execution}:{tail}:{current_revision}"),
-                    custody.work(),
-                )
-            } else {
-                stream_key(key.len(), format_args!("{key}"), custody.work())
-            }?;
-            custody.adopt(retained)?;
-            let appended = if let Some((execution, expected_tail)) = idle_execution {
-                append_if_execution_idle(
-                    &self.client,
-                    &self.stream.0,
-                    record,
-                    self.revision,
-                    stream_key,
-                    operation_id,
-                    execution,
-                    expected_tail,
-                    workflow_guard,
-                    custody.work(),
-                )
-                .await
-            } else {
-                append(
-                    (&self.stream.0, &self.client),
-                    [record],
-                    0,
-                    Some(self.revision),
-                    stream_key,
-                    operation_id,
-                    custody.work(),
-                )
-                .await
-            };
-            custody.relinquish(custody.retained())?;
-
-            let applied = match appended {
-                Ok(AppendOutcome::Committed(receipt)) => {
-                    if receipt.end.checked_sub(receipt.start) != Some(1)
-                        || receipt.tail < receipt.end
-                    {
-                        return Err(guarded_boundary(
-                            custody.work(),
-                            wire::ErrorCode::Storage,
-                            "invalid coordinator append receipt",
-                        ));
-                    }
-                    Ok(receipt.start == revision - 1)
+                        "coordinator changed after owner verification",
+                    ));
                 }
-                Ok(AppendOutcome::TailConflict { .. }) => Ok(false),
-                Err(error)
-                    if idle_execution.is_none() && error.code() == wire::ErrorCode::Conflict =>
+                self.validate_parent_owner(&event, parent_fence, work)?;
+                validate_idempotency_key(idempotency_key.as_str(), work)?;
+                let key = idempotency_key.as_str();
+                let operation_id = event.operation_id();
+                let mut custody = CodecQuota::new(work, 0)?;
+                let canonical = crate::store::history::canonical_bytes_with_work(
+                    &event,
+                    acyclic_stream::MAX_RECORD_BYTES as u64,
+                    custody.work(),
+                )?;
+                if custody.work().is_some() {
+                    custody.adopt(canonical.capacity() as u64)?;
+                }
+                if let Some(work) = custody.work().as_deref_mut() {
+                    work.hashed_bytes(canonical.len() as u64)?;
+                }
+                let digest = *blake3::hash(&canonical).as_bytes();
+                if let Some(matches) = self
+                    .intent_matches(key, &event, &digest, custody.work())
+                    .await?
                 {
-                    Err(error)
+                    return if matches {
+                        self.validate_command_wait(&event, waiting_command, true, custody.work())?;
+                        self.validate_replay(&event, custody.work()).map(|()| false)
+                    } else {
+                        Err(guarded_boundary(
+                            custody.work(),
+                            wire::ErrorCode::Conflict,
+                            "coordinator retry identity reused",
+                        ))
+                    };
                 }
-                Err(error) => return Err(error),
-            };
-            self.refresh(custody.work()).await?;
-            if self
-                .intent_matches(key, &event, &digest, custody.work())
-                .await?
-                != Some(true)
-            {
-                return applied.and_then(|_| {
-                    Err(guarded_boundary(
+                self.validate_command_wait(&event, waiting_command, false, custody.work())?;
+                if let SchedulerEvent::Declared { spec } = &event {
+                    self.verify_content(&spec.state, custody.work()).await?;
+                }
+                self.verify_published_result(&event, custody.work()).await?;
+                self.scheduler.validate_event(&event, custody.work())?;
+                let revision = next_revision(self.revision)?;
+                let committed_at_ms = self.next_commit_time(custody.work())?;
+                custody.transfer();
+                let bytes = encode(
+                    revision,
+                    operation_id,
+                    key,
+                    digest,
+                    canonical,
+                    committed_at_ms,
+                    custody.work(),
+                )?;
+                let (record, retained) =
+                    operations::owned_bytes_from_retained_vec(bytes, custody.work())?;
+                custody.adopt(retained)?;
+                let current_revision = self.revision;
+                let digits = |value: u64| {
+                    value
+                        .checked_ilog10()
+                        .map_or(1, |digits| digits as usize + 1)
+                };
+                let (stream_key, retained) = if parent_fence.is_some() {
+                    stream_key(
+                        key.len() + ":owned-parent:".len() + digits(current_revision),
+                        format_args!("{key}:owned-parent:{current_revision}"),
                         custody.work(),
-                        wire::ErrorCode::Conflict,
-                        "coordinator publication differs from its intent",
-                    ))
-                });
-            }
-            if applied.is_err() {
-                self.validate_command_wait(&event, waiting_command, true, custody.work())?;
-            }
-            self.validate_replay(&event, custody.work())?;
-            self.validate_parent_owner(&event, parent_fence, custody.work())?;
-            Ok(applied.unwrap_or(false))
-        })?;
-        let bytes = future.frame_bytes();
-        let result = future.await;
-        let _frame = CodecQuota::from_retained(work, bytes);
-        result
+                    )
+                } else if waiting_command.is_some() {
+                    stream_key(
+                        key.len() + ":owned-wait:".len() + digits(current_revision),
+                        format_args!("{key}:owned-wait:{current_revision}"),
+                        custody.work(),
+                    )
+                } else if let Some((execution, tail)) = idle_execution {
+                    stream_key(
+                        key.len()
+                            + ":idle-execution:".len()
+                            + 36
+                            + 2
+                            + digits(tail)
+                            + digits(current_revision),
+                        format_args!("{key}:idle-execution:{execution}:{tail}:{current_revision}"),
+                        custody.work(),
+                    )
+                } else {
+                    stream_key(key.len(), format_args!("{key}"), custody.work())
+                }?;
+                custody.adopt(retained)?;
+                let appended = if let Some((execution, expected_tail)) = idle_execution {
+                    append_if_execution_idle(
+                        &self.client,
+                        &self.stream.0,
+                        record,
+                        self.revision,
+                        stream_key,
+                        operation_id,
+                        execution,
+                        expected_tail,
+                        workflow_guard,
+                        custody.work(),
+                    )
+                    .await
+                } else {
+                    append(
+                        (&self.stream.0, &self.client),
+                        [record],
+                        0,
+                        Some(self.revision),
+                        stream_key,
+                        operation_id,
+                        custody.work(),
+                    )
+                    .await
+                };
+                custody.relinquish(custody.retained())?;
+
+                let applied = match appended {
+                    Ok(AppendOutcome::Committed(receipt)) => {
+                        if receipt.end.checked_sub(receipt.start) != Some(1)
+                            || receipt.tail < receipt.end
+                        {
+                            return Err(guarded_boundary(
+                                custody.work(),
+                                wire::ErrorCode::Storage,
+                                "invalid coordinator append receipt",
+                            ));
+                        }
+                        Ok(receipt.start == revision - 1)
+                    }
+                    Ok(AppendOutcome::TailConflict { .. }) => Ok(false),
+                    Err(error)
+                        if idle_execution.is_none()
+                            && error.code() == wire::ErrorCode::Conflict =>
+                    {
+                        Err(error)
+                    }
+                    Err(error) => return Err(error),
+                };
+                self.refresh(custody.work()).await?;
+                if self
+                    .intent_matches(key, &event, &digest, custody.work())
+                    .await?
+                    != Some(true)
+                {
+                    return applied.and_then(|_| {
+                        Err(guarded_boundary(
+                            custody.work(),
+                            wire::ErrorCode::Conflict,
+                            "coordinator publication differs from its intent",
+                        ))
+                    });
+                }
+                if applied.is_err() {
+                    self.validate_command_wait(&event, waiting_command, true, custody.work())?;
+                }
+                self.validate_replay(&event, custody.work())?;
+                self.validate_parent_owner(&event, parent_fence, custody.work())?;
+                Ok(applied.unwrap_or(false))
+            })?;
+        future.await
     }
 
     fn validate_replay(

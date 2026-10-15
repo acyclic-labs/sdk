@@ -20,6 +20,8 @@ use fixtures::{
 mod admission;
 mod cancellation;
 mod fencing;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+mod frame_cancellation;
 #[cfg(feature = "filesystem")]
 mod limits;
 #[cfg(all(
