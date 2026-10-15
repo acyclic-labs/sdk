@@ -1,0 +1,23 @@
+[package]
+name = "acyclic-fuzz"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+acyclic-harness = { path = "../crates/harness", features = ["grpc"] }
+libfuzzer-sys = "0.4"
+prost.workspace = true
+
+[[bin]]
+name = "harness_admission"
+path = "fuzz_targets/harness_admission.rs"
+test = false
+doc = false
+bench = false
+
+[lints]
+workspace = true

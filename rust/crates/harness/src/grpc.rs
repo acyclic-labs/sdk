@@ -3,7 +3,7 @@
 use crate::{
     Error, wire,
     wire_api::{
-        HarnessWireApi, validate_admission, validate_cancel_request, validate_cancel_response,
+        HarnessWireApi, validate_cancel_request, validate_cancel_response,
         validate_command_protocol, validate_observe_request, validate_operation_status,
         validate_resume_protocol,
     },
@@ -75,8 +75,10 @@ impl transport::harness_service_server::HarnessService for HarnessGrpcService {
             async {
                 let command = request.into_inner();
                 validate_command_protocol(&command).map_err(status)?;
-                let admission = self.api.submit(command.clone()).await.map_err(status)?;
-                validate_admission(&command, &admission).map_err(status)?;
+                let expected = command.operation.clone();
+                let admission = self.api.submit(command).await.map_err(status)?;
+                crate::wire_validation::validate_admission_identity(expected.as_ref(), &admission)
+                    .map_err(status)?;
                 Ok(Response::new(admission))
             }
             .await,
@@ -219,7 +221,131 @@ mod tests {
     };
     use futures::{FutureExt as _, stream};
 
-    struct FakeApi;
+    struct FakeApi(Option<wire::CommandEnvelope>);
+
+    #[cfg(not(target_arch = "wasm32"))]
+    proptest::proptest! {
+        #[test]
+        fn submission_preserves_the_entire_command(
+            action_type in "(?s).{0,64}",
+            payload in proptest::collection::vec(proptest::num::u8::ANY, 0..4096),
+            digest in proptest::collection::vec(proptest::num::u8::ANY, 0..64),
+            proof in proptest::collection::vec(proptest::num::u8::ANY, 0..64),
+            capabilities in proptest::collection::vec("(?s).{0,64}", 0..8),
+            revision in proptest::num::u64::ANY,
+        ) {
+            use transport::harness_service_server::HarnessService as _;
+
+            let authority = wire::Authority {
+                kind: wire::AggregateKind::Task as i32,
+                id: action_type.clone(),
+            };
+            let command = wire::CommandEnvelope {
+                protocol: Some(current_protocol()),
+                authority: Some(authority.clone()),
+                operation: Some(wire::OperationIdentity {
+                    operation_id: "operation".into(),
+                    idempotency_key: "retry".into(),
+                }),
+                expected_revision: revision,
+                scope: Some(wire::Scope {
+                    id: "scope".into(), issuer: "runtime".into(), agent_id: "agent".into(),
+                    capabilities, parent_proof: proof.clone(), proof,
+                }),
+                causal_parent: Some(wire::EventReference {
+                    authority: Some(authority), revision: revision.wrapping_add(1),
+                }),
+                action_type,
+                canonical_action_json: payload,
+                intent_digest: digest,
+            };
+            let service = HarnessGrpcService::new(Arc::new(FakeApi(Some(command.clone()))));
+            let response = futures::executor::block_on(service.submit(Request::new(command)));
+            proptest::prop_assert!(response.is_ok());
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn submission_allocation_is_independent_of_action_payload() -> Result<()> {
+        use transport::harness_service_server::HarnessService as _;
+
+        let service = HarnessGrpcService::new(Arc::new(FakeApi(None)));
+        let command = |size| wire::CommandEnvelope {
+            protocol: Some(current_protocol()),
+            operation: Some(wire::OperationIdentity {
+                operation_id: "operation".into(),
+                idempotency_key: "retry".into(),
+            }),
+            canonical_action_json: vec![b'x'; size],
+            ..Default::default()
+        };
+        let mut totals = Vec::new();
+        for tracing in [false, true] {
+            let dispatch = if tracing {
+                tracing::Dispatch::new(tracing_subscriber::registry())
+            } else {
+                tracing::Dispatch::none()
+            };
+            let _guard = tracing::dispatcher::set_default(&dispatch);
+            futures::executor::block_on(service.submit(Request::new(command(0))))
+                .map_err(|error| Error::Storage(error.to_string()))?;
+            let mut mode = Vec::new();
+            for size in [0, 4096, 1024 * 1024] {
+                let mut samples = Vec::new();
+                let mut counts = None;
+                let mut maximum = (0, 0, 0);
+                for _ in 0..64 {
+                    let command = command(size);
+                    let mut result = None;
+                    let started = std::time::Instant::now();
+                    let allocation = allocation_counter::measure(|| {
+                        result = Some(futures::executor::block_on(
+                            service.submit(Request::new(command)),
+                        ));
+                    });
+                    samples.push(started.elapsed());
+                    let admission = result
+                        .ok_or_else(|| Error::Invalid("submission did not run".into()))?
+                        .map_err(|error| Error::Storage(error.to_string()))?
+                        .into_inner();
+                    assert_eq!(
+                        admission
+                            .operation
+                            .as_ref()
+                            .map(|operation| operation.operation_id.as_str()),
+                        Some("operation")
+                    );
+                    let actual = (
+                        allocation.count_total,
+                        allocation.bytes_total,
+                        allocation.bytes_max,
+                    );
+                    if !tracing && let Some(expected) = counts {
+                        assert_eq!(actual, expected);
+                    }
+                    // Registry slabs occasionally grow; separate that storage from
+                    // the steady-state allocations required by every submission.
+                    counts = Some(counts.map_or(actual, |minimum| minimum.min(actual)));
+                    maximum = maximum.max(actual);
+                }
+                samples.sort_unstable();
+                eprintln!(
+                    "submit tracing={tracing} payload={size}: minimum={counts:?}; maximum={maximum:?}; median={:?}",
+                    samples.get(samples.len() / 2)
+                );
+                mode.push(counts);
+            }
+            totals.push(mode);
+        }
+        for mode in totals {
+            assert!(
+                mode.windows(2).all(|pair| pair.first() == pair.get(1)),
+                "submission copies its payload: {mode:?}"
+            );
+        }
+        Ok(())
+    }
 
     impl HarnessWireApi for FakeApi {
         fn authorize_operation_control<'a>(
@@ -240,6 +366,9 @@ mod tests {
             &'a self,
             command: wire::CommandEnvelope,
         ) -> futures::future::BoxFuture<'a, Result<wire::Admission>> {
+            if let Some(expected) = &self.0 {
+                assert_eq!(&command, expected);
+            }
             async move {
                 Ok(wire::Admission {
                     operation: command.operation,
@@ -328,7 +457,7 @@ mod tests {
     async fn tonic_surface_delegates_to_the_common_wire_api() -> Result<()> {
         use transport::harness_service_server::HarnessService as _;
 
-        let service = HarnessGrpcService::new(Arc::new(FakeApi));
+        let service = HarnessGrpcService::new(Arc::new(FakeApi(None)));
         let response = service
             .handshake(Request::new(wire::HandshakeRequest {
                 protocol: Some(current_protocol()),
