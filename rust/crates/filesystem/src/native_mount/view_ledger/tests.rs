@@ -239,3 +239,71 @@ fn failed_record_cannot_vouch_for_an_old_lookup() -> Result<(), Box<dyn std::err
     }
     Ok(())
 }
+
+/// A FUSE handler asks the ledger whether a lookup is unchanged while it holds
+/// its meter. A source watcher records changes on the same meter. Before the
+/// fix, a record held the map's write lock while it waited for the meter, so
+/// the two threads waited on each other and the mount hung.
+#[test]
+fn a_reader_holding_its_meter_never_waits_on_a_recording_writer()
+-> Result<(), Box<dyn std::error::Error>> {
+    let work = crate::NativeMaterializationWork::new(
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )
+    .map_err(|(error, _)| error)?;
+    let ledger = ViewLedger::new(&mut NativeDemandCarrier::Native(&work))?;
+    let watched = path(&["watched"])?;
+    // The lookup reads the node map, which the writer records into. A record
+    // into a map that already tracks a key pays for scanning it.
+    let untouched = FileId::new();
+    ledger.record(
+        &ViewChange::Node(FileId::new()),
+        &mut NativeDemandCarrier::Native(&work),
+    )?;
+    let stamp = ledger.stamp();
+    let (finished, outcome) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        // `ViewLedger::record` charges once before it takes any map, so the
+        // writer enters at the map step: the one that held the map while it
+        // charged.
+        let writer = {
+            let (ledger, work) = (Arc::clone(&ledger), work.clone());
+            move || {
+                super::storage::record(
+                    &ledger.nodes,
+                    super::key_of(&FileId::new()),
+                    ViewStamp::next(),
+                    &mut NativeDemandCarrier::Native(&work),
+                )
+                .map_err(|error| error.to_string())
+            }
+        };
+        let (writer, unchanged) = work.with_original_leaf(|leaf| {
+            let writer = std::thread::spawn(writer);
+            // Let the writer reach the point where the old code held the map
+            // and waited for this meter.
+            for _ in 0..100_000 {
+                if writer.is_finished() || ledger.nodes.try_write().is_err() {
+                    break;
+                }
+                std::thread::yield_now();
+            }
+            let unchanged = ledger
+                .unchanged_since(&watched, Some(untouched), stamp, leaf)
+                .map_err(|error| error.to_string());
+            (writer, unchanged)
+        });
+        let recorded = writer.join().map_err(|_| "the writer panicked".to_owned());
+        let _ = finished.send((recorded, unchanged));
+    });
+    let (recorded, unchanged) = outcome
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .map_err(|_| "a ledger reader and writer deadlocked on the meter")?;
+    recorded??;
+    assert!(
+        unchanged?,
+        "an unrelated node change invalidated the lookup"
+    );
+    Ok(())
+}

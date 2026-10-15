@@ -19,6 +19,14 @@ pub(super) struct InvalidationQueue {
     pub(super) deferred: FuseOwned<Vec<KernelCacheItem>>,
     pub(super) pending_tail: FuseOwned<std::vec::IntoIter<KernelCacheItem>>,
     pub(super) in_flight: bool,
+    /// The last pass failed, so the kernel may hold stale entries.
+    pub(super) denied: bool,
+    /// Failed passes so far, so each waiter learns of a failure after it began.
+    pub(super) denials: u64,
+    /// A waiter arrived after a failed pass, so the invalidator must try again
+    /// even if its inputs are unchanged. Otherwise the waiter could wait for a
+    /// pass that never comes.
+    pub(super) retry: bool,
 }
 
 impl InvalidationQueue {
@@ -137,6 +145,11 @@ impl ProjectionCore {
         target: Option<ViewStamp>,
         work: &Work,
     ) -> Result<(), NativeMountError> {
+        let denials = state.invalidation.denials;
+        if state.invalidation.denied {
+            state.invalidation.retry = true;
+            self.invalidation.notify_all();
+        }
         loop {
             work.charge(Items.delta(1))?;
             if self.stopping.load(Ordering::Acquire) {
@@ -146,6 +159,11 @@ impl ProjectionCore {
                 return Err(NativeMountError::Lifecycle(
                     "FUSE invalidation previously failed",
                 ));
+            }
+            // The invalidator retries on the next change; this caller learns
+            // that its changes may not be visible yet.
+            if state.invalidation.denials != denials {
+                return Err(NativeMountError::Lifecycle("FUSE invalidation failed"));
             }
             if !state.invalidation.is_pending(target) {
                 return Ok(());
@@ -258,7 +276,10 @@ pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &Notifier) {
                 activation.depth != 0,
             );
             drop(activation);
-            if state.invalidation.is_pending(state.invalidation.notified) && blocked != Some(key) {
+            if state.invalidation.is_pending(state.invalidation.notified)
+                && (blocked != Some(key) || state.invalidation.retry)
+            {
+                state.invalidation.retry = false;
                 break key;
             }
             state = core
@@ -304,10 +325,26 @@ pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &Notifier) {
             sdk_failure.take().map_or(Ok(()), Err)
         });
         let denied = result.is_err();
-        if let Err((cause, prefix)) = result {
-            core.retain_handler_failure((sdk_failure.unwrap_or(cause), prefix));
+        // A failed pass does not fail the mount. It is logged, nothing new is
+        // cached until a pass succeeds, and the pass is retried once its
+        // inputs change.
+        if let Err((cause, _)) = &result {
+            tracing::warn!(
+                error = %sdk_failure.as_ref().unwrap_or(cause),
+                "FUSE invalidation failed; caching stops until a later pass succeeds"
+            );
         }
-        core.state_to_finish().invalidation.finish(through);
+        {
+            let mut state = core.state_to_finish();
+            state.invalidation.denied = denied;
+            if denied {
+                state.invalidation.denials = state.invalidation.denials.wrapping_add(1);
+            }
+            state.invalidation.finish(through);
+        }
+        if denied {
+            core.invalidation.notify_all();
+        }
         blocked = if denied { Some(wait_key) } else { None };
     }
 }
