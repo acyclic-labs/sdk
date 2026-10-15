@@ -249,23 +249,13 @@ impl FuseProjection {
         work: &crate::NativeMaterializationWork,
     ) -> Result<Option<(u64, FuseOpenFile)>, NativeMountError> {
         // The caller holds the names lock exclusively.
-        let (inode, unopened) = {
-            let state = self.core.state()?;
-            let inode = lookup
-                .filter(|lookup| {
-                    lookup.node.kind == MountNodeKind::Regular && lookup.node.link_count == 1
-                })
-                .and_then(|lookup| state.inode_by_file.get(&lookup.node.file_id))
-                .map(|(inode, _)| *inode);
-            let unopened = inode
-                .and_then(|inode| state.by_inode.get(&inode))
-                .is_some_and(|entry| entry.lookup_references != 0 && entry.open_handles == 0);
-            (inode, unopened)
-        };
-        if self.skips_open && unopened {
-            self.reopen_implicit(inode.ok_or(libc::ESTALE)?, None, AccessMode::ReadOnly, work)?;
-        }
         let state = self.core.state()?;
+        let inode = lookup
+            .filter(|lookup| {
+                lookup.node.kind == MountNodeKind::Regular && lookup.node.link_count == 1
+            })
+            .and_then(|lookup| state.inode_by_file.get(&lookup.node.file_id))
+            .map(|(inode, _)| *inode);
         let Some(inode) = inode.filter(|inode| {
             state
                 .by_inode

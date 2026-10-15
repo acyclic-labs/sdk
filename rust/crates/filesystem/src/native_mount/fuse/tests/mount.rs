@@ -169,6 +169,52 @@ pub(super) fn linux_listings_resume_across_pages_and_readers()
     Ok(())
 }
 
+/// The kernel applies one attribute version to a whole READDIRPLUS reply,
+/// so a second entry for one inode starts the next reply. Splitting must
+/// neither lose nor repeat a name, and every name of the file reports its
+/// current facts.
+#[test]
+#[ignore = "requires a live Linux FUSE mount"]
+pub(super) fn linux_listings_that_name_one_file_repeatedly_split_without_loss()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (inner, around) = shared_sources(posix_config())?;
+    let volume_id = inner.volume_id()?;
+    let aliases = ["a", "b", "c", "d"];
+    crate::native_mount::adapter::boundary(inner.cancellation(), |work| {
+        inner.create_file(&name("a"), FileMetadata::default(), None, work)
+    })?;
+    inner.write_range(&name("a"), 0, Bytes::from_static(b"first"))?;
+    for alias in &aliases[1..] {
+        crate::native_mount::adapter::boundary(inner.cancellation(), |work| {
+            inner.hard_link(&name("a"), &name(alias), work)
+        })?;
+    }
+    crate::native_mount::adapter::boundary(inner.cancellation(), |work| {
+        inner.create_file(&name("other"), FileMetadata::default(), None, work)
+    })?;
+    let temporary = tempfile::tempdir()?;
+    let mut session = mount(
+        Arc::new(inner) as Arc<dyn MountFilesystem>,
+        volume_id,
+        temporary.path(),
+    )?;
+    let expected = ["a", "b", "c", "d", "other"];
+    for (contents, length) in [(&b"first"[..], 5), (&b"the second version"[..], 18)] {
+        if length != 5 {
+            around.write_range(&name("a"), 0, Bytes::copy_from_slice(contents))?;
+            session.revalidate(&fuse_fixture_work())?;
+        }
+        assert_eq!(listing(temporary.path())?, expected);
+        for alias in aliases {
+            let path = temporary.path().join(alias);
+            assert_eq!(std::fs::symlink_metadata(&path)?.len(), length, "{alias}");
+            assert_eq!(std::fs::read(&path)?, contents, "{alias}");
+        }
+    }
+    assert!(session.stop()?);
+    Ok(())
+}
+
 #[test]
 pub(super) fn only_folding_volumes_with_case_variants_fold_names()
 -> Result<(), Box<dyn std::error::Error>> {

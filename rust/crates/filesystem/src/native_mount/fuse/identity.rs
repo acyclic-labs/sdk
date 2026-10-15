@@ -16,6 +16,8 @@ pub(super) struct InodeEntry {
     pub(super) cached_content: Option<ContentVersion>,
     pub(super) kernel_content: Option<ContentVersion>,
     pub(super) write_handles: u64,
+    /// The listing reply that last handed the kernel this inode's entry.
+    pub(super) listed_in_reply: u64,
     pub(super) negative_children: HashMap<FuseOwned<Vec<u8>>, ViewStamp>,
     pub(super) empty_since: Option<ViewStamp>,
     pub(super) _storage: crate::NativeAllocation,
@@ -50,6 +52,7 @@ impl InodeEntry {
             cached_content: None,
             kernel_content: None,
             write_handles: 0,
+            listed_in_reply: 0,
             negative_children: HashMap::new(),
             empty_since: None,
             _storage: storage,

@@ -29,6 +29,14 @@ pub(super) struct FuseHandlerReports {
     pub(super) first_fatal: Option<(NativeMountError, WorkCounters)>,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Inodes whose attributes this thread's state guards dropped, so a test
+    /// without a kernel sees each invalidation as it is delivered.
+    pub(super) static DROPPED_ATTRIBUTES: std::cell::RefCell<Vec<u64>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 pub(super) struct StateGuard<'a> {
     state: Option<MutexGuard<'a, ProjectionState>>,
     core: &'a ProjectionCore,
@@ -80,6 +88,10 @@ impl Drop for StateGuard<'_> {
         };
         let mut superseded = std::mem::take(&mut state.superseded_attributes);
         drop(state);
+        #[cfg(test)]
+        DROPPED_ATTRIBUTES.with_borrow_mut(|dropped| {
+            dropped.extend(superseded.iter().map(|(inode, _)| *inode));
+        });
         self.core.invalidation.notify_all();
         if let Some(notifier) = self.core.notifier.get() {
             for (inode, credit) in superseded.iter_mut() {
@@ -420,5 +432,4 @@ impl ViewObserver for ProjectionCore {
 pub(super) struct FuseProjection {
     pub(super) core: Arc<ProjectionCore>,
     pub(super) skips_opendir: bool,
-    pub(super) skips_open: bool,
 }
