@@ -85,11 +85,20 @@ message SessionData {
     bytes fs_publication = 12;
     bytes actor_socket = 13;
     bytes actor_call = 14;
+    SessionLatestValue latest_value = 15;
   }
 }
 message SessionAck {
   SessionCursor applied = 1;
 }
+// Additive receive-credit grant, never a replacement for remaining credit.
+// Each data frame consumes one frame and its entire encoded SessionFrame byte
+// length (excluding transport framing). Both balances must suffice before send.
+// Channel 0 is control-only. All control frames, including opened, closed, moved
+// and window, are exempt from data credit; they remain separately admission-bounded.
+// A channel-0 grant replenishes aggregate session credit. A nonzero-channel grant
+// replenishes that channel's additional credit; data must satisfy both windows.
+// Overflow is a protocol error, with neither balance changed.
 message SessionWindow {
   uint64 bytes = 1;
   uint32 frames = 2;
