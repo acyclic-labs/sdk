@@ -21,6 +21,11 @@ name = "mcp-loom"
 path = "tests/mcp_loom.rs"
 
 [[test]]
+name = "goal-files"
+path = "tests/goal_files.rs"
+required-features = ["filesystem"]
+
+[[test]]
 name = "local-recursive-fork"
 path = "tests/local_recursive_fork.rs"
 required-features = ["filesystem-local"]

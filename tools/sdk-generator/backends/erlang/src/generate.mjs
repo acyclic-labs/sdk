@@ -1,10 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { inventory, loadAuthority, sha256, within } from "../../../shared/authority.mjs";
+import { generationOutput, inventory, loadAuthority, sha256 } from "../../../shared/authority.mjs";
 import { verifyRuntime, verifyTools } from "./inventory.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
@@ -22,12 +22,7 @@ export function generate(args, { command = spawnSync, toolchain = pins,
   const source = realpathSync(args["source-root"]), authorityRoot = realpathSync(args.authority);
   const runtime = realpathSync(args["runtime-root"]), runtimeIndex = realpathSync(args["runtime-inventory"]);
   const tools = realpathSync(args["tool-home"]);
-  const output = join(realpathSync(dirname(resolve(args.output))), basename(resolve(args.output)));
-  try { lstatSync(output); throw new Error("output must be absent"); }
-  catch (error) { if (error.code !== "ENOENT") throw error; }
-  for (const protectedInput of [source, authorityRoot, runtime, runtimeIndex, tools, dirname(directory)]) {
-    if (within(protectedInput, output) || within(output, protectedInput)) throw new Error("output overlaps protected input");
-  }
+  const output = generationOutput(args.output, [source, authorityRoot, runtime, runtimeIndex, tools, dirname(directory)]);
   const pin = toolchain.runtime?.[`${process.platform}-${process.arch}`];
   if (!pin) throw new Error("generation runtime host is not admitted");
   const authority = loadAuthority(authorityRoot);

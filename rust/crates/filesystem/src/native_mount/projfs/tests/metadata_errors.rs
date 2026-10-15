@@ -1,23 +1,18 @@
 use super::*;
 
-#[tokio::test]
-async fn read_close_after_rename_does_not_block_publication()
--> Result<(), Box<dyn std::error::Error>> {
-    let work = setup_work()?;
-    let source = windows_checkout_source().await?;
-    let path = windows_path("read.txt");
-    source.create_file(&path, FileMetadata::default(), None, &work)?;
-    source.write_range(&path, 0, Bytes::from_static(b"source contents"))?;
-    let directory = tempfile::tempdir()?;
-    std::fs::write(directory.path().join("read.txt"), b"host contents")?;
-    let runtime = Runtime {
-        source: source.clone(),
+pub(super) fn callback_runtime(
+    source: Arc<MemorySource>,
+    root: &std::path::Path,
+    work: &crate::NativeMaterializationWork,
+) -> Result<Runtime, Box<dyn std::error::Error>> {
+    Ok(Runtime {
+        source,
         work: Mutex::new(work.clone()),
         active_work: Mutex::new(Default::default()),
         original_work: Mutex::new(None),
         callback_guard: None,
-        root: directory.path().to_path_buf(),
-        metadata_root: HostRoot::open(directory.path(), &mut &work)?,
+        root: root.to_path_buf(),
+        metadata_root: HostRoot::open(root, &mut &*work)?,
         staging: Mutex::new(None),
         creating_name: RwLock::new((MountPath::root(), None)),
         writable: true,
@@ -29,7 +24,20 @@ async fn read_close_after_rename_does_not_block_publication()
         post_operation_failure: Arc::new(Mutex::new(PostOperationFailures::default())),
         callbacks: CallbackGate::start()?,
         _allocation: work.claim(0, 0, crate::WorkCounters::UNCHARGED)?,
-    };
+    })
+}
+
+#[tokio::test]
+async fn read_close_after_rename_does_not_block_publication()
+-> Result<(), Box<dyn std::error::Error>> {
+    let work = setup_work()?;
+    let source = windows_checkout_source().await?;
+    let path = windows_path("read.txt");
+    source.create_file(&path, FileMetadata::default(), None, &work)?;
+    source.write_range(&path, 0, Bytes::from_static(b"source contents"))?;
+    let directory = tempfile::tempdir()?;
+    std::fs::write(directory.path().join("read.txt"), b"host contents")?;
+    let runtime = callback_runtime(Arc::clone(&source), directory.path(), &work)?;
     let name = HSTRING::from("read.txt");
     let data = PRJ_CALLBACK_DATA {
         InstanceContext: std::ptr::from_ref(&runtime).cast_mut().cast(),

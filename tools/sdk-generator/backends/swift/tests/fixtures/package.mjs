@@ -1,27 +1,12 @@
-import { tar } from "../../../../shared/tests/archive.mjs";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { authorityFixture, packageFixture } from "../../../../shared/tests/package-fixture.mjs";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { gzipSync } from "node:zlib";
 import { pins, targets } from "../../src/package.mjs";
 import { sha256 } from "../../../../shared/authority.mjs";
 const directory = join(dirname(fileURLToPath(import.meta.url)), "..");
 export function fixture(t) {
-  const root = mkdtempSync(join(tmpdir(), "swift-package-test-"));
-  t.after(() => rmSync(root, { recursive: true }));
-  const authority = join(root, "authority"); mkdirSync(authority);
-  const inputHashes = {}, families = [];
-  for (const source of targets) {
-    const descriptor = source + ".bin";
-    for (const name of [source, descriptor]) {
-      mkdirSync(dirname(join(authority, name)), { recursive: true }); writeFileSync(join(authority, name), name);
-      inputHashes[name] = sha256(name);
-    }
-    families.push({ source, source_sha256: inputHashes[source], descriptor, descriptor_sha256: inputHashes[descriptor] });
-  }
-  const manifest = Buffer.from(JSON.stringify({ schema: "acyclic.sdk.rust-authority.v1", authority: "rust", source_revision: "a".repeat(40), families }));
-  writeFileSync(join(authority, "rust-authority.json"), manifest);
+  const { root, authority, manifest, inputHashes } = authorityFixture(t, "swift", targets);
   const payload = new Map([["LICENSE", Buffer.from("license")], ["NOTICE", Buffer.from("notice")],
     ["Package.swift", readFileSync(join(directory, "../templates/package/Package.swift"))], ["authority/rust-authority.json", manifest]]);
   for (const source of targets) for (const suffix of [".pb.swift", ".grpc.swift"]) payload.set("Sources/AcyclicTransport/" + source.slice(0, -6) + suffix, Buffer.from("staging fixture"));
@@ -35,10 +20,5 @@ export function fixture(t) {
     tool_sha256: { protoc: pins.protoc["linux-x64"].sha256, swift_plugin: pins.swift_plugin["linux-x64"].sha256, grpc_plugin: pins.grpc_plugin["linux-x64"].sha256 },
     outputs: [...payload.keys()].sort(), output_sha256: Object.fromEntries([...payload].map(([name, bytes]) => [name, sha256(bytes)])),
   };
-  const args = { authority, receipt: join(root, "receipt.json"), package: join(root, "package.tar.gz") };
-  const saveReceipt = () => writeFileSync(args.receipt, JSON.stringify(receipt));
-  const entries = () => [...payload].map(([name, bytes]) => ({ name, bytes }));
-  const saveArchive = (members = entries()) => { const bytes = gzipSync(tar(members)); writeFileSync(args.package, bytes); args.sha256 = sha256(bytes); };
-  saveReceipt(); saveArchive();
-  return { args, receipt, payload, saveReceipt, saveArchive, entries };
+  return packageFixture(root, authority, receipt, payload);
 }
