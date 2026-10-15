@@ -1,4 +1,4 @@
-use crate::buffer::Buffer;
+use crate::buffer::{Buffer, normalize};
 use std::{collections::BTreeSet, ops::Range};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -170,6 +170,7 @@ pub struct PromptHistory {
 impl PromptHistory {
     /// Record a nonblank prompt, suppressing adjacent duplicates.
     pub fn push(&mut self, text: String) {
+        let text = normalize(&text);
         if !text.trim().is_empty() && self.entries.last() != Some(&text) {
             self.entries.push(text);
         }
@@ -193,7 +194,7 @@ impl PromptHistory {
             return None;
         }
         if self.index.is_none() {
-            self.draft = draft.to_owned();
+            self.draft = normalize(draft);
         }
         let index = self.index.unwrap_or(self.entries.len()).saturating_sub(1);
         self.index = Some(index);

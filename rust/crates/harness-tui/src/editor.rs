@@ -226,6 +226,18 @@ impl Editor {
         self.replace(self.selection(), &normalize(text), now_ms, 1, true, false);
     }
 
+    /// Load a whole prompt or draft as one undo step, normalizing line endings.
+    pub fn set_text(&mut self, text: &str, now_ms: u64) {
+        self.replace(
+            0..self.text().len(),
+            &normalize(text),
+            now_ms,
+            1,
+            true,
+            false,
+        );
+    }
+
     /// Delete selection, or one grapheme backwards/forwards.
     pub fn delete(&mut self, backwards: bool, now_ms: u64) {
         let mut range = self.selection();
@@ -449,11 +461,21 @@ impl Editor {
             self.history.next_entry()
         };
         if let Some(text) = text {
-            self.replace(0..self.text().len(), &text, now_ms, 1, true, false);
+            let text = normalize(&text);
+            if self.text().is_empty() && text.is_empty() {
+                return true;
+            }
+            let range = 0..self.text().len();
+            let size = self.text().graphemes(true).count() + text.graphemes(true).count();
+            let mut delta = Delta::capture(&self.buffer, range.clone(), &text);
+            self.buffer.replace(range, &text, false);
             // Keep previous-history navigation at the start for repeated Up.
             if previous {
-                self.set_cursor(0, false);
+                self.buffer.cursor = 0;
+                self.buffer.anchor = 0;
             }
+            delta.finish(&self.buffer);
+            self.record(delta, now_ms, 1, size, true);
             true
         } else {
             false

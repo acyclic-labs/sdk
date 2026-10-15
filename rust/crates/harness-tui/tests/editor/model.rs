@@ -17,14 +17,28 @@ fn boundaries(text: &str) -> Vec<usize> {
         .collect()
 }
 
+fn normalize_reference(text: &str) -> String {
+    let mut normalized = String::new();
+    let mut previous_cr = false;
+    for character in text.chars() {
+        if character != '\n' || !previous_cr {
+            normalized.push(if character == '\r' { '\n' } else { character });
+        }
+        previous_cr = character == '\r';
+    }
+    normalized
+}
+
 fn operation() -> impl Strategy<Value = (u8, String)> {
     (
-        0u8..9,
+        0u8..11,
         prop::collection::vec(
             prop_oneof![
                 Just("a"),
                 Just(" "),
                 Just("\n"),
+                Just("\r"),
+                Just("\r\n"),
                 Just("界"),
                 Just("👩‍💻"),
                 Just("e\u{301}"),
@@ -59,6 +73,7 @@ proptest! {
         let mut model = Model::default();
         let mut undo = vec![];
         let mut redo = vec![];
+        let mut recalled_draft = None;
         for (step, (op, text)) in ops.into_iter().enumerate() {
             editor.break_group();
             let before = model.clone();
@@ -68,8 +83,9 @@ proptest! {
             match op {
                 0 | 1 => {
                     editor.insert(&text, step as u64);
-                    model.text.insert_str(model.cursor, &text);
-                    let desired = model.cursor + text.len();
+                    let normalized = normalize_reference(&text);
+                    model.text.insert_str(model.cursor, &normalized);
+                    let desired = model.cursor + normalized.len();
                     model.cursor = boundaries(&model.text).into_iter().find(|i| *i >= desired).unwrap_or(model.text.len());
                     if !text.is_empty() { undo.push((before, model.clone())); redo.clear(); }
                 }
@@ -91,14 +107,38 @@ proptest! {
                     prop_assert_eq!(editor.undo(), expected.is_some());
                     if let Some((before, after)) = expected { model = before.clone(); redo.push((before, after)); }
                 }
-                _ => {
+                8 => {
                     let expected = redo.pop();
                     prop_assert_eq!(editor.redo(), expected.is_some());
                     if let Some((before, after)) = expected { model = after.clone(); undo.push((before, after)); }
                 }
+                9 => {
+                    let entry = format!("saved{text}");
+                    editor.history().push(entry.clone());
+                    recalled_draft = None;
+                    prop_assert_eq!(editor.recall(true, step as u64), model.cursor == 0);
+                    if model.cursor == 0 {
+                        recalled_draft = Some(model.text.clone());
+                        model.text = normalize_reference(&entry);
+                        undo.push((before, model.clone())); redo.clear();
+                    }
+                }
+                _ => {
+                    let expected = model.cursor == model.text.len() && recalled_draft.is_some();
+                    prop_assert_eq!(editor.recall(false, step as u64), expected);
+                    if expected {
+                        model.text = recalled_draft.take().unwrap();
+                        model.cursor = model.text.len();
+                        if !before.text.is_empty() || !model.text.is_empty() {
+                            undo.push((before, model.clone())); redo.clear();
+                        }
+                    }
+                }
             }
             prop_assert_eq!(editor.text(), &model.text);
             prop_assert_eq!(editor.cursor(), model.cursor);
+            prop_assert_eq!(editor.anchor(), model.cursor);
+            prop_assert!(!editor.text().contains('\r'));
             prop_assert!(boundaries(editor.text()).contains(&editor.cursor()));
             prop_assert!(boundaries(editor.text()).contains(&editor.anchor()));
         }
@@ -114,7 +154,7 @@ proptest! {
     fn layout_preserves_graphemes_and_cell_bounds(
         parts in prop::collection::vec(operation().prop_map(|(_, text)| text), 0..12), width in 1usize..32
     ) {
-        let text = parts.concat();
+        let text = normalize_reference(&parts.concat());
         let editor = Editor::new(&text);
         let layout = Layout::new(&editor, width);
         let points = boundaries(&text);

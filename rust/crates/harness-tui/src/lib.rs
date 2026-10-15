@@ -6,6 +6,8 @@ mod history;
 mod keymap;
 mod layout;
 #[cfg(feature = "tui")]
+pub mod key_event;
+#[cfg(feature = "tui")]
 mod widget;
 
 pub use editor::{Editor, Motion};

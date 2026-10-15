@@ -2,6 +2,8 @@
 
 #[path = "editor/behavior.rs"]
 mod behavior;
+#[path = "editor/entry.rs"]
+mod entry;
 #[path = "editor/model.rs"]
 mod model;
 #[cfg(feature = "tui")]
@@ -18,6 +20,7 @@ fn checked_in_fuzz_corpus() {
         include_bytes!("../fuzz/corpus/edit_sequences/motions").as_slice(),
         include_bytes!("../fuzz/corpus/edit_sequences/continuation").as_slice(),
         include_bytes!("../fuzz/corpus/edit_sequences/kill-ring").as_slice(),
+        include_bytes!("../fuzz/corpus/edit_sequences/history").as_slice(),
     ] {
         sequences::exercise(seed);
     }
