@@ -118,6 +118,6 @@ export const normalizeGeneratedTypeScript = source => {
   const normalized = `${source.trimEnd()}\n`;
   // Large runtime descriptors carry one blank separator per message. Compact
   // those separators to keep generated source within the source-file bound.
-  return normalized.includes(" = fileDesc(") && normalized.split("\n").length > 800
+  return normalized.includes("fileDesc(") && normalized.split("\n").length > 800
     ? normalized.replaceAll("\n\n", "\n") : normalized;
 };
