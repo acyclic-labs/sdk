@@ -17,6 +17,28 @@ pub struct SkillMetadata {
 }
 
 impl SkillMetadata {
+    /// Loads the selected skill at its discovered generation under a finite body limit.
+    pub async fn invoke(
+        &self,
+        reader: &dyn ContentResidencyVerifier,
+        maximum_bytes: u64,
+    ) -> Result<ModelMessage> {
+        self.validate(&mut None)?;
+        let (file, bytes) = self.source.read(reader, maximum_bytes).await?;
+        if std::str::from_utf8(&bytes).is_err() || bytes.contains(&0) {
+            return Err(Error::Invalid(
+                "skill body is oversized or invalid text".into(),
+            ));
+        }
+        Ok(ModelMessage {
+            role: ModelRole::System,
+            content: ModelContent::Part(ModelContentPart::File {
+                file,
+                policy: FileProjectionPolicy::BoundedFull,
+            }),
+        })
+    }
+
     /// Validates restored metadata without performing reads.
     pub fn validate(
         &self,

@@ -151,22 +151,7 @@ impl ContextDiscovery {
                             generation: pinned.clone(),
                             path: child(&directory, name),
                         };
-                        let prefix = reader
-                            .read_private_prefix(
-                                &scope.root.volume,
-                                &scope.root.directory,
-                                &source.path,
-                                &pinned,
-                                limits.instruction_bytes.checked_add(1).ok_or_else(|| {
-                                    Error::Invalid("instruction bound overflow".into())
-                                })?,
-                                None,
-                            )?
-                            .await?;
-                        if prefix.len() as u64 > limits.instruction_bytes {
-                            return Err(Error::Invalid("instruction exceeds byte bound".into()));
-                        }
-                        let (file, bytes) = source.read(reader).await?;
+                        let (file, bytes) = source.read(reader, limits.instruction_bytes).await?;
                         if bytes.len() as u64 > limits.instruction_bytes
                             || std::str::from_utf8(&bytes).is_err()
                             || bytes.contains(&0)
@@ -207,7 +192,7 @@ impl ContextDiscovery {
 impl Default for ContextDiscoveryPolicy {
     fn default() -> Self {
         Self {
-            instruction_names: vec!["AGENTS.md".into()],
+            instruction_names: vec!["AGENTS.md".into(), "CLAUDE.md".into()],
             skill_name: Some("SKILL.md".into()),
         }
     }
@@ -226,6 +211,17 @@ pub struct ContextDiscoveryLimits {
     pub header_bytes: u32,
     /// Maximum complete instruction bytes per file.
     pub instruction_bytes: u64,
+}
+
+impl Default for ContextDiscoveryLimits {
+    fn default() -> Self {
+        Self {
+            entries: 4_096,
+            directories: 256,
+            header_bytes: 16_384,
+            instruction_bytes: 65_536,
+        }
+    }
 }
 
 impl ContextDiscoveryLimits {
@@ -289,19 +285,28 @@ impl PinnedContextPath {
     pub async fn read(
         &self,
         reader: &dyn ContentResidencyVerifier,
+        maximum_bytes: u64,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
         self.validate(&mut None)?;
+        if maximum_bytes == 0 || maximum_bytes > crate::conversation::MAX_EXACT_JS_INTEGER {
+            return Err(Error::Invalid(
+                "context body requires a finite positive byte bound".into(),
+            ));
+        }
         let (file, bytes, _hold) = reader
             .read_private_path(
                 &self.root.volume,
                 &self.root.directory,
                 &self.path,
                 Some(&self.generation),
-                crate::conversation::MAX_EXACT_JS_INTEGER,
+                maximum_bytes,
                 None,
             )?
             .await?;
-        if file.volume() != &self.root.volume || file.path() != self.path {
+        if file.volume() != &self.root.volume
+            || file.path() != self.path
+            || bytes.len() as u64 > maximum_bytes
+        {
             return Err(Error::Storage(
                 "pinned path reader returned another file".into(),
             ));

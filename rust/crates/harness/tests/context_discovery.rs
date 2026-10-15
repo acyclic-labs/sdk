@@ -252,6 +252,112 @@ impl Fixture {
 }
 
 #[tokio::test]
+async fn defaults_load_both_instruction_names_in_ancestor_order() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    for path in [
+        "AGENTS.md",
+        "CLAUDE.md",
+        "project/AGENTS.md",
+        "project/CLAUDE.md",
+    ] {
+        fixture.put(path, path.as_bytes(), path).await?;
+    }
+    let mut declaration = fixture.declaration();
+    declaration.skills.clear();
+    declaration.limits = ContextDiscoveryLimits::default();
+    let captured = declaration.capture(fixture.reader.as_ref()).await?;
+    assert_eq!(
+        captured
+            .instructions
+            .iter()
+            .map(|file| file.path())
+            .collect::<Vec<_>>(),
+        [
+            "AGENTS.md",
+            "CLAUDE.md",
+            "project/AGENTS.md",
+            "project/CLAUDE.md"
+        ]
+    );
+    declaration.policy.instruction_names = vec!["CLAUDE.md".into()];
+    assert_eq!(
+        declaration
+            .capture(fixture.reader.as_ref())
+            .await?
+            .instructions
+            .len(),
+        2
+    );
+    for limits in [
+        ContextDiscoveryLimits {
+            entries: 0,
+            ..Default::default()
+        },
+        ContextDiscoveryLimits {
+            directories: 0,
+            ..Default::default()
+        },
+        ContextDiscoveryLimits {
+            header_bytes: 0,
+            ..Default::default()
+        },
+        ContextDiscoveryLimits {
+            instruction_bytes: 0,
+            ..Default::default()
+        },
+    ] {
+        declaration.limits = limits;
+        assert!(matches!(
+            declaration.capture(fixture.reader.as_ref()).await,
+            Err(Error::Invalid(_))
+        ));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn skill_invocation_loads_the_pinned_body_and_enforces_limits() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let original = b"---\nname: inspect\ndescription: Inspect files\n---\noriginal body";
+    fixture
+        .put("skills/inspect/SKILL.md", original, "skill")
+        .await?;
+    let mut declaration = fixture.declaration();
+    declaration.instructions.clear();
+    let captured = declaration.capture(fixture.reader.as_ref()).await?;
+    fixture
+        .put("skills/inspect/SKILL.md", b"replacement", "replacement")
+        .await?;
+    let skill = first_skill(&captured)?;
+    let message = skill.invoke(fixture.reader.as_ref(), 512).await?;
+    let acyclic_harness::model::ModelContent::Part(
+        acyclic_harness::model::ModelContentPart::File { file, .. },
+    ) = message.content
+    else {
+        return Err(Error::Invalid("expected skill file".into()));
+    };
+    assert_eq!(
+        fixture.reader.read(&file, 512, None)?.await?.as_ref(),
+        original
+    );
+    assert!(skill.invoke(fixture.reader.as_ref(), 8).await.is_err());
+    assert!(skill.invoke(fixture.reader.as_ref(), 0).await.is_err());
+    for (key, byte) in [("nul-body", 0), ("invalid-body", 255)] {
+        let mut body = original.to_vec();
+        body.push(byte);
+        fixture.put("skills/inspect/SKILL.md", &body, key).await?;
+        let captured = declaration.capture(fixture.reader.as_ref()).await?;
+        assert!(
+            first_skill(&captured)?
+                .invoke(fixture.reader.as_ref(), 512)
+                .await
+                .is_err()
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn metadata_is_lazy_scopes_are_ordered_and_reload_is_immutable() -> Result<()> {
     let fixture = Fixture::new().await?;
     fixture.put("AGENTS.md", b"root rules", "root").await?;
@@ -278,7 +384,7 @@ async fn metadata_is_lazy_scopes_are_ordered_and_reload_is_immutable() -> Result
     assert!(
         first_skill(&captured)?
             .source
-            .read(fixture.reader.as_ref())
+            .read(fixture.reader.as_ref(), 32_768)
             .await
             .is_err()
     );
@@ -654,7 +760,7 @@ async fn durable_request_replay_retains_discovery_revision() -> Result<()> {
             .first()
             .ok_or_else(|| Error::NotFound("skill".into()))?
             .source
-            .read(fixture.reader.as_ref())
+            .read(fixture.reader.as_ref(), 32_768)
             .await?
             .1
             .as_ref(),
@@ -684,7 +790,7 @@ async fn pinned_reads_fail_closed_for_missing_generation_and_outside_root() -> R
         None,
     )?
     .0;
-    assert!(source.read(fixture.reader.as_ref()).await.is_err());
+    assert!(source.read(fixture.reader.as_ref(), 32_768).await.is_err());
     assert!(
         fixture
             .reader
@@ -702,10 +808,10 @@ async fn pinned_reads_fail_closed_for_missing_generation_and_outside_root() -> R
     source = first_skill(&captured)?.source.clone();
     source.path = "AGENTS.md".into();
     assert!(matches!(
-        source.read(fixture.reader.as_ref()).await,
+        source.read(fixture.reader.as_ref(), 32_768).await,
         Err(Error::Invalid(_))
     ));
     source.path = "skills/missing/SKILL.md".into();
-    assert!(source.read(fixture.reader.as_ref()).await.is_err());
+    assert!(source.read(fixture.reader.as_ref(), 32_768).await.is_err());
     Ok(())
 }
