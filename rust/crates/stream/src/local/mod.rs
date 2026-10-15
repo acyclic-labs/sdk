@@ -1,11 +1,16 @@
 //! Bounded crash-recoverable local Stream provider.
 
+#[cfg(loom)]
+use loom::sync::Mutex;
 use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+#[cfg(test)]
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, PoisonError};
+#[cfg(not(loom))]
+use std::sync::Mutex;
 
 #[cfg(test)]
 use crate::OwnedBytes as Bytes;
@@ -45,6 +50,9 @@ const SNAPSHOT_FILE: &str = "stream.snapshot";
 const SNAPSHOT_TEMPORARY: &str = "stream.snapshot.tmp";
 const FRAME_CHECKSUM_BYTES: usize = 32;
 const REPLAY_PIPELINE_COMMANDS: usize = 32;
+
+#[cfg(loom)]
+pub(crate) mod query_model;
 
 #[cfg(test)]
 static JOURNAL_OPEN_SUBMITTED: Mutex<Option<(PathBuf, tokio::sync::oneshot::Sender<()>)>> =

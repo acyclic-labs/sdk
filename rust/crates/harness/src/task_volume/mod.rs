@@ -4,6 +4,7 @@ mod follow;
 mod heads;
 mod schema;
 mod segment;
+mod watermarks;
 pub use follow::{Change, ChangeStream, Cursor, Observation, Snapshot};
 pub use heads::{HeadFile, HeadSnapshot};
 pub use schema::{Channel, Component, FileKey, Owner, Query, SCHEMA, TaskFile, ToolFile};
@@ -161,6 +162,7 @@ struct Index {
 pub struct TaskVolume<P: ?Sized> {
     provider: Arc<P>,
     path: StreamPath,
+    // Lock order: index -> provider visibility -> provider state; never held across commit acknowledgement.
     index: Mutex<Index>,
 }
 

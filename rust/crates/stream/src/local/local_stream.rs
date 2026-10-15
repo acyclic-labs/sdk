@@ -126,7 +126,7 @@ impl LocalStream {
         }
         journal._ownership_anchor = ownership_anchor;
         commit_clock.unpin();
-        let (changed, _) = watch::channel(0_u64);
+        let (changed, _) = watch::channel(Some(0_u64));
         Ok(Self {
             inner: Arc::new(LocalInner {
                 provider,
@@ -136,14 +136,13 @@ impl LocalStream {
                 synced: watch::channel(0_u64).0,
                 changed,
                 durable_tails: Mutex::new(Default::default()),
-                poisoned: AtomicBool::new(false),
             }),
             work: None,
         })
     }
 
     fn check_available(&self) -> Result<(), StreamError> {
-        if self.inner.poisoned.load(Ordering::Acquire) {
+        if self.inner.changed.borrow().is_none() {
             Err(StreamError::Unavailable)
         } else {
             Ok(())
@@ -232,9 +231,7 @@ impl LocalStream {
         if result.is_err() {
             return Err(self.inner.poison());
         }
-        self.inner.changed.send_modify(|revision| {
-            *revision = revision.saturating_add(1);
-        });
+        self.inner.published();
         self.compact_if_due().await
     }
 

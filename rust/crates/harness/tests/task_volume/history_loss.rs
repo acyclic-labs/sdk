@@ -91,6 +91,7 @@ struct Case {
 
 #[derive(Clone)]
 struct FaultStream {
+    // Fixture lock order: fault -> current; calls, accepted and release are never nested.
     current: Arc<RwLock<Arc<MemoryStream>>>,
     replacement: Arc<MemoryStream>,
     fault: Arc<Mutex<Option<Case>>>,

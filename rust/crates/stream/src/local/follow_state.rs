@@ -3,7 +3,7 @@ struct FollowState {
     path: StreamPath,
     cursor: crate::memory::HistoryCursor,
     anchor: Option<crate::CommitId>,
-    changed: watch::Receiver<u64>,
+    changed: watch::Receiver<Option<u64>>,
     done: bool,
     span: obs::OperationSpan,
 }

@@ -31,15 +31,15 @@ impl Cursor {
         &mut self,
         watermarks: acyclic_stream::StreamWatermarks,
     ) -> Result<()> {
-        if watermarks.durable > watermarks.accepted
-            || watermarks.accepted < self.accepted
-            || watermarks.durable < self.durable
-            || watermarks.accepted < self.position
-        {
+        if !super::watermarks::advance(
+            self.position,
+            &mut self.accepted,
+            &mut self.durable,
+            watermarks.accepted,
+            watermarks.durable,
+        ) {
             return Err(Error::ResetRequired);
         }
-        self.accepted = watermarks.accepted;
-        self.durable = watermarks.durable;
         Ok(())
     }
 }

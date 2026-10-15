@@ -48,6 +48,11 @@ mod wasm;
 /// Conversion helpers between the canonical Rust domain types and generated wire messages.
 pub mod wire_codec;
 
+#[cfg(all(loom, feature = "local"))]
+#[path = "memory/recovery_model.rs"]
+/// Exhaustive verification of production query concurrency paths.
+pub mod verification;
+
 /// Largest bearer credential, in bytes, that an SDK client accepts. It matches the
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
 

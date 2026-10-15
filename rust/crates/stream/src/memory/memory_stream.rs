@@ -1,6 +1,7 @@
 /// Deterministic process-local provider. It retains each idempotency result and committed
 #[derive(Clone)]
 pub struct MemoryStream {
+    // Lock order: TaskVolume index -> LocalStream visibility -> state -> watch internals.
     state: Arc<RwLock<State>>,
     limits: MemoryLimits,
     /// The trusted clock that deadlines are checked against.

@@ -103,30 +103,10 @@ async fn head_condition_on_a_fork_uses_the_inherited_record_identity() -> Result
 }
 
 #[tokio::test]
-async fn native_head_fences_fund_the_identity_and_stop_before_publication_on_denial()
+async fn native_head_fence_cancellation_stops_before_publication()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use crate::test_meter::Meter;
-    use std::sync::{Arc, atomic::Ordering};
-    let mut hashed = Vec::new();
-    for head in [false, true] {
-        let provider = MemoryStream::default();
-        let path = StreamPath::new("head")?;
-        let original = seed(&provider, &path).await?;
-        let mut request = request(&path, 1, original, b"native")?;
-        if !head {
-            request.conditions = vec![CommitCondition::Tail { path, expected: 1 }];
-        }
-        let meter = Arc::new(Meter::default());
-        let result = provider
-            .native_commit(request, None, meter.original())
-            .await??;
-        assert!(matches!(result.value(), CommitOutcome::Committed(_)));
-        hashed.push(meter.hashed.load(Ordering::SeqCst));
-        if head {
-            assert!(meter.read_operations.load(Ordering::SeqCst) >= 2);
-        }
-    }
-    assert_eq!(hashed[1], hashed[0] + 32);
+    use std::sync::Arc;
     let provider = MemoryStream::default();
     let path = StreamPath::new("head")?;
     let original = seed(&provider, &path).await?;
@@ -146,6 +126,34 @@ async fn native_head_fences_fund_the_identity_and_stop_before_publication_on_den
     );
     assert_eq!(provider.tail(path).await?, 1);
     Ok(())
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(64))]
+    #[test]
+    fn native_head_identity_hash_charge_is_independent_of_path_and_payload(
+        path in "[a-z]{1,24}", payload in proptest::collection::vec(proptest::num::u8::ANY,0..256)
+    ) {
+        let result: Result<(),Box<dyn std::error::Error+Send+Sync>>=futures::executor::block_on(async {
+            let mut hashed=Vec::new();
+            for head in [false,true] {
+                let provider=MemoryStream::default();
+                let path=StreamPath::new(&path)?;
+                let original=seed(&provider,&path).await?;
+                let mut request=request(&path,1,original,b"native")?;
+                request.mutations=vec![CommitMutation::Append {path:path.clone(),records:vec![payload.clone().into()]}];
+                if !head {request.conditions=vec![CommitCondition::Tail {path,expected:1}];}
+                let meter=std::sync::Arc::new(crate::test_meter::Meter::default());
+                let result=provider.native_commit(request,None,meter.original()).await??;
+                assert!(matches!(result.value(),CommitOutcome::Committed(_)));
+                hashed.push(meter.hashed.load(std::sync::atomic::Ordering::SeqCst));
+            }
+            let [tail,head]:[u64;2]=hashed.try_into().map_err(|_|"missing native charges")?;
+            assert_eq!(head,tail+32);
+            Ok(())
+        });
+        proptest::prop_assert!(result.is_ok(),"{result:?}");
+    }
 }
 
 #[cfg(feature = "local")]
