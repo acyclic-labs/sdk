@@ -21,6 +21,11 @@ name = "task-volume"
 path = "tests/task_volume.rs"
 
 [[test]]
+name = "goal-files"
+path = "tests/goal_files.rs"
+required-features = ["filesystem"]
+
+[[test]]
 name = "local-recursive-fork"
 path = "tests/local_recursive_fork.rs"
 required-features = ["filesystem-local"]

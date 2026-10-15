@@ -8,8 +8,10 @@ edition = "2024"
 cargo-fuzz = true
 
 [workspace]
+members = ["."]
 
 [dependencies]
+acyclic-harness = { path = ".." }
 libfuzzer-sys = "0.4"
 bytes = "1"
 rmcp = { version = "=3.5.1", default-features = false, features = ["client", "transport-async-rw"] }
@@ -17,6 +19,13 @@ serde = "1"
 serde_json = "1"
 tokio-util = { version = "0.7", features = ["codec"] }
 which = "=8.0.6"
+
+[[bin]]
+name = "goal_parser"
+path = "fuzz_targets/goal_parser.rs"
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "mcp_stdio_codec"

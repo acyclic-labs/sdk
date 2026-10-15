@@ -1200,5 +1200,5 @@ async function main(argv = process.argv.slice(2)) {
   else throw new Error(`unknown command ${options.command}\n\n${usage()}`);
 }
 
-return { sourceSnapshot, assertSourceSnapshot, capturedCompilerIdentity, ensureCargoTargetDirectory, deterministicRustflags, darwinAppleLdPaths, configureDarwinAppleLd, withDeterministicRustflags, linkerInputs, darwinRustObjcopyIdentity, createRustcInvocationCapture, napiGeneratorIdentity, normalizeBuildInputs, buildInputsReceipt, buildInputs, assertBuildInputs, assertMatchingBuildInputs, rustMetadata, assertCurrentNativeFamily, assertExactInventory, assertOwnedDirectory, signDarwinAddon, assertBundle, prepareBuildOutput, publishBundle, assertSelectedArtifact, main };
+return { sourceSnapshot, assertSourceSnapshot, capturedCompilerIdentity, ensureCargoTargetDirectory, deterministicRustflags, darwinAppleLdPaths, configureDarwinAppleLd, withDeterministicRustflags, linkerInputs, darwinRustObjcopyIdentity, createRustcInvocationCapture, napiGeneratorIdentity, normalizeBuildInputs, buildInputsReceipt, assertBuildInputs, assertMatchingBuildInputs, rustMetadata, assertCurrentNativeFamily, assertExactInventory, assertOwnedDirectory, signDarwinAddon, assertBundle, prepareBuildOutput, publishBundle, assertSelectedArtifact, main };
 }

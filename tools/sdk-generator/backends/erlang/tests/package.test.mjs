@@ -2,15 +2,13 @@ import assert from "node:assert/strict";
 import { truncateSync } from "node:fs";
 import test from "node:test";
 import { readPackage } from "../src/package.mjs";
-import { sha256 } from "../../../shared/authority.mjs";
 import { fixture } from "./fixtures/package.mjs";
+import { registerArchiveTests } from "../../../shared/tests/package-admission.mjs";
 
-test("admit complete Erlang archive including original Rust descriptors and application metadata", t => {
-  const f = fixture(t), admitted = readPackage(f.args);
-  assert.equal(admitted.payload.size, f.payload.size);
-  for (const [name, bytes] of admitted.payload) assert.deepEqual(bytes, f.payload.get(name));
+registerArchiveTests("Erlang", readPackage, fixture, {
+  extraMember: "src/injected.erl", metadata: ["rebar.config", "src/acyclic_sdk_transport.app.src", "authority/rust-authority.json", "authority/actors/v1/actors.proto.bin"],
+  metadataError: /metadata differs|manifest differs|Rust input differs/,
 });
-
 test("reject authority, producer, template, runtime and executable bundle drift", t => {
   for (const mutate of [
     f => { f.receipt.source_revision = "b".repeat(40); },
@@ -36,26 +34,8 @@ test("reject unsafe, duplicate, case-colliding and incomplete receipt inventorie
   ]) { const f = fixture(t); mutate(f); f.saveReceipt(); assert.throws(() => readPackage(f.args)); }
 });
 
-test("reject archive links, traversal, duplicate members and additional code", t => {
-  for (const mutate of [
-    entries => { entries[0].type = "2"; },
-    entries => { entries[0].name = "../outside"; },
-    entries => { entries.push(entries[0]); },
-    entries => { entries.push({ name: "src/injected.erl", bytes: Buffer.from("extra") }); },
-  ]) { const f = fixture(t), entries = f.entries(); mutate(entries); f.saveArchive(entries); assert.throws(() => readPackage(f.args)); }
-});
-
-test("reject missing and changed payloads and self-consistently substituted maintained inputs", t => {
-  const missing = fixture(t); missing.saveArchive(missing.entries().slice(1)); assert.throws(() => readPackage(missing.args), /inventory differs/);
-  const changed = fixture(t), entries = changed.entries(); entries[0].bytes = Buffer.from("changed"); changed.saveArchive(entries); assert.throws(() => readPackage(changed.args), /payload digest differs/);
-  for (const name of ["rebar.config", "src/acyclic_sdk_transport.app.src", "authority/rust-authority.json", "authority/actors/v1/actors.proto.bin"]) {
-    const f = fixture(t); f.payload.set(name, Buffer.from("substituted")); f.receipt.output_sha256[name] = sha256(f.payload.get(name)); f.saveReceipt(); f.saveArchive();
-    assert.throws(() => readPackage(f.args), /metadata differs|manifest differs|Rust input differs/);
-  }
-});
-
-test("enforce caller digest, compressed archive and receipt size bounds", t => {
-  const f = fixture(t); f.args.sha256 = "0".repeat(64); assert.throws(() => readPackage(f.args), /archive digest differs/);
-  truncateSync(f.args.package, 16 * 1024 * 1024 + 1); assert.throws(() => readPackage(f.args), /size bound/);
-  const large = fixture(t); truncateSync(large.args.receipt, 1024 * 1024 + 1); assert.throws(() => readPackage(large.args), /receipt exceeds size bound/);
+test("receipt size bound is enforced", t => {
+  const f = fixture(t);
+  truncateSync(f.args.receipt, 1024 * 1024 + 1);
+  assert.throws(() => readPackage(f.args), /receipt exceeds size bound/);
 });
