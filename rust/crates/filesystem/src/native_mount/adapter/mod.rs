@@ -129,6 +129,15 @@ impl From<FsError> for MountSourceError {
             | FsError::Mutation(
                 GenerationMutationError::MissingParent | GenerationMutationError::MissingSource,
             ) => MountSourceError::NotFound,
+            FsError::NotDirectory | FsError::Mutation(GenerationMutationError::NotDirectory) => {
+                MountSourceError::NotDirectory
+            }
+            FsError::Mutation(GenerationMutationError::IsDirectory) => {
+                MountSourceError::IsDirectory
+            }
+            FsError::Mutation(GenerationMutationError::DirectoryNotEmpty) => {
+                MountSourceError::DirectoryNotEmpty
+            }
             FsError::Work(error) => MountSourceError::Work(error),
             FsError::NativeKernel(error) => MountSourceError::NativeWork(error),
             FsError::Cancelled(_) => MountSourceError::Cancelled,

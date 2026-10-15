@@ -8,7 +8,7 @@ use super::*;
 pub(super) async fn default_canonical_continuation_keeps_stages_fresh_beyond_history_bound()
 -> Result<()> {
     let storage = Arc::new(MemoryHarnessStorage::new(AgentId::new(), 131_072).await?);
-    let provider = Arc::new(SummaryModel::default());
+    let (provider, _counts) = summary_model(20);
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let limits = Limits {
         context_messages: 8,
@@ -80,14 +80,7 @@ pub(super) async fn default_canonical_continuation_keeps_stages_fresh_beyond_his
             .await?,
         expected
     );
-    assert_eq!(
-        provider
-            .requests
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len(),
-        generated
-    );
+    assert_eq!(provider.requests().len(), generated);
     assert_eq!(calls.load(Ordering::SeqCst), stage_calls);
 
     let journal = storage.journal();
@@ -609,7 +602,7 @@ pub(super) async fn assert_checkpoint_tail_source(
     let exact = read
         .assert_read_controls(&original, retained, tail_message, &imported)
         .await?;
-    let model = Arc::new(SummaryModel::default());
+    let (model, _counts) = summary_model(1);
     let executor = StockExecutor::new(
         Model::new(
             "synthetic".into(),
@@ -636,15 +629,11 @@ pub(super) async fn assert_checkpoint_tail_source(
     };
     executor.execute(input.clone(), journal).await?;
     {
-        let requests = model
-            .requests
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let requests = model.requests();
         assert_eq!(requests.len(), 1);
         let messages = &requests
             .first()
             .ok_or_else(|| Error::Invalid("missing admitted request".into()))?
-            .request()
             .messages;
         assert_eq!(
             messages.get(..imported.messages.len()),
@@ -781,7 +770,7 @@ pub(super) async fn assert_scoped_checkpoint_source(
         Err(Error::Invalid(_))
     ));
 
-    let model = Arc::new(SummaryModel::default());
+    let (model, _counts) = summary_model(1);
     let executor = StockExecutor::new(
         Model::new(
             "synthetic".into(),
@@ -808,15 +797,11 @@ pub(super) async fn assert_scoped_checkpoint_source(
     };
     executor.execute(input.clone(), journal).await?;
     {
-        let requests = model
-            .requests
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let requests = model.requests();
         assert_eq!(requests.len(), 1);
         let messages = &requests
             .first()
             .ok_or_else(|| Error::Invalid("missing admitted request".into()))?
-            .request()
             .messages;
         assert_eq!(
             messages.get(..retained.messages.len()),

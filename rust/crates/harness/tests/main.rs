@@ -6,7 +6,6 @@ mod stream_fixture;
 
 mod client_public_consumer;
 mod client_transitions;
-mod context_continuation;
 mod durable_extension_scope;
 mod effects;
 mod execution_journal;

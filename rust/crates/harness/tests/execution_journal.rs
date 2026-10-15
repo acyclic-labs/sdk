@@ -10,6 +10,7 @@ use acyclic_fs::{Fs, MemoryAuthorityBackend, MemoryObjectBackend};
 use acyclic_harness::filesystem::{
     FilesystemExecutionJournal, FilesystemHost, FilesystemInteractionHost,
 };
+use acyclic_harness::test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedTurn};
 use acyclic_harness::{
     AgentId, Capabilities, Error, IdempotencyKey, InteractionId, OperationId, Outcome, Result,
     TaskId,
@@ -27,7 +28,7 @@ use acyclic_harness::{
     interaction::{Interaction, InteractionOutcome, InteractionResponse},
     model::{
         FileProjectionPolicy, Model, ModelContent, ModelContentPart, ModelEvent, ModelMessage,
-        ModelProvider, ModelRequest, ModelRole, PreparedModelRequest,
+        ModelRequest, ModelRole, PreparedModelRequest,
     },
     resources::ProviderRef,
     runtime::{Bindings, RuntimeScope, TaskAdmissionRecord, TaskStateProvider, ToolContext},
@@ -38,13 +39,10 @@ use acyclic_harness::{
     },
 };
 use acyclic_stream::MemoryStream;
-use futures::{
-    future::BoxFuture,
-    stream::{self, BoxStream},
-};
+use futures::future::BoxFuture;
 use serde_json::{Value, json};
 use std::sync::{
-    Arc, Mutex,
+    Arc,
     atomic::{AtomicUsize, Ordering},
 };
 
@@ -116,8 +114,6 @@ fn journal(
         },
     )
 }
-
-struct TextModel(AtomicUsize);
 
 async fn bind_conversation(
     stream: &std::sync::Arc<MemoryStream>,
@@ -458,43 +454,6 @@ impl ToolProjection for FixedProjection {
     ) -> Result<(Value, acyclic_harness::NativeCustody)> {
         self.supports_native_projection(work)?;
         Ok((self.0.clone(), None))
-    }
-}
-
-#[derive(Default)]
-struct CapturingModel(Mutex<Vec<ModelRequest>>);
-
-impl ModelProvider for CapturingModel {
-    fn generate<'a>(
-        &'a self,
-        request: acyclic_harness::model::PreparedModelRequest,
-        _dispatch: acyclic_harness::model::ModelDispatch,
-    ) -> BoxStream<'a, Result<ModelEvent>> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(request.request().clone());
-        Box::pin(stream::iter(vec![Ok(ModelEvent::Completed {
-            metadata: Value::Null,
-        })]))
-    }
-}
-
-impl ModelProvider for TextModel {
-    fn generate<'a>(
-        &'a self,
-        _: acyclic_harness::model::PreparedModelRequest,
-        _dispatch: acyclic_harness::model::ModelDispatch,
-    ) -> BoxStream<'a, Result<ModelEvent>> {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        Box::pin(stream::iter(vec![
-            Ok(ModelEvent::Content {
-                delta: "private answer".into(),
-            }),
-            Ok(ModelEvent::Completed {
-                metadata: Value::Null,
-            }),
-        ]))
     }
 }
 

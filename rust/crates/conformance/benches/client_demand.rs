@@ -3,7 +3,7 @@
     clippy::unwrap_used,
     reason = "benchmark setup failure stops measurement"
 )]
-#[path = "../tests/support/client/mod.rs"]
+#[path = "../../harness/tests/support/client/mod.rs"]
 #[allow(
     dead_code,
     reason = "benchmark shares the domain fixture, not every adversarial evidence constructor"

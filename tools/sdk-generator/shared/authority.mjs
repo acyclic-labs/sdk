@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync, realpathSync } from "node:fs";
+import { readFileSync, readdirSync, realpathSync } from "node:fs";
 import { isAbsolute, join, posix, relative, sep } from "node:path";
 
 export const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
@@ -10,6 +10,16 @@ export const within = (root, path) => {
 export const canonical = name => typeof name === "string" && name !== "" && name !== "."
   && !posix.isAbsolute(name) && !name.includes("\\") && !name.includes(":")
   && !name.includes("\0") && !name.split("/").includes("..") && posix.normalize(name) === name;
+
+export function inventory(root, prefix = "") {
+  return readdirSync(join(root, prefix), { withFileTypes: true }).flatMap(entry => {
+    const name = posix.join(prefix, entry.name);
+    if (entry.isSymbolicLink()) throw new Error("generated output contains a link");
+    if (entry.isDirectory()) return inventory(root, name);
+    if (!entry.isFile()) throw new Error("generated output is not a regular file");
+    return [name];
+  }).sort();
+}
 
 export function readInput(root, name, digest) {
   if (!canonical(name)) throw new Error("unsafe authority path");

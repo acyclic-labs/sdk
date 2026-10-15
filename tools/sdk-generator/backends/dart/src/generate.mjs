@@ -1,24 +1,14 @@
 import { spawnSync } from "node:child_process";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, delimiter, dirname, join, posix, resolve } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { loadAuthority, sha256, within } from "../../../shared/authority.mjs";
+import { inventory, loadAuthority, sha256, within } from "../../../shared/authority.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const pinned = { ...JSON.parse(readFileSync(join(directory, "../toolchains/toolchain.json"), "utf8")),
   ...JSON.parse(readFileSync(join(directory, "../../../shared/protoc.json"), "utf8")) };
-
-function inventory(root, prefix = "") {
-  return readdirSync(join(root, prefix), { withFileTypes: true }).flatMap(entry => {
-    const name = posix.join(prefix, entry.name);
-    if (entry.isSymbolicLink()) throw new Error("generated output contains a link");
-    if (entry.isDirectory()) return inventory(root, name);
-    if (!entry.isFile()) throw new Error("generated output is not a regular file");
-    return [name];
-  }).sort();
-}
 
 // The command and toolchain injection are for offline staging controls. The CLI
 // always uses spawnSync and the checked-in Dart plugin build pins.

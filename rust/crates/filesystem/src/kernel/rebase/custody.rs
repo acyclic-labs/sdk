@@ -1,5 +1,7 @@
 use super::*;
 use parking_lot::Mutex;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::atomic::AtomicBool;
 use std::sync::{
     Weak,
     atomic::{AtomicU64, Ordering},
@@ -9,6 +11,8 @@ use std::sync::{
 pub(crate) struct ProofDataCustody {
     retained: AtomicU64,
     physical_retained: AtomicU64,
+    #[cfg(not(target_arch = "wasm32"))]
+    native_accounting_dirty: AtomicBool,
     completed_data_work: Mutex<ProofDataWorkReport>,
 }
 
@@ -29,18 +33,66 @@ struct ProofDataWorkReport {
 }
 
 impl ProofDataCustody {
+    fn payload_changed(&self, completed: &ProofDataWorkReport) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if completed.native_original.is_some() {
+            self.retry_native_accounting();
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = completed;
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn retry_native_accounting(&self) {
+        self.native_accounting_dirty.store(true, Ordering::Release);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn native_accounting_pending(&self) -> bool {
+        self.native_accounting_dirty.load(Ordering::Acquire)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn take_native_accounting_change(&self) -> Result<Option<(u128, u64)>, WorkError> {
+        if !self.native_accounting_pending()
+            || !self.native_accounting_dirty.swap(false, Ordering::AcqRel)
+        {
+            return Ok(None);
+        }
+        let snapshot = (|| {
+            let completed = self.completed_data_work.lock();
+            let born = completed.native_control_born;
+            let retired = completed.native_control_retired;
+            let native_live = u64::try_from(born.checked_sub(retired).ok_or(WorkError::Overflow)?)
+                .map_err(|_| WorkError::Overflow)?;
+            let non_native = self
+                .retained_payload_bytes()
+                .checked_sub(native_live)
+                .ok_or(WorkError::Overflow)?;
+            Ok((retired, non_native))
+        })();
+        if snapshot.is_err() {
+            self.native_accounting_dirty.store(true, Ordering::Release);
+        }
+        snapshot.map(Some)
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn bind_native_original(
         &self,
         original: &Arc<crate::demand::NativeDemandReadMeter>,
     ) -> bool {
         let mut completed = self.completed_data_work.lock();
-        if let Some(bound) = completed.native_original.as_ref() {
+        let bound = if let Some(bound) = completed.native_original.as_ref() {
             bound.as_ptr() == Arc::as_ptr(original)
         } else {
             completed.native_original = Some(Arc::downgrade(original));
             true
+        };
+        if bound {
+            self.retry_native_accounting();
         }
+        bound
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -304,6 +356,7 @@ impl ProofDataClaim {
             return Self::default();
         };
         let completed = owner.completed_data_work.lock();
+        owner.payload_changed(&completed);
         owner.retained.fetch_add(bytes, Ordering::AcqRel);
         Self {
             owner: Arc::downgrade(owner),
@@ -380,6 +433,7 @@ impl ProofDataClaim {
         }
         let original = Arc::clone(retirement.original_meter());
         let mut completed = owner.completed_data_work.lock();
+        owner.payload_changed(&completed);
         debug_assert!(
             completed
                 .native_original
@@ -427,6 +481,7 @@ impl ProofDataClaim {
         reported: bool,
         completed: &mut ProofDataWorkReport,
     ) -> Self {
+        owner.payload_changed(completed);
         if reported {
             completed.reported_physical_bytes = completed
                 .reported_physical_bytes
@@ -462,6 +517,7 @@ impl Drop for ProofDataClaim {
     fn drop(&mut self) {
         if let Some(owner) = self.owner.upgrade() {
             let mut completed = owner.completed_data_work.lock();
+            owner.payload_changed(&completed);
             #[cfg(not(target_arch = "wasm32"))]
             let native = self.native_original.is_some();
             #[cfg(target_arch = "wasm32")]
