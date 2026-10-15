@@ -112,62 +112,16 @@ impl StreamProvider for LocalStream {
     }
 
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        let span = obs::OperationSpan::new(tracing::info_span!(
-            "acyclic.stream.follow",
-            rev = from,
-            terminal = Empty,
-            outcome = Empty,
-            error.kind = Empty
-        ));
-        span.scope(async {
-            let mut state = FollowState {
-                provider: self.clone(),
-                path,
-                cursor: crate::memory::HistoryCursor::at(from),
-                changed: self.inner.changed.subscribe(),
-                done: false,
-                span: span.clone(),
-            };
-            if let Err(error) = self
-                .accepted(self.inner.provider.tail(state.path.clone()))
-                .await?
-            {
-                state.failed(&error);
-                return Err(error);
-            }
-            Ok(span
-                .scope(stream::try_unfold(state, |mut state| async move {
-                    let result = async {
-                        loop {
-                            if let Some(record) = state
-                                .provider
-                                .accepted(
-                                    state
-                                        .provider
-                                        .inner
-                                        .provider
-                                        .next_follow_record(&state.path, &mut state.cursor),
-                                )
-                                .await??
-                            {
-                                return Ok(record);
-                            }
-                            state
-                                .changed
-                                .changed()
-                                .await
-                                .map_err(|_| StreamError::Unavailable)?;
-                        }
-                    }
-                    .await;
-                    if let Err(error) = &result {
-                        state.failed(error);
-                    }
-                    Ok(Some((result?, state)))
-                }))
-                .boxed())
-        })
-        .await
+        self.follow_from(path, from, None).await
+    }
+
+    async fn follow_checked(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: crate::CommitId,
+    ) -> Result<RecordStream, StreamError> {
+        self.follow_from(path, from, Some(preceding)).await
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {

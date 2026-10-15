@@ -47,6 +47,16 @@ fn follow_and_heads_observe_acceptance_before_the_durability_barrier()
                 .ok_or("follow ended")??;
             assert_eq!(record.sequence, n);
             assert_eq!(record.value.as_slice(), b"delta");
+            let checked = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                provider.follow_checked(path.clone(), n + 1, record.commit_id),
+            )
+            .await??;
+            drop(checked);
+            let lost = provider
+                .follow_checked(path.clone(), n + 2, record.commit_id)
+                .await;
+            assert!(matches!(lost, Err(StreamError::OutOfRange)));
             assert_eq!(
                 provider.watermarks(path.clone()).await?,
                 crate::StreamWatermarks {

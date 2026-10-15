@@ -18,20 +18,6 @@ impl Default for MemoryStream {
 }
 
 impl MemoryStream {
-    pub(crate) async fn next_follow_record(
-        &self,
-        path: &StreamPath,
-        cursor: &mut HistoryCursor,
-    ) -> Result<Option<Record>, StreamError> {
-        let state = self.state.read().await;
-        let current = state.paths.get(path).ok_or(StreamError::NotFound)?;
-        if cursor.next > current.tail {
-            return Err(StreamError::OutOfRange);
-        }
-        cursor.sync(current.history.as_ref(), current.tail);
-        Ok(cursor.next_record())
-    }
-
     /// Constructs one bounded independent provider.
     #[must_use]
     pub fn new(limits: MemoryLimits) -> Self {

@@ -62,6 +62,18 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError>;
     /// Replays and then remains live without a handoff gap.
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError>;
+    /// Atomically checks the record at `from - 1` and subscribes after it. A missing
+    /// or changed anchor fails immediately; it must never wait for a future record.
+    /// History replacement during delivery must fail instead of joining histories.
+    async fn follow_checked(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: CommitId,
+    ) -> Result<RecordStream, StreamError> {
+        let _ = (path, from, preceding);
+        Err(StreamError::Unsupported)
+    }
     /// Lists one fixed-snapshot direct-child page.
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError>;
     /// Traverses arbitrarily large direct-child sets without silently

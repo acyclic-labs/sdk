@@ -48,6 +48,14 @@ impl StreamProvider for AckGate {
     async fn follow(&self, path: StreamPath, from: u64) -> StreamResult<RecordStream> {
         self.inner.follow(path, from).await
     }
+    async fn follow_checked(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: CommitId,
+    ) -> StreamResult<RecordStream> {
+        self.inner.follow_checked(path, from, preceding).await
+    }
     async fn children(&self, request: ChildrenRequest) -> StreamResult<ChildStream> {
         self.inner.children(request).await
     }

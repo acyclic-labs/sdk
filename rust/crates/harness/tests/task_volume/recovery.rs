@@ -74,6 +74,14 @@ impl StreamProvider for Restartable {
     async fn follow(&self, path: StreamPath, from: u64) -> StreamResult<RecordStream> {
         self.current()?.follow(path, from).await
     }
+    async fn follow_checked(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: CommitId,
+    ) -> StreamResult<RecordStream> {
+        self.current()?.follow_checked(path, from, preceding).await
+    }
     async fn children(&self, request: ChildrenRequest) -> StreamResult<ChildStream> {
         self.current()?.children(request).await
     }

@@ -286,20 +286,7 @@ impl PreparedCommit {
                             .saturating_mul(1_000),
                     );
                     let id = commit_identity(decision, digest);
-                    for value in [&mut self.plan.result, &mut self.plan.cached] {
-                        append_mut(value)
-                            .records
-                            .first_mut()
-                            .ok_or(StreamError::Unavailable)?
-                            .value = body.clone();
-                    }
-                    history_record(
-                        self.plan
-                            .histories
-                            .first_mut()
-                            .ok_or(StreamError::Unavailable)?,
-                    )?
-                    .value = body;
+                    bind_body(&mut self.plan, body)?;
                     self.plan.bind(id, time)?;
                     let _ = work.record(work.meter.record_codec(
                         0,
@@ -336,6 +323,18 @@ impl PreparedCommit {
             .take();
         result
     }
+}
+
+fn bind_body(plan: &mut CommitPlan, body: Bytes) -> Result<(), StreamError> {
+    for value in [&mut plan.result, &mut plan.cached] {
+        append_mut(value)
+            .records
+            .first_mut()
+            .ok_or(StreamError::Unavailable)?
+            .value = body.clone();
+    }
+    history_record(plan.histories.first_mut().ok_or(StreamError::Unavailable)?)?.value = body;
+    Ok(())
 }
 
 fn append(value: &CommitOutcome) -> &crate::CommittedAppend {

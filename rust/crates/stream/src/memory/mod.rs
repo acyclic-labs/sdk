@@ -48,6 +48,7 @@ include!("memory_limits.rs");
 
 include!("memory_stream.rs");
 include!("provider.rs");
+include!("follow.rs");
 
 include!("state.rs");
 

@@ -23,7 +23,7 @@ use uuid::Uuid;
 pub enum Error {
     /// Underlying durable storage failure.
     #[error(transparent)]
-    Storage(#[from] StreamError),
+    Storage(StreamError),
     /// Noncanonical logical path or identifier.
     #[error("invalid task-volume path")]
     InvalidPath,
@@ -52,6 +52,17 @@ pub enum Error {
 
 /// Task-volume operation result.
 pub type Result<T> = std::result::Result<T, Error>;
+
+impl From<StreamError> for Error {
+    fn from(error: StreamError) -> Self {
+        match error {
+            StreamError::NotFound | StreamError::OutOfRange | StreamError::PrefixNotRetained => {
+                Self::ResetRequired
+            }
+            error => Self::Storage(error),
+        }
+    }
+}
 
 /// Exact publication fence. A scheduler must retain its own execution lease too.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -188,7 +199,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 limit: 1,
             })
             .await?;
-        let record = records.next().await.ok_or(Error::InvalidSegment)??;
+        let record = records.next().await.ok_or(Error::ResetRequired)??;
         if record.sequence != 0 {
             return Err(Error::InvalidSegment);
         }
@@ -243,13 +254,8 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                     )
                     .map_err(|_| Error::LimitExceeded)?,
                 })
-                .await
-                .map_err(history_error)?;
-            let anchor = records
-                .next()
-                .await
-                .ok_or(Error::ResetRequired)?
-                .map_err(history_error)?;
+                .await?;
+            let anchor = records.next().await.ok_or(Error::ResetRequired)??;
             if anchor.sequence != index.next - 1 || anchor.commit_id != index.commit {
                 return Err(Error::ResetRequired);
             }
@@ -260,7 +266,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                     break;
                 }
                 if record.sequence != index.next {
-                    return Err(Error::InvalidSegment);
+                    return Err(Error::ResetRequired);
                 }
                 let files = segment::decode(&record.value)?;
                 validate_file(index, &files)?;
@@ -272,7 +278,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 return Ok(());
             }
             if index.next == before {
-                return Err(Error::InvalidSegment);
+                return Err(Error::ResetRequired);
             }
         }
     }
@@ -403,13 +409,4 @@ fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
 
 fn apply(index: &mut Index, file: FileValue) {
     index.files.insert(file.key.clone(), file);
-}
-
-fn history_error(error: StreamError) -> Error {
-    match error {
-        StreamError::NotFound | StreamError::OutOfRange | StreamError::PrefixNotRetained => {
-            Error::ResetRequired
-        }
-        error => error.into(),
-    }
 }

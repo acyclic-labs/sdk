@@ -9,6 +9,8 @@ use std::future::Future;
 use thiserror::Error;
 
 pub mod conformance;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod follow_tests;
 #[cfg(feature = "grpc")]
 pub mod grpc;
 #[cfg(all(test, not(target_arch = "wasm32")))]

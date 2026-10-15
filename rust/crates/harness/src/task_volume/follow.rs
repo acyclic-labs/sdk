@@ -139,6 +139,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             || cursor.query != query_id(query)?
             || cursor.position == 0
             || cursor.position > tail
+            || cursor.accepted > tail
             || cursor.accepted < cursor.position
             || cursor.durable > cursor.accepted
         {
@@ -166,19 +167,19 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     /// Replays from a durable cursor and remains live without a snapshot/watch race.
     pub async fn follow(&self, query: Query, cursor: Cursor) -> Result<ChangeStream> {
         self.validate_cursor(&query, &cursor).await?;
-        let mut records = self
+        let records = self
             .provider
-            .follow(self.path.clone(), cursor.position - 1)
+            .follow_checked(
+                self.path.clone(),
+                cursor.position,
+                acyclic_stream::CommitId::from_bytes(cursor.commit),
+            )
             .await?;
-        let anchor = records.next().await.ok_or(Error::ResetRequired)??;
-        if anchor.sequence != cursor.position - 1 || anchor.commit_id.as_bytes() != &cursor.commit {
-            return Err(Error::ResetRequired);
-        }
         let stream = futures::stream::try_unfold(
             (records, query, cursor),
             |(mut records, query, mut cursor)| async move {
                 let Some(record) = records.next().await else {
-                    return Ok(None);
+                    return Err(Error::ResetRequired);
                 };
                 let record = record?;
                 if record.sequence != cursor.position {
@@ -220,29 +221,31 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 Err(error) => return Err(error),
             }
         }
-        // An incompatible accepted cursor may refer to a lost, subsequently reused
-        // position. Reconstruct from the provider rather than an old cached head.
-        let snapshot = if supplied {
-            Err(Error::ResetRequired)
-        } else {
-            self.snapshot(&query, maximum_files).await
-        };
-        let (snapshot, changes, reset) = match snapshot {
-            Ok(snapshot) => {
-                let changes = self.follow(query, snapshot.cursor.clone()).await?;
-                (snapshot, changes, false)
+        if !supplied {
+            match self
+                .snapshot_follow(query.clone(), maximum_files, false)
+                .await
+            {
+                Ok(observation) => return Ok(observation),
+                Err(Error::ResetRequired) => {}
+                Err(error) => return Err(error),
             }
-            Err(Error::ResetRequired) => {
-                let mut index = self.index.lock().await;
-                let fresh = Self::open(self.provider.clone(), self.path.clone()).await?;
-                *index = fresh.index.into_inner();
-                drop(index);
-                let snapshot = self.snapshot(&query, maximum_files).await?;
-                let changes = self.follow(query, snapshot.cursor.clone()).await?;
-                (snapshot, changes, true)
-            }
-            Err(error) => return Err(error),
-        };
+        }
+        // Rebuild outside the shared lock. The reconstructed index is still a
+        // fenced immutable cut; a second loss returns ResetRequired to the caller.
+        let fresh = Self::open(self.provider.clone(), self.path.clone()).await?;
+        *self.index.lock().await = fresh.index.into_inner();
+        self.snapshot_follow(query, maximum_files, true).await
+    }
+
+    async fn snapshot_follow(
+        &self,
+        query: Query,
+        maximum_files: usize,
+        reset: bool,
+    ) -> Result<Observation> {
+        let snapshot = self.snapshot(&query, maximum_files).await?;
+        let changes = self.follow(query, snapshot.cursor.clone()).await?;
         Ok(Observation {
             snapshot: Some(snapshot),
             reset,

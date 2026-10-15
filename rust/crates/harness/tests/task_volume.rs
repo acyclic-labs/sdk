@@ -20,6 +20,8 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + 
 mod acceptance;
 #[path = "task_volume/heads.rs"]
 mod heads;
+#[path = "task_volume/history_loss.rs"]
+mod history_loss;
 #[path = "task_volume/recovery.rs"]
 mod recovery;
 
