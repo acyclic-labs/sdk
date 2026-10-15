@@ -5,6 +5,8 @@ use acyclic_stream::BoxProviderFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) mod native;
 mod tool;
 pub use tool::{spec, web_search};
 #[cfg(all(feature = "search-http", not(target_arch = "wasm32")))]
@@ -22,7 +24,7 @@ pub use config::{SearchBackend, SearchConfig};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SearchRequest {
-    /// Natural-language query, sent verbatim to the selected provider.
+    /// Natural-language query, at most 4,096 Unicode characters, sent verbatim.
     #[schemars(length(min = 1, max = 4096))]
     pub query: String,
     /// Maximum number of ranked results to return.
@@ -38,13 +40,25 @@ fn default_results() -> u32 {
 impl SearchRequest {
     /// Validates bounds even when called outside the tool registry.
     pub fn validate(&self) -> Result<()> {
-        if self.query.trim().is_empty()
-            || self.query.len() > 4096
-            || !(1..=20).contains(&self.max_results)
-        {
-            return Err(Error::Invalid(
-                "invalid web search query or result limit".into(),
-            ));
+        self.validate_with_work(None)
+    }
+
+    pub(crate) fn validate_with_work(&self, work: crate::NativeWork<'_>) -> Result<()> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = work {
+            work.charge(acyclic_fs::WorkCounters {
+                items_examined: self.query.len() as u64,
+                ..Default::default()
+            })?;
+        }
+        let mut length = 0;
+        let mut non_whitespace = false;
+        for character in self.query.chars().take(4097) {
+            length += 1;
+            non_whitespace |= !character.is_whitespace();
+        }
+        if !non_whitespace || length > 4096 || !(1..=20).contains(&self.max_results) {
+            return Err(error(work, "invalid web search query or result limit"));
         }
         Ok(())
     }
@@ -77,4 +91,37 @@ pub trait SearchProvider: acyclic_stream::ProviderPlatform {
         &'a self,
         request: &'a SearchRequest,
     ) -> BoxProviderFuture<'a, Result<SearchResponse>>;
+
+    /// Checks for an original-ledger implementation before admitting native dispatch.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_search(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
+        work.remaining()?;
+        Ok(false)
+    }
+
+    /// Executes without falling back to ordinary, unaccounted execution.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn search_with_native_work<'a>(
+        &'a self,
+        _: &'a SearchRequest,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (SearchResponse, acyclic_fs::NativeAllocation)>> {
+        work.remaining()?;
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "search provider has no native producer",
+        })
+    }
+}
+
+pub(crate) fn error(work: crate::NativeWork<'_>, reason: &'static str) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if work.is_some() {
+        return Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Invalid,
+            reason,
+        };
+    }
+    let _ = work;
+    Error::Invalid(reason.into())
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::search::SearchResult;
 use futures::FutureExt as _;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -181,7 +182,7 @@ async fn dropping_a_search_cancels_the_in_flight_exchange() -> Result<()> {
     Ok(())
 }
 
-async fn serve(
+pub(super) async fn serve(
     status: u16,
     body: String,
 ) -> Result<(String, tokio::task::JoinHandle<Result<String>>)> {

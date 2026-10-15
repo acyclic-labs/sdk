@@ -688,6 +688,8 @@ mod compaction;
 mod content;
 mod recovery;
 mod replay;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+mod search;
 mod tools_1;
 mod tools_2;
 fn echo_tools(

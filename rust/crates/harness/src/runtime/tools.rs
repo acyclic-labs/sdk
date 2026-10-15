@@ -496,12 +496,12 @@ impl ToolContext {
         self.validate_native_bound_context(work).map(|_| ())
     }
 
-    pub(super) fn validate_native_bound_context(&self, work: &NativeWork) -> Result<&TaskContext> {
+    pub(crate) fn validate_native_bound_context(&self, work: &NativeWork) -> Result<&TaskContext> {
         work.charge(acyclic_fs::WorkCounters::default())?;
         if !self.native_metadata_matches(work) {
             return Err(native_context::boundary(
                 crate::wire::ErrorCode::Unauthorized,
-                "MCP context has no original native tool metadata source",
+                "tool context has no original native metadata source",
             ));
         }
         let context = self.task();

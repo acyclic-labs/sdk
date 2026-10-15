@@ -55,6 +55,42 @@ impl ScriptedSearchProvider {
 }
 
 impl SearchProvider for ScriptedSearchProvider {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_search(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
+        work.remaining()?;
+        Ok(true)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn search_with_native_work<'a>(
+        &'a self,
+        request: &'a SearchRequest,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (SearchResponse, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
+            request.validate_with_work(Some(work))?;
+            let mut steps = self.steps.lock().unwrap_or_else(|p| p.into_inner());
+            let step = steps
+                .front()
+                .ok_or_else(|| crate::search::error(Some(work), "scripted search exhausted"))?;
+            if &step.request != request {
+                return Err(crate::search::error(
+                    Some(work),
+                    "scripted search request mismatch",
+                ));
+            }
+            let response = match &step.response {
+                Some(response) => crate::search::native::copy_response(response, work)?,
+                None => {
+                    steps.pop_front();
+                    return Err(crate::search::error(Some(work), "scripted search rejected"));
+                }
+            };
+            steps.pop_front();
+            Ok(response)
+        })
+    }
+
     fn search<'a>(
         &'a self,
         request: &'a SearchRequest,

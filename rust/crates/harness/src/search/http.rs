@@ -1,9 +1,10 @@
-use super::{SearchProvider, SearchRequest, SearchResponse, SearchResult};
+use super::{SearchProvider, SearchRequest, SearchResponse};
 use crate::{Error, Result};
 use acyclic_stream::BoxProviderFuture;
 use reqwest::{Client, Url, header::HeaderValue};
 use serde::Deserialize;
 use std::time::Duration;
+mod codec;
 
 const MAXIMUM_RESPONSE_BYTES: usize = 1_048_576;
 
@@ -51,15 +52,35 @@ impl HttpSearch {
         })
     }
 
-    async fn send(&self, request: reqwest::RequestBuilder) -> Result<Vec<u8>> {
-        let mut response = request
-            .header("x-api-key", self.key.clone())
-            .send()
-            .await
-            .map_err(|_| Error::Storage("search HTTP request failed".into()))?;
+    async fn send(
+        &self,
+        request: reqwest::RequestBuilder,
+        work: crate::NativeWork<'_>,
+    ) -> Result<(Vec<u8>, crate::NativeCustody)> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = work {
+            work.admit(acyclic_fs::WorkCounters {
+                source_bytes_read: 1,
+                ..Default::default()
+            })?;
+            work.charge(acyclic_fs::WorkCounters {
+                backend_read_operations: 1,
+                bytes_copied: self.key.as_bytes().len() as u64,
+                items_examined: 1,
+                ..Default::default()
+            })?;
+        }
+        let exchange = request.header("x-api-key", self.key.clone()).send();
+        let mut response = await_io(exchange, work)
+            .await?
+            .map_err(|_| transport_error(work, "search HTTP request failed"))?;
         if !response.status().is_success() {
             // Never expose response bodies or reqwest errors: they can reflect
             // credentials, headers, or a query-bearing URL.
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if work.is_some() {
+                return Err(super::error(work, "search HTTP request rejected"));
+            }
             return Err(Error::Invalid(format!(
                 "search HTTP status {}",
                 response.status().as_u16()
@@ -69,20 +90,30 @@ impl HttpSearch {
             .content_length()
             .is_some_and(|n| n > MAXIMUM_RESPONSE_BYTES as u64)
         {
-            return Err(Error::Invalid("search response exceeds byte limit".into()));
+            return Err(super::error(work, "search response exceeds byte limit"));
         }
+        let mut custody = crate::tool::edit::allocation(work, std::mem::size_of::<Vec<u8>>())?;
         let mut bytes = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|_| Error::Storage("cannot read search response".into()))?
+        while let Some(chunk) = await_io(response.chunk(), work)
+            .await?
+            .map_err(|_| transport_error(work, "cannot read search response"))?
         {
             if chunk.len() > MAXIMUM_RESPONSE_BYTES - bytes.len() {
-                return Err(Error::Invalid("search response exceeds byte limit".into()));
+                return Err(super::error(work, "search response exceeds byte limit"));
             }
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if let Some(work) = work {
+                work.charge(acyclic_fs::WorkCounters {
+                    source_bytes_read: chunk.len() as u64,
+                    ..Default::default()
+                })?;
+            }
+            let length = bytes.len() + chunk.len();
+            crate::tool::edit::reserve_vec(&mut custody, &mut bytes, length)?;
+            crate::tool::edit::charge(&custody, chunk.len() as u64, 1)?;
             bytes.extend_from_slice(&chunk);
         }
-        Ok(bytes)
+        Ok((bytes, custody))
     }
 }
 
@@ -96,6 +127,42 @@ impl Exa {
     pub fn with_endpoint(key: &str, endpoint: &str) -> Result<Self> {
         HttpSearch::new(key, endpoint).map(Self)
     }
+
+    async fn run(
+        &self,
+        request: &SearchRequest,
+        work: crate::NativeWork<'_>,
+    ) -> Result<(SearchResponse, crate::NativeCustody)> {
+        request.validate_with_work(work)?;
+        let _endpoint = crate::tool::edit::allocation(work, self.0.endpoint.as_str().len())?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = work {
+            work.charge(acyclic_fs::WorkCounters {
+                allocation_operations: 1,
+                ..Default::default()
+            })?;
+        }
+        crate::tool::edit::charge(&_endpoint, self.0.endpoint.as_str().len() as u64, 1)?;
+        let body = ExaQuery {
+            query: &request.query,
+            num_results: request.max_results,
+            r#type: "auto",
+            contents: Contents { highlights: true },
+        };
+        let body = request_body(&body, work)?;
+        let bytes = self
+            .0
+            .send(
+                self.0
+                    .client
+                    .post(self.0.endpoint.clone())
+                    .header("content-type", "application/json")
+                    .body(body),
+                work,
+            )
+            .await?;
+        codec::exa(&bytes.0, request.max_results, work)
+    }
 }
 
 impl TinyFish {
@@ -108,6 +175,98 @@ impl TinyFish {
     pub fn with_endpoint(key: &str, endpoint: &str) -> Result<Self> {
         HttpSearch::new(key, endpoint).map(Self)
     }
+
+    async fn run(
+        &self,
+        request: &SearchRequest,
+        work: crate::NativeWork<'_>,
+    ) -> Result<(SearchResponse, crate::NativeCustody)> {
+        request.validate_with_work(work)?;
+        // Reserve both old and replacement URL buffers while the URL serializer
+        // grows its percent-encoded query. This remains separate from response IO.
+        let _url = crate::tool::edit::allocation(
+            work,
+            (self.0.endpoint.as_str().len() + 7 + request.query.len() * 3) * 3,
+        )?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = work {
+            // Cloning and geometric growth of the serializer's private String.
+            let bound = self.0.endpoint.as_str().len() + 7 + request.query.len() * 3;
+            work.charge(acyclic_fs::WorkCounters {
+                allocation_operations: u64::from(usize::BITS - bound.leading_zeros()) + 1,
+                ..Default::default()
+            })?;
+        }
+        crate::tool::edit::charge(
+            &_url,
+            (self.0.endpoint.as_str().len() + 7 + request.query.len() * 3) as u64,
+            request.query.len() as u64,
+        )?;
+        let mut endpoint = self.0.endpoint.clone();
+        endpoint
+            .query_pairs_mut()
+            .append_pair("query", &request.query);
+        let bytes = self.0.send(self.0.client.get(endpoint), work).await?;
+        codec::tinyfish(&bytes.0, request.max_results, work)
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExaQuery<'a> {
+    query: &'a str,
+    num_results: u32,
+    r#type: &'static str,
+    contents: Contents,
+}
+#[derive(serde::Serialize)]
+struct Contents {
+    highlights: bool,
+}
+
+fn request_body(
+    value: &impl serde::Serialize,
+    work: crate::NativeWork<'_>,
+) -> Result<reqwest::Body> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(work) = work {
+        let io = crate::executor::PreparationIo::from_native_work(work)?;
+        let bytes = io.encode(value, MAXIMUM_RESPONSE_BYTES as u64, false)?;
+        return Ok(reqwest::Body::from(bytes::Bytes::from_owner(bytes)));
+    }
+    let _ = work;
+    serde_json::to_vec(value)
+        .map(reqwest::Body::from)
+        .map_err(|_| super::error(work, "cannot encode search request"))
+}
+
+async fn await_io<F: std::future::Future>(
+    future: F,
+    work: crate::NativeWork<'_>,
+) -> Result<F::Output> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(work) = work {
+        work.remaining()?;
+        return tokio::select! {
+            biased;
+            _ = work.cancellation().cancelled() => Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into()),
+            result = future => Ok(result),
+        };
+    }
+    let _ = work;
+    Ok(future.await)
+}
+
+fn transport_error(work: crate::NativeWork<'_>, reason: &'static str) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if work.is_some() {
+        return Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Storage,
+            reason,
+        };
+    }
+    let _ = work;
+    Error::Storage(reason.into())
 }
 
 #[derive(Deserialize)]
@@ -128,31 +287,28 @@ impl SearchProvider for Exa {
         &'a self,
         request: &'a SearchRequest,
     ) -> BoxProviderFuture<'a, Result<SearchResponse>> {
-        Box::pin(async move {
-            request.validate()?;
-            let body = serde_json::json!({
-                "query": request.query,
-                "numResults": request.max_results,
-                "type": "auto",
-                "contents": {"highlights": true}
-            });
-            let bytes = self
-                .0
-                .send(self.0.client.post(self.0.endpoint.clone()).json(&body))
-                .await?;
-            let response: ExaResponse = serde_json::from_slice(&bytes)
-                .map_err(|_| Error::Invalid("invalid Exa search response".into()))?;
-            let results = response
-                .results
-                .into_iter()
-                .take(request.max_results as usize)
-                .map(|item| SearchResult {
-                    url: item.url,
-                    title: item.title.unwrap_or_default(),
-                    snippet: item.highlights.join("\n"),
-                })
-                .collect();
-            Ok(SearchResponse { results })
+        Box::pin(async move { self.run(request, None).await.map(|r| r.0) })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_search(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
+        work.remaining()?;
+        Ok(true)
+    }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn search_with_native_work<'a>(
+        &'a self,
+        request: &'a SearchRequest,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (SearchResponse, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
+            let (response, held) = self.run(request, Some(work)).await?;
+            Ok((
+                response,
+                held.ok_or_else(|| {
+                    super::error(Some(work), "native search response lacks custody")
+                })?,
+            ))
         })
     }
 }
@@ -174,29 +330,33 @@ impl SearchProvider for TinyFish {
         &'a self,
         request: &'a SearchRequest,
     ) -> BoxProviderFuture<'a, Result<SearchResponse>> {
-        Box::pin(async move {
-            request.validate()?;
-            let mut endpoint = self.0.endpoint.clone();
-            endpoint
-                .query_pairs_mut()
-                .append_pair("query", &request.query);
-            let bytes = self.0.send(self.0.client.get(endpoint)).await?;
-            let response: TinyFishResponse = serde_json::from_slice(&bytes)
-                .map_err(|_| Error::Invalid("invalid TinyFish search response".into()))?;
-            let results = response
-                .results
-                .into_iter()
-                .take(request.max_results as usize)
-                .map(|item| SearchResult {
-                    url: item.url,
-                    title: item.title,
-                    snippet: item.snippet,
-                })
-                .collect();
-            Ok(SearchResponse { results })
+        Box::pin(async move { self.run(request, None).await.map(|r| r.0) })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native_search(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
+        work.remaining()?;
+        Ok(true)
+    }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn search_with_native_work<'a>(
+        &'a self,
+        request: &'a SearchRequest,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (SearchResponse, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
+            let (response, held) = self.run(request, Some(work)).await?;
+            Ok((
+                response,
+                held.ok_or_else(|| {
+                    super::error(Some(work), "native search response lacks custody")
+                })?,
+            ))
         })
     }
 }
 
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+mod native_tests;
 #[cfg(test)]
 mod tests;
