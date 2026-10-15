@@ -1,7 +1,7 @@
 [
   {"name":"compact","description":"Summarize the current context","arguments":"text","action":{"kind":"builtin","command":"compact"}},
   {"name":"model","description":"Select or inspect the model","arguments":"word","action":{"kind":"builtin","command":"model"}},
-  {"name":"approval","description":"Select or inspect the approval mode","arguments":"word","action":{"kind":"builtin","command":"approval"}},
+  {"name":"diff","description":"Show captured workspace changes","arguments":"none","action":{"kind":"builtin","command":"diff"}},
   {"name":"plan","description":"Show the task plan","arguments":"none","action":{"kind":"builtin","command":"plan"}},
   {"name":"goal","description":"Show GOAL.md","arguments":"none","action":{"kind":"builtin","command":"goal"}},
   {"name":"mcp","description":"Inspect MCP servers and tools","arguments":"none","action":{"kind":"builtin","command":"mcp"}}

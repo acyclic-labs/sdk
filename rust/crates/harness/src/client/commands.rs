@@ -55,8 +55,8 @@ pub enum BuiltinCommand {
     Compact,
     /// Inspect or change the selected model.
     Model,
-    /// Inspect or change the approval mode.
-    Approval,
+    /// Query captured workspace changes.
+    Diff,
     /// Query the task's plan.md.
     Plan,
     /// Query the private GOAL.md.
@@ -116,11 +116,6 @@ pub enum CommandRequest {
         /// Provider/model identifier.
         model: String,
     },
-    /// Change human approval gating; this never grants capabilities.
-    Approval {
-        /// Owner-defined approval mode identifier.
-        mode: String,
-    },
 }
 
 /// View selected without submitting model text.
@@ -129,8 +124,8 @@ pub enum CommandRequest {
 pub enum CommandQuery {
     /// Current model and available models.
     Model,
-    /// Current approval mode and available modes.
-    Approval,
+    /// Captured workspace changes against each volume's base.
+    Diff,
     /// Task plan.md.
     Plan,
     /// Private GOAL.md.
@@ -441,13 +436,8 @@ fn resolve_builtin(command: BuiltinCommand, arguments: &str) -> CommandResolutio
                 model: arguments.into(),
             },
         },
-        BuiltinCommand::Approval if !arguments.is_empty() => Submit {
-            request: R::Approval {
-                mode: arguments.into(),
-            },
-        },
         BuiltinCommand::Model => Select { query: Q::Model },
-        BuiltinCommand::Approval => Select { query: Q::Approval },
+        BuiltinCommand::Diff => Select { query: Q::Diff },
         BuiltinCommand::Plan => Select { query: Q::Plan },
         BuiltinCommand::Goal => Select { query: Q::Goal },
         BuiltinCommand::Mcp => Select { query: Q::Mcp },

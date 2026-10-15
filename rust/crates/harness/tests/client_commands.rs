@@ -160,11 +160,7 @@ async fn builtin_cases_resolve_from_the_same_catalog_as_completion() -> Result<(
             "/model provider/model",
             json!({"kind":"submit","request":{"kind":"model","model":"provider/model"}}),
         ),
-        ("/approval", json!({"kind":"select","query":"approval"})),
-        (
-            "/approval ask",
-            json!({"kind":"submit","request":{"kind":"approval","mode":"ask"}}),
-        ),
+        ("/diff", json!({"kind":"select","query":"diff"})),
         ("/plan", json!({"kind":"select","query":"plan"})),
         ("/goal", json!({"kind":"select","query":"goal"})),
         ("/mcp", json!({"kind":"select","query":"mcp"})),
@@ -192,7 +188,9 @@ async fn builtin_cases_resolve_from_the_same_catalog_as_completion() -> Result<(
         "/",
         "/model a b",
         "/model a\0b",
-        "/approval a\nb",
+        "/approval",
+        "/approval always",
+        "/diff extra",
         "/plan change",
         "/goal done",
         "/mcp extra",
@@ -206,10 +204,7 @@ async fn builtin_cases_resolve_from_the_same_catalog_as_completion() -> Result<(
         );
     }
     let names: Vec<_> = catalog.commands().map(|spec| spec.name.as_str()).collect();
-    assert_eq!(
-        names,
-        ["approval", "compact", "goal", "mcp", "model", "plan"]
-    );
+    assert_eq!(names, ["compact", "diff", "goal", "mcp", "model", "plan"]);
     for (prefix, expected) in [
         ("/m", vec!["mcp", "model"]),
         ("pla", vec!["plan"]),
