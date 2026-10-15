@@ -83,7 +83,10 @@ impl SearchProvider for ScriptedSearchProvider {
                 Some(response) => crate::search::native::copy_response(response, work)?,
                 None => {
                     steps.pop_front();
-                    return Err(crate::search::error(Some(work), "scripted search rejected"));
+                    return Err(crate::search::rejection(
+                        Some(work),
+                        "scripted search rejected",
+                    ));
                 }
             };
             steps.pop_front();

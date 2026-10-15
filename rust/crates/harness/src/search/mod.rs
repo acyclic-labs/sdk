@@ -58,7 +58,7 @@ impl SearchRequest {
             non_whitespace |= !character.is_whitespace();
         }
         if !non_whitespace || length > 4096 || !(1..=20).contains(&self.max_results) {
-            return Err(error(work, "invalid web search query or result limit"));
+            return Err(rejection(work, "invalid web search query or result limit"));
         }
         Ok(())
     }
@@ -124,4 +124,12 @@ pub(crate) fn error(work: crate::NativeWork<'_>, reason: &'static str) -> Error 
     }
     let _ = work;
     Error::Invalid(reason.into())
+}
+
+pub(crate) fn rejection(work: crate::NativeWork<'_>, reason: &'static str) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if work.is_some() {
+        return Error::ToolRejected(reason);
+    }
+    error(work, reason)
 }

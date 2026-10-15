@@ -16,10 +16,12 @@ fn decode<T: Record>(bytes: &[u8], work: NativeWork<'_>) -> Result<(T, NativeCus
         let io = crate::executor::PreparationIo::from_native_work(work)?;
         let decoded: T = io.decode_json(bytes).map_err(|failure| match failure {
             crate::Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Storage,
-                ..
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "invalid JSON nesting" | "incomplete JSON document",
             }
-            | crate::Error::NativeJson { .. } => error(Some(work), "invalid search response"),
+            | crate::Error::NativeJson { .. } => {
+                crate::search::rejection(Some(work), "invalid search response")
+            }
             failure => failure,
         })?;
         let retained = (std::mem::size_of::<T>() as u64)

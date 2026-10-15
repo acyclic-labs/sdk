@@ -2,6 +2,7 @@ use super::*;
 use crate::{
     OperationId,
     durable_host::tests::created_fixture::CreationFixture,
+    executor::ExecutionJournal,
     runtime::TaskContext,
     search::{SearchResult, native::response_bytes},
     test_support::{ScriptedSearch, ScriptedSearchProvider},
@@ -183,5 +184,61 @@ async fn search_native_script_results_keep_their_full_original_custody() -> Resu
     let result = provider.search_with_native_work(&request, &work)?.await?;
     assert_eq!(result.1.bytes(), response_bytes(&result.0)?);
     assert!(result.1.work().shares_ledger(&work));
+    Ok(())
+}
+
+#[tokio::test]
+async fn search_native_durable_runner_replays_rejection_without_redispatch() -> Result<()> {
+    let (fixture, work, task) = context().await?;
+    let fence = crate::scheduler::LeaseFence::from(&fixture.root_lease.reservation);
+    let (journal, operation) = fixture
+        .runtime
+        .execution_journal_with_native_work(fixture.root, &fence, OperationId::new(), &work)
+        .await?;
+    let backend = Arc::new(ScriptedSearchProvider::new([ScriptedSearch {
+        request: SearchRequest {
+            query: "native query".into(),
+            max_results: 5,
+        },
+        response: None,
+        error: Some("scripted search unavailable".into()),
+    }])?);
+    let mut source = crate::tool::ToolRegistry::default();
+    source.register(
+        (web_search(Arc::new(NativeOnly(backend.clone())))?, None),
+        &mut None,
+        None,
+    )?;
+    let (tools, _custody) = source.clone_with_native_work(&work)?;
+    let io = crate::executor::PreparationIo::from_native_work(&work)?;
+    let call = ToolInvocation {
+        operation_id: operation,
+        ..invocation()
+    };
+    let context = ToolContext::new(task, operation, &call.call_id, Some(&io))?;
+    let tool = tools.get("web_search", Some("1"), Some(&io))?.unwrap();
+    let runner = crate::durable_tool::DurableToolRunner::new(&tools, journal.clone(), Some(&work))?;
+    for reconcile_only in [false, true] {
+        let outcome = runner
+            .run(
+                fixture.root,
+                &tool.definition,
+                &call,
+                &context,
+                Some(&work),
+                reconcile_only,
+            )?
+            .await?;
+        assert!(matches!(outcome.0, crate::Outcome::Failed { ref message }
+            if message == crate::executor::ToolFailureKind::ExecutorRejected.message()));
+        assert!(outcome.1.unwrap().work().shares_ledger(&work));
+        assert_eq!(backend.remaining(), 0);
+    }
+    let records = journal.replay(operation, 0, 64, Some(&io))?.await?;
+    assert!(matches!(records.as_slice(), [_, started, failed]
+    if matches!(started.event, crate::executor::ExecutionEvent::ToolStarted { .. })
+    && matches!(failed.event, crate::executor::ExecutionEvent::ToolFailed {
+        reason: crate::executor::ToolFailureKind::ExecutorRejected, ..
+    })));
     Ok(())
 }

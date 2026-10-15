@@ -79,7 +79,7 @@ impl HttpSearch {
             // credentials, headers, or a query-bearing URL.
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if work.is_some() {
-                return Err(super::error(work, "search HTTP request rejected"));
+                return Err(super::rejection(work, "search HTTP request rejected"));
             }
             return Err(Error::Invalid(format!(
                 "search HTTP status {}",
@@ -90,7 +90,7 @@ impl HttpSearch {
             .content_length()
             .is_some_and(|n| n > MAXIMUM_RESPONSE_BYTES as u64)
         {
-            return Err(super::error(work, "search response exceeds byte limit"));
+            return Err(super::rejection(work, "search response exceeds byte limit"));
         }
         let mut custody = crate::tool::edit::allocation(work, std::mem::size_of::<Vec<u8>>())?;
         let mut bytes = Vec::new();
@@ -99,7 +99,7 @@ impl HttpSearch {
             .map_err(|_| transport_error(work, "cannot read search response"))?
         {
             if chunk.len() > MAXIMUM_RESPONSE_BYTES - bytes.len() {
-                return Err(super::error(work, "search response exceeds byte limit"));
+                return Err(super::rejection(work, "search response exceeds byte limit"));
             }
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if let Some(work) = work {

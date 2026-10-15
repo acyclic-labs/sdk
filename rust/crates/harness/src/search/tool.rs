@@ -162,7 +162,7 @@ impl ToolExecutor for SearchExecutor {
                 });
             }
             if response.0.results.len() > input.0.max_results as usize {
-                return Err(super::error(
+                return Err(super::rejection(
                     Some(work),
                     "search backend exceeded result limit",
                 ));

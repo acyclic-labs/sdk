@@ -38,13 +38,13 @@ impl SearchProvider for NativeSearch {
 
 #[tokio::test]
 async fn native_search_dispatch_scenario_executes_projects_and_replays_once() -> Result<()> {
-    for lose_response in [false, true] {
-        dispatch_scenario(lose_response).await?;
+    for (lose_response, rejected) in [(false, false), (true, false), (false, true)] {
+        dispatch_scenario(lose_response, rejected).await?;
     }
     Ok(())
 }
 
-async fn dispatch_scenario(lose_response: bool) -> Result<()> {
+async fn dispatch_scenario(lose_response: bool, rejected: bool) -> Result<()> {
     let fixture = CreationFixture::new_with_grants(&["tool:call:web_search"]).await?;
     let work = NativeMaterializationWork::new(
         acyclic_fs::WorkBudget {
@@ -76,8 +76,8 @@ async fn dispatch_scenario(lose_response: bool) -> Result<()> {
             query: "native query".into(),
             max_results: 5,
         },
-        response: Some(response.clone()),
-        error: None,
+        response: (!rejected).then(|| response.clone()),
+        error: rejected.then(|| "scripted search unavailable".into()),
     }])?);
     let mut source = ToolRegistry::default();
     source.register(
@@ -128,6 +128,45 @@ async fn dispatch_scenario(lose_response: bool) -> Result<()> {
         .settle_tool_call(journal.as_ref(), operation, 0, call.clone(), &mut first)
         .await;
     assert_eq!(backend.remaining(), 0);
+    if rejected {
+        let reason = ToolFailureKind::ExecutorRejected.message();
+        assert!(matches!(dispatched, Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Invalid, reason: actual,
+        }) if actual == reason));
+        assert!(
+            matches!(session.settle_tool_call(journal.as_ref(), operation, 0, call, &mut first).await,
+            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: actual }) if actual == reason)
+        );
+        assert!(first.is_empty());
+        assert_eq!(backend.remaining(), 0);
+        let records = journal.replay(operation, 0, 64, Some(&io))?.await?;
+        assert_eq!(
+            records
+                .iter()
+                .filter(|r| matches!(r.event, ExecutionEvent::ToolStarted { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|r| matches!(
+                    r.event,
+                    ExecutionEvent::ToolFailed {
+                        reason: ToolFailureKind::ExecutorRejected,
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
+        assert!(
+            !records
+                .iter()
+                .any(|r| matches!(r.event, ExecutionEvent::ToolCompleted { .. }))
+        );
+        return Ok(());
+    }
     if lose_response {
         assert!(matches!(dispatched, Err(Error::Indeterminate(id)) if id == operation));
         assert!(

@@ -1,5 +1,8 @@
 use super::*;
 pub(super) fn tool_propagate(error: &Error, io: Option<&PreparationIo>) -> bool {
+    if matches!(error, Error::ToolRejected(_)) {
+        return false;
+    }
     if native_work(io).is_some() {
         return true;
     }

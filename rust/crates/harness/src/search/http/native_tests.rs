@@ -63,6 +63,7 @@ async fn search_native_http_rejections_are_not_uncertain_transport_failures() ->
         for (status, body) in [
             (200, "{}"),
             (200, "invalid json"),
+            (200, r#"{"results":[]"#),
             (200, r#"{"results":"test-only-placeholder"}"#),
             (401, "test-only-placeholder"),
         ] {
@@ -87,6 +88,8 @@ async fn search_native_http_rejections_are_not_uncertain_transport_failures() ->
                 .await
                 .unwrap_err();
             assert_eq!(error.code(), crate::wire::ErrorCode::Invalid, "{error:?}");
+            assert!(matches!(error, Error::ToolRejected(_)), "{error:?}");
+            assert!(!error.is_native_failure());
             assert!(!error.to_string().contains("test-only-placeholder"));
             drop(error);
             assert_eq!(
@@ -106,6 +109,7 @@ async fn search_native_decode_errors_release_their_original_custody() -> Result<
         for body in [
             "{}",
             "invalid json",
+            r#"{"results":[]"#,
             r#"{"results":"test-only-placeholder"}"#,
         ] {
             let work = work(&CancellationToken::new())?;
@@ -120,6 +124,7 @@ async fn search_native_decode_errors_release_their_original_custody() -> Result<
                 codec::tinyfish(body.as_bytes(), 1, Some(&work)).unwrap_err()
             };
             assert_eq!(error.code(), crate::wire::ErrorCode::Invalid);
+            assert!(!error.is_native_failure());
             drop(error);
             assert_eq!(
                 work.live_allocation_bytes(),
@@ -127,6 +132,40 @@ async fn search_native_decode_errors_release_their_original_custody() -> Result<
                 "exa={exa}, body={body}"
             );
         }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn search_native_decode_accounting_failures_are_not_provider_rejections() -> Result<()> {
+    for exa in [true, false] {
+        let work = NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget {
+                items_examined: 0,
+                ..acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024)
+            },
+            &CancellationToken::new(),
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let baseline = work.live_allocation_bytes();
+        let error = if exa {
+            codec::exa(br#"{"results":[]}"#, 1, Some(&work)).unwrap_err()
+        } else {
+            codec::tinyfish(br#"{"results":[]}"#, 1, Some(&work)).unwrap_err()
+        };
+        assert!(
+            matches!(
+                error,
+                Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "JSON exceeds declared structural bound",
+                }
+            ),
+            "{error:?}"
+        );
+        assert!(error.is_native_failure());
+        drop(error);
+        assert_eq!(work.live_allocation_bytes(), baseline);
     }
     Ok(())
 }
@@ -158,12 +197,12 @@ async fn search_native_http_exhaustion_rejects_before_network() -> Result<()> {
             query: "test".into(),
             max_results: 1,
         };
-        assert!(
-            provider
-                .search_with_native_work(&query, &work)?
-                .await
-                .is_err()
-        );
+        let error = provider
+            .search_with_native_work(&query, &work)?
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::NativeWork { .. }));
+        assert!(error.is_native_failure());
         assert!(listener.accept().now_or_never().is_none());
     }
     Ok(())
