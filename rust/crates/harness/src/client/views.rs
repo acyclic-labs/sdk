@@ -11,6 +11,27 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// One decoded record from a platform follow, addressed to its tracked authority.
+/// These are in-process client inputs, not another wire schema.
+pub enum ViewUpdate {
+    /// One provider-neutral model event.
+    Model {
+        /// Conversation owning the event.
+        authority: wire::Authority,
+        /// Exact provider-neutral item.
+        event: ModelEvent,
+    },
+    /// One incremental tool output chunk.
+    ToolOutput {
+        /// Conversation owning the invocation.
+        authority: wire::Authority,
+        /// Stable invocation identity.
+        call_id: String,
+        /// Output accepted by the stream.
+        delta: String,
+    },
+}
+
 /// One conversation's committed transcript and current model tail.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TranscriptView {

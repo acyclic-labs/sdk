@@ -142,11 +142,14 @@ impl<S: ClientStateStore> HarnessClient<S> {
         Ok(())
     }
 
-    /// Opens a replay/follow stream at the durable cut. No sleeps or polling.
+    /// Opens replay/follow at the disposable view cut, retaining the durable cursor.
     pub async fn replay(&mut self) -> Result<()> {
         self.deliveries = Some(
             self.api
-                .replay(self.session.resume(), crate::wire_api::ReplayMode::Follow)
+                .replay(
+                    self.session.replay_request(),
+                    crate::wire_api::ReplayMode::Follow,
+                )
                 .await?,
         );
         Ok(())
@@ -183,7 +186,13 @@ impl<S: ClientStateStore> HarnessClient<S> {
         self.buffered_delivery = Some(self.session.receive_delivery(delivery, before_commit)?);
         // Maintenance can fail after append; retain the committed frame before it runs.
         self.session.compact_if_needed()?;
-        if let Some(delivery) = self.buffered_delivery.as_ref() {
+        if let Some(delivery) = self.buffered_delivery.as_ref()
+            && delivery
+                .authority
+                .as_ref()
+                .and_then(|authority| self.session.cursor(authority))
+                .is_some_and(|cursor| cursor.revision == delivery.through_revision)
+        {
             self.api
                 .acknowledge(wire::Acknowledge {
                     authority: delivery.authority.clone(),
@@ -225,6 +234,45 @@ impl<S: ClientStateStore> HarnessClient<S> {
         let response = self.api.cancel(request.clone()).await?;
         crate::wire_api::validate_cancel_response(&request, &response)?;
         Ok(response)
+    }
+
+    /// Feeds one model delta from the followed task records into shared views.
+    pub fn model_event(
+        &mut self,
+        authority: &wire::Authority,
+        event: crate::model::ModelEvent,
+    ) -> Result<()> {
+        self.session.model_event(authority, event)
+    }
+
+    /// Feeds one tool output chunk from the followed task records into shared views.
+    pub fn tool_output(
+        &mut self,
+        authority: &wire::Authority,
+        call_id: &str,
+        delta: &str,
+    ) -> Result<()> {
+        self.session.tool_output(authority, call_id, delta)
+    }
+
+    /// Consumes one incoming streaming update and publishes it to the same views as replay.
+    /// The source is the caller's platform stream follow; no second transport or journal.
+    pub async fn next_update(
+        &mut self,
+        source: &mut (impl futures::Stream<Item = Result<super::ViewUpdate>> + Unpin),
+    ) -> Result<bool> {
+        let Some(update) = source.next().await.transpose()? else {
+            return Ok(false);
+        };
+        match update {
+            super::ViewUpdate::Model { authority, event } => self.model_event(&authority, event)?,
+            super::ViewUpdate::ToolOutput {
+                authority,
+                call_id,
+                delta,
+            } => self.tool_output(&authority, &call_id, &delta)?,
+        }
+        Ok(true)
     }
 
     /// Shared renderer state and outbox.

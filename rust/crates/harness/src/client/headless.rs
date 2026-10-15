@@ -408,7 +408,7 @@ fn replay_position<S: ClientStateStore>(
             "operation replay boundary identity mismatch".into(),
         ));
     }
-    Ok((cursor.revision, through.revision))
+    Ok((client.session().view_revision(authority), through.revision))
 }
 
 async fn dispatch<S: ClientStateStore>(

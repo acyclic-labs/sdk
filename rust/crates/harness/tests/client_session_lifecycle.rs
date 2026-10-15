@@ -15,12 +15,11 @@ async fn historical_waiting_cannot_settle_a_different_operation() {
         old.events[0].operation_id = "00000000-0000-0000-0000-000000000002".into();
         let mut saved = session();
         if recovered {
-            saved.receive(frame(old)).unwrap();
+            saved.receive(frame(old.clone())).unwrap();
             saved.checkpoint().unwrap();
             saved = ClientSession::open(saved.into_store()).unwrap();
-        } else {
-            sender.unbounded_send(Ok(old)).unwrap();
         }
+        sender.unbounded_send(Ok(old)).unwrap();
         let mut client = HarnessClient::connect(host.clone(), saved).await.unwrap();
         let mut output = Vec::new();
         let mut run = Box::pin(run_headless(&mut client, command(), target(), &mut output));
@@ -53,10 +52,7 @@ async fn historical_waiting_cannot_settle_a_different_operation() {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(
-            revisions,
-            if recovered { vec![2, 3] } else { vec![1, 2, 3] }
-        );
+        assert_eq!(revisions, vec![1, 2, 3]);
     }
 }
 

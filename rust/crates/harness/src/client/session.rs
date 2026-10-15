@@ -24,7 +24,7 @@ pub struct SessionRecord {
     pub checkpoint: Option<SessionCheckpoint>,
 }
 
-/// Version-bound local projection, cursor and pending command recovery cut.
+/// Version-bound durable cursor and pending command recovery cut.
 #[derive(Clone, PartialEq, prost::Message)]
 pub struct SessionCheckpoint {
     /// Protocol identity that produced this state.
@@ -36,9 +36,6 @@ pub struct SessionCheckpoint {
     /// Exact pending envelopes in submission order.
     #[prost(message, repeated, tag = "3")]
     pub pending: Vec<wire::CommandEnvelope>,
-    /// The same renderer state paired with these cursors.
-    #[prost(bytes = "vec", tag = "4")]
-    pub views_json: Vec<u8>,
 }
 
 /// Private, single-writer durable journal. A failed append must leave no record.
@@ -72,7 +69,7 @@ impl ClientStateStore for MemoryClientState {
     }
 }
 
-/// One client identity's durable outbox, cursor and renderer state.
+/// Durable outbox and cursors with disposable renderer state.
 pub struct ClientSession<S> {
     store: S,
     cursors: BTreeMap<String, wire::ReplayCursor>,
@@ -80,11 +77,13 @@ pub struct ClientSession<S> {
     operations: HashMap<String, usize>,
     idempotency: HashSet<(String, String)>,
     views: ClientViews,
+    view_revisions: BTreeMap<String, u64>,
     tail_records: usize,
 }
 
 impl<S: ClientStateStore> ClientSession<S> {
-    /// Recovers the projection and pending commands from the same journal as its cursors.
+    /// Recovers durable cursors and pending commands. Disposable views rebuild from
+    /// owner history when replay opens; the journal never snapshots a transcript.
     pub fn open(mut store: S) -> Result<Self> {
         let records = store.load()?;
         let mut session = Self {
@@ -94,6 +93,7 @@ impl<S: ClientStateStore> ClientSession<S> {
             operations: HashMap::new(),
             idempotency: HashSet::new(),
             views: ClientViews::default(),
+            view_revisions: BTreeMap::new(),
             tail_records: 0,
         };
         for mut record in records {
@@ -110,7 +110,7 @@ impl<S: ClientStateStore> ClientSession<S> {
         Ok(session)
     }
 
-    /// Adds the initial authority/generation cut once; reconnect uses the saved cut.
+    /// Adds an authority/generation once; reconnect retains its durable cut.
     pub fn track(&mut self, cursor: wire::ReplayCursor) -> Result<()> {
         self.record(
             &SessionRecord {
@@ -203,6 +203,59 @@ impl<S: ClientStateStore> ClientSession<S> {
         self.cursors.get(&authority_key(authority))
     }
 
+    /// Current disposable projection cut. It starts at zero after reopening.
+    #[must_use]
+    pub fn view_revision(&self, authority: &wire::Authority) -> u64 {
+        self.view_revisions
+            .get(&authority_key(authority))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Snapshot-plus-follow starts at the projection cut, retaining durable acknowledgements.
+    #[must_use]
+    pub fn replay_request(&self) -> wire::ResumeRequest {
+        let mut request = self.resume();
+        for cursor in &mut request.cursors {
+            if let Some(authority) = &cursor.authority {
+                cursor.revision = self.view_revision(authority);
+            }
+        }
+        request
+    }
+
+    /// Folds an incoming model item into the session's shared renderer state.
+    pub fn model_event(
+        &mut self,
+        authority: &wire::Authority,
+        event: crate::model::ModelEvent,
+    ) -> Result<()> {
+        self.require_tracked(authority)?;
+        self.views.model_event(authority, event)
+    }
+
+    /// Folds an incoming tool chunk without a separate renderer-owned registry.
+    pub fn tool_output(
+        &mut self,
+        authority: &wire::Authority,
+        call_id: &str,
+        delta: &str,
+    ) -> Result<()> {
+        self.require_tracked(authority)?;
+        self.views.tool_output(authority, call_id, delta);
+        Ok(())
+    }
+
+    fn require_tracked(&self, authority: &wire::Authority) -> Result<()> {
+        valid_authority(Some(authority))?;
+        if !self.cursors.contains_key(&authority_key(authority)) {
+            return Err(Error::Conflict(
+                "streaming authority was not requested".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Exact envelopes awaiting definitive admission; never regenerate their identities.
     pub fn pending(&self) -> impl Iterator<Item = &wire::CommandEnvelope> {
         self.pending.iter().filter_map(Option::as_ref)
@@ -287,7 +340,7 @@ impl<S: ClientStateStore> ClientSession<S> {
         Ok(())
     }
 
-    /// Replaces the journal prefix while retaining the exact cursor/projection pair.
+    /// Replaces recovery metadata without visiting or serializing disposable views.
     pub fn checkpoint(&mut self) -> Result<()> {
         let checkpoint = SessionRecord {
             request: None,
@@ -296,8 +349,6 @@ impl<S: ClientStateStore> ClientSession<S> {
                 protocol: Some(current_protocol()),
                 cursors: self.cursors.values().cloned().collect(),
                 pending: self.pending().cloned().collect(),
-                views_json: serde_json::to_vec(&self.views)
-                    .map_err(|error| Error::Storage(error.to_string()))?,
             }),
         };
         self.store.replace(&checkpoint)?;
@@ -342,8 +393,6 @@ impl<S: ClientStateStore> ClientSession<S> {
                 return Err(Error::Storage("invalid checkpoint cursor".into()));
             }
         }
-        let views = serde_json::from_slice(&checkpoint.views_json)
-            .map_err(|error| Error::Storage(error.to_string()))?;
         let mut operations = HashMap::with_capacity(checkpoint.pending.len());
         let mut idempotency = HashSet::with_capacity(checkpoint.pending.len());
         for (index, command) in checkpoint.pending.iter().enumerate() {
@@ -362,7 +411,8 @@ impl<S: ClientStateStore> ClientSession<S> {
         self.pending = checkpoint.pending.into_iter().map(Some).collect();
         self.operations = operations;
         self.idempotency = idempotency;
-        self.views = views;
+        self.views = ClientViews::default();
+        self.view_revisions.clear();
         self.tail_records = 0;
         Ok(())
     }
@@ -448,18 +498,20 @@ impl<S: ClientStateStore> ClientSession<S> {
         if revision != delivery.through_revision {
             return Err(Error::Conflict("delivery is not contiguous".into()));
         }
-        if delivery.through_revision <= cursor.revision {
-            before_commit(
-                record
-                    .response
-                    .as_ref()
-                    .ok_or_else(|| Error::Storage("delivery record missing".into()))?,
-            )?;
-            return Ok(());
-        }
-        if delivery.from_revision != cursor.revision {
+        let durable_revision = cursor.revision;
+        let view_revision = self.view_revision(authority);
+        if delivery.through_revision > durable_revision && delivery.from_revision > durable_revision
+        {
             return Err(Error::Conflict(
                 "delivery does not follow durable cursor".into(),
+            ));
+        }
+        if persist
+            && delivery.through_revision > view_revision
+            && delivery.from_revision > view_revision
+        {
+            return Err(Error::Conflict(
+                "delivery does not follow view cursor".into(),
             ));
         }
         before_commit(
@@ -468,14 +520,21 @@ impl<S: ClientStateStore> ClientSession<S> {
                 .as_ref()
                 .ok_or_else(|| Error::Storage("delivery record missing".into()))?,
         )?;
-        if persist {
+        if persist && delivery.through_revision > durable_revision {
             self.append_record(record)?;
         }
-        for (event, payload) in delivery.events.iter().zip(payloads) {
-            self.views.apply(authority, &event.operation_id, payload);
+        // Recovery reads only durable metadata. Replaying history rehydrates the
+        // projection without re-appending or moving the durable cursor backwards.
+        if persist && delivery.through_revision > view_revision {
+            for (event, payload) in delivery.events.iter().zip(payloads) {
+                if event.revision > view_revision {
+                    self.views.apply(authority, &event.operation_id, payload);
+                }
+            }
+            self.view_revisions.insert(key.clone(), revision);
         }
         if let Some(cursor) = self.cursors.get_mut(&key) {
-            cursor.revision = revision;
+            cursor.revision = cursor.revision.max(revision);
         }
         Ok(())
     }

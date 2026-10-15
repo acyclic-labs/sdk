@@ -450,7 +450,13 @@ fn checkpoint_bounds_recovery_after_ten_thousand_deliveries() {
     let records = store.load().unwrap();
     assert!(records.len() <= 64, "{} recovery records", records.len());
     assert!(records[0].checkpoint.is_some());
-    let recovered = ClientSession::open(store).unwrap();
+    let mut recovered = ClientSession::open(store).unwrap();
+    assert_eq!(recovered.views(), &Default::default());
+    for revision in 0..10_000 {
+        recovered
+            .receive(frame(delivery(revision, LifecycleState::Active)))
+            .unwrap();
+    }
     assert_eq!(recovered.views(), &views);
     assert_eq!(recovered.resume().cursors[0].revision, 10_000);
     assert_eq!(
@@ -485,7 +491,12 @@ fn native_journal_recovers_a_torn_tail_and_checkpoint_replaces_the_prefix() {
     let mut store = FileClientState::open(&path).unwrap();
     assert_eq!(store.load().unwrap().len(), 1);
     assert_eq!(std::fs::metadata(&path).unwrap().len(), length);
-    let recovered = ClientSession::open(store).unwrap();
+    let mut recovered = ClientSession::open(store).unwrap();
+    for revision in 0..128 {
+        recovered
+            .receive(frame(delivery(revision, LifecycleState::Active)))
+            .unwrap();
+    }
     assert_eq!(recovered.views(), &expected);
     assert_eq!(recovered.resume().cursors[0].revision, 128);
     assert_eq!(recovered.pending().count(), 1);

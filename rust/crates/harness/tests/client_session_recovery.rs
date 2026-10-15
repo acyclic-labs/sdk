@@ -344,9 +344,17 @@ fn fork_lineage_and_child_lifecycle_are_independent_of_cross_authority_order() {
         assert_eq!(child.parent, Some(seed.parent.clone()));
         assert_eq!(child.status, LifecycleState::Active);
         assert_eq!(child.reason.as_deref(), Some("working"));
-        state.checkpoint().unwrap();
         let views = state.views().clone();
-        let recovered = ClientSession::open(state.into_store()).unwrap();
+        let mut store = state.into_store();
+        let history = store.load().unwrap();
+        let mut state = ClientSession::open(store).unwrap();
+        state.checkpoint().unwrap();
+        let mut recovered = ClientSession::open(state.into_store()).unwrap();
+        for record in history {
+            if let Some(response) = record.response {
+                recovered.receive(response).unwrap();
+            }
+        }
         assert_eq!(recovered.views(), &views);
     }
 }

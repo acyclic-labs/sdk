@@ -11,7 +11,7 @@ use std::{
 
 const HEADER_BYTES: usize = 68;
 
-/// File-backed cursor, projection and outbox recovery. Keep its directory private.
+/// File-backed cursor and outbox recovery. Keep its directory private.
 pub struct FileClientState {
     file: File,
     _lock: File,
@@ -27,7 +27,32 @@ impl FileClientState {
     /// Locks a stable sibling `.lock` file before opening the journal data.
     /// Keep the lock file in place across checkpoint replacement and client exit.
     pub fn open(path: &Path) -> Result<Self> {
-        let path = std::path::absolute(path).map_err(storage)?;
+        let absolute = std::path::absolute(path).map_err(storage)?;
+        let path = match absolute.canonicalize() {
+            Ok(path) => path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // Resolve directory aliases even before the journal exists. A dangling
+                // file symlink is not a new journal: replacing it would change its target.
+                if absolute.symlink_metadata().is_ok() {
+                    return Err(storage("journal alias has no target"));
+                }
+                let parent = absolute
+                    .parent()
+                    .ok_or_else(|| storage("journal parent missing"))?;
+                let name = absolute
+                    .file_name()
+                    .ok_or_else(|| storage("journal name missing"))?;
+                parent.canonicalize().map_err(storage)?.join(name)
+            }
+            Err(error) => return Err(storage(error)),
+        };
+        #[cfg(unix)]
+        if let Ok(metadata) = path.metadata() {
+            use std::os::unix::fs::MetadataExt;
+            if metadata.nlink() != 1 {
+                return Err(storage("journal hard links are not supported"));
+            }
+        }
         let mut lock_path = path.as_os_str().to_owned();
         lock_path.push(".lock");
         let lock = open_file(Path::new(&lock_path))?;

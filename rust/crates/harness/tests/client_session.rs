@@ -94,7 +94,11 @@ fn replay_recovers_projection_and_cursor_and_deduplicates() {
         .receive(frame(delivery(0, LifecycleState::Completed)))
         .unwrap();
     let views = original.views().clone();
-    let recovered = ClientSession::open(original.into_store()).unwrap();
+    let mut recovered = ClientSession::open(original.into_store()).unwrap();
+    assert_eq!(recovered.views(), &Default::default());
+    recovered
+        .receive(frame(delivery(0, LifecycleState::Completed)))
+        .unwrap();
     assert_eq!(recovered.views(), &views);
     assert_eq!(recovered.resume().cursors[0].revision, 1);
     assert_eq!(
@@ -489,7 +493,10 @@ async fn reconnect_resends_verbatim_and_resumes_the_committed_cut() {
         .await
         .unwrap();
     client.replay().await.unwrap();
-    assert_eq!(host.resumes.lock().unwrap()[1].cursors[0].revision, 1);
+    assert_eq!(client.session().resume().cursors[0].revision, 1);
+    assert_eq!(host.resumes.lock().unwrap()[1].cursors[0].revision, 0);
+    client.next_delivery().await.unwrap().unwrap();
+    assert_eq!(client.session().resume().cursors[0].revision, 1);
     client.next_delivery().await.unwrap().unwrap();
     assert!(client.next_delivery().await.unwrap().is_none());
     assert_eq!(client.session().resume().cursors[0].revision, 2);
@@ -641,3 +648,6 @@ mod recovery;
 
 #[path = "client_session_lifecycle.rs"]
 mod lifecycle;
+
+#[path = "client_session_review.rs"]
+mod review;
