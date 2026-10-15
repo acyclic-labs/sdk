@@ -88,3 +88,23 @@ fn user_overrides_drive_dispatch_help_and_disabling() -> Result<(), Box<dyn std:
     assert!(InputKeymap::from_json(r#"{"Ctrl+l":"typo"}"#).is_err());
     Ok(())
 }
+
+#[test]
+fn super_overrides_share_canonical_dispatch_and_help() -> Result<(), Box<dyn std::error::Error>> {
+    let map = InputKeymap::from_json(r#"{"Super+k":"Home","Super+x Super+e":"Ctrl+x Ctrl+e"}"#)?;
+    for modifiers in [M::SUPER, M::CONTROL] {
+        assert_eq!(
+            decode_key(KeyEvent::new(KeyCode::Char('k'), modifiers), &map),
+            Some(DecodedKey::Action {
+                action: Action::Move(Motion::LineStart),
+                select: false
+            })
+        );
+    }
+    assert_eq!(map.resolve("Super+k"), map.resolve("Ctrl+k"));
+    assert!(map.help().contains("Ctrl+k\tLine start"));
+    assert_eq!(map.resolve("Super+x Super+e"), map.resolve("Ctrl+x Ctrl+e"));
+    assert_eq!(InputKeymap::from_json(&map.to_json()?)?, map);
+    assert!(InputKeymap::from_json(r#"{"Super+k":"Home","Ctrl+k":"End"}"#).is_err());
+    Ok(())
+}

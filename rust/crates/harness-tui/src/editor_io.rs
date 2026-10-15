@@ -1,5 +1,5 @@
+use crate::editor_args::editor_command;
 use std::{
-    ffi::OsString,
     io::{self, Write},
     path::Path,
 };
@@ -51,18 +51,6 @@ pub fn prepare_image(width: u32, height: u32, rgba: Vec<u8>) -> io::Result<Clipb
         width,
         height,
     })
-}
-
-/// Parse an explicitly configured $EDITOR command, preserving quoted arguments.
-pub fn editor_command(command: &str) -> io::Result<(OsString, Vec<OsString>)> {
-    let mut words = shell_words::split(command)
-        .map_err(io::Error::other)?
-        .into_iter();
-    let program = words
-        .next()
-        .filter(|word| !word.is_empty())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "$EDITOR is empty"))?;
-    Ok((program.into(), words.map(OsString::from).collect()))
 }
 
 /// Invoke $EDITOR on a caller-selected private-volume scratch file. The host

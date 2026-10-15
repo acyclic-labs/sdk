@@ -3,6 +3,8 @@
 mod buffer;
 mod editor;
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
+mod editor_args;
+#[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
 mod editor_io;
 mod history;
 #[cfg(feature = "tui")]
@@ -26,7 +28,9 @@ mod widget;
 
 pub use editor::{Editor, Motion};
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
-pub use editor_io::{ClipboardContent, edit_external, editor_command, prepare_image};
+pub use editor_args::{editor_command, unix_editor_command, windows_editor_command};
+#[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
+pub use editor_io::{ClipboardContent, edit_external, prepare_image};
 pub use history::PromptHistory;
 #[cfg(feature = "tui")]
 pub use input_keymap::InputKeymap;

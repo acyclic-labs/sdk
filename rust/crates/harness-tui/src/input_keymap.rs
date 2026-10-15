@@ -1,3 +1,4 @@
+use crate::key_event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::{Binding, KEYMAP};
 use std::{collections::BTreeMap, io, path::Path};
 
@@ -11,15 +12,32 @@ pub struct InputKeymap {
 impl InputKeymap {
     /// Parse and validate an override file without changing any bindings on error.
     pub fn from_json(json: &str) -> io::Result<Self> {
-        let overrides: BTreeMap<String, String> = serde_json::from_str(json)
+        let raw: BTreeMap<String, String> = serde_json::from_str(json)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        for (source, target) in &overrides {
-            if !valid_chord(source)
-                || !target.is_empty() && !KEYMAP.iter().any(|b| b.chord == target)
+        let invalid = || {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid or conflicting keymap chord",
+            )
+        };
+        let mut overrides = BTreeMap::new();
+        for (source, target) in raw {
+            let source = canonical_chord(&source).ok_or_else(invalid)?;
+            let target = if target.is_empty() {
+                target
+            } else {
+                canonical_chord(&target).ok_or_else(invalid)?
+            };
+            if !target.is_empty() && !KEYMAP.iter().any(|b| b.chord == target) {
+                return Err(invalid());
+            }
+            if overrides
+                .insert(source, target.clone())
+                .is_some_and(|old| old != target)
             {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "invalid keymap chord or action",
+                    "conflicting canonical keymap chords",
                 ));
             }
         }
@@ -43,7 +61,11 @@ impl InputKeymap {
 
     /// Resolve a chord using the same action data as generated help.
     pub fn resolve(&self, chord: &str) -> Option<Binding> {
-        let target = self.overrides.get(chord).map_or(chord, String::as_str);
+        let chord = canonical_chord(chord)?;
+        let target = self
+            .overrides
+            .get(&chord)
+            .map_or(chord.as_str(), String::as_str);
         KEYMAP
             .iter()
             .find(|binding| binding.chord == target)
@@ -51,7 +73,9 @@ impl InputKeymap {
     }
 
     pub(crate) fn disabled(&self, chord: &str) -> bool {
-        self.overrides.get(chord).is_some_and(String::is_empty)
+        canonical_chord(chord)
+            .and_then(|chord| self.overrides.get(&chord))
+            .is_some_and(String::is_empty)
     }
 
     pub(crate) fn has_prefix(&self, prefix: &str) -> bool {
@@ -82,32 +106,51 @@ impl InputKeymap {
     }
 }
 
-fn valid_chord(chord: &str) -> bool {
+fn canonical_chord(chord: &str) -> Option<String> {
     let keys: Vec<_> = chord.split(' ').collect();
-    !keys.is_empty()
-        && keys.len() <= 2
-        && keys.into_iter().all(|mut key| {
-            for modifier in ["Ctrl+", "Alt+", "Shift+", "Super+"] {
-                key = key.strip_prefix(modifier).unwrap_or(key);
+    if keys.is_empty() || keys.len() > 2 {
+        return None;
+    }
+    keys.into_iter()
+        .map(|mut key| {
+            let mut modifiers = KeyModifiers::NONE;
+            for (prefix, modifier) in [
+                ("Ctrl+", KeyModifiers::CONTROL),
+                ("Alt+", KeyModifiers::ALT),
+                ("Shift+", KeyModifiers::SHIFT),
+                ("Super+", KeyModifiers::SUPER),
+            ] {
+                if let Some(rest) = key.strip_prefix(prefix) {
+                    key = rest;
+                    modifiers.insert(modifier);
+                }
             }
-            matches!(
-                key,
-                "Left"
-                    | "Right"
-                    | "Up"
-                    | "Down"
-                    | "Home"
-                    | "End"
-                    | "Backspace"
-                    | "Delete"
-                    | "Enter"
-                    | "Tab"
-                    | "Esc"
-                    | "PageUp"
-                    | "PageDown"
-            ) || key.chars().count() == 1
-                && key
-                    .chars()
-                    .all(|c| !c.is_control() && !c.is_uppercase() && c != '+')
+            let code = match key {
+                "Left" => KeyCode::Left,
+                "Right" => KeyCode::Right,
+                "Up" => KeyCode::Up,
+                "Down" => KeyCode::Down,
+                "Home" => KeyCode::Home,
+                "End" => KeyCode::End,
+                "Backspace" => KeyCode::Backspace,
+                "Delete" => KeyCode::Delete,
+                "Enter" => KeyCode::Enter,
+                "Tab" => KeyCode::Tab,
+                "Esc" => KeyCode::Esc,
+                "PageUp" => KeyCode::PageUp,
+                "PageDown" => KeyCode::PageDown,
+                _ => {
+                    let mut chars = key.chars();
+                    let character = chars.next()?;
+                    if chars.next().is_some() || character.is_control() || character.is_uppercase()
+                    {
+                        return None;
+                    }
+                    KeyCode::Char(character)
+                }
+            };
+            crate::key_decode::key_chord(KeyEvent::new(code, modifiers))
         })
+        .collect::<Option<Vec<_>>>()
+        .map(|keys| keys.join(" "))
 }

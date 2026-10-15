@@ -1,7 +1,7 @@
 use acyclic_harness_tui::key_event::{KeyCode, KeyEvent, KeyModifiers};
 use acyclic_harness_tui::{
-    ClipboardContent, InputKeymap, KEYMAP, PromptInput, editor_command, format_history,
-    parse_history, prepare_image,
+    ClipboardContent, InputKeymap, KEYMAP, PromptInput, format_history, parse_history,
+    prepare_image, unix_editor_command,
 };
 use proptest::prelude::*;
 
@@ -26,7 +26,7 @@ proptest! {
     fn editor_argument_quoting_preserves_original_arguments(args in prop::collection::vec("[a-zA-Z0-9 _/.-]{0,12}", 0..6)) {
         let words: Vec<&str> = std::iter::once("editor").chain(args.iter().map(String::as_str)).collect();
         let command = shell_words::join(words);
-        let (program, restored) = editor_command(&command)?;
+        let (program, restored) = unix_editor_command(&command)?;
         prop_assert_eq!(program, std::ffi::OsString::from("editor"));
         prop_assert_eq!(restored, args.iter().map(std::ffi::OsString::from).collect::<Vec<_>>());
 
