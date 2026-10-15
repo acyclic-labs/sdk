@@ -1,5 +1,5 @@
 //! G controls use real loopback HTTP, the production protocol boundary and disk-backed execution/interaction owners.
-use super::{LocalJournal, journal, request};
+use super::{LocalJournal, hold_io_clock, journal, no_more_requests, request, workspace};
 use acyclic_harness::{
     Capabilities, Error, InteractionId, OperationId, Outcome, Result,
     context::{ContextPipeline, ModelContextCapacity, ModelTokenCount},
@@ -200,11 +200,12 @@ fn executor(model: Arc<ScriptedModelProvider>, scope: RuntimeScope) -> Result<St
     .with_tool_authority(scope, None)
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn endpoint_sampling_lost_ack_reopens_without_model_redispatch_and_pins_request() -> Result<()>
 {
+    let _clock = hold_io_clock();
     for lose_ack in [false, true] {
-        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let root = workspace()?;
         let (disk, issuer, _) = journal(root.path(), true).await?;
         let scope = RuntimeScope::new(
             Capabilities::new(["model:generate", "context:build", "interaction:route"]),
@@ -238,6 +239,7 @@ async fn endpoint_sampling_lost_ack_reopens_without_model_redispatch_and_pins_re
             .local_addr()
             .map_err(|error| Error::Storage(error.to_string()))?;
         let callback_message = sampling(operation).message;
+        let (settled, completion) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
             let (mut call, _) = listener
                 .accept()
@@ -277,12 +279,7 @@ async fn endpoint_sampling_lost_ack_reopens_without_model_redispatch_and_pins_re
             }
             drop(acknowledgement);
             drop(call);
-            assert!(
-                tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
-                    .await
-                    .is_err()
-            );
-            Ok::<_, Error>(())
+            no_more_requests(listener, completion).await
         });
         let transport: Arc<dyn McpToolTransport> = Arc::new(HttpMcpTransport::new(
             Arc::new(NativeMcpHttpProvider::new(
@@ -308,6 +305,7 @@ async fn endpoint_sampling_lost_ack_reopens_without_model_redispatch_and_pins_re
         let observed = transport
             .call(tool.operation_id(), "echo", json!({}), Some(tool.clone()))
             .await;
+        let _ = settled.send(());
         if lose_ack {
             assert!(matches!(observed, Err(Error::Indeterminate(_))));
         } else {
@@ -361,7 +359,7 @@ async fn endpoint_sampling_lost_ack_reopens_without_model_redispatch_and_pins_re
 
 #[tokio::test]
 async fn form_callback_replays_owner_answer_and_rejects_changed_schema() -> Result<()> {
-    let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let root = workspace()?;
     let (disk, issuer, _) = journal(root.path(), true).await?;
     let scope = RuntimeScope::new(
         Capabilities::new(["model:generate", "context:build", "interaction:route"]),
@@ -411,8 +409,9 @@ async fn form_callback_replays_owner_answer_and_rejects_changed_schema() -> Resu
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn real_resource_prompt_endpoint_and_schema_negative_controls() -> Result<()> {
+    let _clock = hold_io_clock();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(|error| Error::Storage(error.to_string()))?;
@@ -567,9 +566,10 @@ async fn real_resource_prompt_endpoint_and_schema_negative_controls() -> Result<
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn remote_callback_cancellation_drops_recorded_model_without_replay() -> Result<()> {
-    let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let _clock = hold_io_clock();
+    let root = workspace()?;
     let (disk, issuer, _) = journal(root.path(), true).await?;
     let scope = RuntimeScope::new(
         Capabilities::new(["model:generate", "context:build", "interaction:route"]),
@@ -611,6 +611,7 @@ async fn remote_callback_cancellation_drops_recorded_model_without_replay() -> R
     let address = listener
         .local_addr()
         .map_err(|error| Error::Storage(error.to_string()))?;
+    let (settled, mut completion) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         let (mut socket, _) = listener
             .accept()
@@ -623,9 +624,10 @@ async fn remote_callback_cancellation_drops_recorded_model_without_replay() -> R
             .write_all(format!("{:x}\r\n{frame}\r\n", frame.len()).as_bytes())
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
-        tokio::time::timeout(std::time::Duration::from_secs(2), dispatched.notified())
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?;
+        tokio::select! {
+            _ = dispatched.notified() => {},
+            _ = &mut completion => return Err(Error::Invalid("transport completed before model dispatch".into())),
+        }
         let cancelled = format!(
             "data: {}\n\n",
             json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"sample","reason":"fixture cancellation"}})
@@ -634,12 +636,7 @@ async fn remote_callback_cancellation_drops_recorded_model_without_replay() -> R
             .write_all(format!("{:x}\r\n{cancelled}\r\n0\r\n\r\n", cancelled.len()).as_bytes())
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
-                .await
-                .is_err()
-        );
-        Ok::<_, Error>(())
+        no_more_requests(listener, completion).await
     });
     let transport = HttpMcpTransport::new(
         Arc::new(NativeMcpHttpProvider::new(
@@ -651,9 +648,14 @@ async fn remote_callback_cancellation_drops_recorded_model_without_replay() -> R
         2000,
         Some((policy(), Arc::clone(&callbacks))),
     )?;
-    assert!(
-        matches!(transport.call(tool.operation_id(), "echo", json!({}), Some(tool.clone())).await, Err(Error::Indeterminate(id)) if id == operation)
-    );
+    let observed = transport
+        .call(tool.operation_id(), "echo", json!({}), Some(tool.clone()))
+        .await;
+    let _ = settled.send(());
+    server
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))??;
+    assert!(matches!(observed, Err(Error::Indeterminate(id)) if id == operation));
     let callback = sampling(operation);
     let records = disk.replay(callback.validate()?.0, 0, 64, None)?.await?;
     assert!(records.iter().any(|record| matches!(
@@ -668,9 +670,6 @@ async fn remote_callback_cancellation_drops_recorded_model_without_replay() -> R
     assert_sampling_text(&model)?;
     assert_eq!(model.reconciliations().len(), 1);
     assert!(model.recoveries().is_empty());
-    server
-        .await
-        .map_err(|error| Error::Storage(error.to_string()))??;
     Ok(())
 }
 
@@ -684,7 +683,7 @@ async fn sampling_media_uses_scoped_filesystem_publication_and_native_policy() -
         runtime::ContentBindings,
     };
     for granted in [false, true] {
-        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let root = workspace()?;
         let (disk, issuer, signed) = journal(root.path(), true).await?;
         let provider = ProviderRef::new(
             "mcp-fault".into(),

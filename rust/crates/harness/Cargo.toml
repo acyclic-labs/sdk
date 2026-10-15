@@ -125,7 +125,7 @@ tracing-subscriber.workspace = true
 proptest.workspace = true
 acyclic-stream = { version = "=0.2.0", path = "../stream" }
 tempfile = "3.27.0"
-tokio.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 
 [dev-dependencies]
 acyclic-harness = { version = "=0.2.0", path = ".", features = ["test-support"] }
