@@ -1,6 +1,8 @@
 syntax = "proto3";
 package acyclic.filesystem.v2;
 
+import "validation/v1/options.proto";
+
 import "protocol/v1/protocol.proto";
 
 option go_package = "github.com/acyclic-labs/sdk/go/gen/filesystem/v2;filesystemv2";
@@ -682,34 +684,34 @@ message CancelResponse {
 }
 
 service FilesystemService {
-  rpc Handshake(HandshakeRequest) returns (HandshakeResponse);
-  rpc CreateWorkspace(CreateWorkspaceRequest) returns (WorkspaceResponse);
-  rpc OpenWorkspace(OpenWorkspaceRequest) returns (WorkspaceResponse);
-  rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (MutationResponse);
-  rpc GetHead(GetHeadRequest) returns (GenerationResponse);
-  rpc GetGeneration(GetGenerationRequest) returns (GenerationResponse);
-  rpc Read(ReadRequest) returns (ReadResponse);
-  rpc Stat(StatRequest) returns (StatResponse);
-  rpc ListDirectory(ListDirectoryRequest) returns (ListDirectoryResponse);
-  rpc ReadLink(ReadLinkRequest) returns (ReadResponse);
-  rpc PlanExtents(PlanExtentsRequest) returns (PlanExtentsResponse);
-  rpc ApplyTransaction(ApplyTransactionRequest) returns (MutationResponse);
-  rpc RebaseTransaction(RebaseTransactionRequest) returns (RebaseTransactionResponse);
-  rpc ForkWorkspace(ForkWorkspaceRequest) returns (WorkspaceResponse);
-  rpc Diff(DiffRequest) returns (DiffResponse);
-  rpc Rebase(RebaseRequest) returns (RebaseResponse);
-  rpc PlanJoin(PlanJoinRequest) returns (JoinPlan);
-  rpc ApplyJoin(ApplyJoinRequest) returns (JoinResponse);
-  rpc Checkpoint(RetainGenerationRequest) returns (RetainGenerationResponse);
-  rpc Pin(RetainGenerationRequest) returns (RetainGenerationResponse);
-  rpc Export(ExportRequest) returns (stream ExportChunk);
-  rpc Import(stream ImportChunk) returns (ImportResponse);
-  rpc IssueMountCredential(CredentialRequest) returns (CredentialResponse);
-  rpc IssueS3Credential(CredentialRequest) returns (CredentialResponse);
-  rpc GetSourceState(SourceStateRequest) returns (SourceResponse);
-  rpc ReconcileSource(SourceOperationRequest) returns (SourceResponse);
-  rpc RescanSource(SourceOperationRequest) returns (SourceResponse);
-  rpc SealSource(SourceOperationRequest) returns (SourceResponse);
-  rpc Observe(ObserveRequest) returns (ObserveResponse);
-  rpc Cancel(CancelRequest) returns (CancelResponse);
+  rpc Handshake(HandshakeRequest) returns (HandshakeResponse) { option (acyclic.validation.v1.auth) = { extractor: "fs.handshake" }; }
+  rpc CreateWorkspace(CreateWorkspaceRequest) returns (WorkspaceResponse) { option (acyclic.validation.v1.auth) = { extractor: "fs.create-volume" }; }
+  rpc OpenWorkspace(OpenWorkspaceRequest) returns (WorkspaceResponse) { option (acyclic.validation.v1.auth) = { extractor: "fs.list-volume" }; }
+  rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (MutationResponse) { option (acyclic.validation.v1.auth) = { extractor: "fs.delete-volume" }; }
+  rpc GetHead(GetHeadRequest) returns (GenerationResponse) { option (acyclic.validation.v1.auth) = { extractor: "fs.list-volume" }; }
+  rpc GetGeneration(GetGenerationRequest) returns (GenerationResponse) { option (acyclic.validation.v1.auth) = { extractor: "fs.read-history" }; }
+  rpc Read(ReadRequest) returns (ReadResponse) { option (acyclic.validation.v1.auth) = { extractor: "fs.read-path" }; }
+  rpc Stat(StatRequest) returns (StatResponse) { option (acyclic.validation.v1.auth) = { extractor: "fs.list-path" }; }
+  rpc ListDirectory(ListDirectoryRequest) returns (ListDirectoryResponse) { option (acyclic.validation.v1.auth) = { extractor: "fs.list-path" }; }
+  rpc ReadLink(ReadLinkRequest) returns (ReadResponse) { option (acyclic.validation.v1.auth) = { extractor: "fs.read-path" }; }
+  rpc PlanExtents(PlanExtentsRequest) returns (PlanExtentsResponse) { option (acyclic.validation.v1.auth) = { extractor: "fs.read-path" }; }
+  rpc ApplyTransaction(ApplyTransactionRequest) returns (MutationResponse) { option (acyclic.validation.v1.auth) = { extractor: "fs.transaction" }; }
+  rpc RebaseTransaction(RebaseTransactionRequest) returns (RebaseTransactionResponse) { option (acyclic.validation.v1.auth) = { extractor: "fs.transaction" }; }
+  rpc ForkWorkspace(ForkWorkspaceRequest) returns (WorkspaceResponse) { option (acyclic.validation.v1.auth) = { extractor: "fs.fork-volume" }; }
+  rpc Diff(DiffRequest) returns (DiffResponse) { option (acyclic.validation.v1.auth) = { extractor: "fs.read-history-pair" }; }
+  rpc Rebase(RebaseRequest) returns (RebaseResponse) { option (acyclic.validation.v1.auth) = { extractor: "fs.merge-volumes" }; }
+  rpc PlanJoin(PlanJoinRequest) returns (JoinPlan) { option (acyclic.validation.v1.auth) = { extractor: "fs.merge-volumes" }; }
+  rpc ApplyJoin(ApplyJoinRequest) returns (JoinResponse) { option (acyclic.validation.v1.auth) = { extractor: "fs.merge-volumes" }; }
+  rpc Checkpoint(RetainGenerationRequest) returns (RetainGenerationResponse) { option (acyclic.validation.v1.auth) = { extractor: "fs.retain-generation" }; }
+  rpc Pin(RetainGenerationRequest) returns (RetainGenerationResponse) { option (acyclic.validation.v1.auth) = { extractor: "fs.retain-generation" }; }
+  rpc Export(ExportRequest) returns (stream ExportChunk) { option (acyclic.validation.v1.auth) = { extractor: "fs.export-paths" }; }
+  rpc Import(stream ImportChunk) returns (ImportResponse) { option (acyclic.validation.v1.auth) = { extractor: "fs.import-paths" }; }
+  rpc IssueMountCredential(CredentialRequest) returns (CredentialResponse) { option (acyclic.validation.v1.auth) = { extractor: "fs.delegate-volume" }; }
+  rpc IssueS3Credential(CredentialRequest) returns (CredentialResponse) { option (acyclic.validation.v1.auth) = { extractor: "fs.delegate-volume" }; }
+  rpc GetSourceState(SourceStateRequest) returns (SourceResponse) { option (acyclic.validation.v1.auth) = { extractor: "fs.list-source" }; }
+  rpc ReconcileSource(SourceOperationRequest) returns (SourceResponse) { option (acyclic.validation.v1.auth) = { extractor: "fs.admin-source" }; }
+  rpc RescanSource(SourceOperationRequest) returns (SourceResponse) { option (acyclic.validation.v1.auth) = { extractor: "fs.admin-source" }; }
+  rpc SealSource(SourceOperationRequest) returns (SourceResponse) { option (acyclic.validation.v1.auth) = { extractor: "fs.admin-source" }; }
+  rpc Observe(ObserveRequest) returns (ObserveResponse) { option (acyclic.validation.v1.auth) = { extractor: "fs.observe-operation" }; }
+  rpc Cancel(CancelRequest) returns (CancelResponse) { option (acyclic.validation.v1.auth) = { extractor: "fs.cancel-operation" }; }
 }

@@ -32,4 +32,21 @@ extend google.protobuf.OneofOptions {
 // route; every public RPC must declare exactly one nonempty path.
 extend google.protobuf.MethodOptions {
   optional string http_path = 51012;
+  // All entries are conjunctive. Resolve every repeated-field occurrence;
+  // missing fields, unknown extractors and an empty extraction fail closed.
+  repeated Authorization auth = 51013;
+}
+
+// The owning service canonicalizes extracted names (including the volume's
+// case fold) before matching. Account identity comes from the verified root.
+message Authorization {
+  // Semantic action, e.g. fs/read or streams/append, never an RPC name.
+  optional string action = 1;
+  // Literal template with scalar or repeated substitutions, e.g.
+  // streams:/{mutations[].append.path}. Every expansion must be authorized.
+  optional string resource = 2;
+  // Product-owned extractor for oneofs, references, and multi-path operations.
+  // Resolves to (semantic action, canonical resource) pairs; all must pass.
+  // Required instead of action/resource when generic extraction is insufficient.
+  optional string extractor = 3;
 }

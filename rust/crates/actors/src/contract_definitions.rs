@@ -1,5 +1,7 @@
-
-#[acyclic_contract_derive::file(family = "actors", messages(BindingProto,
+#[acyclic_contract_derive::file(
+    family = "actors",
+    messages(
+        BindingProto,
         ActorLimitsProto,
         SubscriptionStartProto,
         SubscriptionSpecProto,
@@ -24,18 +26,58 @@
         HeaderProto,
         InvokeActorRequestProto,
         InvokeActorResponseProto,
-        ServiceErrorProto), enums(SubscriptionState, ActorState, ErrorCode), services(ActorsService))]
+        ServiceErrorProto
+    ),
+    enums(SubscriptionState, ActorState, ErrorCode),
+    services(ActorsService)
+)]
 pub struct ActorsFile;
 
 #[acyclic_contract_derive::service(file = ActorsFile)]
 pub enum ActorsService {
-    CreateActor { request: CreateActorRequestProto, response: CreateActorResponseProto },
-    UpdateActor { request: UpdateActorRequestProto, response: UpdateActorResponseProto },
-    InspectActor { request: InspectActorRequestProto, response: InspectActorResponseProto },
-    AddSubscription { request: AddSubscriptionRequestProto, response: AddSubscriptionResponseProto },
-    RemoveSubscription { request: RemoveSubscriptionRequestProto, response: RemoveSubscriptionResponseProto },
-    ResumeSubscription { request: ResumeSubscriptionRequestProto, response: ResumeSubscriptionResponseProto },
-    CheckpointActor { request: CheckpointActorRequestProto, response: CheckpointActorResponseProto },
-    InvokeActor { request: InvokeActorRequestProto, response: InvokeActorResponseProto },
-    DeleteActor { request: DeleteActorRequestProto, response: DeleteActorResponseProto },
+    #[wire(auth(extractor = "actors.create-with-bindings"))]
+    CreateActor {
+        request: CreateActorRequestProto,
+        response: CreateActorResponseProto,
+    },
+    #[wire(auth(extractor = "actors.update-with-bindings"))]
+    UpdateActor {
+        request: UpdateActorRequestProto,
+        response: UpdateActorResponseProto,
+    },
+    #[wire(auth(extractor = "actors.read"))]
+    InspectActor {
+        request: InspectActorRequestProto,
+        response: InspectActorResponseProto,
+    },
+    #[wire(auth(extractor = "actors.subscribe"))]
+    AddSubscription {
+        request: AddSubscriptionRequestProto,
+        response: AddSubscriptionResponseProto,
+    },
+    #[wire(auth(extractor = "actors.unsubscribe"))]
+    RemoveSubscription {
+        request: RemoveSubscriptionRequestProto,
+        response: RemoveSubscriptionResponseProto,
+    },
+    #[wire(auth(extractor = "actors.resume"))]
+    ResumeSubscription {
+        request: ResumeSubscriptionRequestProto,
+        response: ResumeSubscriptionResponseProto,
+    },
+    #[wire(auth(extractor = "actors.checkpoint"))]
+    CheckpointActor {
+        request: CheckpointActorRequestProto,
+        response: CheckpointActorResponseProto,
+    },
+    #[wire(auth(extractor = "actors.invoke"))]
+    InvokeActor {
+        request: InvokeActorRequestProto,
+        response: InvokeActorResponseProto,
+    },
+    #[wire(auth(extractor = "actors.delete"))]
+    DeleteActor {
+        request: DeleteActorRequestProto,
+        response: DeleteActorResponseProto,
+    },
 }
