@@ -32,9 +32,7 @@ chmod +x "$work/portable-sha/bin/sha256sum"
 cat >"$work/bin/jq" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ "$*" == *'.release.tag_name'* ]]; then
-  printf '%s\n' "${FAKE_RELEASE_TAG:-v1.2.3}"
-elif [[ "$*" == *'.after'* ]]; then
+if [[ "$*" == *'.after'* ]]; then
   printf '%s\n' release-head
 elif [[ "$*" == *'.before'* ]]; then
   printf '%s\n' 1111111111111111111111111111111111111111
@@ -49,7 +47,6 @@ set -euo pipefail
 printf '%s\n' "$*" >>"$FAKE_GIT_LOG"
 case "$*" in
   *'rev-parse HEAD'*) printf '%s\n' "${FAKE_HEAD:-release-head}" ;;
-  *'rev-parse refs/tags/'*) printf '%s\n' "${FAKE_TAG_HEAD:-release-head}" ;;
   *'merge-base --is-ancestor'*) [[ "${FAKE_GIT_MODE:-valid}" != nonmain ]] ;;
   *'rev-list --reverse'*)
     case "${FAKE_GIT_MODE:-valid}" in
@@ -107,7 +104,7 @@ make_case() {
   : >"$case_dir/gpg.log"
   : >"$case_dir/gitleaks.log"
   cat >"$case_dir/event.json" <<'EOF'
-{"release":{"tag_name":"v1.2.3"}}
+{"before":"1111111111111111111111111111111111111111","after":"release-head"}
 EOF
   cat >"$case_dir/gitleaks-archive/gitleaks" <<'EOF'
 #!/usr/bin/env bash
@@ -129,7 +126,7 @@ EOF
     --directory "$case_dir/gitleaks-archive" gitleaks
 }
 
-run_release() {
+run_preflight() {
   local name="$1" mode="$2" expected="$3"
   local case_dir="$work/$name"
   make_case "$name"
@@ -139,8 +136,8 @@ run_release() {
     SDK_TEMP_DIR="$case_dir/temp" \
       SDK_ARTIFACT_DIR="$case_dir/artifacts" \
       TOOLS_DIR="$case_dir/tools" \
-      GITHUB_EVENT_NAME="${4:-release}" \
-      GITHUB_REF="${5:-refs/tags/v1.2.3}" \
+      GITHUB_EVENT_NAME="${4:-workflow_dispatch}" \
+      GITHUB_REF="${5:-refs/heads/main}" \
       GITHUB_EVENT_PATH="$case_dir/event.json" \
       FAKE_GIT_MODE="$mode" \
       FAKE_GIT_LOG="$case_dir/git.log" \
@@ -164,61 +161,21 @@ run_release() {
   fi
 }
 
-run_release valid webflow 0
+run_preflight valid webflow 0
 grep -q 'web-flow.gpg' "$work/valid/curl.log"
 grep -q 'gpg.format=openpgp' "$work/valid/git.log"
 grep -q 'detect --source .' "$work/valid/gitleaks.log"
 grep -q -- '--log-opts --diff-merges=first-parent release-head\^..release-head' "$work/valid/gitleaks.log"
 
-make_case wrong-tag
-cat >"$work/wrong-tag/event.json" <<'EOF'
-{"release":{"tag_name":"wrong-tag"}}
-EOF
-set +e
-(
-  cd "$root"
-  SDK_TEMP_DIR="$work/wrong-tag/temp" SDK_ARTIFACT_DIR="$work/wrong-tag/artifacts" \
-    TOOLS_DIR="$work/wrong-tag/tools" GITHUB_EVENT_NAME=release \
-    GITHUB_REF=refs/tags/v1.2.3 GITHUB_EVENT_PATH="$work/wrong-tag/event.json" \
-    FAKE_RELEASE_TAG=wrong-tag \
-    FAKE_GIT_MODE=ssh-good FAKE_GIT_LOG="$work/wrong-tag/git.log" \
-    FAKE_CURL_LOG="$work/wrong-tag/curl.log" FAKE_SHA256_LOG="$work/wrong-tag/sha256.log" \
-    FAKE_GPG_LOG="$work/wrong-tag/gpg.log" FAKE_GITLEAKS_LOG="$work/wrong-tag/gitleaks.log" \
-    PATH="$work/bin:$PATH" bash scripts/qualify-ci.sh preflight
-)
-status=$?
-set -e
-[[ "$status" -ne 0 ]]
-[[ ! -s "$work/wrong-tag/gitleaks.log" ]]
-[[ ! -s "$work/wrong-tag/curl.log" ]]
-
-make_case wrong-head
-set +e
-(
-  cd "$root"
-  SDK_TEMP_DIR="$work/wrong-head/temp" SDK_ARTIFACT_DIR="$work/wrong-head/artifacts" \
-    TOOLS_DIR="$work/wrong-head/tools" GITHUB_EVENT_NAME=release \
-    GITHUB_REF=refs/tags/v1.2.3 GITHUB_EVENT_PATH="$work/wrong-head/event.json" \
-    FAKE_TAG_HEAD=other-head FAKE_GIT_MODE=ssh-good FAKE_GIT_LOG="$work/wrong-head/git.log" \
-    FAKE_CURL_LOG="$work/wrong-head/curl.log" FAKE_SHA256_LOG="$work/wrong-head/sha256.log" \
-    FAKE_GPG_LOG="$work/wrong-head/gpg.log" FAKE_GITLEAKS_LOG="$work/wrong-head/gitleaks.log" \
-    PATH="$work/bin:$PATH" bash scripts/qualify-ci.sh preflight
-)
-status=$?
-set -e
-[[ "$status" -ne 0 ]]
-[[ ! -s "$work/wrong-head/gitleaks.log" ]]
-[[ ! -s "$work/wrong-head/curl.log" ]]
-
-run_release nonmain nonmain 1
-run_release revlist-fail revlist-fail 1
-run_release revlist-empty revlist-empty 1
+run_preflight nonmain nonmain 1 push refs/heads/main
+run_preflight revlist-fail revlist-fail 1
+run_preflight revlist-empty revlist-empty 1
 for mode in scan-fatal scan-zero scan-empty scan-silent scan-fail; do
-  run_release "$mode" "$mode" 1
+  run_preflight "$mode" "$mode" 1
   [[ -s "$work/$mode/gitleaks.log" ]]
 done
-run_release ssh-good ssh-good 0
-run_release main webflow 0 push refs/heads/main
+run_preflight ssh-good ssh-good 0
+run_preflight main webflow 0 push refs/heads/main
 
 gate="$work/gate"
 mkdir -p "$gate/temp" "$gate/artifacts" "$gate/tools/cargo/bin" "$gate/bin"

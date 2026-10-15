@@ -187,23 +187,6 @@ case "$lane" in
         range="$before..$head"
       fi
       allow_webflow=true
-    elif [[ "${GITHUB_EVENT_NAME:-}" == "release" ]]; then
-      release_tag="$(jq -er '.release.tag_name' "$GITHUB_EVENT_PATH")"
-      [[ "${GITHUB_REF:-}" == "refs/tags/$release_tag" ]] || {
-        echo 'release ref does not match the event tag' >&2
-        exit 1
-      }
-      [[ "$(git rev-parse "$GITHUB_REF^{commit}")" == "$head" ]] || {
-        echo 'checked-out source does not match the release tag' >&2
-        exit 1
-      }
-      git fetch --no-tags origin main
-      git merge-base --is-ancestor "$head" FETCH_HEAD || {
-        echo 'release source is not part of main' >&2
-        exit 1
-      }
-      range="${head}^..$head"
-      allow_webflow=true
     else
       base="${head}^"
       range="$base..$head"
@@ -224,8 +207,8 @@ case "$lane" in
       if [[ "$verification" == "G" ]]; then
         continue
       fi
-      # GitHub signs squash merges with its web-flow OpenPGP key. Main and
-      # release tags verified as part of main accept it; PR commits use SSH.
+      # GitHub signs squash merges with its web-flow OpenPGP key. Pushes and
+      # dispatched main checks accept it; PR commits use SSH.
       if [[ "$allow_webflow" == true ]]; then
         if [[ -z "$webflow_home" ]]; then
           webflow_home="$(mktemp -d "$SDK_TEMP_DIR/web-flow.XXXXXXXX")"
