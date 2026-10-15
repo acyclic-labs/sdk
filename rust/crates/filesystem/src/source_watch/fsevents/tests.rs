@@ -254,7 +254,7 @@ impl crate::fsevents::StreamTerminal for (std::sync::Arc<Shared>, CancellationTo
 fn cleanup_wait_preserves_cancelled_birth_and_finishes_late_cancellation() -> TestResult {
     use crate::demand::{DemandWork, NativeDemandReadMeter};
     use crate::{CancellationToken, DemandError};
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     crate::fsevents::EventStream::initialize_services()?;
     for late_wait in [false, true] {
