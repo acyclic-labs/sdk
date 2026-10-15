@@ -11,10 +11,7 @@ use tokio::runtime::Runtime;
 
 type LocalWorkspace = Workspace<LocalAuthorityBackend, LocalObjectBackend>;
 
-#[global_allocator]
-static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
-
-fn main() {
+pub(crate) fn main() {
     if std::env::var_os("ACYCLIC_BENCH_TRACE").is_some() {
         tracing_subscriber::fmt()
             .with_max_level(tracing::Level::TRACE)

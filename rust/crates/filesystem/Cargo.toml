@@ -27,6 +27,16 @@ name = "filesystem"
 harness = false
 required-features = ["local"]
 
+[[bench]]
+name = "filesystem_alloc"
+harness = false
+required-features = ["local"]
+
+[[test]]
+name = "workspace_reads"
+path = "tests/workspace_reads.rs"
+required-features = ["memory"]
+
 [dependencies]
 async-trait.workspace = true
 blake3.workspace = true
