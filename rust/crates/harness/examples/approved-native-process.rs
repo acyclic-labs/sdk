@@ -743,6 +743,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
+    acyclic_native_runtime::initialize_native_io_services()?;
     #[cfg(all(test, feature = "filesystem-local"))]
     if std::env::args().any(|arg| arg == "--mcp-host-death-child") {
         return faults::host_child().await;
