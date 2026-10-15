@@ -13,7 +13,6 @@ use super::{
 };
 use crate::kernel::{FileMetadata, MetadataField};
 use crate::materializer::NativeResourceCredit::{Copy, Items};
-use crate::model::AccessMode;
 use fuser::{
     BsdFileFlags, Config, CopyFileRangeFlags, Errno, FileAttr, FileHandle as FuseFileHandle,
     FileType, Filesystem, FopenFlags, Generation, INodeNo, InitFlags, KernelConfig, LockOwner,

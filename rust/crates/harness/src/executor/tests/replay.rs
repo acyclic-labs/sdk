@@ -131,7 +131,7 @@ async fn stock_prefix_reaches_provider_and_is_pinned_by_replay() -> Result<()> {
 
 #[tokio::test]
 async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
-    let model = Arc::new(ScriptedModel::default());
+    let model = Arc::new(scripted_model());
     let tools = echo_tools(
         Arc::new(FakeTool(AtomicUsize::new(0))),
         json!({"type": "object"}),
@@ -169,13 +169,11 @@ async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
             .await,
         Err(Error::Invalid(_))
     ));
-    assert_eq!(model.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(model.requests().len(), 0);
     let _ = base.execute(input.clone(), &journal).await?;
     assert!(
         model
-            .requests
-            .lock()
-            .unwrap()
+            .requests()
             .iter()
             .all(|request| request.max_output_tokens.is_none())
     );
@@ -293,7 +291,7 @@ async fn finite_canonical_replay_rejects_unmeasured_custom_journal_before_work()
 async fn prefix_replay_accepts_platform_maximum_counts() -> Result<()> {
     let mut executor = uncompacted_executor(
         Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
-        Arc::new(ScriptedModel::default()),
+        Arc::new(scripted_model()),
         ContextPipeline::default(),
         ToolRegistry::default(),
     );
@@ -397,7 +395,7 @@ async fn stock_file_authority_precedes_journal_replay() -> Result<()> {
     };
     let base = StockExecutor::new(
         Model::new("test".into(), "scoped".into(), "1".into(), Value::Null)?,
-        Arc::new(ScriptedModel::default()),
+        Arc::new(scripted_model()),
         ContextPipeline::new(Vec::<Arc<dyn crate::context::ContextStage>>::new()),
         tools,
     )

@@ -1,9 +1,8 @@
 #[cfg(feature = "native-watch")]
 use super::*;
 use crate::NativeMaterializationWork;
-#[cfg(feature = "native-watch")]
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[cfg(feature = "native-watch")]
 #[derive(Debug, Default)]
@@ -108,6 +107,7 @@ impl Drop for SourcePayloadOwnership {
 #[derive(Debug)]
 pub struct NativeMountAllocationCustody {
     bytes: AtomicU64,
+    accounting_dirty: Arc<AtomicBool>,
     original: Option<NativeMaterializationWork>,
 }
 impl NativeMountAllocationCustody {
@@ -127,20 +127,42 @@ impl NativeMountAllocationCustody {
                 &mut work.work,
                 work.budget,
             )?;
-            let metadata = std::mem::size_of::<Self>() as u64;
-            work.claim_allocation(metadata, 1, WorkCounters::UNCHARGED)?;
-            let custody = Arc::new(Self {
-                bytes: AtomicU64::new(metadata),
-                original,
-            });
-            let slot = work
-                .roots
-                .native_mount_admissions
-                .0
-                .get_mut(index)
-                .ok_or(DemandError::InvalidRequest)?;
-            *slot = (Arc::downgrade(&custody), metadata);
-            Ok(custody)
+            work.scope(
+                |work| &mut work.roots.native_mount_admission_pending,
+                true,
+                |work| {
+                    let metadata = std::mem::size_of::<Self>() as u64;
+                    let accounting_dirty = if let Some(dirty) = &work.roots.native_mount_dirty {
+                        dirty.clone()
+                    } else {
+                        work.allocations
+                            .claim_bytes(
+                                std::mem::size_of::<AtomicBool>() as u64,
+                                1,
+                                &mut work.work,
+                                work.budget,
+                            )
+                            .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
+                        let dirty = Arc::new(AtomicBool::new(true));
+                        work.roots.native_mount_dirty = Some(dirty.clone());
+                        dirty
+                    };
+                    work.claim_allocation(metadata, 1, WorkCounters::UNCHARGED)?;
+                    let custody = Arc::new(Self {
+                        bytes: AtomicU64::new(metadata),
+                        accounting_dirty,
+                        original,
+                    });
+                    let slot = work
+                        .roots
+                        .native_mount_admissions
+                        .0
+                        .get_mut(index)
+                        .ok_or(DemandError::InvalidRequest)?;
+                    *slot = (Arc::downgrade(&custody), metadata);
+                    Ok(custody)
+                },
+            )
         })
     }
     #[cfg(feature = "native-watch")]
@@ -203,6 +225,7 @@ impl NativeMountAllocationCustody {
                     .filter(|current| *current >= std::mem::size_of::<Self>() as u64)
             })
             .map_err(|_| crate::WorkError::Overflow)?;
+        self.accounting_dirty.store(true, Ordering::Release);
         self.retire_resource(bytes)
     }
     #[cfg(feature = "native-watch")]
@@ -230,6 +253,7 @@ impl NativeMountAllocationCustody {
 }
 impl Drop for NativeMountAllocationCustody {
     fn drop(&mut self) {
+        self.accounting_dirty.store(true, Ordering::Release);
         let _ = self.retire_resource(self.retained_bytes());
     }
 }

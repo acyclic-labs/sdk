@@ -91,6 +91,61 @@ fn accounting_charge_local(bencher: Bencher) {
     std::hint::black_box(work);
 }
 
+#[cfg(feature = "native-watch")]
+#[divan::bench(args = [(0, false), (128, false), (128, true)], threads = [1, 4], sample_count = 200, sample_size = 64)]
+fn accounting_source_registry(bencher: Bencher, (count, retire): (usize, bool)) {
+    use acyclic_fs::demand::native::NativeDemandSource;
+    use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
+    acyclic_native_runtime::initialize_native_io_services().unwrap();
+    let runtime = Runtime::new().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::BOUNDARY_BUDGET,
+        &cancellation,
+    )
+    .unwrap();
+    let mut sources = Vec::with_capacity(count);
+    for _ in 0..count {
+        sources.push(
+            runtime
+                .block_on(NativeDemandSource::open(
+                    std::borrow::Cow::Borrowed(root.path()),
+                    FilesystemProfile::Portable,
+                    VolumeLimits::default(),
+                    None,
+                    None,
+                    &work,
+                    &cancellation,
+                ))
+                .unwrap(),
+        );
+    }
+    if retire {
+        sources.clear();
+    }
+    let delta = acyclic_fs::WorkCounters {
+        items_examined: 1,
+        ..acyclic_fs::WorkCounters::UNCHARGED
+    };
+    if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() {
+        eprintln!(
+            "before sources={count} retired={retire} live={} work={:?}",
+            work.live_allocation_bytes(),
+            work.receipt()
+        );
+    }
+    bencher.bench(|| work.charge(delta).unwrap());
+    if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() {
+        eprintln!(
+            "after sources={count} retired={retire} live={} work={:?}",
+            work.live_allocation_bytes(),
+            work.receipt()
+        );
+    }
+    std::hint::black_box(sources);
+}
+
 fn workspace(runtime: &Runtime) -> (tempfile::TempDir, LocalFs, LocalWorkspace) {
     let root = tempfile::tempdir().unwrap();
     runtime.block_on(async {

@@ -291,7 +291,7 @@ impl FuseProjection {
             if node.kind != MountNodeKind::Regular {
                 return Err(libc::EISDIR.into());
             }
-            let held = (!self.skips_open && !changes_content(flags) && flags & libc::O_DIRECT == 0)
+            let held = (!changes_content(flags) && flags & libc::O_DIRECT == 0)
                 .then(|| state.by_inode.get(&inode))
                 .flatten()
                 .filter(|entry| entry.cached_content == Some(ContentVersion::of(&entry.lookup)))
@@ -337,9 +337,11 @@ impl FuseProjection {
         if entry.lookup.node.file_id != file_id {
             return Err(libc::ESTALE.into());
         }
+        // The open pins the version it opened: a size of any other version
+        // the kernel holds is dropped before the open is answered, so the
+        // kernel asks again before it reads through this handle.
         if !changes_content(flags) && entry.write_handles == 0 && !entry.kernel_reads(&refreshed) {
             state.invalidate_attributes(inode, work)?;
-            return Err(libc::ESTALE.into());
         }
         let entry = state.by_inode.get_mut(&inode).ok_or(libc::ESTALE)?;
         entry.lookup = refreshed;
@@ -489,98 +491,5 @@ impl FuseProjection {
         })?;
         let ttl = state.admit_entry(source, inode, &child, stamp, work)?;
         Ok((Entry { attr, ttl }, handle, open_flags))
-    }
-
-    pub(super) fn with_handle<T>(
-        &self,
-        inode: u64,
-        handle: u64,
-        access: AccessMode,
-        operation: impl FnOnce(u64) -> Result<T, NativeMountError>,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<T, NativeMountError> {
-        if access == AccessMode::ReadWrite {
-            self.check_source_write(work)?;
-        }
-        if handle != 0 || !self.skips_open {
-            return operation(handle);
-        }
-        let (held, writes) = {
-            let state = self.core.state()?;
-            let held = state.implicit.get(&inode).map(|held| held.0);
-            let writes = held
-                .and_then(|handle| state.files.get(&handle))
-                .is_some_and(|file| file.writes);
-            (held, writes)
-        };
-        match (held, access) {
-            (Some(handle), AccessMode::ReadOnly) => operation(handle),
-            (Some(handle), AccessMode::ReadWrite) if writes => operation(handle),
-            (_, AccessMode::ReadWrite) => {
-                let reopened = {
-                    let _names = self.core.names()?;
-                    self.reopen_implicit(inode, held, access, work)?
-                };
-                operation(reopened)
-            }
-            (None, AccessMode::ReadOnly) => {
-                let (transient, _) = {
-                    let _names = self.core.names()?;
-                    self.open_node(inode, libc::O_RDONLY, work)?
-                };
-                let result = operation(transient);
-                let _ = self.core.state()?.discard_file_handle(inode, transient);
-                result
-            }
-        }
-    }
-
-    pub(super) fn reopen_implicit(
-        &self,
-        inode: u64,
-        stale: Option<u64>,
-        access: AccessMode,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<u64, NativeMountError> {
-        let writes = access == AccessMode::ReadWrite || {
-            let state = self.core.state()?;
-            stale
-                .and_then(|handle| state.files.get(&handle))
-                .is_some_and(|file| file.writes)
-        };
-        let storage = {
-            let mut state = self.core.state()?;
-            let storage = work.claim(
-                std::mem::size_of::<(u64, (u64, crate::NativeAllocation))>() as u64,
-                1,
-                crate::WorkCounters::UNCHARGED,
-            )?;
-            state
-                .implicit
-                .try_reserve(1)
-                .map_err(NativeMountError::Allocation)?;
-            storage
-        };
-        let flags = if writes { libc::O_RDWR } else { libc::O_RDONLY };
-        let (opened, _) = self.open_node(inode, flags, work)?;
-        let mut state = match self.core.state() {
-            Ok(state) => state,
-            Err(error) => {
-                let _ = self
-                    .core
-                    .state_to_finish()
-                    .discard_file_handle(inode, opened);
-                return Err(error.into());
-            }
-        };
-        let current = state.implicit.get(&inode).map(|implicit| implicit.0);
-        if current.is_some() && current != stale {
-            let _ = state.discard_file_handle(inode, opened);
-            return current.ok_or_else(|| libc::ESTALE.into());
-        }
-        if let Some(stale) = state.implicit.insert(inode, (opened, storage)) {
-            let _ = state.discard_file_handle(inode, stale.0);
-        }
-        Ok(opened)
     }
 }

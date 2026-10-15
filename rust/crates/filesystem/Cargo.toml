@@ -42,6 +42,11 @@ name = "workspace_reads"
 path = "tests/workspace_reads.rs"
 required-features = ["memory"]
 
+[[test]]
+name = "native_owner_notifications"
+path = "tests/native_owner_notifications.rs"
+required-features = ["native-watch"]
+
 [dependencies]
 async-trait.workspace = true
 blake3.workspace = true
