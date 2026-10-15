@@ -22,6 +22,11 @@ use std::{
 mod allocation;
 mod completion;
 pub(super) mod journal;
+mod journal_allocation;
+#[cfg(test)]
+mod journal_properties;
+#[cfg(test)]
+mod journal_verification;
 mod mounted;
 mod preparation;
 mod preparation_record;

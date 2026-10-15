@@ -26,8 +26,15 @@ async fn verify_binding<P: StreamProvider + 'static, A, O>(
             &mut Some(&mut io.history_io()),
         )?;
     }
-    owner.verify(false, &mut Some(&mut io.history_io())).await
+    let metadata_io = PreparationIo::from_native_work(guard.native_work()?)?;
+    owner
+        .verify(false, &mut Some(&mut metadata_io.history_io()))
+        .await
 }
+
+#[cfg(test)]
+#[path = "preparation_properties.rs"]
+mod properties;
 
 impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send + Sync + 'static>
     NativeVolumeView<A, O>
