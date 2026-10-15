@@ -30,8 +30,8 @@ mod views;
 pub use views::{ClientViews, TaskView, ToolCallView, TranscriptView, ViewUpdate};
 #[cfg(not(target_arch = "wasm32"))]
 mod journal;
-#[cfg(all(test, not(target_arch = "wasm32")))]
-fn journal_schedule() {}
+#[cfg(not(target_arch = "wasm32"))]
+mod journal_lock;
 pub mod jsonl;
 #[cfg(not(target_arch = "wasm32"))]
 pub use journal::FileClientState;

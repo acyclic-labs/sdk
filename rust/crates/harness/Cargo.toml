@@ -34,6 +34,7 @@ required-features = ["filesystem"]
 [[test]]
 name = "client_journal_model"
 path = "tests/client_journal_model.rs"
+required-features = ["model-checking"]
 
 [[test]]
 name = "client_session"
@@ -91,6 +92,7 @@ name = "explicit-image-conversion"
 required-features = ["filesystem"]
 
 [features]
+model-checking = ["dep:loom"]
 test-support = []
 browser = ["wasm", "filesystem", "acyclic-fs/browser"]
 # Native presentation only; this does not select providers or grant authority.
@@ -154,6 +156,7 @@ protoc-bin-vendored.workspace = true
 tonic-prost-build = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+loom = { version = "=0.7.2", optional = true }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 reqwest = { workspace = true, optional = true }
 tracing.workspace = true
@@ -165,7 +168,6 @@ acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = 
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 allocation-counter = "=0.8.1"
-loom = "=0.7.2"
 tracing-subscriber.workspace = true
 proptest.workspace = true
 acyclic-stream = { version = "=0.2.0", path = "../stream" }

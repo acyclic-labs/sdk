@@ -1,5 +1,6 @@
 //! Single-writer, checksummed private client journal.
 
+use super::journal_lock::{WriterLock, acquire};
 use super::{ClientStateStore, SessionRecord};
 use crate::{Error, Result};
 use prost::Message;
@@ -14,7 +15,7 @@ const HEADER_BYTES: usize = 68;
 /// File-backed cursor and outbox recovery. Keep its directory private.
 pub struct FileClientState {
     file: File,
-    _lock: File,
+    _lock: WriterLock,
     poisoned: bool,
     path: PathBuf,
 }
@@ -77,15 +78,7 @@ impl FileClientState {
             }
             Err(error) => return Err(storage(error)),
         };
-        // Only one nonblocking writer lock is held; there are no nested blocking
-        // acquisitions or wakeups. Checkpoint replacement never replaces this inode.
-        #[cfg(test)]
-        super::journal_schedule();
-        lock.try_lock()
-            .map_err(|error| Error::Conflict(format!("client journal is locked: {error}")))?;
-        if lock.metadata().map_err(storage)?.len() != 0 {
-            return Err(storage("journal lock contains data"));
-        }
+        let lock = acquire(lock)?;
         // Open the data only after acquiring the stable lock: a paused opener must
         // see the current inode after a checkpoint replaces the data file.
         let file = open_file(&path, false).map_err(storage)?;
@@ -192,8 +185,6 @@ impl ClientStateStore for FileClientState {
             let _ = std::fs::remove_file(&temporary);
             return Err(storage(error));
         }
-        #[cfg(test)]
-        super::journal_schedule();
         self.file = file;
         self.sync_parent()
     }
