@@ -136,6 +136,7 @@ wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
 
 [build-dependencies]
+blake3.workspace = true
 prost-build.workspace = true
 protoc-bin-vendored.workspace = true
 tonic-prost-build = { workspace = true, optional = true }
