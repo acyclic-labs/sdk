@@ -126,6 +126,138 @@ fn terminal_write_failures_preserve_the_unpresented_notification() -> Result<()>
 }
 
 #[test]
+fn suppressed_notifications_drain_without_calling_a_broken_terminal() -> Result<()> {
+    use acyclic_harness::client::write_terminal_notifications;
+    #[derive(Default)]
+    struct Broken {
+        writes: usize,
+        flushes: usize,
+    }
+    impl std::io::Write for Broken {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            self.writes += 1;
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.flushes += 1;
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+    }
+    for (mode, focused, event) in [
+        (NotificationMode::Off, false, AttentionEvent::TaskFailed),
+        (NotificationMode::On, true, AttentionEvent::TaskFailed),
+        (
+            NotificationMode::AttentionOnly,
+            false,
+            AttentionEvent::TaskSettled,
+        ),
+    ] {
+        for protocol in [
+            TerminalNotificationProtocol::Osc9,
+            TerminalNotificationProtocol::Osc777,
+            TerminalNotificationProtocol::Bell,
+        ] {
+            let mut view = NotificationView::new(1, 1, 1024)?;
+            view.apply(notice(1, event))?;
+            let mut terminal = Broken::default();
+            assert_eq!(
+                write_terminal_notifications(&mut view, &mut terminal, mode, protocol, focused)
+                    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?,
+                1
+            );
+            assert!(view.is_empty());
+            assert_eq!((terminal.writes, terminal.flushes), (0, 0));
+        }
+    }
+    let mut view = NotificationView::new(1, 2, 1024)?;
+    view.apply(notice(1, AttentionEvent::TaskSettled))?;
+    let failed = notice(2, AttentionEvent::TaskFailed);
+    view.apply(failed.clone())?;
+    let mut terminal = Broken::default();
+    assert!(
+        write_terminal_notifications(
+            &mut view,
+            &mut terminal,
+            NotificationMode::AttentionOnly,
+            TerminalNotificationProtocol::Osc9,
+            false
+        )
+        .is_err()
+    );
+    assert_eq!(view.front(), Some(&failed));
+    assert_eq!(view.len(), 1);
+    assert_eq!((terminal.writes, terminal.flushes), (1, 0));
+    Ok(())
+}
+
+#[test]
+fn terminal_encoding_allocates_only_its_output_buffer() {
+    let notification = AttentionNotification {
+        detail: "x".repeat(1_048_576),
+        ..notice(1, AttentionEvent::TaskFailed)
+    };
+    let mut output = String::new();
+    let bell = allocation_counter::measure(|| {
+        output = terminal_notification(
+            &notification,
+            NotificationMode::On,
+            TerminalNotificationProtocol::Bell,
+            false,
+        );
+    });
+    assert_eq!(output, "\x07");
+    assert_eq!(bell.bytes_total, 1);
+    assert_eq!(bell.count_total, 1);
+    for protocol in [
+        TerminalNotificationProtocol::Osc9,
+        TerminalNotificationProtocol::Osc777,
+    ] {
+        let allocation = allocation_counter::measure(|| {
+            output = terminal_notification(&notification, NotificationMode::On, protocol, false);
+        });
+        assert_eq!(allocation.count_total, 1);
+        assert_eq!(allocation.bytes_total, output.len() as u64);
+        assert!(output.ends_with('\x07'));
+    }
+}
+
+#[test]
+fn queue_insertion_cost_is_independent_of_payload_size() -> Result<()> {
+    let mut previous = None;
+    for bytes in [8, 1_048_576] {
+        let notification = AttentionNotification {
+            detail: "x".repeat(bytes),
+            ..notice(1, AttentionEvent::GoalDone)
+        };
+        let payload = notification.detail.as_ptr();
+        let mut view = NotificationView::new(1, 1, 1_048_640)?;
+        let mut result = Ok(false);
+        let allocation = allocation_counter::measure(|| {
+            result = view.apply(notification);
+        });
+        assert!(result?);
+        if let Some(previous) = previous {
+            assert_eq!(allocation.bytes_total, previous);
+        }
+        previous = Some(allocation.bytes_total);
+        assert_eq!(
+            view.front().map(|record| record.detail.as_ptr()),
+            Some(payload)
+        );
+        let cloned = view.clone();
+        assert_eq!(
+            cloned.front().map(|record| record.detail.as_ptr()),
+            Some(payload)
+        );
+        assert_eq!(
+            view.pop().map(|record| record.detail.as_ptr()),
+            Some(payload)
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn full_queue_preserves_attention_for_replay() -> Result<()> {
     let mut view = NotificationView::new(2, 1, 1024)?;
     let first = notice(3, AttentionEvent::TaskBlocked);
@@ -137,9 +269,9 @@ fn full_queue_preserves_attention_for_replay() -> Result<()> {
     let next = notice(9, AttentionEvent::GoalDone);
     assert!(view.apply(next.clone()).is_err());
     assert_eq!(view.front(), Some(&first));
-    assert_eq!(view.pop(), Some(first.clone()));
+    assert_eq!(view.pop().as_deref(), Some(&first));
     assert!(view.apply(next.clone())?);
-    assert_eq!(view.pop(), Some(next));
+    assert_eq!(view.pop().as_deref(), Some(&next));
     assert!(!view.apply(first)?);
     assert!(view.is_empty());
     Ok(())
@@ -175,12 +307,12 @@ async fn notification_stream_is_push_driven_and_replay_safe() -> Result<()> {
     assert!(stream.next().now_or_never().is_none());
     let first = notice(1, AttentionEvent::TaskSettled);
     sender.try_send(Ok(first.clone())).expect("push");
-    assert_eq!(stream.next().await.transpose()?, Some(first.clone()));
+    assert_eq!(stream.next().await.transpose()?.as_deref(), Some(&first));
     sender.try_send(Ok(first)).expect("replay");
     assert!(stream.next().now_or_never().is_none());
     let next = notice(2, AttentionEvent::GoalDone);
     sender.try_send(Ok(next.clone())).expect("push");
-    assert_eq!(stream.next().await.transpose()?, Some(next));
+    assert_eq!(stream.next().await.transpose()?.as_deref(), Some(&next));
     sender
         .try_send(Err(acyclic_harness::Error::Conflict("query reset".into())))
         .expect("push");
@@ -216,7 +348,7 @@ async fn platform_follow_replays_the_same_attention_records_after_resume()
         let records = provider.follow(path.clone(), 0).await?;
         let stream = NotificationView::new(1, 1, 1024)?.follow(Box::pin(records.map(decode)));
         futures::pin_mut!(stream);
-        assert_eq!(stream.next().await.transpose()?, Some(first));
+        assert_eq!(stream.next().await.transpose()?.as_deref(), Some(&first));
         for (index, event) in [
             AttentionEvent::TaskFailed,
             AttentionEvent::TaskBlocked,
@@ -236,19 +368,22 @@ async fn platform_follow_replays_the_same_attention_records_after_resume()
                     idempotency_key: None,
                 })
                 .await?;
-            assert_eq!(stream.next().await.transpose()?, Some(notification));
+            assert_eq!(
+                stream.next().await.transpose()?.as_deref(),
+                Some(&notification)
+            );
         }
     }
     let records = provider.follow(path, 2).await?;
     let resumed = NotificationView::new(1, 1, 1024)?.follow(Box::pin(records.map(decode)));
     futures::pin_mut!(resumed);
     assert_eq!(
-        resumed.next().await.transpose()?,
-        Some(notice(3, AttentionEvent::TaskBlocked))
+        resumed.next().await.transpose()?.as_deref(),
+        Some(&notice(3, AttentionEvent::TaskBlocked))
     );
     assert_eq!(
-        resumed.next().await.transpose()?,
-        Some(notice(4, AttentionEvent::GoalDone))
+        resumed.next().await.transpose()?.as_deref(),
+        Some(&notice(4, AttentionEvent::GoalDone))
     );
     assert!(resumed.next().now_or_never().is_none());
     Ok(())

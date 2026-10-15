@@ -2,7 +2,10 @@
 
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, VecDeque};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    sync::Arc,
+};
 
 /// Attention events owned by task/goal records, never inferred from renderer text.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -68,8 +71,8 @@ impl AttentionNotification {
 /// before acknowledging a source offset, so a caller can resume from that record.
 #[derive(Clone, Debug, Serialize)]
 pub struct NotificationView {
-    latest: BTreeMap<String, AttentionNotification>,
-    pending: VecDeque<AttentionNotification>,
+    latest: BTreeMap<String, Arc<AttentionNotification>>,
+    pending: VecDeque<Arc<AttentionNotification>>,
     maximum_tasks: usize,
     maximum_pending: usize,
     maximum_text_bytes: usize,
@@ -115,7 +118,7 @@ impl NotificationView {
                 return Ok(false);
             }
             if notification.sequence == previous.sequence {
-                return if previous == &notification {
+                return if previous.as_ref() == &notification {
                     Ok(false)
                 } else {
                     Err(Error::Conflict("attention offset was reused".into()))
@@ -129,18 +132,20 @@ impl NotificationView {
                 "notification consumer must drain before advancing".into(),
             ));
         }
+        let notification = Arc::new(notification);
         self.latest
-            .insert(notification.task.clone(), notification.clone());
+            .insert(notification.task.clone(), Arc::clone(&notification));
         self.pending.push_back(notification);
         Ok(true)
     }
 
     /// Borrows the next attention event; presentation failure leaves it pending.
     pub fn front(&self) -> Option<&AttentionNotification> {
-        self.pending.front()
+        self.pending.front().map(Arc::as_ref)
     }
-    /// Acknowledges a successfully presented notification.
-    pub fn pop(&mut self) -> Option<AttentionNotification> {
+    /// Removes a presented or deliberately suppressed event. Its immutable
+    /// payload stays shared with replay tracking and any other consumers.
+    pub fn pop(&mut self) -> Option<Arc<AttentionNotification>> {
         self.pending.pop_front()
     }
     /// Number of pending presentation events.
@@ -159,7 +164,7 @@ impl NotificationView {
     pub fn follow<'a>(
         self,
         source: acyclic_stream::BoxProviderStream<'a, Result<AttentionNotification>>,
-    ) -> impl futures::Stream<Item = Result<AttentionNotification>> + 'a {
+    ) -> impl futures::Stream<Item = Result<Arc<AttentionNotification>>> + 'a {
         use futures::StreamExt as _;
         futures::stream::try_unfold((self, source), |(mut view, mut source)| async move {
             loop {
@@ -216,23 +221,38 @@ pub fn terminal_notification(
     {
         return String::new();
     }
-    let clean = |text: &str| {
-        text.chars()
-            .map(|ch| {
-                if ch.is_control() || ch == ';' {
-                    ' '
-                } else {
-                    ch
-                }
-            })
-            .collect::<String>()
+    let (prefix, separator) = match protocol {
+        TerminalNotificationProtocol::Bell => return "\x07".into(),
+        TerminalNotificationProtocol::Osc9 => ("\x1b]9;", ": "),
+        TerminalNotificationProtocol::Osc777 => ("\x1b]777;notify;", ";"),
     };
     let title = notification.title();
-    let body = clean(&format!("{}: {}", notification.task, notification.detail));
-    match protocol {
-        TerminalNotificationProtocol::Osc9 => format!("\x1b]9;{title}: {body}\x07"),
-        TerminalNotificationProtocol::Osc777 => format!("\x1b]777;notify;{title};{body}\x07"),
-        TerminalNotificationProtocol::Bell => "\x07".into(),
+    let mut output = String::with_capacity(
+        prefix.len()
+            + title.len()
+            + separator.len()
+            + notification.task.len()
+            + 2
+            + notification.detail.len()
+            + 1,
+    );
+    output.push_str(prefix);
+    output.push_str(title);
+    output.push_str(separator);
+    append_terminal_text(&mut output, &notification.task);
+    output.push_str(": ");
+    append_terminal_text(&mut output, &notification.detail);
+    output.push('\x07');
+    output
+}
+
+fn append_terminal_text(output: &mut String, text: &str) {
+    for ch in text.chars() {
+        output.push(if ch.is_control() || ch == ';' {
+            ' '
+        } else {
+            ch
+        });
     }
 }
 
@@ -249,8 +269,10 @@ pub fn write_terminal_notifications(
     let mut presented = 0;
     while let Some(notification) = view.front() {
         let bytes = terminal_notification(notification, mode, protocol, focused);
-        output.write_all(bytes.as_bytes())?;
-        output.flush()?;
+        if !bytes.is_empty() {
+            output.write_all(bytes.as_bytes())?;
+            output.flush()?;
+        }
         view.pop();
         presented += 1;
     }
