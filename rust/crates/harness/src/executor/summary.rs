@@ -91,6 +91,12 @@ impl StockExecution<'_> {
         let events = executor
             .run_model_step(journal, &input, step, &[], ModelPurpose::Summary)?
             .await?;
+        if !events
+            .last()
+            .is_some_and(|event| matches!(event, ModelEvent::Completed { .. }))
+        {
+            return Err(Error::Indeterminate(operation_id));
+        }
         let text = self.collect_summary_text(events)?;
         self.publish_summary(
             journal,

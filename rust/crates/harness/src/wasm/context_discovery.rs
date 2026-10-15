@@ -303,7 +303,10 @@ pub async fn read_pinned_context_path(
 ) -> std::result::Result<JsValue, JsValue> {
     let source: PinnedContextPath = from_js(source)?;
     let reader = BrowserReader::new(reader, u64::from(maximum_bytes)).map_err(js_error)?;
-    let (file, bytes) = source.read(&reader).await.map_err(js_error)?;
+    let (file, bytes) = source
+        .read(&reader, u64::from(maximum_bytes))
+        .await
+        .map_err(js_error)?;
     let body = ContextPathResult { file, bytes };
     let result = js_sys::Object::new();
     Reflect::set(

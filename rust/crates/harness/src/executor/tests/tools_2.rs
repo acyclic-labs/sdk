@@ -28,7 +28,7 @@ async fn stock_tool_input_obeys_narrow_executor_bound_before_journal_io() -> Res
     };
     let executor = StockExecutor::new(
         Model::new("test".into(), "scoped".into(), "1".into(), Value::Null)?,
-        Arc::new(ScriptedModel::default()),
+        Arc::new(scripted_model()),
         ContextPipeline::default(),
         tools,
     )

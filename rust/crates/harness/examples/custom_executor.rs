@@ -4,13 +4,11 @@ use acyclic_harness::{
     Error, Result,
     context::ContextPipeline,
     executor::{ExecutionJournal, Executor, StockExecutor, TurnInput, TurnOutput},
-    model::{Model, ModelEvent, ModelProvider, PreparedModelRequest},
+    model::{Model, ModelEvent},
+    test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedTurn},
     tool::ToolRegistry,
 };
-use futures::{
-    future::BoxFuture,
-    stream::{self, BoxStream},
-};
+use futures::future::BoxFuture;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -45,24 +43,15 @@ impl Executor for CustomExecutor {
     }
 }
 
-struct MockModel;
-impl ModelProvider for MockModel {
-    fn generate<'a>(
-        &'a self,
-        _: PreparedModelRequest,
-        _dispatch: acyclic_harness::model::ModelDispatch,
-    ) -> BoxStream<'a, Result<ModelEvent>> {
-        Box::pin(stream::iter([Ok(ModelEvent::Completed {
-            metadata: Value::Null,
-        })]))
-    }
-}
-
 fn main() -> Result<()> {
     let _executor: Box<dyn Executor> = Box::new(CustomExecutor(
         StockExecutor::new(
             Model::new("example".into(), "mock".into(), "1".into(), Value::Null)?,
-            Arc::new(MockModel),
+            Arc::new(ScriptedModelProvider::new([ScriptedTurn::Events(vec![
+                ScriptedEvent::Event(ModelEvent::Completed {
+                    metadata: Value::Null,
+                }),
+            ])])),
             ContextPipeline::default(),
             ToolRegistry::default(),
         )

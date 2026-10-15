@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_fs::{CancellationToken, WorkBudget};
+use acyclic_fs::{CancellationToken, WorkBudget, WorkCounters};
 
 fn control_budget() -> WorkBudget {
     WorkBudget {
@@ -86,7 +86,11 @@ fn accepted_completion_uses_only_reserved_credit() {
     assert_eq!(work.receipt(), prefix);
     assert!(io.copy_bytes(2).is_err());
     assert_eq!(work.receipt().bytes_copied, 5);
-    drop(io);
+    assert_eq!(io.completion_work().unwrap(), work.journal_work().unwrap());
+    let pool = io.into_custody();
+    assert_eq!(pool.bytes(), 16);
+    assert!(pool.work().shares_allocation_context(&work));
+    drop(pool);
     assert!(
         work.charge(WorkCounters {
             bytes_copied: 1,

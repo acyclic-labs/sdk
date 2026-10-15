@@ -4,7 +4,10 @@ use crate::kernel::{
     ProofDataCustody,
     allocation::{AllocationLedger, LogicalVecCapacity},
 };
-use std::sync::{Arc, Weak};
+use std::sync::{
+    Arc, Weak,
+    atomic::{AtomicBool, Ordering},
+};
 
 type Observer = (Arc<ProofDataCustody>, u64, Option<u128>);
 pub(super) const SCAN: WorkCounters = WorkCounters {
@@ -41,8 +44,9 @@ pub(crate) struct Admissions {
     pub(super) pending: WorkCounters,
     pub(super) poisoned: bool,
     pub(super) io_failure: Option<DemandError>,
-    pub(super) native_mount_admission_pending: bool,
     observers: (Vec<Observer>, LogicalVecCapacity),
+    pub(super) native_mount_admission_pending: bool,
+    pub(super) native_mount_dirty: Option<Arc<AtomicBool>>,
     pub(super) native_mount_admissions: (
         Vec<(Weak<NativeMountAllocationCustody>, u64)>,
         LogicalVecCapacity,
@@ -73,17 +77,21 @@ fn mount_bytes(entry: &(Weak<NativeMountAllocationCustody>, u64)) -> u64 {
 }
 impl Admissions {
     pub(super) fn live_bytes(&self, live: u64) -> u64 {
+        let mounts = if self
+            .native_mount_dirty
+            .as_ref()
+            .is_some_and(|dirty| dirty.load(Ordering::Acquire))
+        {
+            self.native_mount_admissions.0.as_slice()
+        } else {
+            &[]
+        };
         let backing = self
             .observers
             .0
             .iter()
             .map(|entry| (entry.1, observer_bytes(entry)))
-            .chain(
-                self.native_mount_admissions
-                    .0
-                    .iter()
-                    .map(|entry| (entry.1, mount_bytes(entry))),
-            );
+            .chain(mounts.iter().map(|entry| (entry.1, mount_bytes(entry))));
         let (released, unrecorded) =
             backing.fold((0u64, 0u64), |(released, unrecorded), (paid, actual)| {
                 (
@@ -169,19 +177,8 @@ impl DemandWork {
             let actual = observer_bytes(entry);
             (&mut entry.1, actual)
         });
-        let mut retired_mount = false;
-        let mounts = self
-            .roots
-            .native_mount_admissions
-            .0
-            .iter_mut()
-            .map(|entry| {
-                let actual = mount_bytes(entry);
-                retired_mount |= actual == 0;
-                (&mut entry.1, actual)
-            });
         let mut failure = None;
-        for (paid, actual) in observers.chain(mounts) {
+        for (paid, actual) in observers {
             if actual < *paid {
                 self.allocations
                     .release(*paid - actual)
@@ -196,9 +193,7 @@ impl DemandWork {
             }
             *paid = actual;
         }
-        if retired_mount {
-            self.prune_native_mount_admissions()?;
-        }
+        self.reconcile_native_mounts(&mut failure)?;
         #[cfg(feature = "native-mount")]
         {
             self.roots.view_gates.reconcile(&mut self.allocations)?;
@@ -207,6 +202,59 @@ impl DemandWork {
                 .reconcile_work(&mut self.work, &mut self.budget)?;
         }
         failure.map_or(Ok(()), Err)
+    }
+    fn reconcile_native_mounts(
+        &mut self,
+        failure: &mut Option<crate::WorkError>,
+    ) -> Result<(), crate::WorkError> {
+        let Some(dirty) = self.roots.native_mount_dirty.as_ref() else {
+            return Ok(());
+        };
+        if !dirty.load(Ordering::Acquire) || !dirty.swap(false, Ordering::AcqRel) {
+            return Ok(());
+        }
+        let mut empty = true;
+        let mut retired_mount = false;
+        for entry in &mut self.roots.native_mount_admissions.0 {
+            let actual = mount_bytes(entry);
+            let recorded = if actual < entry.1 {
+                self.allocations
+                    .release(entry.1 - actual)
+                    .map_err(|error| error.into_work_or(crate::WorkError::Overflow))
+            } else if actual > entry.1 {
+                self.allocations
+                    .record_owned_bytes(actual - entry.1, &mut self.work)
+                    .map_err(|error| error.into_work_or(crate::WorkError::Overflow))
+            } else {
+                Ok(())
+            };
+            if let Err(error) = recorded {
+                dirty.store(true, Ordering::Release);
+                return Err(error);
+            }
+            if actual > entry.1
+                && let Err(error) = self.work.verify(self.budget)
+            {
+                failure.get_or_insert(error);
+            }
+            entry.1 = actual;
+            empty &= actual == 0;
+            retired_mount |= actual == 0;
+        }
+        if retired_mount {
+            self.prune_native_mount_admissions()?;
+        }
+        if empty && self.roots.native_mount_admission_pending {
+            if let Some(dirty) = &self.roots.native_mount_dirty {
+                dirty.store(true, Ordering::Release);
+            }
+        } else if empty {
+            drop(self.roots.native_mount_dirty.take());
+            self.allocations
+                .release(std::mem::size_of::<AtomicBool>() as u64)
+                .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
+        }
+        Ok(())
     }
     fn prune_native_mount_admissions(&mut self) -> Result<(), crate::WorkError> {
         if self.roots.native_mount_admission_pending {

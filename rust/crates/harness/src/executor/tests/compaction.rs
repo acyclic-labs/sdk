@@ -1,6 +1,88 @@
 use super::*;
 
 #[tokio::test]
+async fn incomplete_summaries_reconcile_until_completion_without_redispatch() -> Result<()> {
+    for prefix in ["", "first-"] {
+        let observed = if prefix.is_empty() {
+            vec![]
+        } else {
+            vec![ModelEvent::Content {
+                delta: prefix.into(),
+            }]
+        };
+        let mut expanded = observed.clone();
+        expanded.push(ModelEvent::Content {
+            delta: "second-".into(),
+        });
+        let provider = Arc::new(
+            ScriptedModelProvider::new([ScriptedTurn::Events(
+                observed.iter().cloned().map(ScriptedEvent::Event).collect(),
+            )])
+            .with_reconciliations([
+                ScriptedReconciliation {
+                    orphan: false,
+                    observed,
+                    continuation: Some(vec![ModelEvent::Content {
+                        delta: "second-".into(),
+                    }]),
+                },
+                ScriptedReconciliation {
+                    orphan: false,
+                    observed: expanded,
+                    continuation: Some(vec![
+                        ModelEvent::Content {
+                            delta: "restored".into(),
+                        },
+                        ModelEvent::Completed {
+                            metadata: Value::Null,
+                        },
+                    ]),
+                },
+            ]),
+        );
+        let executor = uncompacted_executor(
+            Model::new("test".into(), "summary".into(), "1".into(), Value::Null)?,
+            provider.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        )
+        .with_max_output_tokens(1024)?;
+        let journal = Journal::default();
+        let operation = OperationId::new();
+        let source = crate::context::Context {
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("source".into()),
+            }],
+            ..Default::default()
+        };
+        let instruction = ModelContent::Text("Summarize this context".into());
+        for _ in 0..2 {
+            assert!(
+                matches!(executor.summarize(&journal, operation, source.clone(), instruction.clone()).await,
+                Err(Error::Indeterminate(id)) if id == operation)
+            );
+        }
+        let summary = executor
+            .summarize(&journal, operation, source.clone(), instruction.clone())
+            .await?;
+        assert_eq!(
+            journal.load(&summary.output, None)?.await?.as_ref(),
+            format!("{prefix}second-restored").as_bytes()
+        );
+        assert_eq!(
+            executor
+                .summarize(&journal, operation, source, instruction)
+                .await?,
+            summary
+        );
+        assert_eq!(provider.requests().len(), 1);
+        assert_eq!(provider.reconciliations().len(), 2);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn default_threshold_compacts_through_ordinary_model_admission() -> Result<()> {
     let journal = Journal::default();
     let provider = Arc::new(CountedModel {
@@ -602,7 +684,7 @@ async fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled()
 
 #[tokio::test]
 async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<()> {
-    let provider = Arc::new(ScriptedModel::recoverable());
+    let provider = Arc::new(recoverable_model(1));
     let executor = uncompacted_executor(
         Model::new("test".into(), "summary".into(), "1".into(), Value::Null)?,
         provider.clone(),
@@ -635,7 +717,7 @@ async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<(
             .await
             .is_err()
     );
-    assert_eq!(provider.reconciliations.load(Ordering::SeqCst), 0);
+    assert_eq!(provider.reconciliations().len(), 0);
     let summary = executor
         .summarize(&journal, operation, source.clone(), instruction.clone())
         .await?;
@@ -653,14 +735,14 @@ async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<(
             .await?,
         summary
     );
-    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
-    assert_eq!(provider.reconciliations.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.requests().len(), 1);
+    assert_eq!(provider.reconciliations().len(), 1);
     Ok(())
 }
 
 #[tokio::test]
 async fn summary_and_response_reconcile_inside_one_parent_execution() -> Result<()> {
-    let provider = Arc::new(ScriptedModel::recoverable());
+    let provider = Arc::new(recoverable_model(2));
     let executor = uncompacted_executor(
         Model::new("test".into(), "summary".into(), "1".into(), Value::Null)?,
         provider.clone(),
@@ -710,7 +792,7 @@ async fn summary_and_response_reconcile_inside_one_parent_execution() -> Result<
             .await
             .is_err()
     );
-    assert_eq!(provider.reconciliations.load(Ordering::SeqCst), 0);
+    assert_eq!(provider.reconciliations().len(), 0);
     let summary = executor
         .summarize_in_turn(&journal, &parent, 0, source.clone(), instruction.clone())
         .await?;
@@ -733,8 +815,8 @@ async fn summary_and_response_reconcile_inside_one_parent_execution() -> Result<
             .await?,
         summary
     );
-    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
-    assert_eq!(provider.reconciliations.load(Ordering::SeqCst), 2);
+    assert_eq!(provider.requests().len(), 2);
+    assert_eq!(provider.reconciliations().len(), 2);
     let (_, admissions, _) = replay_execution(
         &journal,
         parent.operation_id,
