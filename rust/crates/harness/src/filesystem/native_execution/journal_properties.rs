@@ -67,7 +67,7 @@ proptest! {
         for value in counters.as_object_mut().unwrap().values_mut() { *value = counter.into(); }
         journal.work = serde_json::from_value(counters).unwrap();
         journal.preimages = images.into_iter().map(|image| MaterializationPreimage { image, custody: None }).collect();
-        let compact = serde_json::to_vec(&journal).unwrap();
+        let compact = serde_json::to_vec(&super::journal_encoding::Canonical(&journal)).unwrap();
         let counters = journal.work;
         journal.work = WorkCounters::UNBOUNDED;
         journal.revision = u64::MAX;
@@ -78,7 +78,7 @@ proptest! {
         let mut output = std::io::Cursor::new(buffer.as_mut_slice());
         let mut encoded = Ok(());
         let allocations = allocation_counter::measure(|| {
-            encoded = serde_json::to_writer(&mut output, &journal);
+            encoded = NativePreparationCompletionTemplate::write_journal(&journal, &mut output);
         });
         prop_assert!(encoded.is_ok());
         prop_assert_eq!(allocations.count_total, 0);

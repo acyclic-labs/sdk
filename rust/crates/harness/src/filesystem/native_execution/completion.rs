@@ -13,6 +13,13 @@ pub(crate) struct NativePreparationCompletionTemplate {
 }
 
 impl NativePreparationCompletionTemplate {
+    pub(crate) fn write_journal<W: std::io::Write>(
+        journal: &MaterializationJournal,
+        writer: W,
+    ) -> serde_json::Result<()> {
+        serde_json::to_writer(writer, &super::journal_encoding::Canonical(journal))
+    }
+
     pub(super) fn new<P: StreamProvider>(
         mut journal: MaterializationJournal,
         owner: &TaskJournalOwner<P>,

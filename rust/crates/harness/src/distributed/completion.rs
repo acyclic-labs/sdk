@@ -144,11 +144,9 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
             template.set_completed_work(counters)?;
             // The accepted reservation covers every write within this fixed buffer.
             let mut output = std::io::Cursor::new(template.output.writable());
-            let serialized = serde_json::to_writer(
+            let serialized = crate::filesystem::NativePreparationCompletionTemplate::write_journal(
+                &template.journal,
                 &mut output,
-                &crate::filesystem::native_execution::journal_encoding::Canonical(
-                    &template.journal,
-                ),
             );
             let written =
                 usize::try_from(output.position()).map_err(|_| Error::NativeBoundary {
