@@ -483,6 +483,14 @@ struct FileHandle {
     claim: Option<crate::FileId>,
 }
 
+/// What [`ProjectionState::withdraw_attributes`] restores.
+#[derive(Clone, Copy, Debug)]
+struct HandedAttributes {
+    content: Option<ContentVersion>,
+    /// How many inodes' attributes were superseded before.
+    superseding: usize,
+}
+
 /// A read-only handle to a file whose pages the kernel already holds at the
 /// version this handle opens. Reads come from those pages, so the source file
 /// opens only when a use reaches it: when the file changed since, through
@@ -579,21 +587,6 @@ impl MountOpenFile for DeferredOpenFile {
     }
 }
 
-/// A handle this session opened for a file the kernel opened without
-/// asking.
-#[derive(Clone, Copy)]
-struct Implicit {
-    handle: u64,
-    writes: bool,
-}
-
-/// What I/O the kernel sent without a handle needs of the inode's own.
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum Access {
-    Read,
-    Write,
-}
-
 /// Whether an open with `flags` may change the file's content.
 fn changes_content(flags: i32) -> bool {
     flags & libc::O_ACCMODE != libc::O_RDONLY || flags & libc::O_TRUNC != 0
@@ -671,8 +664,6 @@ struct OpenedFile<'a> {
     flags: i32,
     open_file: Arc<dyn MountOpenFile>,
     dirty: bool,
-    /// Whether the open may send the kernel small files' pages.
-    stores_pages: bool,
 }
 
 /// Mount-wide facts every attribute reply is built from.
@@ -804,10 +795,6 @@ struct ProjectionState {
     inode_by_path: HashMap<MountPath, u64>,
     inode_by_file: HashMap<crate::FileId, u64>,
     files: HashMap<u64, FileHandle>,
-    /// The handle this session opened for each inode whose I/O the kernel
-    /// sends without one (see [`FuseProjection::skips_open`]), and whether
-    /// it writes, until the kernel forgets the inode.
-    implicit: HashMap<u64, Implicit>,
     streams: DirectoryStreams,
     invalidation: InvalidationQueue,
     page_stores: PageStores,
@@ -942,19 +929,10 @@ impl ProjectionState {
         if inode == ROOT_INODE {
             return;
         }
-        let forgotten = self.by_inode.get_mut(&inode).is_some_and(|entry| {
+        let remove = self.by_inode.get_mut(&inode).is_some_and(|entry| {
             entry.lookup_references = entry.lookup_references.saturating_sub(references);
-            entry.lookup_references == 0
+            entry.lookup_references == 0 && entry.open_handles == 0
         });
-        // The kernel forgets only an inode no open file holds, so the
-        // handle its I/O arrived on is done.
-        if forgotten && let Some(implicit) = self.implicit.remove(&inode) {
-            let _ = self.discard_file_handle(inode, implicit.handle);
-        }
-        let remove = self
-            .by_inode
-            .get(&inode)
-            .is_some_and(|entry| entry.lookup_references == 0 && entry.open_handles == 0);
         if remove && let Some(entry) = self.by_inode.remove(&inode) {
             for binding in &entry.bindings {
                 if self.inode_by_path.get(&binding.path) == Some(&inode) {
@@ -1033,6 +1011,42 @@ impl ProjectionState {
             }
         }
         if admitted { CACHE_TTL } else { Duration::ZERO }
+    }
+
+    /// The version of `inode`'s attributes the kernel was last handed, for
+    /// [`Self::withdraw_attributes`]; `None` for no such inode.
+    fn handed_attributes(&self, inode: u64) -> Option<HandedAttributes> {
+        self.by_inode.get(&inode).map(|entry| HandedAttributes {
+            content: entry.kernel_content,
+            superseding: self.superseded_attributes.len(),
+        })
+    }
+
+    /// Undoes handing `inode`'s attributes to the kernel since `handed`,
+    /// for a reply that did not carry them after all.
+    fn withdraw_attributes(&mut self, inode: u64, handed: Option<HandedAttributes>) {
+        let Some(handed) = handed else {
+            return;
+        };
+        if let Some(entry) = self.by_inode.get_mut(&inode) {
+            entry.kernel_content = handed.content;
+        }
+        self.superseded_attributes.truncate(handed.superseding);
+    }
+
+    /// Pins a read-only open of `inode` to `opened`, the version its handle
+    /// reads. Were the kernel to keep another version's size, it would cut
+    /// what the handle reads to neither version whole, or, holding an empty
+    /// size, read nothing at all; that size is dropped before the open is
+    /// answered, so the kernel asks for this version's first.
+    fn pin_read(&mut self, inode: u64, opened: &MountLookup) {
+        if self
+            .by_inode
+            .get(&inode)
+            .is_some_and(|entry| !entry.kernel_reads(opened))
+        {
+            self.superseded_attributes.push(inode);
+        }
     }
 
     /// Records that a reply hands the kernel `name`'s entry for `inode`,
@@ -1281,7 +1295,6 @@ impl ProjectionState {
             flags,
             open_file,
             dirty,
-            stores_pages,
         } = opened;
         let file_id = lookup.node.file_id;
         let handle = self.next_handle;
@@ -1297,8 +1310,7 @@ impl ProjectionState {
         let claim = changes_content(flags).then_some(file_id);
         let store = match (stamp, u32::try_from(lookup.node.logical_bytes)) {
             (Some(stamp), Ok(length))
-                if stores_pages
-                    && admitted
+                if admitted
                     && cached == CachedContent::Absent
                     && claim.is_none()
                     && flags & libc::O_DIRECT == 0
@@ -1458,21 +1470,6 @@ impl ProjectionState {
         debug_assert_eq!(assigned, expected);
     }
 
-    /// The inode the kernel may still use for I/O, without having opened it
-    /// through this session, once `lookup`'s name is removed: a regular file
-    /// with one name, which the kernel holds and has no handle for yet.
-    fn unopened_referenced_inode(&self, lookup: Option<&MountLookup>) -> Option<u64> {
-        let lookup = lookup?;
-        if lookup.node.kind != MountNodeKind::Regular || lookup.node.link_count != 1 {
-            return None;
-        }
-        let inode = self.inode_by_file.get(&lookup.node.file_id).copied()?;
-        self.by_inode
-            .get(&inode)
-            .is_some_and(|entry| entry.lookup_references != 0 && entry.open_handles == 0)
-            .then_some(inode)
-    }
-
     /// The inode with open handles that loses its last name when `lookup`'s
     /// name is removed; its handles must move to a detached view first.
     fn detaching_inode(&self, lookup: Option<&MountLookup>) -> Option<u64> {
@@ -1615,6 +1612,7 @@ impl ProjectionState {
         }
         self.admit_listing(source, inode, stream.entries_stamp);
         let mut listed = false;
+        let mut in_reply = Vec::new();
         loop {
             let next = stream.emitted.saturating_add(1);
             let Some(entry) = stream.entries.pop_front() else {
@@ -1667,11 +1665,18 @@ impl ProjectionState {
                     return ListingEnd::Failed(listing, errno_on(span, error));
                 }
             };
-            let handed = self
-                .by_inode
-                .get(&attr.ino.0)
-                .map(|entry| entry.kernel_content);
-            let superseding = self.superseded_attributes.len();
+            // The kernel applies a reply's entries under the one attribute
+            // version its request was sent at, so of two entries for one
+            // inode it keeps the first's attributes and drops the second's:
+            // a file listed under a staged name and again under the name it
+            // was renamed to would keep the staged size. Its second entry
+            // starts the next reply instead.
+            if L::COUNTS_LOOKUPS && in_reply.contains(&attr.ino.0) {
+                self.release_listed_reference::<L>(attr.ino.0);
+                stream.entries.push_front(entry);
+                return ListingEnd::Listed(listing);
+            }
+            let handed = self.handed_attributes(attr.ino.0);
             let ttl = if L::COUNTS_LOOKUPS {
                 self.admit_entry(source, attr.ino.0, &child, current)
             } else {
@@ -1679,13 +1684,13 @@ impl ProjectionState {
             };
             if listing.push(next, OsStr::from_bytes(&entry.name), &attr, &ttl) {
                 // The full reply hands the kernel nothing of this entry.
-                if let (Some(handed), Some(listed)) = (handed, self.by_inode.get_mut(&attr.ino.0)) {
-                    listed.kernel_content = handed;
-                }
-                self.superseded_attributes.truncate(superseding);
+                self.withdraw_attributes(attr.ino.0, handed);
                 self.release_listed_reference::<L>(attr.ino.0);
                 stream.entries.push_front(entry);
                 return ListingEnd::Listed(listing);
+            }
+            if L::COUNTS_LOOKUPS {
+                in_reply.push(attr.ino.0);
             }
             listed = true;
             stream.emitted = next;
@@ -2333,13 +2338,6 @@ struct FuseProjection {
     /// then does with the listing cached as [`ProjectionState::directory_open_flags`]
     /// would allow for a source with view stamps.
     skips_opendir: bool,
-    /// Whether the kernel opens files without asking. It then keeps every
-    /// file's pages, which a source that reports its changes keeps coherent
-    /// (and, should its reports stop, attributes that expire at once let
-    /// the kernel drop on the next read), and sends each file's I/O on its
-    /// inode, which [`Self::handle`] gives one handle of its own. A source
-    /// that flushes when a handle closes needs every close, so it is asked.
-    skips_open: bool,
 }
 
 /// One background libfuse session.
@@ -2501,7 +2499,6 @@ impl FuseSession {
             inode_by_path: HashMap::from([(MountPath::root(), ROOT_INODE)]),
             inode_by_file: HashMap::from([(root.node.file_id, ROOT_INODE)]),
             files: HashMap::new(),
-            implicit: HashMap::new(),
             streams: DirectoryStreams::default(),
             invalidation: InvalidationQueue::default(),
             page_stores: PageStores::default(),
@@ -2531,7 +2528,6 @@ impl FuseSession {
         let filesystem = FuseProjection {
             core: Arc::clone(&core),
             skips_opendir: false,
-            skips_open: false,
         };
         let session = fuser::Session::new(filesystem, &request.destination, &config)
             .map_err(|error| NativeMountError::Driver(error.to_string()))?;
@@ -2905,21 +2901,6 @@ impl FuseProjection {
         Ok(Entry { attr, ttl })
     }
 
-    /// Opens the implicit handle of the file `lookup` names, when the kernel
-    /// may hold it open without having asked, so removing its last name
-    /// detaches it for the kernel's later I/O.
-    fn hold_unopened(&self, lookup: Option<&MountLookup>) -> Result<(), i32> {
-        if !self.skips_open {
-            return Ok(());
-        }
-        let inode = self.core.state()?.unopened_referenced_inode(lookup);
-        // The caller holds the names lock exclusively.
-        inode.map_or(Ok(()), |inode| {
-            self.reopen_implicit_named(inode, None, Access::Read)
-                .map(|_| ())
-        })
-    }
-
     fn remove_name(&self, parent: u64, name: &OsStr) -> Result<(), i32> {
         let source = self.source();
         let _names = self.core.names_exclusive()?;
@@ -2930,7 +2911,6 @@ impl FuseProjection {
         };
         let path = &child.spelled;
         let current = source.lookup(path).map_err(errno)?;
-        self.hold_unopened(current.as_ref())?;
         let detaching = self.core.state()?.detaching_inode(current.as_ref());
         let detached = detaching
             .map(|inode| source.detach_file(path).map(|detached| (inode, detached)))
@@ -2974,7 +2954,6 @@ impl FuseProjection {
         } else {
             None
         };
-        self.hold_unopened(replaced.as_ref())?;
         let detaching = self.core.state()?.detaching_inode(replaced.as_ref());
         let detached = detaching
             .map(|inode| {
@@ -3058,30 +3037,11 @@ impl FuseProjection {
         Ok(target)
     }
 
+    /// Opens `inode` with `flags` for the kernel, which may send small
+    /// files' pages with the open.
     fn open_node(&self, inode: u64, flags: i32) -> Result<(u64, FopenFlags), i32> {
-        self.open_node_storing(inode, flags, true)
-    }
-
-    /// Opens `inode` with `flags`; `storing` sends small files' pages to the
-    /// kernel with the open.
-    fn open_node_storing(
-        &self,
-        inode: u64,
-        flags: i32,
-        storing: bool,
-    ) -> Result<(u64, FopenFlags), i32> {
-        let _names = self.core.names()?;
-        self.open_node_named(inode, flags, storing)
-    }
-
-    /// [`Self::open_node_storing`] for a caller that holds the names lock.
-    fn open_node_named(
-        &self,
-        inode: u64,
-        flags: i32,
-        storing: bool,
-    ) -> Result<(u64, FopenFlags), i32> {
         let source = self.source();
+        let _names = self.core.names()?;
         let (path, file_id, stamp_before, binding_before, held) = {
             let state = self.core.state()?;
             admit_open(state.defaults.writable, flags)?;
@@ -3090,11 +3050,8 @@ impl FuseProjection {
                 return Err(libc::EISDIR);
             }
             // Facts a read-only open can stand on without the source: pages
-            // the kernel holds at the version these facts describe. An open
-            // that stores no pages is for a read the kernel's pages could
-            // not serve, so it opens the source now: what it serves is then
-            // the version checked against the kernel's size below.
-            let held = (storing && !changes_content(flags) && flags & libc::O_DIRECT == 0)
+            // the kernel holds at the version these facts describe.
+            let held = (!changes_content(flags) && flags & libc::O_DIRECT == 0)
                 .then(|| state.by_inode.get(&inode))
                 .flatten()
                 .filter(|entry| entry.cached_content == Some(ContentVersion::of(&entry.lookup)))
@@ -3134,19 +3091,23 @@ impl FuseProjection {
         if state.path(inode).ok() != Some(&path) {
             return Err(libc::ESTALE);
         }
-        // A change this mount makes keeps the kernel's size current itself.
-        let changing = changes_content(flags) || state.page_stores.claims.contains_key(&file_id);
-        let entry = state.by_inode.get(&inode).ok_or(libc::ESTALE)?;
-        if entry.lookup.node.file_id != file_id {
+        if state
+            .by_inode
+            .get(&inode)
+            .ok_or(libc::ESTALE)?
+            .lookup
+            .node
+            .file_id
+            != file_id
+        {
             return Err(libc::ESTALE);
         }
-        if !changing && !entry.kernel_reads(&refreshed) {
-            // The file changed around the mount since the kernel was handed
-            // its size, which would cut what this open reads to neither
-            // version whole. Refuse it as an open of a replaced file is
-            // refused; the kernel reads the attributes again first.
-            state.superseded_attributes.push(inode);
-            return Err(libc::ESTALE);
+        // The open pins the version it opened: a size of any other version
+        // the kernel holds is dropped before the open is answered, so the
+        // kernel asks again before it reads through this handle. A change
+        // this open makes keeps the kernel's size current itself.
+        if !changes_content(flags) {
+            state.pin_read(inode, &refreshed);
         }
         let entry = state.by_inode.get_mut(&inode).ok_or(libc::ESTALE)?;
         entry.lookup = refreshed;
@@ -3164,7 +3125,6 @@ impl FuseProjection {
                 flags,
                 open_file,
                 dirty: truncated,
-                stores_pages: storing,
             },
         )?;
         drop(state);
@@ -3342,7 +3302,6 @@ impl FuseProjection {
                 flags,
                 open_file,
                 dirty,
-                stores_pages: true,
             };
             let (handle, open_flags, store) = state.admit_file_handle(source, inode, opened)?;
             Ok((attr, handle, open_flags, store))
@@ -3353,98 +3312,6 @@ impl FuseProjection {
         drop(state);
         let open_flags = self.store_pages(store, open_flags);
         Ok((Entry { attr, ttl }, handle, open_flags))
-    }
-
-    /// Runs `operation` with the handle for I/O the kernel sent on `handle`:
-    /// that handle, or for a file the kernel opened without asking (handle
-    /// 0), the one this session holds for the inode, opened to write on its
-    /// first change. A read of a file the session holds no handle for opens
-    /// one for its own duration, so a file that is only read holds nothing
-    /// open.
-    fn with_handle<T>(
-        &self,
-        inode: u64,
-        handle: u64,
-        access: Access,
-        operation: impl FnOnce(u64) -> Result<T, i32>,
-    ) -> Result<T, i32> {
-        if handle != 0 || !self.skips_open {
-            return operation(handle);
-        }
-        let held = self.core.state()?.implicit.get(&inode).copied();
-        match (held, access) {
-            (Some(implicit), Access::Read) => operation(implicit.handle),
-            (Some(implicit), Access::Write) if implicit.writes => operation(implicit.handle),
-            (_, Access::Write) => operation(self.reopen_implicit(inode, held, access)?),
-            (None, Access::Read) => {
-                let (transient, _) = self.open_node_storing(inode, libc::O_RDONLY, false)?;
-                let result = operation(transient);
-                let _ = self.core.state()?.discard_file_handle(inode, transient);
-                result
-            }
-        }
-    }
-
-    /// Opens `inode`'s implicit handle for `access` in place of `stale`,
-    /// the one it held, if any. The kernel reads what it does not hold
-    /// itself, so the open stores no pages.
-    fn reopen_implicit(
-        &self,
-        inode: u64,
-        stale: Option<Implicit>,
-        access: Access,
-    ) -> Result<u64, i32> {
-        let _names = self.core.names()?;
-        self.reopen_implicit_named(inode, stale, access)
-    }
-
-    /// [`Self::reopen_implicit`] for a caller that holds the names lock.
-    fn reopen_implicit_named(
-        &self,
-        inode: u64,
-        stale: Option<Implicit>,
-        access: Access,
-    ) -> Result<u64, i32> {
-        let writes = access == Access::Write || stale.is_some_and(|stale| stale.writes);
-        let flags = if writes { libc::O_RDWR } else { libc::O_RDONLY };
-        let (opened, _) = self.open_node_named(inode, flags, false)?;
-        let mut state = self.core.state()?;
-        let current = state.implicit.get(&inode).map(|implicit| implicit.handle);
-        if current.is_some() && current != stale.map(|stale| stale.handle) {
-            // Another callback reopened it meanwhile.
-            let _ = state.discard_file_handle(inode, opened);
-            return current.ok_or(libc::ESTALE);
-        }
-        if let Some(stale) = state.implicit.insert(
-            inode,
-            Implicit {
-                handle: opened,
-                writes,
-            },
-        ) {
-            let _ = state.discard_file_handle(inode, stale.handle);
-        }
-        Ok(opened)
-    }
-
-    /// Reads for I/O the kernel sent on `handle`. A held implicit handle
-    /// serves every open the kernel made without asking, so when the file
-    /// changed around the mount since it opened, it reopens once to read
-    /// what those later opens see.
-    fn read_through(&self, inode: u64, handle: u64, offset: u64, size: u32) -> Result<Bytes, i32> {
-        let read = self.with_handle(inode, handle, Access::Read, |opened| {
-            self.read_handle(inode, opened, offset, size)
-        });
-        match read {
-            Err(libc::ESTALE) if handle == 0 && self.skips_open => {
-                let Some(stale) = self.core.state()?.implicit.get(&inode).copied() else {
-                    return Err(libc::ESTALE);
-                };
-                let reopened = self.reopen_implicit(inode, Some(stale), Access::Read)?;
-                self.read_handle(inode, reopened, offset, size)
-            }
-            read => read,
-        }
     }
 
     fn read_handle(&self, inode: u64, handle: u64, offset: u64, size: u32) -> Result<Bytes, i32> {
@@ -3967,11 +3834,11 @@ impl Filesystem for FuseProjection {
             .contains(InitFlags::FUSE_NO_OPENDIR_SUPPORT)
             && ProjectionState::directory_open_flags(self.source())
                 .contains(FopenFlags::FOPEN_CACHE_DIR | FopenFlags::FOPEN_KEEP_CACHE);
-        self.skips_open = config
-            .capabilities()
-            .contains(InitFlags::FUSE_NO_OPEN_SUPPORT)
-            && self.source().view_stamp().is_some()
-            && !self.source().flush_on_handle_close();
+        // Every file open is answered, never skipped (`FUSE_NO_OPEN_SUPPORT`):
+        // an open pins the version its handle reads and drops any other
+        // size the kernel holds (see `ProjectionState::pin_read`). A kernel
+        // that opens without asking reads by the size it holds, and an empty
+        // size reads nothing at all, so no reply could correct it.
         let supported = REQUESTED_CAPABILITIES & config.capabilities();
         config
             .add_capabilities(supported)
@@ -4244,10 +4111,6 @@ impl Filesystem for FuseProjection {
             self.core.request("open"),
             callback_span!(TRACE, open, ino = inode.0),
         );
-        if self.skips_open {
-            // `ENOSYS` tells the kernel to open every file without asking.
-            return reply.error(errno_on(&_request.1, libc::ENOSYS));
-        }
         respond!(
             reply,
             _request.1,
@@ -4284,7 +4147,7 @@ impl Filesystem for FuseProjection {
         respond!(
             reply,
             _request.1,
-            self.read_through(inode.0, fh.0, offset, size),
+            self.read_handle(inode.0, fh.0, offset, size),
             |bytes| {
                 reply.data(&bytes);
             }
@@ -4322,9 +4185,7 @@ impl Filesystem for FuseProjection {
         respond!(
             reply,
             _request.1,
-            self.with_handle(inode.0, fh.0, Access::Write, |handle| {
-                self.write_handle(inode.0, handle, offset, data)
-            }),
+            self.write_handle(inode.0, fh.0, offset, data),
             |written| {
                 reply.written(written);
             }
@@ -4344,9 +4205,7 @@ impl Filesystem for FuseProjection {
             self.core.request("fsync"),
             callback_span!(DEBUG, fsync, ino = inode.0, fh = fh.0),
         );
-        let flushed = self.with_handle(inode.0, fh.0, Access::Read, |handle| {
-            self.flush_handle(inode.0, handle, true, false)
-        });
+        let flushed = self.flush_handle(inode.0, fh.0, true, false);
         respond!(reply, &_request.1, flushed, |()| {
             reply.ok();
         });
@@ -4365,11 +4224,6 @@ impl Filesystem for FuseProjection {
             self.core.request("flush"),
             callback_span!(DEBUG, flush, ino = inode.0, fh = fh.0),
         );
-        if self.skips_open && fh.0 == 0 {
-            // A close flushes nothing for this source (see `skips_open`), and
-            // `ENOSYS` tells the kernel to stop sending closes.
-            return reply.error(errno_on(&_request.1, libc::ENOSYS));
-        }
         respond!(
             reply,
             _request.1,
@@ -4614,9 +4468,7 @@ impl Filesystem for FuseProjection {
         respond!(
             reply,
             &_request.1,
-            self.with_handle(inode.0, fh.0, Access::Write, |handle| {
-                self.allocate(inode.0, handle, offset, length, mode)
-            }),
+            self.allocate(inode.0, fh.0, offset, length, mode),
             |()| reply.ok()
         );
     }
@@ -4635,9 +4487,7 @@ impl Filesystem for FuseProjection {
             self.core.request("lseek"),
             callback_span!(TRACE, lseek, ino = inode.0, fh = fh.0, offset = offset),
         );
-        let found = self.with_handle(inode.0, fh.0, Access::Read, |handle| {
-            self.seek(inode.0, handle, offset, whence)
-        });
+        let found = self.seek(inode.0, fh.0, offset, whence);
         respond!(reply, &_request.1, found, |found| {
             reply.offset(found);
         });
@@ -4665,20 +4515,16 @@ impl Filesystem for FuseProjection {
             self.core.request("copy_file_range"),
             callback_span!(TRACE, copy_file_range, len = length),
         );
-        let copied = self.with_handle(inode_in.0, fh_in.0, Access::Read, |handle_in| {
-            self.with_handle(inode_out.0, fh_out.0, Access::Write, |handle_out| {
-                self.copy_range(
-                    inode_in.0,
-                    handle_in,
-                    offset_in,
-                    inode_out.0,
-                    handle_out,
-                    offset_out,
-                    length,
-                    flags.bits(),
-                )
-            })
-        });
+        let copied = self.copy_range(
+            inode_in.0,
+            fh_in.0,
+            offset_in,
+            inode_out.0,
+            fh_out.0,
+            offset_out,
+            length,
+            flags.bits(),
+        );
         respond!(reply, &_request.1, copied, |written| reply.written(written));
     }
 
@@ -4834,7 +4680,7 @@ mod tests {
         MountSourceError, MountViewLease, ViewObserver,
     };
     use super::{
-        CachedContent, ConfirmedNames, InodeEntry, KernelCacheItem,
+        CachedContent, ConfirmedNames, ContentVersion, InodeEntry, KernelCacheItem,
         MAXIMUM_NEGATIVE_ENTRIES_PER_DIRECTORY, MountFilesystem, MountLookup, MountNode,
         MountNodeKind, MountOpenFile, MountPath, MountSeekTarget, PAGE_STORE_LIMIT, PageStores,
         ROOT_INODE, ViewStamp, admit_open, cached_projected_lookup, changes_content,
@@ -4891,7 +4737,6 @@ mod tests {
             inode_by_path: HashMap::new(),
             inode_by_file: HashMap::new(),
             files: HashMap::new(),
-            implicit: HashMap::new(),
             streams: super::DirectoryStreams::default(),
             invalidation: super::InvalidationQueue::default(),
             page_stores: PageStores::default(),
@@ -4935,6 +4780,76 @@ mod tests {
             intern(&mut state, name("first"))?,
             current,
             "an open inode remains the same for its other hardlink name"
+        );
+        Ok(())
+    }
+
+    /// Interns one regular file at `lookup` the kernel was handed.
+    fn handed_inode(state: &mut super::ProjectionState, lookup: &MountLookup) -> Result<u64, i32> {
+        let inode = intern_projected(
+            &mut state.next_inode,
+            &mut state.by_inode,
+            &mut state.inode_by_path,
+            &mut state.inode_by_file,
+            name("file"),
+            lookup,
+            None,
+            true,
+        )?;
+        state
+            .by_inode
+            .get_mut(&inode)
+            .ok_or(libc::ESTALE)?
+            .kernel_content = Some(ContentVersion::of(lookup));
+        Ok(inode)
+    }
+
+    #[test]
+    fn an_open_of_a_version_the_kernel_holds_no_size_of_drops_its_size() -> Result<(), i32> {
+        let mut state = empty_projection_state();
+        let file_id = FileId::new();
+        let inode = handed_inode(&mut state, &regular(file_id, 4))?;
+
+        state.pin_read(inode, &regular(file_id, 4));
+        assert!(state.superseded_attributes.is_empty());
+        // The kernel would cut a read of the new version to the old size.
+        state.pin_read(inode, &regular(file_id, 5));
+        assert_eq!(
+            state.superseded_attributes,
+            [inode],
+            "the kernel drops the old size and asks again"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_listing_entry_left_out_of_its_reply_hands_the_kernel_nothing() -> Result<(), i32> {
+        let mut state = empty_projection_state();
+        let file_id = FileId::new();
+        let inode = handed_inode(&mut state, &regular(file_id, 4))?;
+        // Superseded earlier, by an entry the reply carries.
+        state.superseded_attributes.push(inode + 1);
+
+        let handed = state.handed_attributes(inode);
+        let entry = state.by_inode.get_mut(&inode).ok_or(libc::ESTALE)?;
+        entry.kernel_content = Some(ContentVersion::of(&regular(file_id, 5)));
+        state.superseded_attributes.push(inode);
+        state.withdraw_attributes(inode, handed);
+
+        assert_eq!(
+            state
+                .by_inode
+                .get(&inode)
+                .ok_or(libc::ESTALE)?
+                .kernel_content,
+            Some(ContentVersion::of(&regular(file_id, 4)))
+        );
+        assert_eq!(state.superseded_attributes, [inode + 1]);
+        state.pin_read(inode, &regular(file_id, 4));
+        assert_eq!(
+            state.superseded_attributes,
+            [inode + 1],
+            "the kernel holds this size"
         );
         Ok(())
     }

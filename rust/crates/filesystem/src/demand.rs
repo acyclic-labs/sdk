@@ -1446,8 +1446,7 @@ pub mod native {
         /// held beneath the root costs several.
         #[cfg(not(windows))]
         fn named_stat(&self) -> std::io::Result<crate::native_host::HostStat> {
-            std::fs::symlink_metadata(self.provider.inner.path.join(&self.relative))
-                .map(cap_std::fs::Metadata::from_just_metadata)
+            crate::native_host::HostStat::named(&self.provider.inner.path.join(&self.relative))
         }
 
         /// What the file's name holds now, by one query against the held root.
@@ -1970,16 +1969,22 @@ pub mod native {
         SourceVersion(*hash.finalize().as_bytes())
     }
 
-    /// A file's identity: its device and inode, and its birth time, which
-    /// tells a new file apart from a removed one whose inode the host reused.
-    /// Every name of one file shares it. A file system that records no birth
-    /// time (a few do not) cannot tell reuse apart by identity alone.
+    /// A file's identity: its device and inode, its file handle, which
+    /// carries the inode's generation where the file system issues handles,
+    /// and its birth time. Either tells a new file apart from a removed one
+    /// whose inode the host reused; the birth time alone does not when both
+    /// were born within one tick of its clock. Every name of one file shares
+    /// it. A file system with neither handles nor birth times (a few) cannot
+    /// tell reuse apart by identity alone.
     #[cfg(unix)]
     fn file_identity(metadata: &HostStat) -> [u8; 32] {
         let mut hash = blake3::Hasher::new();
         hash.update(b"acyclic-fs-native-source-file-v1\0");
         hash.update(&metadata.dev().to_le_bytes());
         hash.update(&metadata.ino().to_le_bytes());
+        if let Some(handle) = metadata.handle() {
+            hash.update(handle);
+        }
         if let Some(born) = metadata
             .created()
             .ok()

@@ -79,7 +79,113 @@ pub struct HostDataRange {
 /// One object's kind, size, times, and identity, read without following its
 /// name's final link.
 #[cfg(not(windows))]
-pub type HostStat = Metadata;
+#[derive(Clone, Debug)]
+pub struct HostStat {
+    metadata: Metadata,
+    handle: Option<[u8; 32]>,
+}
+
+#[cfg(not(windows))]
+impl HostStat {
+    /// A digest of the object's kernel file handle, which names its inode
+    /// and, unlike the inode number, that inode's generation: a file
+    /// created on a removed one's inode gets another, even within one tick
+    /// of the birth time. `None` where the file system issues no handles.
+    #[must_use]
+    pub const fn handle(&self) -> Option<&[u8; 32]> {
+        self.handle.as_ref()
+    }
+
+    /// `metadata` with the handle of the object `path` names relative to
+    /// `directory` (the directory itself when `path` is empty). The two
+    /// queries are separate, so a name replaced between them pairs one
+    /// object's facts with another's handle: an identity no object has,
+    /// which the next query of the name corrects.
+    fn at(metadata: Metadata, directory: &impl std::os::fd::AsFd, path: &Path) -> Self {
+        Self {
+            metadata,
+            handle: file_handle_at(std::os::fd::AsRawFd::as_raw_fd(&directory.as_fd()), path),
+        }
+    }
+
+    /// Stats what the host `path` names, without following its final link,
+    /// as a held root stats a name.
+    ///
+    /// # Errors
+    ///
+    /// Fails as `std::fs::symlink_metadata` does.
+    pub fn named(path: &Path) -> io::Result<Self> {
+        Ok(Self {
+            metadata: Metadata::from_just_metadata(std::fs::symlink_metadata(path)?),
+            handle: file_handle_at(libc::AT_FDCWD, path),
+        })
+    }
+}
+
+#[cfg(not(windows))]
+impl std::ops::Deref for HostStat {
+    type Target = Metadata;
+
+    fn deref(&self) -> &Metadata {
+        &self.metadata
+    }
+}
+
+/// [`HostStat::handle`] of what `path` names relative to `directory`,
+/// without following its final link.
+#[cfg(target_os = "linux")]
+fn file_handle_at(directory: std::os::fd::RawFd, path: &Path) -> Option<[u8; 32]> {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    /// `struct file_handle` with room for `MAX_HANDLE_SZ` bytes.
+    #[repr(C)]
+    struct FileHandle {
+        handle_bytes: libc::c_uint,
+        handle_type: libc::c_int,
+        f_handle: [u8; 128],
+    }
+
+    let name = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let flags = if path.as_os_str().is_empty() {
+        libc::AT_EMPTY_PATH
+    } else {
+        0
+    };
+    let mut handle = FileHandle {
+        handle_bytes: 128,
+        handle_type: 0,
+        f_handle: [0; 128],
+    };
+    let mut mount_id: libc::c_int = 0;
+    // SAFETY: every pointer refers to a live, writable local of the layout
+    // the kernel expects, `handle_bytes` is the capacity of `f_handle`, and
+    // `name` is NUL-terminated; the call is synchronous.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_name_to_handle_at,
+            directory,
+            name.as_ptr(),
+            std::ptr::from_mut(&mut handle),
+            std::ptr::from_mut(&mut mount_id),
+            flags,
+        )
+    };
+    if result != 0 {
+        return None;
+    }
+    let bytes = handle
+        .f_handle
+        .get(..usize::try_from(handle.handle_bytes).ok()?)?;
+    let mut digest = blake3::Hasher::new();
+    digest.update(&handle.handle_type.to_le_bytes());
+    digest.update(bytes);
+    Some(*digest.finalize().as_bytes())
+}
+
+#[cfg(all(not(windows), not(target_os = "linux")))]
+fn file_handle_at(_directory: std::os::fd::RawFd, _path: &Path) -> Option<[u8; 32]> {
+    None
+}
 
 /// One object's kind, size, times, attributes, and identity, read without
 /// following its name's final link. Every plain object's facts come from one
@@ -283,20 +389,27 @@ pub struct HostListedEntry {
 /// The names of one held directory, each with its facts, read relative to
 /// the directory itself so no entry costs a path walk.
 #[cfg(not(windows))]
-pub struct HostStatReader(ReadDir);
+pub struct HostStatReader {
+    entries: ReadDir,
+    directory: Dir,
+}
 
 #[cfg(not(windows))]
 impl Iterator for HostStatReader {
     type Item = io::Result<HostListedEntry>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let entry = match self.0.next()? {
+        let entry = match self.entries.next()? {
             Ok(entry) => entry,
             Err(error) => return Some(Err(error)),
         };
         // One no-follow stat relative to the held directory descriptor.
         let stat = match entry.metadata() {
-            Ok(stat) => Some(stat),
+            Ok(stat) => Some(HostStat::at(
+                stat,
+                &self.directory,
+                Path::new(&entry.file_name()),
+            )),
             Err(error) if error.kind() == io::ErrorKind::NotFound => None,
             Err(error) => return Some(Err(error)),
         };
@@ -1098,7 +1211,11 @@ impl HostRoot {
         }
         #[cfg(not(windows))]
         {
-            self.open_dir_held(path)?.entries().map(HostStatReader)
+            let directory = self.open_dir_held(path)?;
+            Ok(HostStatReader {
+                entries: directory.entries()?,
+                directory,
+            })
         }
     }
 
@@ -1168,7 +1285,13 @@ impl HostRoot {
     /// [`Self::symlink_metadata`] does.
     #[cfg(not(windows))]
     pub fn stat(&self, path: &Path) -> io::Result<HostStat> {
-        self.symlink_metadata(path)
+        // The handle query resolves `path` as the kernel does, but only
+        // after the held walk resolved it beneath the root.
+        Ok(HostStat::at(
+            self.symlink_metadata(path)?,
+            &self.directory,
+            path,
+        ))
     }
 
     /// Stats `path` without following its final link, as
@@ -1217,7 +1340,11 @@ impl HostRoot {
     /// name: the same query reports the same facts for the same object.
     #[cfg(not(windows))]
     pub fn stat_file(&self, file: &File) -> io::Result<HostStat> {
-        Metadata::from_file(file)
+        Ok(HostStat::at(
+            Metadata::from_file(file)?,
+            file,
+            Path::new(""),
+        ))
     }
 
     /// Stats one file this root opened, exactly as [`Self::stat`] stats its
@@ -4015,6 +4142,37 @@ mod tests {
         assert_eq!(HostRoot::scan_held_dir(&root_directory)?.count(), 1);
         for path in [&file, &directory, &root_path] {
             assert_eq!(std::fs::metadata(path)?.atime(), 1_700_000_000);
+        }
+        Ok(())
+    }
+
+    /// Every way of stating one file reports one handle, so its identity
+    /// does not depend on which query saw it, and another file reports
+    /// another.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn every_stat_of_a_file_reports_its_one_handle() -> std::io::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        std::fs::write(temporary.path().join("file"), b"body")?;
+        std::fs::write(temporary.path().join("other"), b"body")?;
+        let root = HostRoot::open(temporary.path())?;
+
+        let named = root.stat(Path::new("file"))?;
+        let opened = root.stat_file(&std::fs::File::open(temporary.path().join("file"))?)?;
+        let absolute = super::HostStat::named(&temporary.path().join("file"))?;
+        let listed = root
+            .read_dir_stats(Path::new(""))?
+            .filter_map(Result::ok)
+            .find(|entry| entry.name == "file")
+            .and_then(|entry| entry.stat)
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
+        let handle = named.handle();
+        assert_eq!(opened.handle(), handle);
+        assert_eq!(absolute.handle(), handle);
+        assert_eq!(listed.handle(), handle);
+        let other = root.stat(Path::new("other"))?;
+        if handle.is_some() {
+            assert_ne!(other.handle(), handle);
         }
         Ok(())
     }
