@@ -112,7 +112,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
         Err(MountSourceError::Stale)
     }
 
-    async fn install_capture(
+    pub(super) async fn install_capture(
         &self,
         candidate: CheckoutCandidate<'_, A, O>,
         scope: InstallScope<'_>,
