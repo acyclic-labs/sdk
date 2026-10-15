@@ -441,7 +441,86 @@ fn historical_assistant_replay_preserves_the_current_turn_tail() {
     assert_eq!(tail.messages.len(), 2);
 }
 
+#[tokio::test]
+async fn replay_before_delayed_model_updates_does_not_reopen_a_committed_turn() {
+    for with_live_turn in [false, true] {
+        let mut state = session();
+        let committed = acyclic_harness::OperationId::from_bytes(2u128.to_be_bytes());
+        state.receive(frame(turn_delivery(0, committed))).unwrap();
+        if with_live_turn {
+            let live = acyclic_harness::OperationId::from_bytes(3u128.to_be_bytes());
+            state
+                .model_event(
+                    &owner(),
+                    live,
+                    ModelEvent::Content {
+                        delta: "live".into(),
+                    },
+                )
+                .unwrap();
+            state
+                .model_event(
+                    &owner(),
+                    live,
+                    ModelEvent::Reasoning {
+                        delta: "reasoning".into(),
+                    },
+                )
+                .unwrap();
+        }
+        let before = state.views().clone();
+        let mut client = HarnessClient::connect(Arc::new(Host::default()), state)
+            .await
+            .unwrap();
+        let mut delayed = futures::stream::iter(
+            [
+                ModelEvent::Content {
+                    delta: "already committed".into(),
+                },
+                ModelEvent::Reasoning {
+                    delta: "already committed reasoning".into(),
+                },
+            ]
+            .map(|event| {
+                Ok(ViewUpdate::Model {
+                    authority: owner(),
+                    turn: committed,
+                    event,
+                })
+            }),
+        );
+        for _ in 0..2 {
+            assert!(client.next_update(&mut delayed).await.unwrap());
+            assert_eq!(client.session().views(), &before);
+        }
+    }
+}
+
 proptest::proptest! {
+    // Property: committing a turn absorbs its delayed deltas in every ordering,
+    // without clearing or changing a different live turn's text and reasoning.
+    #[test]
+    fn committed_turn_absorbs_delayed_deltas(
+        committed in 1u128..64,
+        live in 64u128..128,
+        text in ".{0,64}", reasoning in ".{0,64}",
+        live_first in proptest::bool::ANY,
+    ) {
+        let mut state = session();
+        let committed = acyclic_harness::OperationId::from_bytes(committed.to_be_bytes());
+        let live = acyclic_harness::OperationId::from_bytes(live.to_be_bytes());
+        state.receive(frame(turn_delivery(0, committed))).unwrap();
+        if live_first {
+            state.model_event(&owner(), live, ModelEvent::Content { delta: "live".into() }).unwrap();
+            state.model_event(&owner(), live, ModelEvent::Reasoning { delta: "reasoning".into() }).unwrap();
+        }
+        let before = state.views().clone();
+        for event in [ModelEvent::Content { delta: text }, ModelEvent::Reasoning { delta: reasoning }] {
+            state.model_event(&owner(), committed, event).unwrap();
+            proptest::prop_assert_eq!(state.views(), &before);
+        }
+    }
+
     // Property: replay only removes the tail whose canonical message is committed.
     #[test]
     fn replay_clears_only_the_matching_streaming_turn(

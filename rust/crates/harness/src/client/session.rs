@@ -10,6 +10,8 @@ use crate::{
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+const CHECKPOINT_RECORDS: usize = 64;
+
 /// One atomically appended recovery record. Contains private command grants.
 #[derive(Clone, PartialEq, prost::Message)]
 pub struct SessionRecord {
@@ -373,7 +375,7 @@ impl<S: ClientStateStore> ClientSession<S> {
     }
 
     pub(super) fn compact_if_needed(&mut self) -> Result<()> {
-        if self.tail_records >= 64 {
+        if self.tail_records >= CHECKPOINT_RECORDS {
             self.checkpoint()?;
         }
         Ok(())
@@ -424,6 +426,11 @@ impl<S: ClientStateStore> ClientSession<S> {
         record: &SessionRecord,
         persist: bool,
     ) -> Result<()> {
+        // Reserve this record before removing retry intent. A maintenance failure
+        // must leave the command pending, including when replace committed first.
+        if persist && self.tail_records >= CHECKPOINT_RECORDS - 1 {
+            self.checkpoint()?;
+        }
         let operation = admission
             .operation
             .as_ref()

@@ -35,6 +35,111 @@ fn next_command() -> wire::CommandEnvelope {
     next
 }
 
+fn admission_boundary(padding: usize) -> ClientSession<MemoryClientState> {
+    let mut state = session();
+    state.queue(command()).unwrap();
+    for index in 0..padding {
+        let mut cursor = state.resume().cursors.remove(0);
+        cursor.authority.as_mut().unwrap().id = format!("zz-padding-{index}");
+        state.track(cursor).unwrap();
+    }
+    state
+}
+
+#[tokio::test]
+async fn admission_checkpoint_failure_keeps_intent_for_jsonl_retry() {
+    for after_replace in [false, true] {
+        for reopen in [false, true] {
+            let fail = Arc::new(AtomicBool::new(true));
+            let state = ClientSession::open(CheckpointStore {
+                inner: admission_boundary(61).into_store(),
+                fail: fail.clone(),
+                after_replace,
+            })
+            .unwrap();
+            let host = Arc::new(Host::default());
+            let mut client = HarnessClient::connect(host.clone(), state).await.unwrap();
+            let mut output = Vec::new();
+            assert!(
+                run_headless(&mut client, command(), target(), &mut output)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(
+                client.session().pending().cloned().collect::<Vec<_>>(),
+                [command()]
+            );
+            assert!(
+                !String::from_utf8(output)
+                    .unwrap()
+                    .lines()
+                    .any(|line| matches!(
+                        jsonl::parse_server_frame(line).unwrap().frame,
+                        Some(wire::server_frame::Frame::Admission(_))
+                    ))
+            );
+            let state = client.into_session();
+            let state = if reopen {
+                ClientSession::open(state.into_store()).unwrap()
+            } else {
+                state
+            };
+            fail.store(false, Ordering::Relaxed);
+            let mut client = HarnessClient::connect(host.clone(), state).await.unwrap();
+            let mut output = Vec::new();
+            assert_eq!(
+                run_headless(&mut client, command(), target(), &mut output)
+                    .await
+                    .unwrap(),
+                HeadlessOutcome::Completed
+            );
+            let admissions: Vec<_> = String::from_utf8(output)
+                .unwrap()
+                .lines()
+                .filter_map(
+                    |line| match jsonl::parse_server_frame(line).unwrap().frame {
+                        Some(wire::server_frame::Frame::Admission(admission)) => Some(admission),
+                        _ => None,
+                    },
+                )
+                .collect();
+            assert_eq!(
+                admissions,
+                [admission(&command(), wire::AdmissionState::Accepted)]
+            );
+            assert_eq!(
+                host.commands.lock().unwrap().as_slice(),
+                &[command(), command()]
+            );
+            assert_eq!(client.session().pending().count(), 0);
+        }
+    }
+}
+
+proptest::proptest! {
+    // Property: admission failure leaves retry intent recoverable, regardless of
+    // record position, decision, or a replacement committed before reporting failure.
+    #[test]
+    fn admission_maintenance_is_atomic_with_outbox_removal(
+        padding in proptest::prop_oneof![proptest::strategy::Just(61usize), 0usize..61],
+        after_replace in proptest::bool::ANY,
+        rejected in proptest::bool::ANY,
+    ) {
+        let mut state = ClientSession::open(CheckpointStore {
+            inner: admission_boundary(padding).into_store(),
+            fail: Arc::new(AtomicBool::new(true)),
+            after_replace,
+        }).unwrap();
+        let decision = if rejected { wire::AdmissionState::Rejected } else { wire::AdmissionState::Accepted };
+        let response = admission(&command(), decision);
+        let result = state.receive(wire::ServerFrame { frame: Some(wire::server_frame::Frame::Admission(response)) });
+        let expected = if result.is_err() { vec![command()] } else { Vec::new() };
+        proptest::prop_assert_eq!(state.pending().cloned().collect::<Vec<_>>(), expected.clone());
+        let recovered = ClientSession::open(state.into_store()).unwrap();
+        proptest::prop_assert_eq!(recovered.pending().cloned().collect::<Vec<_>>(), expected);
+    }
+}
+
 #[test]
 fn checkpoint_keeps_a_paused_opener_on_the_same_writer_lock() {
     let directory = tempfile::tempdir().unwrap();

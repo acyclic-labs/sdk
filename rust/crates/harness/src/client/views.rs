@@ -175,6 +175,13 @@ impl ClientViews {
         ) {
             let transcript = self.transcripts.entry(key.clone()).or_default();
             if transcript.streaming_turn != Some(turn) {
+                let message_id = crate::conversation::assistant_message_id(turn);
+                if transcript.messages.iter().rev().any(|message| {
+                    message.kind == crate::conversation::MessageKind::Assistant
+                        && message.id == message_id
+                }) {
+                    return Ok(());
+                }
                 transcript.streaming_text.clear();
                 transcript.reasoning.clear();
                 transcript.streaming_turn = Some(turn);

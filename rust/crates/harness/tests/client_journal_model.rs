@@ -1,6 +1,5 @@
 //! Production journal with its crate-local file-lock shim instrumented by loom.
-#[cfg(not(loom))]
-compile_error!("build this target with cargo rustc --test client_journal_model -- --cfg loom");
+#![cfg(loom)]
 use acyclic_harness::{
     Error, Result,
     client::{ClientSession, ClientStateStore, SessionRecord},
