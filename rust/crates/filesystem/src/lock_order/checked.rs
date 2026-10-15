@@ -9,8 +9,14 @@ use std::time::Duration;
 #[cfg(test)]
 use std::time::Instant;
 
+#[cfg(not(loom))]
 thread_local! {
     static HELD: RefCell<Vec<(u16, &'static Location<'static>)>> = const { RefCell::new(Vec::new()) };
+}
+
+#[cfg(loom)]
+thread_local! {
+    static HELD: RefCell<Vec<(u16, &'static Location<'static>)>> = RefCell::new(Vec::new());
 }
 
 fn with_held(edit: &mut dyn FnMut(&mut Vec<(u16, &'static Location<'static>)>)) {
