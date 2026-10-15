@@ -3,7 +3,13 @@ use prost::{Message, Name};
 use prost_reflect::{DescriptorPool, DynamicMessage, Kind, MessageDescriptor};
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::{borrow::Cow, fmt::Debug, ops::Deref};
+use std::{borrow::Cow, cell::RefCell, collections::HashMap, fmt::Debug, ops::Deref};
+
+// Immutable owner metadata, initialized synchronously per thread. No shared cache
+// or lock crosses a validation call or await; untrusted input cannot select a pool.
+thread_local! {
+    static POOLS: RefCell<HashMap<&'static str, DescriptorPool>> = RefCell::new(HashMap::new());
+}
 
 /// Shared semantic contract with its owning descriptor and wire conversion.
 pub trait ContractType: Clone + Debug + PartialEq {
@@ -32,10 +38,15 @@ impl<T: ContractType> From<T> for Contract<T> {
 
 /// Resolve the owner's message, without maintaining separate field metadata.
 pub fn descriptor<T: ContractType>() -> Result<MessageDescriptor, String> {
-    DescriptorPool::decode(T::DESCRIPTOR)
-        .map_err(|e| e.to_string())?
-        .get_message_by_name(&T::Proto::full_name())
-        .ok_or_else(|| "missing contract descriptor".into())
+    POOLS.with_borrow_mut(|pools| {
+        let pool = match pools.entry(T::Proto::PACKAGE) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => entry
+                .insert(DescriptorPool::decode(T::DESCRIPTOR).map_err(|error| error.to_string())?),
+        };
+        pool.get_message_by_name(&T::Proto::full_name())
+            .ok_or_else(|| "missing contract descriptor".into())
+    })
 }
 impl<T: ContractType> Serialize for Contract<T> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
