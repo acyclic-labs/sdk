@@ -1,0 +1,25 @@
+[package]
+name = "acyclic-auth"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared capability chain contract and verification"
+
+[dependencies]
+acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
+prost.workspace = true
+thiserror.workspace = true
+ts-rs = "=12.0.1"
+
+[dev-dependencies]
+syn = { version = "3", features = ["full"] }
+proptest.workspace = true
+prost-reflect.workspace = true
+tempfile = "3.27.0"
+prost-types.workspace = true
+protoc-bin-vendored = "=3.3.0"
+
+[lints]
+workspace = true

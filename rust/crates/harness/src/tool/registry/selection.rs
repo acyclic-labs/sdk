@@ -15,16 +15,18 @@ impl ToolRegistry {
                 ));
             }
             if selected
-                .insert(
-                    definition.name.clone(),
-                    ModelSelection::Revision(definition.revision.clone()),
-                )
+                .insert(definition.name.as_str(), definition.revision.as_str())
                 .is_some()
             {
                 return Err(Error::Conflict("manifest repeats a tool name".into()));
             }
         }
-        Arc::make_mut(&mut self.data).selected = selected;
+        for (name, selection) in &mut Arc::make_mut(&mut self.data).selected {
+            *selection = match selected.get(name.as_str()) {
+                Some(revision) => ModelSelection::Revision((*revision).to_owned()),
+                None => ModelSelection::Hidden,
+            };
+        }
         Ok(())
     }
 
@@ -64,18 +66,11 @@ impl ToolRegistry {
 
     /// Hides a logical tool while retaining admitted revisions.
     pub fn remove_from_model(&mut self, name: &str) -> Result<()> {
-        if !self.data.selected.contains_key(name)
-            && !self
-                .data
-                .versions
-                .keys()
-                .any(|(logical, _)| logical == name)
-        {
-            return Err(Error::NotFound(format!("tool {name}")));
-        }
-        Arc::make_mut(&mut self.data)
+        let selection = Arc::make_mut(&mut self.data)
             .selected
-            .insert(name.to_owned(), ModelSelection::Hidden);
+            .get_mut(name)
+            .ok_or_else(|| Error::NotFound(format!("tool {name}")))?;
+        *selection = ModelSelection::Hidden;
         Ok(())
     }
 

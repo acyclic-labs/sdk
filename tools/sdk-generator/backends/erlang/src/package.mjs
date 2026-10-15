@@ -2,12 +2,11 @@ import { readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { readBoundedGzip, tarEntries } from "../../../../../scripts/archive-utils.mjs";
-import { canonical, loadAuthority, sha256 } from "../../../shared/authority.mjs";
+import { readDeclaredTarGzip } from "../../../../../scripts/archive-utils.mjs";
+import { equalEntries, loadAuthority, sha256, verifyPackageOutputs } from "../../../shared/authority.mjs";
 import { packageTemplates, pins, producerSources } from "./generate.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
-const equal = (a, b) => JSON.stringify(Object.entries(a).sort()) === JSON.stringify(Object.entries(b).sort());
 
 function snake(name) {
   for (const expression of [/(.)([A-Z][a-z]+)/g, /(.)([0-9]+)/g, /([a-z0-9])([A-Z])/g]) name = name.replace(expression, "$1_$2");
@@ -36,34 +35,19 @@ export function readPackage(args) {
   if (receipt.schema !== "acyclic.sdk.erlang-producer-receipt.v1" || receipt.authority !== "rust" || receipt.target !== "erlang"
     || !Array.isArray(receipt.outputs) || !receipt.input_sha256 || !receipt.output_sha256) throw new Error("unsupported Erlang generation receipt");
   if (receipt.source_revision !== approved.manifest.source_revision || receipt.authority_manifest_sha256 !== sha256(approved.bytes)
-    || !equal(receipt.input_sha256, Object.fromEntries([...approved.inputs].map(([name, bytes]) => [name, sha256(bytes)])))) throw new Error("package authority differs");
+    || !equalEntries(receipt.input_sha256, Object.fromEntries([...approved.inputs].map(([name, bytes]) => [name, sha256(bytes)])))) throw new Error("package authority differs");
   const sources = Object.fromEntries(producerSources.map(name => [name, sha256(readFileSync(join(directory, name)))]));
-  if (!equal(receipt.source_sha256 ?? {}, sources) || receipt.toolchain_sha256 !== sha256(JSON.stringify(pins))) throw new Error("producer source or pins differ");
+  if (!equalEntries(receipt.source_sha256 ?? {}, sources) || receipt.toolchain_sha256 !== sha256(JSON.stringify(pins))) throw new Error("producer source or pins differ");
   const runtime = pins.runtime["linux-x64"];
   if (receipt.otp_version !== runtime.otp_version || receipt.runtime_inventory_sha256 !== runtime.inventory_sha256
     || receipt.gpb_version !== pins.gpb_version || receipt.grpcbox_plugin_version !== pins.grpcbox_plugin_version
     || receipt.rebar_version !== pins.rebar_version || receipt.generator_inventory_sha256 !== pins.generator_inventory_sha256) throw new Error("generation tool admission differs");
   const templates = new Map([...packageTemplates].map(([name, template]) => [name, readFileSync(join(directory, "../templates/package", template))]));
-  if (!equal(receipt.template_sha256 ?? {}, Object.fromEntries([...templates].map(([name, bytes]) => [name, sha256(bytes)])))) throw new Error("package templates differ");
+  if (!equalEntries(receipt.template_sha256 ?? {}, Object.fromEntries([...templates].map(([name, bytes]) => [name, sha256(bytes)])))) throw new Error("package templates differ");
   const required = new Set(["LICENSE", "NOTICE", ...templates.keys(), "authority/rust-authority.json",
     ...[...approved.inputs.keys()].map(name => "authority/" + name), ...expectedModules(approved)]);
-  const names = new Set(), folded = new Set();
-  for (const name of receipt.outputs) {
-    if (!canonical(name) || folded.has(name.toLowerCase()) || !required.has(name)) throw new Error("unsafe, duplicate or unexpected package output");
-    names.add(name); folded.add(name.toLowerCase());
-  }
-  if (names.size !== required.size || [...required].some(name => !names.has(name))) throw new Error("package output inventory incomplete");
-  if (!equal(receipt.output_sha256, Object.fromEntries([...names].map(name => [name, receipt.output_sha256[name]])))
-    || [...names].some(name => !/^[a-f0-9]{64}$/.test(receipt.output_sha256[name]))) throw new Error("package digest inventory differs");
-  const { compressed, expanded } = readBoundedGzip(args.package, 16 * 1024 * 1024, 64 * 1024 * 1024);
-  if (sha256(compressed) !== args.sha256) throw new Error("archive digest differs");
-  const payload = new Map();
-  for (const entry of tarEntries(expanded)) {
-    if (entry.type !== "0" || !canonical(entry.path) || payload.has(entry.path) || !names.has(entry.path)) throw new Error("unsafe, duplicate or unexpected archive member");
-    if (sha256(entry.body) !== receipt.output_sha256[entry.path]) throw new Error("archive payload digest differs");
-    payload.set(entry.path, entry.body);
-  }
-  if (payload.size !== names.size) throw new Error("archive payload inventory differs");
+  verifyPackageOutputs(receipt.outputs, receipt.output_sha256, required, "unsafe, duplicate or unexpected package output");
+  const { compressed, payload } = readDeclaredTarGzip(args.package, args.sha256, receipt.output_sha256, 64 * 1024 * 1024);
   for (const [name, bytes] of templates) if (!payload.get(name).equals(bytes)) throw new Error("package metadata differs from maintained template");
   if (!payload.get("authority/rust-authority.json").equals(approved.bytes)) throw new Error("packaged authority manifest differs");
   for (const [name, bytes] of approved.inputs) if (!payload.get("authority/" + name).equals(bytes)) throw new Error("packaged Rust input differs");

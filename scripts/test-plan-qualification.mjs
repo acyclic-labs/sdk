@@ -631,3 +631,33 @@ printf 'joined\\n'
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("host qualification initializes runner-local tools before both Bun installers", () => {
+  const workflow = YAML.parse(readFileSync(".github/workflows/agent-host-qualification.yml", "utf8"));
+  const job = workflow.jobs.qualify;
+  assert.equal(job.env.TOOLS_DIR, undefined);
+  assert.doesNotMatch(JSON.stringify(job.env), /\$\{\{\s*runner\./);
+  const setup = job.steps.find(step => step.name === "Configure local tools and compiler cache")
+    ?? assert.fail("missing host tool setup");
+  const installers = job.steps.filter(step => /^Install pinned Bun on (Unix|Windows)$/.test(step.name));
+  assert.equal(installers.length, 2);
+  for (const installer of installers) assert.ok(job.steps.indexOf(setup) < job.steps.indexOf(installer));
+  mkdirSync(".tools", { recursive: true });
+  const root = mkdtempSync(".tools/host-tools-");
+  const runnerTemp = resolve(root, "runner temp").replaceAll("\\", "/");
+  const githubEnv = resolve(root, "job env").replaceAll("\\", "/");
+  const bash = process.platform === "win32" ? join(process.env.ProgramFiles ?? "C:/Program Files", "Git", "bin", "bash.exe") : "/bin/bash";
+  try {
+    const result = spawnSync(bash, ["-e", "-c", setup.run], {
+      env: { ...process.env, RUNNER_TEMP: runnerTemp, GITHUB_ENV: githubEnv }, encoding: "utf8", timeout: 10000,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(readFileSync(githubEnv, "utf8").trim().split(/\r?\n/), [
+      `TOOLS_DIR=${runnerTemp}/tools`, `SCCACHE_DIR=${runnerTemp}/sccache`,
+    ]);
+  } finally {
+    assert.ok(resolve(root).startsWith(resolve(".tools") + sep));
+    rmSync(root, { recursive: true, force: true });
+  }
+});
