@@ -88,6 +88,11 @@ name = "write_validation"
 harness = false
 required-features = ["local-runner"]
 
+[[bench]]
+name = "native_observation"
+harness = false
+required-features = ["local-runner"]
+
 [[bin]]
 name = "s3-fixture"
 test = false

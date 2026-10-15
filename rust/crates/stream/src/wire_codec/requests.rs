@@ -72,7 +72,7 @@ pub(crate) fn commit_len(request: &CommitRequest) -> usize {
 
 #[cfg(any(
     feature = "local",
-    feature = "http",
+    all(test, feature = "http"),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 pub(crate) fn header(out: &mut Vec<u8>, tag: u32, length: usize) {
@@ -81,7 +81,7 @@ pub(crate) fn header(out: &mut Vec<u8>, tag: u32, length: usize) {
 }
 #[cfg(any(
     feature = "local",
-    feature = "http",
+    all(test, feature = "http"),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 fn bytes(out: &mut Vec<u8>, tag: u32, value: &[u8]) {
@@ -90,7 +90,7 @@ fn bytes(out: &mut Vec<u8>, tag: u32, value: &[u8]) {
 }
 #[cfg(any(
     feature = "local",
-    feature = "http",
+    all(test, feature = "http"),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 fn uint(out: &mut Vec<u8>, tag: u32, value: Option<u64>) {
@@ -101,7 +101,7 @@ fn uint(out: &mut Vec<u8>, tag: u32, value: Option<u64>) {
 }
 #[cfg(any(
     feature = "local",
-    feature = "http",
+    all(test, feature = "http"),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 fn records(out: &mut Vec<u8>, tag: u32, values: &[OwnedBytes]) {
@@ -112,7 +112,7 @@ fn records(out: &mut Vec<u8>, tag: u32, values: &[OwnedBytes]) {
 
 #[cfg(any(
     feature = "local",
-    feature = "http",
+    all(test, feature = "http"),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 pub(crate) fn append(out: &mut Vec<u8>, request: &AppendRequest) {
@@ -188,7 +188,7 @@ pub(crate) fn commit(out: &mut Vec<u8>, request: &CommitRequest) {
     bytes(out, 3, request.idempotency_key.as_bytes());
 }
 
-#[cfg(all(test, feature = "http"))]
+#[cfg(all(test, feature = "http", not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use prost::Message;
@@ -233,7 +233,7 @@ mod tests {
                 assert_eq!(actual.len(), append_len(&request));
                 assert_eq!(actual.capacity(), capacity);
                 assert_eq!(
-                    crate::http_codec::encode("append", &actual)?,
+                    crate::http_codec::encode_append(&request)?,
                     crate::http_codec::encode("append", &expected)?
                 );
             }
@@ -241,7 +241,40 @@ mod tests {
         Ok(())
     }
     #[test]
-    #[ignore = "manual debug-profile request-path measurement"]
+    fn request_path_append_json_rejects_invalid_records_and_command_size()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut request = AppendRequest {
+            path: crate::StreamPath::new("request/events")?,
+            records: Vec::new(),
+            if_tail: None,
+            idempotency_key: None,
+        };
+        for records in [
+            Vec::new(),
+            vec![OwnedBytes::from(vec![0; crate::MAX_RECORD_BYTES + 1])],
+            vec![OwnedBytes::from_static(b""); crate::MAX_ITEMS + 1],
+            vec![
+                OwnedBytes::from(vec![0; crate::MAX_RECORD_BYTES]);
+                crate::MAX_COMMAND_BYTES / crate::MAX_RECORD_BYTES + 1
+            ],
+        ] {
+            request.records = records;
+            let mut bytes = Vec::with_capacity(append_len(&request));
+            append(&mut bytes, &request);
+            assert_eq!(
+                crate::http_codec::encode_append(&request),
+                Err("limit_exceeded")
+            );
+            assert_eq!(
+                crate::http_codec::encode_append(&request),
+                crate::http_codec::encode("append", &bytes)
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "opt-in debug-profile request-path measurement: npm run bench:clients"]
     fn request_path_measure_append_encoding() -> Result<(), Box<dyn std::error::Error>> {
         let request = AppendRequest {
             path: crate::StreamPath::new("request/events")?,
@@ -249,30 +282,26 @@ mod tests {
             if_tail: Some(0),
             idempotency_key: None,
         };
+        let mut binary = Vec::with_capacity(append_len(&request));
+        append(&mut binary, &request);
+        assert_eq!(
+            crate::http_codec::encode("append", &binary)?,
+            crate::http_codec::encode_append(&request)?
+        );
         for direct in [false, true] {
             let started = std::time::Instant::now();
             for _ in 0..256 {
                 let encoded = if direct {
+                    crate::http_codec::encode_append(&request)?
+                } else {
                     let mut encoded = Vec::with_capacity(append_len(&request));
                     append(&mut encoded, &request);
-                    encoded
-                } else {
-                    crate::wire::AppendRequest {
-                        path: request.path.to_string(),
-                        records: request
-                            .records
-                            .iter()
-                            .map(|record| bytes::Bytes::copy_from_slice(record))
-                            .collect(),
-                        if_tail: request.if_tail,
-                        idempotency_key: None,
-                    }
-                    .encode_to_vec()
+                    crate::http_codec::encode("append", &encoded)?
                 };
                 std::hint::black_box(encoded);
             }
             eprintln!(
-                "stream append encoding direct={direct} iterations=256 bytes=65536 elapsed_us={}",
+                "stream append JSON direct={direct} iterations=256 bytes=65536 elapsed_us={}",
                 started.elapsed().as_micros()
             );
         }

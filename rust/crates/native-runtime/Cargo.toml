@@ -50,6 +50,7 @@ tracing.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
+proptest.workspace = true
 tracing-subscriber.workspace = true
 
 [lints]

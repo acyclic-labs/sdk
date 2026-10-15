@@ -193,6 +193,48 @@ fn page(start: u64, length: u64) -> Value {
 }
 
 #[tokio::test]
+async fn request_path_typed_append_preserves_json_responses_and_validation_trace() {
+    use tracing::instrument::WithSubscriber;
+    use tracing_subscriber::prelude::*;
+
+    let captured = Capture::default();
+    let subscriber = tracing_subscriber::registry().with(captured.clone());
+    async {
+        let server = Server::new(vec![
+            Reply::ok(json!({"ok":true,"start":"0","end":"1","tail":"1","commitId":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})),
+            Reply::ok(json!({"ok":false,"code":"tail_conflict","actualTail":"1"})),
+        ]).await;
+        let mut request = AppendRequest {
+            path: path(),
+            records: Vec::new(),
+            if_tail: Some(0),
+            idempotency_key: Some(IdempotencyKey::new(bytes::Bytes::from_static(b"key")).unwrap()),
+        };
+        assert_eq!(server.client.append(request.clone()).await, Err(StreamError::LimitExceeded));
+        assert!(server.requests().is_empty());
+        request.records.push(OwnedBytes::from_static(b"\x00\xff"));
+        assert!(matches!(server.client.append(request.clone()).await.unwrap(), AppendOutcome::Committed(AppendReceipt { start: 0, end: 1, tail: 1, .. })));
+        assert_eq!(server.client.append(request).await.unwrap(), AppendOutcome::TailConflict { actual_tail: 1 });
+        let expected = ("/v1/stream/append".into(), json!({
+            "path":"follow/test", "values":["AP8="],
+            "options":{"ifTail":"0","idempotencyKey":"a2V5"},
+        }));
+        assert_eq!(server.requests(), vec![expected.clone(), expected]);
+    }.with_subscriber(subscriber).await;
+    let evidence = captured.0.lock().unwrap();
+    let calls: Vec<_> = evidence
+        .spans
+        .iter()
+        .filter(|span| span.name == "acyclic.stream.http.call")
+        .collect();
+    assert_eq!(calls.len(), 3);
+    assert!(calls.iter().all(|span| span.closed));
+    assert_eq!(calls[0].fields["outcome"], "err");
+    assert_eq!(calls[0].fields["error.kind"], "limit_exceeded");
+    assert!(calls[1..].iter().all(|span| span.fields["outcome"] == "ok"));
+}
+
+#[tokio::test]
 async fn startup_rejects_invalid_tail_and_cursor_before_any_read() {
     for (reply, from, expected) in [
         (Reply::ok(json!("3")), 4, StreamError::OutOfRange),
