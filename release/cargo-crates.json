@@ -2,14 +2,16 @@
   "acyclic-inference",
   "acyclic-machines",
   "acyclic-native-runtime",
-  "acyclic-objects",
   "acyclic-contract-derive",
+  "acyclic-auth",
   "acyclic-tonic-web-wasm-client",
   "acyclic-grpc-observability",
   "acyclic-actors",
-  "acyclic-workers",
   "acyclic-stream",
+  "acyclic-objects",
+  "acyclic-workers",
   "acyclic-fs",
+  "acyclic-harness-tui",
   "acyclic-harness",
   "acyclic-plugin"
 ]

@@ -18,6 +18,8 @@
 #![doc = include_str!("../README.md")]
 
 pub mod agent_loop;
+#[cfg(feature = "tui")]
+pub use acyclic_harness_tui as tui;
 pub mod bundle;
 pub mod client;
 pub mod context;

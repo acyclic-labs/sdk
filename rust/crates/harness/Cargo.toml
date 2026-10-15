@@ -17,6 +17,10 @@ name = "main"
 path = "tests/main.rs"
 
 [[test]]
+name = "mcp-loom"
+path = "tests/mcp_loom.rs"
+
+[[test]]
 name = "goal-files"
 path = "tests/goal_files.rs"
 required-features = ["filesystem"]
@@ -83,6 +87,7 @@ name = "explicit-image-conversion"
 required-features = ["filesystem"]
 
 [features]
+tui = ["dep:acyclic-harness-tui", "acyclic-harness-tui/tui"]
 test-support = []
 model-checking = ["dep:loom"]
 browser = ["wasm", "filesystem", "acyclic-fs/browser"]
@@ -105,6 +110,7 @@ machines = ["dep:acyclic-machines"]
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
 
 [dependencies]
+acyclic-harness-tui = { version = "=0.2.0", path = "../harness-tui", default-features = false, optional = true }
 arrayvec = { version = "0.7.8", default-features = false }
 async-trait.workspace = true
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, optional = true }
@@ -141,6 +147,7 @@ wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
 
 [build-dependencies]
+blake3.workspace = true
 prost-build.workspace = true
 protoc-bin-vendored.workspace = true
 tonic-prost-build = { workspace = true, optional = true }

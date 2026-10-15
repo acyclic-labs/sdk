@@ -34,11 +34,11 @@ impl ToolRegistry {
 
     /// Hides a logical tool while retaining admitted revisions.
     pub fn remove_from_model(&mut self, name: &str) -> Result<()> {
-        if !self.versions.keys().any(|(logical, _)| logical == name) {
-            return Err(Error::NotFound(format!("tool {name}")));
-        }
-        self.selected
-            .insert(name.to_owned(), ModelSelection::Hidden);
+        let selection = self
+            .selected
+            .get_mut(name)
+            .ok_or_else(|| Error::NotFound(format!("tool {name}")))?;
+        *selection = ModelSelection::Hidden;
         Ok(())
     }
 
