@@ -1,0 +1,24 @@
+[package]
+name = "acyclic-harness-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Renderer-independent prompt editor and ratatui input widget"
+
+[features]
+default = []
+tui = ["dep:ratatui", "dep:crossterm"]
+
+[dependencies]
+unicode-segmentation = "1.12"
+unicode-width = "0.2"
+ratatui = { version = "0.30", default-features = false, optional = true }
+crossterm = { version = "0.28", optional = true }
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true
