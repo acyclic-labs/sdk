@@ -4,6 +4,7 @@ use acyclic_stream::BoxProviderFuture;
 use reqwest::{Client, Url, header::HeaderValue};
 use serde::Deserialize;
 use std::time::Duration;
+mod body;
 mod codec;
 
 const MAXIMUM_RESPONSE_BYTES: usize = 1_048_576;
@@ -71,7 +72,7 @@ impl HttpSearch {
             })?;
         }
         let exchange = request.header("x-api-key", self.key.clone()).send();
-        let mut response = await_io(exchange, work)
+        let response = await_io(exchange, work)
             .await?
             .map_err(|_| transport_error(work, "search HTTP request failed"))?;
         if !response.status().is_success() {
@@ -92,28 +93,13 @@ impl HttpSearch {
         {
             return Err(super::rejection(work, "search response exceeds byte limit"));
         }
-        let mut custody = crate::tool::edit::allocation(work, std::mem::size_of::<Vec<u8>>())?;
-        let mut bytes = Vec::new();
-        while let Some(chunk) = await_io(response.chunk(), work)
-            .await?
-            .map_err(|_| transport_error(work, "cannot read search response"))?
-        {
-            if chunk.len() > MAXIMUM_RESPONSE_BYTES - bytes.len() {
-                return Err(super::rejection(work, "search response exceeds byte limit"));
-            }
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if let Some(work) = work {
-                work.charge(acyclic_fs::WorkCounters {
-                    source_bytes_read: chunk.len() as u64,
-                    ..Default::default()
-                })?;
-            }
-            let length = bytes.len() + chunk.len();
-            crate::tool::edit::reserve_vec(&mut custody, &mut bytes, length)?;
-            crate::tool::edit::charge(&custody, chunk.len() as u64, 1)?;
-            bytes.extend_from_slice(&chunk);
-        }
-        Ok((bytes, custody))
+        use futures::TryStreamExt as _;
+        let length = response.content_length();
+        let reader = response
+            .bytes_stream()
+            .map_err(std::io::Error::other)
+            .into_async_read();
+        body::read(reader, length, work).await
     }
 }
 

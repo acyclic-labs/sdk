@@ -225,6 +225,41 @@ async fn search_native_http_exhaustion_rejects_before_network() -> Result<()> {
 }
 
 #[tokio::test]
+async fn search_native_http_one_byte_allowance_cannot_read_a_whole_body() -> Result<()> {
+    for exa in [true, false] {
+        let work = NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget {
+                source_bytes_read: 1,
+                ..acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024)
+            },
+            &CancellationToken::new(),
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let baseline = work.live_allocation_bytes();
+        let (endpoint, server) = super::tests::serve(200, r#"{"results":[]}"#.into()).await?;
+        let provider: Arc<dyn SearchProvider> = if exa {
+            Arc::new(Exa::with_endpoint("test-only-placeholder", &endpoint)?)
+        } else {
+            Arc::new(TinyFish::with_endpoint("test-only-placeholder", &endpoint)?)
+        };
+        let query = SearchRequest {
+            query: "test".into(),
+            max_results: 1,
+        };
+        let error = provider
+            .search_with_native_work(&query, &work)?
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::NativeWork { .. }), "{error:?}");
+        assert_eq!(work.receipt().source_bytes_read, 1);
+        drop(error);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+        server.await.map_err(|e| Error::Storage(e.to_string()))??;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn search_native_http_cancellation_stops_an_in_flight_exchange() -> Result<()> {
     let cancellation = CancellationToken::new();
     let work = work(&cancellation)?;
