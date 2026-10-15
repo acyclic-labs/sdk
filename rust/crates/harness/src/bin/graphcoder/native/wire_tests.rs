@@ -27,6 +27,9 @@ async fn replay_follows_owner_waiting_without_scheduler_changes() -> Result<()> 
         "owner",
         &Capabilities::new([
             "lifecycle:manage".into(),
+            "operation:declare".into(),
+            "operation:observe".into(),
+            "operation:cancel".into(),
             private.capability(VolumeOperation::Read, &mut None)?,
             private.capability(VolumeOperation::Write, &mut None)?,
         ]),
