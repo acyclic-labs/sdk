@@ -22,9 +22,8 @@ impl StockExecution<'_> {
                     ModelPurpose::Response,
                 )?
                 .await?;
-            let (calls, completed) =
+            let (calls, metadata) =
                 self.collect_turn_events(input, step, model_events, &mut text)?;
-            let metadata = completed.ok_or(Error::Indeterminate(input.operation_id))?;
             if calls.is_empty() {
                 return Ok(ExecutionProgress::Ready(TurnOutput {
                     text,
@@ -79,9 +78,9 @@ impl StockExecution<'_> {
         step: u32,
         model_events: Vec<ModelEvent>,
         text: &mut String,
-    ) -> Result<(Vec<ToolInvocation>, Option<Value>)> {
+    ) -> Result<(Vec<ToolInvocation>, Value)> {
         let mut calls = Vec::new();
-        let mut completed = None;
+        let mut completed = Value::Null;
         for event in model_events {
             match event {
                 ModelEvent::Content { delta } => {
@@ -108,7 +107,7 @@ impl StockExecution<'_> {
                     )?;
                     stock_vec_push(&mut calls, invocation, self.io)?;
                 }
-                ModelEvent::Completed { metadata } => completed = Some(metadata),
+                ModelEvent::Completed { metadata } => completed = metadata,
                 ModelEvent::Reasoning { .. } => {}
             }
         }

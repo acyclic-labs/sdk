@@ -212,7 +212,6 @@ impl FuseSession {
             let filesystem = FuseProjection {
                 core: Arc::clone(&core),
                 skips_opendir: false,
-                skips_open: false,
             };
             let mut session = fuser::Session::new(filesystem, &request.destination, &config)
                 .map_err(|error| {

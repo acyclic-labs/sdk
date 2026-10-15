@@ -112,9 +112,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
         Err(MountSourceError::Stale)
     }
 
-    async fn install_capture(
+    pub(super) async fn install_capture(
         &self,
-        candidate: CheckoutCandidate<A, O>,
+        candidate: CheckoutCandidate<'_, A, O>,
         scope: InstallScope<'_>,
         carrier: &mut NativeDemandCarrier<'_>,
         cancellation: &CancellationToken,
@@ -130,16 +130,21 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
         let publication = self
             .checkout
             .install_candidate(
-                candidate,
+                (candidate, None),
                 carrier,
                 cancellation,
                 Some(&self.cancellation),
-                |carrier| {
-                    self.with_capture_observer_dispatch(|| {
-                        self.checkout
-                            .ledger
-                            .record(&ViewChange::Effect(&effect), carrier)
-                    })
+                |carrier, stamp| {
+                    if self.checkout.ledger.stamp() != stamp {
+                        return Err(MountSourceError::Stale);
+                    }
+                    let (recorded, notify) = self
+                        .checkout
+                        .ledger
+                        .record_deferred(&ViewChange::Effect(&effect), carrier)?;
+                    Ok((recorded, move || {
+                        self.with_capture_observer_dispatch(notify)
+                    }))
                 },
                 |checkout, candidate, prepared| {
                     let gate = self

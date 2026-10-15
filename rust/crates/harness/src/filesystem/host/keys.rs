@@ -134,6 +134,8 @@ pub(crate) fn map_error(error: WorkspaceError) -> Error {
         | WorkspaceError::ReadLimitExceeded
         | WorkspaceError::NotRegularFile
         | WorkspaceError::NotDirectory
+        | WorkspaceError::IsDirectory
+        | WorkspaceError::DirectoryNotEmpty
         | WorkspaceError::ForeignGeneration
         | WorkspaceError::IncompatibleWorkspace
         | WorkspaceError::NoCommonAncestor

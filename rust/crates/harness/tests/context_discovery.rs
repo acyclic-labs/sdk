@@ -15,11 +15,12 @@ use acyclic_harness::{
     },
     core::{AggregateKind, Authority, AuthorityIssuer},
     filesystem::{FilesystemContentVerifier, FilesystemHost},
-    model::ModelContent,
+    model::{ModelContent, ModelEvent},
     resources::ProviderRef,
+    test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedTurn},
 };
 use std::sync::{
-    Arc, Mutex,
+    Arc,
     atomic::{AtomicUsize, Ordering},
 };
 
@@ -79,7 +80,7 @@ fn first_skill(
 
 fn executor(
     snapshot: acyclic_harness::context::DiscoveredContext,
-    provider: Arc<CapturingModel>,
+    provider: Arc<ScriptedModelProvider>,
 ) -> Result<acyclic_harness::executor::StockExecutor> {
     Ok(acyclic_harness::executor::StockExecutor::new(
         acyclic_harness::model::Model::new(
@@ -95,42 +96,19 @@ fn executor(
     .with_compaction_policy(acyclic_harness::context::CompactionPolicy::Disabled))
 }
 
-fn assert_lazy_request(provider: &CapturingModel) -> Result<()> {
-    let requests = provider
-        .0
-        .lock()
-        .map_err(|_| Error::Storage("model lock".into()))?;
+fn assert_lazy_request(provider: &ScriptedModelProvider) -> Result<()> {
+    let requests = provider.requests();
     assert_eq!(requests.len(), 1);
-    let request = std::str::from_utf8(
+    assert_eq!(provider.remaining(), 0);
+    let request = serde_json::to_string(
         requests
             .first()
             .ok_or_else(|| Error::NotFound("model request".into()))?,
     )
-    .map_err(|e| Error::Invalid(e.to_string()))?;
+    .map_err(|error| Error::Invalid(error.to_string()))?;
     assert!(request.contains("Inspect files"));
     assert!(!request.contains("SECRET BODY"));
     Ok(())
-}
-
-#[derive(Default)]
-struct CapturingModel(Mutex<Vec<Vec<u8>>>);
-
-impl acyclic_harness::model::ModelProvider for CapturingModel {
-    fn generate<'a>(
-        &'a self,
-        request: acyclic_harness::model::PreparedModelRequest,
-        _dispatch: acyclic_harness::model::ModelDispatch,
-    ) -> futures::stream::BoxStream<'a, Result<acyclic_harness::model::ModelEvent>> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(request.bytes().to_vec());
-        Box::pin(futures::stream::iter([Ok(
-            acyclic_harness::model::ModelEvent::Completed {
-                metadata: serde_json::Value::Null,
-            },
-        )]))
-    }
 }
 
 struct Fixture {
@@ -760,7 +738,11 @@ async fn durable_request_replay_retains_discovery_revision() -> Result<()> {
     let (private, scope) = fixture.journal_volume().await?;
     let stream = Arc::new(MemoryStream::default());
     let journal = fixture.journal(stream.clone(), private.clone(), scope.clone())?;
-    let provider = Arc::new(CapturingModel::default());
+    let provider = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Events(vec![
+        ScriptedEvent::Event(ModelEvent::Completed {
+            metadata: serde_json::Value::Null,
+        }),
+    ])]));
     let original_executor = executor(snapshot.clone(), provider.clone())?;
     let input = TurnInput {
         operation_id: OperationId::from_bytes([7; 16]),

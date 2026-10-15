@@ -124,7 +124,7 @@ fn command_hash_floor(bencher: Bencher, reason_bytes: usize) {
         .bench_local(|| blake3::hash(divan::black_box(&bytes)));
 }
 
-#[cfg(feature = "filesystem")]
+#[cfg(feature = "harness-accounting")]
 #[divan::bench(args = [1, 4])]
 fn reducer_snapshot_accounted(bencher: Bencher, events: u64) {
     use acyclic_harness::filesystem::PreparationIo;

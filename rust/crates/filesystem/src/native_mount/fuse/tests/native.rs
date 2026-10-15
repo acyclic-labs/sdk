@@ -157,7 +157,6 @@ pub(super) fn installed_write_denial_preserves_reads_and_post_effect_prefix()
     let projection = crate::native_mount::fuse::FuseProjection {
         core: Arc::clone(&core),
         skips_opendir: false,
-        skips_open: false,
     };
     let work = core.callback_meter()?.ok_or("installed original")?;
     assert!(
@@ -481,65 +480,8 @@ pub(super) fn measured_deferred_open_refuses_an_actual_rebound_file_identity()
 }
 
 #[test]
-fn implicit_open_refusals_leave_no_unreachable_handle() -> Result<(), Box<dyn std::error::Error>> {
-    let (source, _) = shared_sources(posix_config())?;
-    let path = name("implicit-budget");
-    crate::native_mount::adapter::boundary(source.cancellation(), |work| {
-        source.create_file(&path, FileMetadata::default(), None, work)
-    })?;
-    let cancellation = crate::CancellationToken::new();
-    let core = projection_core(Arc::new(source), FINITE_HANDLER_POLICY, &cancellation)?;
-    let projection = crate::native_mount::fuse::FuseProjection {
-        core: Arc::clone(&core),
-        skips_opendir: false,
-        skips_open: true,
-    };
-    let inode = projection
-        .lookup_entry(
-            ROOT_INODE,
-            std::ffi::OsStr::new("implicit-budget"),
-            &fuse_fixture_work(),
-        )?
-        .attr
-        .ino
-        .0;
-    let mut opened = false;
-    for allocations in 0..=128 {
-        let work = cache_work(
-            crate::WorkBudget {
-                allocation_operations: allocations,
-                ..FINITE_HANDLER_POLICY
-            },
-            &cancellation,
-        );
-        let result = {
-            let _names = core.names().map_err(std::io::Error::from_raw_os_error)?;
-            projection.reopen_implicit(inode, None, crate::model::AccessMode::ReadOnly, &work)
-        };
-        let mut state = core.state_to_finish();
-        if let Ok(handle) = result {
-            opened = true;
-            state.implicit.remove(&inode);
-            state
-                .discard_file_handle(inode, handle)
-                .map_err(std::io::Error::from_raw_os_error)?;
-        }
-        assert!(
-            state.files.is_empty(),
-            "a refused implicit open leaked a handle"
-        );
-        assert!(state.implicit.is_empty());
-    }
-    assert!(
-        opened,
-        "the finite allocation sweep must also exercise success"
-    );
-    Ok(())
-}
-
-#[test]
-fn implicit_reads_require_the_version_whose_attributes_were_handed()
--> Result<(), Box<dyn std::error::Error>> {
+fn an_open_drops_the_size_of_any_version_it_does_not_read() -> Result<(), Box<dyn std::error::Error>>
+{
     let (source, around) = shared_sources(posix_config())?;
     let path = name("versioned-read");
     crate::native_mount::adapter::boundary(around.cancellation(), |work| {
@@ -553,7 +495,6 @@ fn implicit_reads_require_the_version_whose_attributes_were_handed()
     let projection = crate::native_mount::fuse::FuseProjection {
         core: Arc::clone(&core),
         skips_opendir: false,
-        skips_open: true,
     };
     let work = fuse_fixture_work();
     let inode = projection
@@ -572,18 +513,27 @@ fn implicit_reads_require_the_version_whose_attributes_were_handed()
         let (file, _) = around.open_file_with_meter(&path, work)?;
         file.resize_with_meter(7, work)
     })?;
-    {
+    // The kernel still holds the empty size; the open is answered with the
+    // new version and that size is dropped before the reply, so the kernel
+    // asks for attributes again before it reads through the handle.
+    crate::native_mount::fuse::core::DROPPED_ATTRIBUTES.with_borrow_mut(Vec::clear);
+    let handle = {
         let _names = core.names().map_err(std::io::Error::from_raw_os_error)?;
-        let error = projection
-            .open_node(inode, libc::O_RDONLY, &work)
-            .err()
-            .ok_or("stale size accepted")?;
-        assert_eq!(callback_errno(&error), libc::ESTALE);
-    }
-    assert!(core.state_to_finish().files.is_empty());
+        projection.open_node(inode, libc::O_RDONLY, &work)?.0
+    };
+    assert!(
+        crate::native_mount::fuse::core::DROPPED_ATTRIBUTES
+            .with_borrow(|dropped| dropped.contains(&inode)),
+        "an open of a newer version left the kernel's size in place"
+    );
+    assert_eq!(
+        projection
+            .read_handle(inode, handle, 0, 64, &work)?
+            .bytes
+            .len(),
+        7
+    );
     assert_eq!(projection.node_attributes(inode, None, &work)?.0.size, 7);
-    let _names = core.names().map_err(std::io::Error::from_raw_os_error)?;
-    let (handle, _) = projection.open_node(inode, libc::O_RDONLY, &work)?;
     core.state_to_finish()
         .discard_file_handle(inode, handle)
         .map_err(std::io::Error::from_raw_os_error)?;
