@@ -1,0 +1,34 @@
+/** Resolves the credential for one request. Respect the supplied cancellation signal. */
+export type CredentialProvider = (signal?: AbortSignal) => string | Promise<string>;
+
+/** A fixed credential or a provider. A provider takes precedence and never falls back. */
+export interface CredentialOptions {
+  readonly token?: string;
+  readonly credential?: CredentialProvider;
+}
+
+/** Validate at each request boundary; never include credential material in errors. */
+export function validateCredential(token: unknown): asserts token is string {
+  if (typeof token !== "string" || !token.trim() ||
+      new TextEncoder().encode(token).byteLength > 12 * 1024 || /[\r\n\0]/.test(token)) {
+    throw new TypeError("credential must be non-empty, at most 12 KiB, and free of CR, LF, or NUL");
+  }
+}
+
+/** Snapshot configuration without caching provider results or owning renewal state. */
+export function credentialProvider(options: CredentialOptions): CredentialProvider {
+  const provider = options.credential;
+  if (provider !== undefined) {
+    if (typeof provider !== "function") throw new TypeError("credential must be a function");
+    return async signal => {
+      signal?.throwIfAborted();
+      const token = await provider(signal);
+      signal?.throwIfAborted();
+      validateCredential(token);
+      return token;
+    };
+  }
+  const token = options.token;
+  validateCredential(token);
+  return signal => { signal?.throwIfAborted(); return token; };
+}
