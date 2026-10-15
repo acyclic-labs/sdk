@@ -76,6 +76,50 @@ fn accounting_source_registry(bencher: Bencher, (count, retire): (usize, bool)) 
     std::hint::black_box(sources);
 }
 
+#[cfg(feature = "memory")]
+#[divan::bench(args = [false, true], threads = [1, 4])]
+fn authority_head(bencher: Bencher, native_accounting: bool) {
+    use acyclic_fs::{AsyncAuthorityStore, AuthorityId, AuthorityWork, Epoch};
+    let runtime = Runtime::new().unwrap();
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+    let store = acyclic_fs::distributed::StreamAuthorityStore::new(std::sync::Arc::new(
+        acyclic_stream::MemoryStream::default(),
+    ));
+    let authority = AuthorityId::from_bytes([1; 16]);
+    runtime
+        .block_on(store.create_authority(
+            authority,
+            Epoch::GENESIS,
+            &mut AuthorityWork::new(budget, &cancellation),
+            None::<&mut ()>,
+        ))
+        .unwrap();
+    if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() {
+        let original = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).unwrap();
+        let mut work = if native_accounting {
+            AuthorityWork::native(&original, &cancellation)
+        } else {
+            AuthorityWork::new(budget, &cancellation)
+        };
+        runtime.block_on(store.head(authority, &mut work)).unwrap();
+        eprintln!(
+            "head native={native_accounting} live={} work={:?}",
+            original.live_allocation_bytes(),
+            work.spent()
+        );
+    }
+    bencher.bench(|| {
+        let original = native_accounting
+            .then(|| acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).unwrap());
+        let mut work = match &original {
+            Some(original) => AuthorityWork::native(original, &cancellation),
+            None => AuthorityWork::new(budget, &cancellation),
+        };
+        runtime.block_on(store.head(authority, &mut work)).unwrap()
+    });
+}
+
 fn workspace(runtime: &Runtime) -> (tempfile::TempDir, LocalFs, LocalWorkspace) {
     let root = tempfile::tempdir().unwrap();
     runtime.block_on(async {
