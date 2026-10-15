@@ -77,3 +77,47 @@ test("a failed callback does not prevent later subscriptions observing publicati
   expect(errors).toHaveLength(1);
   store.dispose();
 });
+
+test("nested publication sees new subscriptions while the outer publication keeps its cut", () => {
+  const store = new SnapshotStore(0);
+  const seen: string[] = [];
+  let stopSecond = () => {};
+  store.subscribe(() => {
+    const value = store.getSnapshot();
+    seen.push(`first:${value}`);
+    if (value === 1) {
+      stopSecond();
+      store.subscribe(() => { seen.push(`late:${store.getSnapshot()}`); });
+      store.publish(2);
+    }
+  });
+  stopSecond = store.subscribe(() => { seen.push("removed"); });
+  store.subscribe(() => { seen.push(`third:${store.getSnapshot()}`); });
+  store.publish(1);
+  expect(seen).toEqual(["first:1", "first:2", "third:2", "late:2", "third:2"]);
+  const stale = store.stage(3);
+  const current = store.stage(4);
+  stale?.();
+  expect(seen).toHaveLength(5);
+  current?.();
+  expect(seen.slice(5)).toEqual(["first:4", "third:4", "late:4"]);
+  store.dispose();
+});
+
+test("duplicate callbacks have independent ownership and disposal stops an active publication", () => {
+  const store = new SnapshotStore(0);
+  let calls = 0;
+  const callback = () => { calls++; };
+  const first = store.subscribe(callback);
+  const second = store.subscribe(callback);
+  store.publish(1);
+  expect(calls).toBe(2);
+  first(); first();
+  store.publish(2);
+  expect(calls).toBe(3);
+  second();
+  store.subscribe(() => { store.dispose(); });
+  store.subscribe(() => { calls++; });
+  store.publish(3);
+  expect(calls).toBe(3);
+});
