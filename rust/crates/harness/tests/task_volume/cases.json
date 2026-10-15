@@ -1,0 +1,398 @@
+[
+  {
+    "name": "request admission and status",
+    "folder": ".tasks/t",
+    "files": {
+      ".tasks/t/requests/r.json": "run",
+      ".tasks/t/status.json": "completed"
+    },
+    "changes": [
+      ".tasks/t/requests/r.json",
+      ".tasks/t/status.json",
+      ".tasks/t/status.json"
+    ],
+    "events": [
+      {
+        "path": ".tasks/t/requests/r.json",
+        "text": "run"
+      },
+      {
+        "path": ".tasks/t/status.json",
+        "text": "admitted"
+      },
+      {
+        "path": ".tasks/t/status.json",
+        "text": "completed"
+      }
+    ]
+  },
+  {
+    "name": "integer sequence order and channels",
+    "folder": ".tasks/t/turns/2/chunks",
+    "files": {
+      ".tasks/t/turns/2/chunks/1": "one",
+      ".tasks/t/turns/2/chunks/2": "two",
+      ".tasks/t/turns/2/chunks/10": "ten"
+    },
+    "order": [
+      ".tasks/t/turns/2/chunks/1",
+      ".tasks/t/turns/2/chunks/2",
+      ".tasks/t/turns/2/chunks/10"
+    ],
+    "changes": [
+      ".tasks/t/turns/2/chunks/1",
+      ".tasks/t/turns/2/chunks/2",
+      ".tasks/t/turns/2/chunks/10"
+    ],
+    "events": [
+      {
+        "path": ".tasks/t/turns/2/chunks/1",
+        "text": "one",
+        "channel": "Text"
+      },
+      {
+        "path": ".tasks/t/turns/2/chunks/2",
+        "text": "two",
+        "channel": "Reasoning"
+      },
+      {
+        "path": ".tasks/t/turns/2/chunks/10",
+        "text": "ten",
+        "channel": "Text"
+      }
+    ]
+  },
+  {
+    "name": "tool lifecycle uses the same segment",
+    "folder": ".tasks/t/turns/0/tools/c",
+    "files": {
+      ".tasks/t/turns/0/tools/c/arguments/0": "{}",
+      ".tasks/t/turns/0/tools/c/request.json": "read",
+      ".tasks/t/turns/0/tools/c/stdout/0": "out",
+      ".tasks/t/turns/0/tools/c/stderr/0": "err",
+      ".tasks/t/turns/0/tools/c/result.json": "ok"
+    },
+    "changes": [
+      ".tasks/t/turns/0/tools/c/arguments/0",
+      ".tasks/t/turns/0/tools/c/request.json",
+      ".tasks/t/turns/0/tools/c/stdout/0",
+      ".tasks/t/turns/0/tools/c/stderr/0",
+      ".tasks/t/turns/0/tools/c/result.json"
+    ],
+    "events": [
+      {
+        "path": ".tasks/t/turns/0/tools/c/arguments/0",
+        "text": "{}"
+      },
+      {
+        "path": ".tasks/t/turns/0/tools/c/request.json",
+        "text": "read"
+      },
+      {
+        "path": ".tasks/t/turns/0/tools/c/stdout/0",
+        "text": "out"
+      },
+      {
+        "path": ".tasks/t/turns/0/tools/c/stderr/0",
+        "text": "err"
+      },
+      {
+        "path": ".tasks/t/turns/0/tools/c/result.json",
+        "text": "ok"
+      }
+    ]
+  },
+  {
+    "name": "approvals and principals",
+    "folder": ".tasks/t/approvals",
+    "files": {
+      ".tasks/t/approvals/r/request.json": "binding",
+      ".tasks/t/approvals/r/decisions/human.json": "allow"
+    },
+    "changes": [
+      ".tasks/t/approvals/r/request.json",
+      ".tasks/t/approvals/r/decisions/human.json"
+    ],
+    "events": [
+      {
+        "path": ".tasks/t/approvals/r/request.json",
+        "text": "binding"
+      },
+      {
+        "path": ".tasks/t/approvals/r/decisions/human.json",
+        "text": "allow"
+      }
+    ]
+  },
+  {
+    "name": "goal plan notification mount and context",
+    "folder": "",
+    "files": {
+      "GOAL.md": "done",
+      "plans/main.md": "finished",
+      ".tasks/t/notifications/n.json": "ready",
+      ".tasks/t/context/v1/manifest.json": "pinned",
+      ".volumes/agents/child": "lineage"
+    },
+    "changes": [
+      "GOAL.md",
+      "plans/main.md",
+      ".tasks/t/notifications/n.json",
+      ".tasks/t/context/v1/manifest.json",
+      ".volumes/agents/child",
+      "GOAL.md",
+      "plans/main.md"
+    ],
+    "events": [
+      {
+        "path": "GOAL.md",
+        "text": "active"
+      },
+      {
+        "path": "plans/main.md",
+        "text": "steps"
+      },
+      {
+        "path": ".tasks/t/notifications/n.json",
+        "text": "ready"
+      },
+      {
+        "path": ".tasks/t/context/v1/manifest.json",
+        "text": "pinned"
+      },
+      {
+        "path": ".volumes/agents/child",
+        "text": "lineage"
+      },
+      {
+        "path": "GOAL.md",
+        "text": "done"
+      },
+      {
+        "path": "plans/main.md",
+        "text": "finished"
+      }
+    ]
+  },
+  {
+    "name": "immutable retries are invisible",
+    "folder": ".tasks/t",
+    "files": {
+      ".tasks/t/requests/r.json": "run"
+    },
+    "changes": [
+      ".tasks/t/requests/r.json"
+    ],
+    "events": [
+      {
+        "path": ".tasks/t/requests/r.json",
+        "text": "run"
+      },
+      {
+        "path": ".tasks/t/requests/r.json",
+        "text": "run"
+      }
+    ]
+  },
+  {
+    "name": "a rejected event preserves earlier individually accepted events",
+    "folder": ".tasks/t",
+    "error": "immutable",
+    "files": {
+      ".tasks/t/requests/r.json": "run",
+      ".tasks/t/status.json": "forged"
+    },
+    "changes": [
+      ".tasks/t/requests/r.json",
+      ".tasks/t/status.json"
+    ],
+    "events": [
+      {
+        "path": ".tasks/t/requests/r.json",
+        "text": "run"
+      },
+      {
+        "path": ".tasks/t/status.json",
+        "text": "forged"
+      },
+      {
+        "path": ".tasks/t/requests/r.json",
+        "text": "different"
+      }
+    ]
+  },
+  {
+    "name": "a late chunk cannot reorder its accepted stream",
+    "folder": ".tasks/t",
+    "error": "sequence",
+    "files": {
+      ".tasks/t/turns/0/chunks/2": "two",
+      ".tasks/t/status.json": "forged"
+    },
+    "changes": [
+      ".tasks/t/turns/0/chunks/2",
+      ".tasks/t/status.json"
+    ],
+    "events": [
+      {
+        "path": ".tasks/t/turns/0/chunks/2",
+        "text": "two",
+        "channel": "Text"
+      },
+      {
+        "path": ".tasks/t/status.json",
+        "text": "forged"
+      },
+      {
+        "path": ".tasks/t/turns/0/chunks/1",
+        "text": "one",
+        "channel": "Text"
+      }
+    ]
+  },
+  {
+    "name": "within publication duplicate identity is deduplicated",
+    "folder": ".tasks/t",
+    "files": {
+      ".tasks/t/requests/r.json": "run"
+    },
+    "changes": [
+      ".tasks/t/requests/r.json"
+    ],
+    "events": [
+      {
+        "path": ".tasks/t/requests/r.json",
+        "text": "run"
+      },
+      {
+        "path": ".tasks/t/requests/r.json",
+        "text": "run"
+      }
+    ]
+  },
+  {
+    "name": "channel is part of immutable content",
+    "folder": ".tasks/t",
+    "error": "immutable",
+    "files": {
+      ".tasks/t/turns/0/chunks/0": "text"
+    },
+    "changes": [
+      ".tasks/t/turns/0/chunks/0"
+    ],
+    "events": [
+      {
+        "path": ".tasks/t/turns/0/chunks/0",
+        "text": "text",
+        "channel": "Text"
+      },
+      {
+        "path": ".tasks/t/turns/0/chunks/0",
+        "text": "text",
+        "channel": "Reasoning"
+      }
+    ]
+  },
+  {
+    "name": "filtered history advances durable checkpoint",
+    "folder": ".tasks/t/notifications",
+    "files": {
+      ".tasks/t/notifications/n.json": "ready"
+    },
+    "changes": [
+      null,
+      ".tasks/t/notifications/n.json",
+      null
+    ],
+    "events": [
+      {
+        "path": ".tasks/other/status.json",
+        "text": "running"
+      },
+      {
+        "path": ".tasks/t/notifications/n.json",
+        "text": "ready"
+      },
+      {
+        "path": ".tasks/t/status.json",
+        "text": "done"
+      }
+    ]
+  },
+  {
+    "name": "turn and attempt scopes are independent",
+    "folder": ".tasks/t/turns/1",
+    "files": {
+      ".tasks/t/turns/1/request.json": "retry",
+      ".tasks/t/turns/1/chunks/0": "new",
+      ".tasks/t/turns/1/completion.json": "done"
+    },
+    "changes": [
+      null,
+      ".tasks/t/turns/1/request.json",
+      ".tasks/t/turns/1/chunks/0",
+      ".tasks/t/turns/1/completion.json"
+    ],
+    "events": [
+      {
+        "path": ".tasks/t/turns/0/chunks/0",
+        "text": "old",
+        "channel": "Text"
+      },
+      {
+        "path": ".tasks/t/turns/1/request.json",
+        "text": "retry"
+      },
+      {
+        "path": ".tasks/t/turns/1/chunks/0",
+        "text": "new",
+        "channel": "Text"
+      },
+      {
+        "path": ".tasks/t/turns/1/completion.json",
+        "text": "done"
+      }
+    ]
+  },
+  {
+    "name": "plans are mutable files followed through one bounded folder query",
+    "folder": "plans",
+    "files": {
+      "plans/main.md": "revised",
+      "plans/other.md": "other"
+    },
+    "order": [
+      "plans/main.md",
+      "plans/other.md"
+    ],
+    "changes": [
+      "plans/main.md",
+      null,
+      "plans/other.md",
+      null,
+      "plans/main.md"
+    ],
+    "events": [
+      {
+        "path": "plans/main.md",
+        "text": "initial"
+      },
+      {
+        "path": "GOAL.md",
+        "text": "active"
+      },
+      {
+        "path": "plans/other.md",
+        "text": "other"
+      },
+      {
+        "path": ".tasks/t/status.json",
+        "text": "running"
+      },
+      {
+        "path": "plans/main.md",
+        "text": "revised"
+      }
+    ]
+  }
+]

@@ -12,7 +12,8 @@ struct State {
     hierarchy_version: CommitId,
     retained_allocation: Allocation,
     #[cfg(not(target_arch = "wasm32"))]
-    reserved: Arc<std::sync::Mutex<(usize, usize)>>,
+    // Lock order: provider state -> reserved counters; counter release takes no other lock.
+    reserved: Arc<crate::query_sync::SyncMutex<(usize, usize)>>,
 }
 
 impl State {

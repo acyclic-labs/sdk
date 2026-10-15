@@ -101,10 +101,20 @@ fn request_json_commit(input: &[u8]) -> Result<Value> {
     let mut request = wire_codec::commit_from_wire(request).map_err(|error| error.code())?;
     crate::request::normalize_commit(&mut request).map_err(|error| error.code())?;
     crate::request::validate_commit_shape(&request).map_err(|error| error.code())?;
+    if request
+        .conditions
+        .iter()
+        .any(|condition| matches!(condition, crate::CommitCondition::Head { .. }))
+    {
+        return Err("unsupported");
+    }
     let conditions: Vec<_> = request
         .conditions
         .iter()
         .map(|condition| match condition {
+            crate::CommitCondition::Head { .. } => {
+                unreachable!("head conditions require a negotiated hosted capability")
+            }
             crate::CommitCondition::Tail { path, expected } => json!({
                 "path": path.to_string(),
                 "ifTail": expected.to_string(),

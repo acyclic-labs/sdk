@@ -126,7 +126,7 @@ impl LocalStream {
         }
         journal._ownership_anchor = ownership_anchor;
         commit_clock.unpin();
-        let (changed, _) = watch::channel(0_u64);
+        let (changed, _) = watch::channel(Some(0_u64));
         Ok(Self {
             inner: Arc::new(LocalInner {
                 provider,
@@ -135,14 +135,16 @@ impl LocalStream {
                 visibility: RwLock::new(()),
                 synced: watch::channel(0_u64).0,
                 changed,
-                poisoned: AtomicBool::new(false),
+                #[cfg(acyclic_loom)]
+                omit_persist_wake: false,
+                durable_tails: Mutex::new(Default::default()),
             }),
             work: None,
         })
     }
 
     fn check_available(&self) -> Result<(), StreamError> {
-        if self.inner.poisoned.load(Ordering::Acquire) {
+        if self.inner.changed.borrow().is_none() {
             Err(StreamError::Unavailable)
         } else {
             Ok(())
@@ -218,7 +220,7 @@ impl LocalStream {
     async fn persist(&self, mut frame: PreparedFrame) -> Result<(), StreamError> {
         let required = !deferred();
         let journal = self.inner.journal.clone();
-        let persist = tokio::task::spawn_blocking(move || {
+        let persist = spawn_blocking(move || {
             journal
                 .lock()
                 .map_err(|_| LocalStreamError::Corrupt)?
@@ -231,9 +233,11 @@ impl LocalStream {
         if result.is_err() {
             return Err(self.inner.poison());
         }
-        self.inner.changed.send_modify(|revision| {
-            *revision = revision.saturating_add(1);
-        });
+        #[cfg(acyclic_loom)]
+        if self.inner.omit_persist_wake {
+            return self.compact_if_due().await;
+        }
+        self.inner.published();
         self.compact_if_due().await
     }
 
@@ -340,7 +344,7 @@ impl LocalStream {
         // The mutation owns completion as well as durability, even if its caller is dropped.
         let deferred = deferred();
         let operation = span.clone();
-        tokio::spawn(DEFERRED.scope(deferred, async move {
+        spawn(DEFERRED.scope(deferred, async move {
             let result = operation
                 .scope(async {
                     let (result, required) = {
@@ -363,6 +367,14 @@ impl LocalStream {
         })?
     }
 
+    /// Observes accepted publications without joining their durability wait.
+    async fn accepted<T>(&self, read: impl Future<Output = T>) -> Result<T, StreamError> {
+        self.check_available()?;
+        let _visibility = self.inner.visibility.read().await;
+        self.check_available()?;
+        Ok(read.await)
+    }
+
     /// Runs one read under shared visibility, then returns its result once
     async fn visible<T>(&self, read: impl Future<Output = T>) -> Result<T, StreamError> {
         self.check_available()?;
@@ -377,6 +389,6 @@ impl LocalStream {
     }
 
     async fn read_visible(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        self.visible(self.inner.provider.read(request)).await?
+        self.accepted(self.inner.provider.read(request)).await?
     }
 }

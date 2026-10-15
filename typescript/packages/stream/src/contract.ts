@@ -1,7 +1,7 @@
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import initStreamWasm, { decodeReadResponse, encodeHttpRequest as encodeHttpRequestWire, initSync as initStreamWasmSync, normalizeCommitRequest, validateAppendRequest, validatePath, validateRequest, validateSequence } from "../generated/wasm/acyclic_stream_wasm.js";
 import {
-  AbsentConditionSchema, AppendMutationSchema, AppendRequestSchema, CommitConditionSchema,
+  AbsentConditionSchema, HeadConditionSchema, AppendMutationSchema, AppendRequestSchema, CommitConditionSchema,
   CommitMutationSchema, CommitRequestSchema,
   ForkMutationSchema, ForkRequestSchema, TailConditionSchema, TailRequestSchema,
   ReadRequestSchema, FollowRequestSchema,
@@ -87,7 +87,7 @@ export function validateSequenceValue(value: unknown): bigint {
 
 function validationError(error: unknown, operation: "append" | "commit" | "request" | "path"): never {
   const code = String(error);
-  if (code === "invalid_path" || code === "invalid_argument" || code === "limit_exceeded") {
+  if (code === "invalid_path" || code === "invalid_argument" || code === "limit_exceeded" || code === "unsupported") {
     const message = code === "limit_exceeded" ? `${operation} command exceeds contract limits`
       : code === "invalid_argument" && operation === "commit" ? "commit requires valid, matching conditions and mutations"
       : code.replaceAll("_", " ");
@@ -238,6 +238,9 @@ export async function normalizeWireCommitBytes(request: ProviderCommitRequest, o
   let input: Uint8Array;
   try {
     const conditions = request.conditions.map(condition => {
+      if ("ifTail" in condition && condition.ifCommitId !== undefined) return create(CommitConditionSchema, {
+        condition: { case: "head", value: create(HeadConditionSchema, { path: condition.path, expected: condition.ifTail, commitId: commitId(condition.ifCommitId) }) },
+      });
       if ("ifTail" in condition) return create(CommitConditionSchema, {
         condition: { case: "tail", value: create(TailConditionSchema, { path: condition.path, expected: condition.ifTail }) },
       });
@@ -279,6 +282,7 @@ export async function normalizeWireCommit(request: ProviderCommitRequest, option
   return {
     conditions: normalized.conditions.map(condition => {
       switch (condition.condition.case) {
+        case "head": return { path: condition.condition.value.path, ifTail: condition.condition.value.expected, ifCommitId: commitId(condition.condition.value.commitId) };
         case "tail": return { path: condition.condition.value.path, ifTail: condition.condition.value.expected };
         case "absent": return { path: condition.condition.value.path, ifAbsent: true };
         default: throw new StreamError("invalid_argument", "normalized condition is missing its kind");

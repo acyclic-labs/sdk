@@ -222,17 +222,14 @@ pub(super) fn capture_missing_host_ancestors(
 
 pub(super) struct MetadataProbeGuard<'a> {
     pub(super) probes: &'a Mutex<HashMap<MountPath, usize>>,
-    pub(super) path: MountPath,
+    pub(super) path: &'a MountPath,
 }
 
 impl<'a> MetadataProbeGuard<'a> {
-    pub(super) fn enter(probes: &'a Mutex<HashMap<MountPath, usize>>, path: &MountPath) -> Self {
+    pub(super) fn enter(probes: &'a Mutex<HashMap<MountPath, usize>>, path: &'a MountPath) -> Self {
         let mut active = lock_recover(probes);
         *active.entry(path.clone()).or_default() += 1;
-        Self {
-            probes,
-            path: path.clone(),
-        }
+        Self { probes, path }
     }
 
     pub(super) fn is_active(probes: &Mutex<HashMap<MountPath, usize>>, path: &MountPath) -> bool {
@@ -245,12 +242,12 @@ impl<'a> MetadataProbeGuard<'a> {
 impl Drop for MetadataProbeGuard<'_> {
     fn drop(&mut self) {
         let mut active = lock_recover(self.probes);
-        let Some(count) = active.get_mut(&self.path) else {
+        let Some(count) = active.get_mut(self.path) else {
             return;
         };
         *count -= 1;
         if *count == 0 {
-            active.remove(&self.path);
+            active.remove(self.path);
         }
     }
 }

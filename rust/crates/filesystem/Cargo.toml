@@ -126,6 +126,7 @@ wasm-bindgen-futures = { workspace = true, optional = true }
 web-sys = { workspace = true, features = ["Blob", "BlobPropertyBag"], optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+loom = { version = "=0.7.2", optional = true }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 cap-primitives = "4.0.3"
 cap-fs-ext = "4.0.2"
@@ -159,6 +160,7 @@ windows = { version = "0.62.2", features = [
 ] }
 
 [features]
+model-checking = ["dep:loom"]
 default = ["local", "memory", "native-watch", "native-mount"]
 local = ["distributed", "acyclic-objects/local", "acyclic-stream/local", "dep:fs2", "dep:tempfile"]
 memory = ["distributed"]
