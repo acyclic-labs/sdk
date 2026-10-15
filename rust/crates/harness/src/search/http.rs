@@ -325,6 +325,21 @@ struct TinyFishResult {
     snippet: String,
 }
 
+/// Exercises the actual response codec without credentials or network I/O.
+#[cfg(feature = "test-support")]
+pub fn decode_search_http_response(
+    bytes: &[u8],
+    maximum: u32,
+    exa: bool,
+    work: crate::NativeWork<'_>,
+) -> Result<(SearchResponse, crate::NativeCustody)> {
+    if exa {
+        codec::exa(bytes, maximum, work)
+    } else {
+        codec::tinyfish(bytes, maximum, work)
+    }
+}
+
 impl SearchProvider for TinyFish {
     fn search<'a>(
         &'a self,

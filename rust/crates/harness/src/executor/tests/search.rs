@@ -9,6 +9,8 @@ use acyclic_fs::{CancellationToken, NativeMaterializationWork};
 struct NativeSearch {
     backend: Arc<ScriptedSearchProvider>,
     lose_response: bool,
+    #[cfg(feature = "search-http")]
+    wire: Option<(Vec<u8>, bool)>,
 }
 
 impl SearchProvider for NativeSearch {
@@ -25,6 +27,17 @@ impl SearchProvider for NativeSearch {
     ) -> Result<crate::NativeFutureBundle<'a, (SearchResponse, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || async move {
             let result = self.backend.search_with_native_work(request, work)?.await?;
+            #[cfg(feature = "search-http")]
+            if let Some((bytes, exa)) = &self.wire {
+                drop(result);
+                let (response, custody) = crate::search::decode_search_http_response(
+                    bytes,
+                    request.max_results,
+                    *exa,
+                    Some(work),
+                )?;
+                return Ok((response, custody.unwrap()));
+            }
             if self.lose_response {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Storage,
@@ -39,12 +52,30 @@ impl SearchProvider for NativeSearch {
 #[tokio::test]
 async fn native_search_dispatch_scenario_executes_projects_and_replays_once() -> Result<()> {
     for (lose_response, rejected) in [(false, false), (true, false), (false, true)] {
-        dispatch_scenario(lose_response, rejected).await?;
+        dispatch_scenario(lose_response, rejected, None).await?;
     }
     Ok(())
 }
 
-async fn dispatch_scenario(lose_response: bool, rejected: bool) -> Result<()> {
+#[cfg(feature = "search-http")]
+#[tokio::test]
+async fn native_search_deep_complete_responses_fail_terminally_and_replay() -> Result<()> {
+    for exa in [true, false] {
+        let body = format!(
+            "{{\"results\":[],\"metadata\":{}0{}}}",
+            "[".repeat(258),
+            "]".repeat(258)
+        );
+        dispatch_scenario(false, true, Some((body.into_bytes(), exa))).await?;
+    }
+    Ok(())
+}
+
+async fn dispatch_scenario(
+    lose_response: bool,
+    rejected: bool,
+    wire: Option<(Vec<u8>, bool)>,
+) -> Result<()> {
     let fixture = CreationFixture::new_with_grants(&["tool:call:web_search"]).await?;
     let work = NativeMaterializationWork::new(
         acyclic_fs::WorkBudget {
@@ -76,8 +107,8 @@ async fn dispatch_scenario(lose_response: bool, rejected: bool) -> Result<()> {
             query: "native query".into(),
             max_results: 5,
         },
-        response: (!rejected).then(|| response.clone()),
-        error: rejected.then(|| "scripted search unavailable".into()),
+        response: (!rejected || wire.is_some()).then(|| response.clone()),
+        error: (rejected && wire.is_none()).then(|| "scripted search unavailable".into()),
     }])?);
     let mut source = ToolRegistry::default();
     source.register(
@@ -85,6 +116,8 @@ async fn dispatch_scenario(lose_response: bool, rejected: bool) -> Result<()> {
             web_search(Arc::new(NativeSearch {
                 backend: backend.clone(),
                 lose_response,
+                #[cfg(feature = "search-http")]
+                wire,
             }))?,
             None,
         ),

@@ -13,6 +13,12 @@ pub use tool::{spec, web_search};
 mod http;
 #[cfg(test)]
 mod tests;
+#[cfg(all(
+    feature = "search-http",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
+pub use http::decode_search_http_response;
 #[cfg(all(feature = "search-http", not(target_arch = "wasm32")))]
 pub use http::{Exa, TinyFish};
 #[cfg(all(feature = "search-http", not(target_arch = "wasm32")))]

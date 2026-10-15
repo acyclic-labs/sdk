@@ -346,7 +346,10 @@ impl Lexical {
             }
         };
         if item {
-            if depth > bounds.maximum_depth || self.items >= bounds.maximum_items {
+            if depth > bounds.maximum_depth {
+                return Err(boundary("JSON nesting limit exceeded", code));
+            }
+            if self.items >= bounds.maximum_items {
                 return Err(boundary("JSON exceeds declared structural bound", code));
             }
             charge.borrow_mut()(JsonCodecCharge::Work { bytes: 0, items: 1 })?;

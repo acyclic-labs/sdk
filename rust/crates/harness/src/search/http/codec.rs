@@ -11,19 +11,29 @@ use crate::filesystem::UploadRecord as Record;
 use serde::de::DeserializeOwned as Record;
 
 fn decode<T: Record>(bytes: &[u8], work: NativeWork<'_>) -> Result<(T, NativeCustody)> {
+    if bytes.len() > super::MAXIMUM_RESPONSE_BYTES {
+        return Err(crate::search::rejection(
+            work,
+            "search response exceeds byte limit",
+        ));
+    }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         let io = crate::executor::PreparationIo::from_native_work(work)?;
-        let decoded: T = io.decode_json(bytes).map_err(|failure| match failure {
-            crate::Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "invalid JSON nesting" | "incomplete JSON document",
-            }
-            | crate::Error::NativeJson { .. } => {
-                crate::search::rejection(Some(work), "invalid search response")
-            }
-            failure => failure,
-        })?;
+        let decoded: T =
+            io.decode_json(bytes).map_err(|failure| match failure {
+                crate::Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason:
+                        "invalid JSON nesting"
+                        | "incomplete JSON document"
+                        | "JSON nesting limit exceeded",
+                }
+                | crate::Error::NativeJson { .. } => {
+                    crate::search::rejection(Some(work), "invalid search response")
+                }
+                failure => failure,
+            })?;
         let retained = (std::mem::size_of::<T>() as u64)
             .checked_add(decoded.logical_owned_bytes()?)
             .ok_or_else(|| error(Some(work), "search decode ownership overflow"))?;
@@ -53,7 +63,14 @@ pub(super) fn exa(
     maximum: u32,
     work: NativeWork<'_>,
 ) -> Result<(SearchResponse, NativeCustody)> {
-    let raw = decode::<ExaResponse>(bytes, work)?;
+    normalize_exa(decode::<ExaResponse>(bytes, work)?, maximum, work)
+}
+
+fn normalize_exa(
+    raw: (ExaResponse, NativeCustody),
+    maximum: u32,
+    work: NativeWork<'_>,
+) -> Result<(SearchResponse, NativeCustody)> {
     let mut held = allocation(work, std::mem::size_of::<SearchResponse>())?;
     let mut results = Vec::new();
     reserve_vec(
@@ -62,24 +79,30 @@ pub(super) fn exa(
         raw.0.results.len().min(maximum as usize),
     )?;
     for item in raw.0.results.into_iter().take(maximum as usize) {
-        let length = item
-            .highlights
-            .iter()
-            .try_fold(0_usize, |n, text| {
-                n.checked_add(text.len())
-                    .ok_or_else(|| error(work, "search snippet size overflow"))
-            })?
-            .checked_add(item.highlights.len().saturating_sub(1))
-            .ok_or_else(|| error(work, "search snippet size overflow"))?;
-        let mut snippet = String::new();
-        reserve_string(&mut held, &mut snippet, length)?;
-        charge(&held, length as u64, item.highlights.len() as u64 + 1)?;
-        for (index, text) in item.highlights.iter().enumerate() {
-            if index > 0 {
-                snippet.push('\n');
+        let snippet = if item.highlights.len() <= 1 {
+            charge(&held, 0, item.highlights.len() as u64 + 1)?;
+            item.highlights.into_iter().next().unwrap_or_default()
+        } else {
+            let length = item
+                .highlights
+                .iter()
+                .try_fold(0_usize, |n, text| {
+                    n.checked_add(text.len())
+                        .ok_or_else(|| error(work, "search snippet size overflow"))
+                })?
+                .checked_add(item.highlights.len().saturating_sub(1))
+                .ok_or_else(|| error(work, "search snippet size overflow"))?;
+            let mut snippet = String::new();
+            reserve_string(&mut held, &mut snippet, length)?;
+            charge(&held, length as u64, item.highlights.len() as u64 + 1)?;
+            for (index, text) in item.highlights.iter().enumerate() {
+                if index > 0 {
+                    snippet.push('\n');
+                }
+                snippet.push_str(text);
             }
-            snippet.push_str(text);
-        }
+            snippet
+        };
         results.push(SearchResult {
             url: item.url,
             title: item.title.unwrap_or_default(),
@@ -88,6 +111,9 @@ pub(super) fn exa(
     }
     finish((SearchResponse { results }, held, raw.1))
 }
+
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+mod tests;
 
 pub(super) fn tinyfish(
     bytes: &[u8],

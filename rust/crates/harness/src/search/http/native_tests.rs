@@ -59,6 +59,11 @@ async fn search_native_http_adapters_return_funded_results() -> Result<()> {
 
 #[tokio::test]
 async fn search_native_http_rejections_are_not_uncertain_transport_failures() -> Result<()> {
+    let deep = format!(
+        "{{\"results\":[],\"metadata\":{}0{}}}",
+        "[".repeat(258),
+        "]".repeat(258)
+    );
     for exa in [true, false] {
         for (status, body) in [
             (200, "{}"),
@@ -66,6 +71,7 @@ async fn search_native_http_rejections_are_not_uncertain_transport_failures() ->
             (200, r#"{"results":[]"#),
             (200, r#"{"results":"test-only-placeholder"}"#),
             (401, "test-only-placeholder"),
+            (200, deep.as_str()),
         ] {
             let work = work(&CancellationToken::new())?;
             let baseline = work.live_allocation_bytes();
