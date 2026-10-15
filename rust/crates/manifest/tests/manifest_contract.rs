@@ -387,47 +387,41 @@ fn asset_bundle_requires_immutable_digest_and_matching_objects_grant()
     Ok(())
 }
 
-#[test]
-fn inbox_scope_uses_s1_whole_segments() -> Result<(), Box<dyn std::error::Error>> {
-    let mut manifest = fixture()?;
-    let env = &mut manifest.environments[0];
-    env.bindings[0] = Binding::new(
-        "INBOX".into(),
-        "inboxGrant".into(),
-        "streams:/agents/a".into(),
-    )?
-    .into();
-    env.grants[0].grant.0.resource = ResourcePattern {
-        name: "streams:/agents/a".into(),
-        prefix: true,
-    };
-    validate(&manifest)?;
-    let env = &mut manifest.environments[0];
-    env.crons[0].inbox.0.name = "streams:/agents/ab/inbox".into();
-    if let EntryRuntime::Actor {
-        subscriptions,
-        timer_inbox,
-        ..
-    } = &mut env.entries[0].runtime
-    {
-        subscriptions[0] = SubscriptionSpec::new(
-            "inbox".into(),
-            "agents/ab/inbox".into(),
-            acyclic_actors::domain::SubscriptionStart::cursor(0),
-            true,
-        )?
-        .into();
-        if let Some(inbox) = timer_inbox {
-            inbox.stream.0.name = "streams:/agents/ab/inbox".into();
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    /// Whole-segment grants cover descendants but never neighboring names.
+    #[test]
+    fn inbox_scope_uses_s1_whole_segments(parent in "[a-z]{1,12}", suffix in "[a-z]{1,8}") {
+        let mut manifest = fixture()?;
+        let prefix = format!("streams:/agents/{parent}");
+        let env = &mut manifest.environments[0];
+        env.bindings[0] = Binding::new("INBOX".into(), "inboxGrant".into(), prefix.clone())?.into();
+        env.grants[0].grant.0.resource = ResourcePattern { name: prefix, prefix: true };
+        for (path, admitted) in [(format!("agents/{parent}/inbox"), true), (format!("agents/{parent}{suffix}/inbox"), false)] {
+            let env = &mut manifest.environments[0];
+            let resource = format!("streams:/{path}");
+            env.crons[0].inbox.0.name = resource.clone();
+            if let EntryRuntime::Actor { subscriptions, timer_inbox, .. } = &mut env.entries[0].runtime {
+                subscriptions[0] = SubscriptionSpec::new("inbox".into(), path, acyclic_actors::domain::SubscriptionStart::cursor(0), true)?.into();
+                if let Some(inbox) = timer_inbox { inbox.stream.0.name = resource; }
+            }
+            prop_assert_eq!(validate(&manifest).is_ok(), admitted);
         }
     }
-    assert_eq!(
-        validate(&manifest).err().map(|e| e.rule),
-        Some("inbox-authority".into())
-    );
-    Ok(())
-}
 
+    /// URL-style integer and mixed hexadecimal IP spellings never become DNS grants.
+    #[test]
+    fn numeric_ip_spellings_are_not_egress_hosts(address in any::<u32>()) {
+        let octets = address.to_be_bytes();
+        for host in [address.to_string(), format!("0x{address:x}"),
+            format!("{}.{}.{}.0x{:x}", octets[0], octets[1], octets[2], octets[3]),
+            format!("{}.{}", octets[0], address & 0x00ff_ffff)] {
+            let mut manifest = fixture()?;
+            manifest.environments[0].entries[0].fetch = Some(FetchBinding { name:"HTTP".into(), egress:vec![EgressRule { host, port:443 }] });
+            prop_assert!(validate(&manifest).is_err());
+        }
+    }
+}
 #[test]
 fn generated_artifacts_have_no_drift() -> Result<(), Box<dyn std::error::Error>> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
