@@ -1,0 +1,95 @@
+use super::*;
+use crate::mcp::callbacks::{McpCallbackPolicy, McpCallbackRequest, McpRuntimeCallbacks};
+
+fn catalog(count: usize) -> Result<ToolRegistry> {
+    let template = crate::tool::files::read_file()?;
+    let mut tools = ToolRegistry::default();
+    for index in 0..count {
+        let name = format!("tool_{index:05}");
+        for revision in ["1", "2"] {
+            let mut tool = template.clone();
+            tool.definition.name = name.clone();
+            tool.definition.revision = revision.into();
+            tools.register((tool, None), &mut None, None)?;
+        }
+        if index % 2 == 0 {
+            tools.remove_from_model(&name)?;
+        } else {
+            tools.select_model_version(&name, "1")?;
+        }
+    }
+    Ok(tools)
+}
+
+fn request(parent: OperationId, id: &str) -> McpCallbackRequest {
+    McpCallbackRequest {
+        parent,
+        policy: McpCallbackPolicy {
+            server: "sample".into(),
+            revision: "1".into(),
+            sampling: true,
+            elicitation: false,
+            maximum_requests: 4,
+        },
+        message: json!({"jsonrpc":"2.0","id":id,"method":"sampling/createMessage",
+            "params":{"messages":[{"role":"user","content":{"type":"text","text":"sample"}}],"maxTokens":128}}),
+    }
+}
+
+#[tokio::test]
+async fn tool_free_sampling_allocations_are_identical_for_10_and_10000_tools() -> Result<()> {
+    let mut observations = Vec::new();
+    for count in [10, 10_000] {
+        let model = Arc::new(ScriptedModelProvider::new([
+            ScriptedTurn::Text("answer".into()),
+            ScriptedTurn::Text("answer".into()),
+        ]));
+        let scope = RuntimeScope::new(Capabilities::new(["model:generate"]), Limits::default())?;
+        let context = Arc::new(capture_admitted_context(scope.clone()).await?);
+        let parent = OperationId::from_bytes([1; 16]);
+        let tool = crate::runtime::ToolContext::new(context, parent, "remote", None)?;
+        let callbacks = McpRuntimeCallbacks::new(
+            uncompacted_executor(
+                Model::new("test".into(), "sampling".into(), "1".into(), Value::Null)?,
+                model.clone(),
+                ContextPipeline::default(),
+                catalog(count)?,
+            )
+            .with_tool_authority(scope, None)?,
+            Arc::new(Journal::default()),
+            "test".into(),
+            ModelContent::Text("continue".into()),
+            None,
+            None,
+        )?;
+        callbacks
+            .admit(tool.clone(), &request(parent, "warmup"))
+            .await?;
+        let request = request(parent, "sample");
+        // Warm the synchronous executor's thread-local parking state outside measurement.
+        futures::executor::block_on(async {});
+        let mut result = None;
+        let allocations = allocation_counter::measure(|| {
+            result = Some(futures::executor::block_on(callbacks.admit(tool, &request)));
+        });
+        let (_, reply) = result.expect("sample ran")?;
+        assert_eq!(
+            reply.pointer("/result/content/text"),
+            Some(&json!("answer"))
+        );
+        assert!(
+            model
+                .requests()
+                .iter()
+                .all(|request| request.tools.is_empty())
+        );
+        assert_eq!(model.remaining(), 0);
+        observations.push((allocations.count_total, allocations.bytes_total));
+    }
+    assert_eq!(
+        observations[0], observations[1],
+        "sampling must not copy catalog-sized data"
+    );
+    eprintln!("tool-free sampling (allocations, bytes), 10 versus 10000 tools: {observations:?}");
+    Ok(())
+}

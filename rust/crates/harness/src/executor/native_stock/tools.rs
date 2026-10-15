@@ -5,16 +5,7 @@ pub(in crate::executor) fn stock_tool_definitions(
     scope: &RuntimeScope,
     io: Option<&PreparationIo>,
 ) -> Result<Vec<crate::tool::ToolDefinition>> {
-    let mut selected = Vec::new();
-    for definition in registry.definitions(io)? {
-        let key = with_history_io(io, |work| {
-            preparation_format(format_args!("tool:call:{}", definition.name), work)
-        })?;
-        if scope.grants().contains(&key) {
-            stock_vec_push(&mut selected, definition, io)?;
-        }
-    }
-    Ok(selected)
+    registry.definitions_for_grants(scope.grants(), io)
 }
 
 pub(in crate::executor) fn stock_is_native(io: Option<&PreparationIo>) -> bool {
