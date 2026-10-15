@@ -13,6 +13,23 @@ pub enum PolicyDecision {
     Deny,
 }
 
+/// Fail-closed authorization outcome, including malformed request facts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum Deny {
+    /// The product resource is not in its unique encoded spelling.
+    #[error("non-canonical request resource")]
+    NonCanonicalResource,
+    /// The authenticated recipient is not a canonical resource name.
+    #[error("non-canonical request audience")]
+    NonCanonicalAudience,
+    /// The owning product denied the request.
+    #[error("owner policy denied the request")]
+    OwnerPolicy,
+    /// The chain does not cover the request.
+    #[error("capability denied the request")]
+    Capability,
+}
+
 /// Typed operation facts; resource grants never authorize socket destinations.
 #[derive(Clone, Copy, Debug)]
 pub enum Target<'a> {
@@ -223,8 +240,25 @@ fn filter_allows(f: &Filter, r: &Request<'_>, p: &Principal, blocks: &[Block], i
 /// Conjunction is the contract's monotonicity rule. Subject references are
 /// frozen at the declaring block; later lineage cannot expand an older filter.
 /// All online ancestor certificates and all offline blocks restrict authority.
-pub fn permits(blocks: &[Block], r: &Request<'_>, policy: PolicyDecision) -> bool {
-    if policy == PolicyDecision::Deny || !valid_chain(blocks) {
+pub fn permits(blocks: &[Block], r: &Request<'_>, policy: PolicyDecision) -> Result<(), Deny> {
+    if matches!(r.target, Target::Resource { resource, .. } if !crate::valid_resource(resource)) {
+        return Err(Deny::NonCanonicalResource);
+    }
+    if !crate::valid_resource(r.audience) {
+        return Err(Deny::NonCanonicalAudience);
+    }
+    if policy == PolicyDecision::Deny {
+        return Err(Deny::OwnerPolicy);
+    }
+    if permits_canonical(blocks, r) {
+        Ok(())
+    } else {
+        Err(Deny::Capability)
+    }
+}
+
+fn permits_canonical(blocks: &[Block], r: &Request<'_>) -> bool {
+    if !valid_chain(blocks) {
         return false;
     }
     let Some(certificates) = &blocks[0].certificates else {

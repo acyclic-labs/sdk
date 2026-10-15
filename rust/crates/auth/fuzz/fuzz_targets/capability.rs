@@ -1,11 +1,13 @@
 #![no_main]
 use acyclic_auth::{
-    authority::{decode_block, decode_capability},
+    authority::{Deny, PolicyDecision, Request, Target, decode_block, decode_capability, permits},
     contract::{
-        BlockProto, CapabilityProto, RecordAttributes, RecordAttributesProto, SocketHostRule,
-        SocketHostRuleProto,
+        BlockProto, CapabilityProto, Limits, RecordAttributes, RecordAttributesProto,
+        SocketHostRule, SocketHostRuleProto,
     },
     decode_component, encode_component,
+    socket::valid_dns_name,
+    valid_resource,
 };
 use libfuzzer_sys::fuzz_target;
 use prost::Message;
@@ -40,6 +42,46 @@ fuzz_target!(|bytes: &[u8]| {
         Ok(bytes.to_vec())
     );
     if let Ok(text) = std::str::from_utf8(bytes) {
+        let attributes = RecordAttributes::default();
+        let usage = Limits {
+            rps: None,
+            burst: None,
+            bytes_per_s: None,
+            channels: None,
+            concurrency: None,
+            bytes: None,
+            spend_micros: None,
+            tokens: None,
+        };
+        let mut request = Request {
+            target: Target::Resource {
+                action: "fs/read",
+                resource: text,
+            },
+            audience: "workers:/app",
+            holder: None,
+            now_unix_seconds: 2,
+            keys: &[],
+            attributes: &attributes,
+            usage: &usage,
+            cpu_millis: 0,
+            memory_bytes: 0,
+        };
+        if !valid_resource(text) {
+            assert_eq!(
+                permits(&[], &request, PolicyDecision::Allow),
+                Err(Deny::NonCanonicalResource)
+            );
+            request.target = Target::Resource {
+                action: "fs/read",
+                resource: "fs:/a",
+            };
+            request.audience = text;
+            assert_eq!(
+                permits(&[], &request, PolicyDecision::Allow),
+                Err(Deny::NonCanonicalAudience)
+            );
+        }
         let wire = SocketHostRuleProto {
             host: text.to_owned(),
             ports: vec![],
@@ -55,4 +97,17 @@ fuzz_target!(|bytes: &[u8]| {
             assert_eq!(encode_component(&decoded), text);
         }
     }
+    let numeric = format!(
+        "0x{:x}.{}",
+        bytes.first().copied().unwrap_or(0),
+        bytes.get(1).copied().unwrap_or(0)
+    );
+    assert!(!valid_dns_name(&numeric));
+    assert!(
+        SocketHostRule::try_from(SocketHostRuleProto {
+            host: numeric,
+            ports: vec![]
+        })
+        .is_err()
+    );
 });

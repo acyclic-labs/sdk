@@ -29,7 +29,14 @@ enum Rule<'a> {
 }
 fn dns(name: &str) -> Option<&str> {
     let name = name.strip_suffix('.').unwrap_or(name);
+    let last = name.rsplit('.').next()?;
+    let hex = last.strip_prefix("0x").or_else(|| last.strip_prefix("0X"));
+    // URL/resolver IPv4 syntax also admits shorthand, octal, hex and integer
+    // hosts. A numeric final label must never enter the DNS grant alternative.
+    let numeric = last.bytes().all(|b| b.is_ascii_digit())
+        || hex.is_some_and(|digits| digits.bytes().all(|b| b.is_ascii_hexdigit()));
     (!name.is_empty()
+        && !numeric
         && name.len() <= 253
         && name.split('.').all(|label| {
             !label.is_empty()
@@ -41,6 +48,13 @@ fn dns(name: &str) -> Option<&str> {
                     .all(|b| b.is_ascii_alphanumeric() || b == b'-')
         }))
     .then_some(name)
+}
+
+/// Shared DNS admission for socket and egress host grants. IP literals belong
+/// in an explicit IP/CIDR alternative, never a DNS name or wildcard suffix.
+/// ASCII case and one trailing root dot retain their DNS equivalence.
+pub fn valid_dns_name(name: &str) -> bool {
+    dns(name).is_some()
 }
 fn parse_rule(host: &str) -> Option<Rule<'_>> {
     if let Some((network, prefix)) = host.split_once('/') {
