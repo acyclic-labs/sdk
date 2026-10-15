@@ -300,6 +300,8 @@ async fn sealed_summary_preparation(
     ))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+mod accounting;
 mod compaction;
 mod publication;
 mod retirement;
