@@ -14,11 +14,10 @@ use acyclic_harness::{
     resources::ProviderRef,
     workflow::{
         DurableWorkflowHost, MachineCheckpoint, MachineIdentity, MachineRegistry, MachineStatus,
-        MachineTransition, ResumableMachine, WorkflowAdmission, WorkflowCommand,
-        WorkflowCommitOutcome, WorkflowJournal,
+        MachineTransition, ResumableMachine, WorkflowAdmission, WorkflowCommand, WorkflowJournal,
     },
 };
-use acyclic_stream::{MemoryStream, StreamClient};
+use acyclic_stream::MemoryStream;
 use bytes::Bytes;
 use futures::TryStreamExt as _;
 use serde_json::{Value, json};
@@ -63,14 +62,20 @@ impl ResumableMachine for Counter {
     reason = "one ordered scenario keeps each step next to the state it checks"
 )]
 async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_retry() -> Result<()> {
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
-    let provider = ProviderRef::new("workflow-e2e", "filesystem", "2")?;
-    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+    let stream = Arc::new(MemoryStream::default());
+    let provider = ProviderRef::new(
+        "workflow-e2e".into(),
+        "filesystem".into(),
+        "2".into(),
+        &mut None,
+    )?;
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let volume = VolumeRef::new(
         provider,
-        "counter-private",
+        "counter-private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(AgentId::from_bytes([4; 16])),
+        &mut None,
     )?;
     host.create_volume(&volume).await?;
     let issuer = AuthorityIssuer::new(
@@ -81,15 +86,26 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
             id: "counter".into(),
         },
     );
-    let scope = issuer.root_for_agent(
-        AgentId::from_bytes([4; 16]),
-        "owner",
-        Capabilities::new([
-            volume.capability(VolumeOperation::Read)?,
-            volume.capability(VolumeOperation::Write)?,
-        ]),
-    );
-    let write = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
+    let scope = issuer
+        .issue(
+            "owner",
+            &Capabilities::new([
+                volume.capability(VolumeOperation::Read, &mut None)?,
+                volume.capability(VolumeOperation::Write, &mut None)?,
+            ]),
+            Some(AgentId::from_bytes([4; 16])),
+            None,
+            &mut None,
+        )
+        .expect("scope proof");
+    let write = ContentGrant::verify(
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &scope,
+        &volume,
+        VolumeOperation::Write,
+        u64::MAX,
+        &mut None,
+    )?;
     let command_payload = host
         .put_content(
             &volume,
@@ -100,17 +116,22 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
             "count.json",
             65_536,
             &IdempotencyKey::new("command-payload")?,
+            None,
+            None,
         )
         .await?;
-    let journal = Arc::new(FilesystemWorkflowJournal::new(
+    let journal = FilesystemWorkflowJournal::new(
         stream.clone(),
         host.clone(),
         "counter",
-        volume.clone(),
-        issuer.verifier(),
-        scope.clone(),
-        65_536,
-    )?);
+        acyclic_harness::filesystem::FilesystemJournalBinding {
+            volume: &volume,
+            verifier: &issuer.verifier(&mut None).expect("verifier copy"),
+            scope: &scope,
+            maximum_bytes: 65_536,
+            io: None,
+        },
+    )?;
     let machine = Arc::new(Counter {
         identity: MachineIdentity {
             name: "test.counter".into(),
@@ -126,37 +147,42 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         state: json!(0),
     };
     let mut registry = MachineRegistry::default();
-    registry.register(machine)?;
+    registry.register(machine, &mut None)?;
     let admission = WorkflowAdmission {
         operation_id: OperationId::from_bytes([9; 16]),
         request_digest: [5; 32],
         initial: initial.clone(),
     };
-    stream
-        .stream("harness/v2/workflows/orphan")
-        .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
-        .append_batch(
-            vec![Bytes::from_static(b"unadmitted-transition")],
-            Some(0),
-            None,
-        )
-        .await
-        .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
+    acyclic_stream::Stream::new(
+        std::sync::Arc::clone(&stream),
+        "harness/v2/workflows/orphan",
+    )
+    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
+    .append_batch(
+        vec![Bytes::from_static(b"unadmitted-transition").into()],
+        Some(0),
+        None,
+    )
+    .await
+    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
     let orphan = FilesystemWorkflowJournal::new(
         stream.clone(),
         host.clone(),
         "orphan",
-        volume.clone(),
-        issuer.verifier(),
-        scope.clone(),
-        65_536,
+        acyclic_harness::filesystem::FilesystemJournalBinding {
+            volume: &volume,
+            verifier: &issuer.verifier(&mut None).expect("verifier copy"),
+            scope: &scope,
+            maximum_bytes: 65_536,
+            io: None,
+        },
     )?;
     assert!(matches!(
         orphan.admit(admission.clone()).await,
         Err(acyclic_harness::Error::Conflict(_))
     ));
     assert_eq!(journal.admit(admission.clone()).await?, admission);
-    assert_eq!(journal.admission().await?, Some(admission.clone()));
+    assert_eq!(journal.admission(None)?.await?.0, Some(admission.clone()));
     let mut changed_admission = admission.clone();
     changed_admission.request_digest = [6; 32];
     assert!(matches!(
@@ -173,20 +199,32 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         DurableWorkflowHost::open(registry.clone(), initial.clone(), journal.clone()).await?;
     let operation = OperationId::from_bytes([8; 16]);
     let retry = IdempotencyKey::new("counter-step-1")?;
-    let transition = workflow.step(operation, retry.clone(), json!(3)).await?;
+    let transition = workflow
+        .step(operation, retry.clone(), json!(3), |_| Ok(()))
+        .await?;
     assert_eq!(transition.state, json!(3));
-    assert_eq!(workflow.step(operation, retry, json!(3)).await?, transition);
+    assert_eq!(
+        workflow
+            .step(operation, retry, json!(3), |_| Ok(()))
+            .await?,
+        transition
+    );
     let second = OperationId::from_bytes([11; 16]);
     assert_eq!(
         workflow
-            .step(second, IdempotencyKey::new("counter-step-2")?, json!(1))
+            .step(
+                second,
+                IdempotencyKey::new("counter-step-2")?,
+                json!(1),
+                |_| Ok(())
+            )
             .await?
             .state,
         json!(4)
     );
-    let committed = journal.replay(0, 64).await?;
+    let committed = journal.replay(0, 64, None)?.await?.0;
     assert_eq!(committed.len(), 2);
-    assert!(matches!(
+    assert_eq!(
         journal
             .commit(
                 0,
@@ -194,14 +232,12 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
                 committed[0].clone()
             )
             .await?,
-        WorkflowCommitOutcome::Replayed(_)
-    ));
+        committed[0]
+    );
     let mut reused_command = committed[1].clone();
     reused_command.operation_id = OperationId::from_bytes([12; 16]);
     reused_command.idempotency_key = IdempotencyKey::new("reused-command")?;
-    reused_command.prior = committed[1].next.clone();
-    reused_command.next.revision = 3;
-    reused_command.next.state = json!(5);
+    reused_command.prior = workflow.checkpoint().clone();
     reused_command.transition.state = json!(5);
     reused_command.transition.commands[0].operation_id =
         committed[0].transition.commands[0].operation_id;
@@ -216,7 +252,6 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
     forged.idempotency_key = IdempotencyKey::new("forged-step")?;
     forged.prior.revision = 2;
     forged.prior.state = json!(999);
-    forged.next.revision = 3;
     assert!(matches!(
         journal
             .commit(2, forged.idempotency_key.clone(), forged)
@@ -226,49 +261,55 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
     let reopened =
         DurableWorkflowHost::open(registry.clone(), initial.clone(), journal.clone()).await?;
     assert_eq!(reopened.checkpoint().state, json!(4));
-    let admission_entries = stream
-        .stream("harness/v2/workflow-admissions/counter")
-        .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
-        .read(0, 2)
-        .await
-        .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
-        .try_collect::<Vec<_>>()
-        .await
-        .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
+    let admission_entries = acyclic_stream::Stream::new(
+        std::sync::Arc::clone(&stream),
+        "harness/v2/workflow-admissions/counter",
+    )
+    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
+    .read(0, 2)
+    .await
+    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
+    .try_collect::<Vec<_>>()
+    .await
+    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
     assert_eq!(admission_entries.len(), 1);
     let admission_ref: FileRef = serde_json::from_slice(&admission_entries[0].value)
         .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
     assert_eq!(admission_ref.descriptor().media_type(), "application/json");
-    let records = stream
-        .stream("harness/v2/workflows/counter")
-        .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
-        .read(0, 2)
-        .await
-        .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
-        .try_collect::<Vec<_>>()
-        .await
-        .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
+    let records = acyclic_stream::Stream::new(
+        std::sync::Arc::clone(&stream),
+        "harness/v2/workflows/counter",
+    )
+    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
+    .read(0, 2)
+    .await
+    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
+    .try_collect::<Vec<_>>()
+    .await
+    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
     assert_eq!(records.len(), 2);
     let reference: FileRef = serde_json::from_slice(&records[0].value)
         .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
     assert_eq!(reference.descriptor().media_type(), "application/json");
-    // Read and reopen more than one page through the real Filesystem/Stream journal.
-    let paged = Arc::new(FilesystemWorkflowJournal::new(
+    let paged = FilesystemWorkflowJournal::new(
         stream.clone(),
         host.clone(),
         "paged-counter",
-        volume.clone(),
-        issuer.verifier(),
-        scope.clone(),
-        65_536,
-    )?);
+        acyclic_harness::filesystem::FilesystemJournalBinding {
+            volume: &volume,
+            verifier: &issuer.verifier(&mut None).expect("verifier copy"),
+            scope: &scope,
+            maximum_bytes: 65_536,
+            io: None,
+        },
+    )?;
     paged.admit(admission.clone()).await?;
     let mut paged_host =
         DurableWorkflowHost::open(registry.clone(), initial.clone(), paged.clone()).await?;
     let first_paged = OperationId::new();
     let first_key = IdempotencyKey::new("paged-first")?;
     let first_transition = paged_host
-        .step(first_paged, first_key.clone(), json!(1))
+        .step(first_paged, first_key.clone(), json!(1), |_| Ok(()))
         .await?;
     for index in 1..=64 {
         paged_host
@@ -276,39 +317,46 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
                 OperationId::new(),
                 IdempotencyKey::new(format!("paged-{index}"))?,
                 json!(1),
+                |_| Ok(()),
             )
             .await?;
     }
-    assert_eq!(paged.replay(0, 64).await?.len(), 64);
-    assert_eq!(paged.replay(64, 64).await?.len(), 1);
-    assert_eq!(paged.replay(0, 65).await?.len(), 64);
-    let fresh_paged = Arc::new(FilesystemWorkflowJournal::new(
+    assert_eq!(paged.replay(0, 64, None)?.await?.0.len(), 64);
+    assert_eq!(paged.replay(64, 64, None)?.await?.0.len(), 1);
+    assert_eq!(paged.replay(0, 65, None)?.await?.0.len(), 64);
+    let fresh_paged = FilesystemWorkflowJournal::new(
         stream.clone(),
         host.clone(),
         "paged-counter",
-        volume.clone(),
-        issuer.verifier(),
-        scope.clone(),
-        65_536,
-    )?);
+        acyclic_harness::filesystem::FilesystemJournalBinding {
+            volume: &volume,
+            verifier: &issuer.verifier(&mut None).expect("verifier copy"),
+            scope: &scope,
+            maximum_bytes: 65_536,
+            io: None,
+        },
+    )?;
     let mut fresh_host = DurableWorkflowHost::open(registry, initial, fresh_paged.clone()).await?;
     assert_eq!(fresh_host.checkpoint().revision, 65);
     assert_eq!(
         fresh_host
-            .step(first_paged, first_key.clone(), json!(1))
+            .step(first_paged, first_key.clone(), json!(1), |_| Ok(()))
             .await?,
         first_transition
     );
-    let first_record = fresh_paged.replay(0, 1).await?.remove(0);
-    assert!(matches!(
-        fresh_paged.commit(0, first_key, first_record).await?,
-        WorkflowCommitOutcome::Replayed(_)
-    ));
+    let first_record = fresh_paged.replay(0, 1, None)?.await?.0.remove(0);
+    assert_eq!(
+        fresh_paged
+            .commit(0, first_key, first_record.clone())
+            .await?,
+        first_record
+    );
     fresh_host
         .step(
             OperationId::new(),
             IdempotencyKey::new("paged-next")?,
             json!(1),
+            |_| Ok(()),
         )
         .await?;
     assert_eq!(fresh_host.checkpoint().revision, 66);
@@ -316,39 +364,35 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         stream,
         host,
         "counter",
-        volume,
-        issuer.verifier(),
-        scope,
-        65_536,
+        acyclic_harness::filesystem::FilesystemJournalBinding {
+            volume: &volume,
+            verifier: &issuer.verifier(&mut None).expect("verifier copy"),
+            scope: &scope,
+            maximum_bytes: 65_536,
+            io: None,
+        },
     )?;
     let candidate = |operation, key: &str, command| -> Result<_> {
         let mut record = committed[1].clone();
         record.operation_id = OperationId::from_bytes([operation; 16]);
         record.idempotency_key = IdempotencyKey::new(key)?;
-        record.prior = committed[1].next.clone();
-        record.next.revision = 3;
-        record.next.state = json!(5);
+        record.prior = workflow.checkpoint().clone();
         record.transition.state = json!(5);
         record.transition.commands[0].operation_id = OperationId::from_bytes([command; 16]);
         Ok(record)
     };
     let first = candidate(13, "concurrent-first", 15)?;
-    // Both independent hosts race the same CAS revision and emit the same
-    // command identity. Exactly one may retain that command operation.
     let second = candidate(14, "concurrent-second", 15)?;
     let (first_result, second_result) = tokio::join!(
         journal.commit(2, first.idempotency_key.clone(), first.clone()),
         other.commit(2, second.idempotency_key.clone(), second.clone()),
     );
-    assert!(
-        matches!(&first_result, Ok(WorkflowCommitOutcome::Applied(_)))
-            ^ matches!(&second_result, Ok(WorkflowCommitOutcome::Applied(_)))
-    );
+    assert!(first_result.is_ok() ^ second_result.is_ok());
     assert!(
         matches!(&first_result, Err(acyclic_harness::Error::Conflict(_)))
             ^ matches!(&second_result, Err(acyclic_harness::Error::Conflict(_)))
     );
-    let tail = journal.replay(0, 64).await?;
+    let tail = journal.replay(0, 64, None)?.await?.0;
     assert_eq!(tail.len(), 3);
     assert!(tail[2] == first || tail[2] == second);
     Ok(())

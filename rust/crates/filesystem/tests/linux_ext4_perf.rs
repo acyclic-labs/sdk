@@ -10,15 +10,74 @@ use std::time::Duration;
 use std::time::Instant;
 
 use acyclic_fs::demand::{DemandSource, native::NativeDemandSource};
-use acyclic_fs::kernel::NamespacePath;
+use acyclic_fs::kernel::{KernelAccounting, NamespacePath};
 use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
 use acyclic_fs::path::PortablePath;
 use acyclic_fs::{
-    CancellationToken, Fs, IdempotencyKey, LazyWorkspace, LocalFs, LocalOptions,
-    MaterializeOptions, MemoryLazyWorkspaceStore, MountOptions, MountPath, PublicationPermit,
-    TransactionCommit, WorkBudget,
+    CancellationToken, Fs, IdempotencyKey, LazyWorkspace, Lifecycle, LocalAuthorityBackend,
+    LocalFs, LocalObjectBackend, LocalOptions, MaterializeOptions, MemoryLazyWorkspaceStore,
+    MountOptions, MountPath, NativeMaterializationWork, OperationId, PublicationPermit,
+    TransactionCommit, VolumeConfig, WorkBudget,
 };
 use serde_json::json;
+
+fn work(
+    cancel: &CancellationToken,
+) -> Result<NativeMaterializationWork, acyclic_fs::NativeTreeMaterializationError> {
+    NativeMaterializationWork::new(WorkBudget::UNBOUNDED, cancel).map_err(|(error, _)| error)
+}
+
+async fn open_source(path: &Path) -> Result<Arc<NativeDemandSource>, Box<dyn std::error::Error>> {
+    Ok(Arc::new(
+        NativeDemandSource::open(
+            std::borrow::Cow::Borrowed(path),
+            FilesystemProfile::Portable,
+            VolumeLimits::default(),
+            None,
+            None,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)?
+        .value,
+    ))
+}
+
+async fn attach(
+    fs: &LocalFs,
+    name: &str,
+    source: Arc<NativeDemandSource>,
+) -> Result<
+    LazyWorkspace<
+        LocalAuthorityBackend,
+        LocalObjectBackend,
+        NativeDemandSource,
+        MemoryLazyWorkspaceStore,
+    >,
+    Box<dyn std::error::Error>,
+> {
+    let cancel = CancellationToken::new();
+    let work = work(&cancel)?;
+    Ok(LazyWorkspace::attach(
+        fs,
+        name,
+        source,
+        MemoryLazyWorkspaceStore::default(),
+        VolumeConfig::portable(if fs.capabilities().durable {
+            Lifecycle::Durable
+        } else {
+            Lifecycle::Ephemeral
+        }),
+        OperationId::new(),
+        &mut KernelAccounting::NativeOriginal {
+            work: &work,
+            cancellation: &cancel,
+        },
+    )
+    .await?
+    .0)
+}
 
 fn component(value: &str) -> Vec<u8> {
     value.as_bytes().to_vec()
@@ -79,11 +138,8 @@ async fn mounted_workflow(
     program: &str,
     args: &[&str],
 ) -> Result<(u128, u128, u128, u128), Box<dyn std::error::Error>> {
-    let demand = Arc::new(
-        NativeDemandSource::open(source, FilesystemProfile::Portable, VolumeLimits::default())
-            .await?,
-    );
-    let lazy = LazyWorkspace::attach(fs, name, demand, MemoryLazyWorkspaceStore::default()).await?;
+    let demand = open_source(source).await?;
+    let lazy = attach(fs, name, demand).await?;
     let view = tempfile::tempdir()?;
     let mount = lazy.mount(view.path(), MountOptions::read_write()).await?;
     let mounted = (|| {
@@ -188,21 +244,8 @@ async fn qualify_linux_lazy_source_promotion() -> Result<(), Box<dyn std::error:
     )?;
     std::fs::write(source.path().join("remove.txt"), b"remove")?;
     std::fs::write(source.path().join("direct-remove.txt"), b"remove")?;
-    let demand = Arc::new(
-        NativeDemandSource::open(
-            source.path(),
-            FilesystemProfile::Portable,
-            VolumeLimits::default(),
-        )
-        .await?,
-    );
-    let lazy = LazyWorkspace::attach(
-        &fs,
-        "linux-source-promotion",
-        demand,
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await?;
+    let demand = open_source(source.path()).await?;
+    let lazy = attach(&fs, "linux-source-promotion", demand).await?;
     let view = tempfile::tempdir()?;
     let mount = lazy
         .mount(view.path(), MountOptions::read_write())
@@ -232,13 +275,20 @@ async fn qualify_linux_lazy_source_promotion() -> Result<(), Box<dyn std::error:
                 .map_err(|error| format!("read promoted source: {error}"))?,
             b"changed"
         );
-        let lookup = lazy.lookup("/direct-remove.txt").await?;
-        assert!(matches!(lookup, acyclic_fs::LazyLookup::Source(_)));
-        let before = lazy.workspace().head().await?.id();
-        lazy.remove_if("/direct-remove.txt", None)
+        let cancel = CancellationToken::new();
+        let work = work(&cancel)?;
+        let mut ctx = KernelAccounting::NativeOriginal {
+            work: &work,
+            cancellation: &cancel,
+        };
+        let lookup = lazy.lookup("/direct-remove.txt", &mut ctx).await?;
+        assert!(matches!(&lookup.0, acyclic_fs::LazyLookup::Source { .. }));
+        lazy.retire_lookup(lookup, &mut ctx)?;
+        let before = lazy.workspace().head(&work, &cancel).await?.id();
+        lazy.remove("/direct-remove.txt", None, &mut ctx)
             .await
             .map_err(|error| format!("direct lazy source remove: {error}"))?;
-        let after = lazy.workspace().head().await?.id();
+        let after = lazy.workspace().head(&work, &cancel).await?.id();
         assert_eq!(before, after, "source-only tombstone must not advance HEAD");
         std::fs::remove_file(view.path().join("remove.txt"))
             .map_err(|error| format!("remove source file: {error}"))?;
@@ -290,21 +340,8 @@ async fn qualify_linux_write_unlink_visibility() -> Result<(), Box<dyn std::erro
     let fs = Fs::local(LocalOptions::new(state.path())).await?;
     let source = tempfile::tempdir()?;
     std::fs::write(source.path().join("victim.txt"), b"source")?;
-    let demand = Arc::new(
-        NativeDemandSource::open(
-            source.path(),
-            FilesystemProfile::Portable,
-            VolumeLimits::default(),
-        )
-        .await?,
-    );
-    let lazy = LazyWorkspace::attach(
-        &fs,
-        "linux-write-unlink",
-        demand,
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await?;
+    let demand = open_source(source.path()).await?;
+    let lazy = attach(&fs, "linux-write-unlink", demand).await?;
     let view = tempfile::tempdir()?;
     let mount = lazy.mount(view.path(), MountOptions::read_write()).await?;
     let result = async {
@@ -391,21 +428,8 @@ async fn qualify_linux_open_hardlink_unlink() -> Result<(), Box<dyn std::error::
     let source = tempfile::tempdir()?;
     std::fs::write(source.path().join("a"), b"source")?;
     std::fs::hard_link(source.path().join("a"), source.path().join("b"))?;
-    let demand = Arc::new(
-        NativeDemandSource::open(
-            source.path(),
-            FilesystemProfile::Portable,
-            VolumeLimits::default(),
-        )
-        .await?,
-    );
-    let lazy = LazyWorkspace::attach(
-        &fs,
-        "linux-open-hardlink-unlink",
-        demand,
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await?;
+    let demand = open_source(source.path()).await?;
+    let lazy = attach(&fs, "linux-open-hardlink-unlink", demand).await?;
     let view = tempfile::tempdir()?;
     let mount = lazy.mount(view.path(), MountOptions::read_write()).await?;
     let result = async {
@@ -442,14 +466,19 @@ async fn qualify_linux_open_hardlink_unlink() -> Result<(), Box<dyn std::error::
         verify(b"update")?;
         mount.sync().await?;
         verify(b"update")?;
+        let cancel = CancellationToken::new();
+        let work = work(&cancel)?;
+        let mut ctx = KernelAccounting::NativeOriginal {
+            work: &work,
+            cancellation: &cancel,
+        };
         assert!(matches!(
-            lazy.lookup("/a").await,
+            lazy.lookup("/a", &mut ctx).await,
             Err(acyclic_fs::LazyWorkspaceError::NotFound)
         ));
-        assert!(matches!(
-            lazy.lookup("/b").await,
-            Ok(acyclic_fs::LazyLookup::Shadow { .. })
-        ));
+        let lookup = lazy.lookup("/b", &mut ctx).await?;
+        assert!(matches!(&lookup.0, acyclic_fs::LazyLookup::Shadow { .. }));
+        lazy.retire_lookup(lookup, &mut ctx)?;
         Ok::<(), Box<dyn std::error::Error>>(())
     }
     .await;
@@ -467,21 +496,8 @@ async fn qualify_linux_ancestor_whiteout() -> Result<(), Box<dyn std::error::Err
     let source = tempfile::tempdir()?;
     std::fs::create_dir(source.path().join("dir"))?;
     std::fs::write(source.path().join("dir/sub"), b"source")?;
-    let demand = Arc::new(
-        NativeDemandSource::open(
-            source.path(),
-            FilesystemProfile::Portable,
-            VolumeLimits::default(),
-        )
-        .await?,
-    );
-    let lazy = LazyWorkspace::attach(
-        &fs,
-        "linux-ancestor-whiteout",
-        demand,
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await?;
+    let demand = open_source(source.path()).await?;
+    let lazy = attach(&fs, "linux-ancestor-whiteout", demand).await?;
     let view = tempfile::tempdir()?;
     let mount = lazy.mount(view.path(), MountOptions::read_write()).await?;
     let result = async {
@@ -528,21 +544,8 @@ async fn qualify_linux_source_rename_visibility() -> Result<(), Box<dyn std::err
     let source = tempfile::tempdir()?;
     std::fs::write(source.path().join("old.txt"), b"old")?;
     std::fs::write(source.path().join("replace.txt"), b"replace")?;
-    let demand = Arc::new(
-        NativeDemandSource::open(
-            source.path(),
-            FilesystemProfile::Portable,
-            VolumeLimits::default(),
-        )
-        .await?,
-    );
-    let lazy = LazyWorkspace::attach(
-        &fs,
-        "linux-source-rename",
-        demand,
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await?;
+    let demand = open_source(source.path()).await?;
+    let lazy = attach(&fs, "linux-source-rename", demand).await?;
     let view = tempfile::tempdir()?;
     let mount = lazy.mount(view.path(), MountOptions::read_write()).await?;
     let result = async {
@@ -664,23 +667,10 @@ async fn report_linux_lazy_mount_read_costs() -> Result<(), Box<dyn std::error::
     let source = source_tree(10, 100)?;
     let state = tempfile::tempdir()?;
     let fs = Fs::local(LocalOptions::new(state.path())).await?;
-    let demand = Arc::new(
-        NativeDemandSource::open(
-            source.path(),
-            FilesystemProfile::Portable,
-            VolumeLimits::default(),
-        )
-        .await?,
-    );
+    let demand = open_source(source.path()).await?;
     let profile_source = Arc::clone(&demand);
     let started = Instant::now();
-    let lazy = LazyWorkspace::attach(
-        &fs,
-        "linux-lazy-mount-costs",
-        demand,
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await?;
+    let lazy = attach(&fs, "linux-lazy-mount-costs", demand).await?;
     let attach_us = started.elapsed().as_micros();
     let view = tempfile::tempdir()?;
     let started = Instant::now();
@@ -777,7 +767,12 @@ async fn report_linux_lazy_mount_read_costs() -> Result<(), Box<dyn std::error::
         )?;
         let path = NamespacePath::from_portable(&path, VolumeLimits::default())?;
         let node = profile_source
-            .lookup(source_reference, &path, &CancellationToken::new())
+            .lookup(
+                source_reference,
+                &path,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
             .await?
             .value
             .ok_or("native source lookup missed a fixture file")?;
@@ -794,10 +789,12 @@ async fn report_linux_lazy_mount_read_costs() -> Result<(), Box<dyn std::error::
                 *version,
                 0,
                 128,
+                WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
             )
             .await?
             .value
+            .bytes
             .len();
     }
     let demand_read_us = started.elapsed().as_micros();
@@ -877,21 +874,8 @@ async fn report_linux_working_set_costs() -> Result<(), Box<dyn std::error::Erro
     let state = tempfile::tempdir()?;
     let fs = Fs::local(LocalOptions::new(state.path())).await?;
     let started = Instant::now();
-    let demand = Arc::new(
-        NativeDemandSource::open(
-            source.path(),
-            FilesystemProfile::Portable,
-            VolumeLimits::default(),
-        )
-        .await?,
-    );
-    let lazy = LazyWorkspace::attach(
-        &fs,
-        "linux-native-costs",
-        demand,
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await?;
+    let demand = open_source(source.path()).await?;
+    let lazy = attach(&fs, "linux-native-costs", demand).await?;
     let attach_us = started.elapsed().as_micros();
 
     let view = tempfile::tempdir()?;
@@ -906,36 +890,46 @@ async fn report_linux_working_set_costs() -> Result<(), Box<dyn std::error::Erro
         )
         .await?;
     let prepare_us = started.elapsed().as_micros();
+    let cancel = CancellationToken::new();
+    let work = work(&cancel)?;
     let started = Instant::now();
-    working_set.validate_for_presentation().await?;
+    working_set.validate_for_presentation(&work).await?;
     let activation_us = started.elapsed().as_micros();
 
     let changed = write_changed_working_set_files(view.path(), DIRECTORIES, CHANGES)?;
     let started = Instant::now();
-    working_set.capture_host_paths(&changed).await?;
+    working_set.capture_host_paths(&changed, &work).await?;
     let capture_us = started.elapsed().as_micros();
     let started = Instant::now();
     working_set
-        .sync_with_permit(PublicationPermit::Unrestricted)
+        .sync_with_permit(PublicationPermit::Unrestricted, &work, |_| {
+            std::future::ready(Ok::<(), acyclic_fs::MountLifecycleError>(()))
+        })
         .await?;
     let sync_us = started.elapsed().as_micros();
-    let published = lazy.workspace().head().await?;
+    let published = lazy.workspace().head(&work, &cancel).await?;
     let started = Instant::now();
     working_set
-        .sync_with_permit(PublicationPermit::Unrestricted)
+        .sync_with_permit(PublicationPermit::Unrestricted, &work, |_| {
+            std::future::ready(Ok::<(), acyclic_fs::MountLifecycleError>(()))
+        })
         .await?;
     let noop_sync_us = started.elapsed().as_micros();
-    let noop_head = lazy.workspace().head().await?;
+    let noop_head = lazy.workspace().head(&work, &cancel).await?;
     assert_eq!(noop_head.id(), published.id());
     let started = Instant::now();
-    working_set.capture_host_subtree(&MountPath::root()).await?;
+    working_set
+        .capture_host_subtree(&MountPath::root(), &work)
+        .await?;
     let noop_capture_us = started.elapsed().as_micros();
     let started = Instant::now();
     working_set
-        .sync_with_permit(PublicationPermit::Unrestricted)
+        .sync_with_permit(PublicationPermit::Unrestricted, &work, |_| {
+            std::future::ready(Ok::<(), acyclic_fs::MountLifecycleError>(()))
+        })
         .await?;
     let second_noop_sync_us = started.elapsed().as_micros();
-    let second_noop_head = lazy.workspace().head().await?;
+    let second_noop_head = lazy.workspace().head(&work, &cancel).await?;
     assert_eq!(second_noop_head.id(), published.id());
 
     println!(
@@ -1020,11 +1014,23 @@ async fn report_linux_exact_materializer_costs() -> Result<(), Box<dyn std::erro
     let source = source_tree(1, 100)?;
     let state = tempfile::tempdir()?;
     let fs = Fs::local(LocalOptions::new(state.path())).await?;
+    let cancel = CancellationToken::new();
+    let work = work(&cancel)?;
     let workspace = fs
-        .create_workspace("linux-exact-materializer-costs")
+        .create_workspace(
+            "linux-exact-materializer-costs",
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        )
+        .await
+        .map_err(|failure| failure.error)?
+        .value;
+    let mut transaction = workspace
+        .begin_transaction(IdempotencyKey::new(), &work, &cancel)
         .await?;
-    let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
-    transaction.create_dir_all("/hot/d000").await?;
+    transaction
+        .create_dir_all("/hot/d000", &work, &cancel)
+        .await?;
     for index in 0..100 {
         transaction
             .write_text(
@@ -1033,7 +1039,16 @@ async fn report_linux_exact_materializer_costs() -> Result<(), Box<dyn std::erro
             )
             .await?;
     }
-    let TransactionCommit::Committed(exact) = transaction.commit().await? else {
+    let TransactionCommit::Committed(exact) = transaction
+        .commit_with_native_work(
+            None,
+            PublicationPermit::Unrestricted,
+            &work,
+            &cancel,
+            &mut |_| std::future::ready(Ok::<(), acyclic_fs::WorkspaceError>(())),
+        )
+        .await?
+    else {
         return Err("materializer fixture did not commit".into());
     };
 
@@ -1065,8 +1080,8 @@ async fn report_linux_exact_materializer_costs() -> Result<(), Box<dyn std::erro
         let before = counters()?;
         let started = Instant::now();
         let receipt = exact
-            .materialize_path(
-                "/hot",
+            .materialize(
+                std::iter::once("/hot"),
                 &MaterializeOptions::native(destination.path()),
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),

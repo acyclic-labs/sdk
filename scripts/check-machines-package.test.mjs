@@ -51,12 +51,12 @@ cargo() {
   [[ "$observed" == "$package_root/Cargo.toml" ]]
   printf '%s\\n' "$action" >> "$work/cargo-calls"
   case "$action" in
-    metadata) echo '{"packages":[{"name":"acyclic-machines","version":"0.2.0"}]}' ;;
+    metadata) echo '{"packages":[{"name":"acyclic-machines","version":"0.2.0"},{"name":"acyclic-grpc-observability","version":"0.2.0"}]}' ;;
     test)
       [[ "$*" == "test --locked -p acyclic-machines -p acyclic-harness --manifest-path $manifest --target-dir $package_target_argument" ]]
       if [[ "$SDK_MUTATE_SOURCE" == true ]]; then touch "$package_root/Cargo.toml.dirty"; fi ;;
     package)
-      [[ "$*" == "package --locked --no-verify -p acyclic-machines --manifest-path $manifest --target-dir $package_target_argument" ]] ;;
+      [[ "$*" == "package --locked --no-verify -p acyclic-grpc-observability -p acyclic-machines --manifest-path $manifest --target-dir $package_target_argument" ]] ;;
     *) return 33 ;;
   esac
 }

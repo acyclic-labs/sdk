@@ -21,6 +21,40 @@ fn finite_admission_checks_every_declared_work_allowance() -> Result<(), serde_j
     Ok(())
 }
 
+#[test]
+fn budget_intersection_preserves_every_declared_allowance() -> Result<(), serde_json::Error> {
+    let fields = serde_json::to_value(WorkBudget::default())?;
+    let names = fields
+        .as_object()
+        .ok_or_else(|| serde::de::Error::custom("work counters must be an object"))?;
+    let mut left = fields.clone();
+    let mut right = fields.clone();
+    let mut expected = fields.clone();
+    for (index, name) in names.keys().enumerate() {
+        let low = (index + 1) as u64;
+        let high = low + 24;
+        let (a, b) = if index % 2 == 0 {
+            (low, high)
+        } else {
+            (high, low)
+        };
+        left[name] = serde_json::json!(a);
+        right[name] = serde_json::json!(b);
+        expected[name] = serde_json::json!(low);
+    }
+    let left: WorkBudget = serde_json::from_value(left)?;
+    let right: WorkBudget = serde_json::from_value(right)?;
+    let expected: WorkBudget = serde_json::from_value(expected)?;
+    assert_eq!(left.intersect_budget(right), expected);
+    assert_eq!(right.intersect_budget(left), expected);
+    assert_eq!(left.intersect_budget(WorkBudget::UNBOUNDED), left);
+    assert_eq!(
+        left.intersect_budget(WorkBudget::default()),
+        WorkBudget::default()
+    );
+    Ok(())
+}
+
 #[derive(Debug, Error, PartialEq)]
 enum OuterError {
     #[error("inner")]
@@ -134,88 +168,6 @@ fn every_multiline_counter_addition_fails_closed_on_overflow() {
     }
 }
 
-#[test]
-fn in_place_item_charges_equal_a_verified_sum() {
-    let mut budget = WorkBudget::UNBOUNDED;
-    budget.items_examined = 5;
-    let mut work = WorkCounters {
-        page_reads: 2,
-        items_examined: 1,
-        ..WorkCounters::default()
-    };
-    let sum = work
-        .checked_add(WorkCounters {
-            items_examined: 3,
-            ..WorkCounters::default()
-        })
-        .and_then(|sum| sum.verify(budget).map(|()| sum));
-    assert_eq!(work.charge_items(3, &budget), Ok(()));
-    assert_eq!(Ok(work), sum);
-
-    let before = work;
-    assert_eq!(
-        work.charge_items(2, &budget),
-        Err(WorkError::BudgetExceeded {
-            counter: "items_examined",
-            observed: 6,
-            maximum: 5,
-        })
-    );
-    assert_eq!(
-        work, before,
-        "a refused charge leaves the counters unchanged"
-    );
-
-    // An earlier counter already past its bound is reported first, exactly
-    // as verifying the complete sum does.
-    budget.page_reads = 1;
-    assert_eq!(
-        work.charge_items(1, &budget),
-        Err(WorkError::BudgetExceeded {
-            counter: "page_reads",
-            observed: 2,
-            maximum: 1,
-        })
-    );
-    assert_eq!(work, before);
-    work.items_examined = u64::MAX;
-    assert_eq!(
-        work.charge_items(1, &WorkBudget::UNBOUNDED),
-        Err(WorkError::Overflow)
-    );
-}
-
-#[test]
-fn in_place_allocation_charges_equal_a_verified_peak() {
-    let mut budget = WorkBudget::UNBOUNDED;
-    budget.peak_allocation_bytes = 100;
-    let mut work = WorkCounters {
-        allocation_operations: 1,
-        peak_allocation_bytes: 40,
-        ..WorkCounters::default()
-    };
-    assert_eq!(work.charge_allocation(2, 30, &budget), Ok(()));
-    assert_eq!(
-        (work.allocation_operations, work.peak_allocation_bytes),
-        (3, 40)
-    );
-    assert_eq!(work.charge_allocation(1, 90, &budget), Ok(()));
-    assert_eq!(
-        (work.allocation_operations, work.peak_allocation_bytes),
-        (4, 90)
-    );
-    let before = work;
-    assert_eq!(
-        work.charge_allocation(1, 101, &budget),
-        Err(WorkError::BudgetExceeded {
-            counter: "peak_allocation_bytes",
-            observed: 101,
-            maximum: 100,
-        })
-    );
-    assert_eq!(work, before);
-}
-
 /// Every counter of [`WorkCounters`], as mutable references in declaration
 /// order, so a test can set one counter at a time.
 fn counter_fields(work: &mut WorkCounters) -> [&mut u64; 24] {
@@ -268,7 +220,6 @@ fn in_place_charges_equal_a_verified_sum_for_every_counter() {
             let mut added = prior;
             assert_eq!(added.try_add_assign(&delta), Ok(()));
             assert_eq!(Ok(added), prior.checked_add(delta));
-            assert_eq!(added.verify_ref(&budget), added.verify(budget));
         }
 
         // Peak allocation is a maximum and never overflows; every other

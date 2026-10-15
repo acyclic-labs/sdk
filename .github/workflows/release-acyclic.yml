@@ -83,7 +83,7 @@ jobs:
       # otherwise leave post-job statistics reporting a fresh, empty server.
       SCCACHE_IDLE_TIMEOUT: '0'
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_sha }}
       - uses: ./.github/actions/rust-toolchain
@@ -189,7 +189,7 @@ jobs:
       - name: Retain native compiler-cache evidence
         if: ${{ !cancelled() }}
         continue-on-error: true
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           retention-days: ${{ contains(github.workflow, 'Release') && 30 || 3 }}
           name: native-build-timings-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -243,14 +243,14 @@ jobs:
         run: .\scripts\qualify-native-mount.ps1 -Backend '${{ matrix.backend }}'
       - name: Retain native-mount qualification
         if: matrix.backend
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           retention-days: ${{ contains(github.workflow, 'Release') && 30 || 3 }}
           name: native-mount-${{ matrix.backend }}
           path: ${{ runner.temp }}/native-mount-artifacts/${{ matrix.backend }}.json
           if-no-files-found: error
 
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           retention-days: ${{ contains(github.workflow, 'Release') && 30 || 3 }}
           name: acyclic-${{ matrix.target }}
@@ -268,13 +268,13 @@ jobs:
         run: node scripts/cache-save-decision.mjs "$PRIMARY_CACHE_KEY" "$MATCHED_CACHE_KEY" "$RUNNER_TEMP/native-build-timings/sccache.json"
       - name: Save native compiler output
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && steps.rust-cache.outputs.compiler-key != '' && steps.compiler-cache.outputs.save == 'true'
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/sccache
           key: ${{ steps.rust-cache.outputs.compiler-key }}
       - name: Save native Cargo downloads
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && steps.rust-cache.outputs.downloads-key != '' && steps.rust-cache.outputs.downloads-hit != 'true'
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index
@@ -305,11 +305,11 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_sha }}
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.15.0
           registry-url: https://registry.npmjs.org
@@ -326,13 +326,13 @@ jobs:
       contents: write
       id-token: write
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
           ref: ${{ inputs.source_sha }}
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.15.0
           registry-url: https://registry.npmjs.org
@@ -341,12 +341,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/release-qualification-artifacts.mjs
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: acyclic-*
           path: release/binaries
           merge-multiple: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: native-mount-*
           path: release/native-mount
@@ -498,7 +498,7 @@ jobs:
             release/native-mount/windows-projfs.json \
             release/acyclic.spdx.json
           node scripts/release-evidence.mjs verify release/SHA256SUMS
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           retention-days: ${{ contains(github.workflow, 'Release') && 30 || 3 }}
           name: acyclic-universal-${{ github.run_id }}-${{ github.run_attempt }}

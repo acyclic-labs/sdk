@@ -1,10 +1,7 @@
 //! Black-box logical Objects conformance for deterministic, disposable test providers.
-//!
-//! The fixture must make its own completed mutations visible before the next read.
-//! Production eventual consistency and live service acceptance require separate checks.
 
 use super::{Error, ObjectsProvider, wire};
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 
 /// Canonical inventory of the executable logical provider walkthrough.
 pub const SUITE: &[u8] = include_bytes!("../../conformance/objects-v1.json");
@@ -65,15 +62,6 @@ fn identity(namespace: &str, operation: &str) -> Option<wire::MutationIdentity> 
 }
 
 /// Exercises every public logical Objects operation in a fresh caller-owned namespace.
-///
-/// Includes current-key replacement, exact retry receipts after a later publication,
-/// atomic conditions, selected reads, allocation bounds, query-bound pagination,
-/// multipart completion and abort, and empty-bucket deletion. No public version,
-/// snapshot, fork, or captured-listing semantics are assumed.
-///
-/// # Errors
-/// Returns a typed provider failure or the exact failed invariant. The namespace
-/// must be a valid unused bucket name; failed verification may leave fixture data.
 #[allow(
     clippy::too_many_lines,
     clippy::cognitive_complexity,
@@ -124,7 +112,7 @@ pub async fn verify<P: ObjectsProvider + ?Sized>(
         "bucket retry identity was rebound",
     )?;
 
-    let body = Bytes::from(vec![b'x'; 2 * 65_536 + 17]);
+    let body = OwnedBytes::from(vec![b'x'; 2 * 65_536 + 17]);
     let mut first_request = put(&bucket, "dir/value");
     first_request.preconditions = Some(wire::Preconditions {
         condition: Some(wire::preconditions::Condition::IfAbsent(true)),
@@ -144,7 +132,7 @@ pub async fn verify<P: ObjectsProvider + ?Sized>(
     )?;
     expected_error(
         provider
-            .put(first_request.clone(), Bytes::from_static(b"different"))
+            .put(first_request.clone(), OwnedBytes::from_static(b"different"))
             .await,
         wire::ErrorCode::IdempotencyMismatch,
         "put retry identity admitted different bytes",
@@ -153,7 +141,7 @@ pub async fn verify<P: ObjectsProvider + ?Sized>(
     let query = get(&bucket, "dir/value");
     let read = provider.get(query.clone(), body.len() as u64).await?;
     ensure(
-        read.body == body && read.header.object.as_ref() == Some(&first),
+        read.body() == &body && read.header().object.as_ref() == Some(&first),
         "get changed the complete representation or its metadata",
     )?;
     expected_error(
@@ -174,7 +162,7 @@ pub async fn verify<P: ObjectsProvider + ?Sized>(
     });
     let selected = provider.get(ranged, 17).await?;
     ensure(
-        selected.body.as_ref() == [b'x'; 17] && selected.header.object.as_ref() == Some(&first),
+        selected.body().as_ref() == [b'x'; 17] && selected.header().object.as_ref() == Some(&first),
         "suffix range changed the selected bytes or complete metadata",
     )?;
     ensure(
@@ -191,14 +179,14 @@ pub async fn verify<P: ObjectsProvider + ?Sized>(
     )?;
 
     let newer = provider
-        .put(put(&bucket, "dir/value"), Bytes::from_static(b"new"))
+        .put(put(&bucket, "dir/value"), OwnedBytes::from_static(b"new"))
         .await?;
     ensure(
         provider.put(first_request, body.clone()).await? == first,
         "retry after replacement lost its original receipt",
     )?;
     ensure(
-        provider.get(query, 3).await?.body.as_ref() == b"new",
+        provider.get(query, 3).await?.body().as_ref() == b"new",
         "old retry restored superseded bytes",
     )?;
     expected_error(
@@ -217,7 +205,7 @@ pub async fn verify<P: ObjectsProvider + ?Sized>(
     )?;
 
     provider
-        .put(put(&bucket, "dir/other"), Bytes::from_static(b"other"))
+        .put(put(&bucket, "dir/other"), OwnedBytes::from_static(b"other"))
         .await?;
     let listing = wire::ListObjectsRequest {
         bucket: Some(bucket.clone()),
@@ -317,8 +305,8 @@ pub async fn verify<P: ObjectsProvider + ?Sized>(
         provider
             .get(get(&bucket, "multipart"), body.len() as u64)
             .await?
-            .body
-            == body,
+            .body()
+            == &body,
         "completed multipart bytes differ",
     )?;
     ensure(

@@ -40,7 +40,7 @@ export class MountedView {
       ...mount,
       mountId: identity(mount.mountId, "mount"),
       volumeId: identity(mount.volumeId, "volume"),
-      path: mountPath(mount.path),
+      path: namespacePath(mount.path),
     }));
     if (!normalized.some((mount) => mount.path === "/")) {
       throw new RangeError("a mounted view requires a root mount");
@@ -119,10 +119,7 @@ export class MountedView {
     return from.mount.checkout.cloneFileRange(from.path, sourceOffset, to.path, destinationOffset, length);
   }
 
-  /**
-   * Builds independent immutable candidates for every mount. This relies on the FsCheckout
-   * contract that checkpointing neither publishes nor mutates pending checkout state.
-   */
+  /** Checkpoint independent candidates without publishing or changing pending state. */
   async checkpointSnapshot(): Promise<MountedSnapshot> {
     return {
       mounts: await Promise.all(this.#mounts.map(async (mount) => ({
@@ -158,11 +155,6 @@ export class MountedView {
 function identity(value: Uint8Array, label: string): Uint8Array {
   if (value.byteLength !== 16) throw new RangeError(`${label} identity must be exactly 16 bytes`);
   return Uint8Array.from(value);
-}
-
-function mountPath(value: string): string {
-  const path = namespacePath(value);
-  return path === "/" ? path : path.replace(/\/+$/, "");
 }
 
 function namespacePath(value: string): string {

@@ -11,7 +11,7 @@
     },
     "harness": {
       "version": "0.2.0",
-      "schemaDigest": "sha256:8608e415b400621d8d50beaa86a8707acd5ce14d32a58c39d3e364ea3dfa97cf",
+      "schemaDigest": "sha256:c8acf71df64ceebc4b7047bda105223a4ac83428feb59ebf146c67b093bffa4b",
       "conformanceDigest": "sha256:3b9ffcc21007714337ab0fb32417941e49f5f9bef7d55e5f4418cae005a443df"
     },
     "filesystem": {
@@ -24,8 +24,8 @@
     "stream": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:7a6e069d578acd1684abbcd4024fc71088e4c1bf2b12491d4c0d7f7bb07c2559",
-      "descriptorDigest": "sha256:b142f3288e29575623309432391079ce7d627664315ebf6135e59ac25d3c8db7",
+      "schemaDigest": "sha256:fd4e2130dc08e04ad6f011ef320e2cad3511970098288bebbbfbf078463c5a30",
+      "descriptorDigest": "sha256:5c1635cab734b6644710e4f43827996a14e30675d78cfe81a2c78e2b6d4a97fb",
       "conformanceDigest": "sha256:230c14bfd9afde7f9ab6e9f8b69769c8b2a06cc7dc3ec6a51dc8964321984d08"
     },
     "objects": {

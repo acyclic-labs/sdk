@@ -1,20 +1,49 @@
 //! Canonical path-independent file records and authenticated file-table pages.
 
-use super::codec::{CanonicalDecodeError, DecodeLimits, Decoder, Encoder};
+use super::codec::{CanonicalDecodeError, DecodeLimits, Decoder, Encoder, ReadAllocationStep};
 use super::codec::{DecodedPageKind, DecodedPageShape};
 use super::file_table_mutation::FileTableFormat;
 use super::persistent_batch;
 use super::persistent_point;
+use super::rebase::ProofDataCustody;
 use super::types::{FileKind, digest_object};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::foundation::{FileId, usize_to_u64};
-use crate::heap_future::in_heap;
-use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
+use crate::heap_future::in_heap_measured;
+use crate::kernel::Child;
+use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectKind, ObjectStoreError, object_digest};
 use std::fmt;
 use strum::{AsRefStr, EnumDiscriminants, EnumIter};
 use thiserror::Error;
+
+/// Encodes one canonical page with before-effect admission.
+pub fn encode_file_table_page<E>(
+    page: &FileTablePage,
+    maximum_items: u32,
+    mut observe: impl FnMut(super::codec::EncodeWorkStep) -> Result<(), E>,
+    allocation_error: impl FnOnce(std::collections::TryReserveError) -> E,
+) -> Result<Vec<u8>, E>
+where
+    E: From<CanonicalDecodeError> + From<crate::WorkError>,
+{
+    match page {
+        FileTablePage::Leaf(records) => encode_file_table_leaf_records(
+            records,
+            maximum_items,
+            None,
+            &mut observe,
+            allocation_error,
+        ),
+        FileTablePage::Internal(children) => encode_file_table_internal_children(
+            children.iter().map(|child| (child.first, child.page)),
+            maximum_items,
+            observe,
+            allocation_error,
+        ),
+    }
+}
 
 const DOMAIN: &[u8; 8] = b"ACYFSFIL";
 const VERSION: u16 = 1;
@@ -22,9 +51,6 @@ const RECORD_DOMAIN: &[u8; 8] = b"ACYFSREC";
 const RECORD_VERSION: u16 = 1;
 
 /// Maximum regular-file bytes stored directly in a file-table leaf record.
-///
-/// The fixed bound keeps decoded records allocation-free and prevents tiny
-/// files from requiring separate extent, blob-index, and chunk objects.
 pub const MAXIMUM_INLINE_FILE_BYTES: usize = 64;
 
 /// Allocation-free canonical payload for one tiny regular file.
@@ -35,12 +61,7 @@ pub struct InlineFileData {
 }
 
 impl InlineFileData {
-    /// Copies one admitted tiny-file payload into its canonical fixed-capacity
-    /// representation.
-    ///
-    /// # Errors
-    ///
-    /// Rejects payloads larger than [`MAXIMUM_INLINE_FILE_BYTES`].
+    /// Copies one admitted tiny-file payload into its canonical fixed-capacity representation.
     pub fn new(bytes: &[u8]) -> Result<Self, InlineFileDataError> {
         let length = u8::try_from(bytes.len()).map_err(|_| InlineFileDataError::TooLarge)?;
         if bytes.len() > MAXIMUM_INLINE_FILE_BYTES {
@@ -235,22 +256,13 @@ impl FileRecord {
     }
 }
 
-/// One lower-bound file-table child.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct FileTableChild {
-    /// Exact first file identity represented by the child.
-    pub first_file_id: FileId,
-    /// Authenticated child page.
-    pub page: ObjectId,
-}
-
 /// One immutable authenticated file-table B+tree page.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FileTablePage {
     /// Strictly ordered file records.
     Leaf(Vec<FileRecord>),
     /// Strictly ordered lower-bound child references.
-    Internal(Vec<FileTableChild>),
+    Internal(Vec<Child<FileId>>),
 }
 
 impl FileTablePage {
@@ -276,7 +288,7 @@ impl FileTablePage {
                         let [first, second] = pair else {
                             return false;
                         };
-                        first.first_file_id >= second.first_file_id
+                        first.first >= second.first
                     })
                     || children
                         .iter()
@@ -294,102 +306,183 @@ impl FileTablePage {
     }
 }
 
-/// Encodes one validated canonical file-table page.
-///
-/// # Errors
-///
-/// Rejects invalid records, ordering, bounds, or object classes.
-pub fn encode_file_table_page(
-    page: &FileTablePage,
-    maximum_items: u32,
-) -> Result<Vec<u8>, CanonicalDecodeError> {
-    match page {
-        FileTablePage::Leaf(records) => encode_file_table_leaf_records(records, maximum_items),
-        FileTablePage::Internal(children) => encode_file_table_internal_children(
-            children
-                .iter()
-                .map(|child| (child.first_file_id, child.page)),
-            maximum_items,
-        ),
-    }
-}
-
-pub(crate) fn encode_file_table_leaf_records(
+pub(crate) fn encode_file_table_leaf_records<E>(
     records: &[FileRecord],
     maximum_items: u32,
-) -> Result<Vec<u8>, CanonicalDecodeError> {
-    if u32::try_from(records.len()).unwrap_or(u32::MAX) > maximum_items {
-        return Err(invariant(FileTableError::TooManyItems));
+    data_custody: Option<&ProofDataCustody>,
+    mut observe: impl FnMut(super::codec::EncodeWorkStep) -> Result<(), E>,
+    allocation_error: impl FnOnce(std::collections::TryReserveError) -> E,
+) -> Result<Vec<u8>, E>
+where
+    E: From<CanonicalDecodeError> + From<WorkError>,
+{
+    use super::codec::EncodeWorkStep;
+    let mut observe = |step| super::codec::observe_encoding(&mut observe, step, data_custody);
+    observe(EncodeWorkStep::Check)?;
+    if count(records.len())? > maximum_items {
+        return Err(invariant(FileTableError::TooManyItems).into());
     }
-    if records.windows(2).any(|pair| {
-        let [first, second] = pair else {
-            return false;
-        };
-        first.file_id >= second.file_id
-    }) {
-        return Err(invariant(FileTableError::NotStrictlyOrdered));
-    }
-    let mut encoded_length = DOMAIN
-        .len()
-        .checked_add(2 + 1 + 4)
-        .ok_or(CanonicalDecodeError::LengthOverflow)?;
+    let mut length = DOMAIN.len() + 2 + 1 + 4;
+    let mut prior = None;
+    let mut copied = 0_u64;
     for record in records {
-        record.validate().map_err(invariant)?;
-        encoded_length = encoded_length
+        observe(EncodeWorkStep::Check)?;
+        let examined = WorkCounters {
+            items_examined: 1,
+            ..WorkCounters::default()
+        };
+        observe(EncodeWorkStep::Admit(examined))?;
+        let validation = if prior.is_some_and(|prior| prior >= record.file_id) {
+            Err(invariant(FileTableError::NotStrictlyOrdered))
+        } else {
+            record.validate().map_err(invariant)
+        };
+        observe(EncodeWorkStep::Completed(examined))?;
+        validation?;
+        length = length
             .checked_add(file_record_encoded_length(*record)?)
             .ok_or(CanonicalDecodeError::LengthOverflow)?;
+        copied = copied
+            .checked_add(record_copied_bytes(*record))
+            .ok_or(WorkError::Overflow)?;
+        prior = Some(record.file_id);
     }
-    let mut encoder = Encoder::with_exact_capacity(DOMAIN, VERSION, encoded_length)?;
+    observe(EncodeWorkStep::Admit(WorkCounters {
+        bytes_encoded: usize_to_u64(length),
+        bytes_copied: copied,
+        ..WorkCounters::default()
+    }))?;
+    let mut encoder = Encoder::with_exact_capacity(
+        DOMAIN,
+        VERSION,
+        length,
+        |step| observe(EncodeWorkStep::Allocation(step)),
+        allocation_error,
+    )?;
+    let header = WorkCounters {
+        bytes_encoded: 5,
+        ..WorkCounters::default()
+    };
+    observe(EncodeWorkStep::Admit(header))?;
     encoder.u8(1);
     encoder.u32(count(records.len())?);
+    observe(EncodeWorkStep::Completed(header))?;
     for record in records {
+        observe(EncodeWorkStep::Check)?;
+        let encoded = WorkCounters {
+            bytes_encoded: usize_to_u64(file_record_encoded_length(*record)?),
+            bytes_copied: record_copied_bytes(*record),
+            ..WorkCounters::default()
+        };
+        observe(EncodeWorkStep::Admit(encoded))?;
         encode_record(&mut encoder, *record);
+        observe(EncodeWorkStep::Completed(encoded))?;
     }
     Ok(encoder.finish())
 }
 
-pub(crate) fn encode_file_table_internal_children<I>(
+pub(crate) fn encode_file_table_internal_children<E, I>(
     children: I,
     maximum_items: u32,
-) -> Result<Vec<u8>, CanonicalDecodeError>
+    mut observe: impl FnMut(super::codec::EncodeWorkStep) -> Result<(), E>,
+    allocation_error: impl FnOnce(std::collections::TryReserveError) -> E,
+) -> Result<Vec<u8>, E>
 where
+    E: From<CanonicalDecodeError> + From<WorkError>,
     I: Clone + ExactSizeIterator<Item = (FileId, ObjectId)>,
 {
-    let length = children.len();
-    if length == 0 {
-        return Err(invariant(FileTableError::InvalidInternalPage));
+    use super::codec::EncodeWorkStep;
+    observe(EncodeWorkStep::Check)?;
+    let item_count = count(children.len())?;
+    if item_count == 0 {
+        return Err(invariant(FileTableError::InvalidInternalPage).into());
     }
-    if u32::try_from(length).unwrap_or(u32::MAX) > maximum_items {
-        return Err(invariant(FileTableError::TooManyItems));
+    if item_count > maximum_items {
+        return Err(invariant(FileTableError::TooManyItems).into());
     }
     let mut prior = None;
     for (file_id, page) in children.clone() {
-        if prior.is_some_and(|value| value >= file_id) || page.kind != ObjectKind::FileTablePage {
-            return Err(invariant(FileTableError::InvalidInternalPage));
+        observe(EncodeWorkStep::Check)?;
+        let examined = WorkCounters {
+            items_examined: 1,
+            ..WorkCounters::default()
+        };
+        observe(EncodeWorkStep::Admit(examined))?;
+        let valid =
+            !prior.is_some_and(|prior| prior >= file_id) && page.kind == ObjectKind::FileTablePage;
+        observe(EncodeWorkStep::Completed(examined))?;
+        if !valid {
+            return Err(invariant(FileTableError::InvalidInternalPage).into());
         }
         prior = Some(file_id);
     }
-    let encoded_length = length
+    let item_bytes = children
+        .len()
         .checked_mul(16 + 32)
-        .and_then(|items| DOMAIN.len().checked_add(2 + 1 + 4 + items))
         .ok_or(CanonicalDecodeError::LengthOverflow)?;
-    let mut encoder = Encoder::with_exact_capacity(DOMAIN, VERSION, encoded_length)?;
+    let length = (DOMAIN.len() + 2 + 1 + 4)
+        .checked_add(item_bytes)
+        .ok_or(CanonicalDecodeError::LengthOverflow)?;
+    observe(EncodeWorkStep::Admit(WorkCounters {
+        bytes_encoded: usize_to_u64(length),
+        bytes_copied: usize_to_u64(item_bytes),
+        ..WorkCounters::default()
+    }))?;
+    let mut encoder = Encoder::with_exact_capacity(
+        DOMAIN,
+        VERSION,
+        length,
+        |step| observe(EncodeWorkStep::Allocation(step)),
+        allocation_error,
+    )?;
+    let header = WorkCounters {
+        bytes_encoded: 5,
+        ..WorkCounters::default()
+    };
+    observe(EncodeWorkStep::Admit(header))?;
     encoder.u8(2);
-    encoder.u32(count(length)?);
+    encoder.u32(item_count);
+    observe(EncodeWorkStep::Completed(header))?;
     for (file_id, page) in children {
+        observe(EncodeWorkStep::Check)?;
+        let encoded = WorkCounters {
+            bytes_encoded: 48,
+            bytes_copied: 48,
+            ..WorkCounters::default()
+        };
+        observe(EncodeWorkStep::Admit(encoded))?;
         encoder.fixed(&file_id.into_bytes());
         encoder.fixed(page.digest.as_bytes());
+        observe(EncodeWorkStep::Completed(encoded))?;
     }
     Ok(encoder.finish())
+}
+
+fn record_copied_bytes(record: FileRecord) -> u64 {
+    16 + 32
+        + match record.payload {
+            FilePayload::InlineRegular(data) => usize_to_u64(data.as_bytes().len()),
+            FilePayload::Regular { .. }
+            | FilePayload::Directory { .. }
+            | FilePayload::SymbolicLink { .. }
+            | FilePayload::ReparsePoint { .. } => 32,
+            FilePayload::Empty | FilePayload::Device { .. } => 0,
+        }
 }
 
 pub(crate) fn file_table_page_decode_shape(
     bytes: &[u8],
     limits: DecodeLimits,
 ) -> Result<DecodedPageShape, CanonicalDecodeError> {
-    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, limits.maximum_page_object_bytes())?;
-    let tag = decoder.u8()?;
-    let item_count = decoder.u32()?;
+    let mut decoder = Decoder::new(
+        bytes,
+        DOMAIN,
+        VERSION,
+        limits.maximum_page_object_bytes(),
+        &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+    )?;
+    let tag = decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+    let item_count = decoder.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
     if item_count > limits.maximum_page_items {
         return Err(CanonicalDecodeError::FieldTooLarge {
             observed: item_count,
@@ -399,25 +492,30 @@ pub(crate) fn file_table_page_decode_shape(
     let kind = match tag {
         1 => {
             for _ in 0..item_count {
-                let _: [u8; 16] = decoder.fixed()?;
-                decoder.u8()?;
-                decoder.u64()?;
-                let _: [u8; 32] = decoder.fixed()?;
-                match decoder.u8()? {
+                let _: [u8; 16] =
+                    decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+                decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+                decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+                let _: [u8; 32] =
+                    decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+                match decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? {
                     1 | 3 | 6 => {
-                        decoder.u64()?;
-                        let _: [u8; 32] = decoder.fixed()?;
+                        decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+                        let _: [u8; 32] = decoder
+                            .fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
                     }
                     2 => {
-                        let _: [u8; 32] = decoder.fixed()?;
+                        let _: [u8; 32] = decoder
+                            .fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
                     }
                     4 => {}
                     5 => {
-                        decoder.u32()?;
-                        decoder.u32()?;
+                        decoder.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+                        decoder.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
                     }
                     7 => {
-                        let length = decoder.u8()?;
+                        let length = decoder
+                            .u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
                         if usize::from(length) > MAXIMUM_INLINE_FILE_BYTES {
                             return Err(CanonicalDecodeError::FieldTooLarge {
                                 observed: u32::from(length),
@@ -439,8 +537,10 @@ pub(crate) fn file_table_page_decode_shape(
         }
         2 => {
             for _ in 0..item_count {
-                let _: [u8; 16] = decoder.fixed()?;
-                let _: [u8; 32] = decoder.fixed()?;
+                let _: [u8; 16] =
+                    decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+                let _: [u8; 32] =
+                    decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
             }
             DecodedPageKind::Internal
         }
@@ -527,10 +627,53 @@ fn encode_record(encoder: &mut Encoder, record: FileRecord) {
     }
 }
 
-pub(crate) fn encode_file_record(record: FileRecord) -> Vec<u8> {
-    let mut encoder = Encoder::new(RECORD_DOMAIN, RECORD_VERSION);
+pub(crate) fn encode_file_record<E>(
+    record: FileRecord,
+    mut observe: impl FnMut(super::codec::EncodeWorkStep) -> Result<(), E>,
+    allocation_error: impl FnOnce(std::collections::TryReserveError) -> E,
+) -> Result<Vec<u8>, E>
+where
+    E: From<CanonicalDecodeError> + From<WorkError>,
+{
+    use super::codec::EncodeWorkStep;
+    observe(EncodeWorkStep::Check)?;
+    let examined = WorkCounters {
+        items_examined: 1,
+        ..WorkCounters::default()
+    };
+    observe(EncodeWorkStep::Admit(examined))?;
+    let validation = record.validate().map_err(invariant);
+    observe(EncodeWorkStep::Completed(examined))?;
+    validation?;
+    let item_length = file_record_encoded_length(record)?;
+    let length = (RECORD_DOMAIN.len() + 2)
+        .checked_add(item_length)
+        .ok_or(CanonicalDecodeError::LengthOverflow)?;
+    let copied = record_copied_bytes(record);
+    observe(EncodeWorkStep::Admit(WorkCounters {
+        items_examined: 1,
+        bytes_encoded: usize_to_u64(length),
+        bytes_copied: copied,
+        ..WorkCounters::default()
+    }))?;
+    let mut encoder = Encoder::with_exact_capacity(
+        RECORD_DOMAIN,
+        RECORD_VERSION,
+        length,
+        |step| observe(EncodeWorkStep::Allocation(step)),
+        allocation_error,
+    )?;
+    let encoded = WorkCounters {
+        items_examined: 1,
+        bytes_encoded: usize_to_u64(item_length),
+        bytes_copied: copied,
+        ..WorkCounters::default()
+    };
+    observe(EncodeWorkStep::Check)?;
+    observe(EncodeWorkStep::Admit(encoded))?;
     encode_record(&mut encoder, record);
-    encoder.finish()
+    observe(EncodeWorkStep::Completed(encoded))?;
+    Ok(encoder.finish())
 }
 
 pub(crate) fn decode_file_record(bytes: &[u8]) -> Result<FileRecord, CanonicalDecodeError> {
@@ -539,114 +682,170 @@ pub(crate) fn decode_file_record(bytes: &[u8]) -> Result<FileRecord, CanonicalDe
         RECORD_DOMAIN,
         RECORD_VERSION,
         usize_to_u64(bytes.len()),
+        &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
     )?;
-    let record = decode_record(&mut decoder)?;
+    let record = decode_record(&mut decoder, &mut |_| Ok::<_, CanonicalDecodeError>(()))?;
     decoder.finish()?;
     Ok(record)
 }
 
-/// Decodes one bounded canonical file-table page.
-///
-/// # Errors
-///
-/// Fails closed on malformed bytes, unknown versions/tags, invalid records,
-/// ordering, or bounds.
-pub fn decode_file_table_page(
+/// Decodes one canonical object with before-effect admission.
+pub fn decode_file_table_page<E>(
     bytes: &[u8],
     limits: DecodeLimits,
-) -> Result<FileTablePage, CanonicalDecodeError> {
-    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, limits.maximum_page_object_bytes())?;
-    let tag = decoder.u8()?;
-    let item_count = decoder.u32()?;
+    observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
+) -> Result<FileTablePage, E>
+where
+    E: From<CanonicalDecodeError>,
+{
+    let mut decoder = Decoder::new(
+        bytes,
+        DOMAIN,
+        VERSION,
+        limits.maximum_page_object_bytes(),
+        observe,
+    )?;
+    let tag = decoder.u8(observe)?;
+    let item_count = decoder.u32(observe)?;
     if item_count > limits.maximum_page_items {
         return Err(CanonicalDecodeError::FieldTooLarge {
             observed: item_count,
             maximum: limits.maximum_page_items,
-        });
+        }
+        .into());
     }
-    let mut records = Vec::new();
-    let mut children = Vec::new();
     match tag {
         1 => {
-            records
-                .try_reserve_exact(capacity(item_count)?)
-                .map_err(|_| CanonicalDecodeError::AllocationFailed)?;
-            for _ in 0..item_count {
-                records.push(decode_record(&mut decoder)?);
+            let mut records = Vec::new();
+            let capacity = capacity(item_count)?;
+            let admitted_bytes = usize_to_u64(
+                capacity
+                    .checked_mul(std::mem::size_of::<FileRecord>())
+                    .ok_or(CanonicalDecodeError::LengthOverflow)?,
+            );
+            observe(ReadAllocationStep::Allocate {
+                bytes: admitted_bytes,
+                operations: u64::from(capacity != 0),
+            })?;
+            if let Err(error) = records.try_reserve_exact(capacity) {
+                observe(ReadAllocationStep::ReserveFailed(error))?;
+                return Err(CanonicalDecodeError::AllocationFailed.into());
             }
+            observe(ReadAllocationStep::Capacity {
+                admitted_bytes,
+                actual_bytes: usize_to_u64(records.capacity() * std::mem::size_of::<FileRecord>()),
+            })?;
+            for _ in 0..item_count {
+                observe(ReadAllocationStep::BeforeItem)?;
+                records.push(decode_record(&mut decoder, observe)?);
+                observe(ReadAllocationStep::Item)?;
+            }
+            decoder.finish()?;
+            let page = FileTablePage::Leaf(records);
+            page.validate(limits.maximum_page_items)
+                .map_err(invariant)?;
+            Ok(page)
         }
         2 => {
-            children
-                .try_reserve_exact(capacity(item_count)?)
-                .map_err(|_| CanonicalDecodeError::AllocationFailed)?;
-            for _ in 0..item_count {
-                children.push(FileTableChild {
-                    first_file_id: FileId::from_bytes(decoder.fixed()?),
-                    page: digest_object(ObjectKind::FileTablePage, decoder.fixed()?),
-                });
+            let mut children = Vec::new();
+            let capacity = capacity(item_count)?;
+            let admitted_bytes = usize_to_u64(
+                capacity
+                    .checked_mul(std::mem::size_of::<Child<FileId>>())
+                    .ok_or(CanonicalDecodeError::LengthOverflow)?,
+            );
+            observe(ReadAllocationStep::Allocate {
+                bytes: admitted_bytes,
+                operations: u64::from(capacity != 0),
+            })?;
+            if let Err(error) = children.try_reserve_exact(capacity) {
+                observe(ReadAllocationStep::ReserveFailed(error))?;
+                return Err(CanonicalDecodeError::AllocationFailed.into());
             }
+            observe(ReadAllocationStep::Capacity {
+                admitted_bytes,
+                actual_bytes: usize_to_u64(
+                    children.capacity() * std::mem::size_of::<Child<FileId>>(),
+                ),
+            })?;
+            for _ in 0..item_count {
+                observe(ReadAllocationStep::BeforeItem)?;
+                let first = FileId::from_bytes(decoder.fixed::<16, E>(observe)?);
+                let page =
+                    digest_object(ObjectKind::FileTablePage, decoder.fixed::<32, E>(observe)?);
+                children.push(Child { first, page });
+                observe(ReadAllocationStep::Item)?;
+            }
+            decoder.finish()?;
+            if children.is_empty()
+                || children
+                    .windows(2)
+                    .any(|pair| matches!(pair, [left, right] if left.first >= right.first))
+            {
+                return Err(invariant(FileTableError::InvalidInternalPage).into());
+            }
+            // Child identities have the canonical FileTablePage kind above.
+            Ok(FileTablePage::Internal(children))
         }
-        value => {
-            return Err(CanonicalDecodeError::UnknownTag {
-                field: "file_table_page",
-                tag: value,
-            });
+        tag => Err(CanonicalDecodeError::UnknownTag {
+            field: "file_table_page",
+            tag,
         }
+        .into()),
     }
-    decoder.finish()?;
-    let page = if tag == 1 {
-        FileTablePage::Leaf(records)
-    } else {
-        FileTablePage::Internal(children)
-    };
-    page.validate(limits.maximum_page_items)
-        .map_err(invariant)?;
-    Ok(page)
 }
 
-fn decode_record(decoder: &mut Decoder<'_>) -> Result<FileRecord, CanonicalDecodeError> {
-    let file_id = FileId::from_bytes(decoder.fixed()?);
-    let kind = FileKind::from_tag(decoder.u8()?).map_err(invariant_tree)?;
-    let link_count = decoder.u64()?;
-    let metadata = digest_object(ObjectKind::Metadata, decoder.fixed()?);
-    let payload = match decoder.u8()? {
+fn decode_record<E: From<CanonicalDecodeError>>(
+    decoder: &mut Decoder<'_>,
+    observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
+) -> Result<FileRecord, E> {
+    let file_id = FileId::from_bytes(decoder.fixed::<16, E>(observe)?);
+    let kind = FileKind::from_tag(decoder.u8(observe)?).map_err(invariant_tree)?;
+    let link_count = decoder.u64(observe)?;
+    let metadata = digest_object(ObjectKind::Metadata, decoder.fixed::<32, E>(observe)?);
+    let payload = match decoder.u8(observe)? {
         1 => FilePayload::Regular {
-            logical_bytes: decoder.u64()?,
-            extents: digest_object(ObjectKind::ExtentPage, decoder.fixed()?),
+            logical_bytes: decoder.u64(observe)?,
+            extents: digest_object(ObjectKind::ExtentPage, decoder.fixed::<32, E>(observe)?),
         },
         2 => FilePayload::Directory {
-            entries: digest_object(ObjectKind::TreePage, decoder.fixed()?),
+            entries: digest_object(ObjectKind::TreePage, decoder.fixed::<32, E>(observe)?),
         },
         3 => FilePayload::SymbolicLink {
-            target_bytes: decoder.u64()?,
-            target: digest_object(ObjectKind::Blob, decoder.fixed()?),
+            target_bytes: decoder.u64(observe)?,
+            target: digest_object(ObjectKind::Blob, decoder.fixed::<32, E>(observe)?),
         },
         4 => FilePayload::Empty,
         5 => FilePayload::Device {
-            major: decoder.u32()?,
-            minor: decoder.u32()?,
+            major: decoder.u32(observe)?,
+            minor: decoder.u32(observe)?,
         },
         6 => FilePayload::ReparsePoint {
-            payload_bytes: decoder.u64()?,
-            payload: digest_object(ObjectKind::Blob, decoder.fixed()?),
+            payload_bytes: decoder.u64(observe)?,
+            payload: digest_object(ObjectKind::Blob, decoder.fixed::<32, E>(observe)?),
         },
         7 => {
-            let length = decoder.u8()?;
+            let length = decoder.u8(observe)?;
             if usize::from(length) > MAXIMUM_INLINE_FILE_BYTES {
                 return Err(CanonicalDecodeError::FieldTooLarge {
                     observed: u32::from(length),
                     maximum: u32::try_from(MAXIMUM_INLINE_FILE_BYTES)
                         .map_err(|_| CanonicalDecodeError::LengthOverflow)?,
-                });
+                }
+                .into());
             }
             let bytes = decoder.take_exact(usize::from(length))?;
-            FilePayload::InlineRegular(InlineFileData::new(bytes).map_err(invariant_inline)?)
+            observe(ReadAllocationStep::BeforeCopy(u64::from(length)))?;
+            let inline = InlineFileData::new(bytes).map_err(invariant_inline)?;
+            observe(ReadAllocationStep::Copied(u64::from(length)))?;
+            FilePayload::InlineRegular(inline)
         }
         tag => {
             return Err(CanonicalDecodeError::UnknownTag {
                 field: "file_payload",
                 tag,
-            });
+            }
+            .into());
         }
     };
     let record = FileRecord {
@@ -661,71 +860,24 @@ fn decode_record(decoder: &mut Decoder<'_>) -> Result<FileRecord, CanonicalDecod
 }
 
 /// Computes one typed file-table page identity.
-///
-/// # Errors
-///
-/// Returns the same validation errors as [`encode_file_table_page`].
 pub fn file_table_page_id(
     page: &FileTablePage,
     maximum_items: u32,
 ) -> Result<ObjectId, CanonicalDecodeError> {
-    let bytes = encode_file_table_page(page, maximum_items)?;
+    let bytes = encode_file_table_page(
+        page,
+        maximum_items,
+        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+        |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+    )?;
     Ok(ObjectId {
         kind: ObjectKind::FileTablePage,
         digest: object_digest(ObjectKind::FileTablePage, &bytes),
     })
 }
 
-/// Exact path-independent record lookup and measured authenticated work.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FileRecordLookup {
-    /// Matching record, or authenticated absence.
-    pub record: Option<FileRecord>,
-    /// Exact page/backend work.
-    pub work: WorkCounters,
-}
-
-/// Original-order file records from one shared authenticated frontier batch.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FileRecordBatchLookup {
-    /// One explicit present/absent result per requested stable file identity.
-    pub records: Vec<Option<FileRecord>>,
-    /// Exact shared traversal and backend work.
-    pub work: WorkCounters,
-}
-
 /// Looks up file records while reading every distinct file-table frontier once.
-///
-/// # Errors
-///
-/// Rejects empty/oversized batches and returns the same authenticated routing,
-/// storage, decode, allocation, and work failures as point lookup.
-pub fn lookup_file_records<S: crate::ImmediateObjectStore>(
-    store: &S,
-    root: ObjectId,
-    file_ids: &[FileId],
-    maximum_queries: u32,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-) -> Result<FileRecordBatchLookup, FileRecordReadFailure> {
-    persistent_batch::lookup::<S, FileTableFormat>(
-        store,
-        root,
-        file_ids,
-        maximum_queries,
-        limits,
-        budget,
-    )
-    .map(to_record_batch)
-    .map_err(map_batch_failure)
-}
-
-/// Asynchronously executes the same batch as [`lookup_file_records`].
-///
-/// # Errors
-///
-/// Returns identical typed failures, including cooperative cancellation.
-pub async fn lookup_file_records_async<S: AsyncObjectStore>(
+pub async fn lookup_file_records<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     file_ids: &[FileId],
@@ -733,36 +885,97 @@ pub async fn lookup_file_records_async<S: AsyncObjectStore>(
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &CancellationToken,
-) -> Result<FileRecordBatchLookup, FileRecordReadFailure> {
-    in_heap(move || async move {
-        persistent_batch::lookup_async::<S, FileTableFormat>(
-            store,
-            root,
-            file_ids,
-            maximum_queries,
-            limits,
-            budget,
-            cancellation,
-        )
-        .await
-        .map(to_record_batch)
-        .map_err(map_batch_failure)
-    })
+) -> Result<OperationReceipt<Vec<Option<FileRecord>>>, FileRecordReadFailure> {
+    lookup_file_records_async_with_custody(
+        store,
+        root,
+        file_ids,
+        maximum_queries,
+        limits,
+        budget,
+        cancellation,
+        None,
+    )
     .await
 }
 
-fn to_record_batch(receipt: persistent_batch::Receipt<FileRecord>) -> FileRecordBatchLookup {
-    FileRecordBatchLookup {
-        records: receipt.values,
-        work: receipt.work,
-    }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
+)]
+pub(crate) async fn lookup_file_records_async_with_custody<S: AsyncObjectStore>(
+    store: &S,
+    root: ObjectId,
+    file_ids: &[FileId],
+    maximum_queries: u32,
+    limits: DecodeLimits,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    data_custody: Option<&ProofDataCustody>,
+) -> Result<OperationReceipt<Vec<Option<FileRecord>>>, FileRecordReadFailure> {
+    let frame_observer =
+        |event| data_custody.map_or(Ok(0), |owner| owner.record_heap_future_event(event));
+    in_heap_measured(
+        move |budget| async move {
+            persistent_batch::lookup_async::<S, FileTableFormat>(
+                store,
+                root,
+                file_ids,
+                maximum_queries,
+                limits,
+                budget,
+                cancellation,
+            )
+            .await
+            .map_err(map_batch_failure)
+        },
+        budget,
+        cancellation,
+        FileRecordReadError::Cancelled,
+        data_custody.map(|_| &frame_observer as &(dyn Fn(_) -> Result<u64, WorkError> + Sync)),
+    )
+    .await
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
+)]
+pub(crate) async fn lookup_file_records_async_with_accounting<S: AsyncObjectStore>(
+    store: &S,
+    root: ObjectId,
+    file_ids: &[FileId],
+    maximum_queries: u32,
+    limits: DecodeLimits,
+    accounting: &mut super::allocation::KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+    data_custody: Option<&ProofDataCustody>,
+) -> Result<
+    (
+        Vec<Option<FileRecord>>,
+        super::allocation::KernelOwnedAllocation,
+    ),
+    crate::FsError,
+> {
+    persistent_batch::lookup_async_with_accounting::<S, FileTableFormat>(
+        store,
+        root,
+        file_ids,
+        maximum_queries,
+        limits,
+        accounting,
+        cancellation,
+        data_custody,
+    )
+    .await
+    .map(|(receipt, allocation)| (receipt.value, allocation))
 }
 
 fn map_batch_failure(failure: persistent_batch::Failure) -> FileRecordReadFailure {
     OperationFailure::new(map_batch_error(failure.error), *failure.work)
 }
 
-fn map_batch_error(error: persistent_batch::Error) -> FileRecordReadError {
+pub(super) fn map_batch_error(error: persistent_batch::Error) -> FileRecordReadError {
     match error {
         persistent_batch::Error::Cancelled => FileRecordReadError::Cancelled,
         persistent_batch::Error::Empty => FileRecordReadError::EmptyBatch,
@@ -780,60 +993,88 @@ fn map_batch_error(error: persistent_batch::Error) -> FileRecordReadError {
     }
 }
 
-/// Looks up one stable file identity through the authenticated file table.
-///
-/// # Errors
-///
-/// Fails on wrong object classes, routing forgery, cycles, excessive height,
-/// malformed canonical pages, backend failure, or work-budget exhaustion.
-pub fn lookup_file_record<S: crate::ImmediateObjectStore>(
+pub(super) fn unmap_batch_error(error: FileRecordReadError) -> persistent_batch::Error {
+    match error {
+        FileRecordReadError::Cancelled => persistent_batch::Error::Cancelled,
+        FileRecordReadError::EmptyBatch => persistent_batch::Error::Empty,
+        FileRecordReadError::TooManyQueries => persistent_batch::Error::TooManyQueries,
+        FileRecordReadError::WrongRootKind => persistent_batch::Error::WrongRootKind,
+        FileRecordReadError::InvalidHeightLimit => persistent_batch::Error::InvalidLimits,
+        FileRecordReadError::Cycle => persistent_batch::Error::CycleOrAlias,
+        FileRecordReadError::HeightExceeded => persistent_batch::Error::HeightExceeded,
+        FileRecordReadError::InvalidRouting => persistent_batch::Error::InvalidRouting,
+        FileRecordReadError::ChildBoundsMismatch => persistent_batch::Error::ChildBoundsMismatch,
+        FileRecordReadError::AllocationFailed => persistent_batch::Error::AllocationFailed,
+        FileRecordReadError::Storage(error) => persistent_batch::Error::Storage(error),
+        FileRecordReadError::Decode(error) => persistent_batch::Error::Decode(error),
+        FileRecordReadError::Work(error) => persistent_batch::Error::Work(error),
+    }
+}
+
+pub(crate) async fn lookup_file_record_async_with_accounting<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     file_id: FileId,
     limits: DecodeLimits,
-    budget: WorkBudget,
-) -> Result<FileRecordLookup, FileRecordReadFailure> {
-    crate::async_storage::poll_immediate(lookup_file_record_async(
+    accounting: &mut super::allocation::KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+    data_custody: Option<&ProofDataCustody>,
+) -> Result<(Option<FileRecord>, super::allocation::KernelOwnedAllocation), crate::FsError> {
+    persistent_point::lookup_async_with_accounting::<S, FileTableFormat>(
         store,
         root,
-        file_id,
+        &file_id,
         limits,
-        budget,
-        &CancellationToken::new(),
-    ))
+        accounting,
+        cancellation,
+        data_custody,
+    )
+    .await
 }
 
-/// Asynchronously looks up one file record, sharing every page another
-/// reader of `store` already decoded.
-///
-/// # Errors
-///
-/// Returns the same typed semantic, storage, decode, work, and cancellation
-/// failures as [`lookup_file_record`].
-pub async fn lookup_file_record_async<S: AsyncObjectStore>(
+/// Looks up one stable file identity through the authenticated file table.
+pub async fn lookup_file_record<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     file_id: FileId,
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &CancellationToken,
-) -> Result<FileRecordLookup, FileRecordReadFailure> {
-    in_heap(move || async move {
-        persistent_point::lookup_async::<S, FileTableFormat>(
-            store,
-            root,
-            &file_id,
-            limits,
-            budget,
-            cancellation,
-        )
+) -> Result<OperationReceipt<Option<FileRecord>>, FileRecordReadFailure> {
+    lookup_file_record_async_with_custody(store, root, file_id, limits, budget, cancellation, None)
         .await
-        .map(|receipt| FileRecordLookup {
-            record: receipt.value,
-            work: receipt.work,
-        })
-        .map_err(map_batch_failure)
-    })
+}
+
+pub(crate) async fn lookup_file_record_async_with_custody<S: AsyncObjectStore>(
+    store: &S,
+    root: ObjectId,
+    file_id: FileId,
+    limits: DecodeLimits,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    data_custody: Option<&ProofDataCustody>,
+) -> Result<OperationReceipt<Option<FileRecord>>, FileRecordReadFailure> {
+    let frame_observer =
+        |event| data_custody.map_or(Ok(0), |owner| owner.record_heap_future_event(event));
+    in_heap_measured(
+        move |budget| async move {
+            persistent_point::lookup_async::<S, FileTableFormat>(
+                store,
+                root,
+                &file_id,
+                limits,
+                budget,
+                cancellation,
+                data_custody,
+            )
+            .await
+            .map_err(map_batch_failure)
+        },
+        budget,
+        cancellation,
+        FileRecordReadError::Cancelled,
+        data_custody.map(|_| &frame_observer as &(dyn Fn(_) -> Result<u64, WorkError> + Sync)),
+    )
     .await
 }
 
@@ -910,15 +1151,15 @@ fn capacity(value: u32) -> Result<usize, CanonicalDecodeError> {
 }
 
 fn invariant(error: FileTableError) -> CanonicalDecodeError {
-    CanonicalDecodeError::Invariant(error.to_string())
+    CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::FileTable(error))
 }
 
 fn invariant_tree(error: super::TreePageError) -> CanonicalDecodeError {
-    CanonicalDecodeError::Invariant(error.to_string())
+    CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Tree(error))
 }
 
 fn invariant_inline(error: InlineFileDataError) -> CanonicalDecodeError {
-    CanonicalDecodeError::Invariant(error.to_string())
+    CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::InlineFileData(error))
 }
 
 #[cfg(test)]

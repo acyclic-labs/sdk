@@ -1,0 +1,169 @@
+use super::*;
+
+impl<A, O> CheckoutMountSource<A, O>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    pub(super) fn created_handle(
+        &self,
+        created: &MountLookup,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
+        if created.node.kind != MountNodeKind::Regular {
+            return Err(MountSourceError::Invalid(
+                "only regular files can own native handles".into(),
+            ));
+        }
+        self.attached_file(created.node.file_id, &mut NativeDemandCarrier::Native(work))
+    }
+
+    pub(super) fn seek_extent(
+        &self,
+        path: &MountPath,
+        offset: u64,
+        target: MountSeekTarget,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<Option<u64>, MountSourceError> {
+        invoke(&self.runtime, work, || async {
+            let mut carrier = NativeDemandCarrier::Native(work);
+            let mut inputs = InputBuffers::new(&mut carrier)?;
+            let path = self.namespace_inputs(path, &mut inputs)?;
+            let observation = self
+                .checkout
+                .observe(
+                    ViewGate::callback_owner()?,
+                    inputs.carrier,
+                    work.cancellation(),
+                    Some(&self.cancellation),
+                )
+                .await?;
+            let mut checkout = observation.observer(
+                &mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()),
+                work.cancellation(),
+            )?;
+            let file_id = checkout
+                .lookup_no_follow(&path, work, work.cancellation())
+                .await?
+                .record
+                .ok_or(MountSourceError::NotFound)?
+                .file_id;
+            let result = checkout
+                .seek_file_extent(
+                    file_id,
+                    offset,
+                    match target {
+                        MountSeekTarget::Data => ExtentSeekTarget::Data,
+                        MountSeekTarget::Hole => ExtentSeekTarget::Hole,
+                    },
+                    work,
+                    work.cancellation(),
+                )
+                .await?;
+            inputs
+                .carrier
+                .check(work.cancellation(), Some(&self.cancellation))?;
+            Ok(result)
+        })
+    }
+
+    pub(super) fn open_handle(
+        &self,
+        path: &MountPath,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(crate::native_mount::MountOpenClaim, MountLookup), MountSourceError> {
+        invoke(&self.runtime, work, || async {
+            let mut carrier = NativeDemandCarrier::Native(work);
+            let observation = self
+                .checkout
+                .observe(
+                    ViewGate::callback_owner()?,
+                    &mut carrier,
+                    work.cancellation(),
+                    Some(&self.cancellation),
+                )
+                .await?;
+            let lookup = self
+                .lookup_in(&observation, path, &mut carrier)
+                .await?
+                .ok_or(MountSourceError::NotFound)?;
+            if lookup.node.kind != MountNodeKind::Regular {
+                return Err(MountSourceError::Invalid(
+                    "only regular files can own native handles".into(),
+                ));
+            }
+            let (file, bytes) = self.attached_file(lookup.node.file_id, &mut carrier)?;
+            Ok((crate::native_mount::MountOpenClaim { file, bytes }, lookup))
+        })
+    }
+
+    pub(super) fn attached_file(
+        &self,
+        file_id: FileId,
+        carrier: &mut NativeDemandCarrier<'_>,
+    ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
+        let cancellation = carrier.cancellation();
+        carrier.check(&cancellation, Some(&self.cancellation))?;
+        let bytes = std::mem::size_of::<CheckoutAttachedFile<A, O>>() as u64;
+        let work = carrier
+            .original_native_work()
+            .ok_or(MountSourceError::NativeWork(
+                crate::NativeTreeMaterializationError::InvalidLayout,
+            ))?;
+        let allocation = work
+            .claim(bytes, 1, crate::WorkCounters::UNCHARGED)
+            .map_err(MountSourceError::NativeWork)?;
+        let attached: Arc<dyn MountOpenFile> = Arc::new(CheckoutAttachedFile {
+            checkout: Arc::clone(&self.checkout),
+            file_id,
+            runtime: self.runtime.clone(),
+            cancellation: self.cancellation.clone(),
+            profile: self.profile,
+            limits: self.limits,
+            _native_allocation: allocation,
+            native_callback_guard: self.native_callback_guard.clone(),
+        });
+        if let Err(error) = carrier.check(&cancellation, Some(&self.cancellation)) {
+            drop(attached);
+            return Err(error);
+        }
+        Ok((attached, 0))
+    }
+
+    pub(super) fn detached_handle(
+        &self,
+        path: &MountPath,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
+        invoke(&self.runtime, work, || async {
+            let mut carrier = NativeDemandCarrier::Native(work);
+            let mut inputs = InputBuffers::new(&mut carrier)?;
+            let path = self.namespace_inputs(path, &mut inputs)?;
+            let observation = self
+                .checkout
+                .observe(
+                    ViewGate::callback_owner()?,
+                    inputs.carrier,
+                    work.cancellation(),
+                    Some(&self.cancellation),
+                )
+                .await?;
+            let mut checkout = observation.observer(
+                &mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()),
+                work.cancellation(),
+            )?;
+            let lookup = checkout
+                .lookup_no_follow_with_metadata(&path, work, work.cancellation())
+                .await?
+                .ok_or(MountSourceError::NotFound)?;
+            if lookup.record.kind != FileKind::Regular {
+                return Err(MountSourceError::Invalid(
+                    "only regular files can own detached handles".into(),
+                ));
+            }
+            let file: Arc<dyn MountOpenFile> =
+                self.detached_from_checkout(&checkout, lookup.record, lookup.metadata, work)?;
+            Ok((file, 0))
+        })
+    }
+}

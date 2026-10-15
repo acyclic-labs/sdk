@@ -1,15 +1,15 @@
 //! Local Objects hot paths (see `docs/observability.md`).
 #![allow(clippy::unwrap_used, reason = "benchmarks abort on setup failure")]
 
-use acyclic_objects::v1::{MemoryObjects, NativeBatchObjects, ObjectsProvider, wire};
+use acyclic_objects::v1::{MemoryObjects, ObjectsProvider, wire};
 use acyclic_objects::{LocalObjects, LocalObjectsLimits};
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use divan::Bencher;
 use divan::counter::ItemsCount;
 use std::path::Path;
 use tokio::runtime::Runtime;
 
-const BODY: Bytes = Bytes::from_static(&[0x5a; 200]);
+const BODY: OwnedBytes = OwnedBytes::from_static(&[0x5a; 200]);
 
 fn main() {
     divan::main();
@@ -39,7 +39,11 @@ fn get(key: String) -> wire::GetObjectRequest {
 
 fn open(runtime: &Runtime, root: &Path) -> LocalObjects {
     runtime
-        .block_on(LocalObjects::open(root, LocalObjectsLimits::default()))
+        .block_on(LocalObjects::open(
+            root,
+            LocalObjectsLimits::default(),
+            None,
+        ))
         .unwrap()
 }
 
@@ -143,7 +147,7 @@ fn list_pages(bencher: Bencher, page_size: u32) {
             ..Default::default()
         };
         runtime
-            .block_on(objects.put(header, Bytes::from_static(b"x")))
+            .block_on(objects.put(header, OwnedBytes::from_static(b"x")))
             .unwrap();
     }
     let query = wire::ListObjectsRequest {

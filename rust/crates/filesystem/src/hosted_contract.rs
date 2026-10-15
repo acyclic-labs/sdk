@@ -6,13 +6,13 @@
 //! derives the protobuf names with `as_str_name()`, so a renamed or removed
 //! protobuf variant cannot silently leave a stale string table behind.
 
-use crate::kernel::{FileKind as EngineFileKind, FilePayloadKind, NameEncoding};
+use crate::kernel::{
+    DependencyUse, ExtentSeekTarget, FileKind as EngineFileKind, FilePayloadKind, NameEncoding,
+};
 use crate::model::FilesystemProfile as EngineProfile;
 use crate::performance::WorkCounters;
 use crate::wire::filesystem::v2 as wire;
-use crate::workspace::{
-    JoinHistory, TransactionDependencyUse, TransactionSparseSeek, WorkspaceExtentKind,
-};
+use crate::workspace::{JoinHistory, WorkspaceExtentKind};
 use serde_json::{Value, json};
 use strum::IntoEnumIterator;
 
@@ -307,21 +307,19 @@ pub const fn name_encoding_from_wire(value: wire::NameEncoding) -> Option<NameEn
 }
 
 /// Converts the transaction sparse seek class to its one wire representation.
-pub const fn sparse_target(value: TransactionSparseSeek) -> wire::SparseTarget {
+pub const fn sparse_target(value: ExtentSeekTarget) -> wire::SparseTarget {
     match value {
-        TransactionSparseSeek::Data => wire::SparseTarget::Data,
-        TransactionSparseSeek::Hole => wire::SparseTarget::Hole,
+        ExtentSeekTarget::Data => wire::SparseTarget::Data,
+        ExtentSeekTarget::Hole => wire::SparseTarget::Hole,
     }
 }
 
 /// Converts dependency usage to its one wire representation.
-pub const fn conflict_use(value: TransactionDependencyUse) -> wire::ConflictUse {
+pub const fn conflict_use(value: DependencyUse) -> wire::ConflictUse {
     match value {
-        TransactionDependencyUse::Observation => wire::ConflictUse::Observation,
-        TransactionDependencyUse::Mutation => wire::ConflictUse::Mutation,
-        TransactionDependencyUse::ObservationAndMutation => {
-            wire::ConflictUse::ObservationAndMutation
-        }
+        DependencyUse::Observation => wire::ConflictUse::Observation,
+        DependencyUse::Mutation => wire::ConflictUse::Mutation,
+        DependencyUse::ObservationAndMutation => wire::ConflictUse::ObservationAndMutation,
     }
 }
 
@@ -429,12 +427,9 @@ mod tests {
         assert_eq!(profile(EngineProfile::Portable), FILESYSTEM_PROFILE[1].wire);
         assert_eq!(file_kind(EngineFileKind::MountBoundary), FILE_KIND[9].wire);
         assert_eq!(name_encoding(NameEncoding::Utf8), NAME_ENCODING[1].wire);
+        assert_eq!(sparse_target(ExtentSeekTarget::Hole), SPARSE_TARGET[2].wire);
         assert_eq!(
-            sparse_target(TransactionSparseSeek::Hole),
-            SPARSE_TARGET[2].wire
-        );
-        assert_eq!(
-            conflict_use(TransactionDependencyUse::ObservationAndMutation),
+            conflict_use(DependencyUse::ObservationAndMutation),
             CONFLICT_USE[3].wire
         );
         assert_eq!(

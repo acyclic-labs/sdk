@@ -14,7 +14,6 @@ members = [
   "rust/crates/grpc-observability",
   "rust/crates/harness",
   "rust/crates/harness-conformance",
-  "rust/crates/harness-codex",
   "rust/crates/inference",
   "rust/crates/inference-wasm",
   "rust/crates/machines",
@@ -54,13 +53,16 @@ hex = "0.4.3"
 http = "1.4.0"
 hyper-util = { version = "0.1.20", features = ["tokio"] }
 indexed_db_futures = { version = "0.6.4", features = ["typed-arrays"] }
-jsonschema = { version = "0.57.0", default-features = false }
+icu_properties = { version = "=2.3.0", default-features = false, features = ["compiled_data"] }
+icu_properties_data = "=2.3.0"
+jsonschema = { version = "0.58.6", default-features = false }
 js-sys = "0.3.94"
-napi = { version = "3.6.1", features = ["async", "napi8", "serde-json"] }
-napi-derive = "3.3.3"
+napi = { version = "3.14.2", features = ["async", "napi8", "serde-json"] }
+napi-derive = "3.6.12"
 # The macOS FSEvents backend links CoreServices, which would load it into every
 # process at start; acyclic-fs loads FSEvents itself when a watch starts.
 notify = { version = "8.2.0", default-features = false, features = ["macos_kqueue"] }
+parking_lot = "0.12.5"
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 prost = "0.14.4"
 prost-build = "0.14.4"
@@ -68,11 +70,11 @@ prost-types = "0.14.4"
 prost-reflect = "0.16.3"
 protoc-bin-vendored = "3.2.0"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
-rmcp = { version = "=3.3.0", default-features = false }
+rmcp = { version = "=3.5.1", default-features = false }
 rusqlite = { version = "0.40", features = ["bundled"] }
 rustix = { version = "1.1.4", features = ["process"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }
-rustls-platform-verifier = "0.7.1"
+rustls-platform-verifier = "=0.7.1"
 ruzstd = "0.9.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_bytes = "0.11.19"
@@ -89,7 +91,6 @@ thiserror = "2.0.17"
 subtle = "2.6.1"
 sync_wrapper = { version = "=1.0.2", features = ["futures"] }
 time = "0.3.55"
-toml = "1.1.6"
 # Libraries depend on tracing only for non-wasm32 targets and never install a
 # subscriber; hosts and tests do. See docs/observability.md.
 tracing = { version = "0.1.44", default-features = false, features = ["std", "attributes"] }
@@ -170,6 +171,8 @@ undocumented_unsafe_blocks = "deny"
 # slower; basic optimization costs little more to compile and keeps backtraces.
 [profile.dev]
 opt-level = 1
+# Keep panic/backtrace file:line information without full type/variable debuginfo.
+debug = "line-tables-only"
 
 # The CLI hashes its own executable to name its service. Unoptimized, that
 # takes ~20 s for a Linux debug binary and outlasts the client's readiness wait.

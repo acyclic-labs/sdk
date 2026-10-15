@@ -1,5 +1,4 @@
 //! Native definitions and serializer fixtures for current file-tool consumers.
-//! This emits actual public contracts; it does not execute a filesystem effect.
 #![allow(missing_docs, reason = "contract example binary, not public API")]
 
 use acyclic_harness::{
@@ -8,13 +7,10 @@ use acyclic_harness::{
     resources::ProviderRef,
     tool::{
         Tool, ToolInvocation, ToolProjection, ToolResult,
-        files::{self, FileResult, FileResultProjection, ReadFileInput, ReadFileProjection},
+        files::{self, FileProjection, FileResult, ReadFileInput},
         schema::ProjectionMode,
         text::{self, ReadOptions, SearchOptions, TextRange},
-        text_files::{
-            self, ReadInput, ReadProjection, ReadResult, SearchInput, SearchProjection,
-            SearchResult,
-        },
+        text_files::{self, ReadInput, ReadResult, SearchInput, SearchResult},
     },
 };
 use serde::Serialize;
@@ -38,7 +34,7 @@ fn value<T: Serialize>(input: T) -> Result<Value> {
 
 fn definition(variant: &str, tool: Tool) -> Result<Value> {
     let definition = tool.definition;
-    definition.validate()?;
+    definition.validate(&mut None)?;
     let digest = definition.digest()?;
     Ok(json!({"variant":variant,"definition":definition,"definition_digest":digest}))
 }
@@ -54,12 +50,13 @@ fn invocation(name: &str, arguments: Value) -> ToolInvocation {
 
 fn definitions() -> Result<Vec<Value>> {
     let mut reference_read = files::read_file()?;
-    let read_projector = ReadFileProjection(ProjectionMode::Reference);
-    reference_read.definition.projection_schema = read_projector.schema()?;
+    let read_projector = FileProjection::Read(ProjectionMode::Reference);
+    reference_read.definition.projection_schema = ProjectionMode::Reference.schema::<String>()?;
     reference_read.projection = std::sync::Arc::new(read_projector);
     let mut reference_write = files::write_file()?;
-    let reference_projector = FileResultProjection(ProjectionMode::Reference);
-    reference_write.definition.projection_schema = reference_projector.schema()?;
+    let reference_projector = FileProjection::Publication(ProjectionMode::Reference);
+    reference_write.definition.projection_schema =
+        ProjectionMode::Reference.schema::<FileResult>()?;
     reference_write.projection = std::sync::Arc::new(reference_projector);
     Ok(vec![
         definition("exact_read_full", files::read_file()?)?,
@@ -91,15 +88,22 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let source = "one\r\n🦀 abaaba\r\n";
     let file = FileRef::new(
         VolumeRef::new(
-            ProviderRef::new("file-contract", "filesystem", "1")?,
-            "private",
+            ProviderRef::new(
+                "file-contract".into(),
+                "filesystem".into(),
+                "1".into(),
+                &mut None,
+            )?,
+            "private".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([51; 16])),
+            &mut None,
         )?,
-        "source.txt",
-        "generation-1",
-        FileDescriptor::from_bytes(source.as_bytes(), "text/plain")?,
-        "source.txt",
+        "source.txt".into(),
+        "generation-1".into(),
+        FileDescriptor::from_bytes(source.as_bytes(), "text/plain", &mut None)?,
+        "source.txt".into(),
+        &mut None,
     )?;
     let read_input = ReadInput {
         file: file.clone(),
@@ -107,7 +111,12 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     };
     let read = ReadResult {
         file: file.clone(),
-        selection: text::read_range(source, read_input.range, READ)?,
+        selection: text::TextSelection {
+            range: read_input.range,
+            text: "🦀".into(),
+            omitted_before: 5,
+            omitted_after: 9,
+        },
     };
     let read_invocation = invocation("acyclic.read_file_range", value(&read_input)?);
     let read_result = ToolResult {
@@ -120,7 +129,12 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let search = SearchResult {
         file: file.clone(),
         query: search_input.query.clone(),
-        matches: text::literal_search(source, &search_input.query, SEARCH)?,
+        matches: text::SearchMatches {
+            matches: vec![TextRange { start: 10, end: 13 }],
+            total_matches: 2,
+            omitted_matches: 1,
+            work: 19,
+        },
     };
     let search_invocation = invocation("acyclic.search_file", value(&search_input)?);
     let search_result = ToolResult {
@@ -131,7 +145,6 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let exact_result = ToolResult {
         value: value(source)?,
     };
-    // A valid serialized FileResult shape, not a claim that this example published it.
     let file_result = ToolResult {
         value: value(FileResult { file: file.clone() })?,
     };
@@ -144,23 +157,23 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             "source":{"file":file,"text":source},
             "range_read":{
                 "input":read_input,"canonical":read,
-                "full":ReadProjection(ProjectionMode::Full).project(&read_invocation,&read_result)?,
-                "reference":ReadProjection(ProjectionMode::Reference).project(&read_invocation,&read_result)?,
+                "full":FileProjection::Range(ProjectionMode::Full).project(&read_invocation,&read_result,None)?.0,
+                "reference":FileProjection::Range(ProjectionMode::Reference).project(&read_invocation,&read_result,None)?.0,
             },
             "literal_search":{
                 "input":search_input,"canonical":search,
-                "full":SearchProjection(ProjectionMode::Full).project(&search_invocation,&search_result)?,
-                "reference":SearchProjection(ProjectionMode::Reference).project(&search_invocation,&search_result)?,
+                "full":FileProjection::Search(ProjectionMode::Full).project(&search_invocation,&search_result,None)?.0,
+                "reference":FileProjection::Search(ProjectionMode::Reference).project(&search_invocation,&search_result,None)?.0,
             },
             "exact_read":{
                 "input":exact_input,"canonical":exact_result.value,
-                "full":ReadFileProjection(ProjectionMode::Full).project(&exact_invocation,&exact_result)?,
-                "reference":ReadFileProjection(ProjectionMode::Reference).project(&exact_invocation,&exact_result)?,
+                "full":FileProjection::Read(ProjectionMode::Full).project(&exact_invocation,&exact_result,None)?.0,
+                "reference":FileProjection::Read(ProjectionMode::Reference).project(&exact_invocation,&exact_result,None)?.0,
             },
             "file_result":{
                 "canonical":file_result.value,
-                "full":FileResultProjection(ProjectionMode::Full).project(&file_invocation,&file_result)?,
-                "reference":FileResultProjection(ProjectionMode::Reference).project(&file_invocation,&file_result)?,
+                "full":FileProjection::Publication(ProjectionMode::Full).project(&file_invocation,&file_result,None)?.0,
+                "reference":FileProjection::Publication(ProjectionMode::Reference).project(&file_invocation,&file_result,None)?.0,
             },
         })
     );

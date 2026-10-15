@@ -1,5 +1,4 @@
 //! Explicit read-only playback of the existing native/WASM wire fixture.
-//! It supplies no authority, admission, cancellation or durable session host.
 
 use acyclic_harness::{
     Error, Result, wire,

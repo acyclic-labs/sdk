@@ -51,37 +51,30 @@ function providerOptions(options: BrowserHistoryOptions): unknown {
     ...(options.memoryLimits === undefined ? {} : { memory: options.memoryLimits }) };
 }
 
-export class BrowserHistoryReader {
-  constructor(private readonly core: WasmBrowserHistoryReader) {}
-  static async open(options: BrowserHistoryOptions): Promise<BrowserHistoryReader> {
-    await ensureHarnessWasm();
-    return new BrowserHistoryReader(await WasmBrowserHistoryReader.openBrowser(providerOptions(options)));
-  }
-  pin(afterRevision = 0n): Promise<HistoryCursor> { return this.core.pin(afterRevision); }
-  readPage(cursor: HistoryCursor, limits: HistoryReadLimits): Promise<HistoryPage> {
-    return this.core.readPage(cursor, limits);
-  }
-  /** A newly pinned logical head; independent of an older archival cursor. */
-  latestConversationMessage(maximumBytes: bigint): Promise<ConversationMessage | null> {
-    return this.core.latestConversationMessage(maximumBytes);
-  }
-  operationEvent(operation: OperationId): Promise<CanonicalEvent | null> { return this.core.operationEvent(operation); }
-  free(): void { this.core.free(); }
+export interface BrowserHistoryReader {
+  pin(afterRevision: bigint): Promise<HistoryCursor>;
+  readPage(cursor: HistoryCursor, limits: HistoryReadLimits): Promise<HistoryPage>;
+  latestConversationMessage(maximumBytes: bigint): Promise<ConversationMessage | null>;
+  operationEvent(operation: OperationId): Promise<CanonicalEvent | null>;
+  free(): void;
 }
 
-export class BrowserAggregate {
-  private constructor(private readonly core: WasmBrowserAggregate) {}
-  static async open(options: BrowserHistoryOptions, snapshot?: Snapshot): Promise<BrowserAggregate> {
-    await ensureHarnessWasm();
-    return new BrowserAggregate(await WasmBrowserAggregate.openBrowser(providerOptions(options), options.schemas ?? [], snapshot));
-  }
-  head(): readonly [authority: Authority, revision: bigint] { return this.core.head(); }
-  snapshot(): Snapshot { return this.core.snapshot(); }
-  execute(command: CanonicalCommand): Promise<CanonicalApplyResult> { return this.core.execute(command); }
-  reconcile(command: CanonicalCommand): Promise<CanonicalApplyResult | null> { return this.core.reconcile(command); }
-  refreshThrough(revision: bigint, maximumEvents: number): Promise<boolean> {
-    return this.core.refreshThrough(revision, maximumEvents);
-  }
-  historyReader(): BrowserHistoryReader { return new BrowserHistoryReader(this.core.historyReader()); }
-  free(): void { this.core.free(); }
+export async function openBrowserHistoryReader(options: BrowserHistoryOptions): Promise<BrowserHistoryReader> {
+  await ensureHarnessWasm();
+  return WasmBrowserHistoryReader.openBrowser(providerOptions(options));
+}
+
+export interface BrowserAggregate {
+  head(): readonly [authority: Authority, revision: bigint];
+  snapshot(): Snapshot;
+  execute(command: CanonicalCommand): Promise<CanonicalApplyResult>;
+  reconcile(command: CanonicalCommand): Promise<CanonicalApplyResult | null>;
+  refreshThrough(revision: bigint, maximumEvents: number): Promise<boolean>;
+  historyReader(): BrowserHistoryReader;
+  free(): void;
+}
+
+export async function openBrowserAggregate(options: BrowserHistoryOptions, snapshot?: Snapshot): Promise<BrowserAggregate> {
+  await ensureHarnessWasm();
+  return WasmBrowserAggregate.openBrowser(providerOptions(options), options.schemas ?? [], snapshot);
 }

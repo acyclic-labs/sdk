@@ -2,19 +2,15 @@
 export type { ForkHistoryPolicy } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { FileRef, Limits, ProviderRef, VolumeRef } from "./conversation.js";
 import type { HistoryReadLimits } from "./browser-history.js";
+import type { ToolJsonValue } from "./model.js";
 import { NativeContracts } from "./native-contracts.js";
 import type { ResourceKind } from "./enums.js";
 export type { ResourceKind } from "./enums.js";
-import type { AgentId, Authority, OperationId } from "./index.js";
-import { MAX_FORK_INHERITED_MESSAGES } from "./limits-contract.js";
+import type { AgentId, Authority, OperationId, Scope, TaskId } from "./index.js";
 export {
-  MAX_FORK_AGENTS,
-  MAX_FORK_ATTACHMENT_MANIFEST_BYTES,
   MAX_FORK_INHERITED_BYTES,
   MAX_FORK_INHERITED_MESSAGES,
-  MAX_FORK_REFERENCE_BYTES,
   MAX_FORK_REFERENCES,
-  MAX_FORK_RESOURCES,
 } from "./limits-contract.js";
 
 type ResourceProvider<Kind extends ResourceKind> =
@@ -27,11 +23,6 @@ export interface ResourceRef<Kind extends ResourceKind = ResourceKind> {
   readonly provider: ResourceProvider<Kind>;
   readonly key: readonly number[];
   readonly version: string | null;
-}
-
-/** Validates and detaches a provider-owned immutable resource address in Rust. */
-export async function resourceRef<Kind extends ResourceKind>(value: ResourceRef<Kind>): Promise<ResourceRef<Kind>> {
-  return (await NativeContracts.create()).validate("resource_ref", value);
 }
 
 export type ResourceRevision =
@@ -67,6 +58,23 @@ export interface ReferenceGrant {
   readonly attachment_manifest?: FileRef;
 }
 
+/** Rust owner verifies this retained project-read MAC descriptor. */
+export interface ProjectSourceAuthorization {
+  readonly owner: Authority;
+  readonly caller_task: TaskId;
+  readonly caller_admission_digest: readonly number[];
+  readonly caller_fence: Readonly<{ reservation_id: string; placement: string }>;
+  readonly operation_id: OperationId;
+  readonly source_task: TaskId;
+  readonly project: VolumeRef<"project", "filesystem">;
+  readonly generation: ResourceRef<"generation">;
+  readonly native_snapshot: ToolJsonValue;
+  readonly graph_root: TaskId;
+  readonly maximum_work: bigint;
+  readonly maximum_bytes: bigint;
+  readonly policy_scope: Scope;
+}
+
 export interface ForkRequest {
   readonly operation_id: OperationId;
   readonly parent: Authority<"conversation">;
@@ -77,6 +85,7 @@ export interface ForkRequest {
   readonly preparation: ForkPreparation;
   readonly selections: readonly ForkSelection[];
   readonly boundary: AttestedBoundary | null;
+  readonly authorized_source?: ProjectSourceAuthorization | null;
 }
 
 /** Immutable parent checkpoint and explicit bounded verification work. */
@@ -98,6 +107,8 @@ export interface ForkPreparation {
   readonly summary?: SummaryForkSelection | null;
   readonly child_project_volume: VolumeRef<"project", "filesystem">;
   readonly child_private_volume: VolumeRef<"agent_private", "filesystem">;
+  /** Optional third child-private RESULT namespace; never mounted as scratch. */
+  readonly child_result_volume?: VolumeRef<"agent_private", "filesystem"> | null;
   readonly inherited_through_sequence: bigint;
   readonly maximum_inherited_messages: bigint;
   readonly maximum_inherited_bytes: bigint;
@@ -114,28 +125,13 @@ export type Capture =
   | Readonly<{ kind: "unsupported"; value: string }>
   | Readonly<{ kind: "in_flight" | "indeterminate"; value: OperationId }>;
 
-/** Replaceable owner of one exact provider's selected fork revision. An
- * uncertain effect rejects so preparation can reconcile the same operation. */
-export interface ForkCaptureProvider {
-  readonly provider: ProviderRef;
-  capture(request: ForkRequest, selection: ForkSelection): Promise<Capture>;
-  /** A missing observation is unresolved, never permission to repeat a side effect. */
-  reconcile(request: ForkRequest, selection: ForkSelection): Promise<Capture | null>;
+/** Exact parent projection bound to a publication provider. */
+export interface ForkParentSnapshot {
+  readonly parent: Authority<"conversation">;
+  readonly revision: bigint;
 }
 
-/** Parent-bound owner of an idempotent multi-resource preparation. */
-export interface ForkPreparer {
-  /** Exact parent projection captured at binding; later revisions need a new binding. */
-  parentSnapshot(): Readonly<{ parent: Authority<"conversation">; revision: bigint }>;
-  prepare(request: ForkRequest): Promise<ForkReport>;
-  reconcile(request: ForkRequest): Promise<ForkReport | null>;
-}
-
-/** Trusted parent-owned publication boundary. The provider must authenticate
- * both signed scopes, append the exact seed at the parent revision, and durably
- * bind or replay the fresh child with a causal link to that append before it
- * returns success. An uncertain reply is observed by operation ID, never
- * recaptured. The facade validates identity, not the provider's internal state. */
+/** Authenticate both scopes, atomically publish seed/child at the parent revision, and replay uncertain replies by operation ID. */
 export interface ForkPublisher {
   parent(): Authority<"conversation">;
   spawnFromReport(report: ForkReport): Promise<ForkSeed>;
@@ -153,10 +149,14 @@ export interface ForkReport {
   readonly captures: readonly Capture[];
   readonly child_private_volume: VolumeRef<"agent_private", "filesystem">;
   readonly child_private_generation: ResourceRef<"generation">;
+  readonly child_result_volume?: VolumeRef<"agent_private", "filesystem"> | null;
+  readonly child_result_generation?: ResourceRef<"generation"> | null;
   readonly inherited_context: readonly FileRef<"agent_private", "filesystem">[];
   readonly inherited_through_sequence: bigint;
   readonly shared_grants: readonly SharedGrant[];
   readonly reference_grants: readonly ReferenceGrant[];
+  /** Original issuer proof of complete archived grant capture, never caller authority. */
+  readonly history_witness?: readonly number[] | null;
   /** Manifest reads need owner, selected-volume, or direct exact-ref authority. */
   readonly attachment_manifests: readonly FileRef[];
 }
@@ -167,30 +167,16 @@ export interface ForkSeed extends Omit<ForkRequest, "selections" | "preparation"
   readonly omissions: readonly ForkOmission[];
   readonly child_private_volume: VolumeRef<"agent_private", "filesystem">;
   readonly child_private_generation: ResourceRef<"generation">;
+  readonly child_result_volume?: VolumeRef<"agent_private", "filesystem"> | null;
+  readonly child_result_generation?: ResourceRef<"generation"> | null;
   readonly inherited_context: readonly FileRef<"agent_private", "filesystem">[];
   readonly inherited_through_sequence: bigint;
   readonly shared_grants: readonly SharedGrant[];
   readonly reference_grants: readonly ReferenceGrant[];
+  /** Required when inherited history has retired from the parent projection. */
+  readonly history_witness?: readonly number[] | null;
   /** Manifest bytes and listed members are independently read-authorized. */
   readonly attachment_manifests: readonly FileRef[];
-}
-
-/** Rust alone converts the complete capture report to its child-visible seed. */
-export async function forkSeed(report: ForkReport): Promise<ForkSeed> {
-  checkInheritedMessageLimit(report.inherited_through_sequence);
-  return (await NativeContracts.create()).forkSeed(report);
-}
-
-export async function validateForkRequest(request: ForkRequest): Promise<void> {
-  (await NativeContracts.create()).validate("fork_request", request);
-}
-
-export async function validateForkSeed(seed: ForkSeed): Promise<void> {
-  (await NativeContracts.create()).validate("fork_seed", seed);
-}
-export async function validateForkReport(report: ForkReport): Promise<void> {
-  checkInheritedMessageLimit(report.inherited_through_sequence);
-  (await NativeContracts.create()).validate("fork_report", report);
 }
 /** Pinned refs that the owning provider may authorize for an attached reader.
  * This is an access plan, not a bearer token or a byte-resolution grant. */
@@ -221,10 +207,4 @@ export async function forkReadableReferences(seed: ForkSeed, reader: AgentId): P
     if (ownerRead || sharedRead || projectRead) refs.set(identity(manifest), manifest);
   }
   return Object.freeze([...refs.values()]);
-}
-
-function checkInheritedMessageLimit(sequence: bigint): void {
-  if (sequence > MAX_FORK_INHERITED_MESSAGES) {
-    throw new TypeError("inherited message limit exceeds protocol cap");
-  }
 }

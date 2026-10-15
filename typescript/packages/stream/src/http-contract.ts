@@ -7,6 +7,7 @@ import type {
 } from "./types.js";
 
 export const HTTP_RESPONSE_CONTRACT = Object.freeze({
+  "delivery/acknowledge": "empty",
   "idempotency/inspect": "observation",
   "tail": "sequence",
   "append": "append",
@@ -22,6 +23,7 @@ export const HTTP_RESPONSE_CONTRACT = Object.freeze({
 export type HttpRoute = keyof typeof HTTP_RESPONSE_CONTRACT;
 
 type HttpResponseByKind = {
+  empty: void;
   observation: IdempotencyObservation | undefined;
   sequence: Sequence;
   append: AppendResult;
@@ -37,14 +39,7 @@ type HttpResponseByKind = {
 export type HttpResponseFor<Route extends HttpRoute> =
   HttpResponseByKind[typeof HTTP_RESPONSE_CONTRACT[Route]];
 
-/**
- * Decode one Rust-validated hosted response with the route-specific public
- * result type derived from the canonical route/family table above.
- *
- * The implementation intentionally remains unknown at this boundary: the
- * Rust/WASM decoder owns runtime validation and projection, while these
- * overloads carry its generated route association into the TypeScript API.
- */
+/** Decode a Rust-validated response using its route-specific result type. */
 export function decodeHttpResponseFor<Route extends HttpRoute>(
   route: Route,
   responseJson: string,

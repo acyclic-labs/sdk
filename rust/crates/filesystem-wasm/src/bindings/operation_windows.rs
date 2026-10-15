@@ -9,8 +9,8 @@ use acyclic_fs::{
 /// Durable leases sharing the filesystem's exact `IndexedDB` authority.
 #[wasm_bindgen]
 pub struct BrowserOperationWindowCoordinator {
-    inner: OperationWindowCoordinator<IndexedDbAuthorityStore>,
-    owner: BrowserEngine,
+    inner: OperationWindowCoordinator<BrowserAuthority>,
+    owner: Fs<BrowserAuthority, CachedObjectStore<BrowserObjects>>,
 }
 
 #[derive(Deserialize, Serialize, Tsify)]
@@ -153,28 +153,24 @@ fn generation(value: &[u8]) -> Result<acyclic_fs::GenerationId, JsValue> {
 
 #[wasm_bindgen]
 impl BrowserFs {
-    /// Opens a coordinator on the exact persistent authority; construction acquires no lease.
     #[wasm_bindgen(js_name = operationWindows)]
     pub fn operation_windows(&self) -> Result<BrowserOperationWindowCoordinator, JsValue> {
-        let inner = match self.engine.as_ref().ok_or_else(closed_error)? {
-            BrowserEngine::IndexedDb(fs) => fs.operation_windows(),
-            BrowserEngine::IndexedDbOpfs(fs) => fs.operation_windows(),
-            BrowserEngine::Memory(_) => {
-                return Err(js_error(
-                    "operation windows require persistent browser authority",
-                ));
-            }
-        };
+        let engine = self.engine.as_ref().ok_or_else(closed_error)?;
+        if self.capabilities.authority != "indexeddb" {
+            return Err(js_error(
+                "operation windows require persistent browser authority",
+            ));
+        }
+        let inner = engine.operation_windows();
         Ok(BrowserOperationWindowCoordinator {
             inner,
-            owner: self.engine.as_ref().ok_or_else(closed_error)?.clone(),
+            owner: engine.clone(),
         })
     }
 }
 
 #[wasm_bindgen]
 impl BrowserOperationWindowCoordinator {
-    /// Opens an overlapping lease through the shared Rust transition.
     pub async fn begin(
         &self,
         workspace_id: &[u8],
@@ -202,7 +198,6 @@ impl BrowserOperationWindowCoordinator {
             .and_then(ts)
     }
 
-    /// Extends the exact live lease; its previous publication permit is fenced.
     pub async fn renew(
         &self,
         lease: Ts<BrowserOperationWindowLease>,
@@ -221,7 +216,6 @@ impl BrowserOperationWindowCoordinator {
             .and_then(ts)
     }
 
-    /// Coalesces an authenticated parent advance.
     #[wasm_bindgen(js_name = observeParent)]
     pub async fn observe_parent(
         &self,
@@ -237,7 +231,6 @@ impl BrowserOperationWindowCoordinator {
             .map_err(js_error)
     }
 
-    /// Closes a lease; the final closer owns reconciliation.
     pub async fn finish(
         &self,
         lease: Ts<BrowserOperationWindowLease>,
@@ -263,7 +256,6 @@ impl BrowserOperationWindowCoordinator {
         )
     }
 
-    /// Inspects the current durable phase without acquiring authority.
     pub async fn inspect(
         &self,
         workspace_id: &[u8],
@@ -300,7 +292,6 @@ impl BrowserOperationWindowCoordinator {
         )
     }
 
-    /// Closes and completes deferred workspace reconciliation through the existing coordinator.
     #[wasm_bindgen(js_name = finishWorkspace)]
     pub async fn finish_workspace(
         &self,
@@ -312,40 +303,28 @@ impl BrowserOperationWindowCoordinator {
         self.require_workspace(workspace)?;
         let lease = lease.to_rust().map_err(js_error)?.decode()?;
         let limits = options.to_rust().map_err(js_error)?.into();
-        macro_rules! finish {
-            ($value:expr) => {
-                match self
-                    .inner
-                    .finish_workspace($value, &lease, now_millis, limits)
-                    .await
-                    .map_err(js_error)?
-                {
-                    WorkspaceOperationFinish::StillActive { remaining } => {
-                        BrowserWorkspaceOperationClose::StillActive { remaining }
-                    }
-                    WorkspaceOperationFinish::AlreadyClosed => {
-                        BrowserWorkspaceOperationClose::AlreadyClosed
-                    }
-                    WorkspaceOperationFinish::Reconciled(value) => {
-                        BrowserWorkspaceOperationClose::Reconciled {
-                            rebase: browser_workspace_rebase_result(value),
-                        }
+        ts(
+            match self
+                .inner
+                .finish_workspace(&workspace.engine, &lease, now_millis, limits)
+                .await
+                .map_err(js_error)?
+            {
+                WorkspaceOperationFinish::StillActive { remaining } => {
+                    BrowserWorkspaceOperationClose::StillActive { remaining }
+                }
+                WorkspaceOperationFinish::AlreadyClosed => {
+                    BrowserWorkspaceOperationClose::AlreadyClosed
+                }
+                WorkspaceOperationFinish::Reconciled(value) => {
+                    BrowserWorkspaceOperationClose::Reconciled {
+                        rebase: browser_workspace_rebase_result(value),
                     }
                 }
-            };
-        }
-        ts(match &workspace.engine {
-            BrowserWorkspaceEngine::IndexedDb(value) => finish!(value),
-            BrowserWorkspaceEngine::IndexedDbOpfs(value) => finish!(value),
-            BrowserWorkspaceEngine::Memory(_) => {
-                return Err(js_error(
-                    "persistent operation window requires a persistent workspace",
-                ));
-            }
-        })
+            },
+        )
     }
 
-    /// Recovers expired leases and interrupted reconciliation without rerunning external effects.
     #[wasm_bindgen(js_name = recoverWorkspace)]
     pub async fn recover_workspace(
         &self,
@@ -355,44 +334,19 @@ impl BrowserOperationWindowCoordinator {
     ) -> Result<Option<Ts<BrowserWorkspaceRebaseResult>>, JsValue> {
         self.require_workspace(workspace)?;
         let limits = options.to_rust().map_err(js_error)?.into();
-        Ok(match &workspace.engine {
-            BrowserWorkspaceEngine::IndexedDb(value) => self
-                .inner
-                .recover_workspace(value, now_millis, limits)
-                .await
-                .map_err(js_error)?
-                .map(browser_workspace_rebase_result)
-                .map(ts)
-                .transpose()?,
-            BrowserWorkspaceEngine::IndexedDbOpfs(value) => self
-                .inner
-                .recover_workspace(value, now_millis, limits)
-                .await
-                .map_err(js_error)?
-                .map(browser_workspace_rebase_result)
-                .map(ts)
-                .transpose()?,
-            BrowserWorkspaceEngine::Memory(_) => {
-                return Err(js_error(
-                    "persistent operation window requires a persistent workspace",
-                ));
-            }
-        })
+        self.inner
+            .recover_workspace(&workspace.engine, now_millis, limits)
+            .await
+            .map_err(js_error)?
+            .map(browser_workspace_rebase_result)
+            .map(ts)
+            .transpose()
     }
 }
 
 impl BrowserOperationWindowCoordinator {
     fn require_workspace(&self, workspace: &BrowserWorkspace) -> Result<(), JsValue> {
-        let owned = match (&self.owner, &workspace.engine) {
-            (BrowserEngine::IndexedDb(fs), BrowserWorkspaceEngine::IndexedDb(value)) => {
-                fs.owns_workspace(value)
-            }
-            (BrowserEngine::IndexedDbOpfs(fs), BrowserWorkspaceEngine::IndexedDbOpfs(value)) => {
-                fs.owns_workspace(value)
-            }
-            _ => false,
-        };
-        if owned {
+        if self.owner.owns_workspace(&workspace.engine) {
             Ok(())
         } else {
             Err(js_error("workspace belongs to another browser filesystem"))

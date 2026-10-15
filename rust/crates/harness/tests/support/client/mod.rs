@@ -22,8 +22,6 @@ pub struct Evidence {
     pub publish: bool,
 }
 
-// A deliberately small domain for exhaustive kernel transitions, not a domain
-// engine supplied to consumers. Real Harness reuse is tested separately.
 pub struct Numbers {
     pub visits: Rc<Cell<usize>>,
     pub adapter: Rc<Cell<u128>>,
@@ -49,6 +47,19 @@ impl Domain for Numbers {
     type Evidence = Evidence;
     fn identity(&self) -> u128 {
         self.adapter.get()
+    }
+    fn restore(
+        &self,
+        fact: &Fact<u64, Basis, u64>,
+        branch: &Hypothesis<u64, Basis, u64, u64, u64>,
+        work: usize,
+    ) -> Result<(usize, usize), Error> {
+        if branch.prediction != PredictionOutcome::Pending
+            || branch.outcome != OperationOutcome::Unknown
+        {
+            return Err(Error::Unsupported);
+        }
+        self.validate(fact, &branch.predicted, &branch.assumption, work)
     }
     fn validate(
         &self,

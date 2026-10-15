@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "acyclic-harness"
 version.workspace = true
 edition.workspace = true
@@ -11,6 +12,15 @@ readme = "README.md"
 exclude = ["benches"]
 documentation = "https://docs.rs/acyclic-harness"
 build = "build.rs"
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
+
+[[test]]
+name = "context-discovery"
+path = "tests/context_discovery.rs"
+required-features = ["filesystem"]
 
 [lib]
 crate-type = ["rlib", "cdylib"]
@@ -30,6 +40,10 @@ required-features = ["native-execution"]
 test = true
 harness = false
 
+[[example]]
+name = "explicit-image-conversion"
+required-features = ["filesystem"]
+
 [[bench]]
 name = "harness"
 harness = false
@@ -44,21 +58,24 @@ browser = ["wasm", "filesystem", "acyclic-fs/browser"]
 terminal = ["dep:hex"]
 wasm = ["acyclic-stream/wasm", "dep:js-sys", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 # Provider adapters. Each pulls only its own SDK family.
-filesystem = ["dep:acyclic-fs", "acyclic-fs/memory", "dep:hex"]
+filesystem = ["dep:acyclic-fs", "acyclic-fs/memory", "dep:hex", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-stream/local"]
 # Explicit native host composition; portable defaults never select it.
-native-execution = ["filesystem", "acyclic-fs/native-mount", "dep:acyclic-native-runtime"]
+native-execution = ["filesystem", "acyclic-fs/native-mount"]
 # Optional native HTTP I/O. Browser hosts implement the same portable boundary.
 mcp-http = ["dep:reqwest"]
+mcp-oauth = ["rmcp/auth", "rmcp/reqwest"]
 objects = ["dep:acyclic-objects"]
 machines = ["dep:acyclic-machines"]
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
 
 [dependencies]
+async-trait.workspace = true
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, optional = true }
 acyclic-machines = { version = "=0.2.0", path = "../machines", optional = true }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, optional = true }
-acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
+base64 = "=0.22.1"
 blake3.workspace = true
 bytes.workspace = true
 futures.workspace = true
@@ -85,18 +102,16 @@ tsify = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
 
-[dev-dependencies]
-async-trait.workspace = true
-
 [build-dependencies]
 prost-build.workspace = true
 protoc-bin-vendored.workspace = true
 tonic-prost-build = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", optional = true }
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 reqwest = { workspace = true, optional = true }
 tracing.workspace = true
+tokio = { version = "1.48.0", default-features = false, features = ["signal"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tracing-subscriber.workspace = true
@@ -105,6 +120,12 @@ proptest.workspace = true
 acyclic-stream = { version = "=0.2.0", path = "../stream" }
 tempfile = "3.27.0"
 tokio.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Rust SDK execution uses the real browser event loop even without exports.
+js-sys.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "=0.3.67"

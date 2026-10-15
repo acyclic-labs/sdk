@@ -1,23 +1,15 @@
 //! Durable capacity, synchronization policy and private reclamation counters.
 /// How journal frames and immutable bodies are made durable before they become observable.
-///
-/// A per-open policy, not part of the on-disk contract: a store written under one policy
-/// reopens under any other.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum LocalDurability {
     /// Flushes file contents and requests durable publication. Windows uses write-through
-    /// moves; its API does not expose a documented equivalent of POSIX directory `fsync`.
-    /// Power-loss durability of same-volume Windows moves is unproven; storage hardware
-    /// and remote filesystems may also provide weaker guarantees.
     #[default]
     FullFlush,
     /// Uses Apple's `F_BARRIERFSYNC`. Opening on a target without that exact primitive fails
-    /// with an I/O error instead of substituting different durability semantics.
     Barrier,
 }
 
 /// Exact durable-local capacity contract. Reopening requires the same capacity limits;
-/// `durability` is a per-open policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LocalObjectsLimits {
     /// Largest body admitted by a single completed object.
@@ -29,7 +21,6 @@ pub struct LocalObjectsLimits {
     /// Maximum journal bytes including its durable header and frame checksums.
     pub maximum_journal_bytes: u64,
     /// Synchronization policy for journal frames and bodies. Not recorded in the durable
-    /// header.
     pub durability: LocalDurability,
 }
 
@@ -55,6 +46,5 @@ pub struct LocalObjectsGarbageCollection {
     /// Crash-left temporary publication files removed.
     pub temporary_files_removed: u64,
     /// Journal bytes reclaimed by compaction, which moves live inline bodies into segments
-    /// and drops the rest.
     pub journal_bytes_reclaimed: u64,
 }

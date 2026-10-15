@@ -9,9 +9,11 @@ use crate::{
     AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken, IdempotencyKey,
     TransactionCommit, WorkBudget, Workspace, WorkspaceError,
 };
+use acyclic_stream::OwnedBytes;
 use bytes::Bytes;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Cursor;
+use std::ops::Bound;
 use thiserror::Error;
 
 const LIST_PAGE_ENTRIES: u32 = 256;
@@ -27,7 +29,6 @@ pub struct S3ListOptions {
     /// Initial exclusive key marker. Ignored after a continuation is supplied.
     pub start_after: Option<String>,
     /// Opaque immutable-generation continuation returned by a prior page.
-    /// Callers should reuse the token returned by a prior page.
     pub continuation: Option<S3ListCursor>,
     /// Maximum combined objects and common prefixes returned.
     pub maximum_keys: u32,
@@ -97,12 +98,7 @@ impl S3ListCursor {
         )
     }
 
-    /// Decodes one bounded canonical continuation token. This checks syntax,
-    /// not the token's origin; the listing operation checks generation/query.
-    ///
-    /// # Errors
-    ///
-    /// Rejects malformed versions, identities, UTF-8, and oversized markers.
+    /// Decodes one bounded canonical continuation token.
     pub fn decode(token: &str, maximum_key_bytes: u32) -> Result<Self, S3Error> {
         let mut fields = token.split('.');
         let version = fields.next().ok_or(S3Error::InvalidContinuation)?;
@@ -157,8 +153,7 @@ impl Default for S3MultipartOptions {
     }
 }
 
-/// One unpublished multipart candidate. Dropping it aborts without authority
-/// mutation; staged immutable objects remain safe collectible orphans.
+/// One unpublished multipart candidate.
 pub struct S3MultipartUpload<A, O> {
     transaction: crate::Transaction<A, O>,
     key: String,
@@ -186,10 +181,6 @@ impl<A, O> Workspace<A, O> {
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
     /// Starts one unpublished multipart object transaction.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid keys or zero staging bounds.
     pub async fn create_multipart_upload(
         &self,
         key: &str,
@@ -201,27 +192,33 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
             return Err(S3Error::InvalidRequest("multipart bounds must be positive"));
         }
         Ok(S3MultipartUpload {
-            transaction: self.workspace.begin_transaction(idempotency_key).await?,
+            transaction: self
+                .workspace
+                .begin_transaction(
+                    idempotency_key,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
+                .await
+                .map_err(|failure| failure.error)?
+                .value,
             key: key.to_owned(),
             options,
             parts: BTreeMap::new(),
         })
     }
     /// Reads object metadata from one pinned generation.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid keys, absent/non-regular paths, and backend failures.
     pub async fn head_object(&self, key: &str) -> Result<S3ObjectHead, S3Error> {
-        let generation = self.workspace.head().await?;
+        let generation = self
+            .workspace
+            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
         self.head_object_in(generation, key).await
     }
 
     /// Reads object metadata from one exact immutable generation.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a foreign generation, invalid key, absent/non-regular path, or backend failure.
     pub async fn head_object_at(
         &self,
         generation: &crate::Generation<A, O>,
@@ -240,11 +237,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
     ) -> Result<S3ObjectHead, S3Error> {
         let mut checkout = self
             .workspace
-            .engine_checkout(
+            .checkout(
                 GenerationSelector::Exact(generation.id()),
                 CheckoutMode::read_only_pinned(),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
             )
-            .await?;
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
         let path = key_path(key, checkout.volume_config())?;
         let record = checkout
             .lookup_no_follow(&path, WorkBudget::UNBOUNDED, &CancellationToken::new())
@@ -262,39 +263,43 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
     }
 
     /// Reads one complete object under a caller byte bound.
-    ///
-    /// # Errors
-    ///
-    /// Returns key, kind, size, authentication, or storage failures.
-    pub async fn get_object(&self, key: &str, maximum_bytes: u64) -> Result<Bytes, S3Error> {
+    pub async fn get_object(&self, key: &str, maximum_bytes: u64) -> Result<OwnedBytes, S3Error> {
         validate_key(key)?;
-        self.workspace
-            .read(&absolute_key(key), maximum_bytes)
+        Ok(self
+            .workspace
+            .read(
+                &absolute_key(key),
+                maximum_bytes,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
             .await
-            .map_err(Into::into)
+            .map_err(|failure| failure.error)?
+            .value)
     }
 
     /// Reads one exact object byte range without materializing the rest.
-    ///
-    /// # Errors
-    ///
-    /// Returns key, range, kind, authentication, or storage failures.
-    pub async fn get_object_range(&self, key: &str, range: ByteRange) -> Result<Bytes, S3Error> {
-        let generation = self.workspace.head().await?;
+    pub async fn get_object_range(
+        &self,
+        key: &str,
+        range: ByteRange,
+    ) -> Result<OwnedBytes, S3Error> {
+        let generation = self
+            .workspace
+            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
         self.get_object_range_in(generation, key, range).await
     }
 
     /// Reads one exact byte range from one immutable generation.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a foreign generation, invalid key/range, or authenticated storage failure.
     pub async fn get_object_range_at(
         &self,
         generation: &crate::Generation<A, O>,
         key: &str,
         range: ByteRange,
-    ) -> Result<Bytes, S3Error> {
+    ) -> Result<OwnedBytes, S3Error> {
         if generation.workspace_id() != self.workspace.id() {
             return Err(S3Error::ForeignGeneration);
         }
@@ -307,14 +312,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
         generation: crate::Generation<A, O>,
         key: &str,
         range: ByteRange,
-    ) -> Result<Bytes, S3Error> {
+    ) -> Result<OwnedBytes, S3Error> {
         let mut checkout = self
             .workspace
-            .engine_checkout(
+            .checkout(
                 GenerationSelector::Exact(generation.id()),
                 CheckoutMode::read_only_pinned(),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
             )
-            .await?;
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
         let path = key_path(key, checkout.volume_config())?;
         checkout
             .read_file_range(
@@ -329,75 +338,132 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
     }
 
     /// Atomically creates or replaces one object.
-    ///
-    /// # Errors
-    ///
-    /// Returns key, parent, transaction, or publication failures.
     pub async fn put_object(
         &self,
         key: &str,
         bytes: Bytes,
         idempotency_key: IdempotencyKey,
     ) -> Result<TransactionCommit<A, O>, S3Error> {
-        let mut transaction = self.workspace.begin_transaction(idempotency_key).await?;
+        let mut transaction = self
+            .workspace
+            .begin_transaction(
+                idempotency_key,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
         create_parent_directories(&mut transaction, key).await?;
-        transaction.write(&absolute_key(key), bytes).await?;
-        transaction.commit().await.map_err(Into::into)
+        transaction
+            .write(
+                &absolute_key(key),
+                bytes,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| failure.error)?;
+        Ok(transaction
+            .commit(
+                None,
+                crate::PublicationPermit::Unrestricted,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+                |_| async {
+                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
+                        crate::OperationReceipt {
+                            value: (),
+                            work: crate::WorkCounters::default(),
+                        },
+                    )
+                },
+            )
+            .await
+            .map_err(|failure| failure.error)?
+            .value)
     }
 
-    /// Prepares one S3 object from already staged immutable content in the
-    /// caller's transaction. The caller can validate its streaming checksums
-    /// before invoking this method and commits the transaction afterward.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a foreign transaction, malformed key or staged content, or a
-    /// Filesystem mutation failure. No content is published on error.
+    /// Prepares one S3 object from already staged immutable content in the caller's transaction.
     pub async fn write_staged(
         &self,
         transaction: &mut crate::Transaction<A, O>,
         key: &str,
         parts: &[crate::StagedContent],
     ) -> Result<(), S3Error> {
-        if transaction.workspace_id() != self.workspace.id() {
+        if transaction.checkout.volume_id() != self.workspace.id().volume_id() {
             return Err(S3Error::ForeignTransaction);
         }
         create_parent_directories(transaction, key).await?;
-        transaction.write_staged(&absolute_key(key), parts).await?;
+        transaction
+            .write_staged(
+                &absolute_key(key),
+                parts,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| failure.error)?;
         Ok(())
     }
 
     /// Atomically removes one object.
-    ///
-    /// # Errors
-    ///
-    /// Returns key, transaction, or publication failures. An absent key is a
-    /// successful no-op, matching S3 delete semantics.
     pub async fn delete_object(
         &self,
         key: &str,
         idempotency_key: IdempotencyKey,
     ) -> Result<(), S3Error> {
         validate_key(key)?;
-        let mut transaction = self.workspace.begin_transaction(idempotency_key).await?;
-        let mutated = match transaction.remove(&absolute_key(key)).await {
-            Ok(()) => true,
+        let mut transaction = self
+            .workspace
+            .begin_transaction(
+                idempotency_key,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
+        let mutated = match transaction
+            .remove(
+                &absolute_key(key),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| failure.error)
+        {
+            Ok(_) => true,
             Err(WorkspaceError::NotFound) => false,
             Err(error) => return Err(error.into()),
         };
         if mutated {
-            complete_delete(&transaction.commit().await?)
+            complete_delete(
+                &transaction
+                    .commit(
+                        None,
+                        crate::PublicationPermit::Unrestricted,
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
+                        |_| async {
+                            Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
+                                crate::OperationReceipt {
+                                    value: (),
+                                    work: crate::WorkCounters::default(),
+                                },
+                            )
+                        },
+                    )
+                    .await
+                    .map_err(|failure| failure.error)?
+                    .value,
+            )
         } else {
             Ok(())
         }
     }
 
     /// Atomically removes several objects through one workspace transaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns request, key, transaction, or publication failures. Absent keys
-    /// are successful no-ops, including repeated bulk deletion.
     pub async fn delete_objects(
         &self,
         keys: &[String],
@@ -406,28 +472,60 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
         if keys.is_empty() {
             return Err(S3Error::InvalidRequest("delete set is empty"));
         }
-        let mut transaction = self.workspace.begin_transaction(idempotency_key).await?;
+        let mut transaction = self
+            .workspace
+            .begin_transaction(
+                idempotency_key,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
         let mut mutated = false;
         for key in keys {
             validate_key(key)?;
-            match transaction.remove(&absolute_key(key)).await {
-                Ok(()) => mutated = true,
+            match transaction
+                .remove(
+                    &absolute_key(key),
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
+                .await
+                .map_err(|failure| failure.error)
+            {
+                Ok(_) => mutated = true,
                 Err(WorkspaceError::NotFound) => {}
                 Err(error) => return Err(error.into()),
             }
         }
         if mutated {
-            complete_delete(&transaction.commit().await?)
+            complete_delete(
+                &transaction
+                    .commit(
+                        None,
+                        crate::PublicationPermit::Unrestricted,
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
+                        |_| async {
+                            Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
+                                crate::OperationReceipt {
+                                    value: (),
+                                    work: crate::WorkCounters::default(),
+                                },
+                            )
+                        },
+                    )
+                    .await
+                    .map_err(|failure| failure.error)?
+                    .value,
+            )
         } else {
             Ok(())
         }
     }
 
     /// Copies one object through immutable extent references.
-    ///
-    /// # Errors
-    ///
-    /// Returns key, kind, transaction, or publication failures.
     pub async fn copy_object(
         &self,
         source: &str,
@@ -435,29 +533,52 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
         idempotency_key: IdempotencyKey,
     ) -> Result<TransactionCommit<A, O>, S3Error> {
         validate_key(source)?;
-        let mut transaction = self.workspace.begin_transaction(idempotency_key).await?;
+        let mut transaction = self
+            .workspace
+            .begin_transaction(
+                idempotency_key,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
         create_parent_directories(&mut transaction, destination).await?;
         transaction
-            .copy(&absolute_key(source), &absolute_key(destination))
-            .await?;
-        transaction.commit().await.map_err(Into::into)
+            .copy(
+                &absolute_key(source),
+                &absolute_key(destination),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| failure.error)?;
+        Ok(transaction
+            .commit(
+                None,
+                crate::PublicationPermit::Unrestricted,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+                |_| async {
+                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
+                        crate::OperationReceipt {
+                            value: (),
+                            work: crate::WorkCounters::default(),
+                        },
+                    )
+                },
+            )
+            .await
+            .map_err(|failure| failure.error)?
+            .value)
     }
 
     /// Lists regular files and delimiter prefixes from one pinned generation.
-    ///
-    /// # Errors
-    ///
-    /// Returns malformed options, unsupported names, work exhaustion, or
-    /// authenticated storage failures.
     pub async fn list_objects(&self, options: S3ListOptions) -> Result<S3List, S3Error> {
         self.list_objects_in(None, options).await
     }
 
     /// Lists from one exact immutable generation with stable continuation.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a foreign generation, malformed options/cursors, exhausted work, or storage failure.
     pub async fn list_objects_at(
         &self,
         generation: &crate::Generation<A, O>,
@@ -482,20 +603,38 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
                 if cursor.query != query {
                     return Err(S3Error::InvalidContinuation);
                 }
-                self.workspace.generation(cursor.generation).await?
+                self.workspace
+                    .generation(
+                        cursor.generation,
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
+                    )
+                    .await
+                    .map_err(|failure| failure.error)?
+                    .value
             }
             None => match selected {
                 Some(generation) => generation,
-                None => self.workspace.head().await?,
+                None => {
+                    self.workspace
+                        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                        .await
+                        .map_err(|failure| failure.error)?
+                        .value
+                }
             },
         };
         let mut checkout = self
             .workspace
-            .engine_checkout(
+            .checkout(
                 GenerationSelector::Exact(generation.id()),
                 CheckoutMode::read_only_pinned(),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
             )
-            .await?;
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
         let limits = checkout.volume_config().limits;
         let (frontier, frontier_key, frontier_name_prefix) =
             listing_frontier(&options.prefix, checkout.volume_config())?;
@@ -529,8 +668,7 @@ enum ListingTask {
         path: NamespacePath,
         key_prefix: String,
         name_prefix: Option<String>,
-        after: Option<LogicalName>,
-        inclusive: bool,
+        after: Bound<LogicalName>,
     },
     Object {
         key: String,
@@ -550,14 +688,12 @@ fn queue_listing_task(
     Ok(())
 }
 
-/// Seek only when every earlier child directory has a flattened `name/`
-/// bound below the marker. A marker such as `a.` is ambiguous because `a/x`
-/// sorts after it, so that case keeps the ordered walk.
+/// Seek only when every earlier child directory has a flattened `name/` bound below the marker.
 fn direct_child_seek(
     options: &S3ListOptions,
     limits: crate::model::VolumeLimits,
     frontier_key: &str,
-) -> Option<(LogicalName, bool)> {
+) -> Option<Bound<LogicalName>> {
     let Some(cursor) = &options.continuation else {
         return None;
     };
@@ -586,12 +722,16 @@ fn direct_child_seek(
         limits.maximum_component_bytes,
     )
     .ok()
-    .map(|name| (name, !cursor.after_prefix))
+    .map(|name| {
+        if cursor.after_prefix {
+            Bound::Excluded(name)
+        } else {
+            Bound::Included(name)
+        }
+    })
 }
 
-/// Merges directory-page lower bounds and object keys in flattened UTF-8
-/// order. A directory's `name/` bound is distinct from its component name:
-/// sibling `a.` must precede a descendant `a/x`.
+/// Merges directory-page lower bounds and object keys in flattened UTF-8 order.
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,
@@ -618,8 +758,7 @@ async fn list_objects_lazy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             path: frontier,
             key_prefix: frontier_key,
             name_prefix: frontier_name_prefix,
-            after: seek.as_ref().map(|(name, _)| name.clone()),
-            inclusive: seek.as_ref().is_some_and(|(_, inclusive)| *inclusive),
+            after: seek.unwrap_or(Bound::Unbounded),
         },
     )?;
     let maximum = usize::try_from(options.maximum_keys).map_err(|_| S3Error::ListLimit)?;
@@ -633,7 +772,6 @@ async fn list_objects_lazy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 key_prefix,
                 name_prefix,
                 after,
-                inclusive,
             } => {
                 let remaining = options.maximum_entries_examined - examined;
                 if remaining == 0 {
@@ -642,29 +780,17 @@ async fn list_objects_lazy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 let page_limit = LIST_PAGE_ENTRIES
                     .min(remaining)
                     .min(options.maximum_keys.saturating_add(1));
-                let page = if inclusive {
-                    checkout
-                        .list_directory_records_at_or_after(
-                            &path,
-                            after.as_ref().ok_or(S3Error::InvalidContinuation)?,
-                            page_limit,
-                            WorkBudget::UNBOUNDED,
-                            &CancellationToken::new(),
-                        )
-                        .await
-                } else {
-                    checkout
-                        .list_directory_records(
-                            &path,
-                            after.as_ref(),
-                            page_limit,
-                            WorkBudget::UNBOUNDED,
-                            &CancellationToken::new(),
-                        )
-                        .await
-                }
-                .map_err(|failure| S3Error::Workspace(WorkspaceError::engine(failure)))?
-                .value;
+                let page = checkout
+                    .list_directory_records(
+                        &path,
+                        after.as_ref(),
+                        page_limit,
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
+                    )
+                    .await
+                    .map_err(|failure| S3Error::Workspace(WorkspaceError::engine(failure)))?
+                    .value;
                 examined = examined
                     .checked_add(u32::try_from(page.entries.len()).map_err(|_| S3Error::ListLimit)?)
                     .ok_or(S3Error::ListLimit)?;
@@ -694,7 +820,7 @@ async fn list_objects_lazy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                             let mut components = path.components().to_vec();
                             components.push(entry.name);
                             let child = NamespacePath::new(components, limits)
-                                .map_err(WorkspaceError::path)?;
+                                .map_err(WorkspaceError::from)?;
                             let child_key = format!("{key}/");
                             queue_listing_task(
                                 &mut pending,
@@ -704,8 +830,7 @@ async fn list_objects_lazy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                                     path: child,
                                     key_prefix: child_key,
                                     name_prefix: None,
-                                    after: None,
-                                    inclusive: false,
+                                    after: Bound::Unbounded,
                                 },
                             )?;
                         }
@@ -730,8 +855,7 @@ async fn list_objects_lazy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                             path,
                             key_prefix,
                             name_prefix,
-                            after: Some(last_name),
-                            inclusive: false,
+                            after: Bound::Excluded(last_name),
                         },
                     )?;
                 }
@@ -793,7 +917,7 @@ fn listing_frontier(
     let limits = config.limits;
     let Some(separator) = prefix.rfind('/') else {
         return Ok((
-            NamespacePath::new(Vec::new(), limits).map_err(WorkspaceError::path)?,
+            NamespacePath::new(Vec::new(), limits).map_err(WorkspaceError::from)?,
             String::new(),
             prefix.to_owned(),
         ));
@@ -802,7 +926,7 @@ fn listing_frontier(
         "listing prefix split point is invalid",
     ))?;
     let path = if directory.is_empty() {
-        NamespacePath::new(Vec::new(), limits).map_err(WorkspaceError::path)?
+        NamespacePath::new(Vec::new(), limits).map_err(WorkspaceError::from)?
     } else {
         key_path(directory, config)?
     };
@@ -825,10 +949,6 @@ fn listing_frontier(
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3MultipartUpload<A, O> {
     /// Stages or replaces one positive part number without publishing it.
-    ///
-    /// # Errors
-    ///
-    /// Rejects zero numbers, part/count bounds, or storage failures.
     pub async fn upload_part(&mut self, part_number: u32, bytes: Bytes) -> Result<(), S3Error> {
         if part_number == 0 {
             return Err(S3Error::InvalidRequest("part number must be positive"));
@@ -845,17 +965,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3MultipartUpload<A, O> {
             .unwrap_or(u64::MAX)
             .saturating_add(1);
         let mut source = Cursor::new(bytes);
-        let staged = self.transaction.stage_content(&mut source, maximum).await?;
+        let staged = self
+            .transaction
+            .stage_content(
+                &mut source,
+                maximum,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
         self.parts.insert(part_number, staged);
         Ok(())
     }
 
     /// Publishes exactly the caller-selected ordered part set as one object.
-    ///
-    /// # Errors
-    ///
-    /// Rejects empty, duplicate, or missing part identities and returns the
-    /// ordinary workspace publication outcome.
     pub async fn complete(
         &mut self,
         ordered_parts: &[u32],
@@ -881,9 +1006,33 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3MultipartUpload<A, O> {
         }
         create_parent_directories(&mut self.transaction, &self.key).await?;
         self.transaction
-            .write_staged(&absolute_key(&self.key), &staged)
-            .await?;
-        self.transaction.commit().await.map_err(Into::into)
+            .write_staged(
+                &absolute_key(&self.key),
+                &staged,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| failure.error)?;
+        Ok(self
+            .transaction
+            .commit(
+                None,
+                crate::PublicationPermit::Unrestricted,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+                |_| async {
+                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
+                        crate::OperationReceipt {
+                            value: (),
+                            work: crate::WorkCounters::default(),
+                        },
+                    )
+                },
+            )
+            .await
+            .map_err(|failure| failure.error)?
+            .value)
     }
 
     /// Aborts without authority mutation. Staged objects are collectible.
@@ -968,7 +1117,14 @@ pub(crate) async fn create_parent_directories<A: AsyncAuthorityStore, O: AsyncOb
     if let Some((parent, _)) = key.rsplit_once('/')
         && !parent.is_empty()
     {
-        transaction.create_dir_all(&format!("/{parent}")).await?;
+        transaction
+            .create_dir_all(
+                &format!("/{parent}"),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| failure.error)?;
     }
     Ok(())
 }
@@ -1127,10 +1283,27 @@ mod tests {
     async fn s3_view_is_the_same_generation_and_copy_is_body_free()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let workspace = fs.create_workspace("s3").await?;
+        let workspace = fs
+            .create_workspace("s3", WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await?
+            .value;
         let s3 = workspace.s3();
-        let other = fs.create_workspace("another-s3-workspace").await?;
-        let mut foreign = other.begin_transaction(IdempotencyKey::new()).await?;
+        let other = fs
+            .create_workspace(
+                "another-s3-workspace",
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await?
+            .value;
+        let mut foreign = other
+            .begin_transaction(
+                IdempotencyKey::new(),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await?
+            .value;
         assert!(matches!(
             s3.write_staged(&mut foreign, "foreign", &[]).await,
             Err(S3Error::ForeignTransaction)
@@ -1155,13 +1328,23 @@ mod tests {
                     length: 3
                 }
             )
-            .await?,
+            .await?
+            .as_slice(),
             b"cde".as_slice()
         );
         s3.copy_object("src/a.bin", "copy/a.bin", IdempotencyKey::new())
             .await?;
         assert_eq!(
-            workspace.read("/copy/a.bin", 16).await?,
+            workspace
+                .read(
+                    "/copy/a.bin",
+                    16,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new()
+                )
+                .await?
+                .value
+                .as_slice(),
             b"abcdef".as_slice()
         );
 
@@ -1210,7 +1393,10 @@ mod tests {
     async fn listing_is_bounded_and_pagination_is_stable() -> Result<(), Box<dyn std::error::Error>>
     {
         let fs = Fs::memory();
-        let workspace = fs.create_workspace("pages").await?;
+        let workspace = fs
+            .create_workspace("pages", WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await?
+            .value;
         let s3 = workspace.s3();
         for key in ["a", "b", "c"] {
             s3.put_object(key, Bytes::from_static(b"x"), IdempotencyKey::new())
@@ -1277,7 +1463,14 @@ mod tests {
     async fn delimiter_pages_preserve_order_and_exact_resume()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let workspace = fs.create_workspace("delimiter-pages").await?;
+        let workspace = fs
+            .create_workspace(
+                "delimiter-pages",
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await?
+            .value;
         let s3 = workspace.s3();
         for key in ["a/one", "a/two", "b/one", "c"] {
             s3.put_object(key, Bytes::from_static(b"x"), IdempotencyKey::new())
@@ -1320,7 +1513,14 @@ mod tests {
     async fn listing_pages_use_flat_key_order_without_scanning_every_entry()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let workspace = fs.create_workspace("lazy-listing").await?;
+        let workspace = fs
+            .create_workspace(
+                "lazy-listing",
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await?
+            .value;
         let s3 = workspace.s3();
         for key in ["a/x", "a-", "a.", "a0", "b", "z"] {
             s3.put_object(key, Bytes::from_static(b"x"), IdempotencyKey::new())
@@ -1361,7 +1561,14 @@ mod tests {
     #[tokio::test]
     async fn listing_matches_an_independent_key_model() -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let workspace = fs.create_workspace("listing-model").await?;
+        let workspace = fs
+            .create_workspace(
+                "listing-model",
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await?
+            .value;
         let s3 = workspace.s3();
         let keys = [
             "a/x",
@@ -1424,7 +1631,14 @@ mod tests {
     async fn listing_uses_fetched_witness_before_requesting_another_page()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let workspace = fs.create_workspace("listing-witness").await?;
+        let workspace = fs
+            .create_workspace(
+                "listing-witness",
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await?
+            .value;
         let s3 = workspace.s3();
         for key in ["a", "b", "c", "d", "p/x"] {
             s3.put_object(key, Bytes::from_static(b"x"), IdempotencyKey::new())
@@ -1466,7 +1680,14 @@ mod tests {
         assert_eq!(two.entries_examined, 3);
         assert!(two.next_continuation.is_some());
 
-        let workspace = fs.create_workspace("listing-prefix-witness").await?;
+        let workspace = fs
+            .create_workspace(
+                "listing-prefix-witness",
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await?
+            .value;
         let s3 = workspace.s3();
         for key in ["a", "b/x", "c", "d"] {
             s3.put_object(key, Bytes::from_static(b"x"), IdempotencyKey::new())
@@ -1497,7 +1718,14 @@ mod tests {
     async fn flat_continuations_seek_without_replaying_earlier_pages()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let workspace = fs.create_workspace("flat-seek").await?;
+        let workspace = fs
+            .create_workspace(
+                "flat-seek",
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await?
+            .value;
         let s3 = workspace.s3();
         for index in 0..32 {
             s3.put_object(
@@ -1528,7 +1756,14 @@ mod tests {
     async fn object_cursor_seeks_past_dense_predecessor_keys()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let workspace = fs.create_workspace("dense-list-cursor").await?;
+        let workspace = fs
+            .create_workspace(
+                "dense-list-cursor",
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await?
+            .value;
         let s3 = workspace.s3();
         for index in 0..32 {
             s3.put_object(
@@ -1572,7 +1807,14 @@ mod tests {
     async fn object_cursor_at_a_directory_includes_its_descendants()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let workspace = fs.create_workspace("directory-marker").await?;
+        let workspace = fs
+            .create_workspace(
+                "directory-marker",
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await?
+            .value;
         let s3 = workspace.s3();
         s3.put_object("a/x", Bytes::from_static(b"x"), IdempotencyKey::new())
             .await?;
@@ -1584,7 +1826,11 @@ mod tests {
                 ..S3ListOptions::default()
             };
             options.continuation = Some(S3ListCursor {
-                generation: workspace.head().await?.id(),
+                generation: workspace
+                    .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                    .await?
+                    .value
+                    .id(),
                 after: "a".to_owned(),
                 after_prefix: false,
                 query: list_query_digest(&options),
@@ -1604,7 +1850,14 @@ mod tests {
     async fn listing_descends_to_the_exact_prefix_frontier_without_unrelated_subtrees()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let workspace = fs.create_workspace("prefix-frontier").await?;
+        let workspace = fs
+            .create_workspace(
+                "prefix-frontier",
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await?
+            .value;
         let s3 = workspace.s3();
         for index in 0..32 {
             s3.put_object(
@@ -1647,8 +1900,19 @@ mod tests {
     async fn multipart_stages_off_authority_and_publishes_one_ordered_generation()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
-        let workspace = fs.create_workspace("multipart").await?;
-        let before = workspace.head().await?.id();
+        let workspace = fs
+            .create_workspace(
+                "multipart",
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await?
+            .value;
+        let before = workspace
+            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await?
+            .value
+            .id();
         let mut upload = workspace
             .s3()
             .create_multipart_upload(
@@ -1659,7 +1923,14 @@ mod tests {
             .await?;
         upload.upload_part(2, Bytes::from_static(b"second")).await?;
         upload.upload_part(1, Bytes::from_static(b"first-")).await?;
-        assert_eq!(workspace.head().await?.id(), before);
+        assert_eq!(
+            workspace
+                .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await?
+                .value
+                .id(),
+            before
+        );
         assert!(matches!(
             upload.complete(&[1, 2]).await?,
             TransactionCommit::Committed(_)
@@ -1669,7 +1940,16 @@ mod tests {
             TransactionCommit::AlreadyCommitted(_)
         ));
         assert_eq!(
-            workspace.read("/large/value.bin", 64).await?,
+            workspace
+                .read(
+                    "/large/value.bin",
+                    64,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new()
+                )
+                .await?
+                .value
+                .as_slice(),
             b"first-second".as_slice()
         );
 

@@ -21,7 +21,7 @@ export function harnessPackageClosure() {
     if (!item || !publicCrates.has(name)) throw new Error(`missing public Harness dependency: ${name}`);
     closure.add(name);
     for (const dependency of item.dependencies) {
-      if (dependency.kind !== "dev" && publicCrates.has(dependency.name)) include(dependency.name);
+      if (publicCrates.has(dependency.name)) include(dependency.name);
     }
   };
   include("acyclic-harness");

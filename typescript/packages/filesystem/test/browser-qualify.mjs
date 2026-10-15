@@ -1,13 +1,13 @@
-// Runs the browser qualification pages in a private headless Chrome and
+// Runs the browser qualification pages in a private headless Chrome or Firefox and
 // reports each page's result, with every uncaught exception and console error
 // each page raised while it ran.
 //
-// Nothing here waits on a guess: the file server is listening before Chrome
-// starts, Chrome publishes its own DevTools endpoint in its profile, and each
+// Nothing here waits on a guess: the file server is listening before the browser
+// starts, the driver publishes its own protocol endpoint in its profile, and each
 // page is navigated only once the driver is observing it.
 //
 // Usage: node test/browser-qualify.mjs [page ...]   (default: every page)
-// CHROME selects the browser executable.
+// CHROME selects Chromium. BROWSER=firefox uses GECKODRIVER and optional FIREFOX.
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createServer } from "node:http";
@@ -137,7 +137,7 @@ async function launchChrome(profile) {
       "--disable-renderer-backgrounding",
       "about:blank",
     ],
-    { stdio: "ignore" },
+    { stdio: "ignore", windowsHide: true },
   );
   const exited = new Promise((resolveExit) => chrome.once("exit", resolveExit));
   // Chrome writes its chosen port and browser endpoint here once it listens.
@@ -161,6 +161,99 @@ async function launchChrome(profile) {
   return { chrome, exited, endpoint: `ws://127.0.0.1:${port}${path.trim()}` };
 }
 
+async function launchFirefox(profile) {
+  const driver = spawn(process.env.GECKODRIVER ?? "geckodriver", ["--port", "0"], {
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  const exited = new Promise(resolveExit => driver.once("close", resolveExit));
+  let logs = "";
+  const endpoint = await new Promise((resolveEndpoint, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`geckodriver did not listen: ${logs}`)), 30_000);
+    const receive = chunk => {
+      logs += chunk.toString();
+      const match = /Listening on (127\.0\.0\.1:\d+)/.exec(logs);
+      if (match) { clearTimeout(timeout); resolveEndpoint(`http://${match[1]}`); }
+    };
+    driver.stdout.on("data", receive);
+    driver.stderr.on("data", receive);
+    driver.once("error", error => { clearTimeout(timeout); reject(error); });
+    driver.once("exit", code => { clearTimeout(timeout); reject(new Error(`geckodriver exited ${code}: ${logs}`)); });
+  }).catch(async error => {
+    if (driver.exitCode === null) driver.kill();
+    await exited;
+    throw error;
+  });
+  const request = async (method, path, body) => {
+    const response = await fetch(`${endpoint}${path}`, {
+      method, headers: { "content-type": "application/json" },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    const result = await response.json();
+    if (!response.ok || result.value?.error) throw new Error(JSON.stringify(result.value));
+    return result.value;
+  };
+  try {
+    const firefoxOptions = {
+      args: ["-headless", "-profile", profile],
+      prefs: { "dom.disable_open_during_load": false, "dom.popup_maximum": 100 },
+      ...(process.env.FIREFOX ? { binary: process.env.FIREFOX } : {}),
+    };
+    const session = await request("POST", "/session", {
+      capabilities: { alwaysMatch: { browserName: "firefox", webSocketUrl: true, "moz:firefoxOptions": firefoxOptions } },
+    });
+    const sessionPath = `/session/${session.sessionId}`;
+    const browser = await connect(session.capabilities.webSocketUrl);
+    await browser.send("session.subscribe", { events: ["log.entryAdded"] });
+    const observer = { events: [] };
+    browser.listen(message => {
+      if (message.method !== "log.entryAdded" || message.params.level !== "error") return;
+      observer.events.push(`${message.params.type === "javascript" ? "uncaught" : "console.error"}: ${message.params.text}`);
+    });
+    return {
+      chrome: driver, exited, browser, observer,
+      request: (method, path, body) => request(method, `${sessionPath}${path}`, body),
+      close: async () => { await request("DELETE", sessionPath); browser.close(); },
+    };
+  } catch (error) {
+    if (driver.exitCode === null) driver.kill();
+    await exited;
+    throw error;
+  }
+}
+
+async function runFirefoxPage(browser, observer, origin, page) {
+  observer.events = [];
+  const events = observer.events;
+  const original = await browser.request("GET", "/window");
+  const tab = await browser.request("POST", "/window/new", { type: "tab" });
+  await browser.request("POST", "/window", { handle: tab.handle });
+  let observed;
+  let last;
+  try {
+    await browser.request("POST", "/url", { url: `${origin}/test/${page}` });
+    observed = await until(Date.now() + PAGE_DEADLINE_MS, `${page} result`, async () => {
+      const uncaught = events.find(event => event.startsWith("uncaught:"));
+      if (uncaught !== undefined) return { status: "failed", text: uncaught };
+      const value = await browser.request("POST", "/execute/sync", {
+        script: `return ${RESULT_EXPRESSION}`, args: [],
+      });
+      last = value;
+      return value?.status === "passed" || value?.status === "failed" ? value : undefined;
+    }).catch(error => {
+      throw new Error(`${error.message}; the page was waiting for: ${last?.waiting || "nothing"}`);
+    });
+  } catch (error) {
+    return { page, passed: false, text: String(error.stack ?? error), events };
+  } finally {
+    await browser.request("DELETE", "/window").catch(() => {});
+    await browser.request("POST", "/window", { handle: original }).catch(() => {});
+  }
+  return { page, passed: observed.status === "passed", text: observed.text, events };
+}
+
+const RESULT_EXPRESSION = "(() => { const node = document.querySelector('#result'); if (node === null) { const result = document.body?.dataset.result; return result ? { status: result.startsWith('failed:') ? 'failed' : result, text: result } : null; } return { status: node.dataset.status ?? null, text: node.textContent, waiting: node.dataset.waiting ?? null }; })()";
+
 async function connect(endpoint) {
   const socket = new WebSocket(endpoint);
   await new Promise((resolveOpen, reject) => {
@@ -179,7 +272,9 @@ async function connect(endpoint) {
     const handler = pending.get(message.id);
     pending.delete(message.id);
     if (message.error === undefined) handler?.resolve(message.result);
-    else handler?.reject(new Error(`${message.error.message} (${message.error.code})`));
+    else handler?.reject(new Error(typeof message.error === "string"
+      ? `${message.error}: ${message.message}`
+      : `${message.error.message} (${message.error.code})`));
   });
   return {
     send(method, params = {}, sessionId = undefined) {
@@ -238,7 +333,7 @@ async function runPage(browser, observer, origin, page) {
       const evaluated = await browser.send(
         "Runtime.evaluate",
         {
-          expression: "(() => { const node = document.querySelector('#result'); if (node === null) { const result = document.body?.dataset.result; return result ? { status: result.startsWith('failed:') ? 'failed' : result, text: result } : null; } return { status: node.dataset.status ?? null, text: node.textContent, waiting: node.dataset.waiting ?? null }; })()",
+          expression: RESULT_EXPRESSION,
           returnByValue: true,
         },
         sessionId,
@@ -265,12 +360,16 @@ const profile = mkdtempSync(join(tmpdir(), "acyclic-fs-browser-"));
 let launched;
 let failed = false;
 try {
-  launched = await launchChrome(profile);
-  const { endpoint } = launched;
-  const browser = await connect(endpoint);
-  const observer = observe(browser);
+  const firefox = process.env.BROWSER === "firefox";
+  if (process.env.BROWSER && !["chrome", "chromium", "firefox"].includes(process.env.BROWSER)) {
+    throw new Error(`unsupported BROWSER: ${process.env.BROWSER}`);
+  }
+  launched = firefox ? await launchFirefox(profile) : await launchChrome(profile);
+  const browser = firefox ? launched.browser : await connect(launched.endpoint);
+  const observer = firefox ? launched.observer : observe(browser);
   for (const page of pages) {
-    const outcome = await runPage(browser, observer, origin, page).catch((error) => ({
+    const outcome = await (firefox ? runFirefoxPage(launched, observer, origin, page)
+      : runPage(browser, observer, origin, page)).catch((error) => ({
       page,
       passed: false,
       text: String(error.stack ?? error),
@@ -284,8 +383,11 @@ try {
     }
     anomalies.length = 0;
   }
-  await browser.send("Browser.close").catch(() => {});
-  browser.close();
+  if (firefox) await launched.close();
+  else {
+    await browser.send("Browser.close").catch(() => {});
+    browser.close();
+  }
 } finally {
   if (launched !== undefined) {
     if (launched.chrome.exitCode === null) launched.chrome.kill();

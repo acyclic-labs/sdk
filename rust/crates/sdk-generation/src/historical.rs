@@ -117,18 +117,8 @@ pub struct RegistryVersion {
     pub yanked: bool,
 }
 
-/// Import actual package archives without rewriting a publisher's manifest or
-/// claiming that its VCS revision identifies the bytes being compiled.
+/// Imports exact archives with their optional registry inventory.
 pub fn archive_plan(
-    version: &str,
-    archive_dir: &Path,
-    source_root: &Path,
-    cargo: &Path,
-) -> Result<(Plan, Metadata), String> {
-    archive_plan_with_inventory(version, archive_dir, source_root, cargo, None)
-}
-
-pub fn archive_plan_with_inventory(
     version: &str,
     archive_dir: &Path,
     source_root: &Path,
@@ -271,7 +261,7 @@ pub fn archive_plan_with_inventory(
                 .insert(format!("{directory}/Cargo.lock"), digest.clone());
             ResolutionLock::DocsProducer { sha256: digest }
         };
-        let metadata = sdk_docs::rustdoc_profiles::load_metadata_with_context(
+        let metadata = sdk_docs::rustdoc_profiles::load_metadata(
             &manifest,
             sdk_docs::rustdoc_profiles::CargoExecutionContext {
                 cargo_path: Some(cargo),
@@ -819,7 +809,7 @@ pub fn imported_metadata(
             .join("Cargo.toml");
         let config = producer_config(root, Some(captured), &archive.package)?;
         let lock = manifest.with_file_name("Cargo.lock");
-        let metadata = sdk_docs::rustdoc_profiles::load_metadata_with_context(
+        let metadata = sdk_docs::rustdoc_profiles::load_metadata(
             &manifest,
             sdk_docs::rustdoc_profiles::CargoExecutionContext {
                 cargo_path: Some(cargo),
@@ -2131,27 +2121,8 @@ pub fn scope_source_file_hashes(
     }
 }
 
-/// Run only the actual historical targets; no modern scenario sources are copied.
+/// Executes actual historical targets against their original owner and captured source.
 pub fn execute_examples(
-    root: &Path,
-    cargo: &Path,
-    target_dir: &Path,
-    examples: &[Example],
-) -> Result<Vec<ExampleExecution>, String> {
-    execute_examples_with_metadata(root, cargo, target_dir, examples, None)
-}
-
-pub fn execute_examples_with_metadata(
-    root: &Path,
-    cargo: &Path,
-    target_dir: &Path,
-    examples: &[Example],
-    owner_metadata: Option<&BTreeMap<String, Metadata>>,
-) -> Result<Vec<ExampleExecution>, String> {
-    execute_examples_with_context(root, cargo, target_dir, examples, owner_metadata, None)
-}
-
-pub fn execute_examples_with_context(
     root: &Path,
     cargo: &Path,
     target_dir: &Path,
@@ -2968,10 +2939,7 @@ mod tests {
             Self(root)
         }
         fn metadata(&self) -> Metadata {
-            sdk_docs::rustdoc_profiles::load_metadata_with_cargo(
-                self.0.join("Cargo.toml"),
-                Some(&cargo()),
-            )
+            sdk_docs::rustdoc_profiles::load_metadata(self.0.join("Cargo.toml"), sdk_docs::rustdoc_profiles::CargoExecutionContext { cargo_path: Some(&cargo()), lock_selection: None })
             .unwrap()
         }
         fn archive(&self, revision: &str, vcs_path: &str) -> (RegistryVersion, PathBuf) {
@@ -3260,7 +3228,7 @@ mod tests {
         .configure(&mut original)
         .unwrap();
         assert!(command_output(&mut original).is_err());
-        let metadata = sdk_docs::rustdoc_profiles::load_metadata_with_context(
+        let metadata = sdk_docs::rustdoc_profiles::load_metadata(
             root.join("Cargo.toml"),
             context,
         )
@@ -3286,7 +3254,7 @@ mod tests {
             }],
         };
         let owners = BTreeMap::from([("historical-fixture".into(), metadata.clone())]);
-        let executions = execute_examples_with_context(
+        let executions = execute_examples(
             &root,
             &cargo,
             &root.join("target"),
@@ -3315,7 +3283,7 @@ mod tests {
             default_features: true,
             features: BTreeSet::from(["dep-alias/native".into(), "old-feature".into()]),
         };
-        sdk_docs::rustdoc_profiles::execute_target_profile_with_context(
+        sdk_docs::rustdoc_profiles::execute_profile(
             root.join("Cargo.toml"),
             &metadata,
             &profile,
@@ -3332,7 +3300,7 @@ mod tests {
         let mut invalid_alias = profile.clone();
         invalid_alias.features = BTreeSet::from(["missing-alias/native".into()]);
         assert!(
-            sdk_docs::rustdoc_profiles::execute_target_profile_with_context(
+            sdk_docs::rustdoc_profiles::execute_profile(
                 root.join("Cargo.toml"),
                 &metadata,
                 &invalid_alias,
@@ -3376,12 +3344,12 @@ mod tests {
                 &relocated_config,
             )),
         };
-        let relocated_metadata = sdk_docs::rustdoc_profiles::load_metadata_with_context(
+        let relocated_metadata = sdk_docs::rustdoc_profiles::load_metadata(
             relocated_root.join("Cargo.toml"),
             relocated_context,
         )
         .unwrap();
-        sdk_docs::rustdoc_profiles::execute_target_profile_with_context(
+        sdk_docs::rustdoc_profiles::execute_profile(
             relocated_root.join("Cargo.toml"),
             &relocated_metadata,
             &profile,
@@ -3730,12 +3698,12 @@ mod tests {
                 &relocated_config,
             )),
         };
-        let relocated_metadata = sdk_docs::rustdoc_profiles::load_metadata_with_context(
+        let relocated_metadata = sdk_docs::rustdoc_profiles::load_metadata(
             relocated.0.join("Cargo.toml"),
             relocated_context,
         )
         .unwrap();
-        let metadata = sdk_docs::rustdoc_profiles::load_metadata_with_context(
+        let metadata = sdk_docs::rustdoc_profiles::load_metadata(
             fixture.0.join("Cargo.toml"),
             context,
         )
@@ -3764,7 +3732,7 @@ mod tests {
             (&fixture.0, &metadata, context),
             (&relocated.0, &relocated_metadata, relocated_context),
         ] {
-            sdk_docs::rustdoc_profiles::execute_target_profile_with_context(
+            sdk_docs::rustdoc_profiles::execute_profile(
                 root.join("Cargo.toml"),
                 metadata,
                 &profile,
@@ -3820,7 +3788,7 @@ mod tests {
             &BTreeSet::from(["historical-fixture".into()]),
         )
         .unwrap();
-        let executed = execute_examples_with_context(
+        let executed = execute_examples(
             &fixture.0,
             &cargo,
             &fixture.0.join("target"),
@@ -3998,10 +3966,7 @@ mod tests {
             "//! Unarchived native source.\n",
         )
         .unwrap();
-        let metadata = sdk_docs::rustdoc_profiles::load_metadata_with_cargo(
-            package.join("Cargo.toml"),
-            Some(&cargo()),
-        )
+        let metadata = sdk_docs::rustdoc_profiles::load_metadata(package.join("Cargo.toml"), sdk_docs::rustdoc_profiles::CargoExecutionContext { cargo_path: Some(&cargo()), lock_selection: None })
         .unwrap();
         let revision = "a".repeat(40);
         let (release, archive) = fixture.archive(&revision, "rust/crates/historical-fixture");
@@ -4021,7 +3986,7 @@ mod tests {
         assert_eq!(discovered[0].target, "old-example");
         assert_eq!(discovered[0].required_features, vec!["old-feature"]);
         let execution =
-            execute_examples(&fixture.0, &cargo(), &fixture.0.join("target"), &discovered).unwrap();
+            execute_examples(&fixture.0, &cargo(), &fixture.0.join("target"), &discovered, None, None).unwrap();
         assert_eq!(
             execution[0].stdout_sha256,
             super::super::sha256_bytes(b"7\n")
@@ -4032,20 +3997,20 @@ mod tests {
         )
         .unwrap();
         assert!(
-            execute_examples(&fixture.0, &cargo(), &fixture.0.join("target"), &discovered)
+            execute_examples(&fixture.0, &cargo(), &fixture.0.join("target"), &discovered, None, None)
                 .unwrap_err()
                 .contains("changed before execution")
         );
         let failing = examples(&metadata, &fixture.0, &owners).unwrap();
         assert!(
-            execute_examples(&fixture.0, &cargo(), &fixture.0.join("target"), &failing)
+            execute_examples(&fixture.0, &cargo(), &fixture.0.join("target"), &failing, None, None)
                 .unwrap_err()
                 .contains("failed")
         );
         fs::write(fixture.0.join("examples/old-example.rs"), r#"fn main() { std::fs::write("examples/old-example.rs", "fn main() {}\n").unwrap(); }"#).unwrap();
         let mutating = examples(&metadata, &fixture.0, &owners).unwrap();
         assert!(
-            execute_examples(&fixture.0, &cargo(), &fixture.0.join("target"), &mutating)
+            execute_examples(&fixture.0, &cargo(), &fixture.0.join("target"), &mutating, None, None)
                 .unwrap_err()
                 .contains("changed during execution")
         );
@@ -4060,7 +4025,7 @@ mod tests {
     #[test]
     fn cargo_binary_target_produces_native_receipt_without_public_api_admission() {
         use sdk_docs::rustdoc_profiles::{
-            execute_target_profile_with_cargo, observe_rustdoc, ProfileSpec, RustdocTarget,
+            execute_profile, observe_rustdoc, ProfileSpec, RustdocTarget,
         };
         let fixture = Fixture::new();
         fs::write(
@@ -4089,31 +4054,13 @@ mod tests {
         };
         let output = fixture.0.join("binary.json");
         let target_dir = fixture.0.join("native-rustdoc");
-        let absent = execute_target_profile_with_cargo(
-            fixture.0.join("Cargo.toml"),
-            &metadata,
-            &profile,
-            &BTreeSet::from([host.clone()]),
-            &target_dir,
-            &output,
-            Some(&cargo()),
-            &RustdocTarget::Binary("absent".into()),
-        );
+        let absent = execute_profile(fixture.0.join("Cargo.toml"), &metadata, &profile, &BTreeSet::from([host.clone()]), &target_dir, &output, sdk_docs::rustdoc_profiles::CargoExecutionContext { cargo_path: Some(&cargo()), lock_selection: None }, &RustdocTarget::Binary("absent".into()));
         assert!(absent
             .unwrap_err()
             .to_string()
             .contains("absent from Cargo"));
         assert!(!target_dir.exists());
-        let observation = execute_target_profile_with_cargo(
-            fixture.0.join("Cargo.toml"),
-            &metadata,
-            &profile,
-            &BTreeSet::from([host]),
-            &target_dir,
-            &output,
-            Some(&cargo()),
-            &RustdocTarget::Binary("historical-fixture".into()),
-        )
+        let observation = execute_profile(fixture.0.join("Cargo.toml"), &metadata, &profile, &BTreeSet::from([host]), &target_dir, &output, sdk_docs::rustdoc_profiles::CargoExecutionContext { cargo_path: Some(&cargo()), lock_selection: None }, &RustdocTarget::Binary("historical-fixture".into()))
         .unwrap();
         assert_eq!(observation.format_version, 60);
         assert_eq!(observation.crate_version.as_deref(), Some("0.1.0"));
@@ -4211,7 +4158,7 @@ mod tests {
             )
             .unwrap();
             let error =
-                execute_examples(&fixture.0, &cargo(), &fixture.0.join("target"), &examples)
+                execute_examples(&fixture.0, &cargo(), &fixture.0.join("target"), &examples, None, None)
                     .unwrap_err();
             assert!(
                 error.contains("source closure changed"),

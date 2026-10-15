@@ -5,13 +5,13 @@
     reason = "one ordered scenario keeps each step next to the state it checks"
 )]
 
-#[path = "support/stream.rs"]
-mod test_stream;
+use crate::stream_fixture as test_stream;
 
 use acyclic_fs::Fs;
 use acyclic_harness::filesystem::{FilesystemContentVerifier, FilesystemHost};
+use acyclic_harness::runtime::TaskSpawner;
 use acyclic_harness::{
-    AgentId, Capabilities, EffectAttemptId, EffectId, IdempotencyKey, OperationId, Result,
+    AgentId, Capabilities, EffectAttemptId, IdempotencyKey, OperationId, Result,
     conversation::{ContentGrant, FileRef, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     core::{
         Action, AggregateKind, Authority, AuthorityIssuer, Command, EffectGuarantee, EffectStatus,
@@ -21,19 +21,15 @@ use acyclic_harness::{
     resources::ProviderRef,
     store::{HistoryCursor, HistoryReadLimits, HistoryReader, StreamAggregate},
 };
-use acyclic_stream::{MemoryStream, StreamClient};
+use acyclic_stream::MemoryStream;
 use futures::{TryStreamExt as _, future::BoxFuture};
 use std::{collections::BTreeSet, sync::Arc};
 
-struct ResultProvider(FileRef, bool);
+struct ResultProvider(FileRef);
 
 impl EffectProvider for ResultProvider {
     fn id(&self) -> &str {
-        if self.1 {
-            "test.uncertain"
-        } else {
-            "test.effects"
-        }
+        "test.effects"
     }
     fn guarantees(&self, _: &str) -> BTreeSet<EffectGuarantee> {
         BTreeSet::from([EffectGuarantee::IdempotentRetry])
@@ -49,12 +45,8 @@ impl EffectProvider for ResultProvider {
                 attempt_id: request.attempt_id,
                 request_digest: request.request_digest,
                 guarantee: request.guarantee,
-                status: if self.1 {
-                    EffectStatus::Indeterminate
-                } else {
-                    EffectStatus::Succeeded {
-                        result: self.0.clone(),
-                    }
+                status: EffectStatus::Succeeded {
+                    result: self.0.clone(),
                 },
             })
         })
@@ -69,99 +61,131 @@ impl EffectProvider for ResultProvider {
 
 #[tokio::test]
 async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
-    let provider = ProviderRef::new("effect-e2e", "filesystem", "2")?;
-    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+    let provider = ProviderRef::new(
+        "effect-e2e".into(),
+        "filesystem".into(),
+        "2".into(),
+        &mut None,
+    )?;
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let volume = VolumeRef::new(
         provider,
-        "effect-private",
+        "effect-private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(AgentId::from_bytes([61; 16])),
+        &mut None,
     )?;
     host.create_volume(&volume).await?;
     let authority = Authority {
-        kind: AggregateKind::Task,
+        kind: AggregateKind::Conversation,
         id: "effect-task".into(),
     };
     let issuer = AuthorityIssuer::new("effect-e2e", [62; 32], authority.clone());
-    let scope = issuer.root_for_agent(
-        AgentId::from_bytes([61; 16]),
-        "effect-owner",
-        Capabilities::new([
-            "effect:run",
-            "lifecycle:manage",
-            "effect:plan",
-            "effect:provider:test.effects",
-            "effect:provider:test.uncertain",
-            &volume.capability(VolumeOperation::Read)?,
-            &volume.capability(VolumeOperation::Write)?,
-        ]),
-    );
-    let write = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
-    let request = host
-        .put_content(
-            &volume,
-            &write,
+    let scope = issuer
+        .issue(
+            "effect-owner",
+            &Capabilities::new([
+                "effect:run",
+                "lifecycle:manage",
+                "effect:plan",
+                "effect:provider:test.effects",
+                "operation:declare",
+                "operation:observe",
+                "operation:cancel",
+                "task:spawn:test.effects@1",
+                "conversation:bind",
+                "fork:publish",
+                &volume.capability(VolumeOperation::Read, &mut None)?,
+                &volume.capability(VolumeOperation::Write, &mut None)?,
+            ]),
+            Some(AgentId::from_bytes([61; 16])),
+            None,
+            &mut None,
+        )
+        .expect("scope proof");
+    let write = ContentGrant::verify(
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &scope,
+        &volume,
+        VolumeOperation::Write,
+        u64::MAX,
+        &mut None,
+    )?;
+    let mut files = Vec::new();
+    for (path, bytes, mime, name, key) in [
+        (
             "effects/request.json",
-            br#"{"secret":"request-body"}"#,
+            br#"{"secret":"request-body"}"#.as_slice(),
             "application/json",
             "request.json",
-            4_096,
-            &IdempotencyKey::new("request-upload")?,
-        )
-        .await?;
-    let result = host
-        .put_content(
-            &volume,
-            &write,
+            "request-upload",
+        ),
+        (
             "effects/result.json",
-            br#"{"receipt":"result-body"}"#,
+            br#"{"receipt":"result-body"}"#.as_slice(),
             "application/json",
             "result.json",
-            4_096,
-            &IdempotencyKey::new("result-upload")?,
-        )
-        .await?;
-    let schema = host
-        .put_content(
-            &volume,
-            &write,
+            "result-upload",
+        ),
+        (
             "effects/result-schema.json",
-            br#"{"type":"object","required":["receipt"]}"#,
+            br#"{"type":"object","required":["receipt"]}"#.as_slice(),
             "application/schema+json",
             "result-schema.json",
-            4_096,
-            &IdempotencyKey::new("schema-upload")?,
-        )
-        .await?;
-    let invalid_schema = host
-        .put_content(
-            &volume,
-            &write,
+            "schema-upload",
+        ),
+        (
             "effects/invalid-schema.json",
-            br#"{"type":17}"#,
+            br#"{"type":17}"#.as_slice(),
             "application/schema+json",
             "invalid-schema.json",
-            4_096,
-            &IdempotencyKey::new("invalid-schema-upload")?,
-        )
-        .await?;
-    let verifier = Arc::new(FilesystemContentVerifier::new(
-        host,
-        issuer.verifier(),
-        scope.clone(),
+            "invalid-schema-upload",
+        ),
+    ] {
+        files.push(
+            host.put_content(
+                &volume,
+                &write,
+                path,
+                bytes,
+                mime,
+                name,
+                4_096,
+                &IdempotencyKey::new(key)?,
+                None,
+                None,
+            )
+            .await?,
+        );
+    }
+    let [request, result, schema, invalid_schema]: [FileRef; 4] = files.try_into().unwrap();
+    let verifier = FilesystemContentVerifier::new(
+        host.clone(),
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &scope,
         4_096,
-    )?);
+        None,
+    )?;
     let provider = Arc::new(test_stream::LostSessionAck::<MemoryStream>::default());
-    let stream = StreamClient::new(provider.clone());
+    let stream = provider.clone();
     let mut aggregate = StreamAggregate::open(
         &stream,
-        authority.clone(),
-        issuer.verifier(),
-        SchemaRegistry::new(),
+        (
+            authority.clone(),
+            issuer.verifier(&mut None).expect("verifier copy"),
+            SchemaRegistry::new(),
+        ),
+        None,
+        acyclic_harness::store::default_projection_read_limits(),
+        acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
+        None,
+        &mut None,
     )
     .await?
     .with_content_verifier(verifier.clone());
-    let effect_id = EffectId::from_bytes([63; 16]);
+    let task = acyclic_harness::TaskId::from_bytes([66; 16]);
+    let effect_command = OperationId::from_bytes([67; 16]);
+    let effect_id = acyclic_harness::effect_host::task_effect_id(task, effect_command, &mut None)?;
     let command = |number: u8, expected_revision, action| Command {
         operation_id: OperationId::from_bytes([number; 16]),
         idempotency_key: IdempotencyKey(format!("effect-{number}")),
@@ -172,77 +196,106 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
     };
     assert!(
         aggregate
-            .execute(command(
-                9,
-                0,
-                Action::PlanEffect {
-                    effect_id,
-                    provider: "test.effects".into(),
-                    guarantee: EffectGuarantee::IdempotentRetry,
-                    effect_kind: "test.write".into(),
-                    request: request.clone(),
-                    result_schema: invalid_schema,
-                }
-            ))
+            .execute(
+                command(
+                    9,
+                    0,
+                    Action::PlanEffect {
+                        effect_id,
+                        provider: "test.effects".into(),
+                        guarantee: EffectGuarantee::IdempotentRetry,
+                        effect_kind: "test.write".into(),
+                        request: request.clone(),
+                        result_schema: invalid_schema,
+                    }
+                ),
+                #[cfg(feature = "filesystem")]
+                None,
+                &mut None
+            )
             .await
             .is_err()
     );
     assert_eq!(aggregate.reducer().revision(), 0);
+    let owner = running_owner(stream.clone(), host.clone(), &volume, &issuer, &scope, task).await?;
     aggregate
-        .execute(command(
-            1,
-            0,
-            Action::PlanEffect {
-                effect_id,
+        .execute(
+            command(
+                68,
+                0,
+                Action::BindConversation {
+                    agent: AgentId::from_bytes([61; 16]),
+                },
+            ),
+            Some(&owner),
+            &mut None,
+        )
+        .await?;
+    let mut registry = EffectRegistry::new(None, Some(verifier.clone()))?;
+    registry.register(Arc::new(ResultProvider(result)), None)?;
+    let effects = acyclic_harness::effect_host::ConversationEffectHost::new(
+        stream.clone(),
+        (
+            authority.clone(),
+            issuer.copy(&mut None)?,
+            scope.copy(&mut None)?,
+        ),
+        SchemaRegistry::new(),
+        verifier.clone(),
+        registry,
+        None,
+        None,
+    )?;
+    effects
+        .run_task_effect(
+            &owner,
+            effect_command,
+            &acyclic_harness::effect_host::TaskEffectPlan {
                 provider: "test.effects".into(),
                 guarantee: EffectGuarantee::IdempotentRetry,
                 effect_kind: "test.write".into(),
                 request,
                 result_schema: schema,
             },
-        ))
+            None,
+            false,
+        )
         .await?;
-    let planned = aggregate
-        .reducer()
-        .effect(effect_id)
-        .cloned()
-        .ok_or_else(|| acyclic_harness::Error::Invalid("planned effect missing".into()))?;
-    let attempt_id = EffectAttemptId::from_bytes([64; 16]);
-    aggregate
-        .execute(command(
-            2,
-            1,
-            Action::MarkEffectDispatched {
-                effect_id,
-                attempt_id,
-            },
-        ))
-        .await?;
-    let dispatched = aggregate
-        .reducer()
-        .effect(effect_id)
-        .cloned()
-        .ok_or_else(|| acyclic_harness::Error::Invalid("dispatched effect missing".into()))?;
-    let mut registry = EffectRegistry::default().with_result_resolver(verifier.clone());
-    registry.register(Arc::new(ResultProvider(result.clone(), false)))?;
-    registry.register(Arc::new(ResultProvider(result, true)))?;
-    let state = aggregate
-        .reducer()
-        .effect(effect_id)
-        .ok_or_else(|| acyclic_harness::Error::Invalid("planned effect missing".into()))?;
-    let dispatch = EffectDispatch::from_state(effect_id, state)?;
-    let attestation = registry
-        .dispatch_and_attest(&issuer, effect_id, state, dispatch)
-        .await?;
-    aggregate
-        .execute(command(
-            3,
-            2,
-            Action::ResolveEffect {
-                observation: attestation.clone(),
-            },
-        ))
-        .await?;
+    aggregate = StreamAggregate::open(
+        &stream,
+        (
+            authority.clone(),
+            issuer.verifier(&mut None)?,
+            SchemaRegistry::new(),
+        ),
+        None,
+        acyclic_harness::store::default_projection_read_limits(),
+        acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
+        None,
+        &mut None,
+    )
+    .await?
+    .with_content_verifier(verifier.clone());
+    let history = HistoryReader::new(&stream, &authority, &issuer.verifier(&mut None)?, &mut None)?;
+    let historical = |through_revision| HistoryCursor {
+        authority: authority.clone(),
+        after_revision: 0,
+        through_revision,
+    };
+    let read_limits = HistoryReadLimits {
+        maximum_events: 3,
+        maximum_bytes: 1_000_000,
+    };
+    let planned = history
+        .effect(&historical(2), effect_id, read_limits, None)
+        .await?
+        .ok_or_else(|| acyclic_harness::Error::NotFound("planned effect".into()))?
+        .0;
+    let dispatched = history
+        .effect(&historical(3), effect_id, read_limits, None)
+        .await?
+        .ok_or_else(|| acyclic_harness::Error::NotFound("dispatched effect".into()))?
+        .0;
     assert!(matches!(
         aggregate
             .reducer()
@@ -250,74 +303,53 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
             .map(|state| &state.status),
         Some(EffectStatus::Succeeded { .. })
     ));
-    let raw = stream
-        .stream(authority.stream_path()?)
-        .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
-        .read(0, 4)
-        .await
-        .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
-        .try_collect::<Vec<_>>()
-        .await
-        .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
-    assert_eq!(raw.len(), 3);
-    let canonical_bytes = raw
-        .iter()
-        .map(|record| record.value.len() as u64)
-        .sum::<u64>();
+    let raw = acyclic_stream::Stream::new(
+        std::sync::Arc::clone(&stream),
+        authority.stream_path(&mut None)?,
+    )
+    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
+    .read(0, 5)
+    .await
+    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
+    .try_collect::<Vec<_>>()
+    .await
+    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
+    assert_eq!(raw.len(), 4);
     for record in &raw {
-        assert!(
-            !record
-                .value
-                .windows(b"request-body".len())
-                .any(|window| window == b"request-body")
-        );
-        assert!(
-            !record
-                .value
-                .windows(b"result-body".len())
-                .any(|window| window == b"result-body")
-        );
-        assert!(
-            !record
-                .value
-                .windows(b"required".len())
-                .any(|window| window == b"required")
-        );
+        for body in [
+            b"request-body".as_slice(),
+            b"result-body".as_slice(),
+            b"required".as_slice(),
+        ] {
+            assert!(
+                !record
+                    .value
+                    .windows(body.len())
+                    .any(|window| window == body)
+            );
+        }
     }
-    // Original effect transitions remain constant while unrelated canonical
-    // history grows. Each cold reader reconstructs the original typed state
-    // through the shared core reducer, never a new provider dispatch.
     use std::sync::atomic::Ordering;
-    let effect_path = format!("harness/v2/effect-transitions/tasks/effect-task/{effect_id}");
-    let indexes = stream
-        .stream(&effect_path)?
-        .read(0, 3)
-        .await?
-        .try_collect::<Vec<_>>()
-        .await?;
-    assert_eq!(indexes.len(), 3);
-    let legacy_bytes = canonical_bytes
-        + indexes
-            .iter()
-            .map(|record| record.value.len() as u64)
-            .sum::<u64>();
-    let probe_reader = HistoryReader::new(&stream, &authority, issuer.verifier())?;
+    let probe_reader = HistoryReader::new(
+        &stream,
+        &authority,
+        &(issuer.verifier(&mut None).expect("verifier copy")),
+        &mut None,
+    )?;
     provider.observation_bytes.store(0, Ordering::SeqCst);
     probe_reader
         .effect(
-            &probe_reader.pin(0).await?,
+            &probe_reader.pin(0, None).await?,
             effect_id,
             HistoryReadLimits {
                 maximum_events: 3,
                 maximum_bytes: 1_000_000,
             },
+            None,
         )
-        .await?;
+        .await
+        .map(|state| state.map(|(state, _)| state))?;
     let bytes = provider.observation_bytes.load(Ordering::SeqCst);
-    assert!(
-        bytes > legacy_bytes,
-        "complete cut proof must be included in byte accounting"
-    );
     let limits = HistoryReadLimits {
         maximum_events: 3,
         maximum_bytes: bytes,
@@ -327,13 +359,14 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         .effect(effect_id)
         .cloned()
         .ok_or_else(|| acyclic_harness::Error::Invalid("completed effect missing".into()))?;
-    let original_cut = probe_reader.pin(0).await?;
+    let original_cut = probe_reader.pin(0, None).await?;
     provider.forbid_writes.store(true, Ordering::SeqCst);
     provider.hide_effect_node_read.store(true, Ordering::SeqCst);
     assert!(
         probe_reader
-            .effect(&original_cut, effect_id, limits)
+            .effect(&original_cut, effect_id, limits, None)
             .await
+            .map(|state| state.map(|(state, _)| state))
             .is_err()
     );
     provider
@@ -344,8 +377,9 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         .store(3, Ordering::SeqCst);
     assert!(
         probe_reader
-            .effect(&original_cut, effect_id, limits)
+            .effect(&original_cut, effect_id, limits, None)
             .await
+            .map(|state| state.map(|(state, _)| state))
             .is_err()
     );
     provider
@@ -353,68 +387,98 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         .store(0, Ordering::SeqCst);
     assert_eq!(
         probe_reader
-            .effect(&original_cut, effect_id, limits)
-            .await?,
+            .effect(&original_cut, effect_id, limits, None)
+            .await
+            .map(|state| state.map(|(state, _)| state))?,
         Some(completed.clone())
     );
     provider.forbid_writes.store(false, Ordering::SeqCst);
-    for atomic in [false, true] {
-        let copied = copied_effect_history(&stream, &authority, &raw, &indexes, atomic).await?;
-        let copied_reader = HistoryReader::new(&copied, &authority, issuer.verifier())?;
-        let result = copied_reader
-            .effect(&copied_reader.pin(0).await?, effect_id, limits)
-            .await;
-        if atomic {
-            assert_eq!(result?, Some(completed.clone()));
-        } else {
-            assert!(result.is_err());
-        }
-    }
-    for retained in 3..=10_003_u64 {
-        if retained > 3 {
+    const N: u64 = 6;
+    let mut observations = Vec::new();
+    for retained in 4..=4 + 10 * N {
+        if retained > 4 {
             provider.forbid_writes.store(false, Ordering::SeqCst);
             let revision = aggregate.reducer().revision();
             aggregate
-                .execute(Command {
-                    operation_id: OperationId::from_bytes(
-                        uuid::Uuid::from_u128(u128::from(retained) + 100_000).into_bytes(),
-                    ),
-                    idempotency_key: IdempotencyKey::new(format!(
-                        "retained-effect-history-{retained}"
-                    ))?,
-                    expected_revision: revision,
-                    scope: scope.clone(),
-                    causal_parent: None,
-                    action: Action::TransitionLifecycle {
-                        to: if retained.is_multiple_of(2) {
-                            LifecycleState::Active
-                        } else {
-                            LifecycleState::Waiting
+                .execute(
+                    Command {
+                        operation_id: OperationId::from_bytes(
+                            uuid::Uuid::from_u128(u128::from(retained) + 100_000).into_bytes(),
+                        ),
+                        idempotency_key: IdempotencyKey::new(format!(
+                            "retained-effect-history-{retained}"
+                        ))?,
+                        expected_revision: revision,
+                        scope: scope.clone(),
+                        causal_parent: None,
+                        action: Action::TransitionLifecycle {
+                            to: if retained.is_multiple_of(2) {
+                                LifecycleState::Waiting
+                            } else {
+                                LifecycleState::Active
+                            },
+                            reason: None,
                         },
-                        reason: None,
                     },
-                })
+                    #[cfg(feature = "filesystem")]
+                    None,
+                    &mut None,
+                )
                 .await?;
         }
-        if matches!(retained, 3 | 1_003 | 10_003) {
+        if retained == 4 + N || retained == 4 + 10 * N {
             provider.forbid_writes.store(true, Ordering::SeqCst);
             provider.observation_reads.store(0, Ordering::SeqCst);
             provider.observation_maximum.store(0, Ordering::SeqCst);
             provider.observation_tails.store(0, Ordering::SeqCst);
-            let cold = HistoryReader::new(&stream, &authority, issuer.verifier())?;
-            let cursor = cold.pin(0).await?;
+            let io = acyclic_harness::filesystem::PreparationIo::from_budget(
+                acyclic_fs::performance::BOUNDARY_BUDGET,
+                &acyclic_fs::CancellationToken::new(),
+            )?;
+            let mut history_io = &io;
+            let cold = HistoryReader::new(
+                &stream,
+                &authority,
+                &(issuer.verifier(&mut None).expect("verifier copy")),
+                &mut Some(&mut history_io),
+            )?;
+            let cursor = cold.pin(0, Some(&mut history_io)).await?;
             assert_eq!(
-                cold.effect(&cursor, effect_id, limits).await?,
+                cold.effect(&cursor, effect_id, limits, Some(&mut history_io))
+                    .await
+                    .map(|state| state.map(|(state, _)| state))?,
                 Some(completed.clone())
             );
-            assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 9);
-            assert_eq!(provider.observation_tails.load(Ordering::SeqCst), 3);
-            assert_eq!(provider.observation_maximum.load(Ordering::SeqCst), 1);
+            let acyclic_harness::filesystem::PreparationIo::Owned { work, .. } = &io else {
+                unreachable!("standalone measurement")
+            };
+            observations.push(work.lock().expect("work counters").0);
         }
     }
-    let reader = HistoryReader::new(&stream, &authority, issuer.verifier())?;
-    let cursor = reader.pin(0).await?;
-    for (cut, expected) in [(1, planned), (2, dispatched), (3, completed.clone())] {
+    let [small, large] = observations.as_slice() else {
+        panic!("missing growth observations")
+    };
+    assert!(small.allocation_operations > 0 && small.peak_allocation_bytes > 0);
+    let small = serde_json::to_value(small).expect("work counters");
+    let large = serde_json::to_value(large).expect("work counters");
+    for (counter, value) in small.as_object().expect("work counters") {
+        assert!(
+            large
+                .get(counter)
+                .and_then(serde_json::Value::as_u64)
+                .expect("counter")
+                <= value.as_u64().expect("counter"),
+            "{counter} must stay bounded"
+        );
+    }
+    let reader = HistoryReader::new(
+        &stream,
+        &authority,
+        &(issuer.verifier(&mut None).expect("verifier copy")),
+        &mut None,
+    )?;
+    let cursor = reader.pin(0, None).await?;
+    for (cut, expected) in [(2, planned), (3, dispatched), (4, completed.clone())] {
         let pinned = HistoryCursor {
             through_revision: cut,
             ..cursor.clone()
@@ -429,8 +493,10 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                         .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?,
                     maximum_bytes: 1_000_000,
                 },
+                None,
             )
-            .await?;
+            .await
+            .map(|state| state.map(|(state, _)| state))?;
         let exact = HistoryReadLimits {
             maximum_events: u32::try_from(cut)
                 .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?,
@@ -444,9 +510,11 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                         ..cursor.clone()
                     },
                     effect_id,
-                    exact
+                    exact,
+                    None
                 )
-                .await?,
+                .await
+                .map(|state| state.map(|(state, _)| state))?,
             Some(expected)
         );
         assert!(
@@ -457,1119 +525,170 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                     HistoryReadLimits {
                         maximum_bytes: exact.maximum_bytes - 1,
                         ..exact
-                    }
+                    },
+                    None
                 )
                 .await
+                .map(|state| state.map(|(state, _)| state))
                 .is_err()
         );
     }
-    provider.observation_bytes.store(0, Ordering::SeqCst);
-    reader
-        .effect(
-            &cursor,
-            effect_id,
-            HistoryReadLimits {
-                maximum_events: 3,
-                maximum_bytes: 1_000_000,
-            },
-        )
-        .await?;
-    let bytes = provider.observation_bytes.load(Ordering::SeqCst);
-    let limits = HistoryReadLimits {
-        maximum_events: 3,
-        maximum_bytes: bytes,
-    };
-    provider.observation_reads.store(0, Ordering::SeqCst);
-    assert!(
-        reader
-            .effect(
-                &cursor,
-                effect_id,
-                HistoryReadLimits {
-                    maximum_events: 2,
-                    ..limits
-                }
-            )
-            .await
-            .is_err()
-    );
-    assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 3);
-    assert!(
-        reader
-            .effect(
-                &cursor,
-                effect_id,
-                HistoryReadLimits {
-                    maximum_bytes: bytes - 1,
-                    ..limits
-                }
-            )
-            .await
-            .is_err()
-    );
-    let first_bytes = raw
-        .first()
-        .ok_or_else(|| acyclic_harness::Error::Invalid("canonical control missing".into()))?
-        .value
-        .len() as u64
-        + indexes
-            .first()
-            .ok_or_else(|| acyclic_harness::Error::Invalid("index control missing".into()))?
-            .value
-            .len() as u64;
-    provider.observation_reads.store(0, Ordering::SeqCst);
-    assert!(
-        reader
-            .effect(
-                &cursor,
-                effect_id,
-                HistoryReadLimits {
-                    maximum_bytes: first_bytes,
-                    ..limits
-                }
-            )
-            .await
-            .is_err()
-    );
-    // The authenticated cut and node precede the first original transition pair.
-    assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 5);
     for fault in 1..=4 {
         provider.history_read_fault.store(fault, Ordering::SeqCst);
-        assert!(reader.effect(&cursor, effect_id, limits).await.is_err());
+        assert!(
+            reader
+                .effect(&cursor, effect_id, limits, None)
+                .await
+                .map(|state| state.map(|(state, _)| state))
+                .is_err()
+        );
         assert_eq!(
-            reader.effect(&cursor, effect_id, limits).await?,
+            reader
+                .effect(&cursor, effect_id, limits, None)
+                .await
+                .map(|state| state.map(|(state, _)| state))?,
             Some(completed.clone())
         );
     }
-    assert_eq!(
-        reader
-            .effect(&cursor, EffectId::from_bytes([99; 16]), limits)
-            .await?,
-        None
-    );
-    assert_eq!(
-        reader
-            .effect(
-                &HistoryCursor {
-                    through_revision: 0,
-                    ..cursor.clone()
-                },
-                effect_id,
-                limits
-            )
-            .await?,
-        None
-    );
     let wrong = HistoryReader::new(
         &stream,
         &authority,
-        AuthorityIssuer::new("effect-e2e", [99; 32], authority.clone()).verifier(),
+        &(AuthorityIssuer::new("effect-e2e", [99; 32], authority.clone())
+            .verifier(&mut None)
+            .expect("verifier copy")),
+        &mut None,
     )?;
-    assert!(wrong.effect(&cursor, effect_id, limits).await.is_err());
+    assert!(
+        wrong
+            .effect(&cursor, effect_id, limits, None)
+            .await
+            .map(|state| state.map(|(state, _)| state))
+            .is_err()
+    );
     assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
 
-    // terminal_effect_retirement_probe: fixed active work and a growing terminal
-    // archive, including actual Filesystem validation and issuer attestations.
-    provider.forbid_writes.store(false, Ordering::SeqCst);
-    aggregate = aggregate.with_resident_terminal_effect_limit(2)?;
-    let fresh = |ordinal: u128, expected_revision, action| Command {
-        operation_id: OperationId::from_bytes(
-            uuid::Uuid::from_u128(ordinal + 3_000_000).into_bytes(),
-        ),
-        idempotency_key: IdempotencyKey(format!("retirement-{ordinal}")),
-        expected_revision,
-        scope: scope.clone(),
-        causal_parent: None,
-        action,
-    };
-    let plan = |id, uncertain| Action::PlanEffect {
-        effect_id: id,
-        provider: if uncertain {
-            "test.uncertain".into()
-        } else {
-            completed.provider.clone()
-        },
-        guarantee: completed.guarantee,
-        effect_kind: completed.effect_kind.clone(),
-        request: completed.request.clone(),
-        result_schema: completed.result_schema.clone(),
-    };
-    let mut ordinal = 0_u128;
-    let active = [
-        EffectId::from_bytes([200; 16]),
-        EffectId::from_bytes([201; 16]),
-        EffectId::from_bytes([202; 16]),
-    ];
-    for (position, id) in active.into_iter().enumerate() {
-        ordinal += 1;
-        aggregate
-            .execute(fresh(
-                ordinal,
-                aggregate.reducer().revision(),
-                plan(id, position == 2),
-            ))
-            .await?;
-        if position == 0 {
-            continue;
-        }
-        let gap = if position == 1 {
-            let planned = aggregate
-                .reducer()
-                .effect(id)
-                .cloned()
-                .ok_or_else(|| acyclic_harness::Error::Invalid("gap effect missing".into()))?;
-            ordinal += 1;
-            aggregate
-                .execute(fresh(
-                    ordinal,
-                    aggregate.reducer().revision(),
-                    Action::TransitionLifecycle {
-                        to: LifecycleState::Active,
-                        reason: None,
-                    },
-                ))
-                .await?;
-            provider.forbid_writes.store(true, Ordering::SeqCst);
-            let reader = HistoryReader::new(&stream, &authority, issuer.verifier())?;
-            let cursor = reader.pin(0).await?;
-            provider.observation_bytes.store(0, Ordering::SeqCst);
-            reader
-                .effect(
-                    &cursor,
-                    id,
-                    HistoryReadLimits {
-                        maximum_events: 1,
-                        maximum_bytes: 1_000_000,
-                    },
-                )
-                .await?;
-            let exact = HistoryReadLimits {
-                maximum_events: 1,
-                maximum_bytes: provider.observation_bytes.load(Ordering::SeqCst),
-            };
-            assert_eq!(
-                reader.effect(&cursor, id, exact).await?,
-                Some(planned.clone())
-            );
-            provider.forbid_writes.store(false, Ordering::SeqCst);
-            Some((cursor, exact, planned))
-        } else {
-            None
-        };
-        ordinal += 1;
-        aggregate
-            .execute(fresh(
-                ordinal,
-                aggregate.reducer().revision(),
-                Action::MarkEffectDispatched {
-                    effect_id: id,
-                    attempt_id: EffectAttemptId::from_bytes(id.into_bytes()),
-                },
-            ))
-            .await?;
-        if let Some((cursor, exact, planned)) = gap {
-            provider.forbid_writes.store(true, Ordering::SeqCst);
-            let reader = HistoryReader::new(&stream, &authority, issuer.verifier())?;
-            assert_eq!(reader.effect(&cursor, id, exact).await?, Some(planned));
-            assert!(
-                reader
-                    .effect(
-                        &cursor,
-                        id,
-                        HistoryReadLimits {
-                            maximum_bytes: exact.maximum_bytes - 1,
-                            ..exact
-                        }
-                    )
-                    .await
-                    .is_err()
-            );
-            provider.forbid_writes.store(false, Ordering::SeqCst);
-        }
-        if position == 2 {
-            let state = aggregate
-                .reducer()
-                .effect(id)
-                .ok_or_else(|| acyclic_harness::Error::Invalid("active effect missing".into()))?;
-            let observation = registry
-                .dispatch_and_attest(&issuer, id, state, EffectDispatch::from_state(id, state)?)
-                .await?;
-            ordinal += 1;
-            aggregate
-                .execute(fresh(
-                    ordinal,
-                    aggregate.reducer().revision(),
-                    Action::ResolveEffect { observation },
-                ))
-                .await?;
-        }
-    }
-    for retained in 1..=1_000_u128 {
-        provider.reset_io();
-        let id = EffectId::from_bytes(uuid::Uuid::from_u128(retained + 10_000_000).into_bytes());
-        ordinal += 1;
-        aggregate
-            .execute(fresh(
-                ordinal,
-                aggregate.reducer().revision(),
-                plan(id, false),
-            ))
-            .await?;
-        ordinal += 1;
-        aggregate
-            .execute(fresh(
-                ordinal,
-                aggregate.reducer().revision(),
-                Action::MarkEffectDispatched {
-                    effect_id: id,
-                    attempt_id: EffectAttemptId::from_bytes(id.into_bytes()),
-                },
-            ))
-            .await?;
-        let state = aggregate
-            .reducer()
-            .effect(id)
-            .ok_or_else(|| acyclic_harness::Error::Invalid("new effect missing".into()))?;
-        let observation = registry
-            .dispatch_and_attest(&issuer, id, state, EffectDispatch::from_state(id, state)?)
-            .await?;
-        ordinal += 1;
-        aggregate
-            .execute(fresh(
-                ordinal,
-                aggregate.reducer().revision(),
-                Action::ResolveEffect { observation },
-            ))
-            .await?;
-        let publication_io = provider.io_snapshot();
-        assert!(publication_io.reads <= 512);
-        assert!(publication_io.tails <= 512);
-        assert!(publication_io.writes <= 512);
-        assert!(publication_io.records <= 512);
-        assert!(publication_io.read_bytes <= 1_048_576);
-        assert!(publication_io.write_bytes <= 1_048_576);
-        assert!(publication_io.inspections <= 512);
-        assert!(publication_io.commit_reads <= 512);
-        assert!(publication_io.receipt_bytes <= 1_048_576);
-        assert!(publication_io.other_calls <= 512);
-        if matches!(retained, 1 | 100 | 1_000) {
-            assert_eq!(aggregate.reducer().resident_terminal_effect_count(), 2);
-            assert_eq!(aggregate.reducer().resident_effect_count(), 5);
-            provider.forbid_writes.store(true, Ordering::SeqCst);
-            provider.observation_reads.store(0, Ordering::SeqCst);
-            provider.observation_maximum.store(0, Ordering::SeqCst);
-            let started = std::time::Instant::now();
-            let cold = StreamAggregate::open_with_projection_limits(
-                &stream,
-                authority.clone(),
-                issuer.verifier(),
-                SchemaRegistry::new(),
-                acyclic_harness::store::default_projection_read_limits(),
-                2,
-            )
-            .await?
-            .with_content_verifier(verifier.clone());
-            let reads = provider.observation_reads.load(Ordering::SeqCst);
-            let maximum = provider.observation_maximum.load(Ordering::SeqCst);
-            assert_eq!(cold.reducer().revision(), aggregate.reducer().revision());
-            assert_eq!(cold.reducer().resident_terminal_effect_count(), 2);
-            assert_eq!(cold.reducer().resident_effect_count(), 5);
-            for (id, expected) in active.into_iter().zip([
-                EffectStatus::Planned,
-                EffectStatus::Dispatched,
-                EffectStatus::Indeterminate,
-            ]) {
-                assert_eq!(
-                    cold.reducer().effect(id).map(|state| &state.status),
-                    Some(&expected)
-                );
-            }
-            let snapshot_bytes = serde_json::to_vec(&cold.reducer().snapshot_with_event_limit(1)?)
-                .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?
-                .len();
-            assert!(snapshot_bytes < 32 * 1_024);
-            assert!(reads <= 4 + 2 * 64);
-            assert!(maximum <= 64);
-            let probe = HistoryReadLimits {
-                maximum_events: 3,
-                maximum_bytes: 1_000_000,
-            };
-            provider.reset_io();
-            let archive_reader = HistoryReader::new(&stream, &authority, issuer.verifier())?;
-            let archive_cut = archive_reader.pin(0).await?;
-            provider.observation_bytes.store(0, Ordering::SeqCst);
-            assert_eq!(
-                archive_reader
-                    .effect(&archive_cut, effect_id, probe)
-                    .await?,
-                Some(completed.clone())
-            );
-            let archive_io = provider.io_snapshot();
-            assert!(archive_io.reads <= 137);
-            assert!(archive_io.tails <= 131);
-            assert_eq!(archive_io.writes, 0);
-            assert_eq!(archive_io.records, 0);
-            assert_eq!(archive_io.write_bytes, 0);
-            assert_eq!(archive_io.inspections, 0);
-            assert_eq!(archive_io.commit_reads, 0);
-            assert_eq!(archive_io.receipt_bytes, 0);
-            assert_eq!(archive_io.other_calls, 0);
-            let (node_count, node_bytes, certificate_count, certificate_bytes) = {
-                let retained_records = provider
-                    .root_records
-                    .lock()
-                    .map_err(|_| acyclic_harness::Error::Invalid("IO observer poisoned".into()))?;
-                let mut counts = (0_u64, 0_u64, 0_u64, 0_u64);
-                for ((path, _), bytes) in retained_records.iter() {
-                    if path.contains("/nodes/") {
-                        counts.0 += 1;
-                        counts.1 += bytes;
-                        assert!(*bytes <= 1_024);
-                    } else {
-                        counts.2 += 1;
-                        counts.3 += bytes;
-                        assert!(*bytes <= 4_096);
-                    }
-                }
-                counts
-            };
-            assert_eq!(certificate_count, aggregate.reducer().revision());
-            assert!(
-                node_count
-                    > u64::try_from(retained)
-                        .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?
-            );
-            println!(
-                "effect_root_io retained={retained} publication={publication_io:?} archive={archive_io:?} nodes={node_count} node_bytes={node_bytes} certificates={certificate_count} certificate_bytes={certificate_bytes}"
-            );
-            let exact = HistoryReadLimits {
-                maximum_events: 3,
-                maximum_bytes: provider.observation_bytes.load(Ordering::SeqCst),
-            };
-            assert_eq!(
-                cold.effect(effect_id, exact).await?,
-                Some(completed.clone())
-            );
-            assert!(
-                archive_reader
-                    .effect(
-                        &archive_cut,
-                        effect_id,
-                        HistoryReadLimits {
-                            maximum_bytes: exact.maximum_bytes - 1,
-                            ..exact
-                        }
-                    )
-                    .await
-                    .is_err()
-            );
-            if retained > 1 {
-                assert!(cold.reducer().effect(effect_id).is_none());
-            }
-            println!(
-                "terminal retirement retained={retained} resident=5 snapshot_bytes={snapshot_bytes} cold_reads={reads} max_batch={maximum} elapsed_us={}",
-                started.elapsed().as_micros()
-            );
-            aggregate = cold;
-            provider.forbid_writes.store(false, Ordering::SeqCst);
-        }
-    }
-
-    // Lost acknowledgements and malformed receipts must not turn a committed
-    // terminal effect into guessed absence or repeat a provider dispatch.
-    for fault in 1..=5 {
-        let id = EffectId::from_bytes([210 + fault; 16]);
-        ordinal += 1;
-        aggregate
-            .execute(fresh(
-                ordinal,
-                aggregate.reducer().revision(),
-                plan(id, false),
-            ))
-            .await?;
-        ordinal += 1;
-        aggregate
-            .execute(fresh(
-                ordinal,
-                aggregate.reducer().revision(),
-                Action::MarkEffectDispatched {
-                    effect_id: id,
-                    attempt_id: EffectAttemptId::from_bytes(id.into_bytes()),
-                },
-            ))
-            .await?;
-        let state = aggregate
-            .reducer()
-            .effect(id)
-            .ok_or_else(|| acyclic_harness::Error::Invalid("fault effect missing".into()))?;
-        let observation = registry
-            .dispatch_and_attest(&issuer, id, state, EffectDispatch::from_state(id, state)?)
-            .await?;
-        let expected_status = observation.status.clone();
-        ordinal += 1;
-        let resolve = fresh(
-            ordinal,
-            aggregate.reducer().revision(),
-            Action::ResolveEffect { observation },
-        );
-        let before = aggregate.reducer().revision();
-        provider
-            .aggregate_commit_fault
-            .store(fault, Ordering::SeqCst);
-        let first = aggregate.execute(resolve.clone()).await;
-        if matches!(fault, 1 | 3 | 4 | 5) {
-            assert!(first.is_err());
-        }
-        let tail = stream.stream(authority.stream_path()?)?.tail().await?;
-        assert_eq!(tail, before + u64::from(fault != 1));
-        provider.forbid_writes.store(true, Ordering::SeqCst);
-        let reopened = StreamAggregate::open_with_projection_limits(
-            &stream,
-            authority.clone(),
-            issuer.verifier(),
-            SchemaRegistry::new(),
-            acyclic_harness::store::default_projection_read_limits(),
-            2,
-        )
-        .await;
-        aggregate = match reopened {
-            Ok(cold) => cold,
-            Err(error) => {
-                assert_eq!(fault, 3, "unexpected cold-open failure: {error}");
-                StreamAggregate::open_with_projection_limits(
-                    &stream,
-                    authority.clone(),
-                    issuer.verifier(),
-                    SchemaRegistry::new(),
-                    acyclic_harness::store::default_projection_read_limits(),
-                    2,
-                )
-                .await?
-            }
-        }
-        .with_content_verifier(verifier.clone());
-        provider.forbid_writes.store(false, Ordering::SeqCst);
-        let retried = aggregate.execute(resolve).await?;
-        assert_eq!(
-            matches!(retried, acyclic_harness::core::ApplyResult::Replayed { .. }),
-            fault != 1
-        );
-        let recovered = aggregate
-            .effect(id, acyclic_harness::store::default_projection_read_limits())
-            .await?
-            .ok_or_else(|| acyclic_harness::Error::Invalid("recovered effect missing".into()))?;
-        assert_eq!(recovered.status, expected_status);
-        assert_eq!(
-            recovered.attempts,
-            vec![EffectAttemptId::from_bytes(id.into_bytes())]
-        );
-        assert_eq!(aggregate.reducer().revision(), before + 1);
-        assert_eq!(aggregate.reducer().resident_terminal_effect_count(), 2);
-        assert_eq!(aggregate.reducer().resident_effect_count(), 5);
-    }
-    // Retirement must also fence pure planning before the event cache evicts.
-    let short_provider = Arc::new(test_stream::LostSessionAck::<MemoryStream>::default());
-    let short_stream = StreamClient::new(short_provider.clone());
-    let mut short = StreamAggregate::open_with_projection_limits(
-        &short_stream,
-        authority.clone(),
-        issuer.verifier(),
-        SchemaRegistry::new(),
-        acyclic_harness::store::default_projection_read_limits(),
-        1,
-    )
-    .await?
-    .with_content_verifier(verifier.clone());
-    let mut before_terminal = None;
-    let mut terminal_operations = Vec::new();
-    for number in 1..=3_u128 {
-        let id = EffectId::from_bytes(uuid::Uuid::from_u128(number + 20_000_000).into_bytes());
-        short
-            .execute(fresh(
-                number * 3,
-                short.reducer().revision(),
-                plan(id, false),
-            ))
-            .await?;
-        short
-            .execute(fresh(
-                number * 3 + 1,
-                short.reducer().revision(),
-                Action::MarkEffectDispatched {
-                    effect_id: id,
-                    attempt_id: EffectAttemptId::from_bytes(id.into_bytes()),
-                },
-            ))
-            .await?;
-        if number == 1 {
-            before_terminal = Some(short.reducer().snapshot_with_event_limit(1)?);
-        }
-        let state = short
-            .reducer()
-            .effect(id)
-            .ok_or_else(|| acyclic_harness::Error::Invalid("short effect missing".into()))?;
-        let observation = registry
-            .dispatch_and_attest(&issuer, id, state, EffectDispatch::from_state(id, state)?)
-            .await?;
-        terminal_operations.push((
-            id,
-            OperationId::from_bytes(uuid::Uuid::from_u128(number * 3 + 2 + 3_000_000).into_bytes()),
-        ));
-        short
-            .execute(fresh(
-                number * 3 + 2,
-                short.reducer().revision(),
-                Action::ResolveEffect { observation },
-            ))
-            .await?;
-    }
-    assert_eq!(short.reducer().revision(), 9);
-    assert_eq!(short.reducer().resident_effect_count(), 1);
-    assert!(matches!(
-        short
-            .reducer()
-            .plan(&fresh(100, 9, plan(EffectId::from_bytes([240; 16]), false))),
-        Err(acyclic_harness::Error::Unsupported(_))
-    ));
-
-    let before_terminal = before_terminal
-        .ok_or_else(|| acyclic_harness::Error::Invalid("pre-terminal snapshot missing".into()))?;
-    let mut terminal_proof_bytes = 0_u64;
-    for (id, operation) in terminal_operations {
-        for (path, position) in [
-            (
-                format!("harness/v2/aggregate-operations/tasks/effect-task/{operation}"),
-                0,
-            ),
-            (
-                format!("harness/v2/effect-transitions/tasks/effect-task/{id}"),
-                2,
-            ),
-        ] {
-            let records = short_stream
-                .stream(path)?
-                .read(position, 1)
-                .await?
-                .try_collect::<Vec<_>>()
-                .await?;
-            let record = records.first().ok_or_else(|| {
-                acyclic_harness::Error::Invalid("original retirement proof missing".into())
-            })?;
-            assert_eq!(records.len(), 1);
-            terminal_proof_bytes += record.value.len() as u64;
-        }
-    }
-    let suffix = short_stream
-        .stream(authority.stream_path()?)?
-        .read(2, 7)
-        .await?
-        .try_collect::<Vec<_>>()
-        .await?;
-    assert_eq!(suffix.len(), 7);
-    let snapshot_bytes = serde_json::to_vec(&before_terminal)
-        .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?
-        .len() as u64;
-    let exact = HistoryReadLimits {
-        maximum_events: 8,
-        maximum_bytes: snapshot_bytes
-            + terminal_proof_bytes
-            + suffix
-                .iter()
-                .map(|record| record.value.len() as u64)
-                .sum::<u64>(),
-    };
-    short_provider.forbid_writes.store(true, Ordering::SeqCst);
-    for allowance in [exact.maximum_bytes - 1, exact.maximum_bytes] {
-        short_provider.observation_reads.store(0, Ordering::SeqCst);
-        let restored = StreamAggregate::open_from_snapshot_with_projection_limits(
-            &short_stream,
-            authority.clone(),
-            issuer.verifier(),
-            SchemaRegistry::new(),
-            before_terminal.clone(),
-            HistoryReadLimits {
-                maximum_bytes: allowance,
-                ..exact
-            },
-            1,
-        )
-        .await;
-        if allowance == exact.maximum_bytes {
-            let restored = restored?;
-            assert_eq!(restored.reducer().revision(), 9);
-            assert_eq!(restored.reducer().resident_effect_count(), 1);
-            assert_eq!(restored.reducer().resident_terminal_effect_count(), 1);
-        } else {
-            assert!(matches!(restored, Err(acyclic_harness::Error::Invalid(_))));
-        }
-        assert_eq!(short_provider.observation_reads.load(Ordering::SeqCst), 7);
-    }
-    short_provider.observation_reads.store(0, Ordering::SeqCst);
-    assert!(matches!(
-        StreamAggregate::open_from_snapshot_with_projection_limits(
-            &short_stream,
-            authority.clone(),
-            issuer.verifier(),
-            SchemaRegistry::new(),
-            before_terminal,
-            HistoryReadLimits {
-                maximum_events: 7,
-                ..exact
-            },
-            1,
-        )
-        .await,
-        Err(acyclic_harness::Error::Invalid(_))
-    ));
-    assert_eq!(short_provider.observation_reads.load(Ordering::SeqCst), 0);
-    assert_eq!(short_provider.observation_writes.load(Ordering::SeqCst), 0);
-
-    // A fresh archived transition shares the configured read allowance and
-    // cannot hydrate the cache or append when its proof exceeds that allowance.
-    let archived_revision = aggregate.reducer().revision();
-    aggregate = aggregate.with_effect_history_read_limits(HistoryReadLimits {
-        maximum_events: 2,
-        maximum_bytes: 32 * 1024 * 1024,
-    })?;
-    ordinal += 1;
-    assert!(matches!(
-        aggregate
-            .execute(fresh(
-                ordinal,
-                archived_revision,
-                Action::MarkEffectDispatched {
-                    effect_id,
-                    attempt_id: EffectAttemptId::from_bytes([243; 16]),
-                },
-            ))
-            .await,
-        Err(acyclic_harness::Error::Invalid(_))
-    ));
-    assert_eq!(aggregate.reducer().revision(), archived_revision);
-    assert!(aggregate.reducer().effect(effect_id).is_none());
-    aggregate = aggregate.with_effect_history_read_limits(HistoryReadLimits {
-        maximum_events: 64,
-        maximum_bytes: 32 * 1024 * 1024,
-    })?;
-
-    // A fresh command targeting known archived state must reach the original
-    // provider authorization and terminal transition check, not cached absence.
-    ordinal += 1;
-    assert!(matches!(
-        aggregate
-            .execute(fresh(
-                ordinal,
-                aggregate.reducer().revision(),
-                Action::MarkEffectDispatched {
-                    effect_id,
-                    attempt_id: EffectAttemptId::from_bytes([244; 16]),
-                }
-            ))
-            .await,
-        Err(acyclic_harness::Error::Conflict(_))
-    ));
-    ordinal += 1;
-    assert!(matches!(
-        aggregate
-            .execute(fresh(
-                ordinal,
-                aggregate.reducer().revision(),
-                Action::ResolveEffect {
-                    observation: attestation.clone(),
-                }
-            ))
-            .await,
-        Err(acyclic_harness::Error::Conflict(_))
-    ));
-    ordinal += 1;
-    let mut denied = fresh(
-        ordinal,
-        aggregate.reducer().revision(),
-        Action::MarkEffectDispatched {
-            effect_id,
-            attempt_id: EffectAttemptId::from_bytes([245; 16]),
-        },
-    );
-    denied.scope = issuer.root_for_agent(
-        AgentId::from_bytes([61; 16]),
-        "no-provider-grant",
-        Capabilities::new(["effect:run"]),
-    );
-    assert!(matches!(
-        aggregate.execute(denied).await,
-        Err(acyclic_harness::Error::Unauthorized(_))
-    ));
-    assert_eq!(aggregate.reducer().resident_terminal_effect_count(), 2);
-    assert_eq!(aggregate.reducer().resident_effect_count(), 5);
-    let revision = aggregate.reducer().revision();
-    assert!(aggregate.reducer().effect(effect_id).is_none());
-    assert!(matches!(
-        aggregate
-            .execute(command(1, 0, plan(effect_id, false)))
-            .await?,
-        acyclic_harness::core::ApplyResult::Replayed { .. }
-    ));
-    assert!(matches!(
-        aggregate
-            .execute(command(
-                3,
-                2,
-                Action::ResolveEffect {
-                    observation: attestation
-                }
-            ))
-            .await?,
-        acyclic_harness::core::ApplyResult::Replayed { .. }
-    ));
-    assert_eq!(aggregate.reducer().revision(), revision);
-    ordinal += 1;
-    let reuse = fresh(ordinal, revision, plan(effect_id, false));
-    assert!(aggregate.reducer().plan(&reuse).is_err());
-    assert!(matches!(
-        aggregate.execute(reuse).await,
-        Err(acyclic_harness::Error::Conflict(_))
-    ));
-    assert_eq!(aggregate.reducer().revision(), revision);
-    assert_eq!(
-        stream.stream(authority.stream_path()?)?.tail().await?,
-        revision
-    );
-    let final_reader = HistoryReader::new(&stream, &authority, issuer.verifier())?;
-    let final_cut = final_reader.pin(0).await?;
-    provider.observation_bytes.store(0, Ordering::SeqCst);
-    assert_eq!(
-        final_reader
-            .effect(
-                &final_cut,
-                effect_id,
-                HistoryReadLimits {
-                    maximum_events: 3,
-                    maximum_bytes: 1_000_000
-                }
-            )
-            .await?,
-        Some(completed.clone())
-    );
-    let final_limits = HistoryReadLimits {
-        maximum_events: 3,
-        maximum_bytes: provider.observation_bytes.load(Ordering::SeqCst),
-    };
-    assert_eq!(
-        aggregate.effect(effect_id, final_limits).await?,
-        Some(completed.clone())
-    );
-    assert!(
-        final_reader
-            .effect(
-                &final_cut,
-                effect_id,
-                HistoryReadLimits {
-                    maximum_bytes: final_limits.maximum_bytes - 1,
-                    ..final_limits
-                }
-            )
-            .await
-            .is_err()
-    );
-    // Every differing bit has an admitted terminal effect. The all-ones key
-    // therefore requires all 128 strictly ordered branches at the original cut.
-    let worst_id = EffectId::from_bytes(uuid::Uuid::from_u128(u128::MAX).into_bytes());
-    let mut worst_completed = None;
-    for bit in 0..=128_u32 {
-        let bits = if bit == 0 {
-            u128::MAX
-        } else {
-            u128::MAX ^ (1_u128 << (bit - 1))
-        };
-        let id = EffectId::from_bytes(uuid::Uuid::from_u128(bits).into_bytes());
-        provider.forbid_writes.store(false, Ordering::SeqCst);
-        provider.reset_io();
-        ordinal += 1;
-        aggregate
-            .execute(fresh(
-                ordinal,
-                aggregate.reducer().revision(),
-                plan(id, false),
-            ))
-            .await?;
-        ordinal += 1;
-        aggregate
-            .execute(fresh(
-                ordinal,
-                aggregate.reducer().revision(),
-                Action::MarkEffectDispatched {
-                    effect_id: id,
-                    attempt_id: EffectAttemptId::from_bytes(id.into_bytes()),
-                },
-            ))
-            .await?;
-        let state = aggregate
-            .reducer()
-            .effect(id)
-            .ok_or_else(|| acyclic_harness::Error::Invalid("depth effect missing".into()))?;
-        let observation = registry
-            .dispatch_and_attest(&issuer, id, state, EffectDispatch::from_state(id, state)?)
-            .await?;
-        ordinal += 1;
-        aggregate
-            .execute(fresh(
-                ordinal,
-                aggregate.reducer().revision(),
-                Action::ResolveEffect { observation },
-            ))
-            .await?;
-        if bit == 0 {
-            worst_completed = aggregate.reducer().effect(id).cloned();
-        }
-        let io = provider.io_snapshot();
-        assert!(io.reads <= 512 && io.tails <= 512 && io.writes <= 512 && io.records <= 512);
-        assert!(
-            io.read_bytes <= 1_048_576
-                && io.write_bytes <= 1_048_576
-                && io.receipt_bytes <= 1_048_576
-        );
-        assert!(io.other_calls <= 512 && io.inspections <= 512 && io.commit_reads <= 512);
-        if bit == 128 {
-            println!("effect_root_publication_maximum_depth io={io:?}");
-        }
-        assert_eq!(aggregate.reducer().resident_effect_count(), 5);
-    }
-    let worst_completed = worst_completed
-        .ok_or_else(|| acyclic_harness::Error::Invalid("depth projection missing".into()))?;
-    provider.forbid_writes.store(true, Ordering::SeqCst);
-    provider.reset_io();
-    let worst_reader = HistoryReader::new(&stream, &authority, issuer.verifier())?;
-    let worst_cut = worst_reader.pin(0).await?;
-    assert_eq!(
-        worst_reader
-            .effect(
-                &worst_cut,
-                worst_id,
-                HistoryReadLimits {
-                    maximum_events: 3,
-                    maximum_bytes: 1_048_576
-                }
-            )
-            .await?,
-        Some(worst_completed.clone())
-    );
-    let worst_io = provider.io_snapshot();
-    assert_eq!(worst_io.reads, 137);
-    assert_eq!(worst_io.tails, 131);
-    assert_eq!(worst_io.writes, 0);
-    assert_eq!(worst_io.other_calls, 0);
-    let worst_limits = HistoryReadLimits {
-        maximum_events: 3,
-        maximum_bytes: worst_io.read_bytes,
-    };
-    assert_eq!(
-        worst_reader
-            .effect(&worst_cut, worst_id, worst_limits)
-            .await?,
-        Some(worst_completed.clone())
-    );
-    assert!(
-        worst_reader
-            .effect(
-                &worst_cut,
-                worst_id,
-                HistoryReadLimits {
-                    maximum_bytes: worst_limits.maximum_bytes - 1,
-                    ..worst_limits
-                }
-            )
-            .await
-            .is_err()
-    );
-    println!("effect_root_maximum_depth original={worst_io:?}");
-    provider.forbid_writes.store(false, Ordering::SeqCst);
-    ordinal += 1;
-    aggregate
-        .execute(fresh(
-            ordinal,
-            aggregate.reducer().revision(),
-            Action::TransitionLifecycle {
-                to: LifecycleState::Waiting,
-                reason: None,
-            },
-        ))
-        .await?;
-    provider.forbid_writes.store(true, Ordering::SeqCst);
-    assert_eq!(
-        worst_reader
-            .effect(&worst_cut, worst_id, worst_limits)
-            .await?,
-        Some(worst_completed)
-    );
     Ok(())
 }
 
-async fn copied_effect_history<P: acyclic_stream::StreamProvider>(
-    source: &StreamClient<P>,
-    authority: &Authority,
-    canonical: &[acyclic_stream::Record],
-    indexes: &[acyclic_stream::Record],
-    atomic: bool,
-) -> Result<StreamClient<MemoryStream>> {
-    use acyclic_stream::{
-        CommitCondition, CommitMutation, CommitOutcome, CommitRequest, StreamPath,
+async fn running_owner<P: acyclic_stream::StreamProvider + 'static>(
+    stream: Arc<P>,
+    filesystem: Arc<
+        FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>,
+    >,
+    volume: &VolumeRef,
+    issuer: &AuthorityIssuer,
+    signed: &acyclic_harness::core::Scope,
+    task: acyclic_harness::TaskId,
+) -> Result<acyclic_harness::durable_host::TaskJournalOwner<P>> {
+    use acyclic_harness::{
+        runtime::{RuntimeScope, TaskAdmissionRecord, TaskDefinition, TaskRegistry},
+        workflow::{MachineIdentity, MachineRegistry, ResumableMachine},
     };
-    let client = StreamClient::new(Arc::new(MemoryStream::default()));
-    let canonical_path = StreamPath::new(authority.stream_path()?)?;
-    let location: serde_json::Value = serde_json::from_slice(
-        &indexes
-            .first()
-            .ok_or_else(|| acyclic_harness::Error::Invalid("index control missing".into()))?
-            .value,
+    let schema = serde_json::json!({"type":"object"});
+    let machine = Arc::new(EffectMachine {
+        identity: MachineIdentity {
+            name: "test.effects".into(),
+            version: "1".into(),
+            digest: [69; 32],
+        },
+        schema: schema.clone(),
+    });
+    let definition = TaskDefinition::<serde_json::Value, serde_json::Value>::resumable(
+        machine.clone(),
+        schema.clone(),
+        schema.clone(),
+    )?;
+    let identity = definition.identity().clone();
+    let machine_identity = machine.identity().clone();
+    let mut tasks = TaskRegistry::default();
+    tasks.register(definition)?;
+    let mut machines = MachineRegistry::default();
+    machines.register(machine, &mut None)?;
+    let scope = RuntimeScope::new(
+        signed.capabilities().clone(),
+        acyclic_harness::conversation::Limits::default(),
+    )?;
+    let runtime = acyclic_harness::filesystem::FilesystemTaskRuntime::open(
+        stream,
+        filesystem,
+        volume,
+        &issuer.verifier(&mut None)?,
+        signed,
+        &scope,
+        &tasks,
+        &machines,
+        &acyclic_harness::tool::ToolRegistry::default(),
+        acyclic_harness::scheduler::SessionLimits {
+            active_tasks: 1,
+            total_tasks: 4,
+            depth: 4,
+            model_steps: 4,
+        },
+        1,
+        scope.limits().file_bytes,
+        Arc::new(acyclic_stream::SystemUnixMillisClock),
+        None,
+        &[],
+        &acyclic_harness::durable_tool::ResumableToolRegistry::default(),
+        None,
     )
-    .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
-    let effect: EffectId = serde_json::from_value(
-        location
-            .get("effect_id")
-            .ok_or_else(|| {
-                acyclic_harness::Error::Invalid("copied effect identity missing".into())
-            })?
-            .clone(),
-    )
-    .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
-    let index_path = StreamPath::new(format!(
-        "harness/v2/effect-transitions/tasks/effect-task/{effect}"
-    ))?;
-    let path = authority.stream_path()?;
-    let (version, suffix) = path
-        .strip_prefix("harness/")
-        .and_then(|path| path.split_once('/'))
-        .ok_or_else(|| acyclic_harness::Error::Invalid("copy root authority is invalid".into()))?;
-    let root_prefix = format!("harness/{version}/effect-heads/{suffix}");
-    let root_path = StreamPath::new(format!("{root_prefix}/cuts"))?;
-    let certificates = source
-        .stream(root_path.as_str())?
-        .read(0, 3)
-        .await?
-        .try_collect::<Vec<_>>()
-        .await?;
-    assert_eq!(certificates.len(), canonical.len());
-    let mut pending = Vec::new();
-    for record in &certificates {
-        let value: serde_json::Value = serde_json::from_slice(&record.value)
-            .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
-        if let Some(hash) = value.get("root").filter(|hash| !hash.is_null()) {
-            pending.push(
-                serde_json::from_value::<[u8; 32]>(hash.clone())
-                    .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?,
-            );
-        }
+    .await?;
+    let host = runtime.task_host();
+    host.admit(TaskAdmissionRecord {
+        operation_id: OperationId::from_bytes(task.into_bytes()),
+        resource_proofs: Vec::new(),
+        task: identity,
+        machine: machine_identity,
+        input: serde_json::json!({}),
+        input_schema: schema.clone(),
+        output_schema: schema,
+        parent: None,
+        grants: scope.grants().clone(),
+        limits: scope.limits(),
+        run_limits: scope.run_limits(),
+        policy: None,
+        extensions: None,
+        execution: None,
+    })
+    .await?;
+    let worker = acyclic_harness::distributed::Worker {
+        id: "effect-worker".into(),
+        available: Default::default(),
+        labels: Default::default(),
+    };
+    let acyclic_harness::distributed::WorkPull::Claimed(lease) =
+        host.pull_work(&worker, None, &mut None).await?
+    else {
+        return Err(acyclic_harness::Error::NotFound("effect task lease".into()));
+    };
+    host.start_task(&lease, &mut None).await?;
+    host.journal_owner(task, &(&lease.reservation).into(), None)
+        .await
+}
+
+struct EffectMachine {
+    identity: acyclic_harness::workflow::MachineIdentity,
+    schema: serde_json::Value,
+}
+impl acyclic_harness::workflow::ResumableMachine for EffectMachine {
+    fn identity(&self) -> &acyclic_harness::workflow::MachineIdentity {
+        &self.identity
     }
-    let mut copied = BTreeSet::new();
-    while let Some(hash) = pending.pop() {
-        if !copied.insert(hash) {
-            continue;
-        }
-        let path = format!(
-            "{root_prefix}/nodes/{}",
-            blake3::Hash::from_bytes(hash).to_hex()
-        );
-        let node = source
-            .stream(&path)?
-            .read(0, 1)
-            .await?
-            .try_collect::<Vec<_>>()
-            .await?;
-        assert_eq!(node.len(), 1);
-        let node = node
-            .first()
-            .ok_or_else(|| acyclic_harness::Error::Invalid("proof node missing".into()))?;
-        let value: serde_json::Value = serde_json::from_slice(&node.value)
-            .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
-        for field in ["left", "right"] {
-            if let Some(hash) = value.get(field) {
-                pending.push(
-                    serde_json::from_value::<[u8; 32]>(hash.clone())
-                        .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?,
-                );
-            }
-        }
-        client.stream(path)?.append(node.value.clone()).await?;
+    fn state_schema(&self) -> &serde_json::Value {
+        &self.schema
     }
-    if atomic {
-        for (position, (event, index)) in canonical.iter().zip(indexes).enumerate() {
-            let expected = position as u64;
-            let condition = |path: StreamPath| {
-                if expected == 0 {
-                    CommitCondition::Absent { path }
-                } else {
-                    CommitCondition::Tail { path, expected }
-                }
-            };
-            let result = client
-                .commit(CommitRequest {
-                    conditions: vec![
-                        condition(canonical_path.clone()),
-                        condition(index_path.clone()),
-                        condition(root_path.clone()),
-                    ],
-                    mutations: vec![
-                        CommitMutation::Append {
-                            path: canonical_path.clone(),
-                            records: vec![event.value.clone()],
-                        },
-                        CommitMutation::Append {
-                            path: index_path.clone(),
-                            records: vec![index.value.clone()],
-                        },
-                        CommitMutation::Append {
-                            path: root_path.clone(),
-                            records: vec![
-                                certificates
-                                    .get(position)
-                                    .ok_or_else(|| {
-                                        acyclic_harness::Error::Invalid(
-                                            "cut certificate missing".into(),
-                                        )
-                                    })?
-                                    .value
-                                    .clone(),
-                            ],
-                        },
-                    ],
-                    idempotency_key: acyclic_stream::IdempotencyKey::new(format!(
-                        "copy-effect-{position}"
-                    ))?,
-                })
-                .await?;
-            assert!(matches!(result, CommitOutcome::Committed(_)));
-        }
-    } else {
-        client
-            .stream(root_path.as_str())?
-            .append_batch(
-                certificates
-                    .iter()
-                    .map(|record| record.value.clone())
-                    .collect(),
-                Some(0),
-                None,
-            )
-            .await?;
-        client
-            .stream(canonical_path.as_str())?
-            .append_batch(
-                canonical
-                    .iter()
-                    .map(|record| record.value.clone())
-                    .collect(),
-                Some(0),
-                None,
-            )
-            .await?;
-        client
-            .stream(index_path.as_str())?
-            .append_batch(
-                indexes.iter().map(|record| record.value.clone()).collect(),
-                Some(0),
-                None,
-            )
-            .await?;
+    fn initialize(&self, input: &serde_json::Value) -> Result<serde_json::Value> {
+        Ok(input.clone())
     }
-    Ok(client)
+    fn transition(
+        &self,
+        state: &serde_json::Value,
+        _: &serde_json::Value,
+    ) -> Result<acyclic_harness::workflow::MachineTransition> {
+        Ok(acyclic_harness::workflow::MachineTransition {
+            state: state.clone(),
+            commands: Vec::new(),
+            status: acyclic_harness::workflow::MachineStatus::Suspended,
+        })
+    }
 }

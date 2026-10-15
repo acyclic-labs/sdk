@@ -55,15 +55,13 @@ extern int acyclic_fs_darwin_mount_truncate(uintptr_t context, const char *path,
 extern int acyclic_fs_darwin_mount_flush(uintptr_t context, uint64_t handle);
 extern int acyclic_fs_darwin_mount_fsync(uintptr_t context);
 extern int acyclic_fs_darwin_mount_durable_writes(uintptr_t context);
-extern int acyclic_fs_darwin_mount_opendir(uintptr_t context, const char *path, uint64_t *handle);
 extern int acyclic_fs_darwin_mount_readdir(uintptr_t context, const char *path, void *buffer,
-                                     fuse_fill_dir_t filler, int64_t offset, uint64_t handle);
-extern int acyclic_fs_darwin_mount_releasedir(uintptr_t context, uint64_t handle);
+                                     fuse_fill_dir_t filler, int64_t offset);
 extern int acyclic_fs_darwin_mount_mkdir(uintptr_t context, const char *path, uint32_t mode,
                                    uint32_t uid, uint32_t gid);
 extern int acyclic_fs_darwin_mount_remove(uintptr_t context, const char *path, int directory);
 extern int acyclic_fs_darwin_mount_rename(uintptr_t context, const char *source,
-                                    const char *destination, uint32_t flags);
+                                    const char *destination);
 extern int acyclic_fs_darwin_mount_link(uintptr_t context, const char *source,
                                   const char *destination);
 extern int acyclic_fs_darwin_mount_symlink(uintptr_t context, const char *target,
@@ -87,14 +85,6 @@ extern int acyclic_fs_darwin_mount_listxattr(uintptr_t context, const char *path
                                        size_t length);
 extern int acyclic_fs_darwin_mount_removexattr(uintptr_t context, const char *path,
                                          const char *name);
-extern int64_t acyclic_fs_darwin_mount_lseek(uintptr_t context, const char *path, uint64_t handle,
-                                       int64_t offset, int whence);
-extern int acyclic_fs_darwin_mount_fallocate(uintptr_t context, const char *path, uint64_t handle,
-                                       int mode, int64_t offset, int64_t length);
-extern int64_t acyclic_fs_darwin_mount_copy_file_range(
-    uintptr_t context, const char *source, uint64_t source_handle, int64_t source_offset,
-    const char *destination, uint64_t destination_handle, int64_t destination_offset,
-    size_t length, int flags);
 
 static uintptr_t current_context(void) {
   struct fuse_context *context = fuse_get_context();
@@ -204,18 +194,10 @@ static int bridge_fsync(const char *path, int data_only, struct fuse_file_info *
   return acyclic_fs_darwin_mount_fsync(current_context());
 }
 
-static int bridge_opendir(const char *path, struct fuse_file_info *info) {
-  return acyclic_fs_darwin_mount_opendir(current_context(), path, &info->fh);
-}
-
 static int bridge_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset,
                           struct fuse_file_info *info) {
-  return acyclic_fs_darwin_mount_readdir(current_context(), path, buffer, filler, offset, info->fh);
-}
-
-static int bridge_releasedir(const char *path, struct fuse_file_info *info) {
-  (void)path;
-  return acyclic_fs_darwin_mount_releasedir(current_context(), info->fh);
+  (void)info;
+  return acyclic_fs_darwin_mount_readdir(current_context(), path, buffer, filler, offset);
 }
 
 static int bridge_mkdir(const char *path, mode_t mode) {
@@ -233,11 +215,7 @@ static int bridge_rmdir(const char *path) {
 }
 
 static int bridge_rename(const char *source, const char *destination) {
-  return acyclic_fs_darwin_mount_rename(current_context(), source, destination, 0);
-}
-
-static int bridge_renamex(const char *source, const char *destination, unsigned int flags) {
-  return acyclic_fs_darwin_mount_rename(current_context(), source, destination, flags);
+  return acyclic_fs_darwin_mount_rename(current_context(), source, destination);
 }
 
 static int bridge_link(const char *source, const char *destination) {
@@ -298,11 +276,6 @@ static int bridge_removexattr(const char *path, const char *name) {
   return acyclic_fs_darwin_mount_removexattr(current_context(), path, name);
 }
 
-static int bridge_fallocate(const char *path, int mode, off_t offset, off_t length,
-                            struct fuse_file_info *info) {
-  return acyclic_fs_darwin_mount_fallocate(current_context(), path, info->fh, mode, offset, length);
-}
-
 static int bridge_statfs(const char *path, struct statvfs *result) {
   (void)path;
   if (statvfs("/", result) != 0) {
@@ -341,14 +314,11 @@ static const struct fuse_operations bridge_operations = {
     .fgetattr = bridge_fgetattr,
     .flush = bridge_flush,
     .fsync = bridge_fsync,
-    .opendir = bridge_opendir,
     .readdir = bridge_readdir,
-    .releasedir = bridge_releasedir,
     .mkdir = bridge_mkdir,
     .unlink = bridge_unlink,
     .rmdir = bridge_rmdir,
     .rename = bridge_rename,
-    .renamex = bridge_renamex,
     .link = bridge_link,
     .symlink = bridge_symlink,
     .readlink = bridge_readlink,
@@ -360,7 +330,6 @@ static const struct fuse_operations bridge_operations = {
     .setxattr = bridge_setxattr,
     .listxattr = bridge_listxattr,
     .removexattr = bridge_removexattr,
-    .fallocate = bridge_fallocate,
     .statfs = bridge_statfs,
     .init = bridge_init,
 };
@@ -368,7 +337,12 @@ static const struct fuse_operations bridge_operations = {
 struct acyclic_fs_darwin_mount_session {
   pthread_mutex_t mutex;
   struct fuse *instance;
+  int stop_requested;
 };
+
+size_t acyclic_fs_darwin_mount_session_allocation_size(void) {
+  return sizeof(struct acyclic_fs_darwin_mount_session);
+}
 
 struct acyclic_fs_darwin_mount_session *acyclic_fs_darwin_mount_session_new(void) {
   struct acyclic_fs_darwin_mount_session *session = calloc(1, sizeof(*session));
@@ -397,10 +371,19 @@ void acyclic_fs_darwin_mount_session_free(struct acyclic_fs_darwin_mount_session
    mounted. */
 int acyclic_fs_darwin_mount_run(struct acyclic_fs_darwin_mount_session *session, int argc, char **argv,
                           const char *mountpoint, uintptr_t context,
-                          void (*mounted)(void *arg), void *mounted_arg) {
+                          void (*mounted)(void *arg), void *mounted_arg,
+                          int *interrupted_before_namespace) {
   if (session == NULL) {
     return 4;
   }
+  *interrupted_before_namespace = 0;
+  pthread_mutex_lock(&session->mutex);
+  if (session->stop_requested) {
+    pthread_mutex_unlock(&session->mutex);
+    *interrupted_before_namespace = 1;
+    return 0;
+  }
+  pthread_mutex_unlock(&session->mutex);
   struct fuse_args arguments = FUSE_ARGS_INIT(argc, argv);
   struct fuse_chan *channel = fuse_mount(mountpoint, &arguments);
   if (channel == NULL) {
@@ -410,11 +393,18 @@ int acyclic_fs_darwin_mount_run(struct acyclic_fs_darwin_mount_session *session,
       fuse_new(channel, &arguments, &bridge_operations, sizeof(bridge_operations),
                (void *)context);
   if (instance == NULL) {
-    fuse_unmount(NULL, channel);
+    fuse_chan_destroy(channel);
     return 1;
   }
   fuse_set_mounted_callback(instance, mounted, mounted_arg);
   pthread_mutex_lock(&session->mutex);
+  if (session->stop_requested) {
+    pthread_mutex_unlock(&session->mutex);
+    fuse_unmount(NULL, channel);
+    fuse_destroy(instance);
+    *interrupted_before_namespace = 1;
+    return 0;
+  }
   if (session->instance != NULL) {
     pthread_mutex_unlock(&session->mutex);
     fuse_unmount(NULL, channel);
@@ -460,6 +450,7 @@ void acyclic_fs_darwin_mount_interrupt(struct acyclic_fs_darwin_mount_session *s
     return;
   }
   pthread_mutex_lock(&session->mutex);
+  session->stop_requested = 1;
   struct fuse *instance = session->instance;
   if (instance != NULL) {
     fuse_exit(instance);

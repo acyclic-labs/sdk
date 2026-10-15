@@ -1,56 +1,17 @@
-//! Tracing glue for `docs/observability.md`. Each operation owns its completion
-//! span and dispatcher; filtered children cannot overwrite caller fields.
-//! These helpers erase tracing on wasm32, which never links `tracing`.
-//!
-//! Only [`Observe::observe_on`] emits the `acyclic.work` event, and only facade
-//! operations returning an [`OperationReceipt`] call it, while no observed
-//! facade operation calls another. Summing those events therefore counts each
-//! unit of work once; nested spans record just the `work.*` summary fields.
+//! Operation tracing on native hosts.
 
-use crate::performance::{MeasuredResult, OperationReceipt, WorkCounters};
+use crate::performance::{MeasuredResult, WorkCounters};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use tracing::field::Empty;
 
-/// One operation owns its span and originating dispatcher, even if filtered.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use acyclic_native_runtime::obs::OperationSpan;
+
+/// WASM records no spans.
+#[cfg(target_arch = "wasm32")]
 #[derive(Clone)]
-pub(crate) struct OperationSpan {
-    #[cfg(not(target_arch = "wasm32"))]
-    span: tracing::Span,
-    #[cfg(not(target_arch = "wasm32"))]
-    context: tracing::Span,
-    #[cfg(not(target_arch = "wasm32"))]
-    dispatch: tracing::Dispatch,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl OperationSpan {
-    pub(crate) fn new(span: tracing::Span) -> Self {
-        let dispatch = dispatch_for(&span);
-        let context = if span.is_disabled() {
-            tracing::Span::current()
-        } else {
-            span.clone()
-        };
-        Self {
-            span,
-            context,
-            dispatch,
-        }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl Drop for OperationSpan {
-    fn drop(&mut self) {
-        // Subscriber registries can close a retained parent via the current
-        // dispatcher when their last child is destroyed.
-        tracing::dispatcher::with_default(&self.dispatch, || {
-            drop(std::mem::replace(&mut self.span, tracing::Span::none()));
-            drop(std::mem::replace(&mut self.context, tracing::Span::none()));
-        });
-    }
-}
+pub(crate) struct OperationSpan {}
 
 /// Creates an explicitly owned operation span without evaluating fields on WASM.
 macro_rules! span {
@@ -72,12 +33,7 @@ pub(crate) use span;
 pub(crate) async fn in_span<F: std::future::Future>(span: &OperationSpan, future: F) -> F::Output {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        use tracing::{Instrument as _, instrument::WithSubscriber as _};
-        let dispatch = span.dispatch.clone();
-        future
-            .instrument(span.context.clone())
-            .with_subscriber(dispatch)
-            .await
+        span.scope(future).await
     }
     #[cfg(target_arch = "wasm32")]
     future.await
@@ -92,22 +48,19 @@ pub(crate) async fn in_span<F: std::future::Future>(span: &OperationSpan, future
         reason = "WASM records no spans or synchronous native work"
     )
 )]
+#[cfg(any(test, feature = "local", feature = "native-watch"))]
 pub(crate) fn scope<T>(span: &OperationSpan, job: impl FnOnce() -> T) -> T {
     #[cfg(not(target_arch = "wasm32"))]
-    return tracing::dispatcher::with_default(&span.dispatch, || span.context.in_scope(job));
+    return span.in_scope(job);
     #[cfg(target_arch = "wasm32")]
     job()
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn dispatch_for(span: &tracing::Span) -> tracing::Dispatch {
-    span.with_subscriber(|(_, dispatch)| dispatch.clone())
-        .unwrap_or_else(|| tracing::dispatcher::get_default(Clone::clone))
-}
-
-/// Captures ancestry at a boundary with no operation span of its own.
-/// This context is for worker attribution, never for recording completion.
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+/// Captures caller ancestry for worker attribution.
+#[cfg(all(
+    any(test, feature = "local", feature = "native-watch"),
+    not(target_arch = "wasm32")
+))]
 pub(crate) fn caller_context() -> OperationSpan {
     OperationSpan::new(tracing::Span::current())
 }
@@ -124,8 +77,7 @@ pub(crate) fn in_context<T>(
     move || scope(&span, job)
 }
 
-/// A failure with a stable, path-free name to record as `error.kind`: its
-/// variant name, from `strum::IntoStaticStr`.
+/// A stable, path-free error variant name.
 pub(crate) trait ErrorKind {
     #[cfg_attr(
         target_arch = "wasm32",
@@ -143,8 +95,7 @@ where
     }
 }
 
-/// Records on an operation's owned span, even when a filter disabled it.
-/// Falling back to `Span::current()` would overwrite the caller's outcome.
+/// Records the result on its operation span.
 #[cfg_attr(
     target_arch = "wasm32",
     allow(unused_variables, reason = "WASM records no spans")
@@ -154,21 +105,8 @@ pub(crate) fn outcome_on<T, E: ErrorKind>(
     result: Result<T, E>,
 ) -> Result<T, E> {
     #[cfg(not(target_arch = "wasm32"))]
-    record_outcome(&span.span, result.as_ref().err().map(E::kind));
+    record_outcome(span, result.as_ref().err().map(E::kind));
     result
-}
-
-/// Records a plain receipt result; failed APIs without receipts have no work totals.
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
-pub(crate) fn receipt_on<T, E: ErrorKind>(
-    span: &OperationSpan,
-    result: Result<OperationReceipt<T>, E>,
-) -> Result<OperationReceipt<T>, E> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Ok(receipt) = &result {
-        record_work(&span.span, &receipt.work);
-    }
-    outcome_on(span, result)
 }
 
 /// Summary on an explicitly owned span: a filtered child cannot mutate its parent.
@@ -181,14 +119,28 @@ pub(crate) fn measured_on<T, E: ErrorKind>(
     result: MeasuredResult<T, E>,
     work: impl FnOnce(&T) -> &WorkCounters,
 ) -> MeasuredResult<T, E> {
+    measured_on_with_kind(span, result, work, E::kind)
+}
+
+/// Caller-owned failures need not implement the SDK's private error taxonomy.
+#[cfg_attr(
+    target_arch = "wasm32",
+    allow(unused_variables, reason = "WASM records no spans")
+)]
+pub(crate) fn measured_on_with_kind<T, E>(
+    span: &OperationSpan,
+    result: MeasuredResult<T, E>,
+    work: impl FnOnce(&T) -> &WorkCounters,
+    kind: impl FnOnce(&E) -> &'static str,
+) -> MeasuredResult<T, E> {
     #[cfg(not(target_arch = "wasm32"))]
-    if !span.span.is_disabled() {
+    if !span.is_disabled() {
         let (work, kind) = match &result {
             Ok(value) => (work(value), None),
-            Err(failure) => (&*failure.work, Some(failure.error.kind())),
+            Err(failure) => (&*failure.work, Some(kind(&failure.error))),
         };
-        record_outcome(&span.span, kind);
-        record_work(&span.span, work);
+        record_outcome(span, kind);
+        record_work(span, work);
     }
     result
 }
@@ -206,46 +158,6 @@ fn record_work(span: &tracing::Span, work: &WorkCounters) {
     }
 }
 
-/// Closes a facade operation: records [`measured_on`] on its span and emits its
-/// receipt through [`WorkCounters::emit`].
-pub(crate) trait Observe {
-    fn observe_on(self, span: &OperationSpan, op: &'static str) -> Self;
-}
-
-impl<T, E: ErrorKind> Observe for MeasuredResult<OperationReceipt<T>, E> {
-    #[cfg_attr(
-        target_arch = "wasm32",
-        allow(unused_variables, reason = "WASM records no spans")
-    )]
-    fn observe_on(self, span: &OperationSpan, op: &'static str) -> Self {
-        let result = measured_on(span, self, |receipt| &receipt.work);
-        #[cfg(not(target_arch = "wasm32"))]
-        scope(span, || match &result {
-            Ok(receipt) => receipt.work.emit(&span.span, op, "ok"),
-            Err(failure) => failure.work.emit(&span.span, op, "err"),
-        });
-        result
-    }
-}
-
-/// An id field value: `bytes` as lowercase hex, formatted only when recorded.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn hex(bytes: &[u8]) -> tracing::field::DisplayValue<Hex<'_>> {
-    tracing::field::display(Hex(bytes))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct Hex<'a>(&'a [u8]);
-
-#[cfg(not(target_arch = "wasm32"))]
-impl std::fmt::Display for Hex<'_> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0
-            .iter()
-            .try_for_each(|byte| write!(formatter, "{byte:02x}"))
-    }
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 fn record_outcome(span: &tracing::Span, kind: Option<&'static str>) {
     match kind {
@@ -254,11 +166,7 @@ fn record_outcome(span: &tracing::Span, kind: Option<&'static str>) {
     };
 }
 
-#[cfg(all(
-    test,
-    feature = "native-mount",
-    any(target_os = "linux", target_os = "macos")
-))]
+#[cfg(all(test, feature = "native-mount", target_os = "linux"))]
 pub(crate) use worker_context_tests::assert_filtered_callback_isolation;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -267,64 +175,20 @@ mod worker_context_tests {
     use std::time::Duration;
     use tracing_subscriber::{layer::Context, prelude::*};
 
-    type RecordedFields = Vec<(String, String, String)>;
+    use acyclic_grpc_observability::tests::{Capture, Evidence};
 
-    #[derive(Default)]
-    struct Evidence {
-        records: RecordedFields,
-        closes: Vec<String>,
-        event_parent: Option<String>,
-        events: Vec<(Option<String>, RecordedFields)>,
-    }
-
-    struct Capture {
-        evidence: Arc<Mutex<Evidence>>,
-        closed: mpsc::Sender<()>,
-    }
-
-    struct Fields<'a>(&'a mut RecordedFields, String);
-    impl tracing::field::Visit for Fields<'_> {
-        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-            self.0
-                .push((self.1.clone(), field.name().into(), format!("{value:?}")));
-        }
-    }
-
+    struct NotifyClose(mpsc::Sender<()>);
     #[expect(
         clippy::expect_used,
-        reason = "test callbacks cannot return errors; failed fixture invariants must fail the test"
+        reason = "test notification invariants must fail immediately"
     )]
-    impl<S> tracing_subscriber::Layer<S> for Capture
+    impl<S> tracing_subscriber::Layer<S> for NotifyClose
     where
         S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
     {
-        fn on_record(
-            &self,
-            id: &tracing::Id,
-            record: &tracing::span::Record<'_>,
-            ctx: Context<'_, S>,
-        ) {
-            let span = ctx.span(id).expect("recorded span exists");
-            let mut evidence = self.evidence.lock().expect("evidence poisoned");
-            record.record(&mut Fields(&mut evidence.records, span.name().into()));
-        }
-        fn on_event(&self, event: &tracing::Event<'_>, ctx: Context<'_, S>) {
-            let parent = ctx.event_span(event).map(|span| span.name().into());
-            let mut fields = Vec::new();
-            event.record(&mut Fields(&mut fields, event.metadata().target().into()));
-            let mut evidence = self.evidence.lock().expect("evidence poisoned");
-            evidence.event_parent = parent.clone();
-            evidence.events.push((parent, fields));
-        }
         fn on_close(&self, id: tracing::Id, ctx: Context<'_, S>) {
-            let span = ctx.span(&id).expect("closing span exists");
-            self.evidence
-                .lock()
-                .expect("evidence poisoned")
-                .closes
-                .push(span.name().into());
-            if span.name() == "worker_operation" {
-                self.closed.send(()).expect("worker close observer is live");
+            if ctx.span(&id).expect("closing span exists").name() == "worker_operation" {
+                self.0.send(()).expect("worker close observer is live");
             }
         }
     }
@@ -335,15 +199,11 @@ mod worker_context_tests {
             for unwind in [false, true] {
                 let origin_seen = Arc::new(Mutex::new(Evidence::default()));
                 let foreign_seen = Arc::new(Mutex::new(Evidence::default()));
-                let (closed, _) = mpsc::channel();
+
                 let origin = tracing::Dispatch::new(
                     tracing_subscriber::registry()
                         .with(
-                            Capture {
-                                evidence: Arc::clone(&origin_seen),
-                                closed: closed.clone(),
-                            }
-                            .with_filter(
+                            Capture(Arc::clone(&origin_seen), Default::default()).with_filter(
                                 tracing_subscriber::filter::filter_fn(move |metadata| {
                                     !filtered || metadata.name() != "drop_operation"
                                 }),
@@ -355,11 +215,10 @@ mod worker_context_tests {
                             tracing_subscriber::filter::LevelFilter::TRACE
                         }),
                 );
-                let foreign =
-                    tracing::Dispatch::new(tracing_subscriber::registry().with(Capture {
-                        evidence: Arc::clone(&foreign_seen),
-                        closed,
-                    }));
+                let foreign = tracing::Dispatch::new(
+                    tracing_subscriber::registry()
+                        .with(Capture(Arc::clone(&foreign_seen), Default::default())),
+                );
                 let operation = tracing::dispatcher::with_default(&origin, || {
                     let root = tracing::info_span!("drop_root");
                     let caller = tracing::info_span!(parent: &root, "drop_caller");
@@ -433,18 +292,14 @@ mod worker_context_tests {
         use std::future::Future as _;
         for filtered in [false, true] {
             let seen = Arc::new(Mutex::new(Evidence::default()));
-            let (closed, _) = mpsc::channel();
-            let origin = tracing::Dispatch::new(
-                tracing_subscriber::registry().with(
-                    Capture {
-                        evidence: Arc::clone(&seen),
-                        closed,
-                    }
-                    .with_filter(tracing_subscriber::filter::filter_fn(
-                        move |metadata| !filtered || metadata.name() != "frame_operation",
-                    )),
+
+            let origin = tracing::Dispatch::new(tracing_subscriber::registry().with(
+                Capture(Arc::clone(&seen), Default::default()).with_filter(
+                    tracing_subscriber::filter::filter_fn(move |metadata| {
+                        !filtered || metadata.name() != "frame_operation"
+                    }),
                 ),
-            );
+            ));
             let foreign = tracing::Dispatch::new(tracing_subscriber::registry());
             let future = tracing::dispatcher::with_default(&origin, || {
                 let root = tracing::info_span!("frame_root");
@@ -476,10 +331,7 @@ mod worker_context_tests {
         }
     }
 
-    #[cfg(all(
-        feature = "native-mount",
-        any(target_os = "linux", target_os = "macos")
-    ))]
+    #[cfg(all(feature = "native-mount", target_os = "linux"))]
     #[expect(
         clippy::expect_used,
         reason = "test assertion helper cannot return errors; poisoned evidence must fail the test"
@@ -490,17 +342,14 @@ mod worker_context_tests {
         let _second = tracing::Dispatch::new(tracing_subscriber::registry());
         for visible in [false, true] {
             let evidence = Arc::new(Mutex::new(Evidence::default()));
-            let (closed, _) = mpsc::channel();
+
             let dispatch = tracing::Dispatch::new(
                 tracing_subscriber::registry()
                     .with(tracing_subscriber::filter::filter_fn(move |metadata| {
                         metadata.name() == "callback_parent"
                             || (visible && metadata.name() == "acyclic.fs.mount.filtered_callback")
                     }))
-                    .with(Capture {
-                        evidence: Arc::clone(&evidence),
-                        closed,
-                    }),
+                    .with(Capture(Arc::clone(&evidence), Default::default())),
             );
             let errno = tracing::dispatcher::with_default(&dispatch, || {
                 let parent = tracing::info_span!("callback_parent", errno = 77);
@@ -551,73 +400,14 @@ mod worker_context_tests {
     }
 
     #[tokio::test]
-    async fn filtered_facade_retains_one_parent_neutral_work_receipt()
-    -> Result<(), Box<dyn std::error::Error>> {
-        use tracing::{Instrument as _, instrument::WithSubscriber as _};
-        let _second = tracing::Dispatch::new(tracing_subscriber::registry());
-        let evidence = Arc::new(Mutex::new(Evidence::default()));
-        let (closed, _) = mpsc::channel();
-        let dispatch = tracing::Dispatch::new(
-            tracing_subscriber::registry().with(
-                Capture {
-                    evidence: Arc::clone(&evidence),
-                    closed,
-                }
-                .with_filter(tracing_subscriber::filter::filter_fn(|metadata| {
-                    metadata.name() == "ledger_caller" || metadata.target() == "acyclic.work"
-                })),
-            ),
-        );
-        let receipt = async {
-            let caller =
-                tracing::info_span!("ledger_caller", outcome = "unchanged", work.items = 99);
-            crate::Fs::memory()
-                .create_volume(
-                    crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral),
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
-                )
-                .instrument(caller)
-                .await
-        }
-        .with_subscriber(dispatch)
-        .await?;
-        let evidence = evidence.lock().expect("evidence poisoned");
-        assert!(
-            evidence.records.is_empty(),
-            "filtered operations mutated caller: {:?}",
-            evidence.records
-        );
-        assert_eq!(evidence.events.len(), 1, "{:?}", evidence.events);
-        let (parent, fields) = &evidence.events[0];
-        assert_eq!(
-            parent, &None,
-            "filtered receipt must not borrow caller's span"
-        );
-        assert!(
-            fields
-                .iter()
-                .any(|(_, field, value)| field == "op" && value == "\"create_volume\"")
-        );
-        assert!(
-            fields
-                .iter()
-                .any(|(_, field, value)| field == "items_examined"
-                    && value == &receipt.work.items_examined.to_string())
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn detached_worker_retains_scoped_subscriber_and_operation_until_work_finishes()
     -> Result<(), Box<dyn std::error::Error>> {
         use tracing::instrument::WithSubscriber as _;
         let evidence = Arc::new(Mutex::new(Evidence::default()));
         let (closed_tx, closed_rx) = mpsc::channel();
-        let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(Capture {
-            evidence: Arc::clone(&evidence),
-            closed: closed_tx,
-        }));
+        let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(
+            Capture(Arc::clone(&evidence), Default::default()).and_then(NotifyClose(closed_tx)),
+        ));
         let (started_tx, started_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
         let (caller, operation) = tracing::dispatcher::with_default(&dispatch, || {
@@ -664,7 +454,6 @@ mod worker_context_tests {
         .with_subscriber(unrelated)
         .await?;
         let evidence = evidence.lock().expect("evidence poisoned");
-        assert_eq!(evidence.event_parent.as_deref(), Some("worker_operation"));
         assert_eq!(
             evidence.events.len(),
             2,

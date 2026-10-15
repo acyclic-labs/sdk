@@ -1,39 +1,70 @@
 use super::*;
+use crate::async_storage::AsyncObjectStore;
 use crate::foundation::Digest;
 use crate::kernel::{
     Extent, ExtentKind, ExtentPage, decode_extent_page, encode_extent_page, extent_page_id,
 };
 use crate::memory::MemoryObjectStore;
-use crate::storage::ObjectStore;
-use bytes::Bytes;
 
-fn put(
+use acyclic_stream::OwnedBytes;
+
+async fn put(
     store: &MemoryObjectStore,
     extents: Vec<Extent>,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let page = ExtentPage::Leaf(extents);
     let root = extent_page_id(&page, 16)?;
-    store.put(
-        root,
-        Bytes::from(encode_extent_page(&page, 16)?),
-        WorkBudget::UNBOUNDED,
-    )?;
+    {
+        let __object_args = (
+            root,
+            OwnedBytes::from(encode_extent_page(
+                &page,
+                16,
+                |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+                |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+            )?),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?;
     Ok(root)
 }
 
-fn extents(
+async fn extents(
     store: &MemoryObjectStore,
     root: ObjectId,
 ) -> Result<Vec<Extent>, Box<dyn std::error::Error>> {
-    let bytes = store.read(root, u64::MAX, WorkBudget::UNBOUNDED)?.value;
-    let ExtentPage::Leaf(extents) = decode_extent_page(&bytes, DecodeLimits::default())? else {
+    let bytes = {
+        let __object_args = (
+            root,
+            u64::MAX,
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?
+    .value;
+    let ExtentPage::Leaf(extents) =
+        decode_extent_page(&bytes, DecodeLimits::default(), &mut |_| {
+            Ok::<_, crate::kernel::CanonicalDecodeError>(())
+        })?
+    else {
         return Err("clone result is not a leaf".into());
     };
     Ok(extents)
 }
 
-#[test]
-fn clone_reuses_content_and_preserves_sparse_kinds_without_blob_reads()
+#[tokio::test]
+async fn clone_reuses_content_and_preserves_sparse_kinds_without_blob_reads()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let blob = ObjectId {
@@ -62,7 +93,8 @@ fn clone_reuses_content_and_preserves_sparse_kinds_without_blob_reads()
                 kind: ExtentKind::AllocatedZero,
             },
         ],
-    )?;
+    )
+    .await?;
     let destination = put(
         &store,
         vec![Extent {
@@ -70,7 +102,8 @@ fn clone_reuses_content_and_preserves_sparse_kinds_without_blob_reads()
             length: 16,
             kind: ExtentKind::Hole,
         }],
-    )?;
+    )
+    .await?;
     let receipt = clone_extent_range(
         &store,
         ExtentCloneRequest {
@@ -88,12 +121,14 @@ fn clone_reuses_content_and_preserves_sparse_kinds_without_blob_reads()
         },
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    )
+    .await?;
     assert_eq!(receipt.logical_bytes, 16);
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 1);
     assert_eq!(
-        extents(&store, receipt.root)?,
+        extents(&store, receipt.root).await?,
         vec![
             Extent {
                 offset: 0,
@@ -128,8 +163,8 @@ fn clone_reuses_content_and_preserves_sparse_kinds_without_blob_reads()
     Ok(())
 }
 
-#[test]
-fn same_file_overlap_plans_source_before_destination_writes()
+#[tokio::test]
+async fn same_file_overlap_plans_source_before_destination_writes()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = put(
@@ -146,7 +181,8 @@ fn same_file_overlap_plans_source_before_destination_writes()
                 kind: ExtentKind::Hole,
             },
         ],
-    )?;
+    )
+    .await?;
     let receipt = clone_extent_range(
         &store,
         ExtentCloneRequest {
@@ -164,9 +200,11 @@ fn same_file_overlap_plans_source_before_destination_writes()
         },
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    )
+    .await?;
     assert_eq!(
-        extents(&store, receipt.root)?,
+        extents(&store, receipt.root).await?,
         vec![
             Extent {
                 offset: 0,
@@ -183,8 +221,9 @@ fn same_file_overlap_plans_source_before_destination_writes()
     Ok(())
 }
 
-#[test]
-fn invalid_decode_limits_reject_before_source_reads() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn invalid_decode_limits_reject_before_source_reads() -> Result<(), Box<dyn std::error::Error>>
+{
     let store = MemoryObjectStore::default();
     let root = put(
         &store,
@@ -193,7 +232,8 @@ fn invalid_decode_limits_reject_before_source_reads() -> Result<(), Box<dyn std:
             length: 8,
             kind: ExtentKind::Hole,
         }],
-    )?;
+    )
+    .await?;
     let failure = clone_extent_range(
         &store,
         ExtentCloneRequest {
@@ -214,7 +254,9 @@ fn invalid_decode_limits_reject_before_source_reads() -> Result<(), Box<dyn std:
             ..DecodeLimits::default()
         },
         WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("invalid decode limits unexpectedly succeeded")?;
     assert!(matches!(failure.error, ExtentCloneError::InvalidLimits));
@@ -222,68 +264,8 @@ fn invalid_decode_limits_reject_before_source_reads() -> Result<(), Box<dyn std:
     Ok(())
 }
 
-#[test]
-fn async_and_sync_clone_share_exact_results_and_work() -> Result<(), Box<dyn std::error::Error>> {
-    let sync_store = MemoryObjectStore::default();
-    let async_store = MemoryObjectStore::default();
-    let source_extents = vec![
-        Extent {
-            offset: 0,
-            length: 4,
-            kind: ExtentKind::AllocatedZero,
-        },
-        Extent {
-            offset: 4,
-            length: 4,
-            kind: ExtentKind::Hole,
-        },
-    ];
-    let destination_extents = vec![Extent {
-        offset: 0,
-        length: 12,
-        kind: ExtentKind::Hole,
-    }];
-    let sync_source = put(&sync_store, source_extents.clone())?;
-    let async_source = put(&async_store, source_extents)?;
-    let sync_destination = put(&sync_store, destination_extents.clone())?;
-    let async_destination = put(&async_store, destination_extents)?;
-    let request = ExtentCloneRequest {
-        source_root: sync_source,
-        source_logical_bytes: 8,
-        source_range: ByteRange {
-            offset: 1,
-            length: 6,
-        },
-        destination_root: sync_destination,
-        destination_logical_bytes: 12,
-        destination_offset: 3,
-        maximum_spans: 2,
-        maximum_mutations: 2,
-    };
-    let synchronous = clone_extent_range(
-        &sync_store,
-        request,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-    )?;
-    let asynchronous = crate::async_storage::poll_ready(clone_extent_range_async(
-        &async_store,
-        ExtentCloneRequest {
-            source_root: async_source,
-            destination_root: async_destination,
-            ..request
-        },
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    ))
-    .ok_or("memory-backed asynchronous range clone unexpectedly blocked")??;
-    assert_eq!(asynchronous, synchronous);
-    Ok(())
-}
-
-#[test]
-fn pre_cancelled_async_clone_performs_zero_work() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn pre_cancelled_clone_performs_zero_work() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = put(
         &store,
@@ -292,10 +274,11 @@ fn pre_cancelled_async_clone_performs_zero_work() -> Result<(), Box<dyn std::err
             length: 8,
             kind: ExtentKind::Hole,
         }],
-    )?;
+    )
+    .await?;
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let failure = crate::async_storage::poll_ready(clone_extent_range_async(
+    let failure = clone_extent_range(
         &store,
         ExtentCloneRequest {
             source_root: root,
@@ -313,13 +296,15 @@ fn pre_cancelled_async_clone_performs_zero_work() -> Result<(), Box<dyn std::err
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("memory-backed asynchronous range clone unexpectedly blocked")?
+    )
+    .await
     .err()
     .ok_or("cancelled range clone unexpectedly succeeded")?;
     assert!(matches!(
         failure.error,
-        ExtentCloneError::Source(super::super::ExtentReadError::Cancelled)
+        ExtentCloneError::Destination(ExtentMutationError::Storage(
+            crate::ObjectStoreError::Cancelled
+        ))
     ));
     assert_eq!(*failure.work, WorkCounters::default());
     Ok(())
@@ -423,9 +408,8 @@ fn request_validation_rejects_every_shape_before_work() -> Result<(), Box<dyn st
         let Err(failure) = validate_request(request, limits) else {
             return Err("invalid clone request unexpectedly succeeded".into());
         };
-        assert_eq!(*failure.work, WorkCounters::default());
         assert_eq!(
-            std::mem::discriminant(&failure.error),
+            std::mem::discriminant(&failure),
             std::mem::discriminant(&expected)
         );
     }

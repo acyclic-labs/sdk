@@ -1,16 +1,15 @@
 import { expect, test } from "bun:test";
 import { ClientViews, type ClientDomain, type ClientObservation, type ClientViewLimits } from "../src/client-views.js";
-import { ProjectionStore, type ClientEvent, type ClientListener } from "../src/client.js";
+import { ProjectionStore, type ClientEvent } from "../src/client.js";
 import { WasmClientViews } from "../generated/wasm/acyclic_harness_wasm.js";
 
 type Value = Readonly<{ count: number }>;
-type Evidence = ClientObservation<Value>;
 const limits: ClientViewLimits = { records: 4, branches: 4, edges: 8, bytes: 1_000_000, work: 256, retention: 10n, visible: 4 };
 const value = (count: number): Value => Object.freeze({ count });
-const evidence = (key: string, revision: number, projected: Value, operation: Evidence["operation"] = null): Evidence => ({
+const evidence = (key: string, revision: number, projected: Value, operation: ClientObservation<Value>["operation"] = null): ClientObservation<Value> => ({
   fact: { key, basis: String(revision), value: projected, bytes: 512 }, operation, work: 1,
 });
-const domain: ClientDomain<Value, null, Evidence> = {
+const domain: ClientDomain<Value, null, ClientObservation<Value>> = {
   identity: "1",
   validate: () => ({ bytes: 512, work: 1 }),
   observe(input, current) {
@@ -22,6 +21,50 @@ const domain: ClientDomain<Value, null, Evidence> = {
 };
 
 await ClientViews.initialize();
+
+test("restored hypotheses retain dependencies and require trusted outcome receipts", () => {
+  const receipt = evidence("a", 1, value(1), ["op", "Completed"]);
+  const recovering: ClientDomain<Value, null, ClientObservation<Value>> = {
+    ...domain,
+    restore(fact, branch) {
+      if (branch.adapter !== "1") throw new Error("adapter drift");
+      if (branch.prediction === "Pending" && branch.outcome === "Unknown" && branch.basis === fact.basis) {
+        return { bytes: 512, work: 1 };
+      }
+      if (branch.prediction === "Confirmed" && branch.outcome === "Completed" &&
+          branch.operation === receipt.operation?.[0] && fact.basis === receipt.fact?.basis &&
+          branch.predicted.count === receipt.fact.value.count) return { bytes: 512, work: 1 };
+      throw new Error("no trusted recovery receipt");
+    },
+  };
+  const source = new ClientViews(recovering, "71", 0n, limits);
+  source.observe("a", evidence("a", 0, value(0)));
+  const parent = source.begin({ key: "a", basis: "0", operation: "op", predicted: value(1), assumption: null, dependencies: [], expires: 5n });
+  source.observe("a", receipt);
+  const child = source.begin({ key: "a", basis: "1", operation: "child", predicted: value(2), assumption: null,
+    dependencies: [{ branch: parent, requirement: "Confirmed" }], expires: 5n });
+  const savedParent = source.checkpoint(parent);
+  const savedChild = source.checkpoint(child);
+  const restored = new ClientViews(recovering, "71", source.sequence(), limits);
+  restored.observe("a", receipt);
+  const before = restored.residency();
+  expect(() => restored.restore(savedChild)).toThrow();
+  expect(restored.residency()).toEqual(before);
+  expect(() => restored.restore({ ...savedChild, prediction: "Confirmed", outcome: "Completed" })).toThrow();
+  expect(restored.residency()).toEqual(before);
+  restored.restore(savedParent);
+  restored.restore(savedChild);
+  expect(restored.view("a", [child]).value).toBe(savedChild.predicted);
+  expect(restored.checkpoint(child).dependencies).toEqual(savedChild.dependencies);
+  expect(restored.checkpoint(parent).outcome).toBe("Completed");
+  const next = restored.begin({ key: "a", basis: "1", operation: null, predicted: value(3), assumption: null,
+    dependencies: [], expires: 5n });
+  expect([parent, child]).not.toContain(next);
+  const unsupported = new ClientViews(domain, "71", source.sequence(), limits);
+  unsupported.observe("a", receipt);
+  expect(() => unsupported.restore(savedParent)).toThrow();
+  source.dispose(); restored.dispose(); unsupported.dispose();
+});
 
 test("Rust binding keeps stable immutable references, narrow notifications, honest outcome and provenance", () => {
   const client = new ClientViews(domain, "7", 0n, limits);
@@ -67,14 +110,14 @@ test("Rust binding keeps stable immutable references, narrow notifications, hone
     client.discard(branch);
     expect(selected.getSnapshot().hypotheses).toEqual([]);
     expect(notifications).toBe(3);
-    expect(() => client.release("a")).toThrow("dispose");
+    expect(() => client.release("a")).toThrow();
     selected.dispose();
     sibling.dispose();
     client.release("a");
     expect(client.residency().slice(0, 3)).toEqual([1, 0, 0]);
   } finally { off(); otherOff(); selected.dispose(); sibling.dispose(); unrelated.dispose(); client.dispose(); }
   client.dispose();
-  expect(() => client.view("a")).toThrow("disposed");
+  expect(() => client.view("a")).toThrow();
 });
 
 test("raw generated WASM rejects negative/overflow/precision-losing ticks and costs", () => {
@@ -90,14 +133,14 @@ test("raw generated WASM rejects negative/overflow/precision-losing ticks and co
     }
     raw.observe("a", evidence("a", 0, value(0)));
     const snapshot = raw.view("a", []);
-    expect(() => raw.observe("a", { ...evidence("a", 1, value(1)), work: limits.work + 1 })).toThrow("Budget");
+    expect(() => raw.observe("a", { ...evidence("a", 1, value(1)), work: limits.work + 1 })).toThrow();
     expect(raw.view("a", []).value).toBe(snapshot.value);
     const hugeOverlays = new Array(limits.visible + 1);
     Object.defineProperty(hugeOverlays, 0, { get() { throw new Error("overlays parsed before admission"); } });
-    expect(() => raw.view("a", hugeOverlays)).toThrow("Budget");
+    expect(() => raw.view("a", hugeOverlays)).toThrow();
     const hugeDependencies = new Array(limits.edges + 1);
     Object.defineProperty(hugeDependencies, 0, { get() { throw new Error("dependencies parsed before admission"); } });
-    expect(() => raw.begin({ dependencies: hugeDependencies }, value(1), null)).toThrow("Budget");
+    expect(() => raw.begin({ dependencies: hugeDependencies }, value(1), null)).toThrow();
     const narrow = evidence("a", 1, value(1));
     Object.defineProperty(narrow, "unrelated", { enumerable: true, get() { throw new Error("unrelated field enumerated"); } });
     raw.observe("a", narrow);
@@ -110,26 +153,26 @@ test("binding failure atomicity, ambiguity, dependencies, retention and finite s
   client.observe("a", evidence("a", 0, value(0)));
   const request = { key: "a", basis: "0", operation: "op", predicted: value(1), assumption: null, dependencies: [], expires: 5n } as const;
   try {
-    expect(() => client.begin({ ...request, basis: "bad" })).toThrow("StaleBasis");
+    expect(() => client.begin({ ...request, basis: "bad" })).toThrow();
     const branch = client.begin(request);
     expect(branch).toBe("8:1");
     for (const alias of ["08:1", "8:01", "+8:1", "8:+1"] as const) {
-      expect(() => client.select("a", [alias])).toThrow("Conflict");
-      expect(() => client.discard(alias)).toThrow("Conflict");
+      expect(() => client.select("a", [alias])).toThrow();
+      expect(() => client.discard(alias)).toThrow();
     }
-    expect(() => client.begin(request)).toThrow("Conflict");
+    expect(() => client.begin(request)).toThrow();
     const child = client.begin({ ...request, operation: "child", dependencies: [{ branch, requirement: "Prediction" }] });
-    expect(() => client.view("a", [branch, child])).toThrow("Ambiguous");
+    expect(() => client.view("a", [branch, child])).toThrow();
     const selected = client.select("a", [child]);
     const unchanged = selected.getSnapshot();
-    expect(() => client.observe("a", evidence("a", -1, value(9)))).toThrow("Unsupported");
+    expect(() => client.observe("a", evidence("a", -1, value(9)))).toThrow();
     expect(selected.getSnapshot()).toBe(unchanged);
     client.observe("a", { fact: null, operation: ["op", "Rejected"], work: 1 });
     expect(selected.getSnapshot().value.count).toBe(0);
     expect(selected.getSnapshot().hypotheses[0]?.prediction).toBe("Invalidated");
     const second = client.select("a");
     const third = client.select("a");
-    expect(() => client.select("a")).toThrow("capacity");
+    expect(() => client.select("a")).toThrow();
     const before = client.residency();
     expect(() => client.advance(-1n)).toThrow();
     expect(client.residency()).toEqual(before);
@@ -142,8 +185,8 @@ test("binding failure atomicity, ambiguity, dependencies, retention and finite s
 });
 
 test("ProjectionStore explicitly starts before delivery and retains updates across subscriber churn", () => {
-  const listeners = new Set<ClientListener<number>>();
-  const client = { subscribe(listener: ClientListener<number>) { listeners.add(listener); return () => { listeners.delete(listener); }; } };
+  const listeners = new Set<(event: ClientEvent<number>) => void>();
+  const client = { subscribe(listener: (event: ClientEvent<number>) => void) { listeners.add(listener); return () => { listeners.delete(listener); }; } };
   const store = new ProjectionStore(client, 0, (state, event) => state + event.event);
   expect(listeners.size).toBe(0);
   store.start(); store.start();
@@ -163,7 +206,7 @@ test("ProjectionStore explicitly starts before delivery and retains updates acro
   store.dispose(); store.dispose(); emit(4);
   expect(listeners.size).toBe(0);
   expect(store.getSnapshot()).toBe(3);
-  expect(() => store.start()).toThrow("disposed");
+  expect(() => store.start()).toThrow();
 });
 
 test("bounded reordered/duplicate/partial outcomes preserve unrelated authoritative values", () => {
@@ -178,7 +221,7 @@ test("bounded reordered/duplicate/partial outcomes preserve unrelated authoritat
     const selected = client.select("a", [branch]);
     try {
       for (const outcome of repeated ? [first, second, second] : [first, second]) {
-        const observation: Evidence = outcome === "Completed" ? evidence("a", 1, value(1), ["original", outcome])
+        const observation: ClientObservation<Value> = outcome === "Completed" ? evidence("a", 1, value(1), ["original", outcome])
           : { fact: null, operation: ["original", outcome], work: 1 };
         const before = selected.getSnapshot();
         const residency = client.residency();

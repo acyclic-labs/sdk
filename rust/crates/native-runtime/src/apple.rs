@@ -1,38 +1,10 @@
 //! Positional I/O for arbitrary Apple file handles.
-//!
-//! These functions run on the runtime's bounded I/O workers, never on the
-//! service executor. Dispatch I/O is not valid for an arbitrary `File` here:
-//! its random-channel offsets are relative to the descriptor's cursor, and
-//! `/dev/fd/N` aliases that cursor rather than creating an independent one.
 
 use crate::{OwnedRead, OwnedWrite};
 use bytes::Bytes;
 use std::fs::File;
 use std::io;
 use std::os::unix::fs::FileExt as _;
-use std::os::unix::fs::MetadataExt as _;
-
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
-pub(super) struct FileIdentity {
-    device: u64,
-    inode: u64,
-}
-
-pub(super) fn file_identity(file: &File) -> io::Result<FileIdentity> {
-    let metadata = file.metadata()?;
-    Ok(FileIdentity {
-        device: metadata.dev(),
-        inode: metadata.ino(),
-    })
-}
-
-pub(super) fn file_identity_capacity() -> usize {
-    let limit = rustix::process::getrlimit(rustix::process::Resource::Nofile);
-    usize::try_from(limit.current.unwrap_or(u64::MAX))
-        .unwrap_or(usize::MAX)
-        .saturating_div(4)
-        .clamp(1, 4096)
-}
 
 fn validate_range(offset: u64, length: usize) -> io::Result<()> {
     let length = u64::try_from(length)
@@ -75,6 +47,26 @@ pub(super) fn write_all_batch_owned(file: &File, writes: Vec<OwnedWrite>) -> io:
         file.write_all_at(&write.bytes, write.offset)?;
     }
     Ok(())
+}
+
+#[allow(
+    unsafe_code,
+    reason = "fsync and the durability barrier act only on the held descriptor"
+)]
+pub(super) fn sync_once(file: &File, durability: crate::Durability) -> io::Result<()> {
+    use std::os::fd::AsRawFd as _;
+    // SAFETY: both operations act only on the live descriptor.
+    let result = unsafe {
+        match durability {
+            crate::Durability::Full => libc::fsync(file.as_raw_fd()),
+            crate::Durability::Barrier => libc::fcntl(file.as_raw_fd(), libc::F_BARRIERFSYNC),
+        }
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 #[cfg(test)]

@@ -1,7 +1,4 @@
 //! Logical bucket/key Objects contract replacing public version history and snapshots.
-//!
-//! Reads and listings may lag mutations. Single-object publication and its conditions are
-//! atomic. Service-owned retained bytes are a private service contract, not public history.
 pub mod conformance;
 #[cfg(all(feature = "http", not(target_arch = "wasm32")))]
 pub mod http;
@@ -10,13 +7,14 @@ pub mod json;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub mod local;
 mod memory;
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub(crate) use memory::persistence::Publication;
 pub mod request;
 pub mod response;
 #[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
 mod upload;
 
 /// Canonical HTTP route, input message, and output message inventory, relative to `/v1/objects/`.
-/// Streaming routes carry bounded NDJSON frames; see the Objects v1 HTTP contract document.
 pub const HTTP_ROUTES: &[(&str, &str, &str)] = &[
     ("buckets/create", "CreateBucketRequest", "Bucket"),
     ("buckets/head", "HeadBucketRequest", "Bucket"),
@@ -58,28 +56,6 @@ pub const HTTP_ROUTES: &[(&str, &str, &str)] = &[
 ];
 pub use memory::{MemoryObjects, MemoryOptions};
 
-/// Native composition capability for filesystem storage over logical Objects.
-///
-/// This is not a public service RPC. Implementations must execute a batch under
-/// one native authority admission, with one result per input in order. There is
-/// deliberately no default loop over public `put`/`get` calls: filesystem work
-/// accounting must not mistake multiple remote operations for one native batch.
-#[async_trait::async_trait]
-#[doc(hidden)]
-pub trait NativeBatchObjects: ObjectsProvider {
-    /// Publishes ordered, individually atomic mutations in one native admission.
-    /// A failed item leaves its representation and retry receipt unchanged.
-    async fn put_batch(
-        &self,
-        requests: Vec<(wire::PutObjectHeader, bytes::Bytes)>,
-    ) -> Vec<Result<wire::ObjectInfo, Error>>;
-
-    /// Reads ordered, individually bounded selections under one native admission.
-    async fn get_batch(
-        &self,
-        requests: Vec<(wire::GetObjectRequest, u64)>,
-    ) -> Vec<Result<Object, Error>>;
-}
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub mod grpc;
 #[cfg(all(test, feature = "grpc", not(target_arch = "wasm32")))]
@@ -104,8 +80,7 @@ pub mod wire {
 /// Largest caller-supplied PEM CA, client certificate, or private key.
 #[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
 const MAX_PEM_BYTES: usize = 64 * 1024;
-/// Largest bearer credential, in bytes, that an SDK client accepts. It matches the
-/// Acyclic platform's maximum bearer (12 KiB), so every platform-issued credential fits.
+/// Largest bearer credential, in bytes, that an SDK client accepts.
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
 
 /// Canonical Objects v1 descriptor, including streaming service definitions.
@@ -124,52 +99,65 @@ impl From<wire::ErrorCode> for Error {
     }
 }
 
-/// One buffered selection for callers that explicitly bound allocation.
-/// Streaming transports also expose framed upload/download APIs.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Object {
-    /// Representation metadata and optional selected byte range.
-    pub header: wire::GetObjectHeader,
-    /// Complete selected bytes, with no torn representation.
-    pub body: bytes::Bytes,
-}
-
-/// A validated header followed by bounded decoded chunks. Dropping it cancels the read.
-pub struct Download {
-    /// Metadata for the complete selected representation.
-    pub header: wire::GetObjectHeader,
-    /// Decoded body chunks; a truncated body or terminal service error is an error item.
-    pub body: BodyStream,
-}
-pub use crate::obs::BodyStream;
-/// Caller-owned upload chunks. A source failure aborts publication, preserving its category.
-pub type UploadBody = futures::stream::BoxStream<'static, Result<bytes::Bytes, Error>>;
-impl Download {
-    /// Collects chunks within an explicit allocation bound, preserving terminal failures.
-    pub async fn collect(self, maximum_bytes: u64) -> Result<Object, Error> {
-        use futures::StreamExt;
-        let mut body = bytes::BytesMut::new();
-        let mut stream = self.body;
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
-            let size = (body.len() as u64)
-                .checked_add(chunk.len() as u64)
-                .ok_or(Error::from(wire::ErrorCode::QuotaExceeded))?;
-            if size > maximum_bytes || usize::try_from(size).is_err() {
-                return Err(wire::ErrorCode::QuotaExceeded.into());
-            }
-            body.extend_from_slice(&chunk);
-        }
-        Ok(Object {
-            header: self.header,
-            body: body.freeze(),
-        })
-    }
-}
+#[cfg(not(target_arch = "wasm32"))]
+mod native_error;
+mod object;
+mod ownership;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use native_error::native_preparation_error;
+#[cfg(not(target_arch = "wasm32"))]
+pub use native_error::{NativeObjectsCause, NativeObjectsError, NativeObjectsSharedFailure};
+pub use object::{BodyStream, Download, Object, UploadBody};
+pub use ownership::Guarded;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use ownership::native_input_meter;
+#[cfg(not(target_arch = "wasm32"))]
+pub use ownership::{
+    ObjectsBatch, ObjectsNativeFuture, ObjectsNativeRequest, ObjectsPutReceipt, native_future,
+};
 
 /// Transport-independent logical Objects interface.
 #[async_trait::async_trait]
 pub trait ObjectsProvider: Send + Sync {
+    /// Publishes ordered, individually atomic mutations in one native admission.
+    async fn put_batch(
+        &self,
+        requests: Vec<(wire::PutObjectHeader, acyclic_stream::OwnedBytes)>,
+    ) -> Vec<Result<wire::ObjectInfo, Error>> {
+        vec![Err(wire::ErrorCode::Unsupported.into()); requests.len()]
+    }
+
+    /// Reads ordered, individually bounded selections under one native admission.
+    async fn get_batch(
+        &self,
+        requests: Vec<(wire::GetObjectRequest, u64)>,
+    ) -> Vec<Result<Object, Error>> {
+        requests
+            .into_iter()
+            .map(|_| Err(wire::ErrorCode::Unsupported.into()))
+            .collect()
+    }
+
+    /// Reads a genuine batch using the caller's original allocation owner.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn get_batch_native(
+        &self,
+        _requests: ObjectsNativeRequest<Vec<(wire::GetObjectRequest, u64)>>,
+        _meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<Object>>, NativeObjectsError> {
+        Err(NativeObjectsError::from(NativeObjectsCause::Unsupported))
+    }
+
+    /// Publishes a genuine batch with the current caller's original admissions.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn put_batch_native(
+        &self,
+        _requests: ObjectsNativeRequest<Vec<(wire::PutObjectHeader, acyclic_stream::OwnedBytes)>>,
+        _meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
+        Err(NativeObjectsError::from(NativeObjectsCause::Unsupported))
+    }
+
     /// Creates a tenant-scoped logical bucket.
     async fn create_bucket(
         &self,
@@ -186,14 +174,35 @@ pub trait ObjectsProvider: Send + Sync {
     async fn put(
         &self,
         header: wire::PutObjectHeader,
-        body: bytes::Bytes,
+        body: acyclic_stream::OwnedBytes,
     ) -> Result<wire::ObjectInfo, Error>;
+
+    /// Publishes through the same engine with the current original native meter.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn put_native(
+        &self,
+        _request: ObjectsNativeRequest<(wire::PutObjectHeader, acyclic_stream::OwnedBytes)>,
+        _meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, ObjectsPutReceipt>, NativeObjectsError> {
+        Err(NativeObjectsError::from(NativeObjectsCause::Unsupported))
+    }
     /// Reads one complete selected representation within the caller's allocation bound.
     async fn get(
         &self,
         request: wire::GetObjectRequest,
         maximum_bytes: u64,
     ) -> Result<Object, Error>;
+
+    /// Reads through the same provider using its original-meter body producer.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn get_native(
+        &self,
+        _request: ObjectsNativeRequest<wire::GetObjectRequest>,
+        _maximum_bytes: u64,
+        _meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, Object>, NativeObjectsError> {
+        Err(NativeObjectsError::from(NativeObjectsCause::Unsupported))
+    }
     /// Reads metadata without allocating body bytes.
     async fn head(
         &self,
@@ -218,7 +227,7 @@ pub trait ObjectsProvider: Send + Sync {
     async fn upload_part(
         &self,
         header: wire::UploadPartHeader,
-        body: bytes::Bytes,
+        body: acyclic_stream::OwnedBytes,
     ) -> Result<wire::UploadedPart, Error>;
     /// Paginates staged parts by part number.
     async fn list_parts(

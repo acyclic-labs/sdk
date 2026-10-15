@@ -4,6 +4,7 @@ use super::{
     upload, wire,
 };
 use crate::obs;
+use acyclic_stream::OwnedBytes;
 use bytes::Bytes;
 use futures::{StreamExt, stream};
 use prost::Message;
@@ -39,15 +40,14 @@ impl HttpObjects {
                 rpc.code = obs::Empty
             ),
             async {
-                request::put_stream_digest(&query)?;
-                let original = query.encode_to_vec();
+                request::put(&query)?;
                 let header = line(
                     "PutObjectRequest",
                     &wire::PutObjectRequest {
                         frame: Some(wire::put_object_request::Frame::Header(query)),
                     },
                 )?;
-                let (chunks, state, failure) = upload::chunks(body);
+                let (chunks, state) = upload::chunks(body);
                 let frames = chunks.map(|chunk| {
                     line(
                         "PutObjectRequest",
@@ -77,15 +77,13 @@ impl HttpObjects {
                             .await?;
                         self.decode("ObjectInfo", reply).await
                     },
-                    failure,
+                    &state,
                 )
                 .await?;
-                response::validate_binary(
-                    "objects/put",
-                    &original,
-                    &result.encode_to_vec(),
-                    state.finish()?,
-                )?;
+                response::object_info(&result)?;
+                if result.size != state.finish()? {
+                    return Err(response::invalid());
+                }
                 Ok(result)
             },
         )
@@ -105,15 +103,15 @@ impl HttpObjects {
                 rpc.code = obs::Empty
             ),
             async {
-                request::upload_part_stream_digest(&query)?;
-                let original = query.encode_to_vec();
+                request::upload_part(&query)?;
+                let part_number = query.part_number;
                 let header = line(
                     "UploadPartRequest",
                     &wire::UploadPartRequest {
                         frame: Some(wire::upload_part_request::Frame::Header(query)),
                     },
                 )?;
-                let (chunks, state, failure) = upload::chunks(body);
+                let (chunks, state) = upload::chunks(body);
                 let frames = chunks.map(|chunk| {
                     line(
                         "UploadPartRequest",
@@ -143,26 +141,17 @@ impl HttpObjects {
                             .await?;
                         self.decode("UploadedPart", reply).await
                     },
-                    failure,
+                    &state,
                 )
                 .await?;
-                response::validate_binary(
-                    "multipart/upload-part",
-                    &original,
-                    &result.encode_to_vec(),
-                    state.finish()?,
-                )?;
+                response::part(&result, part_number, state.finish()?)?;
                 Ok(result)
             },
         )
         .await
     }
-    /// Creates a bounded client using HTTPS or loopback HTTP for local development.
-    pub fn new(endpoint: &str, token: &str, maximum_response_bytes: usize) -> Result<Self, Error> {
-        Self::with_ca_certificate(endpoint, token, maximum_response_bytes, None)
-    }
-    /// Adds one bounded PEM private CA without modifying process-wide trust.
-    pub fn with_ca_certificate(
+    /// Creates a bounded client with optional exclusive PEM trust.
+    pub fn new(
         endpoint: &str,
         token: &str,
         maximum_response_bytes: usize,
@@ -207,7 +196,7 @@ impl HttpObjects {
         }
         Ok(Self {
             transport: transport.build().map_err(|_| invalid())?,
-            endpoint,
+            endpoint: endpoint.join("v1/objects/").map_err(|_| invalid())?,
             authorization,
             maximum: maximum_response_bytes,
         })
@@ -220,7 +209,7 @@ impl HttpObjects {
     ) -> Result<Response, Error> {
         let url = self
             .endpoint
-            .join(&format!("v1/objects/{route}"))
+            .join(route)
             .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
         let response = self
             .transport
@@ -332,7 +321,7 @@ impl HttpObjects {
                 rpc.code = obs::Empty
             ),
             async {
-                request::validate_binary("objects/get", &query.encode_to_vec(), 0)?;
+                request::get(&query)?;
                 let bytes = json::encode("GetObjectRequest", &query)?;
                 if bytes.len() > REQUEST_BYTES {
                     return Err(wire::ErrorCode::QuotaExceeded.into());
@@ -357,10 +346,7 @@ impl HttpObjects {
                 let first = reader.next().await?.ok_or_else(response::invalid)?;
                 let header = match first.frame {
                     Some(wire::get_object_response::Frame::Header(header)) => header,
-                    Some(wire::get_object_response::Frame::Error(detail)) => {
-                        return Err(frame_error(detail.code));
-                    }
-                    _ => return Err(response::invalid()),
+                    frame => return Err(response::reject_frame(frame)),
                 };
                 let remaining = response::get_header(&header, &query.range, maximum_bytes)?;
                 let body =
@@ -378,10 +364,7 @@ impl HttpObjects {
                                 let remaining = remaining - bytes.len() as u64;
                                 Ok(Some((Bytes::from(bytes), (reader, remaining))))
                             }
-                            Some(wire::get_object_response::Frame::Error(detail)) => {
-                                Err(frame_error(detail.code))
-                            }
-                            _ => Err(response::invalid()),
+                            frame => Err(response::reject_frame(frame)),
                         }
                     })
                     .boxed();
@@ -455,12 +438,6 @@ impl Frames {
         }
     }
 }
-fn frame_error(code: i32) -> Error {
-    wire::ErrorCode::try_from(code)
-        .ok()
-        .filter(|code| *code != wire::ErrorCode::Unspecified)
-        .map_or_else(response::invalid, Error::from)
-}
 #[async_trait::async_trait]
 impl ObjectsProvider for HttpObjects {
     async fn create_bucket(&self, query: wire::CreateBucketRequest) -> Result<wire::Bucket, Error> {
@@ -496,9 +473,9 @@ impl ObjectsProvider for HttpObjects {
     async fn put(
         &self,
         query: wire::PutObjectHeader,
-        body: Bytes,
+        body: OwnedBytes,
     ) -> Result<wire::ObjectInfo, Error> {
-        self.put_stream(query, stream::once(async { Ok(body) }).boxed())
+        self.put_stream(query, stream::once(async { Ok(body) }).boxed().into())
             .await
     }
     async fn get(
@@ -515,10 +492,7 @@ impl ObjectsProvider for HttpObjects {
         &self,
         query: wire::HeadObjectRequest,
     ) -> Result<wire::HeadObjectResponse, Error> {
-        request::validate_binary("objects/head", &query.encode_to_vec(), 0)?;
-        request::bucket(&query.bucket)?;
-        request::key(&query.object_key)?;
-        request::read_filters(&query.if_match, &query.if_none_match)?;
+        request::head(&query)?;
         self.call(
             "objects/head",
             query,
@@ -541,9 +515,7 @@ impl ObjectsProvider for HttpObjects {
         &self,
         query: wire::ListObjectsRequest,
     ) -> Result<wire::ListObjectsResponse, Error> {
-        request::validate_binary("objects/list", &query.encode_to_vec(), 0)?;
-        request::bucket(&query.bucket)?;
-        request::page_size(query.page_size)?;
+        request::list(&query)?;
         self.call("objects/list", query, |query, result| {
             response::listing(&query, &result)?;
             Ok(result)
@@ -568,23 +540,16 @@ impl ObjectsProvider for HttpObjects {
     async fn upload_part(
         &self,
         query: wire::UploadPartHeader,
-        body: Bytes,
+        body: OwnedBytes,
     ) -> Result<wire::UploadedPart, Error> {
-        self.upload_part_stream(query, stream::once(async { Ok(body) }).boxed())
+        self.upload_part_stream(query, stream::once(async { Ok(body) }).boxed().into())
             .await
     }
     async fn list_parts(
         &self,
         query: wire::ListPartsRequest,
     ) -> Result<wire::ListPartsResponse, Error> {
-        request::validate_binary("multipart/list-parts", &query.encode_to_vec(), 0)?;
-        request::bucket(&query.bucket)?;
-        request::key(&query.object_key)?;
-        request::upload_id(&query.upload_id)?;
-        request::page_size(query.page_size)?;
-        if query.after_part_number > 10_000 {
-            return Err(wire::ErrorCode::InvalidArgument.into());
-        }
+        request::list_parts(&query)?;
         self.call("multipart/list-parts", query, |query, result| {
             response::parts(&query, &result)?;
             Ok(result)

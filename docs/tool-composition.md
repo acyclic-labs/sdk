@@ -145,8 +145,30 @@ remain separate because the durable result must survive changes in model renderi
 These are necessary boundaries, not duplicate execution paths.
 
 PR319's native contract and PR325's lease correction have independently verified
-main landings. The focused portable/default-tools PR324 still requires its own
-final-source affected checks, required exact-head SDK success and verified landing.
+main landings. The portable/default-tools PR324 passed its exact-source affected checks and
+required SDK Qualification, then landed at 1e481d413 with all 34 owned blobs verified.
 Full D browser/context/compaction integration remains dependent on qualified I/B
 producer contracts. Historical source snapshots and failed qualification logs are
 preserved in ignored evidence; earlier passes do not qualify this combined source.
+
+## Explicit conversion consumer
+
+`rust/crates/harness/examples/explicit-image-conversion.rs` assembles an ordinary
+`Tool` that explicitly transforms the IMG1 fixture pixels with a selected mask.
+This is a test codec example; production conversion/model adapters remain deferred.
+The native media policy itself performs no conversion. The tool definition pins
+its codec revision, typed source/options/result schemas, and 4096-byte/work bound.
+The canonical result retains the original source, verified derived ref and mask;
+the replaceable projection sends only the derived file through ordinary native
+`Parts`.
+
+The executor reuses portable source/destination authorization and the original
+TaskContext reader/publisher. `stage_file_once` binds publication to the admitted
+conversion operation. Pure bounded recomputation during reconciliation reuses that
+receipt; no new effect ID, attachment engine or conversion journal is introduced.
+The existing native boundary scenario composes this public example with a real
+admitted task and tool journal, rejects changed options on replay, retains identical
+source/derived refs over composition reopen, and captures the actual derived bytes
+at the model boundary after a lost model response. Memory-backed reopen remains
+narrower than OS process restart or default fork/compaction; those and ordinary
+browser runtime consumption still require the qualified I/B producer contracts.

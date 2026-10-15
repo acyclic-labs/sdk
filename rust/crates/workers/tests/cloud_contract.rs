@@ -154,7 +154,7 @@ async fn cloud_worker_publication_and_lifecycle_use_existing_contracts() {
         )
         .await
         .expect("valid Cloud fixture");
-    assert_eq!(published.body, code);
+    assert_eq!(published.body().as_ref(), code.as_ref());
     let created = client
         .create(&decode::<wire::CreateActorRequest>(
             "CreateActorRequest",

@@ -3,7 +3,11 @@
   "version": "0.2.0",
   "license": "Apache-2.0",
   "description": "Versioned workspaces for browser, memory, hosted, and native providers",
-  "keywords": ["filesystem", "storage", "workspaces"],
+  "keywords": [
+    "filesystem",
+    "storage",
+    "workspaces"
+  ],
   "private": false,
   "repository": {
     "type": "git",
@@ -12,7 +16,12 @@
   },
   "type": "module",
   "sideEffects": false,
-  "files": ["dist", "generated", "examples", "CHANGELOG.md"],
+  "files": [
+    "dist",
+    "generated",
+    "examples",
+    "CHANGELOG.md"
+  ],
   "exports": {
     ".": {
       "types": "./dist/browser.d.ts",
@@ -27,10 +36,6 @@
       "node": "./dist/memory-node.js",
       "default": "./dist/memory.js"
     },
-    "./grpc": {
-      "types": "./dist/grpc.d.ts",
-      "default": "./dist/grpc.js"
-    },
     "./hosted": {
       "types": "./dist/hosted.d.ts",
       "default": "./dist/hosted.js"
@@ -42,6 +47,10 @@
     "./proto": {
       "types": "./generated/proto/filesystem/v2/filesystem_pb.d.ts",
       "default": "./generated/proto/filesystem/v2/filesystem_pb.js"
+    },
+    "./grpc": {
+      "types": "./dist/grpc.d.ts",
+      "default": "./dist/grpc.js"
     }
   },
   "scripts": {
@@ -53,21 +62,22 @@
     "check": "bun run build:wasm && bun x tsc -p tsconfig.json --noEmit",
     "check:types": "bun x tsc -p tsconfig.type-tests.json --pretty false",
     "test": "bun run build && bun run test:composition && bun run test:s3",
-    "test:cloud": "node --test test/cloud-contract.test.mjs",
     "test:composition": "bun test/node-memory.mjs",
     "test:native:installed": "node test/native-public-installed.mjs",
     "test:s3": "bun test test/hosted-s3.test.mjs",
     "test:browser": "bun test/browser-qualify.mjs",
-    "pack:dry": "bun run build:clean && bun pm pack --dry-run"
+    "pack:dry": "bun run build:clean && bun pm pack --dry-run",
+    "test:cloud": "node --test test/cloud-contract.test.mjs"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "2.15.0",
-    "@connectrpc/connect": "2.1.1",
-    "@connectrpc/connect-node": "2.1.1",
-    "@connectrpc/connect-web": "2.1.1"
+    "@acyclic-labs/actors": "0.2.0",
+    "@bufbuild/protobuf": "2.16.0",
+    "@connectrpc/connect": "2.2.0",
+    "@connectrpc/connect-web": "2.2.0",
+    "@connectrpc/connect-node": "2.2.0"
   },
   "devDependencies": {
-    "@types/node": "26.6.2",
+    "@types/node": "26.6.4",
     "typescript": "7.0.2"
   }
 }

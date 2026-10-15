@@ -3,7 +3,7 @@ import { createClient, Code, ConnectError, type Interceptor } from "@connectrpc/
 import { create, fromBinary, toBinary, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
 import { createGrpcTransport, Http2SessionManager } from "@connectrpc/connect-node";
 import { BucketsService, ObjectsService, MultipartService } from "../generated/proto/objects/v1/objects_pb.js";
-import { observeInterceptors, resolveObserver, type AcyclicObserver } from "./observe.js";
+import { observeInterceptors, resolveObserver, type AcyclicObserver } from "@acyclic-labs/actors/observe";
 /** Node/Bun transport configuration for the logical Objects service. */
 export interface ObjectsV1GrpcOptions {
   readonly endpoint: string;

@@ -1,7 +1,8 @@
 //! Shared native/browser command journal codec and Rust replay.
+#[cfg(test)]
+use crate::OwnedBytes as Bytes;
 use crate::wire_codec;
 use crate::{AppendRequest, CommitRequest, ForkRequest, MemoryStream, StreamError, StreamProvider};
-use bytes::Bytes;
 use prost::Message;
 #[derive(Clone)]
 pub(crate) enum Command {
@@ -18,16 +19,36 @@ pub(crate) async fn replay(provider: &MemoryStream, command: Command) -> Result<
     }
 }
 
-pub(crate) fn journal_command(command: &Command) -> JournalCommand {
-    let operation = match command {
-        Command::Append(request) => journal_command::Operation::Append(wire_append(request)),
-        Command::Fork(request) => journal_command::Operation::Fork(wire_fork(request)),
-        Command::Commit(request) => {
-            journal_command::Operation::Commit(wire_codec::commit_to_wire(request))
+impl Command {
+    pub(crate) fn encoded_len(&self) -> usize {
+        use wire_codec::requests::*;
+        block_len(match self {
+            Self::Append(request) => append_len(request),
+            Self::Fork(request) => fork_len(request),
+            Self::Commit(request) => commit_len(request),
+        })
+    }
+    pub(crate) fn encode(&self, output: &mut Vec<u8>) {
+        use wire_codec::requests::*;
+        match self {
+            Self::Append(request) => {
+                header(output, 1, append_len(request));
+                append(output, request);
+            }
+            Self::Fork(request) => {
+                header(output, 2, fork_len(request));
+                fork(output, request);
+            }
+            Self::Commit(request) => {
+                header(output, 5, commit_len(request));
+                commit(output, request);
+            }
         }
-    };
-    JournalCommand {
-        operation: Some(operation),
+    }
+    pub(crate) fn encode_to_vec(&self) -> Vec<u8> {
+        let mut output = Vec::with_capacity(self.encoded_len());
+        self.encode(&mut output);
+        output
     }
 }
 
@@ -45,7 +66,7 @@ pub(crate) fn decode_command(encoded: &[u8]) -> Result<Command, StreamError> {
         }
     }?;
     // Persist only canonical bytes emitted by the current first-party writer.
-    if journal_command(&command).encode_to_vec() != encoded {
+    if command.encode_to_vec() != encoded {
         return Err(StreamError::InvalidArgument);
     }
     Ok(command)
@@ -66,30 +87,6 @@ mod journal_command {
         Fork(crate::wire::ForkRequest),
         #[prost(message, tag = "5")]
         Commit(crate::wire::CommitRequest),
-    }
-}
-
-fn wire_append(request: &AppendRequest) -> crate::wire::AppendRequest {
-    crate::wire::AppendRequest {
-        path: request.path.to_string(),
-        records: request.records.clone(),
-        if_tail: request.if_tail,
-        idempotency_key: request
-            .idempotency_key
-            .as_ref()
-            .map(|key| Bytes::copy_from_slice(key.as_bytes())),
-    }
-}
-
-fn wire_fork(request: &ForkRequest) -> crate::wire::ForkRequest {
-    crate::wire::ForkRequest {
-        source: request.source.to_string(),
-        destination: request.destination.to_string(),
-        at_tail: request.at_tail,
-        idempotency_key: request
-            .idempotency_key
-            .as_ref()
-            .map(|key| Bytes::copy_from_slice(key.as_bytes())),
     }
 }
 
@@ -127,11 +124,8 @@ mod tests {
             idempotency_key: crate::IdempotencyKey::new(Bytes::from_static(b"commit"))?,
         });
         for command in [append, fork, commit] {
-            let encoded = journal_command(&command).encode_to_vec();
-            assert_eq!(
-                journal_command(&decode_command(&encoded)?).encode_to_vec(),
-                encoded
-            );
+            let encoded = command.encode_to_vec();
+            assert_eq!(decode_command(&encoded)?.encode_to_vec(), encoded);
             for end in 0..encoded.len() {
                 assert!(decode_command(&encoded[..end]).is_err());
             }
@@ -155,7 +149,7 @@ mod tests {
             if_tail: None,
             idempotency_key: Some(crate::IdempotencyKey::new(Bytes::from_static(b"first"))?),
         };
-        let encoded = journal_command(&Command::Append(request.clone())).encode_to_vec();
+        let encoded = Command::Append(request.clone()).encode_to_vec();
         replay(&provider, decode_command(&encoded)?).await?;
         let crate::AppendOutcome::Committed(receipt) = provider.append(request).await? else {
             return Err(StreamError::Unavailable);
@@ -163,7 +157,6 @@ mod tests {
         assert_eq!(receipt.start, 0);
         assert_eq!(receipt.end, 1);
         // The actual Chromium test asserts this same complete content-bound ID,
-        // rather than merely comparing two WASM projections of memory state.
         assert_eq!(
             *receipt.commit_id.as_bytes(),
             [

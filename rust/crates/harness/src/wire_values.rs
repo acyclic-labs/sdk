@@ -19,7 +19,7 @@ fn required<T>(value: Option<T>, name: &str) -> Result<T> {
 impl TryFrom<wire::ProviderRef> for ProviderRef {
     type Error = Error;
     fn try_from(value: wire::ProviderRef) -> Result<Self> {
-        Self::new(value.namespace, value.family, value.version)
+        Self::new(value.namespace, value.family, value.version, &mut None)
     }
 }
 
@@ -51,7 +51,7 @@ impl TryFrom<wire::VolumeRef> for VolumeRef {
             wire::volume_owner::Owner::AgentId(id) => VolumeOwner::Agent(AgentId::parse(&id)?),
             wire::volume_owner::Owner::Session(id) => VolumeOwner::Session(id),
         };
-        Self::new(provider, value.id, class, owner)
+        Self::new(provider, value.id, class, owner, &mut None)
     }
 }
 
@@ -105,6 +105,7 @@ impl TryFrom<wire::FileRef> for FileRef {
             value.immutable_version,
             required(value.descriptor, "file.descriptor")?.try_into()?,
             value.display_name,
+            &mut None,
         )
     }
 }
@@ -128,7 +129,7 @@ impl TryFrom<wire::Attachment> for Attachment {
             file: required(value.file, "attachment.file")?.try_into()?,
             label: value.label,
         };
-        result.validate()?;
+        result.validate(&mut None)?;
         Ok(result)
     }
 }
@@ -158,7 +159,7 @@ impl TryFrom<wire::ReferencedAttachments> for ReferencedAttachments {
                 item_count: value.item_count,
             },
         };
-        result.validate()?;
+        result.validate(&mut None)?;
         Ok(result)
     }
 }
@@ -221,7 +222,7 @@ impl TryFrom<wire::ConversationMessage> for ConversationMessage {
                 .map(|(name, file)| Ok((name, file.try_into()?)))
                 .collect::<Result<BTreeMap<_, _>>>()?,
         };
-        result.validate()?;
+        result.validate(&mut None)?;
         Ok(result)
     }
 }

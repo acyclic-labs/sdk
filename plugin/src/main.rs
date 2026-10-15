@@ -5,6 +5,10 @@
     clippy::too_many_lines,
     reason = "the CLI entry points dispatch every subcommand in one place"
 )]
+#![allow(
+    clippy::manual_async_fn,
+    reason = "explicit Send future bounds avoid higher-ranked lifetime errors in native commands"
+)]
 
 mod adapter_state;
 mod cli_output;
@@ -16,48 +20,70 @@ mod git;
 mod guidance;
 mod identity;
 mod install;
+mod native_root_source;
 mod obs;
 mod pi;
+mod pi_binding;
+mod pi_builtin;
+mod pi_caller;
+mod pi_conversation;
+mod pi_fork;
+mod pi_fork_host;
+mod pi_host;
+mod pi_inspection;
+mod pi_mail;
+mod pi_native;
+mod pi_native_host;
+mod pi_operator;
+mod pi_operator_host;
+mod pi_owner;
+mod pi_recovery;
+mod pi_registration;
+mod pi_root;
+mod pi_root_allocation;
+mod pi_root_inputs;
+mod pi_root_provider;
+mod pi_runtime;
+mod pi_selected_host;
+mod pi_task;
+mod pi_workflow;
 mod roots;
 mod service;
 mod service_log;
 mod service_process;
+mod service_session;
 #[cfg(test)]
 mod tests;
 mod tool_input;
 mod util;
 
 use acyclic_fs::demand::native::NativeDemandSource;
-use acyclic_fs::demand::{
-    DemandDirectoryObserver, DemandSource, FilteredDemandSource, SourceReference,
-};
+use acyclic_fs::demand::{DemandDirectoryObserver, DemandSource, SourceReference};
 use acyclic_fs::kernel::{FileKind, NamespacePath};
 use acyclic_fs::model::{
     CheckoutMode, FilesystemProfile, GenerationSelector, Lifecycle, VolumeConfig, VolumeLimits,
 };
-use acyclic_fs::native_host::HostRoot;
 use acyclic_fs::path::PortablePath;
 use acyclic_fs::{
-    ApplyOptions, CancellationToken, CaptureOptions, CapturePolicy, CheckoutCommitOutcome,
-    DefaultTextMergeDriver, DistributedFs, Generation, GitCommand, GitCommandOutput,
-    GitCompatRepository, GitDirtyState, GitFilesystemAction, GitFilesystemExecutor,
-    GitFilesystemResult, GitGenerationRef, GitIgnorePolicy, GitPublicationRecord, GitTreeRef,
-    IdempotencyKey, JoinOutcome, LazyMount, LazyWorkspace, LineageMultiRootPublicationAuthorizer,
-    LocalAuthorityBackend, LocalCoreStateStore, LocalFs, LocalObjectBackend, LocalOptions,
-    MaterializeOptions, MaterializingWorkspaceMultiRootPublisher,
+    ApplyOptions, CancellationToken, CaptureOptions, CapturePolicy, DefaultTextMergeDriver,
+    Generation, GitCommand, GitCommandOutput, GitCompatRepository, GitDirtyState,
+    GitFilesystemAction, GitFilesystemExecutor, GitFilesystemResult, GitIgnorePolicy,
+    GitPublicationRecord, GitTreeRef, IdempotencyKey, JoinOutcome, LazyMount, LazyWorkspace,
+    LineageMultiRootPublicationAuthorizer, LocalAuthorityBackend, LocalCoreStateStore, LocalFs,
+    LocalObjectBackend, LocalOptions, MaterializeOptions, MaterializingWorkspaceMultiRootPublisher,
     MaterializingWorkspaceMultiRootPublisherError, MemoryMergeResolutionCache, MergeConflict,
     MergeDriverRegistry, MountOptions, MultiRootMaterializer, MultiRootMergeCandidate,
     MultiRootMergePlan, MultiRootMergeRoot, MultiRootPublication, MultiRootPublicationCoordinator,
     MultiRootPublicationError, MultiRootPublicationPhase, NativeWatch, NativeWatchOptions,
-    OperationId, OperationReconcileLimits, OperationWindowLease, Publication, PublicationPermit,
-    TransactionCommit, WatchBatch, WatchChange, WatchEpoch, WatchSequence, WorkBudget, Workspace,
-    WorkspaceContextId, WorkspaceContextRoot, WorkspaceContextState, WorkspaceDelete,
-    WorkspaceError, WorkspaceMultiRootPublisherError, WorkspaceOperationFinish, WorkspacePathApply,
-    WorkspaceRestore, WorkspaceRootId, apply_git_patch_with_permit, blame_git_generations,
-    capture_baseline_with_policy, capture_git_compatible_generation,
-    capture_git_compatible_generation_at, capture_git_compatible_generation_incremental,
-    capture_watch_batch_with_policy, git_compatible_diff_counts, grep_git_generation,
-    resolve_merge_plan, walk_git_tree,
+    OperationId, OperationReconcileLimits, OperationWindowCoordinator, OperationWindowLease,
+    Publication, PublicationPermit, TransactionCommit, WatchBatch, WatchChange, WorkBudget,
+    Workspace, WorkspaceContextId, WorkspaceContextRegistry, WorkspaceContextRoot,
+    WorkspaceContextState, WorkspaceDelete, WorkspaceError, WorkspaceGraph,
+    WorkspaceMultiRootPublisherError, WorkspaceOperationFinish, WorkspacePathApply,
+    WorkspaceRestore, WorkspaceRootId, apply_git_patch, blame_git_generations, capture_baseline,
+    capture_git_compatible_generation, capture_git_compatible_generation_at,
+    capture_git_compatible_generation_incremental, capture_watch_batch, git_compatible_diff_counts,
+    grep_git_generation, resolve_merge_plan, walk_git_tree,
 };
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -72,7 +98,7 @@ use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-#[cfg(any(test, not(target_os = "linux")))]
+#[cfg(not(target_os = "linux"))]
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{Mutex as AsyncMutex, watch};
 
@@ -90,24 +116,85 @@ use git::*;
 use guidance::*;
 use install::*;
 use pi::*;
+use pi_binding::*;
 use roots::*;
 use service::*;
 use service_process::*;
+use service_session::SessionController;
 use tool_input::*;
 use util::*;
 
-/// Unified Acyclic CLI, local service, host hook bridges, and installer.
-fn main() {
-    obs::init();
-    let result = main_result();
-    obs::finish();
-    if let Err(error) = result {
-        eprintln!("{error}");
-        std::process::exit(1);
+/// Native failures retain their SDK ownership through the final CLI write.
+#[derive(Debug)]
+enum CliFailure {
+    Native(acyclic_harness::Error),
+    NativeControl(ControlRequestError),
+    Ordinary(Box<dyn std::error::Error + Send + Sync>),
+    ClosedFailed,
+}
+
+impl std::fmt::Display for CliFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Native(error) => std::fmt::Display::fmt(error, formatter),
+            Self::NativeControl(error) => std::fmt::Display::fmt(error, formatter),
+            Self::Ordinary(error) => std::fmt::Display::fmt(error, formatter),
+            Self::ClosedFailed => formatter.write_str("service shutdown state is failed"),
+        }
     }
 }
 
-fn main_result() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+impl From<acyclic_harness::Error> for CliFailure {
+    fn from(error: acyclic_harness::Error) -> Self {
+        Self::Native(error)
+    }
+}
+
+impl From<ControlRequestError> for CliFailure {
+    fn from(error: ControlRequestError) -> Self {
+        Self::NativeControl(error)
+    }
+}
+
+impl From<Box<dyn std::error::Error + Send + Sync>> for CliFailure {
+    fn from(error: Box<dyn std::error::Error + Send + Sync>) -> Self {
+        Self::Ordinary(error)
+    }
+}
+
+impl From<io::Error> for CliFailure {
+    fn from(error: io::Error) -> Self {
+        Self::Ordinary(error.into())
+    }
+}
+
+impl From<serde_json::Error> for CliFailure {
+    fn from(error: serde_json::Error) -> Self {
+        Self::Ordinary(error.into())
+    }
+}
+
+impl From<String> for CliFailure {
+    fn from(error: String) -> Self {
+        Self::Ordinary(error.into())
+    }
+}
+
+/// Unified Acyclic CLI, local service, host hook bridges, and installer.
+fn main() -> std::process::ExitCode {
+    obs::init();
+    let result = main_result();
+    obs::finish();
+    match result {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn main_result() -> Result<(), CliFailure> {
     let mut arguments = env::args().skip(1);
     match arguments.next().as_deref() {
         Some(command) if identity::is_command(command) => {
@@ -120,35 +207,33 @@ fn main_result() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .block_on(identity::run(&arguments))
                 .map_err(Into::into);
         }
-        Some("__hook") => return run_native_hook(&arguments.collect::<Vec<_>>()),
+        Some("__hook") => {
+            return run_native_hook(&arguments.collect::<Vec<_>>()).map_err(CliFailure::Ordinary);
+        }
         Some("__mcp") => return codex_hook_mcp::serve().map_err(Into::into),
+        Some("__pi") => return run_pi_control(&arguments.collect::<Vec<_>>()),
         _ => {}
     }
     if is_foreground_cli_invocation() {
-        let result = tokio::runtime::Builder::new_current_thread()
+        tokio::runtime::Builder::new_current_thread()
             .enable_all()
-            .build()
-            .map_err(display)?
-            .block_on(run())
-            .map_err(display);
-        result.map_err(io::Error::other)?;
+            .build()?
+            .block_on(run())?;
         return Ok(());
     }
     let result = std::thread::Builder::new()
         .name("acyclic".to_owned())
         .stack_size(32 * 1024 * 1024)
-        .spawn(|| {
+        .spawn(|| -> Result<(), CliFailure> {
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .thread_stack_size(32 * 1024 * 1024)
-                .build()
-                .map_err(display)?
+                .build()?
                 .block_on(run())
-                .map_err(display)
         })?
         .join()
         .map_err(|_| io::Error::other("control-plane thread panicked"))?;
-    result.map_err(io::Error::other)?;
+    result?;
     Ok(())
 }
 
@@ -169,13 +254,15 @@ fn run_native_hook(arguments: &[String]) -> Result<(), Box<dyn std::error::Error
                     .build()
                     .map_err(display)
                     .and_then(|runtime| {
-                        runtime.block_on(forward_native_hook(
-                            host,
-                            event,
-                            cwd,
-                            input,
-                            ServiceStart::Allowed,
-                        ))
+                        runtime
+                            .block_on(forward_native_hook(
+                                host,
+                                event,
+                                cwd,
+                                input,
+                                ServiceStart::Allowed,
+                            ))
+                            .map_err(display)
                     })
                     .unwrap_or_else(|error| failure.answer(&error)),
                 Err(error) => failure.answer(&error),
@@ -184,6 +271,48 @@ fn run_native_hook(arguments: &[String]) -> Result<(), Box<dyn std::error::Error
         Err(error) => HookFailure::classify(host, event, None).answer(&error),
     };
     serde_json::to_writer(io::stdout().lock(), &response)?;
+    Ok(())
+}
+
+/// Pi controls use the same service transport, but errors are not native-hook
+/// fail-open answers and uncertain requests are never automatically resent.
+fn run_pi_control(arguments: &[String]) -> Result<(), CliFailure> {
+    let [event] = arguments else {
+        return Err(acyclic_harness::Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Invalid,
+            reason: "acyclic __pi requires one operation",
+        }
+        .into());
+    };
+    let (cwd, mut input) = read_native_hook_call()?;
+    let object = input
+        .as_object_mut()
+        .ok_or(acyclic_harness::Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Invalid,
+            reason: "Pi control must be an object",
+        })?;
+    if let Some(environment) = env::var_os(pi_caller::CALLER_ENVIRONMENT) {
+        let text = environment
+            .to_str()
+            .ok_or_else(|| "Pi caller scope is not UTF-8".to_owned())?;
+        if text.len() > MAXIMUM_CONTROL_MESSAGE_BYTES {
+            return Err("Pi caller scope exceeds the 4 MiB bound".to_owned().into());
+        }
+        object.insert("caller".to_owned(), serde_json::from_str(text)?);
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let response = runtime.block_on(forward_native_hook(
+        "pi",
+        event,
+        cwd,
+        input,
+        ServiceStart::Allowed,
+    ))?;
+    let mut stdout = io::stdout().lock();
+    serde_json::to_writer(&mut stdout, &response)?;
+    stdout.flush()?;
     Ok(())
 }
 
@@ -267,6 +396,36 @@ async fn forward_native_hook(
         }
         Err(error) => Err(error.to_string()),
     }
+}
+
+fn guarded_cli_text(
+    parts: &[&str],
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> acyclic_harness::Result<(String, acyclic_fs::NativeAllocation)> {
+    let bytes = parts
+        .iter()
+        .try_fold(0_usize, |size, part| size.checked_add(part.len()))
+        .filter(|size| *size <= MAXIMUM_CONTROL_MESSAGE_BYTES)
+        .ok_or(acyclic_harness::Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Invalid,
+            reason: "native CLI metadata exceeds its byte bound",
+        })?;
+    let allocation = work.claim(
+        bytes as u64,
+        u64::from((bytes as u64) != 0),
+        acyclic_fs::WorkCounters::UNCHARGED,
+    )?;
+    let mut name = String::new();
+    name.try_reserve_exact(bytes)
+        .map_err(acyclic_fs::NativeTreeMaterializationError::AllocationFailed)?;
+    work.charge(acyclic_fs::WorkCounters {
+        bytes_copied: bytes as u64,
+        ..acyclic_fs::WorkCounters::UNCHARGED
+    })?;
+    for part in parts {
+        name.push_str(part);
+    }
+    Ok((name, allocation))
 }
 
 /// The service request for one native hook event.
@@ -417,6 +576,7 @@ fn is_foreground_cli_invocation() -> bool {
                     | "discard"
                     | "install"
                     | "uninstall"
+                    | "pi"
                     | "__service-drain"
                     | "__installer-rename"
                     | "__verify-certification"
@@ -429,7 +589,7 @@ fn is_foreground_cli_invocation() -> bool {
     })
 }
 
-async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn run() -> Result<(), CliFailure> {
     let mut arguments = env::args().skip(1).collect::<Vec<_>>();
     let invocation_cwd = env::current_dir()?.canonicalize()?;
     let mut cwd = invocation_cwd.clone();
@@ -445,7 +605,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .is_some_and(|argument| matches!(argument.as_str(), "--help" | "-h"))
     {
         println!(
-            "Acyclic {}\n\nUsage: acyclic-plugin [COMMAND]\n\nCommands:\n  login [--json]     Sign in with device approval\n  signup --agent [--json] Create an agent identity\n  whoami [--json]    Show the signed-in identity\n  orgs [--json]      List organizations\n  refresh [--json]   Rotate the session token\n  logout [--json]    Revoke the session; retain agent keys\n  bearer --org ID --output NEW_FILE [--json]\n                       Save an organization bearer privately\n  identity-mcp       Serve customer identity MCP tools\n  install HOST       Install host integration\n  uninstall HOST [--purge]\n                       Remove integration; preserve durable state unless purged\n  doctor [--json]    Diagnose the release installation\n  git ARGS...        Run Git compatibility commands\n  agents [--json]    List recursive agent workspace status\n  discard WORKSPACE  Discard a child workspace\n  mcp                 Serve MCP over standard input/output",
+            "Acyclic {}\n\nUsage: acyclic-plugin [COMMAND]\n\nCommands:\n  login [--json]     Sign in with device approval\n  signup --agent [--json] Create an agent identity\n  whoami [--json]    Show the signed-in identity\n  orgs [--json]      List organizations\n  refresh [--json]   Rotate the session token\n  logout [--json]    Revoke the session; retain agent keys\n  bearer --org ID --output NEW_FILE [--json]\n                       Save an organization bearer privately\n  identity-mcp       Serve customer identity MCP tools\n  install HOST       Install host integration\n  uninstall HOST [--purge]\n                       Remove integration; preserve durable state unless purged\n  doctor [--json]    Diagnose the release installation\n  git ARGS...        Run Git compatibility commands\n  agents [--json]    List recursive agent workspace status\n  discard WORKSPACE  Discard a child workspace\n  pi approvals --session SESSION --operation TOOL_ID [--json]\n                       Inspect an original Root operator approval\n  pi approve --session SESSION --operation TOOL_ID --digest DIGEST\n             --decision approve|decline\n                       Resolve and publish the exact Root-approved selection\n  mcp                 Serve MCP over standard input/output",
             env!("CARGO_PKG_VERSION")
         );
         return Ok(());
@@ -472,7 +632,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             "no-replace" => RenameMode::NoReplace,
             _ => return Err(io::Error::other("invalid installer rename mode").into()),
         };
-        durable_rename(Path::new(from), Path::new(to), mode)?;
+        durable_rename(Path::new(from), Path::new(to), mode, None)?;
         return Ok(());
     }
     if arguments
@@ -494,6 +654,21 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 "certification receipt does not match this Acyclic executable",
             )
             .into());
+        }
+        return Ok(());
+    }
+    if arguments.first().is_some_and(|command| command == "pi") {
+        let response = pi_operator::run_cli(
+            &default_data_directory(),
+            cwd,
+            arguments.get(1..).unwrap_or_default(),
+        )
+        .await?;
+        {
+            let mut stdout = io::stdout().lock();
+            serde_json::to_writer(&mut stdout, &response)?;
+            stdout.write_all(b"\n")?;
+            stdout.flush()?;
         }
         return Ok(());
     }
@@ -595,10 +770,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .first()
         .is_some_and(|argument| argument == "__service")
     {
-        return run_service(default_data_directory())
-            .await
-            .map_err(io::Error::other)
-            .map_err(Into::into);
+        return match run_service(default_data_directory()).await? {
+            service::SessionCloseState::Closed => Ok(()),
+            service::SessionCloseState::Failed => Err(CliFailure::ClosedFailed),
+        };
     }
     let commandless = arguments
         .first()

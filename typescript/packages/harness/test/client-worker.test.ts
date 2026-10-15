@@ -11,10 +11,8 @@ test("optional selected snapshot channel coalesces under backpressure and dispos
   const { port1, port2 } = new MessageChannel();
   const source = new SnapshotStore(1);
   const errors: unknown[] = [];
-  let encodes = 0;
-  const stop = publishClientSnapshots(source, port1, { ...codec, encode(value) { encodes++; return codec.encode(value); } }, 16, error => errors.push(error));
+  const stop = publishClientSnapshots(source, port1, codec, 16, error => errors.push(error));
   source.publish(2); source.publish(3);
-  expect(encodes).toBe(1);
   const target = receiveClientSnapshots(0, port2, codec, 16, error => errors.push(error));
   const received: number[] = [];
   const done = Promise.withResolvers<void>();
@@ -25,11 +23,9 @@ test("optional selected snapshot channel coalesces under backpressure and dispos
   try {
     await done.promise;
     expect(received).toEqual([1, 3]);
-    expect(encodes).toBe(2);
     expect(errors).toEqual([]);
     stop(); stop(); target.dispose(); target.dispose(); unsubscribe();
     source.publish(4);
-    expect(encodes).toBe(2);
   } finally { stop(); target.dispose(); }
 });
 

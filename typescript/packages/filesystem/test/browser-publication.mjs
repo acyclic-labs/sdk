@@ -43,7 +43,7 @@ if (actor !== null) {
   };
   channel.postMessage({ ready: actor });
 } else {
-  const { adaptWasmFs, adaptWasmOperationWindows } = await import("../dist/wasm-adapter.js");
+  const { adaptFs, adaptOperationWindows } = await import("../dist/filesystem-adapter.js");
   const result = document.querySelector("#result");
   const workspace = await fs.createWorkspace("main");
   const windows = fs.operationWindows();
@@ -157,10 +157,10 @@ if (actor !== null) {
       try {
         const foreign = await foreignFs.createWorkspace("main");
         assert(equal(foreign.id, workspace.id), "ownership control requires equal workspace IDs");
-        const publicFs = adaptWasmFs(fs);
+        const publicFs = adaptFs(fs);
         const publicWorkspace = await publicFs.openWorkspace("main");
-        const publicForeign = await adaptWasmFs(foreignFs).openWorkspace("main");
-        const publicWindows = adaptWasmOperationWindows(publicFs);
+        const publicForeign = await adaptFs(foreignFs).openWorkspace("main");
+        const publicWindows = adaptOperationWindows(publicFs);
         const ownedLease = await windows.begin(workspace.id, await workspace.head(), "ownership", BigInt(Date.now()), expiry);
         for (const [coordinator, other] of [[windows, foreign], [publicWindows, publicForeign]]) {
           for (const action of [

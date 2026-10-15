@@ -119,12 +119,15 @@ if command -v wslpath >/dev/null 2>&1 && command -v cargo.exe >/dev/null 2>&1; t
   manifest="$(wslpath -w "$manifest")"
   package_target_argument="$(wslpath -w "$package_target")"
 fi
-version="$("$cargo_bin" metadata --no-deps --format-version 1 --manifest-path "$manifest" | node -e 'let input=""; process.stdin.on("data", chunk => input += chunk).on("end", () => console.log(JSON.parse(input).packages.find(item => item.name === "acyclic-machines").version))')"
+versions="$("$cargo_bin" metadata --no-deps --format-version 1 --manifest-path "$manifest" | node -e 'let input=""; process.stdin.on("data", chunk => input += chunk).on("end", () => { const packages = JSON.parse(input).packages; console.log(["acyclic-machines", "acyclic-grpc-observability"].map(name => packages.find(item => item.name === name).version).join("\t")); })')"
+IFS=$'\t' read -r version observability_version <<< "$versions"
 "$cargo_bin" test --locked -p acyclic-machines -p acyclic-harness --manifest-path "$manifest" --target-dir "$package_target_argument"
 clean_head "$root" "$head"
 clean_head "$package_root" "$head"
-"$cargo_bin" package --locked --no-verify -p acyclic-machines --manifest-path "$manifest" --target-dir "$package_target_argument"
+"$cargo_bin" package --locked --no-verify -p acyclic-grpc-observability -p acyclic-machines --manifest-path "$manifest" --target-dir "$package_target_argument"
 crate="$package_target/package/acyclic-machines-${version}.crate"
+observability_crate="$package_target/package/acyclic-grpc-observability-$observability_version.crate"
+strict_archive "$observability_crate"
 strict_archive "$crate"
 tar -xOf "$crate" "acyclic-machines-${version}/.cargo_vcs_info.json" |
   valid_vcs_info "$head"
@@ -132,18 +135,29 @@ clean_head "$root" "$head"
 clean_head "$package_root" "$head"
 
 tar -xzf "$crate" -C "$test_root"
+tar -xzf "$observability_crate" -C "$test_root"
+mkdir -p "$test_root/.cargo"
+observability_path="$(bash "$root/scripts/native-tool-path.sh" "$test_root/acyclic-grpc-observability-$observability_version")"
+cat >"$test_root/.cargo/config.toml" <<EOF
+[patch.crates-io]
+acyclic-grpc-observability = { path = "$observability_path" }
+EOF
+install -m 0644 "$root/rust-toolchain.toml" "$test_root/rust-toolchain.toml"
 test_manifest="$test_root/acyclic-machines-${version}/Cargo.toml"
 if [[ "$cargo_bin" == "cargo.exe" ]]; then
   test_manifest="$(wslpath -w "$test_manifest")"
 fi
-"$cargo_bin" check --manifest-path "$test_manifest" --target-dir "$package_target_argument"
+(
+  cd "$test_root"
+  "$cargo_bin" check --manifest-path "$test_manifest" --target-dir "$package_target_argument"
+)
 
 if [[ -n "$output" ]]; then
   mkdir -p "$(dirname "$output")"
   mkdir "$output"
-  install -m 0644 "$crate" "$output/"
+  install -m 0644 "$crate" "$observability_crate" "$output/"
   staged="$output/$(basename "$crate")"
   cmp --silent "$crate" "$staged"
   strict_archive "$staged"
-  (cd "$output" && sha256sum "$(basename "$crate")" > SHA256SUMS && sha256sum --strict --check SHA256SUMS)
+  (cd "$output" && sha256sum "$(basename "$crate")" "$(basename "$observability_crate")" > SHA256SUMS && sha256sum --strict --check SHA256SUMS)
 fi

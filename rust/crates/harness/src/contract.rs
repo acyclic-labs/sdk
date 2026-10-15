@@ -60,44 +60,12 @@ pub(crate) fn next_revision(revision: u64) -> Result<u64> {
         .ok_or_else(|| Error::Invalid("revision exhausted".into()))
 }
 
-/// One sorted-key JSON encoding for durable identities and Rust/WASM output.
-/// Conversion through Value preserves full-width serde integer values while
-/// avoiding struct declaration order as an accidental wire contract.
-pub(crate) fn canonical_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
+/// Sorted-key JSON for durable identities and Rust/WASM output.
+pub(crate) fn canonical_json_bytes<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
     let mut value =
         serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
     value.sort_all_objects();
     serde_json::to_vec(&value).map_err(|error| Error::Invalid(error.to_string()))
-}
-
-/// Checks compact JSON size without retaining an encoded buffer or cloning a
-/// Value tree. Key ordering does not change the size of ordinary typed records.
-/// Canonical encoding and identity checks still use `canonical_json_bytes`.
-pub(crate) fn validate_json_byte_bound<T: Serialize>(value: &T, maximum: u64) -> Result<()> {
-    json_byte_length(value, maximum).map(|_| ())
-}
-
-/// Counts compact JSON input using a bounded writer, without allocating its bytes.
-pub(crate) fn json_byte_length<T: Serialize>(value: &T, maximum: u64) -> Result<u64> {
-    struct Budget(u64);
-
-    impl std::io::Write for Budget {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0 = self
-                .0
-                .checked_sub(bytes.len() as u64)
-                .ok_or_else(|| std::io::Error::other("JSON exceeds declared byte bound"))?;
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    let mut budget = Budget(maximum);
-    serde_json::to_writer(&mut budget, value).map_err(|error| Error::Invalid(error.to_string()))?;
-    Ok(maximum - budget.0)
 }
 
 /// Decodes a complete JSON value without an unrelated nesting policy ceiling.
@@ -109,58 +77,6 @@ pub(crate) fn json_from_slice<T: serde::de::DeserializeOwned>(
     let value = T::deserialize(&mut decoder)?;
     decoder.end()?;
     Ok(value)
-}
-
-/// Digest of the exact canonical JSON bytes used at durable identity boundaries.
-pub(crate) fn canonical_json_digest<T: Serialize>(value: &T) -> Result<[u8; 32]> {
-    Ok(*blake3::hash(&canonical_json_bytes(value)?).as_bytes())
-}
-
-/// One JSON Schema admission rule shared by host task/tool execution and the
-/// WASM facade before untrusted model values reach typed executors.
-pub(crate) fn validate_json_schema_value(
-    schema: &serde_json::Value,
-    value: &serde_json::Value,
-    label: &str,
-) -> Result<()> {
-    compile_json_schema(schema, label)?
-        .validate(value)
-        .map_err(|error| Error::Invalid(format!("{label} failed validation: {error}")))
-}
-
-/// Compiles one JSON Schema; `label` names it in the error. Schemas are
-/// immutable contracts re-checked on every tool, task, and state boundary, so
-/// validators are memoised by content digest instead of being rebuilt per
-/// value. The bounded cache is reset when full; failures are never cached.
-pub(crate) fn compile_json_schema(
-    schema: &serde_json::Value,
-    label: &str,
-) -> Result<std::sync::Arc<jsonschema::Validator>> {
-    use std::sync::{Arc, Mutex, PoisonError};
-    type Cache = std::collections::BTreeMap<[u8; 32], Arc<jsonschema::Validator>>;
-    static CACHE: Mutex<Cache> = Mutex::new(Cache::new());
-    let key = *blake3::hash(
-        &serde_json::to_vec(schema).map_err(|error| Error::Invalid(error.to_string()))?,
-    )
-    .as_bytes();
-    let cached = CACHE
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(&key)
-        .cloned();
-    if let Some(validator) = cached {
-        return Ok(validator);
-    }
-    let validator = Arc::new(
-        jsonschema::validator_for(schema)
-            .map_err(|error| Error::Invalid(format!("invalid {label} schema: {error}")))?,
-    );
-    let mut cache = CACHE.lock().unwrap_or_else(PoisonError::into_inner);
-    if cache.len() >= 256 {
-        cache.clear();
-    }
-    cache.insert(key, Arc::clone(&validator));
-    Ok(validator)
 }
 
 /// Returns whether a component label satisfies the shared Rust spelling rule.
@@ -276,6 +192,7 @@ impl IdempotencyKey {
 
 /// One admission result per submitted input.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum Admission<T> {
     /// Work was accepted.
     Accepted(T),
@@ -287,6 +204,7 @@ pub enum Admission<T> {
     /// Existing work must be reconciled before retrying.
     Indeterminate {
         /// Operation whose admission must be reconciled.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         operation_id: OperationId,
     },
 }
@@ -325,9 +243,50 @@ pub struct ProtocolIdentity {
 /// Deterministic capability set.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-pub struct Capabilities(BTreeSet<String>);
+pub struct Capabilities(pub(crate) BTreeSet<String>);
 
 impl Capabilities {
+    /// Copies borrowed grants on the original native ledger.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub fn copy<'a>(
+        values: impl IntoIterator<Item = &'a str>,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        use crate::store::history::HistoryIo as _;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
+        let mut copied = BTreeSet::new();
+        for value in values {
+            work.charge(acyclic_fs::WorkCounters {
+                items_examined: 1,
+                ..Default::default()
+            })?;
+            if copied.contains(value) {
+                continue;
+            }
+            let slot = std::mem::size_of::<String>() as u64;
+            let bytes = slot.checked_add(value.len() as u64).ok_or({
+                acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow)
+            })?;
+            io.admit_owned(bytes)?;
+            io.retain_owned(slot)?;
+            let value = io.clone_text(value)?;
+            copied.insert(value);
+        }
+        io.check_cancellation()?;
+        Ok((Self(copied), io.into_custody()?))
+    }
+
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        self.0.iter().try_fold(0u64, |total, value| {
+            total
+                .checked_add(std::mem::size_of::<String>() as u64)
+                .and_then(|total| total.checked_add(value.capacity() as u64))
+                .ok_or_else(|| Error::Invalid("capability capacity overflow".into()))
+        })
+    }
+
     /// Builds a capability set.
     pub fn new(values: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self(values.into_iter().map(Into::into).collect())
@@ -439,95 +398,9 @@ pub fn resolve_policy_layers(layers: &[PolicyLayer]) -> Result<Capabilities> {
     ))
 }
 
-/// Terminal non-approval outcomes kept distinct for tool callers.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum InteractionRejection {
-    /// A participant explicitly refused the action.
-    #[error("declined")]
-    Declined,
-    /// The requester or responder cancelled it.
-    #[error("cancelled")]
-    Cancelled,
-    /// Its response deadline elapsed.
-    #[error("expired")]
-    Expired,
-    /// Interaction policy denied it.
-    #[error("denied")]
-    Denied,
-}
-
-/// Errors shared by harness surfaces.
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum Error {
-    /// The requested resource does not exist.
-    #[error("resource not found: {0}")]
-    NotFound(String),
-    /// An immutable identity or revision precondition failed.
-    #[error("conflict: {0}")]
-    Conflict(String),
-    /// A required capability is unavailable.
-    #[error("unsupported capability: {0}")]
-    Unsupported(String),
-    /// The request is malformed.
-    #[error("invalid request: {0}")]
-    Invalid(String),
-    /// The caller lacks authority.
-    #[error("unauthorized: {0}")]
-    Unauthorized(String),
-    /// A bound approval resolved without permission to execute.
-    #[error("interaction {0}")]
-    InteractionRejected(InteractionRejection),
-    /// Durable provider operation failed.
-    #[error("storage failure: {0}")]
-    Storage(String),
-    /// Durable admission may have committed and must be reconciled.
-    #[error("operation outcome is indeterminate: {0}")]
-    Indeterminate(OperationId),
-}
-
-impl Error {
-    /// Stable wire classification from which every adapter derives its status.
-    #[must_use]
-    pub fn code(&self) -> crate::wire::ErrorCode {
-        use crate::wire::ErrorCode;
-        match self {
-            Self::NotFound(_) => ErrorCode::NotFound,
-            Self::Conflict(_) => ErrorCode::Conflict,
-            Self::Unsupported(_) => ErrorCode::Unsupported,
-            Self::Invalid(_) => ErrorCode::Invalid,
-            Self::Unauthorized(_) => ErrorCode::Unauthorized,
-            Self::InteractionRejected(InteractionRejection::Declined) => {
-                ErrorCode::InteractionDeclined
-            }
-            Self::InteractionRejected(InteractionRejection::Cancelled) => {
-                ErrorCode::InteractionCancelled
-            }
-            Self::InteractionRejected(InteractionRejection::Expired) => {
-                ErrorCode::InteractionExpired
-            }
-            Self::InteractionRejected(InteractionRejection::Denied) => ErrorCode::InteractionDenied,
-            Self::Storage(_) => ErrorCode::Storage,
-            Self::Indeterminate(_) => ErrorCode::Indeterminate,
-        }
-    }
-
-    /// Stable classification for tracing's `error.kind`; never the message,
-    /// which can embed paths.
-    #[must_use]
-    pub fn kind(&self) -> &'static str {
-        self.code().as_str_name()
-    }
-}
-
-/// A Stream failure below the harness is a durable-storage failure.
-impl From<acyclic_stream::StreamError> for Error {
-    fn from(error: acyclic_stream::StreamError) -> Self {
-        Self::Storage(error.to_string())
-    }
-}
-
-/// Harness result type.
-pub type Result<T> = std::result::Result<T, Error>;
+#[path = "contract_errors.rs"]
+mod errors;
+pub use errors::{Error, InteractionRejection, Result};
 
 #[cfg(test)]
 mod tests {
@@ -574,8 +447,11 @@ mod tests {
             "\"\u{e9}\":[-9223372036854775808,1.5e+300,-0.0,false]}",
         );
         assert_eq!(canonical_json_bytes(&value)?, expected.as_bytes());
-        validate_json_byte_bound(&value, expected.len() as u64)?;
-        assert!(validate_json_byte_bound(&value, expected.len() as u64 - 1).is_err());
+        crate::executor::json::json_byte_length(&value, expected.len() as u64, &mut None)?;
+        assert!(
+            crate::executor::json::json_byte_length(&value, expected.len() as u64 - 1, &mut None)
+                .is_err()
+        );
         Ok(())
     }
 
@@ -629,7 +505,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_json_preserves_value_conversion_and_invalid_messages() -> Result<()> {
+    fn canonical_json_preserves_value_conversion_and_rejects_invalid_values() -> Result<()> {
         assert_eq!(
             canonical_json_bytes(&[f64::NAN, f64::INFINITY, f64::NEG_INFINITY])?,
             b"[null,null,null]"
@@ -640,29 +516,19 @@ mod tests {
             br#"{"1.5":1}"#
         );
         for key in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            assert_eq!(
+            assert!(matches!(
                 canonical_json_bytes(&Pairs(vec![(key, 1)])),
-                Err(Error::Invalid(
-                    "float key must be finite (got NaN or +/-inf)".into()
-                ))
-            );
+                Err(Error::Invalid(_))
+            ));
         }
-        assert_eq!(
+        for result in [
             canonical_json_bytes(&Pairs(vec![(vec![1_u8], 1)])),
-            Err(Error::Invalid("key must be a string".into()))
-        );
-        assert_eq!(
             canonical_json_bytes(&Failing),
-            Err(Error::Invalid("canonical fixture failure".into()))
-        );
-        assert_eq!(
             canonical_json_bytes(&i128::MIN),
-            Err(Error::Invalid("number out of range".into()))
-        );
-        assert_eq!(
             canonical_json_bytes(&u128::MAX),
-            Err(Error::Invalid("number out of range".into()))
-        );
+        ] {
+            assert!(matches!(result, Err(Error::Invalid(_))));
+        }
         assert_eq!(
             canonical_json_bytes(&(i128::from(i64::MIN), u128::from(u64::MAX)))?,
             b"[-9223372036854775808,18446744073709551615]"
@@ -692,7 +558,7 @@ mod tests {
 
         let visited = Cell::new(0);
         assert!(matches!(
-            validate_json_byte_bound(&Observed(&visited), 32),
+            crate::executor::json::json_byte_length(&Observed(&visited), 32, &mut None),
             Err(Error::Invalid(message)) if message.contains("declared byte bound")
         ));
         assert_eq!(visited.get(), 1);

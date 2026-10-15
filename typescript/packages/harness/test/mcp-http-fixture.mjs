@@ -48,7 +48,7 @@ export async function startMcpFixture() {
         peer = { session: `fixture-${client}`, requests: 0, calls: 0, ready: false, ids: [] };
         peers.set(client, peer);
         response.setHeader("mcp-session-id", peer.session);
-        result = { protocolVersion: "2025-11-25", capabilities: { tools: {} },
+        result = { protocolVersion: "2025-11-25", capabilities: { tools: {}, resources: {}, prompts: {} },
           serverInfo: { name: "browser-fixture", version: "1" } };
       } else {
         if (!peer || request.headers["mcp-session-id"] !== peer.session) throw new Error("foreign session");
@@ -72,6 +72,16 @@ export async function startMcpFixture() {
           } else {
             result = { content: [{ type: "text", text: "héllo 🦀" }], structuredContent: { value: "FULL_WIDTH" } };
           }
+        } else if (input.method === "resources/list") {
+          result = { resources: [{ name: "content", uri: "fixture://content" }] };
+        } else if (input.method === "resources/templates/list") {
+          result = { resourceTemplates: [{ name: "named", uriTemplate: "fixture://{name}" }] };
+        } else if (input.method === "resources/read" && input.params.uri === "fixture://content") {
+          result = { contents: [{ uri: "fixture://content", text: "héllo resource 🦀" }] };
+        } else if (input.method === "prompts/list") {
+          result = { prompts: [{ name: "fixture", arguments: [{ name: "topic", required: true }] }] };
+        } else if (input.method === "prompts/get" && input.params.name === "fixture" && input.params.arguments.topic === "chosen") {
+          result = { messages: [{ role: "user", content: { type: "text", text: "external chosen prompt" } }] };
         } else throw new Error("unsupported fixture method");
       }
       peer.ids.push(input.id); peer.requests++;

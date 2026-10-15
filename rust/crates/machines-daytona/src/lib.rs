@@ -218,21 +218,6 @@ enum Intent {
     DestroyCheckpoint(CheckpointId),
 }
 
-/// Provider-side extension the sdk's `CreateMachine` cannot carry: environment variables a
-/// sandbox receives at boot, staged under the create idempotency key before `create` runs.
-///
-/// A host uses this to hand a fresh worker its boot environment (for example an endpoint and a
-/// one-time boot token) so the entrypoint can fetch its sealed inputs. Staging is in-memory and
-/// cleared by the matching `create` however it ends; a key that never creates leaks nothing but
-/// a map entry. Native fork children inherit their parent's environment and memory, so they
-/// share its credentials; container disk-fork children receive the environment Daytona
-/// reports for their source.
-pub trait BootEnvironment: Send + Sync {
-    /// Records `env` for the sandbox that `create` with `key` will make. A second call for
-    /// the same key replaces the first.
-    fn stage_boot_env(&self, key: IdempotencyKey, env: BTreeMap<String, String>);
-}
-
 /// Machines provider over Daytona VM sandboxes.
 pub struct DaytonaProvider {
     config: DaytonaConfig,
@@ -262,15 +247,6 @@ impl std::fmt::Debug for DaytonaProvider {
     }
 }
 
-impl BootEnvironment for DaytonaProvider {
-    fn stage_boot_env(&self, key: IdempotencyKey, env: BTreeMap<String, String>) {
-        self.boot_env
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(key, env);
-    }
-}
-
 fn now_unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -280,6 +256,14 @@ fn now_unix_ms() -> u64 {
 }
 
 impl DaytonaProvider {
+    /// Stages or replaces the environment for the matching create; creation clears it on completion.
+    pub fn stage_boot_env(&self, key: IdempotencyKey, env: BTreeMap<String, String>) {
+        self.boot_env
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(key, env);
+    }
+
     /// Binds a provider to one Daytona organization.
     ///
     /// # Errors
@@ -295,7 +279,7 @@ impl DaytonaProvider {
         })
     }
 
-    /// Boot environment staged for `key`, if any; see [`BootEnvironment`].
+    /// Boot environment staged for `key`, if any.
     #[must_use]
     pub fn staged_boot_env(&self, key: IdempotencyKey) -> Option<BTreeMap<String, String>> {
         self.boot_env

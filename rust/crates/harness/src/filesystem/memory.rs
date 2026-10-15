@@ -9,46 +9,63 @@ use crate::{
     AgentId, Capabilities, ConversationId, Error, IdempotencyKey, InteractionId, OperationId,
     Result,
     conversation::{
-        Attachment, ContentGrant, ContentPublisher, ContentResidencyVerifier, ConversationMessage,
-        FileRef, Limits, MessageKind, ReferencedAttachments, VolumeClass, VolumeOperation,
-        VolumeOwner, VolumeRef,
+        Attachment, BoundedContentFuture, ContentHold, ContentPublisher, ContentResidencyVerifier,
+        FileRef, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
     core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, SchemaRegistry, Scope},
-    executor::{ExecutionEvent, ExecutionJournal, TurnInput, TurnOutput},
+    executor::{ExecutionJournal, TurnOutput},
     interaction::{InteractionOutcome, InteractionResponse},
-    model::{Model, ModelProvider},
-    projection::select_model_context_at_revision,
     resources::{GenerationRef, ProviderRef},
     runtime::{ContentBindings, RuntimeScope},
-    store::StreamAggregate,
     tool::{
         Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry,
         ToolResult,
     },
 };
+#[cfg(test)]
+use crate::{
+    conversation::{ConversationMessage, MessageKind},
+    executor::TurnInput,
+    store::StreamAggregate,
+};
 use acyclic_fs::{
-    Fs, MemoryAuthorityBackend, MemoryObjectBackend, WorkspaceDirectoryPage,
+    DirectoryPage, Fs, MemoryAuthorityBackend, MemoryObjectBackend,
     kernel::{FileKind, LogicalName, NameEncoding},
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
-use acyclic_stream::{MemoryStream, StreamClient};
+use acyclic_stream::MemoryStream;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::Arc,
-};
+use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 
 type MemoryHost = FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>;
 type MemoryJournal =
     FilesystemExecutionJournal<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>;
 
-fn new_memory_store(
-    volume: &VolumeRef,
+async fn new_memory_content(
+    agent: AgentId,
     maximum_file_bytes: u64,
-) -> Result<Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>> {
-    Ok(Arc::new(std::sync::Mutex::new(
+) -> Result<(
+    Arc<MemoryHost>,
+    VolumeRef,
+    Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
+)> {
+    if maximum_file_bytes == 0 {
+        return Err(Error::Invalid(
+            "memory Harness file limit must be positive".into(),
+        ));
+    }
+    let provider = ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let host: Arc<MemoryHost> = FilesystemHost::new(Fs::memory(), &provider, None)?;
+    let volume = VolumeRef::new(
+        provider,
+        Uuid::new_v4().to_string(),
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(agent),
+        &mut None,
+    )?;
+    let memory_store = Arc::new(std::sync::Mutex::new(
         crate::memory_store::MemoryStore::new(
             volume.clone(),
             maximum_file_bytes,
@@ -56,11 +73,12 @@ fn new_memory_store(
             u64::MAX,
             u64::MAX,
         )?,
-    )))
+    ));
+    host.create_volume(&volume).await?;
+    Ok((host, volume, memory_store))
 }
 
-/// A fully bound in-process journal and owner-private file volume. Its data is
-/// deliberately ephemeral; durable deployments bind persistent providers.
+/// A fully bound in-process journal and owner-private file volume.
 pub struct MemoryHarnessStorage {
     journal: Arc<MemoryJournal>,
     content_verifier: Arc<FilesystemContentVerifier<MemoryAuthorityBackend, MemoryObjectBackend>>,
@@ -69,366 +87,42 @@ pub struct MemoryHarnessStorage {
     volume: VolumeRef,
     read_capability: String,
     write_capability: String,
-    write: ContentGrant,
     scope: Scope,
     issuer: AuthorityIssuer,
-    stream: StreamClient<MemoryStream>,
+    stream: Arc<MemoryStream>,
     conversation: Authority,
     maximum_file_bytes: u64,
     memory_store: Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
 }
 
-/// Ready-to-run local Harness with an isolated conversation and private volume.
-///
-/// This preset is intentionally ephemeral. Its storage and bundle remain
-/// accessible so callers can stage attachments or use the full typed turn API.
-pub struct LocalHarness {
-    storage: MemoryHarnessStorage,
-    bundle: crate::bundle::HarnessBundle,
-}
-
-impl LocalHarness {
-    /// Starts a fresh local agent with the standard bounded runtime defaults.
-    pub async fn new(model: Model, provider: Arc<dyn ModelProvider>) -> Result<Self> {
-        Self::with_limits(
-            AgentId::new(),
-            Limits::default(),
-            model,
-            provider,
-            crate::context::CompactionPolicy::default(),
-        )
-        .await
-    }
-
-    /// Starts a named local agent with explicit limits and compaction policy.
-    pub async fn with_limits(
-        agent: AgentId,
-        limits: Limits,
-        model: Model,
-        provider: Arc<dyn ModelProvider>,
-        compaction: crate::context::CompactionPolicy,
-    ) -> Result<Self> {
-        limits.validate()?;
-        let storage = MemoryHarnessStorage::new(agent, limits.file_bytes).await?;
-        let tools = storage.default_tools(limits)?;
-        Self::from_storage(
-            storage,
-            limits,
-            model,
-            provider,
-            tools,
-            [
-                "tool:call:acyclic.read_file".into(),
-                "tool:call:acyclic.write_file".into(),
-                "tool:call:acyclic.edit_file".into(),
-                "tool:call:acyclic.list_files".into(),
-            ],
-            compaction,
-        )
-    }
-
-    /// Starts a local agent with an explicitly selected, versioned tool set and
-    /// matching capability grants and compaction policy. Merely registering a tool does not authorize
-    /// its execution; callers must grant `tool:call:<name>` deliberately.
-    pub async fn with_tools(
-        agent: AgentId,
-        limits: Limits,
-        model: Model,
-        provider: Arc<dyn ModelProvider>,
-        tools: ToolRegistry,
-        capabilities: impl IntoIterator<Item = String>,
-        compaction: crate::context::CompactionPolicy,
-    ) -> Result<Self> {
-        limits.validate()?;
-        let storage = MemoryHarnessStorage::new(agent, limits.file_bytes).await?;
-        Self::from_storage(
-            storage,
-            limits,
-            model,
-            provider,
-            tools,
-            capabilities,
-            compaction,
-        )
-    }
-
-    fn from_storage(
-        storage: MemoryHarnessStorage,
-        limits: Limits,
-        model: Model,
-        provider: Arc<dyn ModelProvider>,
-        tools: ToolRegistry,
-        capabilities: impl IntoIterator<Item = String>,
-        compaction: crate::context::CompactionPolicy,
-    ) -> Result<Self> {
-        let mut builder = storage
-            .builder()
-            .model(model, provider)
-            .grant(capability::MODEL_GENERATE)
-            .tools(tools)
-            .compaction(compaction)
-            .limits(limits);
-        for capability in capabilities {
-            builder = builder.grant(capability);
-        }
-        let bundle = builder.build()?;
-        Ok(Self { storage, bundle })
-    }
-
-    /// Runs a text prompt through the canonical ref-only conversation path.
-    pub async fn run(&self, prompt: &str) -> Result<TurnOutput> {
-        self.storage.run_prompt(&self.bundle, prompt).await
-    }
-
-    /// Runs text with ordered, already-staged attachment references.
-    pub async fn run_with_attachments(
-        &self,
-        prompt: &str,
-        attachments: Vec<Attachment>,
-    ) -> Result<TurnOutput> {
-        self.storage
-            .run_prompt_with_attachments(&self.bundle, prompt, attachments)
-            .await
-    }
-
-    /// Exposes staging, attachment admission, conversation replay, and grants.
-    #[must_use]
-    pub fn storage(&self) -> &MemoryHarnessStorage {
-        &self.storage
-    }
-
-    /// Exposes the immutable runtime binding for typed execution.
-    #[must_use]
-    pub fn bundle(&self) -> &crate::bundle::HarnessBundle {
-        &self.bundle
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ListFilesInput {
-    path: String,
-    expected_generation: Option<GenerationRef>,
-    after: Option<String>,
-    maximum_entries: u32,
-}
-
-struct LocalListFilesTool {
-    verifier: Arc<FilesystemContentVerifier<MemoryAuthorityBackend, MemoryObjectBackend>>,
-    volume: VolumeRef,
-    maximum_bytes: u64,
-    observed: tokio::sync::Mutex<HashMap<OperationId, (ToolInvocation, ToolResult)>>,
-}
-
-fn require_volume_grant(
-    scope: Option<&RuntimeScope>,
-    volume: &VolumeRef,
-    operation: VolumeOperation,
-) -> Result<()> {
-    let scope =
-        scope.ok_or_else(|| Error::Unauthorized("file tool requires a scoped caller".into()))?;
-    let capability = volume.capability(operation)?;
-    if !scope.grants().contains(&capability) {
-        return Err(Error::Unauthorized(format!("scope lacks {capability}")));
-    }
-    Ok(())
-}
-
-impl ToolExecutor for LocalListFilesTool {
-    fn authorize(&self, scope: Option<&RuntimeScope>, _: &ToolInvocation) -> Result<()> {
-        require_volume_grant(scope, &self.volume, VolumeOperation::Read)
-    }
-
-    fn execute<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
-        Box::pin(async move {
-            let mut observed = self.observed.lock().await;
-            if let Some((original, result)) = observed.get(&invocation.operation_id) {
-                return if original == &invocation {
-                    Ok(result.clone())
-                } else {
-                    Err(Error::Conflict(
-                        "list_files operation identity changed".into(),
-                    ))
-                };
-            }
-            let input: ListFilesInput = serde_json::from_value(invocation.arguments.clone())
-                .map_err(|error| Error::Invalid(format!("list_files input is invalid: {error}")))?;
-            if input.maximum_entries == 0
-                || (input.after.is_some() && input.expected_generation.is_none())
-            {
-                return Err(Error::Invalid(
-                    "list_files requires a bounded, generation-pinned page".into(),
-                ));
-            }
-            let after = input
-                .after
-                .map(|name| {
-                    LogicalName::new(NameEncoding::Utf8, name.into_bytes(), u32::MAX)
-                        .map_err(|error| Error::Invalid(error.to_string()))
-                })
-                .transpose()?;
-            let (generation, page) = self
-                .verifier
-                .list_private_directory(
-                    &self.volume,
-                    "",
-                    &input.path,
-                    input.expected_generation.as_ref(),
-                    after.as_ref(),
-                    input.maximum_entries,
-                )
-                .await?;
-            let entries =
-                page.entries
-                    .into_iter()
-                    .map(|entry| {
-                        let name = entry.name.unicode_text().ok_or_else(|| {
-                            Error::Unsupported("local file name is not UTF-8".into())
-                        })?;
-                        let kind = match entry.kind {
-                            FileKind::Regular => "file",
-                            FileKind::Directory => "directory",
-                            FileKind::SymbolicLink => "symlink",
-                            FileKind::Fifo => "fifo",
-                            FileKind::Socket => "socket",
-                            FileKind::CharacterDevice => "character_device",
-                            FileKind::BlockDevice => "block_device",
-                            FileKind::ReparsePoint => "reparse_point",
-                            FileKind::MountBoundary => "mount_boundary",
-                        };
-                        Ok(json!({"name": name, "kind": kind}))
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-            let next_after = entries
-                .last()
-                .and_then(|entry| entry["name"].as_str())
-                .map(str::to_owned);
-            let value = json!({
-                "generation": generation,
-                "entries": entries,
-                "has_more": page.has_more,
-                "next_after": next_after,
-            });
-            if serde_json::to_vec(&value)
-                .map_err(|error| Error::Invalid(error.to_string()))?
-                .len() as u64
-                > self.maximum_bytes
-            {
-                return Err(Error::Invalid("directory page exceeds render limit".into()));
-            }
-            let result = ToolResult { value };
-            observed.insert(invocation.operation_id, (invocation, result.clone()));
-            Ok(result)
-        })
-    }
-
-    fn reconcile<'a>(
-        &'a self,
-        invocation: ToolInvocation,
-    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
-        Box::pin(async move {
-            let observed = self.observed.lock().await;
-            match observed.get(&invocation.operation_id) {
-                Some((original, result)) if original == &invocation => Ok(Some(result.clone())),
-                Some(_) => Err(Error::Conflict(
-                    "list_files operation identity changed".into(),
-                )),
-                None => Ok(None),
-            }
-        })
-    }
-}
-
-impl ToolProjection for LocalListFilesTool {
-    fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        Ok(serde_json::json!({"kind":"json","value":result.value}))
-    }
-}
-
-struct MemoryContentPublisher {
-    files: FilesystemContentPublisher<MemoryAuthorityBackend, MemoryObjectBackend>,
-    memory_store: Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
-}
-
-impl ContentPublisher for MemoryContentPublisher {
-    fn volume(&self) -> &VolumeRef {
-        self.files.volume()
-    }
-
-    fn stage_once<'a>(
-        &'a self,
-        operation_id: OperationId,
-        path: &'a str,
-        bytes: &'a [u8],
-        media_type: &'a str,
-        display_name: &'a str,
-    ) -> BoxFuture<'a, Result<FileRef>> {
-        Box::pin(async move {
-            let persisted = self
-                .files
-                .stage_once(operation_id, path, bytes, media_type, display_name)
-                .await?;
-            self.retain(persisted, bytes)
-        })
-    }
-
-    fn stage_at<'a>(
-        &'a self,
-        operation_id: OperationId,
-        source: &'a FileRef,
-        bytes: &'a [u8],
-    ) -> BoxFuture<'a, Result<FileRef>> {
-        Box::pin(async move {
-            let persisted = self.files.stage_at(operation_id, source, bytes).await?;
-            self.retain(persisted, bytes)
-        })
-    }
-
-    fn stage<'a>(
-        &'a self,
-        operation_id: OperationId,
-        path: &'a str,
-        bytes: &'a [u8],
-        media_type: &'a str,
-        display_name: &'a str,
-    ) -> BoxFuture<'a, Result<FileRef>> {
-        Box::pin(async move {
-            let persisted = self
-                .files
-                .stage(operation_id, path, bytes, media_type, display_name)
-                .await?;
-            self.retain(persisted, bytes)
-        })
-    }
-}
-
-impl MemoryContentPublisher {
-    fn retain(&self, persisted: FileRef, bytes: &[u8]) -> Result<FileRef> {
-        let staged = self
-            .memory_store
-            .lock()
-            .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?
-            .stage_reference(&persisted, bytes, true)?;
-        debug_assert_eq!(persisted, staged);
-        Ok(persisted)
-    }
-}
+mod listing;
+mod publisher;
+use listing::LocalListFilesTool;
+use publisher::MemoryContentPublisher;
 
 impl MemoryHarnessStorage {
-    /// Assembles portable read/write/edit tools and this volume's directory tool.
-    /// Callers composing a custom builder can use this registry unchanged.
-    pub fn default_tools(&self, limits: Limits) -> Result<ToolRegistry> {
-        limits.validate()?;
+    /// Assembles portable defaults with an optional explicitly bound recursive provider.
+    pub fn default_tools(
+        &self,
+        limits: Limits,
+        source: Option<
+            Arc<
+                super::ConfiguredRecursiveToolSource<
+                    MemoryStream,
+                    MemoryAuthorityBackend,
+                    MemoryObjectBackend,
+                >,
+            >,
+        >,
+    ) -> Result<ToolRegistry> {
+        limits.validate(&mut None)?;
         if limits.file_bytes > self.maximum_file_bytes {
             return Err(Error::Invalid(
                 "tool file limit exceeds the bound storage volume".into(),
             ));
         }
-        let mut tools = ToolRegistry::new();
-        tools.register(crate::tool::files::read_file()?)?;
-        tools.register(crate::tool::files::write_file()?)?;
-        tools.register(crate::tool::files::edit_file()?)?;
-        tools.register(self.list_files_tool(limits))?;
+        let mut tools = super::recursive_default_tools(source, limits.file_bytes)?;
+        tools.register((self.list_files_tool(limits), None), &mut None, None)?;
         Ok(tools)
     }
 
@@ -437,7 +131,7 @@ impl MemoryHarnessStorage {
             verifier: self.content_verifier.clone(),
             volume: self.volume.clone(),
             maximum_bytes: limits.render_bytes,
-            observed: tokio::sync::Mutex::new(HashMap::new()),
+            observed: tokio::sync::Mutex::new(BTreeMap::new()),
         });
         Tool {
             definition: ToolDefinition {
@@ -484,36 +178,20 @@ impl MemoryHarnessStorage {
         }
     }
 
-    /// Creates an agent-owned private volume and a bound conversation before
-    /// any turn or interaction can publish a reference.
+    /// Creates an agent-owned private volume and a bound conversation before any turn or interaction can publish a reference.
     pub async fn new(agent: AgentId, maximum_file_bytes: u64) -> Result<Self> {
-        if maximum_file_bytes == 0 {
-            return Err(Error::Invalid(
-                "memory Harness file limit must be positive".into(),
-            ));
-        }
-        let provider = ProviderRef::new("local", "filesystem", "2")?;
-        let host: Arc<MemoryHost> = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
-        let volume = VolumeRef::new(
-            provider,
-            Uuid::new_v4().to_string(),
-            VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(agent),
-        )?;
-        let memory_store = new_memory_store(&volume, maximum_file_bytes)?;
-        host.create_volume(&volume).await?;
+        let (host, volume, memory_store) = new_memory_content(agent, maximum_file_bytes).await?;
         let conversation = Authority {
             kind: AggregateKind::Conversation,
             id: ConversationId::new().to_string(),
         };
         let key = *blake3::hash(&OperationId::new().into_bytes()).as_bytes();
         let issuer = AuthorityIssuer::new("local-harness", key, conversation.clone());
-        let read_capability = volume.capability(VolumeOperation::Read)?;
-        let write_capability = volume.capability(VolumeOperation::Write)?;
-        let scope = issuer.root_for_agent(
-            agent,
+        let read_capability = volume.capability(VolumeOperation::Read, &mut None)?;
+        let write_capability = volume.capability(VolumeOperation::Write, &mut None)?;
+        let scope = issuer.issue(
             "owner",
-            Capabilities::new([
+            &Capabilities::new([
                 capability::CONVERSATION_BIND.to_owned(),
                 capability::CONVERSATION_APPEND.to_owned(),
                 capability::CONVERSATION_SELECT_CONTEXT.to_owned(),
@@ -521,51 +199,69 @@ impl MemoryHarnessStorage {
                 read_capability.clone(),
                 write_capability.clone(),
             ]),
+            Some(agent),
+            None,
+            &mut None,
+        )?;
+        let verifier = issuer.verifier(&mut None)?;
+        let stream = Arc::new(MemoryStream::default());
+        let input = FilesystemContentVerifier::new(
+            Arc::clone(&host),
+            &verifier,
+            &scope,
+            maximum_file_bytes,
+            None,
+        )?;
+        let journal = Arc::new(
+            FilesystemExecutionJournal::new(
+                stream.clone(),
+                Arc::clone(&host),
+                &SchemaRegistry::new(),
+                crate::filesystem::FilesystemJournalBinding {
+                    volume: &volume,
+                    verifier: &verifier,
+                    scope: &scope,
+                    maximum_bytes: maximum_file_bytes,
+                    io: None,
+                },
+            )?
+            .with_input_verifier(input.clone()),
         );
-        let write =
-            ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
-        let stream = StreamClient::new(Arc::new(MemoryStream::default()));
-        let mut aggregate = StreamAggregate::open(
+        crate::store::StreamAggregate::open(
             &stream,
-            conversation.clone(),
-            issuer.verifier(),
-            SchemaRegistry::new(),
+            (
+                conversation.clone(),
+                verifier.clone(),
+                SchemaRegistry::new(),
+            ),
+            None,
+            crate::store::default_projection_read_limits(),
+            crate::store::DEFAULT_TERMINAL_EFFECTS,
+            None,
+            &mut None,
         )
-        .await?;
-        aggregate
-            .execute(Command {
+        .await?
+        .execute(
+            Command {
                 operation_id: OperationId::new(),
                 idempotency_key: IdempotencyKey::new("local-conversation-bind")?,
                 expected_revision: 0,
                 scope: scope.clone(),
                 causal_parent: None,
                 action: Action::BindConversation { agent },
-            })
-            .await?;
-        let input = Arc::new(FilesystemContentVerifier::new(
-            Arc::clone(&host),
-            issuer.verifier(),
-            scope.clone(),
-            maximum_file_bytes,
-        )?);
-        let journal = Arc::new(
-            FilesystemExecutionJournal::new(
-                stream.clone(),
-                Arc::clone(&host),
-                volume.clone(),
-                issuer.verifier(),
-                scope.clone(),
-                maximum_file_bytes,
-            )?
-            .with_input_verifier(input.clone()),
-        );
+            },
+            None,
+            &mut None,
+        )
+        .await?;
         let publisher = Arc::new(MemoryContentPublisher {
             files: FilesystemContentPublisher::new(
                 Arc::clone(&host),
-                volume.clone(),
-                &issuer.verifier(),
+                &volume,
+                &verifier,
                 &scope,
                 maximum_file_bytes,
+                None,
             )?,
             memory_store: memory_store.clone(),
         });
@@ -577,7 +273,6 @@ impl MemoryHarnessStorage {
             volume,
             read_capability,
             write_capability,
-            write,
             scope,
             issuer,
             stream,
@@ -612,15 +307,7 @@ impl MemoryHarnessStorage {
             .grant(self.write_capability.clone())
     }
 
-    /// Runs a canonical conversation turn from already staged primary content
-    /// and ordered attachments. The user record and model-context selection
-    /// commit before model dispatch; the assistant record commits afterward.
-    /// Retrying the same operation recovers both records and the exact
-    /// previously selected context rather than silently selecting newer history.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one complete idempotent conversation turn"
-    )]
+    /// Runs the shared canonical loop with this memory-backed journal.
     pub async fn run_conversation(
         &self,
         bundle: &crate::bundle::HarnessBundle,
@@ -629,177 +316,13 @@ impl MemoryHarnessStorage {
         attachments: Vec<Attachment>,
         max_steps: u32,
     ) -> Result<TurnOutput> {
-        let limits = bundle.limits();
-        limits.validate_file(&content)?;
-        if attachments.len() > limits.attachments {
-            return Err(Error::Invalid(
-                "turn attachments exceed harness limits".into(),
-            ));
-        }
-        for attachment in &attachments {
-            attachment.validate()?;
-            limits.validate_file(&attachment.file)?;
-        }
-        let referenced = if attachments.len() <= 128 {
-            ReferencedAttachments::Inline { items: attachments }
-        } else {
-            self.host
-                .put_attachment_manifest(
-                    &self.volume,
-                    &self.write,
-                    &format!("turns/{operation_id}/attachments.json"),
-                    &attachments,
-                    self.maximum_file_bytes,
-                    &IdempotencyKey::new(format!("conversation:{operation_id}:attachments"))?,
-                )
-                .await?
-        };
-        let user_operation = derived_operation_id(operation_id, b"conversation-user");
-        let mut aggregate = self.open_conversation(limits).await?;
-        let state = aggregate
-            .reducer()
-            .conversation()
-            .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?;
-        let existing_selection = aggregate
-            .context_selection_for_operation(operation_id)
-            .await?;
-        let retry_view = if let Some(selection) = &existing_selection {
-            if selection
-                .message_ids
-                .iter()
-                .any(|id| state.message(*id).is_none())
-            {
-                let reader = aggregate.history_reader()?;
-                let cursor = crate::store::HistoryCursor {
-                    authority: aggregate.reducer().authority().clone(),
-                    after_revision: 0,
-                    through_revision: aggregate.reducer().revision(),
-                };
-                Some(
-                    reader
-                        .selected_conversation(
-                            &cursor,
-                            selection,
-                            self.journal.context_history_limits(limits)?,
-                        )
-                        .await?,
-                )
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        let checkpoint_reference = aggregate.reducer().latest_context_checkpoint().cloned();
-        let checkpoint = if existing_selection.is_none() {
-            match &checkpoint_reference {
-                Some(reference) => Some(
-                    crate::executor::load_canonical_checkpoint(
-                        self.journal.as_ref(),
-                        reference,
-                        limits,
-                    )
-                    .await?
-                    .0,
-                ),
-                None => None,
-            }
-        } else {
-            None
-        };
-        let preparation = crate::turn::prepare_turn_with_checkpoint(
-            retry_view.as_ref().unwrap_or(state),
-            operation_id,
-            content,
-            referenced,
-            limits,
-            existing_selection,
-            false,
-            true,
-            checkpoint.as_ref().zip(checkpoint_reference),
-        )?;
-        let user_id = preparation.user_id;
-        if let Some(message) = preparation.user_message.clone() {
-            self.append_conversation(
-                &mut aggregate,
-                user_operation,
-                "user",
-                Action::AppendConversationMessage {
-                    message: Box::new(message),
-                },
-            )
-            .await?;
-        }
-        if preparation.selection_is_new {
-            self.append_conversation(
-                &mut aggregate,
-                operation_id,
-                "context",
-                Action::SelectModelContext {
-                    selection: preparation.selection.clone(),
-                },
-            )
-            .await?;
-        }
-        let selection = preparation.selection;
-        let historical = aggregate
-            .reducer()
-            .conversation()
-            .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?;
-        let historical = retry_view.as_ref().unwrap_or(historical);
-        if selection.conversation_revision > historical.logical_revision() {
-            return Err(Error::Storage(
-                "selection revision exceeds conversation history".into(),
-            ));
-        }
-        if selection.message_ids.last() != Some(&user_id) {
-            return Err(Error::Conflict(
-                "turn identity is bound to another context selection".into(),
-            ));
-        }
-        let selected = select_model_context_at_revision(
-            historical,
-            selection,
-            self.content_verifier.as_ref(),
-            limits.context_messages,
-            limits.attachments,
-            limits.render_bytes,
-            limits.attachments,
-        )
-        .await?;
-        // The execution journal verifies selection through this same projection.
-        // Release its guard before entering the executor.
-        drop(aggregate);
-        let output = bundle
-            .run(TurnInput::from_selected_context(
-                operation_id,
-                selected,
-                max_steps,
-            )?)
-            .await?;
-        self.publish_canonical_checkpoint(operation_id, limits)
-            .await?;
-        self.append_assistant(operation_id, user_id, &output, limits)
-            .await?;
-        self.open_conversation(limits)
-            .await?
-            .compact_conversation_projection()?;
-        Ok(output)
-    }
-
-    /// Convenience over the canonical ref-only turn API for local text input.
-    pub async fn run_prompt(
-        &self,
-        bundle: &crate::bundle::HarnessBundle,
-        prompt: &str,
-    ) -> Result<TurnOutput> {
-        self.run_prompt_with_attachments(bundle, prompt, Vec::new())
+        self.journal
+            .run_conversation(bundle, operation_id, content, attachments, max_steps)
             .await
     }
 
-    /// Text convenience with ordered staged file refs; canonical history still
-    /// contains only refs and the complete list is manifest-backed if needed.
-    pub async fn run_prompt_with_attachments(
+    /// Stages text and ordered attachments for the canonical turn loop.
+    pub async fn run_prompt(
         &self,
         bundle: &crate::bundle::HarnessBundle,
         prompt: &str,
@@ -821,318 +344,6 @@ impl MemoryHarnessStorage {
             .await
     }
 
-    async fn publish_canonical_checkpoint(
-        &self,
-        operation_id: OperationId,
-        limits: Limits,
-    ) -> Result<()> {
-        let Some(reference) = crate::executor::canonical_checkpoint_for_operation(
-            self.journal.as_ref(),
-            operation_id,
-            limits,
-        )
-        .await?
-        else {
-            return Ok(());
-        };
-        let (envelope, _) =
-            crate::executor::load_canonical_checkpoint(self.journal.as_ref(), &reference, limits)
-                .await?;
-        let mut selection = envelope.selection;
-        selection.checkpoint = Some(reference);
-        let mut aggregate = self.open_conversation(limits).await?;
-        let publication = derived_operation_id(operation_id, b"conversation-checkpoint");
-        if let Some(committed) = aggregate
-            .context_selection_for_operation(publication)
-            .await?
-        {
-            return if committed == selection {
-                Ok(())
-            } else {
-                Err(Error::Conflict(
-                    "canonical checkpoint publication changed on retry".into(),
-                ))
-            };
-        }
-        self.append_conversation(
-            &mut aggregate,
-            publication,
-            "checkpoint",
-            Action::SelectModelContext { selection },
-        )
-        .await
-    }
-
-    async fn open_conversation(
-        &self,
-        limits: Limits,
-    ) -> Result<tokio::sync::MappedMutexGuard<'_, StreamAggregate<MemoryStream>>> {
-        self.journal.conversation_projection(limits).await
-    }
-
-    async fn append_conversation(
-        &self,
-        aggregate: &mut StreamAggregate<MemoryStream>,
-        operation_id: OperationId,
-        label: &str,
-        action: Action,
-    ) -> Result<()> {
-        aggregate
-            .execute(Command {
-                operation_id,
-                idempotency_key: IdempotencyKey::new(format!(
-                    "conversation:{operation_id}:{label}"
-                ))?,
-                expected_revision: aggregate.reducer().revision(),
-                scope: self.scope.clone(),
-                causal_parent: None,
-                action,
-            })
-            .await?;
-        Ok(())
-    }
-
-    async fn indexed_conversation_message(
-        &self,
-        aggregate: &StreamAggregate<MemoryStream>,
-        id: Uuid,
-        limits: Limits,
-    ) -> Result<Option<ConversationMessage>> {
-        let state = aggregate
-            .reducer()
-            .conversation()
-            .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?;
-        if let Some(message) = state.message(id) {
-            return Ok(Some(message.clone()));
-        }
-        let cursor = crate::store::HistoryCursor {
-            authority: aggregate.reducer().authority().clone(),
-            after_revision: 0,
-            through_revision: aggregate.reducer().revision(),
-        };
-        aggregate
-            .history_reader()?
-            .conversation_message(
-                &cursor,
-                id,
-                self.journal.context_history_limits(limits)?.maximum_bytes,
-            )
-            .await
-    }
-
-    fn next_conversation_sequence(aggregate: &StreamAggregate<MemoryStream>) -> Result<u64> {
-        aggregate
-            .reducer()
-            .conversation()
-            .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?
-            .logical_revision()
-            .checked_add(1)
-            .ok_or_else(|| Error::Invalid("conversation sequence exhausted".into()))
-    }
-
-    async fn append_assistant(
-        &self,
-        operation_id: OperationId,
-        user_id: Uuid,
-        output: &TurnOutput,
-        limits: Limits,
-    ) -> Result<()> {
-        if output.attachments.len() > limits.attachments {
-            return Err(Error::Invalid(
-                "assistant attachments exceed harness limits".into(),
-            ));
-        }
-        for attachment in &output.attachments {
-            attachment.validate()?;
-            limits.validate_file(&attachment.file)?;
-        }
-        let assistant_operation = derived_operation_id(operation_id, b"conversation-assistant");
-        let assistant_id = Uuid::from_bytes(assistant_operation.into_bytes());
-        let content = self
-            .stage(
-                operation_id,
-                &format!("turns/{operation_id}/assistant.txt"),
-                output.text.as_bytes(),
-                "text/plain",
-                "assistant.txt",
-            )
-            .await?;
-        let metadata = serde_json::to_vec(&output.metadata)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        let metadata = self
-            .stage(
-                operation_id,
-                &format!("turns/{operation_id}/metadata.json"),
-                &metadata,
-                "application/json",
-                "metadata.json",
-            )
-            .await?;
-        let attachments = if output.attachments.len() <= 128 {
-            ReferencedAttachments::Inline {
-                items: output.attachments.clone(),
-            }
-        } else {
-            self.host
-                .put_attachment_manifest(
-                    &self.volume,
-                    &self.write,
-                    &format!("turns/{operation_id}/assistant-attachments.json"),
-                    &output.attachments,
-                    self.maximum_file_bytes,
-                    &IdempotencyKey::new(format!(
-                        "conversation:{operation_id}:assistant-attachments"
-                    ))?,
-                )
-                .await?
-        };
-        let mut aggregate = self.open_conversation(limits).await?;
-        self.append_tool_history(&mut aggregate, operation_id, user_id, limits)
-            .await?;
-        let mut extensions = BTreeMap::new();
-        extensions.insert("acyclic.model.metadata".to_owned(), metadata);
-        let existing = self
-            .indexed_conversation_message(&aggregate, assistant_id, limits)
-            .await?;
-        if let Some(existing) = existing {
-            if existing.content != content
-                || existing.attachments != attachments
-                || existing.extensions != extensions
-                || existing.reply_to != Some(user_id)
-                || existing.kind != MessageKind::Assistant
-            {
-                return Err(Error::Conflict(
-                    "turn identity belongs to another assistant message".into(),
-                ));
-            }
-            return Ok(());
-        }
-        let message = ConversationMessage {
-            id: assistant_id,
-            sequence: Self::next_conversation_sequence(&aggregate)?,
-            kind: MessageKind::Assistant,
-            content,
-            attachments,
-            reply_to: Some(user_id),
-            tool_call_id: None,
-            extensions,
-        };
-        self.append_conversation(
-            &mut aggregate,
-            assistant_operation,
-            "assistant",
-            Action::AppendConversationMessage {
-                message: Box::new(message),
-            },
-        )
-        .await
-    }
-
-    async fn append_tool_history(
-        &self,
-        aggregate: &mut StreamAggregate<MemoryStream>,
-        operation_id: OperationId,
-        user_id: Uuid,
-        limits: Limits,
-    ) -> Result<()> {
-        let mut calls = BTreeMap::new();
-        let mut replay = crate::executor::ExecutionReplay::new(operation_id);
-        while let Some(page) = replay.next_page(self.journal.as_ref()).await? {
-            for record in page {
-                let (kind, content, attachments, reply_to, call_id, step) = match record.event {
-                    ExecutionEvent::ToolStarted {
-                        step,
-                        call_id,
-                        invocation,
-                    } => (
-                        MessageKind::ToolCall,
-                        invocation,
-                        ReferencedAttachments::Inline { items: Vec::new() },
-                        Some(user_id),
-                        call_id,
-                        step,
-                    ),
-                    ExecutionEvent::ToolCompleted {
-                        step,
-                        call_id,
-                        result,
-                        projection,
-                    } => {
-                        let call =
-                            calls
-                                .get(&(step, call_id.clone()))
-                                .copied()
-                                .ok_or_else(|| {
-                                    Error::Storage("tool result has no durable start".into())
-                                })?;
-                        (
-                            MessageKind::ToolResult,
-                            result,
-                            ReferencedAttachments::Inline {
-                                items: vec![Attachment {
-                                    file: projection,
-                                    label: Some("model_projection".into()),
-                                }],
-                            },
-                            Some(call),
-                            call_id,
-                            step,
-                        )
-                    }
-                    _ => continue,
-                };
-                let publication = derived_operation_id(
-                    operation_id,
-                    format!("conversation-tool:{}", record.sequence).as_bytes(),
-                );
-                let id = Uuid::from_bytes(publication.into_bytes());
-                if kind == MessageKind::ToolCall
-                    && calls.insert((step, call_id.clone()), id).is_some()
-                {
-                    return Err(Error::Storage(
-                        "duplicate durable tool call identity".into(),
-                    ));
-                }
-                let existing = self
-                    .indexed_conversation_message(aggregate, id, limits)
-                    .await?;
-                if let Some(existing) = existing {
-                    if existing.kind != kind
-                        || existing.content != content
-                        || existing.attachments != attachments
-                        || existing.reply_to != reply_to
-                        || existing.tool_call_id.as_deref() != Some(call_id.as_str())
-                    {
-                        return Err(Error::Conflict(
-                            "tool publication identity belongs to another message".into(),
-                        ));
-                    }
-                    continue;
-                }
-                let message = ConversationMessage {
-                    id,
-                    sequence: Self::next_conversation_sequence(aggregate)?,
-                    kind,
-                    content,
-                    attachments,
-                    reply_to,
-                    tool_call_id: Some(call_id),
-                    extensions: BTreeMap::new(),
-                };
-                self.append_conversation(
-                    aggregate,
-                    publication,
-                    "tool",
-                    Action::AppendConversationMessage {
-                        message: Box::new(message),
-                    },
-                )
-                .await?;
-            }
-        }
-        Ok(())
-    }
-
     /// Stages user content or an attachment before it is admitted to a turn.
     pub async fn stage(
         &self,
@@ -1142,36 +353,37 @@ impl MemoryHarnessStorage {
         media_type: &str,
         display_name: &str,
     ) -> Result<FileRef> {
-        self.publisher
-            .stage(operation_id, path, bytes, media_type, display_name)
-            .await
+        let (file, _hold) = self
+            .publisher
+            .stage(operation_id, path, bytes, media_type, display_name, None)?
+            .await?;
+        Ok(file)
     }
 
     /// Reads a pinned owner-private version after verifying its descriptor.
-    pub async fn read(&self, file: &FileRef) -> Result<Vec<u8>> {
+    pub async fn read(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
         if let Ok(bytes) = self
             .memory_store
             .lock()
             .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?
             .read(file)
         {
-            return Ok(bytes);
+            return Ok(bytes.into());
         }
-        self.content_verifier.read(file).await
+        self.content_verifier
+            .read(file, self.maximum_file_bytes, None)?
+            .await
     }
 
-    /// Lazily discovers this agent's private files under its existing signed
-    /// volume-read grant. Pages pin a generation; callers pass it back to
-    /// detect a changed directory instead of silently mixing two heads.
+    /// Lazily discovers this agent's private files under its existing signed volume-read grant.
     pub async fn list_private_directory(
         &self,
         path: &str,
         expected_generation: Option<&GenerationRef>,
         after: Option<&LogicalName>,
         maximum_entries: u32,
-    ) -> Result<(GenerationRef, WorkspaceDirectoryPage)> {
-        let page = self
-            .content_verifier
+    ) -> Result<(GenerationRef, DirectoryPage)> {
+        self.content_verifier
             .list_private_directory(
                 &self.volume,
                 "",
@@ -1180,28 +392,10 @@ impl MemoryHarnessStorage {
                 after,
                 maximum_entries,
             )
-            .await?;
-        // Exercise the same bounded path/generation core used by WASM for
-        // every native owner listing. The filesystem page remains the source
-        // of its provider generation proof; direct host-owned files may not
-        // exist in the ephemeral shared index and are retained in that page.
-        let after_text = after.and_then(LogicalName::unicode_text);
-        let core = self
-            .memory_store
-            .lock()
-            .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?;
-        let generation = core.generation();
-        let _shared_page = core.list(
-            path,
-            Some(generation),
-            after_text.as_deref(),
-            maximum_entries as usize,
-        )?;
-        Ok(page)
+            .await
     }
 
-    /// Publishes one owner-mediated exact-file read scope to another agent,
-    /// independent of any fork relationship. The file must be resident now.
+    /// Publishes one owner-mediated exact-file read scope to another agent, independent of any fork relationship.
     pub async fn delegate_file_read(
         &self,
         reader: AgentId,
@@ -1214,12 +408,17 @@ impl MemoryHarnessStorage {
     }
 
     /// Resolves a pinned reference under an owner-issued signed read scope.
-    pub async fn read_delegated(&self, scope: &Scope, file: &FileRef) -> Result<Vec<u8>> {
-        self.delegated_reader(scope)?.read(file).await
+    pub async fn read_delegated(
+        &self,
+        scope: &Scope,
+        file: &FileRef,
+    ) -> Result<acyclic_stream::OwnedBytes> {
+        self.delegated_reader(scope)?
+            .read(file, self.maximum_file_bytes, None)?
+            .await
     }
 
-    /// Shares a private subtree with a named agent. An empty prefix grants
-    /// root discovery but never exposes internal storage receipts.
+    /// Shares a private subtree with a named agent.
     pub fn delegate_directory_read(
         &self,
         reader: AgentId,
@@ -1239,7 +438,7 @@ impl MemoryHarnessStorage {
         expected_generation: Option<&GenerationRef>,
         after: Option<&LogicalName>,
         maximum_entries: u32,
-    ) -> Result<(GenerationRef, WorkspaceDirectoryPage)> {
+    ) -> Result<(GenerationRef, DirectoryPage)> {
         self.delegated_reader(scope)?
             .list_private_directory(
                 &self.volume,
@@ -1252,25 +451,26 @@ impl MemoryHarnessStorage {
             .await
     }
 
-    /// Reads a named file from a delegated private directory and pins its
-    /// observed version for later exact-reference use.
+    /// Reads a named file from a delegated private directory and pins its observed version for later exact-reference use.
     pub async fn read_delegated_path(
         &self,
         scope: &Scope,
         granted_prefix: &str,
         path: &str,
         expected_generation: Option<&GenerationRef>,
-    ) -> Result<(FileRef, Vec<u8>)> {
+    ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
         let resolved = self
             .delegated_reader(scope)?
-            .read_private_path(&self.volume, granted_prefix, path, expected_generation)
-            .await?;
-        // A delegated read still uses the filesystem verifier for the signed
-        // scope and generation proof. When the path is also present in the
-        // shared core (all content staged through this storage), use the core
-        // path head and resident bytes for the returned payload. Direct
-        // provider files, such as host-owned manifests, intentionally fall
-        // back to the verifier result.
+            .read_private_path(
+                &self.volume,
+                granted_prefix,
+                path,
+                expected_generation,
+                u64::MAX,
+                None,
+            )?
+            .await
+            .map(|(file, bytes, _)| (file, bytes))?;
         let core = self
             .memory_store
             .lock()
@@ -1279,7 +479,7 @@ impl MemoryHarnessStorage {
         match shared {
             Ok(reference) if reference == resolved.0 => {
                 let bytes = core.read(&reference)?;
-                Ok((reference, bytes))
+                Ok((reference, bytes.into()))
             }
             _ => Ok(resolved),
         }
@@ -1288,41 +488,44 @@ impl MemoryHarnessStorage {
     fn delegated_reader(
         &self,
         scope: &Scope,
-    ) -> Result<FilesystemContentVerifier<MemoryAuthorityBackend, MemoryObjectBackend>> {
+    ) -> Result<Arc<FilesystemContentVerifier<MemoryAuthorityBackend, MemoryObjectBackend>>> {
         FilesystemContentVerifier::new(
             self.host.clone(),
-            self.issuer.verifier(),
-            scope.clone(),
+            self.content_verifier.verifier.as_ref(),
+            scope,
             self.maximum_file_bytes,
+            None,
         )
     }
 
-    /// Resolves an addressable local interaction under a host-issued exact
-    /// responder grant. This method belongs to the local host, not the agent.
+    /// Resolves an addressable local interaction under a host-issued exact responder grant.
     pub async fn resolve_interaction(
         &self,
         id: InteractionId,
         response: InteractionResponse,
     ) -> Result<InteractionOutcome> {
-        let responder = self.issuer.root(
-            format!("local-responder:{id}"),
-            Capabilities::new([
+        let responder = self.issuer.issue(
+            &format!("local-responder:{id}"),
+            &Capabilities::new([
                 capability::INTERACTION_RESOLVE.to_owned(),
                 capability::interaction_respond(id),
             ]),
-        );
+            None,
+            None,
+            &mut None,
+        )?;
         self.journal
             .resolve_interaction(id, response, &responder)
             .await?;
         self.journal
-            .interaction_outcome(id)
+            .interaction_outcome(id, None)?
             .await?
             .ok_or_else(|| Error::Storage("resolved interaction has no committed outcome".into()))
     }
 
     /// Opens the bound conversation's exact Stream history to host adapters.
     #[must_use]
-    pub fn stream(&self) -> &StreamClient<MemoryStream> {
+    pub fn stream(&self) -> &Arc<MemoryStream> {
         &self.stream
     }
 
@@ -1341,907 +544,13 @@ impl MemoryHarnessStorage {
     /// Returns the trusted verifier without disclosing the signing key.
     #[must_use]
     pub fn verifier(&self) -> crate::core::AuthorityVerifier {
-        self.issuer.verifier()
-    }
-}
-
-fn derived_operation_id(turn: OperationId, domain: &[u8]) -> OperationId {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(domain);
-    hasher.update(&turn.into_bytes());
-    let mut bytes = [0; 16];
-    bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-    OperationId::from_bytes(bytes)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        Outcome,
-        model::{Model, ModelAttempt, ModelEvent, ModelProvider, ModelRequest},
-        runtime::{TaskDefinition, TaskRegistry},
-    };
-    use futures::{
-        future::BoxFuture,
-        stream::{self, BoxStream},
-    };
-    use serde_json::Value;
-    use std::sync::{
-        Mutex,
-        atomic::{AtomicUsize, Ordering},
-    };
-
-    struct TextModel(Arc<Mutex<Vec<ModelRequest>>>);
-
-    fn synthetic_token_count(
-        request: &crate::model::PreparedModelRequest,
-    ) -> Result<crate::context::ModelTokenCount> {
-        // These test providers use UTF-8 bytes as token units, including framing.
-        let message_tokens = request
-            .request()
-            .messages
-            .iter()
-            .map(|message| {
-                let bytes = message.content.file_refs().iter().try_fold(
-                    crate::contract::canonical_json_bytes(message)?.len() as u64,
-                    |total, file| {
-                        total
-                            .checked_add(file.descriptor().byte_length())
-                            .ok_or_else(|| Error::Invalid("synthetic token count overflows".into()))
-                    },
-                )?;
-                u32::try_from(bytes)
-                    .map_err(|_| Error::Invalid("synthetic token count exceeds u32".into()))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let fixed = crate::contract::canonical_json_bytes(&request.request().tools)?.len();
-        Ok(crate::context::ModelTokenCount {
-            request_digest: request.manifest().request_digest,
-            fixed_tokens: u32::try_from(fixed)
-                .map_err(|_| Error::Invalid("synthetic framing exceeds u32".into()))?,
-            message_tokens,
-        })
-    }
-
-    impl ModelProvider for TextModel {
-        fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
-            Ok(crate::context::ModelContextCapacity {
-                context_tokens: 131_072,
-                output_tokens: 4_096,
-            })
-        }
-        fn count_tokens(
-            &self,
-            request: &crate::model::PreparedModelRequest,
-        ) -> Result<crate::context::ModelTokenCount> {
-            synthetic_token_count(request)
-        }
-        fn generate<'a>(
-            &'a self,
-            request: crate::model::PreparedModelRequest,
-            _dispatch: crate::model::ModelDispatch,
-        ) -> BoxStream<'a, Result<ModelEvent>> {
-            self.0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(request.request().clone());
-            Box::pin(stream::iter(vec![
-                Ok(ModelEvent::Content {
-                    delta: "local response".into(),
-                }),
-                Ok(ModelEvent::Completed {
-                    metadata: Value::Null,
-                }),
-            ]))
-        }
-
-        fn reconcile<'a>(
-            &'a self,
-            _: ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            Box::pin(async { Ok(None) })
-        }
-    }
-
-    async fn run_admitted_file_case<F, Fut>(
-        storage: &MemoryHarnessStorage,
-        limits: Limits,
-        handler: F,
-    ) -> Result<()>
-    where
-        F: Fn(crate::runtime::TaskContext) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = Result<()>> + Send + 'static,
-    {
-        use crate::runtime::{Bindings, ContentBindings};
-        let mut bindings = Bindings::local();
-        bindings.scope = RuntimeScope::new(
-            Capabilities::new([
-                storage.read_capability.clone(),
-                storage.write_capability.clone(),
-                "task:spawn:file_tool_case@1".into(),
-                "tool:call:acyclic.read_file".into(),
-                "tool:call:acyclic.write_file".into(),
-                "tool:call:acyclic.edit_file".into(),
-                "tool:call:acyclic.list_files".into(),
-            ]),
-            limits,
-        )?;
-        bindings.content = Some(ContentBindings {
-            reader: storage.content_verifier.clone(),
-            writer: Some(storage.publisher.clone()),
-        });
-        bindings.tasks.register(TaskDefinition::live(
-            "file_tool_case",
-            "1",
-            move |context, (): ()| handler(context),
-        )?)?;
-        let runtime = bindings.build()?;
-        let task = runtime.task::<(), ()>("file_tool_case")?;
-        assert_eq!(
-            runtime.spawn(&task, ()).await?.result().await?,
-            Outcome::Succeeded(())
-        );
-        Ok(())
-    }
-
-    struct ModelWithoutAccounting(TextModel);
-
-    impl ModelProvider for ModelWithoutAccounting {
-        fn generate<'a>(
-            &'a self,
-            request: crate::model::PreparedModelRequest,
-            dispatch: crate::model::ModelDispatch,
-        ) -> BoxStream<'a, Result<ModelEvent>> {
-            self.0.generate(request, dispatch)
-        }
-
-        fn reconcile<'a>(
-            &'a self,
-            attempt: ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            self.0.reconcile(attempt)
-        }
-    }
-
-    #[tokio::test]
-    async fn local_convenience_consumers_replace_or_disable_compaction() -> Result<()> {
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let policy =
-            crate::context::CompactionPolicy::Threshold(crate::context::ThresholdCompaction {
-                response_reserve_tokens: 1_024,
-                recent_tokens: 2_048,
-                ..crate::context::ThresholdCompaction::default()
-            });
-        let local = LocalHarness::with_limits(
-            AgentId::new(),
-            Limits::default(),
-            Model::new("test", "text", "1", Value::Null)?,
-            Arc::new(TextModel(requests.clone())),
-            policy,
-        )
-        .await?;
-        assert_eq!(local.run("replacement").await?.text, "local response");
-        let disabled = LocalHarness::with_tools(
-            AgentId::new(),
-            Limits::default(),
-            Model::new("test", "text", "1", Value::Null)?,
-            Arc::new(ModelWithoutAccounting(TextModel(requests.clone()))),
-            ToolRegistry::new(),
-            Vec::<String>::new(),
-            crate::context::CompactionPolicy::Disabled,
-        )
-        .await?;
-        assert_eq!(disabled.run("disabled").await?.text, "local response");
-        let requests = requests
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0].max_output_tokens, Some(1_024));
-        assert_eq!(requests[1].max_output_tokens, None);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
-        let owner = MemoryHarnessStorage::new(AgentId::new(), 4_096).await?;
-        let other = MemoryHarnessStorage::new(AgentId::new(), 4_096).await?;
-        let file = owner
-            .stage(
-                OperationId::new(),
-                "notes/one.txt",
-                b"pinned text",
-                "text/plain",
-                "one.txt",
-            )
-            .await?;
-        let expected_projection = json!({"kind":"json","value":"pinned text"});
-        let render_bytes = serde_json::to_vec(&expected_projection)
-            .map_err(|error| Error::Invalid(error.to_string()))?
-            .len() as u64;
-        let limits = Limits {
-            file_bytes: 4_096,
-            render_bytes,
-            ..Limits::default()
-        };
-        let tool = owner
-            .default_tools(limits)?
-            .get("acyclic.read_file")
-            .ok_or_else(|| Error::NotFound("read tool".into()))?
-            .clone();
-        let invocation = ToolInvocation {
-            operation_id: OperationId::new(),
-            call_id: "read-1".into(),
-            name: "acyclic.read_file".into(),
-            arguments: json!({"file":file}),
-        };
-        let own_tool = tool.clone();
-        let own_invocation = invocation.clone();
-        run_admitted_file_case(&owner, limits, move |task| {
-            let tool = own_tool.clone();
-            let invocation = own_invocation.clone();
-            let expected_projection = expected_projection.clone();
-            async move {
-                let context = crate::runtime::ToolContext::new(
-                    task.clone(),
-                    invocation.operation_id,
-                    &invocation.call_id,
-                )?;
-                let result = tool
-                    .executor
-                    .execute_with_context(context.clone(), invocation.clone())
-                    .await?;
-                assert_eq!(result.value, json!("pinned text"));
-                let projection = tool.projection.project(&invocation, &result)?;
-                assert_eq!(projection, expected_projection);
-                let content = tool.definition.validate_projection(&projection)?;
-                content.validate_limits(limits)?;
-                assert!(matches!(
-                    content.validate_limits(Limits {
-                        render_bytes: render_bytes - 1,
-                        ..limits
-                    }),
-                    Err(Error::Invalid(_))
-                ));
-                assert_eq!(
-                    tool.executor
-                        .reconcile_with_context(context, invocation.clone())
-                        .await?,
-                    Some(result)
-                );
-                let narrowed = task.scoped(
-                    task.scope().grants().clone(),
-                    Limits {
-                        render_bytes: 4,
-                        ..limits
-                    },
-                )?;
-                assert!(matches!(
-                    tool.executor
-                        .execute_with_context(
-                            crate::runtime::ToolContext::new(
-                                narrowed,
-                                invocation.operation_id,
-                                &invocation.call_id
-                            )?,
-                            invocation
-                        )
-                        .await,
-                    Err(Error::Invalid(_))
-                ));
-                Ok(())
-            }
-        })
-        .await?;
-        run_admitted_file_case(&other, limits, move |task| {
-            let tool = tool.clone();
-            let invocation = invocation.clone();
-            async move {
-                assert!(matches!(
-                    tool.executor
-                        .execute_with_context(
-                            crate::runtime::ToolContext::new(
-                                task,
-                                invocation.operation_id,
-                                &invocation.call_id
-                            )?,
-                            invocation
-                        )
-                        .await,
-                    Err(Error::Unauthorized(_)) | Err(Error::NotFound(_))
-                ));
-                Ok(())
-            }
-        })
-        .await
-    }
-
-    #[tokio::test]
-    async fn default_write_reconciles_original_receipt_and_rejects_changed_retry() -> Result<()> {
-        let storage = MemoryHarnessStorage::new(AgentId::new(), 4_096).await?;
-        let limits = Limits {
-            file_bytes: 4_096,
-            render_bytes: 4_096,
-            ..Limits::default()
-        };
-        let tool = storage
-            .default_tools(limits)?
-            .get("acyclic.write_file")
-            .ok_or_else(|| Error::NotFound("write tool".into()))?
-            .clone();
-        run_admitted_file_case(&storage, limits, move |task| {
-            let tool = tool.clone();
-            async move {
-                let invocation = ToolInvocation {
-                    operation_id: OperationId::new(), call_id: "write-1".into(), name: "acyclic.write_file".into(),
-                    arguments: json!({"path":"notes/one.txt","text":"saved text","media_type":"text/plain","display_name":"one.txt"}),
-                };
-                let context = crate::runtime::ToolContext::new(task.clone(), invocation.operation_id, &invocation.call_id)?;
-                let first = tool.executor.execute_with_context(context.clone(), invocation.clone()).await?;
-                let file: FileRef = serde_json::from_value(first.value["file"].clone()).map_err(|error| Error::Invalid(error.to_string()))?;
-                let user = task.stage_file(OperationId::new(), "notes/one.txt", b"later user edit", "text/plain", "one.txt").await?;
-                assert_eq!(tool.executor.reconcile_with_context(context.clone(), invocation.clone()).await?, Some(first));
-                assert_eq!(task.read_file(&file).await?, b"saved text");
-                assert_eq!(task.read_file(&user).await?, b"later user edit");
-                for (field, value) in [("text", "different text"), ("path", "notes/another.txt"), ("media_type", "text/markdown"), ("display_name", "other.txt")] {
-                    let mut changed = invocation.clone(); changed.arguments[field] = json!(value);
-                    assert!(matches!(tool.executor.reconcile_with_context(context.clone(), changed).await, Err(Error::Conflict(_))));
-                }
-                // General task staging retains its existing multi-path operation contract.
-                let ordinary = OperationId::new();
-                for path in ["multi/a.txt", "multi/b.txt"] {
-                    task.stage_file(ordinary, path, b"ordinary", "text/plain", "ordinary.txt").await?;
-                }
-                Ok(())
-            }
-        }).await
-    }
-
-    #[tokio::test]
-    async fn owner_private_directory_is_lazy_paged_and_generation_pinned() -> Result<()> {
-        let storage = MemoryHarnessStorage::new(AgentId::new(), 4_096).await?;
-        storage
-            .stage(
-                OperationId::new(),
-                "notes/one.txt",
-                b"one",
-                "text/plain",
-                "one.txt",
-            )
-            .await?;
-        let (generation, root) = storage.list_private_directory("", None, None, 8).await?;
-        assert!(
-            root.entries
-                .iter()
-                .any(|entry| entry.name.unicode_text().as_deref() == Some("notes"))
-        );
-        assert!(
-            !root
-                .entries
-                .iter()
-                .any(|entry| entry.name.unicode_text().as_deref() == Some(".system"))
-        );
-        let (_, notes) = storage
-            .list_private_directory("notes", Some(&generation), None, 8)
-            .await?;
-        assert!(
-            notes
-                .entries
-                .iter()
-                .any(|entry| entry.name.unicode_text().as_deref() == Some("one.txt"))
-        );
-        let limits = Limits {
-            file_bytes: 4_096,
-            render_bytes: 1_024,
-            ..Limits::default()
-        };
-        let tool = storage
-            .default_tools(limits)?
-            .get("acyclic.list_files")
-            .ok_or_else(|| Error::NotFound("default list tool".into()))?
-            .clone();
-        let invocation = ToolInvocation {
-            operation_id: OperationId::new(),
-            call_id: "list-1".into(),
-            name: "acyclic.list_files".into(),
-            arguments: json!({"path": "notes", "maximum_entries": 65}),
-        };
-        let page = tool.executor.execute(invocation.clone()).await?;
-        assert_eq!(page.value["entries"][0]["name"], "one.txt");
-        storage
-            .stage(
-                OperationId::new(),
-                "notes/two.txt",
-                b"two",
-                "text/plain",
-                "two.txt",
-            )
-            .await?;
-        assert_eq!(tool.executor.reconcile(invocation).await?, Some(page));
-        let (_, pinned_notes) = storage
-            .list_private_directory("notes", Some(&generation), None, 8)
-            .await?;
-        assert_eq!(pinned_notes.entries.len(), 1);
-        assert_eq!(
-            pinned_notes.entries[0].name.unicode_text().as_deref(),
-            Some("one.txt")
-        );
-        let (_, current_notes) = storage
-            .list_private_directory("notes", None, None, 8)
-            .await?;
-        assert_eq!(current_notes.entries.len(), 2);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn local_private_volume_identity_is_unique_per_conversation() -> Result<()> {
-        let agent = AgentId::new();
-        let first = MemoryHarnessStorage::new(agent, 4_096).await?;
-        let second = MemoryHarnessStorage::new(agent, 4_096).await?;
-        assert_ne!(first.volume(), second.volume());
-        let file = first
-            .stage(
-                OperationId::new(),
-                "notes/one.txt",
-                b"private",
-                "text/plain",
-                "one.txt",
-            )
-            .await?;
-        assert!(matches!(
-            second.read(&file).await,
-            Err(Error::Unauthorized(_))
-        ));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn default_file_tools_require_caller_volume_grants() -> Result<()> {
-        let storage = MemoryHarnessStorage::new(AgentId::new(), 4_096).await?;
-        let limits = Limits {
-            file_bytes: 4_096,
-            render_bytes: 4_096,
-            ..Limits::default()
-        };
-        let tools = storage.default_tools(limits)?;
-        let file = storage
-            .stage(
-                OperationId::new(),
-                "notes/one.txt",
-                b"one",
-                "text/plain",
-                "one.txt",
-            )
-            .await?;
-        run_admitted_file_case(&storage, limits, move |task| {
-            let tools = tools.clone(); let file = file.clone();
-            async move {
-                let task = task.scoped(Capabilities::new([
-                    "tool:call:acyclic.read_file", "tool:call:acyclic.write_file", "tool:call:acyclic.edit_file", "tool:call:acyclic.list_files",
-                ]), limits)?;
-                for (name, arguments) in [
-                    ("acyclic.read_file", json!({"file":file})),
-                    ("acyclic.write_file", json!({"path":"notes/two.txt","text":"two","media_type":"text/plain","display_name":"two.txt"})),
-                    ("acyclic.edit_file", json!({"file":file,"old_text":"one","new_text":"two"})),
-                ] {
-                    let invocation = ToolInvocation { operation_id: OperationId::new(), call_id: name.into(), name: name.into(), arguments };
-                    let tool = tools.get(name).ok_or_else(|| Error::NotFound(name.into()))?;
-                    assert!(matches!(tool.executor.execute_with_context(crate::runtime::ToolContext::new(task.clone(), invocation.operation_id, &invocation.call_id)?, invocation).await, Err(Error::Unauthorized(_))));
-                }
-                let invocation = ToolInvocation { operation_id: OperationId::new(), call_id: "list".into(), name: "acyclic.list_files".into(), arguments: json!({"path":"","maximum_entries":8}) };
-                assert!(matches!(tools.get("acyclic.list_files").ok_or_else(|| Error::NotFound("list tool".into()))?.executor.authorize(Some(task.scope()), &invocation), Err(Error::Unauthorized(_))));
-                Ok(())
-            }
-        }).await
-    }
-
-    struct ReadFileModel {
-        file: Arc<Mutex<Option<FileRef>>>,
-        calls: AtomicUsize,
-    }
-
-    impl ModelProvider for ReadFileModel {
-        fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
-            Ok(crate::context::ModelContextCapacity {
-                context_tokens: 131_072,
-                output_tokens: 4_096,
-            })
-        }
-        fn count_tokens(
-            &self,
-            request: &crate::model::PreparedModelRequest,
-        ) -> Result<crate::context::ModelTokenCount> {
-            synthetic_token_count(request)
-        }
-        fn generate<'a>(
-            &'a self,
-            request: crate::model::PreparedModelRequest,
-            _dispatch: crate::model::ModelDispatch,
-        ) -> BoxStream<'a, Result<ModelEvent>> {
-            let request = request.request();
-            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                let Some(file) = self
-                    .file
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone()
-                else {
-                    return Box::pin(stream::iter(vec![Err(Error::Invalid(
-                        "file was not staged before model generation".into(),
-                    ))]));
-                };
-                assert!(
-                    request
-                        .tools
-                        .iter()
-                        .any(|tool| tool.name == "acyclic.read_file")
-                );
-                Box::pin(stream::iter(vec![
-                    Ok(ModelEvent::ToolCall {
-                        call_id: "read".into(),
-                        name: "acyclic.read_file".into(),
-                        arguments: json!({"file": file}),
-                    }),
-                    Ok(ModelEvent::Completed {
-                        metadata: Value::Null,
-                    }),
-                ]))
-            } else {
-                assert!(request.messages.iter().any(|message| {
-                    matches!(
-                        &message.content,
-                        crate::model::ModelContent::Part(
-                            crate::model::ModelContentPart::ToolResult { .. }
-                        )
-                    )
-                }));
-                Box::pin(stream::iter(vec![
-                    Ok(ModelEvent::Content {
-                        delta: "read complete".into(),
-                    }),
-                    Ok(ModelEvent::Completed {
-                        metadata: Value::Null,
-                    }),
-                ]))
-            }
-        }
-
-        fn reconcile<'a>(
-            &'a self,
-            _: ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            Box::pin(async { Ok(None) })
-        }
-    }
-
-    #[tokio::test]
-    async fn local_harness_advertises_and_executes_default_read_file() -> Result<()> {
-        let file = Arc::new(Mutex::new(None));
-        let model = Arc::new(ReadFileModel {
-            file: file.clone(),
-            calls: AtomicUsize::new(0),
-        });
-        let local =
-            LocalHarness::new(Model::new("test", "file", "1", Value::Null)?, model.clone()).await?;
-        let staged = local
-            .storage()
-            .stage(
-                OperationId::new(),
-                "notes/read.txt",
-                b"read me",
-                "text/plain",
-                "read.txt",
-            )
-            .await?;
-        *file
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(staged);
-        assert_eq!(local.run("read the file").await?.text, "read complete");
-        assert_eq!(model.calls.load(Ordering::SeqCst), 2);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn local_harness_runs_without_manual_storage_wiring() -> Result<()> {
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let local = LocalHarness::new(
-            Model::new("test", "text", "1", Value::Null)?,
-            Arc::new(TextModel(requests.clone())),
-        )
-        .await?;
-        let output = local.run("hello").await?;
-        assert_eq!(output.text, "local response");
-        let file = local
-            .storage()
-            .stage(
-                OperationId::new(),
-                "input/note.txt",
-                b"attached text",
-                "text/plain",
-                "note.txt",
-            )
-            .await?;
-        let output = local
-            .run_with_attachments(
-                "read this",
-                vec![Attachment {
-                    file,
-                    label: Some("note".into()),
-                }],
-            )
-            .await?;
-        assert_eq!(output.text, "local response");
-        assert_eq!(
-            requests
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .len(),
-            2
-        );
-        assert!(matches!(
-            local.storage().volume().owner(),
-            VolumeOwner::Agent(_)
-        ));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn local_builder_runs_through_ref_only_storage() -> Result<()> {
-        let storage = MemoryHarnessStorage::new(AgentId::from_bytes([81; 16]), 4_096).await?;
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let bundle = storage
-            .builder()
-            .compaction(crate::context::CompactionPolicy::Disabled)
-            .model(
-                Model::new("test", "text", "1", Value::Null)?,
-                Arc::new(TextModel(requests.clone())),
-            )
-            .grant("model:generate")
-            .build()?;
-        let operation_id = OperationId::from_bytes([82; 16]);
-        let attachment = storage
-            .stage(
-                operation_id,
-                "input/note.txt",
-                b"private attachment body",
-                "text/plain",
-                "note.txt",
-            )
-            .await?;
-        let user = storage
-            .stage(
-                operation_id,
-                "input/prompt.txt",
-                b"hello",
-                "text/plain",
-                "prompt.txt",
-            )
-            .await?;
-        assert_eq!(
-            storage.read(&attachment).await?.as_slice(),
-            b"private attachment body"
-        );
-        let reader = AgentId::from_bytes([83; 16]);
-        let delegated = storage
-            .delegate_file_read(reader, "attached-reader", &attachment)
-            .await?;
-        assert_eq!(delegated.agent(), Some(reader));
-        assert_eq!(
-            storage
-                .read_delegated(&delegated, &attachment)
-                .await?
-                .as_slice(),
-            b"private attachment body"
-        );
-        let root_directory = storage.delegate_directory_read(reader, "attached-root", "")?;
-        assert_eq!(
-            storage
-                .read_delegated(&root_directory, &attachment)
-                .await?
-                .as_slice(),
-            b"private attachment body"
-        );
-        assert!(
-            ContentGrant::verify(
-                &storage.verifier(),
-                &delegated,
-                storage.volume(),
-                VolumeOperation::Write
-            )
-            .is_err()
-        );
-        let directory = storage.delegate_directory_read(reader, "attached-directory", "input")?;
-        let (generation, listed) = storage
-            .list_delegated(&directory, "input", "input", None, None, 16)
-            .await?;
-        assert!(
-            listed
-                .entries
-                .iter()
-                .any(|entry| entry.name.unicode_text().as_deref() == Some("note.txt"))
-        );
-        let (from_directory, body) = storage
-            .read_delegated_path(&directory, "input", "input/note.txt", Some(&generation))
-            .await?;
-        assert_eq!(body, b"private attachment body");
-        assert_eq!(from_directory.path(), attachment.path());
-        assert!(
-            storage
-                .read_delegated_path(&directory, "input", "inputs/note.txt", Some(&generation))
-                .await
-                .is_err()
-        );
-        storage
-            .stage(
-                OperationId::from_bytes([84; 16]),
-                "input/new.txt",
-                b"new",
-                "text/plain",
-                "new.txt",
-            )
-            .await?;
-        assert!(
-            storage
-                .read_delegated_path(&directory, "input", "input/note.txt", Some(&generation))
-                .await
-                .is_ok()
-        );
-        assert!(
-            ContentGrant::verify(
-                &storage.verifier(),
-                &directory,
-                storage.volume(),
-                VolumeOperation::Write
-            )
-            .is_err()
-        );
-        let output = storage
-            .run_conversation(
-                &bundle,
-                operation_id,
-                user.clone(),
-                vec![Attachment {
-                    file: attachment.clone(),
-                    label: None,
-                }],
-                2,
-            )
-            .await?;
-        assert_eq!(output.text, "local response");
-        let first_aggregate = storage.open_conversation(bundle.limits()).await?;
-        let first_user = first_aggregate
-            .reducer()
-            .conversation()
-            .and_then(|conversation| conversation.messages.first())
-            .ok_or_else(|| Error::Invalid("conversation user message is missing".into()))?;
-        assert_eq!(
-            first_user.id,
-            crate::turn::canonical_user_message_id(operation_id)
-        );
-        drop(first_aggregate);
-        let replayed = storage
-            .run_conversation(
-                &bundle,
-                operation_id,
-                user.clone(),
-                vec![Attachment {
-                    file: attachment.clone(),
-                    label: None,
-                }],
-                2,
-            )
-            .await?;
-        assert_eq!(replayed, output);
-        let mut aggregate = storage.open_conversation(bundle.limits()).await?;
-        assert_eq!(
-            aggregate
-                .reducer()
-                .conversation()
-                .ok_or_else(|| crate::Error::Invalid("conversation not bound".into()))?
-                .messages
-                .len(),
-            2
-        );
-        assert_eq!(aggregate.reducer().resident_context_selections().count(), 1);
-        let expected_selection = aggregate
-            .context_selection_for_operation(operation_id)
-            .await?
-            .ok_or_else(|| Error::Invalid("original context selection missing".into()))?;
-        aggregate.set_resident_event_limit(1)?;
-        assert_eq!(aggregate.reducer().resident_context_selections().count(), 0);
-        assert!(
-            aggregate
-                .reducer()
-                .context_selection_for_operation(operation_id)
-                .is_none()
-        );
-        assert_eq!(
-            aggregate
-                .context_selection_for_operation(operation_id)
-                .await?,
-            Some(expected_selection)
-        );
-        drop(aggregate);
-        storage.run_prompt(&bundle, "follow-up").await?;
-        assert_eq!(
-            storage
-                .run_conversation(
-                    &bundle,
-                    operation_id,
-                    user,
-                    vec![Attachment {
-                        file: attachment,
-                        label: None
-                    }],
-                    2
-                )
-                .await?,
-            output
-        );
-        let requests = requests
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0].messages.len(), 1);
-        assert_eq!(requests[1].messages.len(), 3);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn typed_tasks_stage_and_resolve_only_with_owner_bound_grants() -> Result<()> {
-        let storage = MemoryHarnessStorage::new(AgentId::from_bytes([91; 16]), 4_096).await?;
-        let mut tasks = TaskRegistry::default();
-        tasks.register(
-            TaskDefinition::live("file_task", "1", |context, (): ()| async move {
-                let file = context
-                    .stage_file(
-                        OperationId::from_bytes([92; 16]),
-                        "task/result.txt",
-                        b"pinned bytes",
-                        "text/plain",
-                        "result.txt",
-                    )
-                    .await?;
-                let bytes = context.read_file(&file).await?;
-                let narrowed =
-                    context.scoped(Capabilities::new(Vec::<String>::new()), Limits::default())?;
-                assert!(narrowed.read_file(&file).await.is_err());
-                assert!(
-                    narrowed
-                        .stage_file(
-                            OperationId::from_bytes([93; 16]),
-                            "task/denied.txt",
-                            b"denied",
-                            "text/plain",
-                            "denied.txt"
-                        )
-                        .await
-                        .is_err()
-                );
-                String::from_utf8(bytes).map_err(|error| Error::Invalid(error.to_string()))
-            })?
-            .requires("content:write")?,
-        )?;
-        let bundle = storage
-            .builder()
-            .compaction(crate::context::CompactionPolicy::Disabled)
-            .tasks(tasks)
-            .model(
-                Model::new("test", "text", "1", Value::Null)?,
-                Arc::new(TextModel(Arc::new(Mutex::new(Vec::new())))),
-            )
-            .grant("model:generate")
-            .build()?;
-        let runtime = bundle.runtime();
-        let task = runtime.task::<(), String>("file_task")?;
-        assert_eq!(
-            runtime.spawn(&task, ()).await?.result().await?,
-            Outcome::Succeeded("pinned bytes".to_owned())
-        );
-        Ok(())
+        self.content_verifier.verifier.as_ref().clone()
     }
 }
 
 #[cfg(test)]
-#[path = "memory_summary_tests.rs"]
+mod tests;
+
+#[cfg(test)]
+#[path = "memory_summary_tests/mod.rs"]
 mod summary_tests;

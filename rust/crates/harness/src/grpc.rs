@@ -34,12 +34,6 @@ impl HarnessGrpcService {
     pub fn new(api: Arc<dyn HarnessWireApi>) -> Self {
         Self { api }
     }
-
-    /// Wraps this implementation as a tonic server service.
-    #[must_use]
-    pub fn into_server(self) -> transport::harness_service_server::HarnessServiceServer<Self> {
-        transport::harness_service_server::HarnessServiceServer::new(self)
-    }
 }
 
 #[tonic::async_trait]
@@ -139,7 +133,8 @@ impl transport::harness_service_server::HarnessService for HarnessGrpcService {
                     .map_err(status)?;
                 let request = request.into_inner();
                 let response = self.api.observe(request.clone()).await.map_err(status)?;
-                validate_operation_status(&request, &response).map_err(status)?;
+                validate_operation_status(&request.operation_id, request.owner.as_ref(), &response)
+                    .map_err(status)?;
                 Ok(Response::new(response))
             }
             .await,
@@ -326,26 +321,6 @@ mod tests {
                 })
             }
             .boxed()
-        }
-    }
-
-    #[test]
-    fn statuses_follow_the_wire_error_code() {
-        let operation = crate::OperationId::from_bytes([1; 16]);
-        for (error, code) in [
-            (Error::Invalid("x".into()), tonic::Code::InvalidArgument),
-            (Error::Storage("x".into()), tonic::Code::Unavailable),
-            (Error::Indeterminate(operation), tonic::Code::Unavailable),
-            (
-                Error::InteractionRejected(crate::InteractionRejection::Expired),
-                tonic::Code::DeadlineExceeded,
-            ),
-        ] {
-            let status = status(error.clone());
-            assert_eq!(
-                (status.code(), status.message()),
-                (code, error.to_string().as_str())
-            );
         }
     }
 

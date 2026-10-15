@@ -5,36 +5,28 @@ use acyclic_harness::{
     core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, Reducer, SchemaRegistry},
     runtime::{Bindings, RuntimeScope, TaskAdmissionRecord, TaskStateProvider},
 };
-use acyclic_stream::BoxProviderFuture;
 use serde_json::Value;
 use std::sync::Arc;
 
-// The generic provider deliberately returns a different admission selection.
-// This is fault injection at the state seam, not a fabricated native adapter.
 struct ResumedScope(RuntimeScope);
 
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl TaskStateProvider for ResumedScope {
     fn policy_identity(&self) -> Option<acyclic_harness::registry::ComponentIdentity> {
         None
     }
-    fn observe_admission<'a>(
-        &'a self,
-        _: TaskId,
-    ) -> BoxProviderFuture<'a, Result<TaskAdmissionRecord>> {
-        Box::pin(async { Err(Error::Unsupported("scope boundary fixture".into())) })
+    async fn observe_admission(&self, _: TaskId) -> Result<TaskAdmissionRecord> {
+        Err(Error::Unsupported("scope boundary fixture".into()))
     }
-    fn resume_scope<'a>(
-        &'a self,
-        _: TaskId,
-        _: OperationId,
-    ) -> BoxProviderFuture<'a, Result<RuntimeScope>> {
-        Box::pin(async move { Ok(self.0.clone()) })
+    async fn resume_scope(&self, _: TaskId, _: OperationId) -> Result<RuntimeScope> {
+        Ok(self.0.clone())
     }
-    fn outcome<'a>(&'a self, _: TaskId) -> BoxProviderFuture<'a, Result<Option<Outcome<Value>>>> {
-        Box::pin(async { Err(Error::Unsupported("scope boundary fixture".into())) })
+    async fn outcome(&self, _: TaskId) -> Result<Option<Outcome<Value>>> {
+        Err(Error::Unsupported("scope boundary fixture".into()))
     }
-    fn cancel<'a>(&'a self, _: TaskId) -> BoxProviderFuture<'a, Result<()>> {
-        Box::pin(async { Err(Error::Unsupported("scope boundary fixture".into())) })
+    async fn cancel(&self, _: TaskId) -> Result<()> {
+        Err(Error::Unsupported("scope boundary fixture".into()))
     }
 }
 
@@ -44,12 +36,24 @@ fn selected_scope(id: &str) -> Result<RuntimeScope> {
         id: id.into(),
     };
     let issuer = AuthorityIssuer::new("extension-resume", [93; 32], authority.clone());
-    let mut agent = Reducer::new(authority, issuer.verifier(), SchemaRegistry::new());
-    agent.apply(Command {
+    let mut agent = Reducer::new(
+        authority,
+        issuer.verifier(&mut None).expect("verifier copy"),
+        SchemaRegistry::new(),
+    );
+    agent.apply(&Command {
         operation_id: OperationId::new(),
         idempotency_key: IdempotencyKey::new(format!("selection:{id}"))?,
         expected_revision: 0,
-        scope: issuer.root("owner", Capabilities::new(["extension:activate"])),
+        scope: issuer
+            .issue(
+                "owner",
+                &Capabilities::new(["extension:activate"]),
+                None,
+                None,
+                &mut None,
+            )
+            .expect("scope proof"),
         causal_parent: None,
         action: Action::SelectExtensions { roots: Vec::new() },
     })?;
@@ -78,8 +82,8 @@ async fn resumed_context_rejects_omitted_introduced_or_retargeted_extension_sele
         let mut bindings = Bindings::local();
         bindings.scope = root;
         bindings.state = Some(Arc::new(ResumedScope(resumed)));
-        let harness = bindings.build()?;
-        let result = harness.durable_context(task, operation).await;
+        let harness = bindings.build(None)?;
+        let result = harness.durable_context(task, operation, None).await;
         if accepts {
             assert_eq!(result?.scope().extensions(), expected.as_ref());
         } else {

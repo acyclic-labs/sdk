@@ -510,21 +510,9 @@ export class BrowserChangeSet {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Stable path-independent records and namespace binding changes.
-     */
     changes(): BrowserGenerationDiffResult;
-    /**
-     * Composes contiguous immutable deltas by diffing their outer endpoints.
-     */
     compose(next: BrowserChangeSet, maximum_changes: number): Promise<BrowserChangeSet>;
-    /**
-     * Exact immutable base endpoint.
-     */
     readonly from: BrowserGeneration;
-    /**
-     * Exact immutable resulting endpoint.
-     */
     readonly to: BrowserGeneration;
 }
 
@@ -535,498 +523,61 @@ export class BrowserCheckout {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Applies one ordered sparse mutation batch atomically within this volume.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed operations, rejected semantics,
-     * cancellation, storage, or bounded-work failure.
-     */
     applyTransaction(operations: TransactionOperation[]): Promise<BrowserTransactionResult>;
-    /**
-     * Builds an immutable candidate generation without publishing authority.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for invalid checkout state, corruption,
-     * cancellation, storage failure, or bounded-work exhaustion.
-     */
     checkpoint(): Promise<BrowserCheckpointResult>;
-    /**
-     * Clones one logical range by immutable extent reference.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed paths/ranges,
-     * cancellation, storage, or bounded work.
-     */
     cloneFileRange(source: string, source_offset: bigint, destination: string, destination_offset: bigint, length: bigint): Promise<BrowserMutationResult>;
-    /**
-     * Clones one logical range between stable file identities.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed identities/ranges, absence,
-     * invalid kinds, storage, cancellation, or bounded work.
-     */
     cloneFileRangeById(source_file_id: Uint8Array, source_offset: bigint, destination_file_id: Uint8Array, destination_offset: bigint, length: bigint): Promise<BrowserMutationResult>;
-    /**
-     * Checkpoints and conditionally publishes this private overlay.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed operation identity, clean
-     * or read-only checkout, closure failure, cancellation, or bounded work.
-     */
     commit(operation_id: Uint8Array, lease: BrowserOperationWindowLease | undefined): Promise<BrowserCommitResult>;
-    /**
-     * Creates an exact POSIX character or block device identity.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed paths/kinds, unsupported
-     * profile semantics, storage, cancellation, or bounded work.
-     */
     createDevice(path: string, kind: string, major: number, minor: number): Promise<BrowserMutationResult>;
-    /**
-     * Creates one empty directory in the private COW overlay.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed paths, conflicts,
-     * cancellation, storage, allocation, or bounded work.
-     */
     createDirectory(path: string): Promise<BrowserMutationResult>;
-    /**
-     * Creates one regular file in the private COW overlay.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed paths, conflicts,
-     * cancellation, storage, allocation, or bounded work.
-     */
     createFile(path: string, bytes: Uint8Array): Promise<BrowserMutationResult>;
-    /**
-     * Creates an opaque exact Windows reparse-point payload.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed paths, unsupported profile
-     * semantics, excessive payload, storage, cancellation, or bounded work.
-     */
     createReparsePoint(path: string, payload: Uint8Array): Promise<BrowserMutationResult>;
-    /**
-     * Creates an exact empty special namespace entry.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed paths/kinds, unsupported
-     * profile semantics, storage, cancellation, or bounded work.
-     */
     createSpecial(path: string, kind: string): Promise<BrowserMutationResult>;
-    /**
-     * Creates one symbolic link with exact opaque target bytes.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed paths, conflicts,
-     * excessive targets, cancellation, storage, or bounded work.
-     */
     createSymbolicLink(path: string, target: Uint8Array): Promise<BrowserMutationResult>;
-    /**
-     * Discards the private overlay and returns to its immutable base.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for cancellation, corruption, storage, or work bounds.
-     */
     discard(): Promise<BrowserMutationResult>;
-    /**
-     * Builds a deterministic complete manifest for resumable transfer.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for checkpoint, closure, authentication,
-     * cancellation, storage, serialization, or bounded work.
-     */
     exportManifest(): Promise<BrowserExportManifestResult>;
-    /**
-     * Creates one hard link within the volume.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed paths, invalid kinds,
-     * conflicts, cancellation, storage, or bounded work.
-     */
     hardLink(source: string, destination: string): Promise<BrowserMutationResult>;
-    /**
-     * Returns one bounded ordered directory page.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed paths/cursors,
-     * non-directories, corruption, cancellation, or bounded work.
-     */
     listDirectory(path: string, after: string | null | undefined, maximum_entries: number): Promise<BrowserDirectoryPageResult>;
-    /**
-     * Returns one bounded directory page with records and metadata fetched in batches.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed paths/cursors,
-     * non-directories, corruption, cancellation, or bounded work.
-     */
     listDirectoryRecords(path: string, after: string | null | undefined, maximum_entries: number): Promise<BrowserDirectoryRecordPageResult>;
-    /**
-     * Returns one bounded ordered named-attribute page.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for class, cursor, path, storage, cancellation, or work failure.
-     */
     listNamedAttributes(path: string, after_class: string | null | undefined, after_name: Uint8Array | null | undefined, maximum_entries: number): Promise<BrowserNamedAttributePageResult>;
-    /**
-     * Resolves a bounded path batch with shared authenticated frontiers.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for non-array/excessive/malformed paths,
-     * storage, cancellation, authentication, or bounded-work failure.
-     */
     lookupBatchNoFollow(paths: BrowserPathBatch): Promise<BrowserBatchLookupResult>;
-    /**
-     * Resolves one canonical absolute path without following links.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed paths or authenticated
-     * storage, cancellation, and bounded-work failures.
-     */
     lookupNoFollow(path: string): Promise<BrowserLookupResult>;
-    /**
-     * Applies and publishes one direct-live transaction with bounded safe retries.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed operations or identity,
-     * wrong checkout mode, unresolved work, cancellation, storage, rebase,
-     * or bounded-work failure.
-     */
     mutateLive(operations: TransactionOperation[], operation_id: Uint8Array, maximum_attempts: number, maximum_conflicts: number): Promise<BrowserLiveTransactionResult>;
-    /**
-     * Plans one bounded sparse range without reading file content blobs.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed path/range, invalid bounds,
-     * non-regular kind, storage, cancellation, or bounded work.
-     */
     planFileExtents(path: string, offset: bigint, length: bigint, maximum_spans: number): Promise<BrowserExtentPlanResult>;
-    /**
-     * Plans one bounded sparse range by stable file identity.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed identity/range, invalid bounds,
-     * non-regular kind, storage, cancellation, or bounded work.
-     */
     planFileExtentsById(file_id: Uint8Array, offset: bigint, length: bigint, maximum_spans: number): Promise<BrowserExtentPlanResult>;
-    /**
-     * Allocates sparse holes without replacing existing content.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed values, unsupported
-     * keep-size physical allocation, cancellation, storage, or bounded work.
-     */
     preallocateFile(path: string, offset: bigint, length: bigint, keep_size: boolean): Promise<BrowserMutationResult>;
-    /**
-     * Allocates sparse holes by stable file identity.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed identity/range, absence,
-     * unsupported allocation, storage, cancellation, or bounded work.
-     */
     preallocateFileById(file_id: Uint8Array, offset: bigint, length: bigint, keep_size: boolean): Promise<BrowserMutationResult>;
-    /**
-     * Prepares a bounded two-parent merge against the current authority head.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed identity, invalid checkout
-     * state, non-head parent, corruption, cancellation, or bounded work.
-     */
     prepareMerge(theirs: Uint8Array, maximum_changes: number, maximum_conflicts: number): Promise<BrowserMergePreparationResult>;
-    /**
-     * Reads one exact logical regular-file range.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed paths, invalid ranges,
-     * non-regular files, corruption, cancellation, or bounded work.
-     */
     readFileRange(path: string, offset: bigint, length: bigint): Promise<BrowserFileReadResult>;
-    /**
-     * Reads one exact logical range by stable file identity.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed identity/range, absence,
-     * non-regular kind, storage, cancellation, or bounded work.
-     */
     readFileRangeById(file_id: Uint8Array, offset: bigint, length: bigint): Promise<BrowserFileReadResult>;
-    /**
-     * Reads one complete candidate file record by stable identity.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed identity, authenticated
-     * absence, storage, cancellation, or bounded-work failure.
-     */
     readFileRecordById(file_id: Uint8Array): Promise<BrowserFileRecordReadResult>;
-    /**
-     * Reads complete canonical metadata bytes for one path.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for path, storage, codec, cancellation, or work failure.
-     */
     readMetadata(path: string): Promise<BrowserMetadataResult>;
-    /**
-     * Reads complete canonical metadata by stable file identity.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed identity, absence, storage,
-     * authentication, cancellation, encoding, or bounded work.
-     */
     readMetadataById(file_id: Uint8Array): Promise<BrowserMetadataResult>;
-    /**
-     * Reads one exact named attribute value.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for class, name, path, storage, cancellation, or work failure.
-     */
     readNamedAttribute(path: string, attribute_class: string, name: Uint8Array): Promise<BrowserNamedAttributeResult>;
-    /**
-     * Reads one opaque Windows reparse-point payload without interpreting it.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed paths, wrong file kind,
-     * storage, cancellation, authentication, or bounded work.
-     */
     readReparsePoint(path: string): Promise<BrowserFileReadResult>;
-    /**
-     * Reads one symbolic link's exact opaque target bytes without following it.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed paths, non-links,
-     * corruption, cancellation, storage, or bounded work.
-     */
     readSymbolicLink(path: string): Promise<BrowserFileReadResult>;
-    /**
-     * Safely advances to head and sparsely replays private mutations.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for unsupported consistency, invalid
-     * bounds, corruption, cancellation, storage, replay, or bounded work.
-     */
     rebaseHead(maximum_conflicts: number): Promise<BrowserRebaseResult>;
-    /**
-     * Explicitly advances a clean manual checkout to the authority head.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for dirty state, storage, cancellation,
-     * authentication, or bounded-work failure.
-     */
     refreshHead(): Promise<BrowserCheckpointResult>;
-    /**
-     * Explicitly performs observation-safe synchronization for a live checkout.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for unsupported mode, conflicts, storage,
-     * cancellation, authentication, or bounded-work failure.
-     */
     refreshLive(): Promise<BrowserCheckpointResult>;
-    /**
-     * Removes one namespace binding.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed paths/identities,
-     * conflicts, cancellation, storage, or bounded work.
-     */
     remove(path: string, expected_file_id?: Uint8Array | null): Promise<BrowserMutationResult>;
-    /**
-     * Removes one exact named attribute.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for class, name, mutation, cancellation, or work failure.
-     */
     removeNamedAttribute(path: string, attribute_class: string, name: Uint8Array): Promise<BrowserMutationResult>;
-    /**
-     * Atomically renames one binding within the volume.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed paths, conflicts,
-     * cancellation, storage, or bounded work.
-     */
     rename(source: string, destination: string, replace: boolean): Promise<BrowserMutationResult>;
-    /**
-     * Changes one regular file's logical length.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed values, invalid kinds,
-     * cancellation, storage, or bounded work.
-     */
     resizeFile(path: string, logical_bytes: bigint): Promise<BrowserMutationResult>;
-    /**
-     * Changes logical length by stable file identity.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed identity/length, absence,
-     * invalid kind, storage, cancellation, or bounded work.
-     */
     resizeFileById(file_id: Uint8Array, logical_bytes: bigint): Promise<BrowserMutationResult>;
-    /**
-     * Resolves an ordered path batch once into immutable generation-bound handles.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for non-pinned checkouts, malformed paths,
-     * corruption, cancellation, or bounded work.
-     */
     resolveFiles(paths: BrowserPathBatch): Promise<BrowserResolvedFiles>;
-    /**
-     * Resumes an unresolved direct-live transaction with the same operation identity.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed identity, wrong checkout
-     * mode, absent staged work, cancellation, storage, rebase, or bounds.
-     */
     resumeLive(operation_id: Uint8Array, maximum_attempts: number, maximum_conflicts: number): Promise<BrowserLiveMutationResult>;
-    /**
-     * Finds the next sparse data or hole boundary without reading file bodies.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed path/offset/target,
-     * non-regular kind, storage, cancellation, or bounded work.
-     */
     seekFileExtent(path: string, offset: bigint, target: string): Promise<BrowserExtentSeekResult>;
-    /**
-     * Finds the next sparse boundary by stable file identity.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed identity/offset/target,
-     * non-regular kind, storage, cancellation, or bounded work.
-     */
     seekFileExtentById(file_id: Uint8Array, offset: bigint, target: string): Promise<BrowserExtentSeekResult>;
-    /**
-     * Atomically replaces metadata and optional logical size for one path.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed metadata/path, non-regular
-     * resize, storage, cancellation, mutation, or bounded-work failure.
-     */
     setAttributes(path: string, canonical_bytes: Uint8Array, logical_bytes?: bigint | null): Promise<BrowserMutationResult>;
-    /**
-     * Atomically replaces metadata and optional logical size by file identity.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed identity/metadata,
-     * non-regular resize, storage, cancellation, or bounded work.
-     */
     setAttributesById(file_id: Uint8Array, canonical_bytes: Uint8Array, logical_bytes?: bigint | null): Promise<BrowserMutationResult>;
-    /**
-     * Atomically replaces complete canonical metadata for one path.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for path, codec, mutation, cancellation, or work failure.
-     */
     setMetadata(path: string, canonical_bytes: Uint8Array): Promise<BrowserMutationResult>;
-    /**
-     * Replaces complete canonical metadata by stable file identity.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed identity/metadata, absence,
-     * storage, cancellation, or bounded work.
-     */
     setMetadataById(file_id: Uint8Array, canonical_bytes: Uint8Array): Promise<BrowserMutationResult>;
-    /**
-     * Returns one complete no-follow file record and canonical metadata.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed paths, storage,
-     * authentication, cancellation, encoding, or bounded-work failure.
-     */
     statNoFollow(path: string): Promise<BrowserStatResult>;
-    /**
-     * Replaces one logical file range in the private COW overlay.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed paths/offsets,
-     * non-regular files, cancellation, storage, or bounded work.
-     */
     writeFile(path: string, offset: bigint, bytes: Uint8Array): Promise<BrowserMutationResult>;
-    /**
-     * Replaces one logical range by stable file identity.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed identity/offset,
-     * non-regular kind, storage, cancellation, or bounded work.
-     */
     writeFileById(file_id: Uint8Array, offset: bigint, bytes: Uint8Array): Promise<BrowserMutationResult>;
-    /**
-     * Inserts or replaces one exact named attribute.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for class, name, mode, mutation, cancellation, or work failure.
-     */
     writeNamedAttribute(path: string, attribute_class: string, name: Uint8Array, bytes: Uint8Array, mode: string): Promise<BrowserMutationResult>;
-    /**
-     * Punches a hole or records physically allocated zeros.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed ranges/kinds,
-     * cancellation, storage, or bounded work.
-     */
     zeroFileRange(path: string, offset: bigint, length: bigint, allocated: boolean, extend: boolean): Promise<BrowserMutationResult>;
-    /**
-     * Punches a hole or records allocated zero by stable file identity.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed identity/range, absence,
-     * invalid kind, storage, cancellation, or bounded work.
-     */
     zeroFileRangeById(file_id: Uint8Array, offset: bigint, length: bigint, allocated: boolean, extend: boolean): Promise<BrowserMutationResult>;
-    /**
-     * Returns exact bounded work used to acquire this checkout handle.
-     */
     readonly acquisitionWork: BrowserWorkCounters;
 }
 
@@ -1037,136 +588,21 @@ export class BrowserFs {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Discards resident acceleration without changing persistent state.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error after close or poisoned cache state.
-     */
     clearObjectCache(): void;
-    /**
-     * Releases browser handles. Durable state remains in the selected browser stores.
-     */
     close(): void;
-    /**
-     * Creates both generation-fenced speculation engines over this
-     * browser filesystem's authenticated object backend and shared cache.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error after close, for malformed identities or
-     * options, or when either engine rejects its hard policy.
-     */
     createSpeculation(volume_id: Uint8Array, generation_id: Uint8Array, options: any): BrowserSpeculation;
-    /**
-     * Creates one independently configured volume.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for unsupported durability, storage,
-     * authentication, cancellation, or bounded-work failure.
-     */
     createVolume(options: any): Promise<BrowserVolume>;
-    /**
-     * Idempotently creates one caller-selected volume identity.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed identity, incompatible
-     * existing configuration, unsupported semantics, or storage failure.
-     */
     createVolumeWithId(volume_id: Uint8Array, options: any): Promise<BrowserVolume>;
-    /**
-     * Creates or idempotently reopens one named workspace.
-     *
-     * # Errors
-     *
-     * Returns closed-engine, invalid-name, authority, or storage failures.
-     */
     createWorkspace(name: string): Promise<BrowserWorkspace>;
-    /**
-     * Exports one bounded manifest-ordered immutable-object page.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed manifests, invalid cursors,
-     * cancellation, storage, allocation, or bounded-work failures.
-     */
     exportGenerationBatch(manifest: any, cursor: bigint, maximum_objects: number, maximum_object_bytes: bigint): Promise<GenerationTransferBatchResult>;
-    /**
-     * Exports one exact authenticated immutable object for resumable transfer.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed identity, absence,
-     * corruption, cancellation, storage, or bounded work.
-     */
     exportObject(object_id: Uint8Array, maximum_bytes: bigint): Promise<BrowserFileReadResult>;
-    /**
-     * Idempotently imports one manifest-aligned immutable-object page.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed manifests, cursor/body
-     * bounds, cancellation, storage, or bounded-work failures.
-     */
     importGenerationBatch(manifest: any, cursor: bigint, objects: any, maximum_objects: number): Promise<GenerationTransferCursorResult>;
-    /**
-     * Idempotently imports one immutable object under its authenticated identity.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed identity, digest mismatch,
-     * cancellation, storage, or bounded work.
-     */
     importObject(object_id: Uint8Array, bytes: Uint8Array): Promise<BrowserMutationResult>;
-    /**
-     * Exact process-local immutable-object accelerator telemetry.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error after close, poisoned cache state, or
-     * serialization failure.
-     */
     objectCacheStats(): any;
-    /**
-     * Opens one previously created or restored persistent volume.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed identity, authenticated
-     * absence, storage corruption, cancellation, or bounded work.
-     */
     openVolume(volume_id: Uint8Array): Promise<BrowserVolume>;
-    /**
-     * Opens one existing named workspace.
-     *
-     * # Errors
-     *
-     * Returns closed-engine, invalid-name, absence, authority, or storage failures.
-     */
     openWorkspace(name: string): Promise<BrowserWorkspace>;
-    /**
-     * Opens a coordinator on the exact persistent authority; construction acquires no lease.
-     */
     operationWindows(): BrowserOperationWindowCoordinator;
-    /**
-     * Restores authority only after authenticating a complete imported closure.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed manifest, incomplete or
-     * corrupt closure, conflicting authority, cancellation, or bounded work.
-     */
     restoreVolume(manifest: any, operation_id: Uint8Array): Promise<BrowserVolume>;
-    /**
-     * Exact backend facts selected during open.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error when capability serialization fails.
-     */
     readonly capabilities: any;
 }
 
@@ -1178,60 +614,14 @@ export class BrowserGeneration {
     free(): void;
     [Symbol.dispose](): void;
     listDirectory(path: string, after: any | null | undefined, maximum_entries: number): Promise<BrowserWorkspaceDirectoryPage>;
-    /**
-     * Retains this exact generation under one opaque identity.
-     */
     pin(identity: string): Promise<BrowserGeneration>;
     planExtents(path: string, offset: bigint, length: bigint, maximum_spans: number): Promise<BrowserWorkspaceExtentPlan>;
-    /**
-     * Reads one complete file from this exact immutable state.
-     */
     read(path: string, maximum_bytes: bigint): Promise<Uint8Array>;
     readRange(path: string, offset: bigint, length: bigint): Promise<Uint8Array>;
     readSymbolicLink(path: string): Promise<Uint8Array>;
     stat(path: string): Promise<BrowserWorkspaceStat>;
-    /**
-     * Content-addressed generation identity.
-     */
     readonly id: Uint8Array;
-    /**
-     * Owning opaque workspace identity.
-     */
     readonly workspaceId: Uint8Array;
-}
-
-/**
- * Browser-safe Git-shaped compatibility history over the canonical Rust state machine.
- */
-export class BrowserGitCompatRepository {
-    free(): void;
-    [Symbol.dispose](): void;
-    /**
-     * Validates and canonicalizes a Rust Git output before JS projection.
-     */
-    canonicalizeOutputJson(value_json: string): string;
-    /**
-     * Validates and canonicalizes a durable pending transition before JS
-     * projection.
-     */
-    canonicalizePendingTransitionJson(value_json: string): string;
-    /**
-     * Parses and executes a Git-shaped argv command using the Rust source of truth.
-     */
-    executeArgvJson(argv: string[], workspace_generation: Uint8Array, default_author: string, now_seconds: bigint): Promise<string>;
-    /**
-     * Executes one typed command encoded with the public serde contract.
-     */
-    executeJson(command_json: string, workspace_generation: Uint8Array): Promise<string>;
-    /**
-     * Executes a natural JavaScript Git command through the Rust
-     * projection shared with the native binding.
-     */
-    executePublicJson(command_json: string, workspace_generation: Uint8Array): Promise<string>;
-    /**
-     * Creates process-local compatibility state for one SDK workspace.
-     */
-    constructor(workspace_id: Uint8Array);
 }
 
 /**
@@ -1241,17 +631,8 @@ export class BrowserJoinPlan {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Applies this immutable plan through one exact target-head CAS.
-     */
     apply(if_target: Uint8Array, idempotency_key?: Uint8Array | null): Promise<BrowserJoinResult>;
-    /**
-     * Exact discovered common ancestor.
-     */
     readonly commonAncestor: Uint8Array;
-    /**
-     * Target generation observed while planning.
-     */
     readonly targetHead: Uint8Array;
 }
 
@@ -1262,33 +643,12 @@ export class BrowserOperationWindowCoordinator {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Opens an overlapping lease through the shared Rust transition.
-     */
     begin(workspace_id: Uint8Array, parent: Uint8Array, owner: string, now_millis: bigint, expires_at_millis: bigint, lease_id?: Uint8Array | null): Promise<BrowserOperationWindowLease>;
-    /**
-     * Closes a lease; the final closer owns reconciliation.
-     */
     finish(lease: BrowserOperationWindowLease, now_millis: bigint): Promise<BrowserOperationWindowClose>;
-    /**
-     * Closes and completes deferred workspace reconciliation through the existing coordinator.
-     */
     finishWorkspace(workspace: BrowserWorkspace, lease: BrowserOperationWindowLease, now_millis: bigint, options: BrowserOperationReconcileOptions): Promise<BrowserWorkspaceOperationClose>;
-    /**
-     * Inspects the current durable phase without acquiring authority.
-     */
     inspect(workspace_id: Uint8Array): Promise<BrowserOperationWindowPhase>;
-    /**
-     * Coalesces an authenticated parent advance.
-     */
     observeParent(workspace_id: Uint8Array, parent: Uint8Array): Promise<boolean>;
-    /**
-     * Recovers expired leases and interrupted reconciliation without rerunning external effects.
-     */
     recoverWorkspace(workspace: BrowserWorkspace, now_millis: bigint, options: BrowserOperationReconcileOptions): Promise<BrowserWorkspaceRebaseResult | undefined>;
-    /**
-     * Extends the exact live lease; its previous publication permit is fenced.
-     */
     renew(lease: BrowserOperationWindowLease, now_millis: bigint, expires_at_millis: bigint): Promise<BrowserOperationWindowLease>;
 }
 
@@ -1299,25 +659,10 @@ export class BrowserResolvedFile {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Reads one exact logical range without another namespace lookup.
-     */
     readRange(offset: bigint, length: bigint): Promise<BrowserFileReadResult>;
-    /**
-     * Reads opaque symbolic-link target bytes without another namespace lookup.
-     */
     readSymbolicLink(): Promise<BrowserFileReadResult>;
-    /**
-     * Terminal file kind authenticated by the pinned generation.
-     */
     readonly kind: FileKind;
-    /**
-     * Logical content length authenticated by the pinned generation.
-     */
     readonly logicalBytes: bigint;
-    /**
-     * Complete canonical metadata authenticated by the pinned generation.
-     */
     readonly metadataCanonicalBytes: Uint8Array;
 }
 
@@ -1328,17 +673,8 @@ export class BrowserResolvedFiles {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Transfers one generation-bound handle to JavaScript. Each index may be taken once.
-     */
     take(index: number): BrowserResolvedFile | undefined;
-    /**
-     * Number of original-order results.
-     */
     readonly length: number;
-    /**
-     * Exact work receipt for the shared namespace traversal.
-     */
     readonly work: BrowserWorkCounters;
 }
 
@@ -1349,76 +685,14 @@ export class BrowserSpeculation {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Cooperatively cancels future residency execution from this owner.
-     */
     cancel(): void;
-    /**
-     * Executes one admitted residency prediction through the browser's
-     * authenticated object backend and shared cache.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for an inactive operation, storage or
-     * authentication failure, bounded-work exhaustion, or cancellation.
-     */
     executeResidency(operation_id: Uint8Array): Promise<BrowserResidencyExecution>;
-    /**
-     * Records terminal usefulness for one promotion operation.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed or inactive operation identities.
-     */
     finishPromotion(operation_id: Uint8Array, useful: boolean): void;
-    /**
-     * Records terminal usefulness for one residency operation.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed or inactive operation identities.
-     */
     finishResidency(operation_id: Uint8Array, useful: boolean): void;
-    /**
-     * Returns exact payload-free metrics for both engines.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error if metrics cannot be serialized.
-     */
     metrics(): BrowserSpeculationMetrics;
-    /**
-     * Records foreground demand and admits one authenticated successor.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed input or a failed bounded transition.
-     */
     observe(observation: any): BrowserAdmissionResult;
-    /**
-     * Plans one bounded promotion from exact caller-observed location facts.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed facts, unsupported tiers,
-     * inactive residency, or a failed bounded transition.
-     */
     planPromotion(request: any): BrowserPromotionAdmission;
-    /**
-     * Atomically preempts both engines before recording foreground bytes.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error if exact bounded accounting fails.
-     */
     preemptForForeground(bytes: bigint): BrowserSpeculationPreemption;
-    /**
-     * Atomically fences both engines onto a new immutable generation.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for a malformed identity or failed transition.
-     */
     replaceGeneration(generation_id: Uint8Array): BrowserSpeculationPreemption;
 }
 
@@ -1429,65 +703,20 @@ export class BrowserTransaction {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Clones one immutable range without reading file bytes.
-     */
     cloneRange(source: string, source_offset: bigint, destination: string, destination_offset: bigint, length: bigint): Promise<void>;
-    /**
-     * Publishes the complete candidate through one idempotent head CAS.
-     */
     commit(lease: BrowserOperationWindowLease | undefined): Promise<BrowserWorkspaceCommit>;
-    /**
-     * Clones one complete regular file without copying its body.
-     */
     copy(source: string, destination: string): Promise<void>;
-    /**
-     * Creates every absent directory on one canonical path.
-     */
     createDirAll(path: string): Promise<void>;
-    /**
-     * Creates exactly one empty directory.
-     */
     createDirectory(path: string): Promise<void>;
-    /**
-     * Creates one symbolic link with an opaque target.
-     */
     createSymbolicLink(path: string, target: Uint8Array): Promise<void>;
-    /**
-     * Creates one same-workspace hard link.
-     */
     hardLink(source: string, destination: string): Promise<void>;
-    /**
-     * Preallocates one sparse range without replacing content.
-     */
     preallocate(path: string, offset: bigint, length: bigint, keep_size: boolean): Promise<void>;
-    /**
-     * Safely advances this retained candidate and sparsely replays its work.
-     */
     rebase(maximum_conflicts: number): Promise<BrowserTransactionRebase>;
-    /**
-     * Removes one existing namespace binding inside this transaction.
-     */
     remove(path: string): Promise<void>;
-    /**
-     * Atomically renames one namespace binding inside this transaction.
-     */
     rename(source: string, destination: string): Promise<void>;
-    /**
-     * Changes one regular file's logical length.
-     */
     resize(path: string, logical_bytes: bigint): Promise<void>;
-    /**
-     * Creates or replaces one complete file inside this transaction.
-     */
     write(path: string, bytes: Uint8Array): Promise<void>;
-    /**
-     * Replaces one sparse regular-file range.
-     */
     writeRange(path: string, offset: bigint, bytes: Uint8Array): Promise<void>;
-    /**
-     * Punches a hole or installs allocated zeros over one exact range.
-     */
     zeroRange(path: string, offset: bigint, length: bigint, allocated: boolean, extend: boolean): Promise<void>;
 }
 
@@ -1498,31 +727,9 @@ export class BrowserVolume {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Opens the volume head with explicit access and consistency semantics.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for an invalid mode or authenticated
-     * storage, cancellation, and bounded-work failures.
-     */
     checkout(options: any): Promise<BrowserCheckout>;
-    /**
-     * Computes one bounded Merkle-aware semantic generation diff.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error for malformed identities, corrupt
-     * storage, cancellation, allocation, or bounded work.
-     */
     diffGenerations(before: Uint8Array, after: Uint8Array, maximum_changes: number): Promise<BrowserGenerationDiffResult>;
-    /**
-     * Returns exact bounded work used to acquire this volume handle.
-     */
     readonly acquisitionWork: BrowserWorkCounters;
-    /**
-     * Returns the canonical 16-byte volume identity.
-     */
     readonly id: Uint8Array;
 }
 
@@ -1533,77 +740,26 @@ export class BrowserWorkspace {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Begins one sparse atomic transaction at the current workspace head.
-     */
     beginTransaction(idempotency_key?: Uint8Array | null): Promise<BrowserTransaction>;
-    /**
-     * Retains the current generation under one human-readable label.
-     */
     checkpoint(label: string): Promise<BrowserGeneration>;
-    /**
-     * Terminally removes this mutable workspace head.
-     */
     delete(idempotency_key?: Uint8Array | null): Promise<string>;
-    /**
-     * Computes one immutable bounded semantic delta between exact generations.
-     */
     diff(from: BrowserGeneration, to: BrowserGeneration, maximum_changes: number): Promise<BrowserChangeSet>;
-    /**
-     * Forks the current generation into an independent named workspace.
-     */
     fork(destination: string, idempotency_key?: Uint8Array | null): Promise<BrowserWorkspace>;
-    /**
-     * Creates an independent workspace at one caller-selected exact generation.
-     */
     forkAt(destination: string, generation: BrowserGeneration, options: BrowserForkOptions): Promise<BrowserWorkspace>;
-    /**
-     * Reopens an authenticated exact retained generation without moving the head.
-     */
     generation(id: Uint8Array): Promise<BrowserGeneration>;
-    /**
-     * Current immutable generation identity.
-     */
     head(): Promise<Uint8Array>;
-    /**
-     * Builds one immutable side-effect-free plan for joining this workspace into a target.
-     */
     joinInto(target: BrowserWorkspace, options: any): Promise<BrowserJoinPlan>;
-    /**
-     * Advances this fork onto its source workspace's current generation.
-     */
     liveRebase(idempotency_key: Uint8Array | null | undefined, maximum_generations: number, maximum_changes: number, maximum_conflicts: number): Promise<BrowserWorkspaceRebaseResult>;
-    /**
-     * Retains the current generation under one opaque stable identity.
-     */
     pin(identity: string): Promise<BrowserGeneration>;
     planExtents(path: string, offset: bigint, length: bigint, maximum_spans: number): Promise<BrowserWorkspaceExtentPlan>;
-    /**
-     * Reads one complete regular file under a byte bound.
-     */
     read(path: string, maximum_bytes: bigint): Promise<Uint8Array>;
     readRange(path: string, offset: bigint, length: bigint): Promise<Uint8Array>;
     readSymbolicLink(path: string): Promise<Uint8Array>;
-    /**
-     * Removes one existing path atomically.
-     */
     remove(path: string): Promise<BrowserWorkspaceCommit>;
     stat(path: string): Promise<BrowserWorkspaceStat>;
-    /**
-     * Synchronizes prior operations and returns the exact immutable head.
-     */
     sync(): Promise<BrowserGeneration>;
-    /**
-     * Atomically creates or replaces one complete file.
-     */
     write(path: string, bytes: Uint8Array): Promise<BrowserWorkspaceCommit>;
-    /**
-     * Stable opaque workspace identity.
-     */
     readonly id: Uint8Array;
-    /**
-     * Canonical workspace name.
-     */
     readonly name: string;
 }
 
@@ -1613,42 +769,14 @@ export class BrowserWorkspace {
 export class BrowserWorkspaceContextRegistry {
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Adopts one parent-authorized root without enumerating its contents.
-     */
     adoptRoot(context_id: Uint8Array, root_wire: Uint8Array): Promise<Uint8Array>;
-    /**
-     * Recursively tombstones a direct-child subtree.
-     */
     discardSubtree(parent_context_id: Uint8Array, child_context_id: Uint8Array, maximum: number): Promise<Uint8Array>;
-    /**
-     * Creates an in-process registry. Host persistence can be injected by
-     * the JavaScript embedding when it is available.
-     */
     constructor();
-    /**
-     * Registers an exact direct child from the shared serde contract.
-     */
     registerChild(context_id: Uint8Array, parent_context_id: Uint8Array, roots_wire: Uint8Array): Promise<Uint8Array>;
-    /**
-     * Registers one root context from the shared serde contract.
-     */
     registerRoot(context_id: Uint8Array, roots_wire: Uint8Array): Promise<Uint8Array>;
-    /**
-     * Releases one root after callers have settled its filesystem changes.
-     */
     removeRoot(context_id: Uint8Array, root_id: Uint8Array): Promise<Uint8Array>;
-    /**
-     * Resolves one context as stable JSON.
-     */
     resolve(context_id: Uint8Array): Promise<Uint8Array>;
-    /**
-     * Freezes or resumes one durable context.
-     */
     setActive(context_id: Uint8Array, active: boolean): Promise<Uint8Array>;
-    /**
-     * Advances one root binding after a compatibility branch switch.
-     */
     setWorkspace(context_id: Uint8Array, root_id: Uint8Array, workspace_id: Uint8Array, workspace_name: string, parent_workspace_id?: Uint8Array | null): Promise<Uint8Array>;
 }
 
@@ -1704,19 +832,11 @@ export function encodePublicationJson(value_json: string): string;
 
 /**
  * Opens transactional browser storage with explicit `IndexedDB` or OPFS immutable objects.
- *
- * # Errors
- *
- * Returns a JavaScript error for invalid options or unavailable required storage.
  */
 export function openBrowserFs(options: any): Promise<BrowserFs>;
 
 /**
  * Opens the deterministic process-local reference backend.
- *
- * # Errors
- *
- * Returns a JavaScript error when the memory options are invalid.
  */
 export function openMemoryFs(options: any): BrowserFs;
 
@@ -1728,7 +848,6 @@ export interface InitOutput {
     readonly __wbg_browsercheckout_free: (a: number, b: number) => void;
     readonly __wbg_browserfs_free: (a: number, b: number) => void;
     readonly __wbg_browsergeneration_free: (a: number, b: number) => void;
-    readonly __wbg_browsergitcompatrepository_free: (a: number, b: number) => void;
     readonly __wbg_browserjoinplan_free: (a: number, b: number) => void;
     readonly __wbg_browseroperationwindowcoordinator_free: (a: number, b: number) => void;
     readonly __wbg_browserresolvedfile_free: (a: number, b: number) => void;
@@ -1823,12 +942,6 @@ export interface InitOutput {
     readonly browsergeneration_readSymbolicLink: (a: number, b: number, c: number) => any;
     readonly browsergeneration_stat: (a: number, b: number, c: number) => any;
     readonly browsergeneration_workspaceId: (a: number) => [number, number];
-    readonly browsergitcompatrepository_canonicalizeOutputJson: (a: number, b: number, c: number) => [number, number, number, number];
-    readonly browsergitcompatrepository_canonicalizePendingTransitionJson: (a: number, b: number, c: number) => [number, number, number, number];
-    readonly browsergitcompatrepository_executeArgvJson: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: bigint) => any;
-    readonly browsergitcompatrepository_executeJson: (a: number, b: number, c: number, d: number, e: number) => any;
-    readonly browsergitcompatrepository_executePublicJson: (a: number, b: number, c: number, d: number, e: number) => any;
-    readonly browsergitcompatrepository_new: (a: number, b: number) => [number, number, number];
     readonly browserjoinplan_apply: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly browserjoinplan_commonAncestor: (a: number) => [number, number];
     readonly browserjoinplan_targetHead: (a: number) => [number, number];
@@ -1918,9 +1031,9 @@ export interface InitOutput {
     readonly openBrowserFs: (a: any) => any;
     readonly openMemoryFs: (a: any) => [number, number, number];
     readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___wasm_bindgen_2db2d17d2c533688___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_2db2d17d2c533688___JsError___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___web_sys_9d8a003a502ed1ff___features__gen_IdbVersionChangeEvent__IdbVersionChangeEvent__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_2db2d17d2c533688___JsValue___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___js_sys_4adc133f13832d5d___Function_fn_wasm_bindgen_2db2d17d2c533688___JsValue_____wasm_bindgen_2db2d17d2c533688___sys__Undefined___js_sys_4adc133f13832d5d___Function_fn_wasm_bindgen_2db2d17d2c533688___JsValue_____wasm_bindgen_2db2d17d2c533688___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___web_sys_9d8a003a502ed1ff___features__gen_Event__Event______true_: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___web_sys_197818af2a22eac3___features__gen_IdbVersionChangeEvent__IdbVersionChangeEvent__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_2db2d17d2c533688___JsValue___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___js_sys_a5471da919551fc6___Function_fn_wasm_bindgen_2db2d17d2c533688___JsValue_____wasm_bindgen_2db2d17d2c533688___sys__Undefined___js_sys_a5471da919551fc6___Function_fn_wasm_bindgen_2db2d17d2c533688___JsValue_____wasm_bindgen_2db2d17d2c533688___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___web_sys_197818af2a22eac3___features__gen_Event__Event______true_: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke_______true_: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

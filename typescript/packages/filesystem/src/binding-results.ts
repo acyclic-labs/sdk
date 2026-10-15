@@ -1,70 +1,53 @@
 import type {
   BatchLookupEntry, DirectoryBindingChange, DirectoryPage, DirectoryRecordPage, FileRecordSnapshot,
   GenerationDiff, NamedAttributePage, NamedAttributeResult, StatResult, TreeEntrySnapshot, WorkCounters,
-  WasmRawFileRecordSnapshot,
   WorkspaceFileKind,
 } from "./contracts.js";
-import type * as NativeBinding from "../generated/native/binding.js";
-import type * as WasmBinding from "../generated/wasm/acyclic_fs_wasm.js";
 import { isFileKind } from "../generated/hosted-contract.js";
-import { copyBytes } from "./binding-values.js";
+import { copyName } from "./binding-values.js";
 
-type RawFileRecord = WasmRawFileRecordSnapshot;
-type BoundaryFileKind = WorkspaceFileKind | WasmBinding.FileKind | NativeBinding.FileKind;
-type RawTreeEntry = TreeEntrySnapshot;
-
-/**
- * File-kind values are validated and emitted as finite Rust-owned types at
- * each native/WASM boundary. Keep this projection as a type-preserving seam
- * for the shared adapters; do not duplicate the Rust domain list here.
- */
-export function projectFileKind(value: BoundaryFileKind): WorkspaceFileKind {
+/** Validates the generated binding file kind. */
+export function projectFileKind(value: string): WorkspaceFileKind {
   if (!isFileKind(value)) throw new TypeError("filesystem binding returned an invalid file kind");
   return value;
 }
 
-/** Validate the stringly accessor exposed by generated resolved-file classes. */
-export function projectRawFileKind(value: string): WorkspaceFileKind {
-  if (!isFileKind(value)) throw new TypeError("filesystem binding returned an invalid file kind");
-  return value;
-}
-
-export function copyFileRecord(record: FileRecordSnapshot | RawFileRecord): FileRecordSnapshot {
+export function copyFileRecord(record: FileRecordSnapshot): FileRecordSnapshot {
   return {
     ...record,
     fileKind: projectFileKind(record.fileKind),
-    fileId: copyBytes(record.fileId),
+    fileId: new Uint8Array(record.fileId),
     linkCount: BigInt(record.linkCount),
-    metadataObject: copyBytes(record.metadataObject),
+    metadataObject: new Uint8Array(record.metadataObject),
     logicalBytes: record.logicalBytes === undefined ? undefined : BigInt(record.logicalBytes),
-    payloadObject: record.payloadObject === undefined ? undefined : copyBytes(record.payloadObject),
-    inlineBytes: record.inlineBytes === undefined ? undefined : copyBytes(record.inlineBytes),
+    payloadObject: record.payloadObject === undefined ? undefined : new Uint8Array(record.payloadObject),
+    inlineBytes: record.inlineBytes === undefined ? undefined : new Uint8Array(record.inlineBytes),
   };
 }
 
 export function copyBatchLookupEntries(entries: readonly BatchLookupEntry[]): BatchLookupEntry[] {
   return entries.map((entry) => ({
     ...entry,
-    fileId: entry.fileId === undefined ? undefined : copyBytes(entry.fileId),
+    fileId: entry.fileId === undefined ? undefined : new Uint8Array(entry.fileId),
   }));
 }
 
 export function copyStatResult(value: {
   readonly exists: boolean;
-  readonly record: FileRecordSnapshot | WasmRawFileRecordSnapshot | undefined;
+  readonly record: FileRecordSnapshot | undefined;
   readonly metadataCanonicalBytes: Uint8Array | undefined;
 }, work: WorkCounters): StatResult {
   return {
     exists: value.exists,
     record: value.record === undefined ? undefined : copyFileRecord(value.record),
-    metadataCanonicalBytes: value.metadataCanonicalBytes === undefined ? undefined : copyBytes(value.metadataCanonicalBytes),
+    metadataCanonicalBytes: value.metadataCanonicalBytes === undefined ? undefined : new Uint8Array(value.metadataCanonicalBytes),
     work,
   };
 }
 
 export function copyNamedAttributeResult(value: { readonly exists: boolean; readonly bytes: Uint8Array | undefined },
   work: WorkCounters): NamedAttributeResult {
-  return { exists: value.exists, bytes: value.bytes === undefined ? undefined : copyBytes(value.bytes), work };
+  return { exists: value.exists, bytes: value.bytes === undefined ? undefined : new Uint8Array(value.bytes), work };
 }
 
 export function copyNamedAttributePage(value: {
@@ -77,7 +60,7 @@ export function copyNamedAttributePage(value: {
         entry.attributeClass !== "mac-resource-fork") {
       throw new TypeError("named attribute result has an invalid class");
     }
-    return { attributeClass: entry.attributeClass, name: copyBytes(entry.name) };
+    return { attributeClass: entry.attributeClass, name: new Uint8Array(entry.name) };
   }), hasMore: value.hasMore, work };
 }
 
@@ -86,42 +69,42 @@ export function copyDirectoryPage(value: {
   readonly hasMore: boolean;
 },
   work: WorkCounters): DirectoryPage {
-  return { entries: value.entries.map(entry => ({ name: copyBytes(entry.name),
-    fileId: copyBytes(entry.fileId), fileKind: projectFileKind(entry.fileKind) })), hasMore: value.hasMore, work };
+  return { entries: value.entries.map(entry => ({ name: new Uint8Array(entry.name),
+    fileId: new Uint8Array(entry.fileId), fileKind: projectFileKind(entry.fileKind) })), hasMore: value.hasMore, work };
 }
 
 export function copyDirectoryRecordPage(value: {
   readonly entries: readonly {
     readonly name: Uint8Array;
-    readonly record: FileRecordSnapshot | WasmRawFileRecordSnapshot;
+    readonly record: FileRecordSnapshot;
     readonly metadataCanonicalBytes: Uint8Array;
   }[];
   readonly hasMore: boolean;
 }, work: WorkCounters): DirectoryRecordPage {
-  return { entries: value.entries.map(entry => ({ name: copyBytes(entry.name),
-    record: copyFileRecord(entry.record), metadataCanonicalBytes: copyBytes(entry.metadataCanonicalBytes) })),
+  return { entries: value.entries.map(entry => ({ name: new Uint8Array(entry.name),
+    record: copyFileRecord(entry.record), metadataCanonicalBytes: new Uint8Array(entry.metadataCanonicalBytes) })),
     hasMore: value.hasMore, work };
 }
 
-function copyTreeEntry(entry: RawTreeEntry): TreeEntrySnapshot {
+function copyTreeEntry(entry: TreeEntrySnapshot): TreeEntrySnapshot {
   return {
     ...entry,
     fileKind: projectFileKind(entry.fileKind),
-    fileId: copyBytes(entry.fileId),
-    name: { ...entry.name, bytes: copyBytes(entry.name.bytes) },
+    fileId: new Uint8Array(entry.fileId),
+    name: copyName(entry.name),
   };
 }
 
 export function copyBindingChange(change: {
   readonly directoryId: Uint8Array;
   readonly name: TreeEntrySnapshot["name"];
-  readonly before: RawTreeEntry | undefined;
-  readonly after: RawTreeEntry | undefined;
+  readonly before: TreeEntrySnapshot | undefined;
+  readonly after: TreeEntrySnapshot | undefined;
 }): DirectoryBindingChange {
   return {
     ...change,
-    directoryId: copyBytes(change.directoryId),
-    name: { ...change.name, bytes: copyBytes(change.name.bytes) },
+    directoryId: new Uint8Array(change.directoryId),
+    name: copyName(change.name),
     before: change.before === undefined ? undefined : copyTreeEntry(change.before),
     after: change.after === undefined ? undefined : copyTreeEntry(change.after),
   };
@@ -130,20 +113,20 @@ export function copyBindingChange(change: {
 export function copyGenerationDiff(value: {
   readonly files: readonly {
     readonly fileId: Uint8Array;
-    readonly before: FileRecordSnapshot | RawFileRecord | undefined;
-    readonly after: FileRecordSnapshot | RawFileRecord | undefined;
+    readonly before: FileRecordSnapshot | undefined;
+    readonly after: FileRecordSnapshot | undefined;
   }[];
   readonly bindings: readonly {
     readonly directoryId: Uint8Array;
     readonly name: TreeEntrySnapshot["name"];
-    readonly before: RawTreeEntry | undefined;
-    readonly after: RawTreeEntry | undefined;
+    readonly before: TreeEntrySnapshot | undefined;
+    readonly after: TreeEntrySnapshot | undefined;
   }[];
   readonly truncated: boolean;
 }, work: WorkCounters): GenerationDiff {
   return {
     files: value.files.map(change => ({
-      fileId: copyBytes(change.fileId),
+      fileId: new Uint8Array(change.fileId),
       before: change.before === undefined ? undefined : copyFileRecord(change.before),
       after: change.after === undefined ? undefined : copyFileRecord(change.after),
     })),

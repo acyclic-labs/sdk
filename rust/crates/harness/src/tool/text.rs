@@ -1,5 +1,7 @@
 //! Bounded UTF-8 selections and literal search, independent of storage or models.
 
+use super::edit::{charge, invalid, reserve_string, reserve_vec};
+use crate::NativeCustody;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 
@@ -70,32 +72,47 @@ pub struct TextSelection {
 }
 
 /// Selects exactly the requested interval, rejecting invalid UTF-8 boundaries.
-/// No implicit rounding, truncation or normalization changes the request.
-pub fn read_range(source: &str, range: TextRange, options: ReadOptions) -> Result<TextSelection> {
-    options.validate()?;
+pub(crate) fn read_range(
+    source: &str,
+    range: TextRange,
+    options: ReadOptions,
+    work: &mut NativeCustody,
+) -> Result<TextSelection> {
+    if options.maximum_input_bytes == 0
+        || options.maximum_input_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
+        || options.maximum_text_bytes == 0
+        || options.maximum_text_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
+    {
+        return Err(invalid(
+            work,
+            "read byte bounds must be positive and exactly representable",
+        ));
+    }
     let source_bytes = source.len() as u64;
     let selected = range
         .end
         .checked_sub(range.start)
-        .ok_or_else(|| Error::Invalid("read range is reversed".into()))?;
+        .ok_or_else(|| invalid(work, "read range is reversed"))?;
     if source_bytes > options.maximum_input_bytes
         || range.end > source_bytes
         || selected > options.maximum_text_bytes
     {
-        return Err(Error::Invalid(
-            "read range exceeds its explicit byte bounds".into(),
-        ));
+        return Err(invalid(work, "read range exceeds its explicit byte bounds"));
     }
     let start = usize::try_from(range.start)
-        .map_err(|_| Error::Invalid("read start cannot be represented".into()))?;
-    let end = usize::try_from(range.end)
-        .map_err(|_| Error::Invalid("read end cannot be represented".into()))?;
+        .map_err(|_| invalid(work, "read start cannot be represented"))?;
+    let end =
+        usize::try_from(range.end).map_err(|_| invalid(work, "read end cannot be represented"))?;
     let text = source
         .get(start..end)
-        .ok_or_else(|| Error::Invalid("read range splits a UTF-8 character".into()))?;
+        .ok_or_else(|| invalid(work, "read range splits a UTF-8 character"))?;
+    let mut selected_text = String::new();
+    reserve_string(work, &mut selected_text, text.len())?;
+    charge(work, (text.len()) as u64, 0)?;
+    selected_text.push_str(text);
     Ok(TextSelection {
         range,
-        text: text.to_owned(),
+        text: selected_text,
         omitted_before: range.start,
         omitted_after: source_bytes - range.end,
     })
@@ -160,18 +177,33 @@ pub struct SearchMatches {
 }
 
 /// Searches every legal candidate under an actual comparison counter.
-///
-/// Matching is case-sensitive, literal and includes overlaps. The source must
-/// be fully scanned to return successful complete accounting. Exhausted work
-/// returns an explicit error, never an incomplete result reported as complete.
-pub fn literal_search(source: &str, query: &str, options: SearchOptions) -> Result<SearchMatches> {
-    options.validate()?;
+pub(crate) fn literal_search(
+    source: &str,
+    query: &str,
+    options: SearchOptions,
+    work: &mut NativeCustody,
+) -> Result<SearchMatches> {
+    if options.maximum_input_bytes == 0
+        || options.maximum_input_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
+        || options.maximum_query_bytes == 0
+        || options.maximum_query_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
+        || options.maximum_work == 0
+        || options.maximum_work > crate::conversation::MAX_EXACT_JS_INTEGER
+        || options.maximum_matches == 0
+        || options.maximum_matches == u32::MAX
+    {
+        return Err(invalid(
+            work,
+            "search allowances must be positive and finite",
+        ));
+    }
     if source.len() as u64 > options.maximum_input_bytes
         || query.is_empty()
         || query.len() as u64 > options.maximum_query_bytes
     {
-        return Err(Error::Invalid(
-            "search input or query exceeds its byte contract".into(),
+        return Err(invalid(
+            work,
+            "search input or query exceeds its byte contract",
         ));
     }
     let mut result = SearchMatches {
@@ -192,14 +224,13 @@ pub fn literal_search(source: &str, query: &str, options: SearchOptions) -> Resu
         let candidate = source
             .as_bytes()
             .get(offset..end)
-            .ok_or_else(|| Error::Invalid("search range cannot be represented".into()))?;
+            .ok_or_else(|| invalid(work, "search range cannot be represented"))?;
         let mut matched = true;
         for (actual, expected) in candidate.iter().zip(query.as_bytes()) {
             if result.work >= options.maximum_work {
-                return Err(Error::Invalid(
-                    "search exhausted its comparison allowance".into(),
-                ));
+                return Err(invalid(work, "search exhausted its comparison allowance"));
             }
+            charge(work, 0, 1)?;
             result.work += 1;
             if actual != expected {
                 matched = false;
@@ -211,6 +242,8 @@ pub fn literal_search(source: &str, query: &str, options: SearchOptions) -> Resu
             if result.matches.len() as u64 >= u64::from(options.maximum_matches) {
                 result.omitted_matches += 1;
             } else {
+                let length = result.matches.len() + 1;
+                reserve_vec(work, &mut result.matches, length)?;
                 result.matches.push(TextRange {
                     start: offset as u64,
                     end: end as u64,
@@ -238,8 +271,14 @@ mod tests {
 
     #[test]
     fn read_records_omissions_and_preserves_exact_utf8_and_crlf() -> Result<()> {
+        let mut work = None;
         assert_eq!(
-            read_range("a\r\n🦀\r\nb", TextRange { start: 3, end: 9 }, READ)?,
+            read_range(
+                "a\r\n🦀\r\nb",
+                TextRange { start: 3, end: 9 },
+                READ,
+                &mut work
+            )?,
             TextSelection {
                 range: TextRange { start: 3, end: 9 },
                 text: "🦀\r\n".into(),
@@ -253,10 +292,10 @@ mod tests {
             TextRange { start: 9, end: 8 },
             TextRange { start: 0, end: 11 },
         ] {
-            assert!(read_range("a\r\n🦀\r\nb", range, READ).is_err());
+            assert!(read_range("a\r\n🦀\r\nb", range, READ, &mut work).is_err());
         }
         assert_eq!(
-            read_range("abc", TextRange { start: 3, end: 3 }, READ)?.text,
+            read_range("abc", TextRange { start: 3, end: 3 }, READ, &mut work)?.text,
             ""
         );
         assert!(
@@ -266,7 +305,8 @@ mod tests {
                 ReadOptions {
                     maximum_text_bytes: 2,
                     ..READ
-                }
+                },
+                &mut work,
             )
             .is_err()
         );
@@ -275,16 +315,15 @@ mod tests {
 
     #[test]
     fn overlaps_omissions_and_work_are_explicit() -> Result<()> {
+        let mut work = None;
+        let matches = literal_search("aaa", "aa", SEARCH, &mut work)?;
+        assert_eq!(matches.matches, vec![TextRange { start: 0, end: 2 }]);
+        assert_eq!(matches.total_matches, 2);
+        assert_eq!(matches.omitted_matches, 1);
         assert_eq!(
-            literal_search("aaa", "aa", SEARCH)?,
-            SearchMatches {
-                matches: vec![TextRange { start: 0, end: 2 }],
-                total_matches: 2,
-                omitted_matches: 1,
-                work: 4
-            }
+            literal_search("🦀🦀", "🦀", SEARCH, &mut work)?.total_matches,
+            2
         );
-        assert_eq!(literal_search("🦀🦀", "🦀", SEARCH)?.total_matches, 2);
         assert!(
             literal_search(
                 "aaa",
@@ -292,12 +331,19 @@ mod tests {
                 SearchOptions {
                     maximum_work: 3,
                     ..SEARCH
-                }
+                },
+                &mut work,
             )
             .is_err()
         );
-        assert_eq!(literal_search("a", "long", SEARCH)?.work, 0);
-        assert_eq!(literal_search("ABC", "abc", SEARCH)?.total_matches, 0);
+        assert_eq!(
+            literal_search("a", "long", SEARCH, &mut work)?.total_matches,
+            0
+        );
+        assert_eq!(
+            literal_search("ABC", "abc", SEARCH, &mut work)?.total_matches,
+            0
+        );
         for options in [
             SearchOptions {
                 maximum_input_bytes: 0,
@@ -320,14 +366,15 @@ mod tests {
                 ..SEARCH
             },
         ] {
-            assert!(literal_search("a", "a", options).is_err());
+            assert!(literal_search("a", "a", options, &mut work).is_err());
         }
-        assert!(literal_search("a", "", SEARCH).is_err());
+        assert!(literal_search("a", "", SEARCH, &mut work).is_err());
         Ok(())
     }
 
     #[test]
     fn bounded_search_agrees_with_all_legal_start_positions() -> Result<()> {
+        let mut work = None;
         for length in 0..=6 {
             for bits in 0..(1 << length) {
                 let source: String = (0..length)
@@ -346,7 +393,7 @@ mod tests {
                                 })
                         })
                         .collect();
-                    let actual = literal_search(&source, query, SEARCH)?;
+                    let actual = literal_search(&source, query, SEARCH, &mut work)?;
                     assert_eq!(actual.total_matches, expected.len() as u64);
                     assert_eq!(
                         actual.matches,

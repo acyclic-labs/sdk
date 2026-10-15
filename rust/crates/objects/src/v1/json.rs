@@ -16,15 +16,14 @@ pub fn encode_binary(name: &str, bytes: &[u8], maximum: usize) -> Result<Vec<u8>
     if bytes.len() > maximum {
         return Err(wire::ErrorCode::QuotaExceeded.into());
     }
-    let descriptor = pool()?
-        .get_message_by_name(&format!("acyclic.objects.v1.{name}"))
-        .ok_or(Error::from(wire::ErrorCode::InvalidArgument))?;
-    let message = DynamicMessage::decode(descriptor, bytes)
-        .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
+    let message = decode_input(name, bytes)?;
     serde_json::to_vec(&message).map_err(|_| wire::ErrorCode::InvalidArgument.into())
 }
 /// Decodes bounded descriptor JSON to generated binary wire bytes.
 pub fn decode_binary(name: &str, bytes: &[u8], maximum: usize) -> Result<Vec<u8>, Error> {
+    Ok(decode_json(name, bytes, maximum)?.encode_to_vec())
+}
+fn decode_json(name: &str, bytes: &[u8], maximum: usize) -> Result<DynamicMessage, Error> {
     if bytes.len() > maximum {
         return Err(wire::ErrorCode::QuotaExceeded.into());
     }
@@ -36,32 +35,23 @@ pub fn decode_binary(name: &str, bytes: &[u8], maximum: usize) -> Result<Vec<u8>
         .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
     json.end()
         .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
-    Ok(message.encode_to_vec())
+    Ok(message)
 }
 /// Encodes a canonical message using its generated descriptor, without parallel JSON shapes.
-/// Message names are unqualified Objects v1 type names from the canonical route inventory.
 pub fn encode(name: &str, value: &impl Message) -> Result<Vec<u8>, Error> {
+    let message = decode_input(name, &value.encode_to_vec())?;
+    serde_json::to_vec(&message).map_err(|_| wire::ErrorCode::InvalidArgument.into())
+}
+fn decode_input(name: &str, bytes: &[u8]) -> Result<DynamicMessage, Error> {
     let descriptor = pool()?
         .get_message_by_name(&format!("acyclic.objects.v1.{name}"))
         .ok_or(Error::from(wire::ErrorCode::InvalidArgument))?;
-    let message = DynamicMessage::decode(descriptor, value.encode_to_vec().as_slice())
-        .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
-    serde_json::to_vec(&message).map_err(|_| wire::ErrorCode::InvalidArgument.into())
+    DynamicMessage::decode(descriptor, bytes)
+        .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))
 }
 /// Decodes one bounded JSON message. Unknown fields, trailing JSON, and invalid wire values fail.
 pub fn decode<T: Message + Default>(name: &str, bytes: &[u8], maximum: usize) -> Result<T, Error> {
-    if bytes.len() > maximum {
-        return Err(wire::ErrorCode::QuotaExceeded.into());
-    }
-    let descriptor = pool()?
-        .get_message_by_name(&format!("acyclic.objects.v1.{name}"))
-        .ok_or(Error::from(wire::ErrorCode::InvalidArgument))?;
-    let mut json = serde_json::Deserializer::from_slice(bytes);
-    let message = DynamicMessage::deserialize(descriptor, &mut json)
-        .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
-    json.end()
-        .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
-    message
+    decode_json(name, bytes, maximum)?
         .transcode_to()
         .map_err(|_| wire::ErrorCode::InvalidArgument.into())
 }

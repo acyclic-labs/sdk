@@ -1,0 +1,233 @@
+use super::*;
+
+pub(in crate::native_mount) struct ViewReadLease {
+    pub(in crate::native_mount) generation: u64,
+    pub(super) gate: Arc<ViewGate>,
+    pub(super) owner_slot: usize,
+    pub(super) cleanup_slot: Option<usize>,
+    pub(super) payload_bytes: u64,
+}
+
+pub(in crate::native_mount) struct ViewWriteLease {
+    pub(in crate::native_mount) generation: u64,
+    pub(super) gate: Arc<ViewGate>,
+    pub(super) armed: bool,
+}
+
+pub(in crate::native_mount) struct ViewMutationPhase {
+    pub(in crate::native_mount) generation: u64,
+    pub(super) gate: Arc<ViewGate>,
+}
+
+impl ViewWriteLease {
+    pub(in crate::native_mount) fn into_mutation_phase(mut self) -> ViewMutationPhase {
+        let mut state = self
+            .gate
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        assert!(
+            state.writer && !state.mutation_phase,
+            "original exclusive view owner"
+        );
+        state.mutation_phase = true;
+        state.writer = false;
+        self.armed = false;
+        let phase = ViewMutationPhase {
+            generation: self.generation,
+            gate: Arc::clone(&self.gate),
+        };
+        drop(state);
+        self.gate.changed.notify_waiters();
+        phase
+    }
+}
+
+impl Drop for ViewMutationPhase {
+    fn drop(&mut self) {
+        let mut state = self
+            .gate
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        state.mutation_phase = false;
+        drop(state);
+        self.gate.changed.notify_waiters();
+    }
+}
+
+pub(super) struct WaitingWriter {
+    pub(super) gate: Arc<ViewGate>,
+    registered: bool,
+}
+
+impl ViewReadLease {
+    /// Transfers an already admitted visible owner payload to this original lease.
+    pub(in crate::native_mount) fn attach_owned_payload(
+        &mut self,
+        bytes: u64,
+    ) -> Result<(), MountSourceError> {
+        let mut state = self
+            .gate
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let index = self
+            .cleanup_slot
+            .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
+        let Some(ReadSlot::Meter {
+            payload_active,
+            payload_finished,
+            proof_alive: true,
+            ..
+        }) = state.reader_slots.get_mut(index).and_then(Option::as_mut)
+        else {
+            return Err(MountSourceError::Work(crate::WorkError::Overflow));
+        };
+        let active = payload_active
+            .checked_add(bytes)
+            .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
+        payload_finished
+            .checked_add(active)
+            .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
+        let owned = self
+            .payload_bytes
+            .checked_add(bytes)
+            .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
+        *payload_active = active;
+        self.payload_bytes = owned;
+        Ok(())
+    }
+}
+
+impl Drop for ViewReadLease {
+    fn drop(&mut self) {
+        let mut state = self
+            .gate
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        state.readers = {
+            assert!(state.readers >= 1, "owned view read");
+            state.readers - 1
+        };
+        assert!(
+            self.owner_slot < state.reader_slots.len(),
+            "owned callback slot"
+        );
+        if let Some(slot) = state.reader_slots.get_mut(self.owner_slot)
+            && let Some(ReadSlot::Owner { readers, .. }) = slot
+        {
+            *readers = {
+                assert!(*readers >= 1, "owned callback read");
+                *readers - 1
+            };
+            if *readers == 0 {
+                *slot = None;
+                state.occupied_slots = {
+                    assert!(state.occupied_slots > 0, "owned callback slot");
+                    state.occupied_slots - 1
+                };
+            }
+        }
+        if let Some(index) = self.cleanup_slot {
+            assert!(index < state.reader_slots.len(), "owned cleanup slot");
+            if let Some(slot) = state.reader_slots.get_mut(index)
+                && let Some(ReadSlot::Meter {
+                    readers,
+                    finished,
+                    proof_alive,
+                    payload_active,
+                    payload_finished,
+                }) = slot
+            {
+                *readers = {
+                    assert!(*readers >= 1, "owned view read cleanup");
+                    *readers - 1
+                };
+                *finished = {
+                    assert!(
+                        *finished < u64::MAX,
+                        "admitted view read cleanup addressability"
+                    );
+                    *finished + 1
+                };
+                *payload_active = {
+                    assert!(
+                        *payload_active >= self.payload_bytes,
+                        "owned original binding payload"
+                    );
+                    *payload_active - self.payload_bytes
+                };
+                *payload_finished = {
+                    assert!(
+                        *payload_finished <= u64::MAX - self.payload_bytes,
+                        "admitted binding payload cleanup addressability"
+                    );
+                    *payload_finished + self.payload_bytes
+                };
+                if *readers == 0 && !*proof_alive {
+                    *slot = None;
+                    state.occupied_slots = {
+                        assert!(state.occupied_slots > 0, "owned cleanup slot");
+                        state.occupied_slots - 1
+                    };
+                }
+            }
+        }
+        state.release_empty_registry(&self.gate);
+        let wake = state.readers == 0;
+        drop(state);
+        if wake {
+            self.gate.changed.notify_waiters();
+        }
+    }
+}
+
+impl WaitingWriter {
+    pub(super) fn register(gate: &Arc<ViewGate>) -> Self {
+        let mut state = gate.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.waiting_writers = state.waiting_writers.saturating_add(1);
+        drop(state);
+        Self {
+            gate: Arc::clone(gate),
+            registered: true,
+        }
+    }
+
+    pub(super) fn admit(&mut self, state: &mut ViewState) {
+        state.waiting_writers = state.waiting_writers.saturating_sub(1);
+        self.registered = false;
+    }
+}
+
+impl Drop for WaitingWriter {
+    fn drop(&mut self) {
+        if self.registered {
+            let mut state = self
+                .gate
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            state.waiting_writers = state.waiting_writers.saturating_sub(1);
+            drop(state);
+            self.gate.changed.notify_waiters();
+        }
+    }
+}
+
+impl Drop for ViewWriteLease {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let mut state = self
+            .gate
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        state.writer = false;
+        drop(state);
+        self.gate.changed.notify_waiters();
+    }
+}

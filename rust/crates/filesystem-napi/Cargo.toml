@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", features = ["native-mount", "napi-types"] }
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 bytes.workspace = true
 napi.workspace = true
 napi-derive.workspace = true
@@ -20,7 +21,7 @@ serde_json.workspace = true
 tokio.workspace = true
 
 [build-dependencies]
-napi-build = "2.3.1"
+napi-build = "2.6.0"
 
 [dev-dependencies]
 tempfile = "3.27.0"

@@ -1,0 +1,48 @@
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
+    async fn mutate(
+        &self,
+        mut candidate: CheckoutCandidate<A, O>,
+        change: AuthoredMutation,
+        effect: ViewChange<'_>,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
+        apply_authored(&mut candidate.checkout, &change, work).await?;
+        self.checkout
+            .install_change(
+                candidate,
+                effect,
+                work,
+                &self.cancellation,
+                self.native_callback_guard.clone(),
+            )
+            .await
+    }
+}
+
+async fn apply_authored<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    change: &AuthoredMutation,
+    work: &crate::NativeMaterializationWork,
+) -> Result<(), MountSourceError> {
+    let allocation = work
+        .claim(
+            std::mem::size_of::<AuthoredMutation>() as u64,
+            0,
+            crate::WorkCounters {
+                items_examined: 1,
+                bytes_copied: std::mem::size_of::<AuthoredMutation>() as u64,
+                ..crate::WorkCounters::UNCHARGED
+            },
+        )
+        .map_err(MountSourceError::NativeWork)?;
+    checkout
+        .apply_borrowed_authored_transaction_with_native_work(
+            std::slice::from_ref(change),
+            &allocation,
+            work,
+            work.cancellation(),
+        )
+        .await
+        .map_err(MountSourceError::from)?;
+    Ok(())
+}

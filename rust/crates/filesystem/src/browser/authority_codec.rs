@@ -145,6 +145,7 @@ pub(crate) fn decode_commit(
         return Err(AuthorityCodecError::DigestMismatch);
     }
     Ok(DurableCommit {
+        settled_at_micros: None,
         epoch,
         sequence,
         operation_id,
@@ -200,6 +201,7 @@ pub(crate) fn decode_commit_owned(
         return Err(AuthorityCodecError::DigestMismatch);
     }
     Ok(DurableCommit {
+        settled_at_micros: None,
         epoch,
         sequence,
         operation_id,
@@ -390,6 +392,7 @@ mod tests {
             &payload,
         );
         let commit = DurableCommit {
+            settled_at_micros: None,
             epoch,
             sequence,
             operation_id,

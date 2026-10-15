@@ -29,12 +29,12 @@
     "check:types": "tsc -p tsconfig.type-tests.json --pretty false"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "2.15.0",
+    "@bufbuild/protobuf": "2.16.0",
     "@acyclic-labs/actors": "0.2.0",
     "@acyclic-labs/objects": "0.2.0"
   },
   "devDependencies": {
     "typescript": "7.0.2",
-    "@types/node": "26.4.1"
+    "@types/node": "26.6.4"
   }
 }

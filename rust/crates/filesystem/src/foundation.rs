@@ -303,6 +303,9 @@ pub struct DurableCommit {
     pub digest: Digest,
     /// Canonical schema-versioned operation bytes.
     pub payload: Bytes,
+    /// Authoritative Stream settlement time; absent for offline and legacy records.
+    /// This metadata is not serialized into the filesystem record or its digest.
+    pub settled_at_micros: Option<u64>,
 }
 
 /// Canonical non-payload bytes hashed into one authority commit identity.

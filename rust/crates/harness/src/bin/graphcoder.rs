@@ -1,11 +1,38 @@
-//! Native `GraphCoder` entrypoint. No durable product host is installed yet.
+//! Native `GraphCoder` presentation over the public Harness runtime and wire API.
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "graphcoder/commands/mod.rs"]
+mod commands;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "graphcoder/fixture.rs"]
 mod fixture;
 #[cfg(not(target_arch = "wasm32"))]
+#[path = "graphcoder/options.rs"]
+mod options;
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "graphcoder/terminal.rs"]
 mod terminal;
+#[cfg(not(target_arch = "wasm32"))]
+use options::{HELP, Selection};
+#[cfg(all(not(target_arch = "wasm32"), feature = "filesystem-local"))]
+#[path = "graphcoder/native/mod.rs"]
+mod native;
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    feature = "filesystem-local",
+    feature = "native-execution"
+))]
+#[path = "graphcoder/native_scenario/mod.rs"]
+mod native_scenario;
+#[cfg(all(not(target_arch = "wasm32"), feature = "filesystem-local"))]
+#[path = "graphcoder/native_tools.rs"]
+mod native_tools;
+#[cfg(all(not(target_arch = "wasm32"), feature = "filesystem-local"))]
+#[path = "graphcoder/native_writeback/mod.rs"]
+mod native_writeback;
+#[cfg(all(not(target_arch = "wasm32"), feature = "filesystem-local"))]
+#[path = "graphcoder/provider.rs"]
+mod provider;
 
 #[cfg(target_arch = "wasm32")]
 fn main() -> std::process::ExitCode {
@@ -15,7 +42,12 @@ fn main() -> std::process::ExitCode {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> std::process::ExitCode {
-    match run() {
+    let result = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
+        .and_then(|runtime| runtime.block_on(run()));
+    match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("graphcoder: {}", terminal::text(&error.to_string()));
@@ -25,149 +57,265 @@ fn main() -> std::process::ExitCode {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-const HELP: &str = "graphcoder --fixture wire [--headless]\n\
-    Explicit offline wire playback; no persistent session or recursive execution.\n\
-    /next       Display one bounded activity delivery\n\
-    /reset      Reset this fixture's transient display cursor\n\
-    /request PATH  Dispatch a protobuf ClientFrame (fixture rejects mutations)\n\
-    /help       Display these commands\n\
-    /quit       Exit\n\
-    Input, tree, diff, approvals, cancellation and durable reopen require a product host.\n";
-
-#[cfg(not(target_arch = "wasm32"))]
-fn options() -> acyclic_harness::Result<Option<bool>> {
-    use acyclic_harness::Error;
-
-    let mut fixture_selected = false;
-    let mut headless = false;
-    let mut arguments = std::env::args_os().skip(1);
-    while let Some(argument) = arguments.next() {
-        if argument == "--help" || argument == "-h" {
-            print!("{HELP}");
-            return Ok(None);
-        }
-        if argument == "--headless" && !headless {
-            headless = true;
-        } else if argument == "--fixture"
-            && !fixture_selected
-            && arguments.next().as_deref() == Some(std::ffi::OsStr::new("wire"))
-        {
-            fixture_selected = true;
-        } else {
-            return Err(Error::Invalid(
-                "expected --fixture wire [--headless]".into(),
-            ));
-        }
-    }
-    if !fixture_selected {
-        return Err(Error::Unsupported(
-            "durable terminal host is unavailable; use --fixture wire for UI playback only".into(),
-        ));
-    }
-    Ok(Some(headless))
+enum Backend {
+    Fixture(fixture::WireFixture),
+    #[cfg(feature = "filesystem-local")]
+    Native(std::sync::Arc<native::NativeSession>),
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn run() -> Result<(), Box<dyn std::error::Error>> {
-    use acyclic_harness::{Error, wire, wire_api::current_protocol};
-    use std::io::{BufRead as _, IsTerminal as _, Read as _, Write as _};
+impl Backend {
+    fn api(&self) -> &dyn acyclic_harness::wire_api::HarnessWireApi {
+        match self {
+            Self::Fixture(api) => api,
+            #[cfg(feature = "filesystem-local")]
+            Self::Native(api) => api.as_ref(),
+        }
+    }
 
-    let Some(headless) = options()? else {
+    fn cursor(&self) -> acyclic_harness::wire::ReplayCursor {
+        match self {
+            Self::Fixture(api) => api.start_cursor(),
+            #[cfg(feature = "filesystem-local")]
+            Self::Native(api) => api.start_cursor(),
+        }
+    }
+
+    #[cfg(feature = "filesystem-local")]
+    fn native(&self) -> acyclic_harness::Result<&std::sync::Arc<native::NativeSession>> {
+        match self {
+            Self::Native(api) => Ok(api),
+            Self::Fixture(_) => Err(acyclic_harness::Error::Unsupported(
+                "operation requires a durable product host; fixture input is not queued".into(),
+            )),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn input_lines()
+-> acyclic_harness::Result<tokio::sync::mpsc::Receiver<acyclic_harness::Result<String>>> {
+    use std::io::{BufRead as _, Read as _};
+    let (send, receive) = tokio::sync::mpsc::channel(1);
+    std::thread::Builder::new()
+        .name("graphcoder-input".into())
+        .spawn(move || {
+            let stdin = std::io::stdin();
+            let mut input = stdin.lock();
+            loop {
+                let mut line = String::new();
+                let result = match (&mut input)
+                    .take(terminal::MAX_FRAME_BYTES as u64 + 1)
+                    .read_line(&mut line)
+                {
+                    Ok(0) => break,
+                    Ok(_) if line.len() <= terminal::MAX_FRAME_BYTES => Ok(line),
+                    Ok(_) => Err(acyclic_harness::Error::Invalid(
+                        "terminal input exceeds bounds".into(),
+                    )),
+                    Err(error) => Err(acyclic_harness::Error::Storage(error.to_string())),
+                };
+                let failed = result.is_err();
+                if send.blocking_send(result).is_err() || failed {
+                    break;
+                }
+            }
+        })
+        .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
+    Ok(receive)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_harness::{Error, wire, wire_api::current_protocol};
+    use std::io::{IsTerminal as _, Write as _};
+    let Some((selection, headless)) = options::parse()? else {
         return Ok(());
     };
-    let api = fixture::WireFixture::load()?;
+    let backend = match selection {
+        Selection::Fixture => Backend::Fixture(fixture::WireFixture::load()?),
+        Selection::Native(path) => {
+            #[cfg(feature = "filesystem-local")]
+            {
+                Backend::Native(std::sync::Arc::new(
+                    native::NativeSession::open(native::Config::from_file(&path)?).await?,
+                ))
+            }
+            #[cfg(not(feature = "filesystem-local"))]
+            {
+                let _ = path;
+                return Err(Error::Unsupported(
+                    "native session requires filesystem-local feature".into(),
+                )
+                .into());
+            }
+        }
+        Selection::Scenario(path) => {
+            #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+            {
+                let cancellation = acyclic_fs::CancellationToken::new();
+                let preparation = native_scenario::prepare(&path, &cancellation);
+                tokio::pin!(preparation);
+                let manifest = tokio::select! {
+                    result = &mut preparation => result?,
+                    signal = tokio::signal::ctrl_c() => {
+                        signal?;
+                        cancellation.cancel();
+                        preparation.await?
+                    }
+                };
+                println!(
+                    "scenario-json={}",
+                    serde_json::json!({"manifest": manifest})
+                );
+                return Ok(());
+            }
+            #[cfg(not(all(feature = "filesystem-local", feature = "native-execution")))]
+            {
+                let _ = path;
+                return Err(Error::Unsupported(
+                    "native scenario requires filesystem-local,native-execution features".into(),
+                )
+                .into());
+            }
+        }
+    };
     let handshake = wire::client_frame::Frame::Handshake(wire::HandshakeRequest {
         protocol: Some(current_protocol()),
         required: None,
     });
-    futures::executor::block_on(terminal::dispatch(&api, handshake))?;
+    let api = &backend;
+    terminal::dispatch(api.api(), handshake).await?;
+    let mut cursor = api.cursor();
+    let fixture_mode = matches!(api, Backend::Fixture(_));
+    let mut backend = Some(backend);
     let stdin = std::io::stdin();
-    let interactive = !headless && stdin.is_terminal();
-    let mut input = stdin.lock();
+    let stdin_is_terminal = stdin.is_terminal();
+    let interactive = !headless && stdin_is_terminal;
+    let mut input = input_lines()?;
     let mut output = std::io::stdout().lock();
+    let mut scrollback = terminal::Scrollback::default();
+    #[cfg(feature = "filesystem-local")]
+    let mut parent = None;
+    #[cfg(feature = "filesystem-local")]
+    let mut workers = tokio::task::JoinSet::<acyclic_harness::Result<String>>::new();
     writeln!(
         output,
-        "GraphCoder — fixture wire; UI playback only, no durable effects"
+        "terminal-mode stdin-is-terminal={stdin_is_terminal} interactive={interactive} headless={headless} process-id={}",
+        std::process::id()
     )?;
-    let mut cursor = api.start_cursor();
+    writeln!(
+        output,
+        "{}",
+        if fixture_mode {
+            "GraphCoder — fixture wire; UI playback only, no durable effects"
+        } else {
+            "GraphCoder — actual local Harness runtime; deterministic request-digest provider; native commands require explicit approved bindings"
+        }
+    )?;
     loop {
         if interactive {
-            write!(output, "fixture> ")?;
+            write!(
+                output,
+                "{}> ",
+                if fixture_mode {
+                    "fixture"
+                } else {
+                    "graphcoder"
+                }
+            )?;
         }
         output.flush()?;
-        let mut line = String::new();
-        // A too-long line terminates instead of treating its remainder as a
-        // second command. No background stdin thread or child process is owned.
-        if (&mut input)
-            .take(terminal::MAX_FRAME_BYTES as u64 + 1)
-            .read_line(&mut line)?
-            == 0
-        {
-            break;
-        }
-        if line.len() > terminal::MAX_FRAME_BYTES {
-            return Err(Error::Invalid("terminal input exceeds bounds".into()).into());
-        }
-        let command = line.trim_end_matches(['\r', '\n']);
-        match command {
-            "/quit" => break,
-            "/help" => write!(output, "{HELP}")?,
-            "/reset" => {
-                cursor = api.start_cursor();
-                writeln!(output, "fixture display reset; no session restored")?;
-            }
-            "" => {}
-            command => {
-                let request = if command == "/next" {
-                    Ok(wire::client_frame::Frame::Resume(wire::ResumeRequest {
-                        protocol: Some(current_protocol()),
-                        cursors: vec![cursor.clone()],
-                    }))
-                } else if let Some(path) = command.strip_prefix("/request ") {
-                    read_request(path)
-                } else {
-                    Err(Error::Unsupported(
-                        "operation requires a durable product host; fixture input is not queued"
-                            .into(),
-                    ))
-                };
-                let result = match request {
-                    Ok(request) => futures::executor::block_on(terminal::dispatch(&api, request)),
-                    Err(error) => Err(error),
-                };
-                match result {
-                    Ok(Some(frame)) => {
-                        let response = wire::ServerFrame { frame: Some(frame) };
-                        let rendered = terminal::render(&response)?;
-                        write!(output, "{rendered}")?;
-                        output.flush()?;
-                        if let Some(wire::server_frame::Frame::Delivery(delivery)) = response.frame
-                        {
-                            cursor = wire::ReplayCursor {
-                                authority: delivery.authority,
-                                generation: delivery.generation,
-                                revision: delivery.through_revision,
-                            };
-                        }
-                    }
-                    Ok(None) => writeln!(output, "end of fixture activity")?,
-                    Err(error) => {
-                        if !interactive {
-                            return Err(error.into());
-                        }
-                        writeln!(output, "{}", terminal::text(&error.to_string()))?;
-                    }
+        #[cfg(feature = "filesystem-local")]
+        let line = loop {
+            tokio::select! {
+                line = input.recv() => break line,
+                outcome = workers.join_next(), if !workers.is_empty() => {
+                    let rendered = outcome.ok_or_else(|| Error::Conflict("worker handle missing".into()))?
+                        .map_err(|error| Error::Storage(format!("frontend worker ended without a receipt; retain its original lease: {error}")))??;
+                    scrollback.push(rendered)?;
+                    if let Some(page) = scrollback.page(0) { write!(output, "{page}")?; }
+                    if interactive { write!(output, "graphcoder> ")?; }
+                    output.flush()?;
                 }
             }
+        };
+        #[cfg(not(feature = "filesystem-local"))]
+        let line = input.recv().await;
+        let Some(line) = line else {
+            #[cfg(feature = "filesystem-local")]
+            if !workers.is_empty() {
+                writeln!(
+                    output,
+                    "input closed with active leases; outcomes remain uncertain until authoritative reconciliation"
+                )?;
+            }
+            break;
+        };
+        let line = line?;
+        let command = line.trim_end_matches(['\r', '\n']);
+        if command == "/quit" {
+            #[cfg(feature = "filesystem-local")]
+            if !workers.is_empty() {
+                writeln!(
+                    output,
+                    "closing presentation with active leases; outcomes remain uncertain until authoritative reconciliation"
+                )?;
+            }
+            break;
+        }
+        if command == "/help" {
+            write!(output, "{HELP}")?;
+            continue;
+        }
+        if command.is_empty() {
+            continue;
+        }
+        if let Some(back) = command.strip_prefix("/back ") {
+            let result = back
+                .parse::<usize>()
+                .ok()
+                .and_then(|back| scrollback.page(back));
+            if let Some(page) = result {
+                write!(output, "{page}")?;
+            } else {
+                writeln!(
+                    output,
+                    "display page unavailable; request an explicit archival page"
+                )?;
+            }
+            continue;
+        }
+        let result = commands::execute(
+            command,
+            &mut backend,
+            &mut cursor,
+            #[cfg(feature = "filesystem-local")]
+            &mut parent,
+            #[cfg(feature = "filesystem-local")]
+            &mut workers,
+            &mut output,
+        )
+        .await;
+        match result {
+            Ok(rendered) => {
+                scrollback.push(rendered)?;
+                if let Some(page) = scrollback.page(0) {
+                    write!(output, "{page}")?;
+                }
+                output.flush()?;
+            }
+            Err(error) if interactive => {
+                writeln!(output, "{}", terminal::text(&error.to_string()))?
+            }
+            Err(error) => return Err(error.into()),
         }
     }
     Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn read_request(path: &str) -> acyclic_harness::Result<acyclic_harness::wire::client_frame::Frame> {
-    use acyclic_harness::{Error, wire};
-    use prost::Message as _;
+fn read_bytes(path: &std::path::Path) -> acyclic_harness::Result<Vec<u8>> {
     use std::io::Read as _;
     let mut bytes = Vec::new();
     std::fs::File::open(path)
@@ -175,14 +323,28 @@ fn read_request(path: &str) -> acyclic_harness::Result<acyclic_harness::wire::cl
             file.take(terminal::MAX_FRAME_BYTES as u64 + 1)
                 .read_to_end(&mut bytes)
         })
-        .map_err(|error| Error::Invalid(error.to_string()))?;
+        .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
     if bytes.len() > terminal::MAX_FRAME_BYTES {
-        return Err(Error::Invalid("request exceeds terminal bounds".into()));
+        return Err(acyclic_harness::Error::Invalid(
+            "request exceeds terminal bounds".into(),
+        ));
     }
-    wire::ClientFrame::decode(bytes.as_slice())
-        .map_err(|error| Error::Invalid(error.to_string()))?
+    Ok(bytes)
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "filesystem-local"))]
+fn read_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> acyclic_harness::Result<T> {
+    serde_json::from_slice(&read_bytes(path)?)
+        .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn read_request(path: &str) -> acyclic_harness::Result<acyclic_harness::wire::client_frame::Frame> {
+    use prost::Message as _;
+    acyclic_harness::wire::ClientFrame::decode(read_bytes(std::path::Path::new(path))?.as_slice())
+        .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?
         .frame
-        .ok_or_else(|| Error::Invalid("request frame is missing".into()))
+        .ok_or_else(|| acyclic_harness::Error::Invalid("request frame is missing".into()))
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

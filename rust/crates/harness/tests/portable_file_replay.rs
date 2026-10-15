@@ -1,6 +1,4 @@
 //! Real task admission and portable file-result replay under attenuated authority.
-//! Reopens composition over retained memory providers; process restart, task-owned
-//! lease journal, cancellation and native/browser execution are separate gates.
 #![cfg(feature = "filesystem")]
 
 use acyclic_fs::Fs;
@@ -18,9 +16,7 @@ use acyclic_harness::{
     },
     interaction::{Interaction, InteractionOutcome},
     resources::ProviderRef,
-    runtime::{
-        AgentHarness, ContentBindings, RuntimeScope, TaskDefinition, TaskRegistry, ToolContext,
-    },
+    runtime::{Bindings, ContentBindings, RuntimeScope, TaskDefinition, TaskRegistry, ToolContext},
     scheduler::SessionLimits,
     tool::{
         ToolExecutor, ToolInvocation, ToolRegistry, ToolResult, files,
@@ -32,7 +28,7 @@ use acyclic_harness::{
         MachineIdentity, MachineRegistry, MachineStatus, MachineTransition, ResumableMachine,
     },
 };
-use acyclic_stream::{BoxProviderFuture, MemoryStream, StreamClient};
+use acyclic_stream::{BoxProviderFuture, MemoryStream};
 use serde_json::{Value, json};
 use std::sync::{
     Arc,
@@ -65,7 +61,6 @@ impl ResumableMachine for AdmissionMachine {
     }
 }
 
-// Instrument the actual factory executor; this wrapper supplies no file behavior.
 struct FileExecutorSpy {
     inner: Arc<dyn ToolExecutor>,
     executions: AtomicUsize,
@@ -73,45 +68,44 @@ struct FileExecutorSpy {
 }
 
 impl ToolExecutor for FileExecutorSpy {
-    fn authorize(&self, scope: Option<&RuntimeScope>, invocation: &ToolInvocation) -> Result<()> {
-        self.inner.authorize(scope, invocation)
-    }
-    fn authorize_with_context(
+    fn authorize(
         &self,
-        context: &ToolContext,
-        invocation: &ToolInvocation,
-    ) -> Result<()> {
-        self.inner.authorize_with_context(context, invocation)
+        scope: Option<&acyclic_harness::runtime::RuntimeScope>,
+        context: Option<&acyclic_harness::runtime::ToolContext>,
+        invocation: &acyclic_harness::tool::ToolInvocation,
+        work: acyclic_harness::NativeWork<'_>,
+    ) -> acyclic_harness::Result<()> {
+        let _ = (scope, context, invocation, work);
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if work.is_some() {
+            return Err(acyclic_harness::Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Unsupported,
+                reason: "tool executor has no native authorization producer",
+            });
+        }
+        if let Some(context) = context {
+            return self.inner.authorize(None, Some(context), invocation, None);
+        }
+
+        self.inner.authorize(scope, None, invocation, None)
     }
+
     fn execute<'a>(
         &'a self,
         invocation: ToolInvocation,
+        context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
         self.executions.fetch_add(1, Ordering::SeqCst);
-        self.inner.execute(invocation)
+        self.inner.execute(invocation, context)
     }
-    fn execute_with_context<'a>(
-        &'a self,
-        context: ToolContext,
-        invocation: ToolInvocation,
-    ) -> BoxProviderFuture<'a, Result<ToolResult>> {
-        self.executions.fetch_add(1, Ordering::SeqCst);
-        self.inner.execute_with_context(context, invocation)
-    }
+
     fn reconcile<'a>(
         &'a self,
         invocation: ToolInvocation,
+        context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
         self.reconciliations.fetch_add(1, Ordering::SeqCst);
-        self.inner.reconcile(invocation)
-    }
-    fn reconcile_with_context<'a>(
-        &'a self,
-        context: ToolContext,
-        invocation: ToolInvocation,
-    ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
-        self.reconciliations.fetch_add(1, Ordering::SeqCst);
-        self.inner.reconcile_with_context(context, invocation)
+        self.inner.reconcile(invocation, context)
     }
 }
 
@@ -127,57 +121,69 @@ impl ExecutionJournal for JournalSpy {
         operation: OperationId,
         after: u64,
         maximum: u32,
-    ) -> BoxProviderFuture<'a, Result<Vec<ExecutionRecord>>> {
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, Vec<ExecutionRecord>>> {
         self.reads.fetch_add(1, Ordering::SeqCst);
-        self.inner.replay(operation, after, maximum)
+        self.inner.replay(operation, after, maximum, io)
     }
     fn append<'a>(
         &'a self,
         operation: OperationId,
-        key: String,
-        event: ExecutionEvent,
-    ) -> BoxProviderFuture<'a, Result<()>> {
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, ()>> {
         self.writes.fetch_add(1, Ordering::SeqCst);
-        self.inner.append(operation, key, event)
+        self.inner.append(operation, key, event, io)
     }
     fn append_if_tail<'a>(
         &'a self,
         operation: OperationId,
         tail: u64,
-        key: String,
-        event: ExecutionEvent,
-    ) -> BoxProviderFuture<'a, Result<bool>> {
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, bool>> {
         self.writes.fetch_add(1, Ordering::SeqCst);
-        self.inner.append_if_tail(operation, tail, key, event)
+        self.inner.append_if_tail(operation, tail, key, event, io)
     }
     fn stage<'a>(
         &'a self,
         operation: OperationId,
-        key: String,
-        bytes: Vec<u8>,
+        key: &'a str,
+        bytes: &'a [u8],
         media_type: &'static str,
-    ) -> BoxProviderFuture<'a, Result<FileRef>> {
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, FileRef>> {
         self.writes.fetch_add(1, Ordering::SeqCst);
-        self.inner.stage(operation, key, bytes, media_type)
+        self.inner.stage(operation, key, bytes, media_type, io)
     }
-    fn load<'a>(&'a self, file: &'a FileRef) -> BoxProviderFuture<'a, Result<Vec<u8>>> {
+    fn load<'a>(
+        &'a self,
+        file: &'a FileRef,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
+    {
         self.reads.fetch_add(1, Ordering::SeqCst);
-        self.inner.load(file)
+        self.inner.load(file, io)
     }
     fn open_interaction<'a>(
         &'a self,
         id: InteractionId,
-        interaction: Interaction,
-    ) -> BoxProviderFuture<'a, Result<()>> {
+        interaction: &'a Interaction,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, ()>> {
         self.writes.fetch_add(1, Ordering::SeqCst);
-        self.inner.open_interaction(id, interaction)
+        self.inner.open_interaction(id, interaction, io)
     }
     fn interaction_outcome<'a>(
         &'a self,
         id: InteractionId,
-    ) -> BoxProviderFuture<'a, Result<Option<InteractionOutcome>>> {
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, Option<InteractionOutcome>>>
+    {
         self.reads.fetch_add(1, Ordering::SeqCst);
-        self.inner.interaction_outcome(id)
+        self.inner.interaction_outcome(id, io)
     }
 }
 
@@ -187,14 +193,20 @@ impl ExecutionJournal for JournalSpy {
     reason = "one retained admission and replay scenario keeps pre-I/O negative controls with its positive result"
 )]
 async fn portable_read_replay_checks_original_source_authority_before_journal_io() -> Result<()> {
-    let provider = ProviderRef::new("file-replay", "filesystem", "2")?;
-    let filesystem = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+    let provider = ProviderRef::new(
+        "file-replay".into(),
+        "filesystem".into(),
+        "2".into(),
+        &mut None,
+    )?;
+    let filesystem = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let agent = AgentId::from_bytes([81; 16]);
     let volume = VolumeRef::new(
         provider,
-        "private",
+        "private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent),
+        &mut None,
     )?;
     filesystem.create_volume(&volume).await?;
     let issuer = AuthorityIssuer::new(
@@ -205,33 +217,38 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             id: "file-replay".into(),
         },
     );
-    let read_grant = volume.capability(VolumeOperation::Read)?;
-    let signed = issuer.root_for_agent(
-        agent,
-        "owner",
-        Capabilities::new([
-            "operation:declare".to_owned(),
-            "operation:observe".to_owned(),
-            "operation:cancel".to_owned(),
-            "task:spawn:fixture.file_replay@1".to_owned(),
-            "tool:call:acyclic.read_file".to_owned(),
-            "tool:call:acyclic.read_file_range".to_owned(),
-            "tool:call:acyclic.search_file".to_owned(),
-            "tool:call:acyclic.write_file".to_owned(),
-            "tool:call:acyclic.edit_file".to_owned(),
-            "tool:call:acyclic.patch_file".to_owned(),
-            read_grant.clone(),
-            volume.capability(VolumeOperation::Write)?,
-        ]),
-    );
+    let read_grant = volume.capability(VolumeOperation::Read, &mut None)?;
+    let signed = issuer
+        .issue(
+            "owner",
+            &Capabilities::new([
+                "operation:declare".to_owned(),
+                "operation:observe".to_owned(),
+                "operation:cancel".to_owned(),
+                "task:spawn:fixture.file_replay@1".to_owned(),
+                "tool:call:acyclic.read_file".to_owned(),
+                "tool:call:acyclic.read_file_range".to_owned(),
+                "tool:call:acyclic.search_file".to_owned(),
+                "tool:call:acyclic.write_file".to_owned(),
+                "tool:call:acyclic.edit_file".to_owned(),
+                "tool:call:acyclic.patch_file".to_owned(),
+                read_grant.clone(),
+                volume.capability(VolumeOperation::Write, &mut None)?,
+            ]),
+            Some(agent),
+            None,
+            &mut None,
+        )
+        .expect("scope proof");
     let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?;
-    let writer = Arc::new(FilesystemContentPublisher::new(
+    let writer = FilesystemContentPublisher::new(
         filesystem.clone(),
-        volume.clone(),
-        &issuer.verifier(),
+        &volume,
+        &issuer.verifier(&mut None).expect("verifier copy"),
         &signed,
         65_536,
-    )?);
+        None,
+    )?;
     let text = "original\r\n🦀 exact bytes\r\n";
     let source = writer
         .stage(
@@ -240,8 +257,10 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             text.as_bytes(),
             "text/plain",
             "source.txt",
-        )
-        .await?;
+            None,
+        )?
+        .await?
+        .0;
     let mut tool = files::read_file()?;
     let executor = Arc::new(FileExecutorSpy {
         inner: tool.executor.clone(),
@@ -250,8 +269,8 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
     });
     tool.executor = executor.clone();
     let definition = tool.definition.clone();
-    let mut tools = ToolRegistry::new();
-    tools.register(tool)?;
+    let mut tools = ToolRegistry::default();
+    tools.register((tool, None), &mut None, None)?;
     let mutations = [
         (
             files::write_file()?,
@@ -276,7 +295,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         if index == 0 {
             tool.executor = write_executor.clone();
         }
-        tools.register(tool)?;
+        tools.register((tool, None), &mut None, None)?;
     }
     let mut bounded_text = [
         (
@@ -312,7 +331,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             reconciliations: AtomicUsize::new(0),
         });
         tool.executor = executor.clone();
-        tools.register(tool.clone())?;
+        tools.register((tool.clone(), None), &mut None, None)?;
         bounded_executors.push(executor);
     }
     let mut retained_text_results = Vec::new();
@@ -331,28 +350,31 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
     )?;
     let mut tasks = TaskRegistry::default();
     tasks.register(task_definition)?;
-    let task_definition = tasks.get_version::<u64, u64>("fixture.file_replay", "1")?;
+    let task_definition = tasks.get_version::<u64, u64>(
+        "fixture.file_replay",
+        "1",
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        None,
+    )?;
     let mut machines = MachineRegistry::default();
-    machines.register(machine)?;
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    machines.register(machine, &mut None)?;
+    let stream = Arc::new(MemoryStream::default());
     let admission = OperationId::from_bytes([84; 16]);
     let task = TaskId::from_bytes(admission.into_bytes());
     let call = OperationId::from_bytes([85; 16]);
     let arguments = json!({"file":source});
 
     for reopened in [false, true] {
-        // This reopens the real task host and reconstructs scope from its retained
-        // admission. There is no test TaskStateProvider or fabricated resumed scope.
         let runtime = FilesystemTaskRuntime::open(
             stream.clone(),
             filesystem.clone(),
-            volume.clone(),
-            issuer.verifier(),
-            signed.clone(),
-            scope.clone(),
-            tasks.clone(),
-            machines.clone(),
-            tools.clone(),
+            &volume,
+            &issuer.verifier(&mut None).expect("verifier copy"),
+            &signed,
+            &scope,
+            &tasks,
+            &machines,
+            &tools,
             SessionLimits {
                 active_tasks: 1,
                 total_tasks: 1,
@@ -361,6 +383,11 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             },
             1,
             65_536,
+            Arc::new(acyclic_stream::SystemUnixMillisClock),
+            None,
+            &[],
+            &acyclic_harness::durable_tool::ResumableToolRegistry::default(),
+            None,
         )
         .await?;
         if !reopened {
@@ -372,55 +399,65 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                 Admission::Accepted(_)
             ));
         }
-        let context = runtime.harness().durable_context(task, admission).await?;
-        // Explicit low-level composition reuses the real admitted task host and
-        // original owner-bound writer. This is not the default lease-owned writer.
-        let writable = AgentHarness::with_policy(
-            tasks.clone(),
-            tools.clone(),
-            scope.clone(),
-            1,
-            Some(runtime.task_host().clone()),
-            None,
-            Some(ContentBindings {
-                reader: Arc::new(FilesystemContentVerifier::new(
+        let context = runtime
+            .harness()
+            .durable_context(task, admission, None)
+            .await?;
+        let writable = Bindings {
+            tasks: tasks.clone(),
+            tools: tools.clone(),
+            scope: scope.clone(),
+            concurrency: 1,
+            durable_host: Some(runtime.task_host().clone()),
+            content: Some(ContentBindings {
+                reader: FilesystemContentVerifier::new(
                     filesystem.clone(),
-                    issuer.verifier(),
-                    signed.clone(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
+                    &signed,
                     65_536,
-                )?),
+                    None,
+                )?,
                 writer: Some(writer.clone()),
             }),
-            None,
-            None,
-        )?
-        .durable_context(task, admission)
+            ..Bindings::local()
+        }
+        .build(None)?
+        .durable_context(task, admission, None)
         .await?;
-        // This runner regression uses an explicit real FS journal, not the
-        // runtime's lease-owned default execution entry point.
         let journal = Arc::new(JournalSpy {
             inner: Arc::new(FilesystemExecutionJournal::new(
                 stream.clone(),
                 filesystem.clone(),
-                volume.clone(),
-                issuer.verifier(),
-                signed.clone(),
-                65_536,
+                &acyclic_harness::core::SchemaRegistry::new(),
+                acyclic_harness::filesystem::FilesystemJournalBinding {
+                    volume: &volume,
+                    verifier: &issuer.verifier(&mut None).expect("verifier copy"),
+                    scope: &signed,
+                    maximum_bytes: 65_536,
+                    io: None,
+                },
             )?),
             reads: AtomicUsize::new(0),
             writes: AtomicUsize::new(0),
         });
-        let runner = DurableToolRunner::new(tools.clone(), journal.clone());
+        let runner = DurableToolRunner::new(&tools, journal.clone(), None)?;
         assert_eq!(
             runner
-                .run_with_context(
+                .run(
                     task,
-                    call,
-                    definition.clone(),
-                    arguments.clone(),
-                    ToolContext::new(context.clone(), call, call.to_string())?
-                )
-                .await?,
+                    &definition,
+                    &acyclic_harness::tool::ToolInvocation {
+                        operation_id: call,
+                        call_id: call.to_string(),
+                        name: definition.name.clone(),
+                        arguments: arguments.clone(),
+                    },
+                    &ToolContext::new(context.clone(), call, &(call.to_string()), None)?,
+                    None,
+                    false,
+                )?
+                .await?
+                .0,
             Outcome::Succeeded(json!(text))
         );
         assert_eq!(executor.executions.load(Ordering::SeqCst), 1);
@@ -439,36 +476,38 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                 name: tool.definition.name.clone(),
                 arguments: arguments.clone(),
             };
-            let original = ToolContext::new(context.clone(), operation, operation.to_string())?;
+            let original =
+                ToolContext::new(context.clone(), operation, &operation.to_string(), None)?;
             let reads = journal.reads.load(Ordering::SeqCst);
             let writes = journal.writes.load(Ordering::SeqCst);
-            // A valid retained scope cannot replace the originally admitted call context.
             assert!(matches!(
-                tool.executor.authorize(Some(context.scope()), &invocation),
+                tool.executor
+                    .authorize(Some(context.scope()), None, &invocation, None),
                 Err(Error::Unauthorized(_))
             ));
             tool.executor
-                .authorize_with_context(&original, &invocation)?;
+                .authorize(None, Some(&original), &invocation, None)?;
             for wrong in [
-                ToolContext::new(context.clone(), OperationId::new(), operation.to_string())?,
-                ToolContext::new(context.clone(), operation, "different-call")?,
+                ToolContext::new(
+                    context.clone(),
+                    OperationId::new(),
+                    &operation.to_string(),
+                    None,
+                )?,
+                ToolContext::new(context.clone(), operation, "different-call", None)?,
             ] {
                 assert!(matches!(
-                    tool.executor.authorize_with_context(&wrong, &invocation),
+                    tool.executor
+                        .authorize(None, Some(&wrong), &invocation, None),
                     Err(Error::Unauthorized(_))
                 ));
             }
             assert_eq!(journal.reads.load(Ordering::SeqCst), reads);
             assert_eq!(journal.writes.load(Ordering::SeqCst), writes);
             let Outcome::Succeeded(value) = runner
-                .run_with_context(
-                    task,
-                    operation,
-                    tool.definition.clone(),
-                    arguments.clone(),
-                    original,
-                )
+                .run(task, &tool.definition, &invocation, &original, None, false)?
                 .await?
+                .0
             else {
                 panic!("admitted bounded text must complete")
             };
@@ -498,28 +537,43 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         }
         let write_call = OperationId::from_bytes([86; 16]);
         let write_result = runner
-            .run_with_context(
+            .run(
                 task,
-                write_call,
-                mutations[0].0.definition.clone(),
-                mutations[0].1.clone(),
-                ToolContext::new(writable.clone(), write_call, write_call.to_string())?,
-            )
-            .await?;
+                &mutations[0].0.definition,
+                &acyclic_harness::tool::ToolInvocation {
+                    operation_id: write_call,
+                    call_id: write_call.to_string(),
+                    name: mutations[0].0.definition.name.clone(),
+                    arguments: mutations[0].1.clone(),
+                },
+                &ToolContext::new(
+                    writable.clone(),
+                    write_call,
+                    &(write_call.to_string()),
+                    None,
+                )?,
+                None,
+                false,
+            )?
+            .await?
+            .0;
         let Outcome::Succeeded(write_value) = write_result else {
             panic!("write must complete")
         };
         let published: files::FileResult = serde_json::from_value(write_value.clone())
             .map_err(|error| Error::Invalid(error.to_string()))?;
         assert_eq!(published.file.path(), "destination.txt");
-        assert_eq!(writable.read_file(&published.file).await?, b"body");
+        assert_eq!(
+            writable.read_file(&published.file, None).await?.as_ref(),
+            b"body".as_ref()
+        );
         assert_eq!(write_executor.executions.load(Ordering::SeqCst), 1);
         assert_eq!(write_executor.reconciliations.load(Ordering::SeqCst), 0);
         if reopened {
             assert_eq!(journal.writes.load(Ordering::SeqCst), 0);
         }
-        let write_records = journal.inner.replay(write_call, 0, 16).await?;
-        let records = journal.inner.replay(call, 0, 16).await?;
+        let write_records = journal.inner.replay(write_call, 0, 16, None)?.await?;
+        let records = journal.inner.replay(call, 0, 16, None)?.await?;
         assert_eq!(
             records
                 .iter()
@@ -531,34 +585,42 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         let before_writes = journal.writes.load(Ordering::SeqCst);
         let workspace = acyclic_harness::filesystem::workspace_ref(
             volume.provider().clone(),
-            &volume.storage_name()?,
+            &volume.storage_name(&mut None)?,
         )?;
-        let before_rejected_head = filesystem.resolve(&workspace).await?.generation;
-        // This admitted runtime intentionally has a reader and no original writer.
-        // A scope's write capability cannot supply that missing provider binding.
+        let before_rejected_head = filesystem.resolve(&workspace, None).await?.generation;
         for (tool, arguments) in &mutations {
             let operation = OperationId::new();
             assert!(matches!(
                 runner
-                    .run_with_context(
+                    .run(
                         task,
-                        operation,
-                        tool.definition.clone(),
-                        arguments.clone(),
-                        ToolContext::new(context.clone(), operation, operation.to_string())?
-                    )
-                    .await,
+                        &tool.definition,
+                        &acyclic_harness::tool::ToolInvocation {
+                            operation_id: operation,
+                            call_id: operation.to_string(),
+                            name: tool.definition.name.clone(),
+                            arguments: arguments.clone(),
+                        },
+                        &ToolContext::new(
+                            context.clone(),
+                            operation,
+                            &(operation.to_string()),
+                            None
+                        )?,
+                        None,
+                        false,
+                    )?
+                    .await
+                    .map(|result| result.0),
                 Err(Error::Unauthorized(_))
             ));
         }
-        let write_grant = volume.capability(VolumeOperation::Write)?;
+        let write_grant = volume.capability(VolumeOperation::Write, &mut None)?;
         let no_write = writable.scoped(
             scope.grants().without(&Capabilities::new([write_grant])),
             scope.limits(),
         )?;
         for (index, (tool, arguments)) in mutations.iter().enumerate() {
-            // The write case replays an already completed operation. Edit/patch
-            // are fresh controls with valid original read grant and input schema.
             let operation = if index == 0 {
                 write_call
             } else {
@@ -566,19 +628,31 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             };
             assert!(matches!(
                 runner
-                    .run_with_context(
+                    .run(
                         task,
-                        operation,
-                        tool.definition.clone(),
-                        arguments.clone(),
-                        ToolContext::new(no_write.clone(), operation, operation.to_string())?
-                    )
-                    .await,
+                        &tool.definition,
+                        &acyclic_harness::tool::ToolInvocation {
+                            operation_id: operation,
+                            call_id: operation.to_string(),
+                            name: tool.definition.name.clone(),
+                            arguments: arguments.clone(),
+                        },
+                        &ToolContext::new(
+                            std::sync::Arc::new(no_write.clone()),
+                            operation,
+                            &operation.to_string(),
+                            None
+                        )?,
+                        None,
+                        false,
+                    )?
+                    .await
+                    .map(|result| result.0),
                 Err(Error::Unauthorized(_))
             ));
         }
         assert_eq!(
-            journal.inner.replay(write_call, 0, 16).await?,
+            journal.inner.replay(write_call, 0, 16, None)?.await?,
             write_records
         );
         let restricted = context.scoped(
@@ -589,14 +663,26 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         )?;
         assert!(matches!(
             runner
-                .run_with_context(
+                .run(
                     task,
-                    call,
-                    definition.clone(),
-                    arguments.clone(),
-                    ToolContext::new(restricted, call, call.to_string())?
-                )
-                .await,
+                    &definition,
+                    &acyclic_harness::tool::ToolInvocation {
+                        operation_id: call,
+                        call_id: call.to_string(),
+                        name: definition.name.clone(),
+                        arguments: arguments.clone(),
+                    },
+                    &ToolContext::new(
+                        std::sync::Arc::new(restricted),
+                        call,
+                        &(call.to_string()),
+                        None
+                    )?,
+                    None,
+                    false,
+                )?
+                .await
+                .map(|result| result.0),
             Err(Error::Unauthorized(_))
         ));
         let restricted = context.scoped(
@@ -608,23 +694,35 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         )?;
         assert!(matches!(
             runner
-                .run_with_context(
+                .run(
                     task,
-                    call,
-                    definition.clone(),
-                    arguments.clone(),
-                    ToolContext::new(restricted, call, call.to_string())?
-                )
-                .await,
+                    &definition,
+                    &acyclic_harness::tool::ToolInvocation {
+                        operation_id: call,
+                        call_id: call.to_string(),
+                        name: definition.name.clone(),
+                        arguments: arguments.clone(),
+                    },
+                    &ToolContext::new(
+                        std::sync::Arc::new(restricted),
+                        call,
+                        &(call.to_string()),
+                        None
+                    )?,
+                    None,
+                    false,
+                )?
+                .await
+                .map(|result| result.0),
             Err(Error::Invalid(_))
         ));
         assert_eq!(journal.reads.load(Ordering::SeqCst), before_reads);
         assert_eq!(journal.writes.load(Ordering::SeqCst), before_writes);
         assert_eq!(executor.executions.load(Ordering::SeqCst), 1);
         assert_eq!(executor.reconciliations.load(Ordering::SeqCst), 0);
-        assert_eq!(journal.inner.replay(call, 0, 16).await?, records);
+        assert_eq!(journal.inner.replay(call, 0, 16, None)?.await?, records);
         assert_eq!(
-            filesystem.resolve(&workspace).await?.generation,
+            filesystem.resolve(&workspace, None).await?.generation,
             before_rejected_head
         );
         assert_eq!(write_executor.executions.load(Ordering::SeqCst), 1);
@@ -637,8 +735,10 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                     b"later destination edit",
                     "text/plain",
                     "destination.txt",
-                )
-                .await?;
+                    None,
+                )?
+                .await?
+                .0;
             assert_ne!(published.file, later_write);
             let later = writer
                 .stage(
@@ -647,8 +747,10 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                     b"later user edit",
                     "text/plain",
                     "source.txt",
-                )
-                .await?;
+                    None,
+                )?
+                .await?
+                .0;
             assert_ne!(source, later);
         }
     }

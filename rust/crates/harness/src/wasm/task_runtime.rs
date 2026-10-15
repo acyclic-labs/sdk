@@ -1,22 +1,19 @@
 //! Browser bindings over the ordinary task runtime and its real providers.
 
-use super::{
-    WasmLimitsInput, WasmReducer, WasmTaskRunLimitsInput, from_js, js_error, key_bytes,
-    wasm_limits, wasm_run_limits,
-};
+use super::{WasmReducer, from_js, js_error, key_bytes};
 use crate::{
     Admission, Error, OperationId, Result, TaskId,
     context::{ContextPipeline, ModelContextCapacity, ModelTokenCount},
-    conversation::{ContentGrant, FileRef, VolumeOperation, VolumeRef},
+    conversation::{ContentGrant, FileRef, Limits, VolumeOperation, VolumeRef},
     core::Scope,
     distributed::{SchedulerPayloadStore, WorkLease, WorkPull, Worker},
     filesystem::{
-        FilesystemHost, FilesystemSchedulerPayloadStore, FilesystemTaskRuntime, StockTurnMachine,
+        FilesystemContentPublisher, FilesystemHost, FilesystemTaskRuntime, StockTurnMachine,
         TaskWakeCursor, TaskWorkerAttempt, TaskWorkerOutcome,
     },
-    model::{Model, ModelAttempt, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
+    model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
     resources::ProviderRef,
-    runtime::{DurableTaskHost, RuntimeScope, TaskDefinition, TaskRegistry},
+    runtime::{RuntimeScope, TaskDefinition, TaskRegistry, TaskRunLimits, TaskStateProvider},
     scheduler::SessionLimits,
     tool::{
         Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry,
@@ -28,7 +25,7 @@ use acyclic_fs::{
     EmbeddedCapabilities, Fs,
     browser::{IndexedDbAuthorityStore, IndexedDbObjectStore},
 };
-use acyclic_stream::{BrowserStream, BrowserStreamLimits, MemoryLimits, StreamClient};
+use acyclic_stream::{BrowserStream, BrowserStreamLimits, MemoryLimits, SystemUnixMillisClock};
 use js_sys::{Function, Promise};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -191,8 +188,10 @@ struct WasmBrowserTaskOptions {
     filesystem_provider: ProviderRef,
     #[tsify(type = "WasmVolumeRefWire")]
     volume: VolumeRef,
-    limits: WasmLimitsInput,
-    run_limits: WasmTaskRunLimitsInput,
+    #[tsify(type = "WasmLimitsInput")]
+    limits: Limits,
+    #[tsify(type = "WasmTaskRunLimitsInput")]
+    run_limits: TaskRunLimits,
     session_limits: WasmBrowserSessionLimits,
     concurrency: u32,
     maximum_payload_bytes: u64,
@@ -278,18 +277,25 @@ impl ToolExecutor for HostTool {
     fn execute<'a>(
         &'a self,
         invocation: ToolInvocation,
+        _context: Option<crate::runtime::ToolContext>,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<ToolResult>> {
         Box::pin(self.call(&self.execute, invocation))
     }
     fn reconcile<'a>(
         &'a self,
         invocation: ToolInvocation,
+        _context: Option<crate::runtime::ToolContext>,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<ToolResult>>> {
         Box::pin(self.call(&self.reconcile, invocation))
     }
 }
 impl ToolProjection for HostTool {
-    fn project(&self, invocation: &ToolInvocation, result: &ToolResult) -> Result<Value> {
+    fn project(
+        &self,
+        invocation: &ToolInvocation,
+        result: &ToolResult,
+        _work: crate::NativeWork<'_>,
+    ) -> Result<(Value, crate::NativeCustody)> {
         let invocation = to_js(invocation)
             .map_err(|_| Error::Invalid("tool projection invocation encoding failed".into()))?;
         let result = to_js(result)
@@ -298,7 +304,9 @@ impl ToolProjection for HostTool {
             .project
             .call2(&JsValue::UNDEFINED, &invocation, &result)
             .map_err(|_| Error::Invalid("tool projection failed".into()))?;
-        from_js(value).map_err(|_| Error::Invalid("tool projection is invalid".into()))
+        from_js(value)
+            .map(|value| (value, None))
+            .map_err(|_| Error::Invalid("tool projection is invalid".into()))
     }
 }
 
@@ -389,7 +397,7 @@ impl ModelProvider for HostModel {
         let callback = self.count_tokens.as_ref().ok_or_else(|| {
             Error::Unsupported("selected model token counting is unavailable".into())
         })?;
-        let digest = to_js(&request.manifest().request_digest)
+        let digest = to_js(&request.request_digest())
             .map_err(|_| Error::Invalid("model counting digest encoding failed".into()))?;
         let value = callback
             .call2(
@@ -400,7 +408,7 @@ impl ModelProvider for HostModel {
             .map_err(|_| Error::Invalid("model token counting callback failed".into()))?;
         let count: ModelTokenCount = from_js(value)
             .map_err(|_| Error::Invalid("model counting callback returned invalid data".into()))?;
-        count.validate(request)?;
+        count.validate(request, &mut None)?;
         Ok(count)
     }
 
@@ -457,11 +465,19 @@ impl ModelProvider for HostModel {
 
     fn reconcile<'a>(
         &'a self,
-        attempt: ModelAttempt,
+        dispatch: ModelDispatch,
+        observed: &'a [ModelEvent],
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
         Box::pin(async move {
-            let attempt = to_js(&attempt)
+            let attempt = to_js(&dispatch)
                 .map_err(|_| Error::Invalid("model attempt encoding failed".into()))?;
+            super::set_js_field(
+                &attempt,
+                "observed",
+                &to_js(&observed)
+                    .map_err(|_| Error::Invalid("model attempt encoding failed".into()))?,
+            )
+            .map_err(|_| Error::Invalid("model attempt encoding failed".into()))?;
             let pending = self
                 .reconcile
                 .call1(&JsValue::UNDEFINED, &attempt)
@@ -496,7 +512,7 @@ impl WasmTaskRegistry {
     #[wasm_bindgen(js_name = registerTool)]
     pub fn register_tool(
         &mut self,
-        #[wasm_bindgen(unchecked_param_type = "WasmModelToolDefinitionWire")] definition: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "ToolDefinition")] definition: JsValue,
         execute: Function,
         reconcile: Function,
         project: Function,
@@ -508,11 +524,18 @@ impl WasmTaskRegistry {
             project,
         });
         self.tools
-            .register(Tool {
-                definition,
-                executor: host.clone(),
-                projection: host,
-            })
+            .register(
+                (
+                    Tool {
+                        definition,
+                        executor: host.clone(),
+                        projection: host,
+                    },
+                    None,
+                ),
+                &mut None,
+                None,
+            )
             .map_err(js_error)
     }
 
@@ -575,7 +598,9 @@ impl WasmTaskRegistry {
                 "task version is already registered".into(),
             )));
         }
-        self.machines.register(machine).map_err(js_error)?;
+        self.machines
+            .register(machine, &mut None)
+            .map_err(js_error)?;
         self.tasks.register(task).map_err(js_error)?;
         Ok(())
     }
@@ -606,16 +631,20 @@ impl WasmTaskRuntime {
     ) -> std::result::Result<WasmTaskRuntime, JsValue> {
         let options: WasmBrowserTaskOptions = from_js(options)?;
         let scope: Scope = from_js(signed_scope)?;
-        let verifier = owner.issuer.verifier();
-        ContentGrant::verify(&verifier, &scope, &options.volume, VolumeOperation::Write)
-            .map_err(js_error)?;
-        let root = RuntimeScope::new(
-            scope.capabilities().clone(),
-            wasm_limits(options.limits).map_err(js_error)?,
+        let verifier = owner.issuer.verifier(&mut None).map_err(js_error)?;
+        ContentGrant::verify(
+            &verifier,
+            &scope,
+            &options.volume,
+            VolumeOperation::Write,
+            options.maximum_payload_bytes,
+            &mut None,
         )
-        .map_err(js_error)?
-        .with_run_limits(wasm_run_limits(options.run_limits).map_err(js_error)?)
         .map_err(js_error)?;
+        let root = RuntimeScope::new(scope.capabilities().clone(), options.limits)
+            .map_err(js_error)?
+            .with_run_limits(options.run_limits, &mut None)
+            .map_err(js_error)?;
         let authority = IndexedDbAuthorityStore::open(
             &options.filesystem_database,
             options.maximum_object_bytes,
@@ -626,15 +655,14 @@ impl WasmTaskRuntime {
             IndexedDbObjectStore::open(&options.filesystem_database, options.maximum_object_bytes)
                 .await
                 .map_err(|error| js_error(Error::Storage(error.to_string())))?;
-        let filesystem = Arc::new(
-            FilesystemHost::new(
-                Fs::new(authority, objects, EmbeddedCapabilities { durable: true }),
-                options.filesystem_provider,
-            )
-            .map_err(js_error)?,
-        );
+        let filesystem = FilesystemHost::new(
+            Fs::new(authority, objects, EmbeddedCapabilities { durable: true }),
+            &options.filesystem_provider,
+            None,
+        )
+        .map_err(js_error)?;
         let limits = options.stream_limits;
-        let stream = StreamClient::new(Arc::new(
+        let stream = Arc::new(
             BrowserStream::open(
                 &options.stream_database,
                 BrowserStreamLimits {
@@ -652,18 +680,18 @@ impl WasmTaskRuntime {
             )
             .await
             .map_err(|error| js_error(Error::Storage(error.to_string())))?,
-        ));
+        );
         let limits = options.session_limits;
         let runtime = FilesystemTaskRuntime::open(
             stream,
             filesystem.clone(),
-            options.volume.clone(),
-            verifier.clone(),
-            scope.clone(),
-            root,
-            registry.tasks.clone(),
-            registry.machines.clone(),
-            registry.tools.clone(),
+            &options.volume,
+            &verifier,
+            &scope,
+            &root,
+            &registry.tasks,
+            &registry.machines,
+            &registry.tools,
             SessionLimits {
                 active_tasks: limits.active_tasks,
                 total_tasks: limits.total_tasks,
@@ -672,6 +700,11 @@ impl WasmTaskRuntime {
             },
             options.concurrency as usize,
             options.maximum_payload_bytes,
+            Arc::new(SystemUnixMillisClock),
+            None,
+            &[],
+            &crate::durable_tool::ResumableToolRegistry::default(),
+            None,
         )
         .await
         .map_err(js_error)?;
@@ -696,17 +729,17 @@ impl WasmTaskRuntime {
     #[wasm_bindgen(js_name = configureModel)]
     pub fn configure_model(
         &mut self,
-        #[wasm_bindgen(unchecked_param_type = "WasmModelWire")] model: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "Model")] model: JsValue,
         #[wasm_bindgen(
-            unchecked_param_type = "(request: Uint8Array, dispatch: Pick<WasmModelAttemptWire, 'operation_id' | 'step' | 'request_digest'>, signal: AbortSignal) => AsyncIterator<WasmModelEvent>"
+            unchecked_param_type = "(request: Uint8Array, dispatch: ModelDispatch, signal: AbortSignal) => AsyncIterator<ModelEvent>"
         )]
         generate: Function,
         #[wasm_bindgen(
-            unchecked_param_type = "(attempt: WasmModelAttemptWire) => WasmModelEvent[] | null | Promise<WasmModelEvent[] | null>"
+            unchecked_param_type = "(attempt: ModelDispatch & { observed: ModelEvent[] }) => ModelEvent[] | null | Promise<ModelEvent[] | null>"
         )]
         reconcile: Function,
         #[wasm_bindgen(
-            unchecked_param_type = "((model: WasmModelWire) => ModelContextCapacity) | undefined"
+            unchecked_param_type = "((model: Model) => ModelContextCapacity) | undefined"
         )]
         capacity: Option<Function>,
         #[wasm_bindgen(
@@ -739,6 +772,8 @@ impl WasmTaskRuntime {
             &self.scope,
             &self.volume,
             VolumeOperation::Write,
+            self.maximum_payload_bytes,
+            &mut None,
         )
         .map_err(js_error)?;
         self.filesystem
@@ -757,16 +792,18 @@ impl WasmTaskRuntime {
         bytes: Vec<u8>,
     ) -> std::result::Result<JsValue, JsValue> {
         let operation = OperationId::parse(&operation).map_err(js_error)?;
-        let store = FilesystemSchedulerPayloadStore::new(
+        let store = FilesystemContentPublisher::new(
             self.filesystem.clone(),
-            self.volume.clone(),
+            &self.volume,
             &self.verifier,
             &self.scope,
             self.maximum_payload_bytes,
+            None,
         )
         .map_err(js_error)?;
         let file: FileRef = store
-            .stage(operation, &key, &bytes)
+            .stage(operation, &key, &bytes, None)
+            .map_err(js_error)?
             .await
             .map_err(js_error)?;
         super::to_js_admitted(&file)
@@ -789,7 +826,7 @@ impl WasmTaskRuntime {
         let definition = self
             .runtime
             .harness()
-            .task_version::<Value, Value>(&name, &version)
+            .task::<Value, Value>(&format!("{name}@{version}"))
             .map_err(js_error)?;
         let admission = self
             .runtime
@@ -821,7 +858,13 @@ impl WasmTaskRuntime {
         let task = TaskId::parse(&task).map_err(js_error)?;
         match self
             .runtime
-            .run_operation(&worker, task, &self.commands(), maximum_transitions)
+            .run_operation(
+                &worker,
+                task,
+                &self.commands().map_err(js_error)?,
+                maximum_transitions,
+                None,
+            )
             .await
             .map_err(js_error)?
         {
@@ -837,7 +880,7 @@ impl WasmTaskRuntime {
         let work = match self
             .runtime
             .task_host()
-            .recover_work(task)
+            .recover_work(task, &mut None)
             .await
             .map_err(js_error)?
         {
@@ -880,7 +923,7 @@ impl WasmTaskRuntime {
             .worker_tick(
                 &worker,
                 cursor,
-                &self.commands(),
+                &self.commands().map_err(js_error)?,
                 maximum_events,
                 maximum_transitions,
             )
@@ -919,7 +962,12 @@ impl WasmTaskRuntime {
         let lease: WorkLease = from_js(lease)?;
         work_to_js(&work_value(
             self.runtime
-                .resume_task(lease, &self.commands(), maximum_transitions)
+                .resume_task(
+                    lease,
+                    &self.commands().map_err(js_error)?,
+                    maximum_transitions,
+                    None,
+                )
                 .await,
         ))
     }
@@ -979,14 +1027,16 @@ impl WasmTaskRuntime {
         let message = OperationId::parse(&message).map_err(js_error)?;
         self.runtime
             .task_host()
-            .send_owned(
+            .send_mail(
                 sender,
-                crate::scheduler::LeaseFence::from(&lease.reservation),
+                &crate::scheduler::LeaseFence::from(&lease.reservation),
                 recipient,
                 message,
                 from_js(payload)?,
+                None,
             )
             .await
+            .map(|_| ())
             .map_err(js_error)
     }
 
@@ -1013,21 +1063,24 @@ impl WasmTaskRuntime {
 impl WasmTaskRuntime {
     fn commands(
         &self,
-    ) -> crate::filesystem::FilesystemTaskCommands<
-        '_,
-        BrowserStream,
-        IndexedDbAuthorityStore,
-        IndexedDbObjectStore,
+    ) -> Result<
+        crate::filesystem::FilesystemTaskCommands<
+            '_,
+            BrowserStream,
+            IndexedDbAuthorityStore,
+            IndexedDbObjectStore,
+        >,
     > {
         let commands = self.runtime.commands();
         match &self.model {
             Some((model, provider, compaction)) => commands.with_model(
-                model.clone(),
+                model,
                 provider.clone(),
-                ContextPipeline::new([]),
-                compaction.clone(),
+                &ContextPipeline::new([]),
+                compaction,
+                None,
             ),
-            None => commands,
+            None => Ok(commands),
         }
     }
 }

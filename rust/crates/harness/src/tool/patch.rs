@@ -1,9 +1,6 @@
-//! Exact, bounded V4A update-file transformation over immutable UTF-8.
-//!
-//! This accepts the `diff` fragment of an update operation, not paths or a
-//! multi-file envelope. Publication stays with the caller's original task
-//! context and its existing generation-checked content receipt.
-
+//! Exact bounded V4A update-file transformation.
+use super::edit::{charge, conflict, invalid, reserve_string, reserve_vec, retain};
+use crate::NativeCustody;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 
@@ -20,7 +17,7 @@ pub struct PatchLimits {
 }
 
 impl PatchLimits {
-    /// Rejects absent and unbounded allowances before parsing or source I/O.
+    /// Rejects absent and unbounded allowances.
     pub fn validate(self) -> Result<()> {
         super::edit::validate_edit_bound(self.maximum_bytes)?;
         super::edit::validate_edit_bound(self.maximum_work)?;
@@ -45,24 +42,30 @@ fn line_text(line: &str) -> &str {
         .map_or(line, |text| text.strip_suffix('\r').unwrap_or(text))
 }
 
-fn parse(diff: &str, maximum_hunks: u32) -> Result<Vec<Hunk<'_>>> {
+fn parse<'a>(
+    diff: &'a str,
+    maximum_hunks: u32,
+    meter: &mut NativeCustody,
+) -> Result<Vec<Hunk<'a>>> {
     let mut hunks: Vec<Hunk<'_>> = Vec::new();
-    let mut ended = false;
     for raw in diff.split_inclusive('\n') {
         let line = line_text(raw);
-        if ended {
-            return Err(Error::Invalid(
-                "patch has data after its end-of-file marker".into(),
+        if hunks.last().is_some_and(|hunk| hunk.at_end) {
+            return Err(invalid(
+                meter,
+                "patch has data after its end-of-file marker",
             ));
         }
         if line == "@@" || line.starts_with("@@ ") {
             if hunks.len() as u64 >= u64::from(maximum_hunks) {
-                return Err(Error::Invalid("patch exceeds hunk bound".into()));
+                return Err(invalid(meter, "patch exceeds hunk bound"));
             }
             let anchor = line.strip_prefix("@@ ");
             if anchor == Some("") {
-                return Err(Error::Invalid("patch anchor is empty".into()));
+                return Err(invalid(meter, "patch anchor is empty"));
             }
+            let length = hunks.len() + 1;
+            reserve_vec(meter, &mut hunks, length)?;
             hunks.push(Hunk {
                 anchor,
                 lines: Vec::new(),
@@ -71,24 +74,23 @@ fn parse(diff: &str, maximum_hunks: u32) -> Result<Vec<Hunk<'_>>> {
         } else {
             let hunk = hunks
                 .last_mut()
-                .ok_or_else(|| Error::Invalid("patch requires a hunk header".into()))?;
+                .ok_or_else(|| invalid(meter, "patch requires a hunk header"))?;
             if line == "*** End of File" {
                 hunk.at_end = true;
-                ended = true;
             } else {
                 let prefix = line
                     .as_bytes()
                     .first()
                     .copied()
-                    .ok_or_else(|| Error::Invalid("patch line lacks a prefix".into()))?;
+                    .ok_or_else(|| invalid(meter, "patch line lacks a prefix"))?;
                 if !matches!(prefix, b' ' | b'+' | b'-') {
-                    return Err(Error::Invalid(
-                        "patch line has an unsupported prefix".into(),
-                    ));
+                    return Err(invalid(meter, "patch line has an unsupported prefix"));
                 }
                 let text = line
                     .get(1..)
-                    .ok_or_else(|| Error::Invalid("patch line prefix is invalid".into()))?;
+                    .ok_or_else(|| invalid(meter, "patch line prefix is invalid"))?;
+                let length = hunk.lines.len() + 1;
+                reserve_vec(meter, &mut hunk.lines, length)?;
                 hunk.lines.push((prefix, text));
             }
         }
@@ -98,64 +100,69 @@ fn parse(diff: &str, maximum_hunks: u32) -> Result<Vec<Hunk<'_>>> {
             .iter()
             .any(|h| !h.lines.iter().any(|(kind, _)| matches!(kind, b'+' | b'-')))
     {
-        return Err(Error::Invalid(
-            "patch requires a change in every hunk".into(),
-        ));
+        return Err(invalid(meter, "patch requires a change in every hunk"));
     }
     Ok(hunks)
 }
 
-fn same(left: &str, right: &str, remaining: &mut u64) -> Result<bool> {
+fn same(left: &str, right: &str, remaining: &mut u64, meter: &NativeCustody) -> Result<bool> {
     let cost = left.len().max(right.len()).max(1) as u64;
     *remaining = remaining
         .checked_sub(cost)
-        .ok_or_else(|| Error::Invalid("patch exceeds context comparison work bound".into()))?;
+        .ok_or_else(|| invalid(meter, "patch exceeds context comparison work bound"))?;
+    charge(meter, 0, cost)?;
     Ok(left == right)
 }
 
-fn unique_anchor(source: &[&str], cursor: usize, anchor: &str, work: &mut u64) -> Result<usize> {
+fn unique_anchor(
+    source: &[&str],
+    cursor: usize,
+    anchor: &str,
+    work: &mut u64,
+    meter: &NativeCustody,
+) -> Result<usize> {
     let mut found = None;
     for (index, line) in source.iter().enumerate().skip(cursor) {
-        if same(line_text(line), anchor, work)? {
+        if same(line_text(line), anchor, work, meter)? {
             if found.is_some() {
-                return Err(Error::Conflict("patch anchor is ambiguous".into()));
+                return Err(conflict(meter, "patch anchor is ambiguous"));
             }
             found = Some(index);
         }
     }
     found
         .map(|index| index + 1)
-        .ok_or_else(|| Error::Conflict("patch anchor is missing".into()))
+        .ok_or_else(|| conflict(meter, "patch anchor is missing"))
 }
 
-fn locate(source: &[&str], cursor: usize, hunk: &Hunk<'_>, work: &mut u64) -> Result<usize> {
+fn locate(
+    source: &[&str],
+    cursor: usize,
+    hunk: &Hunk<'_>,
+    work: &mut u64,
+    meter: &NativeCustody,
+) -> Result<usize> {
     let start = match hunk.anchor {
-        Some(anchor) => unique_anchor(source, cursor, anchor, work)?,
+        Some(anchor) => unique_anchor(source, cursor, anchor, work, meter)?,
         None => cursor,
     };
-    let old: Vec<_> = hunk
-        .lines
-        .iter()
-        .filter(|(kind, _)| *kind != b'+')
-        .map(|(_, text)| *text)
-        .collect();
-    if old.is_empty() {
-        // An insertion without context has no unique position except an
-        // explicit anchor, EOF, or the only boundary in an empty file.
+    let old_length = hunk.lines.iter().filter(|(kind, _)| *kind != b'+').count();
+    if old_length == 0 {
         return if hunk.at_end {
             Ok(source.len())
         } else if hunk.anchor.is_some() || source.is_empty() {
             Ok(start)
         } else {
-            Err(Error::Conflict(
-                "patch insertion needs context, an anchor or EOF".into(),
+            Err(conflict(
+                meter,
+                "patch insertion needs context, an anchor or EOF",
             ))
         };
     }
     let mut found = None;
     for offset in start..=source.len() {
         let Some(end) = offset
-            .checked_add(old.len())
+            .checked_add(old_length)
             .filter(|end| *end <= source.len())
         else {
             break;
@@ -165,50 +172,70 @@ fn locate(source: &[&str], cursor: usize, hunk: &Hunk<'_>, work: &mut u64) -> Re
         }
         let candidate = source
             .get(offset..end)
-            .ok_or_else(|| Error::Invalid("patch source range is invalid".into()))?;
+            .ok_or_else(|| invalid(meter, "patch source range is invalid"))?;
         let mut matches = true;
-        for (line, expected) in candidate.iter().zip(&old) {
-            if !same(line_text(line), expected, work)? {
+        for (line, (_, expected)) in candidate
+            .iter()
+            .zip(hunk.lines.iter().filter(|(kind, _)| *kind != b'+'))
+        {
+            if !same(line_text(line), expected, work, meter)? {
                 matches = false;
                 break;
             }
         }
         if matches {
             if found.is_some() {
-                return Err(Error::Conflict("patch context is ambiguous".into()));
+                return Err(conflict(meter, "patch context is ambiguous"));
             }
             found = Some(offset);
         }
     }
-    found.ok_or_else(|| Error::Conflict("patch context is missing".into()))
+    found.ok_or_else(|| conflict(meter, "patch context is missing"))
 }
 
-fn append(output: &mut String, text: &str, maximum: u64) -> Result<()> {
+fn append(output: &mut String, text: &str, maximum: u64, meter: &mut NativeCustody) -> Result<()> {
     let length = output
         .len()
         .checked_add(text.len())
         .filter(|length| *length as u64 <= maximum)
-        .ok_or_else(|| Error::Invalid("patch output exceeds byte bound".into()))?;
-    output
-        .try_reserve(length - output.len())
-        .map_err(|_| Error::Invalid("patch output allocation failed".into()))?;
+        .ok_or_else(|| invalid(meter, "patch output exceeds byte bound"))?;
+    reserve_string(meter, output, length)?;
+    charge(meter, (text.len()) as u64, 0)?;
     output.push_str(text);
     Ok(())
 }
 
-/// Applies exact V4A context/add/delete hunks and optional `@@ anchor`/EOF.
-///
-/// Ambiguous/missing context and whitespace mismatches fail explicitly. Hunks
-/// consume the original source in order; no fuzzy matching, rebasing or partial
-/// publication occurs. Unchanged bytes retain their line endings. Added lines
-/// use the source's first line-ending style, or LF when it has none.
-pub fn apply_update(source: &str, diff: &str, limits: PatchLimits) -> Result<String> {
-    limits.validate()?;
-    if source.len() as u64 > limits.maximum_bytes || diff.len() as u64 > limits.maximum_bytes {
-        return Err(Error::Invalid("patch input exceeds byte bound".into()));
+/// Applies exact context/add/delete hunks and optional anchors or EOF.
+pub(crate) fn apply_update(
+    source: &str,
+    diff: &str,
+    limits: PatchLimits,
+    meter: &mut NativeCustody,
+) -> Result<String> {
+    if limits.maximum_bytes == 0
+        || limits.maximum_bytes == u64::MAX
+        || limits.maximum_work == 0
+        || limits.maximum_work == u64::MAX
+        || limits.maximum_hunks == 0
+        || limits.maximum_hunks == u32::MAX
+    {
+        return Err(invalid(meter, "patch limits must be positive and finite"));
     }
-    let hunks = parse(diff, limits.maximum_hunks)?;
-    let source_lines: Vec<_> = source.split_inclusive('\n').collect();
+    if source.len() as u64 > limits.maximum_bytes || diff.len() as u64 > limits.maximum_bytes {
+        return Err(invalid(meter, "patch input exceeds byte bound"));
+    }
+    retain(
+        meter,
+        std::mem::size_of::<Vec<Hunk<'_>>>() + std::mem::size_of::<Vec<&str>>(),
+    )?;
+    let hunks = parse(diff, limits.maximum_hunks, meter)?;
+    let mut source_lines = Vec::new();
+    reserve_vec(
+        meter,
+        &mut source_lines,
+        source.split_inclusive('\n').count(),
+    )?;
+    source_lines.extend(source.split_inclusive('\n'));
     let ending = source_lines
         .iter()
         .find(|line| line.ends_with('\n'))
@@ -220,44 +247,43 @@ pub fn apply_update(source: &str, diff: &str, limits: PatchLimits) -> Result<Str
     let mut cursor = 0;
     let mut work = limits.maximum_work;
     for hunk in &hunks {
-        let start = locate(&source_lines, cursor, hunk, &mut work)?;
+        let start = locate(&source_lines, cursor, hunk, &mut work, meter)?;
         for line in source_lines
             .get(cursor..start)
-            .ok_or_else(|| Error::Invalid("patch hunks overlap".into()))?
+            .ok_or_else(|| invalid(meter, "patch hunks overlap"))?
         {
-            append(&mut output, line, limits.maximum_bytes)?;
+            append(&mut output, line, limits.maximum_bytes, meter)?;
         }
         cursor = start;
         for &(kind, text) in &hunk.lines {
             match kind {
                 b' ' => {
-                    let original = source_lines.get(cursor).ok_or_else(|| {
-                        Error::Conflict("patch context extends beyond source".into())
-                    })?;
-                    append(&mut output, original, limits.maximum_bytes)?;
+                    let original = source_lines
+                        .get(cursor)
+                        .ok_or_else(|| conflict(meter, "patch context extends beyond source"))?;
+                    append(&mut output, original, limits.maximum_bytes, meter)?;
                     cursor += 1;
                 }
                 b'-' => {
                     cursor += 1;
                 }
                 b'+' => {
-                    // Inserting after an unterminated context/anchor line
-                    // creates a line boundary, never concatenates two lines.
+                    // Inserting after an unterminated context/anchor line creates a line boundary, never concatenates two lines.
                     if !output.is_empty() && !output.ends_with('\n') {
-                        append(&mut output, ending, limits.maximum_bytes)?;
+                        append(&mut output, ending, limits.maximum_bytes, meter)?;
                     }
-                    append(&mut output, text, limits.maximum_bytes)?;
-                    append(&mut output, ending, limits.maximum_bytes)?;
+                    append(&mut output, text, limits.maximum_bytes, meter)?;
+                    append(&mut output, ending, limits.maximum_bytes, meter)?;
                 }
-                _ => return Err(Error::Invalid("invalid parsed patch prefix".into())),
+                _ => return Err(invalid(meter, "invalid parsed patch prefix")),
             }
         }
     }
     for line in source_lines
         .get(cursor..)
-        .ok_or_else(|| Error::Conflict("patch extends beyond source".into()))?
+        .ok_or_else(|| conflict(meter, "patch extends beyond source"))?
     {
-        append(&mut output, line, limits.maximum_bytes)?;
+        append(&mut output, line, limits.maximum_bytes, meter)?;
     }
     Ok(output)
 }
@@ -274,29 +300,41 @@ mod tests {
 
     #[test]
     fn ordered_hunks_preserve_exact_context_utf8_and_line_endings() -> Result<()> {
+        let mut work = None;
         assert_eq!(
             apply_update(
                 "a\r\n🦀\r\nb\r\nc",
                 "@@\n a\n-🦀\n+日本語\n@@\n-b\n+B\n",
-                LIMITS
+                LIMITS,
+                &mut work,
             )?,
             "a\r\n日本語\r\nB\r\nc"
         );
         assert_eq!(
-            apply_update("head\ntail\n", "@@ head\n+middle\n", LIMITS)?,
+            apply_update("head\ntail\n", "@@ head\n+middle\n", LIMITS, &mut work)?,
             "head\nmiddle\ntail\n"
         );
         assert_eq!(
-            apply_update("a\na\n", "@@\n-a\n+last\n*** End of File\n", LIMITS)?,
+            apply_update(
+                "a\na\n",
+                "@@\n-a\n+last\n*** End of File\n",
+                LIMITS,
+                &mut work
+            )?,
             "a\nlast\n"
         );
-        assert_eq!(apply_update("", "@@\n+new\n", LIMITS)?, "new\n");
+        assert_eq!(apply_update("", "@@\n+new\n", LIMITS, &mut work)?, "new\n");
         assert_eq!(
-            apply_update("head", "@@ head\n+next\n", LIMITS)?,
+            apply_update("head", "@@ head\n+next\n", LIMITS, &mut work)?,
             "head\nnext\n"
         );
         assert_eq!(
-            apply_update("a\nb\nc\n", "@@\n-a\n+A\n b\n@@\n-c\n+C\n", LIMITS)?,
+            apply_update(
+                "a\nb\nc\n",
+                "@@\n-a\n+A\n b\n@@\n-c\n+C\n",
+                LIMITS,
+                &mut work
+            )?,
             "A\nb\nC\n"
         );
         Ok(())
@@ -304,6 +342,7 @@ mod tests {
 
     #[test]
     fn malformed_ambiguous_out_of_order_and_unbounded_patches_fail() {
+        let mut work = None;
         for (source, diff) in [
             ("a\na\n", "@@\n-a\n+x\n"),
             ("a \n", "@@\n-a\n+x\n"),
@@ -313,7 +352,7 @@ mod tests {
             ("a\n", "@@\n a\n"),
             ("a\n", "@@\n-a\n+x\n*** End of File\n+extra\n"),
         ] {
-            assert!(apply_update(source, diff, LIMITS).is_err());
+            assert!(apply_update(source, diff, LIMITS, &mut work).is_err());
         }
         for limits in [
             PatchLimits {
@@ -353,7 +392,7 @@ mod tests {
                 ..LIMITS
             },
         ] {
-            assert!(apply_update("a\nb\n", "@@\n-a\n+A\n@@\n-b\n+B\n", limits).is_err());
+            assert!(apply_update("a\nb\n", "@@\n-a\n+A\n@@\n-b\n+B\n", limits, &mut work).is_err());
         }
         // Input and diff each fit, but their combined output exceeds the cap.
         let source = format!("a\n{}", "z".repeat(29));
@@ -364,7 +403,8 @@ mod tests {
                 PatchLimits {
                     maximum_bytes: 32,
                     ..LIMITS
-                }
+                },
+                &mut work,
             )
             .is_err()
         );
@@ -372,6 +412,7 @@ mod tests {
 
     #[test]
     fn bounded_single_line_oracle_rejects_every_ambiguous_source() -> Result<()> {
+        let mut work = None;
         for length in 0..=6 {
             for bits in 0..(1 << length) {
                 let lines: Vec<_> = (0..length)
@@ -387,7 +428,7 @@ mod tests {
                 for needle in ["a\n", "🦀\n"] {
                     let count = lines.iter().filter(|line| **line == needle).count();
                     let diff = format!("@@\n-{}\n+X\n", needle.trim_end_matches('\n'));
-                    let result = apply_update(&source, &diff, LIMITS);
+                    let result = apply_update(&source, &diff, LIMITS, &mut work);
                     if count == 1 {
                         assert_eq!(result?, source.replacen(needle, "X\n", 1));
                     } else {

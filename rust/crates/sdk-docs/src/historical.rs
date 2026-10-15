@@ -519,11 +519,11 @@ mod tests {
     fn binary_guides_preserve_native_source_without_exposing_private_items() {
         let root = tempfile::tempdir().unwrap();
         let (input, scope) = fixture(root.path(), "0.1.0");
-        assert!(build_data(&input)
+        assert!(build_data(&input, &[])
             .unwrap_err()
             .to_string()
             .contains("private rustdoc"));
-        let candidate = build_data_with_binaries(&input, &scope.binaries).unwrap();
+        let candidate = build_data(&input, &scope.binaries).unwrap();
         assert_eq!(
             candidate.source.publication_status,
             PublicationStatus::Candidate
@@ -831,7 +831,7 @@ mod tests {
                 scope.released_packages[0].yanked = true;
             }
             if version.contains('-') {
-                assert!(build_data(&input).is_err());
+                assert!(build_data(&input, &[]).is_err());
             }
             let data = build(&input, &scope).unwrap();
             write_bundle(&data, output.path(), false).unwrap();

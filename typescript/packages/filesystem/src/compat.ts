@@ -6,12 +6,13 @@ import type {
   WorkspaceRebaseResult,
 } from "./contracts.js";
 import {
-  GIT_COMPAT_ACTION_VARIANTS,
+  GIT_COMPAT_ACTION_VARIANTS as gitCompatActionVariants,
   GIT_COMPAT_BYTE_FIELDS,
   GIT_COMPAT_DIRTY_STATE_WIRE,
   GIT_COMPAT_OPAQUE_PATHS,
-  GIT_COMPAT_OUTPUT_VARIANTS,
+  GIT_COMPAT_OUTPUT_VARIANTS as gitCompatOutputVariants,
   GIT_COMPAT_PENDING_FIELDS,
+  GIT_COMPAT_RESULT_VARIANTS,
   GIT_COMPAT_PUBLIC_ALIASES,
   GIT_COMPAT_TIMESTAMP_FIELDS,
   GIT_COMPAT_TRANSITION_IDENTITY_BYTES,
@@ -55,8 +56,6 @@ export type {
   WorkspaceRootIdentity,
 } from "../generated/git-compat-contract.js";
 
-const gitCompatOutputVariants = [...GIT_COMPAT_OUTPUT_VARIANTS] as const;
-const gitCompatActionVariants = [...GIT_COMPAT_ACTION_VARIANTS] as const;
 const gitCompatDirtyStateByWire = new Map(
   Object.entries(GIT_COMPAT_DIRTY_STATE_WIRE).map(([typescript, wire]) => [wire, typescript]),
 );
@@ -91,32 +90,7 @@ export interface CompatibilityWire {
   decode(kind: CompatibilityWireKind, envelope: CompatibilityWireEnvelope): CompatibilityJson;
 }
 
-export interface RawCompatibilityWire {
-  encodeMergePlanJson(valueJson: string): string;
-  decodeMergePlanJson(valueJson: string): string;
-  encodeMergeCandidateJson(valueJson: string): string;
-  decodeMergeCandidateJson(valueJson: string): string;
-  encodeMultiRootPlanJson(valueJson: string): string;
-  decodeMultiRootPlanJson(valueJson: string): string;
-  encodeMultiRootCandidateJson(valueJson: string): string;
-  decodeMultiRootCandidateJson(valueJson: string): string;
-  encodePublicationJson(valueJson: string): string;
-  decodePublicationJson(valueJson: string): string;
-}
-
-/** Decodes an exact byte identity without JavaScript's truncating coercions. */
-export function decodeFixedBytes(value: unknown, length: number, name: string): Uint8Array {
-  if (
-    !Array.isArray(value) ||
-    value.length !== length ||
-    value.some(byte => !Number.isInteger(byte) || byte < 0 || byte > 255)
-  ) {
-    throw new TypeError(`${name} must be a ${length}-byte identity`);
-  }
-  return Uint8Array.from(value as number[]);
-}
-
-function compatibilityJson(value: unknown, name: string): CompatibilityJson {
+function compatibilityJson(value: unknown): CompatibilityJson {
   if (
     value === null ||
     typeof value === "boolean" ||
@@ -124,17 +98,17 @@ function compatibilityJson(value: unknown, name: string): CompatibilityJson {
     (typeof value === "number" && Number.isFinite(value))
   ) return value;
   if (Array.isArray(value)) {
-    return value.map((entry, index) => compatibilityJson(entry, `${name}[${index}]`));
+    return value.map(compatibilityJson);
   }
   if (
     typeof value === "object" &&
     (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)
   ) {
     return Object.fromEntries(
-      Object.entries(value).map(([key, entry]) => [key, compatibilityJson(entry, `${name}.${key}`)]),
+      Object.entries(value).map(([key, entry]) => [key, compatibilityJson(entry)]),
     );
   }
-  throw new TypeError(`${name} is not finite JSON data`);
+  throw new TypeError("compatibility value is not finite JSON data");
 }
 
 function isCompatibilityObject(
@@ -144,7 +118,7 @@ function isCompatibilityObject(
 }
 
 function compatibilityEnvelope(value: unknown, kind: CompatibilityWireKind): CompatibilityWireEnvelope {
-  const decoded = compatibilityJson(value, "compatibility envelope");
+  const decoded = compatibilityJson(value);
   if (
     !isCompatibilityObject(decoded) ||
     decoded.kind !== kind ||
@@ -159,7 +133,10 @@ function compatibilityEnvelope(value: unknown, kind: CompatibilityWireKind): Com
 }
 
 /** Adapts generated bindings without reimplementing Rust validation semantics. */
-export function adaptCompatibilityWire(raw: RawCompatibilityWire): CompatibilityWire {
+export function adaptCompatibilityWire(raw: Pick<typeof import("../generated/wasm/acyclic_fs_wasm.js"),
+  | "encodeMergePlanJson" | "decodeMergePlanJson" | "encodeMergeCandidateJson" | "decodeMergeCandidateJson"
+  | "encodeMultiRootPlanJson" | "decodeMultiRootPlanJson" | "encodeMultiRootCandidateJson" | "decodeMultiRootCandidateJson"
+  | "encodePublicationJson" | "decodePublicationJson">): CompatibilityWire {
   const functions = {
     "merge-plan": [raw.encodeMergePlanJson, raw.decodeMergePlanJson],
     "merge-candidate": [raw.encodeMergeCandidateJson, raw.decodeMergeCandidateJson],
@@ -179,7 +156,6 @@ export function adaptCompatibilityWire(raw: RawCompatibilityWire): Compatibility
       compatibilityEnvelope(envelope, kind);
       return compatibilityJson(
         JSON.parse(functions[kind][1](JSON.stringify(envelope))) as unknown,
-        "decoded compatibility value",
       );
     },
   };
@@ -388,51 +364,38 @@ export function gitCompatSafeTimestamp(value: bigint): number {
 
 /** Decode and validate the native façade's stable JSON envelope. */
 export function parseGitCompatOutputJson(json: string): GitCompatOutput {
-  return projectGitCompatOutputJson(json);
-}
-
-/**
- * Rehydrates the Rust JSON projection for package callers. Rust has already
- * deserialized and validated this payload; this adapter only restores JS
- * ownership types (typed arrays, bigint, and omitted optional values) using
- * the generated field contract.
- */
-export function projectGitCompatOutputJson(json: string): GitCompatOutput {
   const value = parseGitJson(json);
   if (value === "NoOp") return value;
   const output = object(value, "Git command output");
-  const variants = Object.keys(output);
-  if (variants.length !== 1 || !gitCompatOutputVariants.includes(variants[0] as typeof gitCompatOutputVariants[number])) {
-    throw new TypeError("Git command output has an unknown variant");
-  }
-  if (variants[0] === "Status") {
+  const kind = tagged(output, gitCompatOutputVariants, "command output");
+  if (kind === "Status") {
     const status = object(output.Status, "Git Status output");
     for (const field of ["branch", "workspace", "dirty", "all_changes_staged"]) {
       if (!(field in status)) throw new TypeError(`Git Status output lacks ${field}`);
     }
   }
-  if (variants[0] === "Bisect") {
+  if (kind === "Bisect") {
     const bisect = object(output.Bisect, "Git Bisect output");
     if ("remaining" in bisect) u32(bisect.remaining, "bisect remaining");
   }
-  if (variants[0] === "Text" && typeof output.Text !== "string") {
+  if (kind === "Text" && typeof output.Text !== "string") {
     throw new TypeError("Git Text output must be a string");
   }
-  if (variants[0] === "Paths" && (!Array.isArray(output.Paths)
+  if (kind === "Paths" && (!Array.isArray(output.Paths)
     || output.Paths.some(path => typeof path !== "string"))) {
     throw new TypeError("Git Paths output must be an array of strings");
   }
-  if (variants[0] === "Action") {
+  if (kind === "Action") {
     tagged(output.Action, gitCompatActionVariants, "Git action");
-  } else if (variants[0] === "Prepared") {
-    const envelope = object(output[variants[0]], `Git ${variants[0]} output`);
+  } else if (kind === "Prepared") {
+    const envelope = object(output[kind], `Git ${kind} output`);
     tagged(envelope.action, gitCompatActionVariants, "Git action");
   }
   return hydrateGitCompatValue(output, "") as GitCompatOutput;
 }
 
 /** Rehydrates a pending Rust transition without reproducing its action union. */
-export function projectGitPendingTransitionJson(json: string): GitPendingTransition {
+export function parseGitPendingTransitionJson(json: string): GitPendingTransition {
   const value = object(parseGitJson(json), "pending transition");
   for (const field of GIT_COMPAT_PENDING_FIELDS) {
     if (!(field in value)) throw new TypeError(`Git pending transition lacks its ${field}`);
@@ -446,8 +409,8 @@ export function projectGitPendingTransitionJson(json: string): GitPendingTransit
 }
 
 /** Serializes a public executor result using the Rust wire field contract. */
-export function stringifyGitFilesystemResultPublic(result: GitFilesystemResult): string {
-  tagged(result, ["Captured", "Forked", "Applied", "Data"], "filesystem result");
+export function stringifyGitFilesystemResult(result: GitFilesystemResult): string {
+  tagged(result, GIT_COMPAT_RESULT_VARIANTS, "filesystem result");
   return JSON.stringify(serializeGitCompatValue(result, ""));
 }
 
@@ -545,16 +508,6 @@ function isOpaqueGitValuePath(path: string): boolean {
     || path.includes(".Filesystem.Data.value.");
 }
 
-/** Decode one durable pending transition returned by the native store. */
-export function parseGitPendingTransitionJson(json: string): GitPendingTransition {
-  return projectGitPendingTransitionJson(json);
-}
-
-/** Encode an executor result without relying on `Uint8Array`'s object-shaped JSON form. */
-export function stringifyGitFilesystemResult(result: GitFilesystemResult): string {
-  return stringifyGitFilesystemResultPublic(result);
-}
-
 /** Execute and complete one durable action with Rust-equivalent return semantics. */
 export async function finishGitCompatOutput(
   repository: Pick<GitCompatRepository, "completeTransitionResult">,
@@ -573,18 +526,14 @@ export async function finishGitCompatOutput(
   return output;
 }
 
-function tagged<const K extends string>(
-  value: unknown,
-  variants: readonly K[],
-  label: string,
-): readonly [K, unknown] {
+function tagged(value: unknown, variants: ReadonlySet<string>, label: string): string {
   const record = object(value, label);
   const keys = Object.keys(record);
-  if (keys.length !== 1 || !variants.includes(keys[0] as K)) {
+  const kind = keys[0];
+  if (keys.length !== 1 || kind === undefined || !variants.has(kind)) {
     throw new TypeError(`Git ${label} has an unknown or ambiguous variant`);
   }
-  const kind = keys[0] as K;
-  return [kind, record[kind]];
+  return kind;
 }
 
 function object(value: unknown, label: string): Record<string, unknown> {
@@ -603,8 +552,7 @@ function bytes(value: unknown, length: number | undefined, label: string): numbe
   return values as number[];
 }
 
-// Lazy source epochs are Rust u64 values. Read the original JSON token before
-// JavaScript rounds it; older engines fail closed on an unsafe numeric value.
+// Read u64 epochs before JSON rounds them; reject unsafe numbers on older engines.
 function parseGitJson(json: string): unknown {
   return JSON.parse(json, (key: string, value: unknown, context?: { source?: string }) => {
     if (key !== "epoch" || typeof value !== "number") return value;
@@ -630,8 +578,7 @@ function u64(value: unknown, label: string): bigint {
   return epoch;
 }
 
-// Rust's transparent OperationId wraps uuid::Uuid: JSON uses its canonical
-// string form, while the native N-API boundary accepts the same 16 raw bytes.
+// Rust OperationId uses UUID strings in JSON and 16 bytes at the N-API boundary.
 function uuidIdentity(value: unknown, label: string): OperationIdentity {
   if (typeof value !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
     throw new TypeError(`Git ${label} must be a UUID string`);

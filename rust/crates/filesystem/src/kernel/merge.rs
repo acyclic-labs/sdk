@@ -1,24 +1,32 @@
 //! Canonical bounded three-way generation merge.
 
+use super::allocation::{KernelAccounting, KernelOwnedAllocation};
+use super::checkpoint::build_checkpoint_with_accounting;
+use super::extent_mutation::{apply_extent_mutations_with_accounting, put_encoded_with_accounting};
+use super::file_table_mutation::apply_file_table_mutations_with_accounting;
+use super::persistent_btree::Format;
+use super::persistent_diff::{
+    diff_file_records_with_accounting, diff_tree_entries_with_accounting,
+};
+use super::persistent_point::{Owned, retire_allocation};
+use super::range::plan_extent_range_with_accounting;
+use super::tree_mutation::{TreeFormat, apply_tree_mutations_with_accounting};
 use super::{
     CanonicalDecodeError, CheckpointError, CheckpointRequest, DecodeLimits, ExtentKind,
-    ExtentMutation, ExtentMutationError, ExtentMutationOptions, ExtentRangeRequest,
-    ExtentReadError, ExtentSlice, FileMetadata, FilePayload, FileRecord, FileTableMutation,
-    FileTableMutationError, GenerationRoot, LogicalName, MetadataField, PersistentDiffError,
-    TreeMutation, TreeMutationError, apply_extent_mutations_async,
-    apply_file_table_mutations_async, apply_tree_mutations_async, build_checkpoint_async,
-    decode_file_metadata, diff_file_records_async, diff_tree_entries_async, encode_file_metadata,
-    plan_extent_range_async,
+    ExtentMutation, ExtentMutationError, ExtentRangeRequest, ExtentReadError, ExtentSlice,
+    FileMetadata, FilePayload, FileRecord, FileTableMutation, FileTableMutationError,
+    GenerationRoot, LogicalName, MetadataField, TreeMutation, TreeMutationError,
+    decode_file_metadata,
 };
+use crate::FsError;
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::{CancellationError, CancellationToken};
 use crate::foundation::{FileId, GenerationId};
 use crate::performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
 };
-use crate::storage::{ByteRange, ObjectId, ObjectKind, ObjectStoreError, object_digest};
-use bytes::Bytes;
-use std::collections::{BTreeMap, BTreeSet};
+use crate::storage::{ByteRange, ObjectId, ObjectKind, ObjectStoreError};
+use std::collections::BTreeMap;
 use thiserror::Error;
 
 /// One exact unresolved three-way merge region.
@@ -47,10 +55,6 @@ pub enum MergeConflictSide {
 }
 
 /// Declarative resolution for one exact merge conflict.
-///
-/// Synthesized records and bindings are already-authenticated immutable
-/// inputs. The merge kernel validates their identity and shape before they can
-/// participate in the unpublished candidate.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MergeConflictResolution {
     /// Select one of the three immutable input sides.
@@ -69,7 +73,6 @@ pub struct MergeGenerationRequest {
     /// Authenticated common ancestor root.
     pub base: GenerationRoot,
     /// Exact authenticated object for `ours`, when it is already immutable.
-    /// Omitting it creates the required parent checkpoint for a private candidate.
     pub ours_generation: Option<ObjectId>,
     /// Current sparse candidate rooted at `base_generation`.
     pub ours: GenerationRoot,
@@ -85,6 +88,85 @@ pub struct MergeGenerationRequest {
     pub maximum_conflicts: u32,
     /// Caller-validated side selections for exact conflicting regions.
     pub resolutions: BTreeMap<MergeConflict, MergeConflictResolution>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct MergeGenerationBorrowedRequest<'a> {
+    pub base_generation: ObjectId,
+    pub base: &'a GenerationRoot,
+    pub ours_generation: Option<ObjectId>,
+    pub ours: &'a GenerationRoot,
+    pub theirs_generation: ObjectId,
+    pub theirs: &'a GenerationRoot,
+    pub retain_theirs_parent: bool,
+    pub maximum_changes: u32,
+    pub maximum_conflicts: u32,
+}
+
+#[derive(Clone, Copy)]
+enum ResolutionView<'a> {
+    Map(&'a BTreeMap<MergeConflict, MergeConflictResolution>),
+    #[cfg(not(target_arch = "wasm32"))]
+    Slice(&'a [(MergeConflict, MergeConflictResolution)]),
+}
+
+impl<'a> ResolutionView<'a> {
+    fn get_by(
+        self,
+        accounting: &mut KernelAccounting<'_>,
+        mut compare: impl FnMut(&MergeConflict) -> std::cmp::Ordering,
+    ) -> Result<Option<&'a MergeConflictResolution>, FsError> {
+        match self {
+            Self::Map(map) => {
+                for (key, value) in map {
+                    accounting.charge(WorkCounters {
+                        items_examined: 1,
+                        ..WorkCounters::UNCHARGED
+                    })?;
+                    match compare(key) {
+                        std::cmp::Ordering::Less => {}
+                        std::cmp::Ordering::Equal => return Ok(Some(value)),
+                        std::cmp::Ordering::Greater => break,
+                    }
+                }
+                Ok(None)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Slice(slice) => {
+                let index =
+                    super::search::binary_search_with_accounting(slice, accounting, |(key, _)| {
+                        compare(key)
+                    })?;
+                Ok(index
+                    .ok()
+                    .and_then(|index| slice.get(index))
+                    .map(|(_, value)| value))
+            }
+        }
+    }
+
+    fn file(
+        self,
+        file: FileId,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Option<&'a MergeConflictResolution>, FsError> {
+        self.get_by(accounting, |key| key.cmp(&MergeConflict::File(file)))
+    }
+
+    fn binding(
+        self,
+        directory: FileId,
+        name: &LogicalName,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Option<&'a MergeConflictResolution>, FsError> {
+        self.get_by(accounting, |key| match key {
+            MergeConflict::File(_) => std::cmp::Ordering::Less,
+            MergeConflict::Binding {
+                directory_id,
+                name: key,
+            } => directory_id.cmp(&directory).then_with(|| key.cmp(name)),
+        })
+    }
 }
 
 /// Terminal result of canonical merge preparation.
@@ -147,6 +229,9 @@ pub enum MergeGenerationError {
     /// Exact work overflowed or exceeded its admitted budget.
     #[error(transparent)]
     Work(#[from] WorkError),
+    /// A common accounting leaf retained an exact facade error cause.
+    #[error(transparent)]
+    Kernel(crate::FsError),
 }
 
 /// Receipt-bearing merge result.
@@ -154,16 +239,6 @@ pub type MergeGenerationResult =
     MeasuredResult<OperationReceipt<MergeGenerationOutcome>, MergeGenerationError>;
 
 /// Performs one sparse bounded three-way merge and constructs its two-parent checkpoint.
-///
-/// Equal Merkle roots are skipped by the shared diff kernels. The complete
-/// algorithm, including directory binding resolution and hard-link deltas, is
-/// owned here so every facade and language binding has identical semantics and
-/// physical work accounting.
-///
-/// # Errors
-///
-/// Rejects malformed or foreign roots, zero/truncated frontiers, cancellation,
-/// storage corruption, sparse application, checkpoint, or work-budget failures.
 #[allow(
     clippy::too_many_lines,
     reason = "one sparse bounded three-way merge and its two-parent checkpoint"
@@ -182,577 +257,807 @@ pub async fn merge_generation_async<S: AsyncObjectStore>(
         error.kind = crate::obs::Empty,
         work.items = crate::obs::Empty,
         work.bytes = crate::obs::Empty,
-        work.durability = crate::obs::Empty,
+        work.durability = crate::obs::Empty
     );
-    let result = crate::obs::in_span(&span, async move {
-        cancellation
-            .check()
-            .map_err(|error| OperationFailure::before_work(error.into()))?;
+    let result = crate::obs::in_span(&span, async {
+        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+        let result =
+            merge_generation_with_accounting(store, request, limits, &mut accounting, cancellation)
+                .await;
+        let work = accounting.spent();
+        result
+            .map(|(value, _)| OperationReceipt { value, work })
+            .map_err(|error| OperationFailure::new(project_merge_error(error), work))
+    })
+    .await;
+    crate::obs::measured_on(&span, result, |receipt| &receipt.work)
+}
+
+type RecordChange = (Option<FileRecord>, Option<FileRecord>);
+
+struct MergeState {
+    records: Owned<Vec<(FileId, RecordChange)>>,
+    conflicts: Owned<Vec<MergeConflict>>,
+    folds: Owned<Vec<(FileId, FileId)>>,
+    file_folds: Owned<Vec<FileFold>>,
+    truncated: bool,
+    remaining_changes: u32,
+}
+
+impl MergeState {
+    fn new(maximum_changes: u32, accounting: &mut KernelAccounting<'_>) -> Result<Self, FsError> {
+        Ok(Self {
+            records: Owned::allocate(0, accounting)?,
+            conflicts: Owned::allocate(0, accounting)?,
+            folds: Owned::allocate(0, accounting)?,
+            file_folds: Owned::allocate(0, accounting)?,
+            truncated: false,
+            remaining_changes: maximum_changes,
+        })
+    }
+    fn record(
+        &self,
+        file: FileId,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<RecordChange, FsError> {
+        let index = super::search::binary_search_with_accounting(
+            &self.records.value,
+            accounting,
+            |(id, _)| id.cmp(&file),
+        )?
+        .map_err(|_| FsError::InvalidDiff)?;
+        Ok(self.records.value.get(index).ok_or(FsError::InvalidDiff)?.1)
+    }
+    fn replace(
+        &mut self,
+        file: FileId,
+        value: RecordChange,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), FsError> {
+        let index = super::search::binary_search_with_accounting(
+            &self.records.value,
+            accounting,
+            |(id, _)| id.cmp(&file),
+        )?
+        .map_err(|_| FsError::InvalidDiff)?;
+        self.records
+            .value
+            .get_mut(index)
+            .ok_or(FsError::InvalidDiff)?
+            .1 = value;
+        Ok(())
+    }
+    fn consume(&mut self, count: usize) -> Result<(), FsError> {
+        self.remaining_changes = self
+            .remaining_changes
+            .checked_sub(u32::try_from(count).map_err(|_| FsError::MergeChangeLimit)?)
+            .ok_or(FsError::MergeChangeLimit)?;
+        Ok(())
+    }
+    fn conflict(
+        &mut self,
+        conflict: MergeConflict,
+        maximum: u32,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), FsError> {
+        if self.conflicts.value.len() < usize::try_from(maximum).unwrap_or(usize::MAX) {
+            self.conflicts
+                .ensure_for_push(usize::try_from(maximum).unwrap_or(usize::MAX), accounting)?;
+            self.conflicts.value.push(conflict);
+        } else {
+            self.truncated = true;
+        }
+        Ok(())
+    }
+}
+
+pub(crate) async fn merge_generation_with_accounting<S: AsyncObjectStore>(
+    store: &S,
+    request: MergeGenerationRequest,
+    limits: DecodeLimits,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<(MergeGenerationOutcome, KernelOwnedAllocation), FsError> {
+    let inputs = MergeGenerationBorrowedRequest {
+        base_generation: request.base_generation,
+        base: &request.base,
+        ours_generation: request.ours_generation,
+        ours: &request.ours,
+        theirs_generation: request.theirs_generation,
+        theirs: &request.theirs,
+        retain_theirs_parent: request.retain_theirs_parent,
+        maximum_changes: request.maximum_changes,
+        maximum_conflicts: request.maximum_conflicts,
+    };
+    merge_generation_core(
+        store,
+        inputs,
+        ResolutionView::Map(&request.resolutions),
+        limits,
+        accounting,
+        cancellation,
+    )
+    .await
+}
+
+pub(crate) async fn merge_generation_with_borrowed_map_resolutions_with_accounting<
+    S: AsyncObjectStore,
+>(
+    store: &S,
+    request: &MergeGenerationBorrowedRequest<'_>,
+    resolutions: &BTreeMap<MergeConflict, MergeConflictResolution>,
+    limits: DecodeLimits,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<(MergeGenerationOutcome, KernelOwnedAllocation), FsError> {
+    merge_generation_core(
+        store,
+        *request,
+        ResolutionView::Map(resolutions),
+        limits,
+        accounting,
+        cancellation,
+    )
+    .await
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) async fn merge_generation_with_borrowed_resolutions_with_accounting<
+    S: AsyncObjectStore,
+>(
+    store: &S,
+    request: MergeGenerationBorrowedRequest<'_>,
+    resolutions: &[(MergeConflict, MergeConflictResolution)],
+    limits: DecodeLimits,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<(MergeGenerationOutcome, KernelOwnedAllocation), FsError> {
+    for [left, right] in resolutions.array_windows::<2>() {
+        accounting.charge(WorkCounters {
+            items_examined: 1,
+            ..WorkCounters::UNCHARGED
+        })?;
+        if left.0 >= right.0 {
+            return Err(FsError::InvalidDiff);
+        }
+    }
+    merge_generation_core(
+        store,
+        request,
+        ResolutionView::Slice(resolutions),
+        limits,
+        accounting,
+        cancellation,
+    )
+    .await
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "This state transition keeps admission, effects and resource retirement in one frame."
+)]
+fn merge_generation_core<'a, 'accounting, S: AsyncObjectStore>(
+    store: &'a S,
+    request: MergeGenerationBorrowedRequest<'a>,
+    resolutions: ResolutionView<'a>,
+    limits: DecodeLimits,
+    accounting: &'a mut KernelAccounting<'accounting>,
+    cancellation: &'a CancellationToken,
+) -> acyclic_stream::BoxProviderFuture<
+    'a,
+    Result<(MergeGenerationOutcome, KernelOwnedAllocation), FsError>,
+> {
+    Box::pin(async move {
+        accounting.check()?;
         if request.maximum_changes == 0 || request.maximum_conflicts == 0 {
-            return Err(OperationFailure::before_work(
-                MergeGenerationError::ChangeLimit,
-            ));
+            return Err(FsError::MergeChangeLimit);
         }
         if request.base.volume_id != request.ours.volume_id
             || request.base.volume_id != request.theirs.volume_id
             || request.base.root_file_id != request.ours.root_file_id
             || request.base.root_file_id != request.theirs.root_file_id
         {
-            return Err(OperationFailure::before_work(
-                MergeGenerationError::InvalidDiff,
-            ));
+            return Err(FsError::InvalidDiff);
         }
-        let mut work = WorkCounters::default();
-        let ours = diff_file_records_async(
-            store,
-            Some(request.base.file_table),
-            Some(request.ours.file_table),
-            request.maximum_changes,
-            limits,
-            remaining(work, budget)?,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| map_diff_failure(failure, work))?;
-        work = add(work, ours.work)?;
-        let theirs = diff_file_records_async(
-            store,
-            Some(request.base.file_table),
-            Some(request.theirs.file_table),
-            request.maximum_changes,
-            limits,
-            remaining(work, budget)?,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| map_diff_failure(failure, work))?;
-        work = add(work, theirs.work)?;
-        if ours.truncated || theirs.truncated {
-            return Err(OperationFailure::new(
-                MergeGenerationError::ChangeLimit,
-                work,
-            ));
-        }
-        let ours = changes_by_file(ours.changes);
-        let theirs = changes_by_file(theirs.changes);
-        let identities = ours
-            .keys()
-            .chain(theirs.keys())
-            .copied()
-            .collect::<BTreeSet<_>>();
-        if identities.len() > usize::try_from(request.maximum_changes).unwrap_or(usize::MAX) {
-            return Err(OperationFailure::new(
-                MergeGenerationError::ChangeLimit,
-                work,
-            ));
-        }
-        let mut remaining_changes = request
-            .maximum_changes
-            .checked_sub(u32::try_from(identities.len()).unwrap_or(u32::MAX))
-            .ok_or_else(|| OperationFailure::new(MergeGenerationError::ChangeLimit, work))?;
-        let mut resolutions = BTreeMap::new();
-        let mut conflicts = Vec::new();
-        let mut truncated = false;
-        let mut folds = Vec::new();
-        let mut file_folds = Vec::new();
-        for file_id in identities {
-            let base = ours
-                .get(&file_id)
-                .map(|change| change.0)
-                .or_else(|| theirs.get(&file_id).map(|change| change.0))
-                .flatten();
-            let ours_value = ours.get(&file_id).map_or(base, |change| change.1);
-            let theirs_value = theirs.get(&file_id).map_or(base, |change| change.1);
-            let mut resolved = resolve_optional(base, ours_value, theirs_value);
-            // Both sides added the same identity (each materialized one shared
-            // source file, say) with identical content: a convergent addition.
-            if matches!(resolved, OptionalResolution::Conflict)
-                && base.is_none()
-                && let (Some(ours_record), Some(theirs_record)) = (ours_value, theirs_value)
-                && ours_record.kind == theirs_record.kind
-                && ours_record.payload == theirs_record.payload
-                && let Some(metadata) = converge_metadata_async(
-                    store,
-                    ours_record.metadata,
-                    theirs_record.metadata,
-                    limits,
-                    budget,
-                    cancellation,
-                    &mut work,
-                )
-                .await?
-            {
-                resolved = OptionalResolution::Resolved(Some(FileRecord {
-                    metadata,
-                    ..ours_record
-                }));
-            }
-            // Both sides added the same directory identity (each promoted one
-            // shared source directory, say) with different entries: merge those
-            // entries against an empty directory.
-            let base = if base.is_none()
-                && matches!(resolved, OptionalResolution::Conflict)
-                && is_directory(ours_value)
-                && is_directory(theirs_value)
-            {
-                let ours_record = ours_value.ok_or_else(|| invalid(work))?;
-                let entries =
-                    empty_tree_async(store, limits, budget, cancellation, &mut work).await?;
-                Some(FileRecord {
-                    payload: FilePayload::Directory { entries },
-                    ..ours_record
-                })
-            } else {
-                base
-            };
-            if matches!(resolved, OptionalResolution::Conflict)
-                && is_directory(base)
-                && is_directory(ours_value)
-                && is_directory(theirs_value)
-            {
-                if remaining_changes == 0 {
-                    return Err(OperationFailure::new(
-                        MergeGenerationError::ChangeLimit,
-                        work,
-                    ));
-                }
-                let directory = merge_directory_record_with_resolutions_async(
-                    store,
-                    file_id,
-                    base.ok_or_else(|| invalid(work))?,
-                    ours_value.ok_or_else(|| invalid(work))?,
-                    theirs_value.ok_or_else(|| invalid(work))?,
-                    remaining_changes,
-                    request
-                        .maximum_conflicts
-                        .saturating_sub(u32::try_from(conflicts.len()).unwrap_or(u32::MAX)),
-                    &request.resolutions,
-                    limits,
-                    remaining(work, budget)?,
-                    cancellation,
-                )
-                .await
-                .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-                work = add(work, directory.work)?;
-                remaining_changes = remaining_changes
-                    .checked_sub(directory.value.examined_changes)
-                    .ok_or_else(|| {
-                        OperationFailure::new(MergeGenerationError::ChangeLimit, work)
-                    })?;
-                conflicts.extend(directory.value.conflicts);
-                truncated |= directory.value.truncated;
-                folds.extend(directory.value.folds);
-                file_folds.extend(directory.value.file_folds);
-                let Some(record) = directory.value.record else {
-                    continue;
-                };
-                resolved = OptionalResolution::Resolved(Some(record));
-            }
-            if matches!(resolved, OptionalResolution::Conflict)
-                && base.is_some()
-                && ours_value.is_some()
-                && theirs_value.is_some()
-                && is_extent_regular(base)
-                && is_extent_regular(ours_value)
-                && is_extent_regular(theirs_value)
-            {
-                let regular = merge_regular_record_async(
-                    store,
-                    base.ok_or_else(|| invalid(work))?,
-                    ours_value.ok_or_else(|| invalid(work))?,
-                    theirs_value.ok_or_else(|| invalid(work))?,
-                    remaining_changes,
-                    limits,
-                    remaining(work, budget)?,
-                    cancellation,
-                )
-                .await
-                .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-                work = add(work, regular.work)?;
-                if let Some((record, examined)) = regular.value {
-                    remaining_changes =
-                        remaining_changes.checked_sub(examined).ok_or_else(|| {
-                            OperationFailure::new(MergeGenerationError::ChangeLimit, work)
-                        })?;
-                    resolved = OptionalResolution::Resolved(Some(record));
-                }
-            }
-            if matches!(resolved, OptionalResolution::Conflict) {
-                resolved = merge_records_async(
-                    store,
-                    [base, ours_value, theirs_value],
-                    limits,
-                    budget,
-                    cancellation,
-                    &mut work,
-                )
-                .await?
-                .map_or(OptionalResolution::Conflict, |record| {
-                    OptionalResolution::Resolved(Some(record))
-                });
-            }
-            let OptionalResolution::Resolved(resolved) = resolved else {
-                if let Some(resolution) = request.resolutions.get(&MergeConflict::File(file_id)) {
-                    let resolved = match resolution {
-                        MergeConflictResolution::Select(side) => {
-                            select_optional(*side, base, ours_value, theirs_value)
-                        }
-                        MergeConflictResolution::File(record) => {
-                            if record.is_some_and(|record| record.file_id != file_id) {
-                                return Err(invalid(work));
-                            }
-                            *record
-                        }
-                        MergeConflictResolution::Binding(_) => return Err(invalid(work)),
-                    };
-                    resolutions.insert(file_id, (ours_value, resolved));
-                    continue;
-                }
-                if conflicts.len()
-                    < usize::try_from(request.maximum_conflicts).unwrap_or(usize::MAX)
-                {
-                    conflicts.push(MergeConflict::File(file_id));
-                } else {
-                    truncated = true;
-                }
-                continue;
-            };
-            resolutions.insert(file_id, (ours_value, resolved));
-        }
-        fold_additions(
-            store,
-            folds,
-            &mut resolutions,
-            &mut FoldState {
-                conflicts: &mut conflicts,
-                truncated: &mut truncated,
-                remaining_changes: &mut remaining_changes,
-                file_folds: &mut file_folds,
-            },
-            request.maximum_conflicts,
-            &request.resolutions,
-            limits,
-            budget,
-            cancellation,
-            &mut work,
-        )
-        .await?;
-        if !conflicts.is_empty() || truncated {
-            return Ok(OperationReceipt {
-                value: MergeGenerationOutcome::Conflicted {
-                    conflicts,
-                    truncated,
-                },
-                work,
-            });
-        }
-        adjust_link_counts(
-            store,
-            &mut resolutions,
-            &mut remaining_changes,
-            limits,
-            budget,
-            cancellation,
-            &mut work,
-        )
-        .await?;
-        let mutations = resolutions
-            .into_iter()
-            .filter(|(_, (before, after))| before != after)
-            .filter_map(|(file_id, (before, after))| file_table_mutation(file_id, before, after))
-            .collect::<Vec<_>>();
-        let merged_table = if mutations.is_empty() {
-            request.ours.file_table
-        } else {
-            let applied = apply_file_table_mutations_async(
+        let mut state = MergeState::new(request.maximum_changes, accounting)?;
+        let result = async {
+            let (ours, custody) = diff_file_records_with_accounting(
                 store,
-                request.ours.file_table,
-                mutations,
+                Some(request.base.file_table),
+                Some(request.ours.file_table),
                 request.maximum_changes,
                 limits,
-                remaining(work, budget)?,
+                accounting,
                 cancellation,
             )
-            .await
-            .map_err(|failure| {
-                failure.map_with_prior_work(work, MergeGenerationError::FileTable)
-            })?;
-            work = add(work, applied.work)?;
-            applied.root
-        };
-        let (ours_parent_root, ours_parent_generation) = match request.ours_generation {
-            Some(object) if object.kind == crate::storage::ObjectKind::GenerationRoot => {
-                (object, GenerationId::new(object.digest))
-            }
-            Some(_) => {
-                return Err(OperationFailure::new(
-                    MergeGenerationError::InvalidDiff,
-                    work,
-                ));
-            }
-            None => {
-                let ours_parent = build_checkpoint_async(
+            .await?;
+            let bytes = ours.retained_allocation_bytes;
+            let ours = Owned::new(ours, custody, bytes);
+            let result = async {
+                let (theirs, custody) = diff_file_records_with_accounting(
                     store,
-                    CheckpointRequest {
-                        base: request.base_generation,
-                        file_table: request.ours.file_table,
-                        merge_parent: None,
-                    },
+                    Some(request.base.file_table),
+                    Some(request.theirs.file_table),
+                    request.maximum_changes,
                     limits,
-                    remaining(work, budget)?,
+                    accounting,
                     cancellation,
                 )
-                .await
-                .map_err(|failure| {
-                    failure.map_with_prior_work(work, MergeGenerationError::Checkpoint)
-                })?;
-                work = add(work, ours_parent.work)?;
-                (ours_parent.root, ours_parent.generation_id)
+                .await?;
+                let bytes = theirs.retained_allocation_bytes;
+                let theirs = Owned::new(theirs, custody, bytes);
+                let result = async {
+                    if ours.value.truncated || theirs.value.truncated {
+                        return Err(FsError::MergeChangeLimit);
+                    }
+                    let mut frontier_indices = [0, 0];
+                    let mut frontier = 0_usize;
+                    while next_changes(
+                        &ours.value.changes,
+                        &theirs.value.changes,
+                        &mut frontier_indices,
+                    )
+                    .is_some()
+                    {
+                        accounting.charge(WorkCounters {
+                            items_examined: 1,
+                            ..WorkCounters::UNCHARGED
+                        })?;
+                        frontier = frontier.checked_add(1).ok_or(WorkError::Overflow)?;
+                    }
+                    state.consume(frontier)?;
+                    let mut indices = [0, 0];
+                    while let Some([left, right]) =
+                        next_changes(&ours.value.changes, &theirs.value.changes, &mut indices)
+                    {
+                        accounting.charge(WorkCounters {
+                            items_examined: 1,
+                            ..WorkCounters::UNCHARGED
+                        })?;
+                        let file = left.or(right).ok_or(FsError::InvalidDiff)?.key;
+                        let base = left.or(right).and_then(|change| change.before);
+                        let ours_value = left.map_or(base, |change| change.after);
+                        let theirs_value = right.map_or(base, |change| change.after);
+                        let mut resolved = resolve_optional(base, ours_value, theirs_value);
+                        if matches!(resolved, OptionalResolution::Conflict)
+                            && base.is_none()
+                            && let (Some(a), Some(b)) = (ours_value, theirs_value)
+                            && a.kind == b.kind
+                            && a.payload == b.payload
+                            && let Some(metadata) = converge_metadata_async(
+                                store,
+                                a.metadata,
+                                b.metadata,
+                                limits,
+                                accounting,
+                                cancellation,
+                            )
+                            .await?
+                        {
+                            resolved =
+                                OptionalResolution::Resolved(Some(FileRecord { metadata, ..a }));
+                        }
+                        let base = if base.is_none()
+                            && matches!(resolved, OptionalResolution::Conflict)
+                            && is_directory(ours_value)
+                            && is_directory(theirs_value)
+                        {
+                            Some(FileRecord {
+                                payload: FilePayload::Directory {
+                                    entries: empty_tree_async(
+                                        store,
+                                        limits,
+                                        accounting,
+                                        cancellation,
+                                    )
+                                    .await?,
+                                },
+                                ..ours_value.ok_or(FsError::InvalidDiff)?
+                            })
+                        } else {
+                            base
+                        };
+                        if matches!(resolved, OptionalResolution::Conflict)
+                            && is_directory(base)
+                            && is_directory(ours_value)
+                            && is_directory(theirs_value)
+                        {
+                            if state.remaining_changes == 0 {
+                                return Err(FsError::MergeChangeLimit);
+                            }
+                            let record = merge_directory_record_with_resolutions_async(
+                                store,
+                                file,
+                                base.ok_or(FsError::InvalidDiff)?,
+                                ours_value.ok_or(FsError::InvalidDiff)?,
+                                theirs_value.ok_or(FsError::InvalidDiff)?,
+                                resolutions,
+                                request.maximum_conflicts,
+                                limits,
+                                &mut state,
+                                accounting,
+                                cancellation,
+                            )
+                            .await?;
+                            if let Some(record) = record {
+                                resolved = OptionalResolution::Resolved(Some(record));
+                            } else {
+                                state.records.ensure_for_push(usize::MAX, accounting)?;
+                                state.records.value.push((file, (ours_value, ours_value)));
+                                continue;
+                            }
+                        }
+                        if matches!(resolved, OptionalResolution::Conflict)
+                            && is_extent_regular(base)
+                            && is_extent_regular(ours_value)
+                            && is_extent_regular(theirs_value)
+                            && let Some((record, examined)) = merge_regular_record_async(
+                                store,
+                                base.ok_or(FsError::InvalidDiff)?,
+                                ours_value.ok_or(FsError::InvalidDiff)?,
+                                theirs_value.ok_or(FsError::InvalidDiff)?,
+                                state.remaining_changes,
+                                limits,
+                                accounting,
+                                cancellation,
+                            )
+                            .await?
+                        {
+                            state.consume(examined as usize)?;
+                            resolved = OptionalResolution::Resolved(Some(record));
+                        }
+                        if matches!(resolved, OptionalResolution::Conflict) {
+                            resolved = merge_records_async(
+                                store,
+                                [base, ours_value, theirs_value],
+                                limits,
+                                accounting,
+                                cancellation,
+                            )
+                            .await?
+                            .map_or(OptionalResolution::Conflict, |record| {
+                                OptionalResolution::Resolved(Some(record))
+                            });
+                        }
+                        let after = match resolved {
+                            OptionalResolution::Resolved(record) => record,
+                            OptionalResolution::Conflict => {
+                                match resolutions.file(file, accounting)? {
+                                    Some(MergeConflictResolution::Select(side)) => {
+                                        select_optional(*side, base, ours_value, theirs_value)
+                                    }
+                                    Some(MergeConflictResolution::File(record)) => {
+                                        if record.is_some_and(|record| record.file_id != file) {
+                                            return Err(FsError::InvalidDiff);
+                                        }
+                                        *record
+                                    }
+                                    Some(MergeConflictResolution::Binding(_)) => {
+                                        return Err(FsError::InvalidDiff);
+                                    }
+                                    None => {
+                                        state.conflict(
+                                            MergeConflict::File(file),
+                                            request.maximum_conflicts,
+                                            accounting,
+                                        )?;
+                                        ours_value
+                                    }
+                                }
+                            }
+                        };
+                        state.records.ensure_for_push(usize::MAX, accounting)?;
+                        state.records.value.push((file, (ours_value, after)));
+                    }
+                    Ok(())
+                }
+                .await;
+                theirs.retire(accounting)?;
+                result
             }
-        };
-        let merged = build_checkpoint_async(
-            store,
-            CheckpointRequest {
-                base: ours_parent_root,
-                file_table: merged_table,
-                merge_parent: request
-                    .retain_theirs_parent
-                    .then_some(request.theirs_generation),
-            },
-            limits,
-            remaining(work, budget)?,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| failure.map_with_prior_work(work, MergeGenerationError::Checkpoint))?;
-        work = add(work, merged.work)?;
-        let root = GenerationRoot {
-            volume_id: request.ours.volume_id,
-            root_file_id: request.ours.root_file_id,
-            file_table: merged_table,
-            parents: if request.retain_theirs_parent {
-                vec![
-                    ours_parent_generation,
-                    GenerationId::new(request.theirs_generation.digest),
-                ]
-            } else {
-                vec![ours_parent_generation]
-            },
-            required_features: request.ours.continuation_features(),
-        };
-        Ok(OperationReceipt {
-            value: MergeGenerationOutcome::Prepared {
-                generation_root: merged.root,
-                root,
-                generation_id: merged.generation_id,
-            },
-            work,
-        })
+            .await;
+            ours.retire(accounting)?;
+            result?;
+            fold_additions(
+                store,
+                resolutions,
+                request.maximum_conflicts,
+                limits,
+                &mut state,
+                accounting,
+                cancellation,
+            )
+            .await?;
+            if !state.conflicts.value.is_empty() || state.truncated {
+                return Ok(None);
+            }
+            adjust_link_counts(store, limits, &mut state, accounting, cancellation).await?;
+            let mut mutations = Owned::allocate(0, accounting)?;
+            let result = async {
+                for (file, (before, after)) in &state.records.value {
+                    if before != after
+                        && let Some(mutation) = file_table_mutation(*file, *before, *after)
+                    {
+                        mutations.ensure_for_push(usize::MAX, accounting)?;
+                        mutations.value.push(mutation);
+                    }
+                }
+                let merged_table = if mutations.value.is_empty() {
+                    request.ours.file_table
+                } else {
+                    apply_file_table_mutations_with_accounting(
+                        store,
+                        request.ours.file_table,
+                        &mutations.value,
+                        request.maximum_changes,
+                        limits,
+                        accounting,
+                        cancellation,
+                    )
+                    .await?
+                    .value
+                };
+                let (parent, parent_id) = match request.ours_generation {
+                    Some(object) if object.kind == ObjectKind::GenerationRoot => {
+                        (object, GenerationId::new(object.digest))
+                    }
+                    Some(_) => return Err(FsError::InvalidDiff),
+                    None => {
+                        let parent = build_checkpoint_with_accounting(
+                            store,
+                            CheckpointRequest {
+                                base: request.base_generation,
+                                file_table: request.ours.file_table,
+                                merge_parent: None,
+                            },
+                            limits,
+                            accounting,
+                            cancellation,
+                        )
+                        .await?;
+                        (parent, GenerationId::new(parent.digest))
+                    }
+                };
+                let merged = build_checkpoint_with_accounting(
+                    store,
+                    CheckpointRequest {
+                        base: parent,
+                        file_table: merged_table,
+                        merge_parent: request
+                            .retain_theirs_parent
+                            .then_some(request.theirs_generation),
+                    },
+                    limits,
+                    accounting,
+                    cancellation,
+                )
+                .await?;
+                let parent_count = if request.retain_theirs_parent { 2 } else { 1 };
+                let mut parents = Owned::allocate(parent_count, accounting)?;
+                let delta = WorkCounters {
+                    bytes_copied: (parent_count * std::mem::size_of::<GenerationId>()) as u64,
+                    ..WorkCounters::UNCHARGED
+                };
+                let copied = accounting.admit(delta).and_then(|()| {
+                    parents.value.push(parent_id);
+                    if request.retain_theirs_parent {
+                        parents
+                            .value
+                            .push(GenerationId::new(request.theirs_generation.digest));
+                    }
+                    accounting.record_completed(delta)
+                });
+                if let Err(error) = copied {
+                    parents.retire(accounting)?;
+                    return Err(error);
+                }
+                let Owned {
+                    value: parents,
+                    allocation,
+                    ..
+                } = parents;
+                Ok((
+                    MergeGenerationOutcome::Prepared {
+                        generation_root: merged,
+                        generation_id: GenerationId::new(merged.digest),
+                        root: GenerationRoot {
+                            volume_id: request.ours.volume_id,
+                            root_file_id: request.ours.root_file_id,
+                            file_table: merged_table,
+                            parents,
+                            required_features: request.ours.continuation_features(),
+                        },
+                    },
+                    allocation,
+                ))
+            }
+            .await;
+            mutations.retire(accounting)?;
+            result.map(Some)
+        }
+        .await;
+        state.records.retire(accounting)?;
+        state.folds.retire(accounting)?;
+        state.file_folds.retire(accounting)?;
+        match result {
+            Ok(None) => {
+                let Owned {
+                    value: conflicts,
+                    allocation,
+                    ..
+                } = state.conflicts;
+                Ok((
+                    MergeGenerationOutcome::Conflicted {
+                        conflicts,
+                        truncated: state.truncated,
+                    },
+                    allocation,
+                ))
+            }
+            other => {
+                state.conflicts.retire(accounting)?;
+                other?.ok_or(FsError::InvalidDiff)
+            }
+        }
     })
-    .await;
-    crate::obs::measured_on(&span, result, |receipt| &receipt.work)
+}
+
+#[allow(
+    clippy::type_complexity,
+    reason = "This pairs borrowed diff entries directly without another carrier or allocation."
+)]
+fn next_changes<'a, K: Ord, V>(
+    left: &'a [super::persistent_diff::ValueChange<K, V>],
+    right: &'a [super::persistent_diff::ValueChange<K, V>],
+    indices: &mut [usize; 2],
+) -> Option<[Option<&'a super::persistent_diff::ValueChange<K, V>>; 2]> {
+    let [left_index, right_index] = indices;
+    let (a, b) = (left.get(*left_index), right.get(*right_index));
+    let result = match (a, b) {
+        (Some(a), Some(b)) => match a.key.cmp(&b.key) {
+            std::cmp::Ordering::Less => [Some(a), None],
+            std::cmp::Ordering::Greater => [None, Some(b)],
+            std::cmp::Ordering::Equal => [Some(a), Some(b)],
+        },
+        (Some(a), None) => [Some(a), None],
+        (None, Some(b)) => [None, Some(b)],
+        (None, None) => return None,
+    };
+    let [left_change, right_change] = result;
+    *left_index += usize::from(left_change.is_some());
+    *right_index += usize::from(right_change.is_some());
+    Some(result)
 }
 
 fn is_extent_regular(record: Option<FileRecord>) -> bool {
     matches!(
-        record.map(|value| value.payload),
+        record.map(|record| record.payload),
         Some(FilePayload::Regular { .. })
     )
 }
 
 #[allow(
     clippy::too_many_arguments,
-    clippy::too_many_lines,
-    reason = "the three merge sides, change bound, decode limits, budget, and cancellation are independent inputs of one record merge"
+    reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
 )]
-async fn merge_regular_record_async<S: AsyncObjectStore>(
-    store: &S,
+#[allow(
+    clippy::too_many_lines,
+    reason = "The merge frame retains both sides and their admitted data until the merged record is complete."
+)]
+fn merge_regular_record_async<'a, 'accounting, S: AsyncObjectStore>(
+    store: &'a S,
     base: FileRecord,
     ours: FileRecord,
     theirs: FileRecord,
     maximum_changes: u32,
     limits: DecodeLimits,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<OperationReceipt<Option<(FileRecord, u32)>>, OperationFailure<MergeGenerationError>> {
-    let Some(kind) = resolve_three(&base.kind, &ours.kind, &theirs.kind) else {
-        return Ok(OperationReceipt {
-            value: None,
-            work: WorkCounters::default(),
-        });
-    };
-    let mut work = WorkCounters::default();
-    let Some(metadata) = merge_metadata_async(
-        store,
-        Some(base.metadata),
-        ours.metadata,
-        theirs.metadata,
-        limits,
-        budget,
-        cancellation,
-        &mut work,
-    )
-    .await?
-    else {
-        return Ok(OperationReceipt { value: None, work });
-    };
-    let (
-        FilePayload::Regular {
-            logical_bytes: base_bytes,
-            extents: base_root,
-        },
-        FilePayload::Regular {
-            logical_bytes: ours_bytes,
-            extents: ours_root,
-        },
-        FilePayload::Regular {
-            logical_bytes: theirs_bytes,
-            extents: theirs_root,
-        },
-    ) = (base.payload, ours.payload, theirs.payload)
-    else {
-        return Ok(OperationReceipt { value: None, work });
-    };
-    let Some(logical_bytes) = resolve_three(&base_bytes, &ours_bytes, &theirs_bytes) else {
-        return Ok(OperationReceipt { value: None, work });
-    };
-    if base_bytes != ours_bytes || base_bytes != theirs_bytes || logical_bytes == 0 {
-        return Ok(OperationReceipt { value: None, work });
-    }
-    let request = |root| ExtentRangeRequest {
-        root,
-        file_size: logical_bytes,
-        range: ByteRange {
-            offset: 0,
-            length: logical_bytes,
-        },
-        maximum_spans: maximum_changes,
-        limits,
-        budget,
-    };
-    let base_plan = plan_extent_range_async(store, request(base_root), cancellation)
-        .await
-        .map_err(|failure| failure.map_with_prior_work(work, MergeGenerationError::ExtentRead))?;
-    work = add(work, base_plan.work)?;
-    let ours_plan = plan_extent_range_async(
-        store,
-        ExtentRangeRequest {
-            budget: remaining(work, budget)?,
-            ..request(ours_root)
-        },
-        cancellation,
-    )
-    .await
-    .map_err(|failure| failure.map_with_prior_work(work, MergeGenerationError::ExtentRead))?;
-    work = add(work, ours_plan.work)?;
-    let theirs_plan = plan_extent_range_async(
-        store,
-        ExtentRangeRequest {
-            budget: remaining(work, budget)?,
-            ..request(theirs_root)
-        },
-        cancellation,
-    )
-    .await
-    .map_err(|failure| failure.map_with_prior_work(work, MergeGenerationError::ExtentRead))?;
-    work = add(work, theirs_plan.work)?;
-    let mut indices = [0_usize; 3];
-    let plans = [&base_plan.spans, &ours_plan.spans, &theirs_plan.spans];
-    let mut offset = 0_u64;
-    let mut mutations = Vec::new();
-    while offset < logical_bytes {
-        let spans = [
-            plans[0].get(indices[0]).ok_or_else(|| invalid(work))?,
-            plans[1].get(indices[1]).ok_or_else(|| invalid(work))?,
-            plans[2].get(indices[2]).ok_or_else(|| invalid(work))?,
-        ];
-        let end = spans
-            .iter()
-            .map(|span| span.offset.saturating_add(span.length))
-            .min()
-            .ok_or_else(|| invalid(work))?;
-        if end <= offset {
-            return Err(invalid(work));
-        }
-        let kinds = [
-            sliced_extent_kind(spans[0], offset)?,
-            sliced_extent_kind(spans[1], offset)?,
-            sliced_extent_kind(spans[2], offset)?,
-        ];
-        let Some(resolved) = resolve_three(&kinds[0], &kinds[1], &kinds[2]) else {
-            return Ok(OperationReceipt { value: None, work });
+    accounting: &'a mut KernelAccounting<'accounting>,
+    cancellation: &'a CancellationToken,
+) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<(FileRecord, u32)>, FsError>> {
+    Box::pin(async move {
+        let Some(kind) = resolve_three(&base.kind, &ours.kind, &theirs.kind) else {
+            return Ok(None);
         };
-        if resolved != kinds[1] {
-            mutations.push(ExtentMutation::Replace {
-                offset,
-                length: end - offset,
-                kind: resolved,
-                extend: false,
-            });
-            if mutations.len() > usize::try_from(maximum_changes).unwrap_or(usize::MAX) {
-                return Err(OperationFailure::new(
-                    MergeGenerationError::ChangeLimit,
-                    work,
-                ));
-            }
-        }
-        offset = end;
-        // `spans[index]` above is exactly `plans[index][indices[index]]`, fetched
-        // moments earlier in this same loop iteration and not mutated since, so
-        // reusing it here avoids re-indexing `plans`/`indices` by a loop variable.
-        for (index_slot, span) in indices.iter_mut().zip(spans.iter()) {
-            if span.offset + span.length == end {
-                *index_slot += 1;
-            }
-        }
-    }
-    let root = if mutations.is_empty() {
-        ours_root
-    } else {
-        let applied = apply_extent_mutations_async(
+        let Some(metadata) = merge_metadata_async(
             store,
-            ours_root,
-            ours_bytes,
-            &mutations,
-            ExtentMutationOptions {
-                maximum_mutations: maximum_changes,
-                limits,
-                budget: remaining(work, budget)?,
-            },
+            Some(base.metadata),
+            ours.metadata,
+            theirs.metadata,
+            limits,
+            accounting,
             cancellation,
         )
-        .await
-        .map_err(|failure| {
-            failure.map_with_prior_work(work, MergeGenerationError::ExtentMutation)
-        })?;
-        work = add(work, applied.work)?;
-        applied.root
-    };
-    Ok(OperationReceipt {
-        value: Some((
-            FileRecord {
-                file_id: ours.file_id,
-                kind,
-                link_count: ours.link_count,
-                metadata,
-                payload: FilePayload::Regular {
-                    logical_bytes,
-                    extents: root,
-                },
+        .await?
+        else {
+            return Ok(None);
+        };
+        let (
+            FilePayload::Regular {
+                logical_bytes: base_bytes,
+                extents: base_root,
             },
-            u32::try_from(mutations.len()).unwrap_or(u32::MAX),
-        )),
-        work,
+            FilePayload::Regular {
+                logical_bytes: ours_bytes,
+                extents: ours_root,
+            },
+            FilePayload::Regular {
+                logical_bytes: theirs_bytes,
+                extents: theirs_root,
+            },
+        ) = (base.payload, ours.payload, theirs.payload)
+        else {
+            return Ok(None);
+        };
+        let Some(logical_bytes) = resolve_three(&base_bytes, &ours_bytes, &theirs_bytes) else {
+            return Ok(None);
+        };
+        if base_bytes != ours_bytes || base_bytes != theirs_bytes || logical_bytes == 0 {
+            return Ok(None);
+        }
+        let request = move |root| ExtentRangeRequest {
+            root,
+            file_size: logical_bytes,
+            range: ByteRange {
+                offset: 0,
+                length: logical_bytes,
+            },
+            maximum_spans: maximum_changes,
+            limits,
+            budget: WorkBudget::UNBOUNDED,
+        };
+        let (base_plan, allocation) =
+            plan_extent_range_with_accounting(store, request(base_root), accounting, cancellation)
+                .await?;
+        let bytes = base_plan.retained_allocation_bytes;
+        let base_plan = Owned::new(base_plan, allocation, bytes);
+        let result = {
+            let base_plan = &base_plan;
+            let accounting = &mut *accounting;
+            async move {
+                let (ours_plan, allocation) = plan_extent_range_with_accounting(
+                    store,
+                    request(ours_root),
+                    accounting,
+                    cancellation,
+                )
+                .await?;
+                let bytes = ours_plan.retained_allocation_bytes;
+                let ours_plan = Owned::new(ours_plan, allocation, bytes);
+                let result = {
+                    let ours_plan = &ours_plan;
+                    let accounting = &mut *accounting;
+                    async move {
+                        let (theirs_plan, allocation) = plan_extent_range_with_accounting(
+                            store,
+                            request(theirs_root),
+                            accounting,
+                            cancellation,
+                        )
+                        .await?;
+                        let bytes = theirs_plan.retained_allocation_bytes;
+                        let theirs_plan = Owned::new(theirs_plan, allocation, bytes);
+                        let mut mutations = Owned::allocate(0, accounting)?;
+                        let result = {
+                            let theirs_plan = &theirs_plan;
+                            let mutations = &mut mutations;
+                            let accounting = &mut *accounting;
+                            async move {
+                                let plans = [
+                                    &base_plan.value.spans,
+                                    &ours_plan.value.spans,
+                                    &theirs_plan.value.spans,
+                                ];
+                                let mut indices = [0_usize; 3];
+                                let mut offset = 0;
+                                while offset < logical_bytes {
+                                    accounting.charge(WorkCounters {
+                                        items_examined: 1,
+                                        ..WorkCounters::UNCHARGED
+                                    })?;
+                                    let spans = [
+                                        plans[0].get(indices[0]).ok_or(FsError::InvalidDiff)?,
+                                        plans[1].get(indices[1]).ok_or(FsError::InvalidDiff)?,
+                                        plans[2].get(indices[2]).ok_or(FsError::InvalidDiff)?,
+                                    ];
+                                    let end = spans
+                                        .iter()
+                                        .map(|span| span.offset.saturating_add(span.length))
+                                        .min()
+                                        .ok_or(FsError::InvalidDiff)?;
+                                    if end <= offset {
+                                        return Err(FsError::InvalidDiff);
+                                    }
+                                    let kinds = [
+                                        sliced_extent_kind(spans[0], offset)?,
+                                        sliced_extent_kind(spans[1], offset)?,
+                                        sliced_extent_kind(spans[2], offset)?,
+                                    ];
+                                    let Some(resolved) =
+                                        resolve_three(&kinds[0], &kinds[1], &kinds[2])
+                                    else {
+                                        return Ok(None);
+                                    };
+                                    if resolved != kinds[1] {
+                                        if mutations.value.len() >= maximum_changes as usize {
+                                            return Err(FsError::MergeChangeLimit);
+                                        }
+                                        mutations.ensure_for_push(
+                                            maximum_changes as usize,
+                                            accounting,
+                                        )?;
+                                        mutations.value.push(ExtentMutation::Replace {
+                                            offset,
+                                            length: end - offset,
+                                            kind: resolved,
+                                            extend: false,
+                                        });
+                                    }
+                                    offset = end;
+                                    for (index, span) in indices.iter_mut().zip(spans) {
+                                        if span.offset + span.length == end {
+                                            *index += 1;
+                                        }
+                                    }
+                                }
+                                let root = if mutations.value.is_empty() {
+                                    ours_root
+                                } else {
+                                    apply_extent_mutations_with_accounting(
+                                        store,
+                                        (ours_root, ours_bytes),
+                                        &mutations.value,
+                                        maximum_changes,
+                                        limits,
+                                        accounting,
+                                        cancellation,
+                                    )
+                                    .await?
+                                    .root
+                                };
+                                Ok(Some((
+                                    root,
+                                    u32::try_from(mutations.value.len())
+                                        .map_err(|_| FsError::MergeChangeLimit)?,
+                                )))
+                            }
+                        }
+                        .await;
+                        mutations.retire(accounting)?;
+                        theirs_plan.retire(accounting)?;
+                        result
+                    }
+                }
+                .await;
+                ours_plan.retire(accounting)?;
+                result
+            }
+        }
+        .await;
+        base_plan.retire(accounting)?;
+        result.map(|merged| {
+            merged.map(|(root, count)| {
+                (
+                    FileRecord {
+                        file_id: ours.file_id,
+                        kind,
+                        link_count: ours.link_count,
+                        metadata,
+                        payload: FilePayload::Regular {
+                            logical_bytes,
+                            extents: root,
+                        },
+                    },
+                    count,
+                )
+            })
+        })
     })
 }
 
-fn sliced_extent_kind(
-    span: &ExtentSlice,
-    offset: u64,
-) -> Result<ExtentKind, OperationFailure<MergeGenerationError>> {
+fn sliced_extent_kind(span: &ExtentSlice, offset: u64) -> Result<ExtentKind, FsError> {
     let delta = offset
         .checked_sub(span.offset)
-        .ok_or_else(|| OperationFailure::before_work(MergeGenerationError::InvalidDiff))?;
+        .ok_or(FsError::InvalidDiff)?;
     Ok(match span.kind {
         ExtentKind::Hole => ExtentKind::Hole,
         ExtentKind::AllocatedZero => ExtentKind::AllocatedZero,
@@ -763,153 +1068,19 @@ fn sliced_extent_kind(
             object,
             object_offset: object_offset
                 .checked_add(delta)
-                .ok_or_else(|| OperationFailure::before_work(MergeGenerationError::InvalidDiff))?,
+                .ok_or(FsError::InvalidDiff)?,
         },
     })
 }
 
-type RecordChange = (Option<FileRecord>, Option<FileRecord>);
-
-fn changes_by_file(
-    changes: Vec<super::persistent_diff::ValueChange<FileId, FileRecord>>,
-) -> BTreeMap<FileId, RecordChange> {
-    changes
-        .into_iter()
-        .map(|change| (change.key, (change.before, change.after)))
-        .collect()
-}
-
-async fn adjust_link_counts<S: AsyncObjectStore>(
-    store: &S,
-    resolutions: &mut BTreeMap<FileId, RecordChange>,
-    remaining_changes: &mut u32,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-    work: &mut WorkCounters,
-) -> Result<(), OperationFailure<MergeGenerationError>> {
-    // A selected parent binding can leave an introduced directory unbound.
-    // Its children must not contribute links to the candidate. Cache each
-    // exact directory transition so pruning a nested orphan only pays for the
-    // transitions that actually change, not for every prior sibling.
-    let mut transitions =
-        BTreeMap::<FileId, (Option<ObjectId>, Option<ObjectId>, BTreeMap<FileId, i64>)>::new();
-    loop {
-        cancellation.check().map_err(|error| {
-            OperationFailure::new(MergeGenerationError::Cancelled(error), *work)
-        })?;
-        let mut deltas = BTreeMap::<FileId, i64>::new();
-        for (directory_id, (before, after)) in resolutions.iter() {
-            let before_entries = directory_entries(*before);
-            let after_entries = directory_entries(*after);
-            if before_entries == after_entries {
-                // Pruning an unbound directory removes its earlier contribution.
-                // Retaining that cached transition would keep its children alive
-                // without a binding from the root.
-                transitions.remove(directory_id);
-                continue;
-            }
-            if transitions
-                .get(directory_id)
-                .is_none_or(|(cached_before, cached_after, _)| {
-                    *cached_before != before_entries || *cached_after != after_entries
-                })
-            {
-                if *remaining_changes == 0 {
-                    return Err(OperationFailure::new(
-                        MergeGenerationError::ChangeLimit,
-                        *work,
-                    ));
-                }
-                let entries = diff_tree_entries_async(
-                    store,
-                    before_entries,
-                    after_entries,
-                    *remaining_changes,
-                    limits,
-                    remaining(*work, budget)?,
-                    cancellation,
-                )
-                .await
-                .map_err(|failure| map_diff_failure(failure, *work))?;
-                *work = add(*work, entries.work)?;
-                if entries.truncated {
-                    return Err(OperationFailure::new(
-                        MergeGenerationError::ChangeLimit,
-                        *work,
-                    ));
-                }
-                *remaining_changes = remaining_changes
-                    .checked_sub(u32::try_from(entries.changes.len()).unwrap_or(u32::MAX))
-                    .ok_or_else(|| {
-                        OperationFailure::new(MergeGenerationError::ChangeLimit, *work)
-                    })?;
-                let mut contribution = BTreeMap::<FileId, i64>::new();
-                for binding in entries.changes {
-                    if let Some(before) = binding.before {
-                        *contribution.entry(before.file_id).or_default() -= 1;
-                    }
-                    if let Some(after) = binding.after {
-                        *contribution.entry(after.file_id).or_default() += 1;
-                    }
-                }
-                transitions.insert(*directory_id, (before_entries, after_entries, contribution));
-            }
-            if let Some((_, _, contribution)) = transitions.get(directory_id) {
-                for (file_id, delta) in contribution {
-                    *deltas.entry(*file_id).or_default() += delta;
-                }
-            }
-        }
-        if deltas
-            .iter()
-            .any(|(file_id, delta)| *delta != 0 && !resolutions.contains_key(file_id))
-        {
-            return Err(invalid(*work));
-        }
-        let mut pruned_directory = false;
-        for (file_id, (ours, resolved)) in resolutions.iter_mut() {
-            let delta = deltas.get(file_id).copied().unwrap_or(0);
-            let links = i128::from(ours.map_or(0, |record| record.link_count))
-                .checked_add(i128::from(delta))
-                .and_then(|value| u64::try_from(value).ok())
-                .ok_or_else(|| invalid(*work))?;
-            if resolved.is_none() {
-                if links != 0 {
-                    return Err(invalid(*work));
-                }
-                continue;
-            }
-            if links == 0 {
-                pruned_directory |= is_directory(*resolved);
-                *resolved = None;
-            } else if !pruned_directory && let Some(record) = resolved {
-                record.link_count = links;
-            }
-        }
-        if !pruned_directory {
-            return Ok(());
-        }
-    }
-}
-
+#[cfg(test)]
 pub(crate) struct DirectoryMergeResult {
     pub(crate) record: Option<FileRecord>,
     pub(crate) conflicts: Vec<MergeConflict>,
     pub(crate) truncated: bool,
     pub(crate) examined_changes: u32,
-    /// Names both sides added as directories under different identities:
-    /// `(ours, theirs)`. Ours keeps the name; theirs' entries fold into it.
-    pub(crate) folds: Vec<(FileId, FileId)>,
-    /// Names both sides added as non-directories under different identities.
-    pub(crate) file_folds: Vec<FileFold>,
 }
 
-/// One name both sides added as a non-directory under different identities
-/// (each captured the same host file, say). Ours keeps the name; theirs
-/// folds into it when both hold the same file, and the binding conflicts
-/// otherwise.
-#[derive(Clone, Debug)]
 pub(crate) struct FileFold {
     directory_id: FileId,
     name: LogicalName,
@@ -917,11 +1088,11 @@ pub(crate) struct FileFold {
     theirs: FileId,
 }
 
+#[cfg(test)]
 #[allow(
     clippy::too_many_arguments,
-    reason = "the three merge sides, both bounds, decode limits, budget, and cancellation are independent inputs of one directory merge"
+    reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
 )]
-#[cfg(test)]
 pub(crate) async fn merge_directory_record_async<S: AsyncObjectStore>(
     store: &S,
     directory_id: FileId,
@@ -934,26 +1105,41 @@ pub(crate) async fn merge_directory_record_async<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<DirectoryMergeResult>, OperationFailure<MergeGenerationError>> {
-    merge_directory_record_with_resolutions_async(
-        store,
-        directory_id,
-        base,
-        ours,
-        theirs,
-        maximum_changes,
-        maximum_conflicts,
-        &BTreeMap::new(),
-        limits,
-        budget,
-        cancellation,
-    )
-    .await
+    let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    let result = async {
+        let mut state = MergeState::new(maximum_changes, &mut accounting)?;
+        let record = merge_directory_record_with_resolutions_async(
+            store,
+            directory_id,
+            base,
+            ours,
+            theirs,
+            ResolutionView::Slice(&[]),
+            maximum_conflicts,
+            limits,
+            &mut state,
+            &mut accounting,
+            cancellation,
+        )
+        .await?;
+        Ok(DirectoryMergeResult {
+            record,
+            conflicts: state.conflicts.value,
+            truncated: state.truncated,
+            examined_changes: maximum_changes - state.remaining_changes,
+        })
+    }
+    .await;
+    let work = accounting.spent();
+    result
+        .map(|value| OperationReceipt { value, work })
+        .map_err(|error| OperationFailure::new(project_merge_error(error), work))
 }
 
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "the three merge sides, both bounds, resolutions, decode limits, budget, and cancellation are independent inputs of one directory merge"
+    reason = "This state transition keeps admission, effects and resource retirement in one frame."
 )]
 async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
     store: &S,
@@ -961,29 +1147,21 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
     base: FileRecord,
     ours: FileRecord,
     theirs: FileRecord,
-    maximum_changes: u32,
+    requested: ResolutionView<'_>,
     maximum_conflicts: u32,
-    resolutions: &BTreeMap<MergeConflict, MergeConflictResolution>,
     limits: DecodeLimits,
-    budget: WorkBudget,
+    state: &mut MergeState,
+    accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
-) -> Result<OperationReceipt<DirectoryMergeResult>, OperationFailure<MergeGenerationError>> {
-    let mut work = WorkCounters::default();
-    let conflict = || DirectoryMergeResult {
-        record: None,
-        conflicts: (maximum_conflicts != 0)
-            .then_some(MergeConflict::File(directory_id))
-            .into_iter()
-            .collect(),
-        truncated: maximum_conflicts == 0,
-        examined_changes: 0,
-        folds: Vec::new(),
-        file_folds: Vec::new(),
+) -> Result<Option<FileRecord>, FsError> {
+    let (Some(base_entries), Some(ours_entries), Some(theirs_entries)) = (
+        directory_entries(Some(base)),
+        directory_entries(Some(ours)),
+        directory_entries(Some(theirs)),
+    ) else {
+        return Err(FsError::InvalidDiff);
     };
-    // A driver resolving this directory's record supplies its metadata only:
-    // the entries below are always merged, never replaced wholesale, so one
-    // side's additions cannot vanish behind the other's metadata.
-    let supplied = match resolutions.get(&MergeConflict::File(directory_id)) {
+    let supplied = match requested.file(directory_id, accounting)? {
         Some(MergeConflictResolution::Select(side)) => Some(select_value(
             *side,
             &base.metadata,
@@ -996,223 +1174,549 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
         _ => None,
     };
     let metadata = if let Some(metadata) = supplied {
-        metadata
+        Some(metadata)
     } else {
-        let merged = merge_metadata_async(
+        merge_metadata_async(
             store,
             Some(base.metadata),
             ours.metadata,
             theirs.metadata,
             limits,
-            budget,
+            accounting,
             cancellation,
-            &mut work,
         )
-        .await?;
-        let Some(metadata) = merged else {
-            return Ok(OperationReceipt {
-                value: conflict(),
-                work,
-            });
-        };
-        metadata
+        .await?
     };
-    let Some(link_count) = resolve_three(&base.link_count, &ours.link_count, &theirs.link_count)
-    else {
-        return Ok(OperationReceipt {
-            value: conflict(),
-            work,
-        });
+    let link_count = resolve_three(&base.link_count, &ours.link_count, &theirs.link_count);
+    let (Some(metadata), Some(link_count)) = (metadata, link_count) else {
+        state.conflict(
+            MergeConflict::File(directory_id),
+            maximum_conflicts,
+            accounting,
+        )?;
+        return Ok(None);
     };
-    let (Some(base_entries), Some(ours_entries), Some(theirs_entries)) = (
-        directory_entries(Some(base)),
-        directory_entries(Some(ours)),
-        directory_entries(Some(theirs)),
-    ) else {
-        return Err(OperationFailure::before_work(
-            MergeGenerationError::InvalidDiff,
-        ));
-    };
-    let ours_diff = diff_tree_entries_async(
+    let maximum = state.remaining_changes.max(1);
+    let (ours_diff, allocation) = diff_tree_entries_with_accounting(
         store,
         Some(base_entries),
         Some(ours_entries),
-        maximum_changes,
+        maximum,
         limits,
-        remaining(work, budget)?,
+        accounting,
         cancellation,
     )
-    .await
-    .map_err(|failure| map_diff_failure(failure, work))?;
-    work = add(work, ours_diff.work)?;
-    let theirs_diff = diff_tree_entries_async(
-        store,
-        Some(base_entries),
-        Some(theirs_entries),
-        maximum_changes,
-        limits,
-        remaining(work, budget)?,
-        cancellation,
-    )
-    .await
-    .map_err(|failure| map_diff_failure(failure, work))?;
-    work = add(work, theirs_diff.work)?;
-    if ours_diff.truncated || theirs_diff.truncated {
-        return Err(OperationFailure::new(
-            MergeGenerationError::ChangeLimit,
-            work,
-        ));
-    }
-    let ours_changes = ours_diff
-        .changes
-        .into_iter()
-        .map(|change| (change.key, (change.before, change.after)))
-        .collect::<BTreeMap<_, _>>();
-    let theirs_changes = theirs_diff
-        .changes
-        .into_iter()
-        .map(|change| (change.key, (change.before, change.after)))
-        .collect::<BTreeMap<_, _>>();
-    let names = ours_changes
-        .keys()
-        .chain(theirs_changes.keys())
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    if names.len() > usize::try_from(maximum_changes).unwrap_or(usize::MAX) {
-        return Err(OperationFailure::new(
-            MergeGenerationError::ChangeLimit,
-            work,
-        ));
-    }
-    let examined_changes = u32::try_from(names.len()).unwrap_or(u32::MAX);
-    let mut conflicts = Vec::new();
-    let mut truncated = false;
-    let mut mutations = Vec::new();
-    let mut folds = Vec::new();
-    let mut file_folds = Vec::new();
-    for name in names {
-        let base_value = ours_changes
-            .get(&name)
-            .map(|change| change.0.clone())
-            .or_else(|| theirs_changes.get(&name).map(|change| change.0.clone()))
-            .flatten();
-        let ours_value = ours_changes
-            .get(&name)
-            .map_or_else(|| base_value.clone(), |change| change.1.clone());
-        let theirs_value = theirs_changes
-            .get(&name)
-            .map_or_else(|| base_value.clone(), |change| change.1.clone());
-        let resolved = resolve_three(&base_value, &ours_value, &theirs_value).or_else(|| {
-            resolutions
-                .get(&MergeConflict::Binding {
-                    directory_id,
-                    name: name.clone(),
-                })
-                .and_then(|resolution| match resolution {
-                    MergeConflictResolution::Select(side) => {
-                        Some(select_value(*side, &base_value, &ours_value, &theirs_value))
-                    }
-                    MergeConflictResolution::Binding(value) => {
-                        [base_value.clone(), ours_value.clone(), theirs_value.clone()]
-                            .into_iter()
-                            .find(|entry| entry.as_ref().map(|entry| entry.file_id) == *value)
-                    }
-                    MergeConflictResolution::File(_) => None,
-                })
-        });
-        // Both sides added a directory under this name with different
-        // identities. Directories merge by path: ours keeps the name and
-        // theirs' entries are folded into it by the caller.
-        let resolved = resolved.or_else(|| match (&base_value, &ours_value, &theirs_value) {
-            (None, Some(ours_entry), Some(theirs_entry))
-                if ours_entry.kind == super::FileKind::Directory
-                    && theirs_entry.kind == super::FileKind::Directory
-                    && ours_entry.file_id != theirs_entry.file_id =>
-            {
-                folds.push((ours_entry.file_id, theirs_entry.file_id));
-                Some(ours_value.clone())
-            }
-            _ => None,
-        });
-        // Files merge by path too: ours keeps the name, and the caller folds
-        // theirs into it or reports this binding.
-        let resolved = resolved.or_else(|| match (&base_value, &ours_value, &theirs_value) {
-            (None, Some(ours_entry), Some(theirs_entry))
-                if ours_entry.kind != super::FileKind::Directory
-                    && theirs_entry.kind != super::FileKind::Directory
-                    && ours_entry.file_id != theirs_entry.file_id =>
-            {
-                file_folds.push(FileFold {
-                    directory_id,
-                    name: name.clone(),
-                    ours: ours_entry.file_id,
-                    theirs: theirs_entry.file_id,
-                });
-                Some(ours_value.clone())
-            }
-            _ => None,
-        });
-        let Some(resolved) = resolved else {
-            if conflicts.len() < usize::try_from(maximum_conflicts).unwrap_or(usize::MAX) {
-                conflicts.push(MergeConflict::Binding { directory_id, name });
-            } else {
-                truncated = true;
-            }
-            continue;
-        };
-        if resolved != ours_value
-            && let Some(mutation) = tree_mutation(name, ours_value, resolved)
-        {
-            mutations.push(mutation);
-        }
-    }
-    if !conflicts.is_empty() || truncated {
-        return Ok(OperationReceipt {
-            value: DirectoryMergeResult {
-                record: None,
-                conflicts,
-                truncated,
-                examined_changes,
-                folds,
-                file_folds,
-            },
-            work,
-        });
-    }
-    let entries = if mutations.is_empty() {
-        ours_entries
-    } else {
-        let applied = apply_tree_mutations_async(
+    .await?;
+    let bytes = ours_diff.retained_allocation_bytes;
+    let ours_diff = Owned::new(ours_diff, allocation, bytes);
+    let result = async {
+        let (theirs_diff, allocation) = diff_tree_entries_with_accounting(
             store,
-            ours_entries,
-            mutations,
-            maximum_changes,
+            Some(base_entries),
+            Some(theirs_entries),
+            maximum,
             limits,
-            remaining(work, budget)?,
+            accounting,
             cancellation,
         )
-        .await
-        .map_err(|failure| failure.map_with_prior_work(work, MergeGenerationError::Tree))?;
-        work = add(work, applied.work)?;
-        applied.root
-    };
-    Ok(OperationReceipt {
-        value: DirectoryMergeResult {
-            record: Some(FileRecord {
+        .await?;
+        let bytes = theirs_diff.retained_allocation_bytes;
+        let theirs_diff = Owned::new(theirs_diff, allocation, bytes);
+        let mut mutations = Owned::allocate(0, accounting)?;
+        let result = async {
+            if ours_diff.value.truncated || theirs_diff.value.truncated {
+                return Err(FsError::MergeChangeLimit);
+            }
+            let mut indices = [0, 0];
+            let mut conflicted = false;
+            while let Some([left, right]) = next_changes(
+                &ours_diff.value.changes,
+                &theirs_diff.value.changes,
+                &mut indices,
+            ) {
+                accounting.charge(WorkCounters {
+                    items_examined: 1,
+                    ..WorkCounters::UNCHARGED
+                })?;
+                state.consume(1)?;
+                let name = &left.or(right).ok_or(FsError::InvalidDiff)?.key;
+                let base_value = left.or(right).and_then(|change| change.before.as_ref());
+                let ours_value = left.map_or(base_value, |change| change.after.as_ref());
+                let theirs_value = right.map_or(base_value, |change| change.after.as_ref());
+                // Resolve borrowed entries; clone only actual retained outputs.
+                let mut resolved = if ours_value == theirs_value || theirs_value == base_value {
+                    Some(ours_value)
+                } else if ours_value == base_value {
+                    Some(theirs_value)
+                } else {
+                    None
+                };
+                if resolved.is_none()
+                    && let Some(resolution) = requested.binding(directory_id, name, accounting)?
+                {
+                    resolved = match resolution {
+                        MergeConflictResolution::Select(side) => Some(match side {
+                            MergeConflictSide::Base => base_value,
+                            MergeConflictSide::Ours => ours_value,
+                            MergeConflictSide::Theirs => theirs_value,
+                        }),
+                        MergeConflictResolution::Binding(id) => {
+                            [base_value, ours_value, theirs_value]
+                                .into_iter()
+                                .find(|entry| entry.map(|entry| entry.file_id) == *id)
+                        }
+                        MergeConflictResolution::File(_) => None,
+                    };
+                }
+                if resolved.is_none()
+                    && let (None, Some(a), Some(b)) = (base_value, ours_value, theirs_value)
+                    && a.file_id != b.file_id
+                {
+                    if a.kind == super::FileKind::Directory && b.kind == super::FileKind::Directory
+                    {
+                        state.folds.ensure_for_push(usize::MAX, accounting)?;
+                        state.folds.value.push((a.file_id, b.file_id));
+                        resolved = Some(ours_value);
+                    } else if a.kind != super::FileKind::Directory
+                        && b.kind != super::FileKind::Directory
+                    {
+                        state.file_folds.ensure_for_push(usize::MAX, accounting)?;
+                        let (name, mut allocation) = super::persistent_io::clone_key::<TreeFormat>(
+                            name,
+                            limits.maximum_name_bytes,
+                            accounting,
+                            None,
+                            0,
+                        )?;
+                        let bytes = TreeFormat::key_owned_bytes(&name);
+                        state.file_folds.value.push(FileFold {
+                            directory_id,
+                            name,
+                            ours: a.file_id,
+                            theirs: b.file_id,
+                        });
+                        state.file_folds.allocation.absorb(&mut allocation)?;
+                        state.file_folds.bytes = state
+                            .file_folds
+                            .bytes
+                            .checked_add(bytes)
+                            .ok_or(WorkError::Overflow)?;
+                        resolved = Some(ours_value);
+                    }
+                }
+                let Some(resolved) = resolved else {
+                    conflicted = true;
+                    if state.conflicts.value.len() < maximum_conflicts as usize {
+                        state
+                            .conflicts
+                            .ensure_for_push(maximum_conflicts as usize, accounting)?;
+                        let (name, mut allocation) = super::persistent_io::clone_key::<TreeFormat>(
+                            name,
+                            limits.maximum_name_bytes,
+                            accounting,
+                            None,
+                            0,
+                        )?;
+                        let bytes = TreeFormat::key_owned_bytes(&name);
+                        state
+                            .conflicts
+                            .value
+                            .push(MergeConflict::Binding { directory_id, name });
+                        state.conflicts.allocation.absorb(&mut allocation)?;
+                        state.conflicts.bytes = state
+                            .conflicts
+                            .bytes
+                            .checked_add(bytes)
+                            .ok_or(WorkError::Overflow)?;
+                    } else {
+                        state.truncated = true;
+                    }
+                    continue;
+                };
+                if resolved != ours_value {
+                    mutations.ensure_for_push(usize::MAX, accounting)?;
+                    let (mutation, mut allocation, bytes) = if let Some(entry) = resolved {
+                        let (entry, allocation) = super::persistent_io::clone_value::<TreeFormat>(
+                            entry,
+                            limits.maximum_name_bytes,
+                            accounting,
+                            None,
+                            0,
+                        )?;
+                        let bytes = TreeFormat::value_owned_bytes(&entry);
+                        let mutation = if let Some(before) = ours_value {
+                            TreeMutation::Replace {
+                                entry,
+                                expected_file_id: before.file_id,
+                            }
+                        } else {
+                            TreeMutation::Insert(entry)
+                        };
+                        (mutation, allocation, bytes)
+                    } else {
+                        let (name, allocation) = super::persistent_io::clone_key::<TreeFormat>(
+                            name,
+                            limits.maximum_name_bytes,
+                            accounting,
+                            None,
+                            0,
+                        )?;
+                        let bytes = TreeFormat::key_owned_bytes(&name);
+                        (
+                            TreeMutation::Remove {
+                                name,
+                                expected_file_id: ours_value.map(|entry| entry.file_id),
+                            },
+                            allocation,
+                            bytes,
+                        )
+                    };
+                    mutations.value.push(mutation);
+                    mutations.allocation.absorb(&mut allocation)?;
+                    mutations.bytes = mutations
+                        .bytes
+                        .checked_add(bytes)
+                        .ok_or(WorkError::Overflow)?;
+                }
+            }
+            if conflicted {
+                return Ok(None);
+            }
+            let entries = if mutations.value.is_empty() {
+                ours_entries
+            } else {
+                apply_tree_mutations_with_accounting(
+                    store,
+                    ours_entries,
+                    &mutations.value,
+                    maximum,
+                    limits,
+                    accounting,
+                    cancellation,
+                )
+                .await?
+                .value
+            };
+            Ok(Some(FileRecord {
                 file_id: directory_id,
                 kind: super::FileKind::Directory,
                 link_count,
                 metadata,
                 payload: FilePayload::Directory { entries },
-            }),
-            conflicts,
-            truncated,
-            examined_changes,
-            folds,
-            file_folds,
-        },
-        work,
-    })
+            }))
+        }
+        .await;
+        mutations.retire(accounting)?;
+        theirs_diff.retire(accounting)?;
+        result
+    }
+    .await;
+    ours_diff.retire(accounting)?;
+    result
+}
+
+async fn fold_additions<S: AsyncObjectStore>(
+    store: &S,
+    requested: ResolutionView<'_>,
+    maximum_conflicts: u32,
+    limits: DecodeLimits,
+    state: &mut MergeState,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<(), FsError> {
+    while let Some((ours_id, theirs_id)) = state.folds.value.pop() {
+        let (ours_before, ours) = state.record(ours_id, accounting)?;
+        let (theirs_before, theirs) = state.record(theirs_id, accounting)?;
+        let (Some(ours), Some(theirs)) = (ours, theirs) else {
+            return Err(FsError::InvalidDiff);
+        };
+        let empty = FileRecord {
+            payload: FilePayload::Directory {
+                entries: empty_tree_async(store, limits, accounting, cancellation).await?,
+            },
+            ..ours
+        };
+        let record = merge_directory_record_with_resolutions_async(
+            store,
+            ours_id,
+            empty,
+            ours,
+            theirs,
+            requested,
+            maximum_conflicts,
+            limits,
+            state,
+            accounting,
+            cancellation,
+        )
+        .await?;
+        if let Some(record) = record {
+            state.replace(ours_id, (ours_before, Some(record)), accounting)?;
+        }
+        state.replace(theirs_id, (theirs_before, None), accounting)?;
+    }
+    state.file_folds.value.reverse();
+    while let Some(fold) = state.file_folds.value.pop() {
+        let (ours_before, ours) = state.record(fold.ours, accounting)?;
+        let (theirs_before, theirs) = state.record(fold.theirs, accounting)?;
+        let (Some(ours), Some(theirs)) = (ours, theirs) else {
+            return Err(FsError::InvalidDiff);
+        };
+        let metadata = if ours.kind == theirs.kind
+            && ours.payload == theirs.payload
+            && ours.link_count == 1
+            && theirs.link_count == 1
+        {
+            converge_metadata_async(
+                store,
+                ours.metadata,
+                theirs.metadata,
+                limits,
+                accounting,
+                cancellation,
+            )
+            .await?
+        } else {
+            None
+        };
+        let bytes = TreeFormat::key_owned_bytes(&fold.name);
+        let allocation =
+            super::persistent_point::split_allocation(&mut state.file_folds.allocation, bytes)?;
+        state.file_folds.bytes = state
+            .file_folds
+            .bytes
+            .checked_sub(bytes)
+            .ok_or(WorkError::Overflow)?;
+        let name = Owned::new(fold.name, allocation, bytes);
+        if let Some(metadata) = metadata {
+            state.replace(
+                fold.ours,
+                (ours_before, Some(FileRecord { metadata, ..ours })),
+                accounting,
+            )?;
+            state.replace(fold.theirs, (theirs_before, None), accounting)?;
+            name.retire(accounting)?;
+        } else if state.conflicts.value.len() < maximum_conflicts as usize {
+            state
+                .conflicts
+                .ensure_for_push(maximum_conflicts as usize, accounting)?;
+            let Owned {
+                value: name,
+                mut allocation,
+                bytes,
+            } = name;
+            state.conflicts.value.push(MergeConflict::Binding {
+                directory_id: fold.directory_id,
+                name,
+            });
+            state.conflicts.allocation.absorb(&mut allocation)?;
+            state.conflicts.bytes = state
+                .conflicts
+                .bytes
+                .checked_add(bytes)
+                .ok_or(WorkError::Overflow)?;
+        } else {
+            state.truncated = true;
+            name.retire(accounting)?;
+        }
+    }
+    Ok(())
+}
+
+struct DirectoryTransition {
+    directory: FileId,
+    before: Option<ObjectId>,
+    after: Option<ObjectId>,
+    contribution: Owned<Vec<(FileId, i64)>>,
+}
+
+fn add_delta(
+    deltas: &mut Owned<Vec<(FileId, i64)>>,
+    file: FileId,
+    delta: i64,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(), FsError> {
+    match super::search::binary_search_with_accounting(&deltas.value, accounting, |(id, _)| {
+        id.cmp(&file)
+    })? {
+        Ok(index) => {
+            let value = &mut deltas.value.get_mut(index).ok_or(FsError::InvalidDiff)?.1;
+            *value = value.checked_add(delta).ok_or(WorkError::Overflow)?;
+        }
+        Err(index) => {
+            deltas.ensure_for_push(usize::MAX, accounting)?;
+            deltas.value.insert(index, (file, delta));
+        }
+    }
+    Ok(())
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "Link-count validation and edits share the admitted mutation frame."
+)]
+async fn adjust_link_counts<S: AsyncObjectStore>(
+    store: &S,
+    limits: DecodeLimits,
+    state: &mut MergeState,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<(), FsError> {
+    let mut transitions: Owned<Vec<DirectoryTransition>> = Owned::allocate(0, accounting)?;
+    let result = async {
+        loop {
+            accounting.check()?;
+            let mut deltas = Owned::allocate(0, accounting)?;
+            let result = async {
+                for (directory, (before, after)) in &state.records.value {
+                    let before = directory_entries(*before);
+                    let after = directory_entries(*after);
+                    let cached = super::search::binary_search_with_accounting(
+                        &transitions.value,
+                        accounting,
+                        |entry| entry.directory.cmp(directory),
+                    )?;
+                    if before == after {
+                        if let Ok(index) = cached {
+                            transitions
+                                .value
+                                .remove(index)
+                                .contribution
+                                .retire(accounting)?;
+                        }
+                        continue;
+                    }
+                    let unchanged = cached
+                        .ok()
+                        .and_then(|index| transitions.value.get(index))
+                        .is_some_and(|entry| entry.before == before && entry.after == after);
+                    if !unchanged {
+                        if state.remaining_changes == 0 {
+                            return Err(FsError::MergeChangeLimit);
+                        }
+                        let (diff, allocation) = diff_tree_entries_with_accounting(
+                            store,
+                            before,
+                            after,
+                            state.remaining_changes,
+                            limits,
+                            accounting,
+                            cancellation,
+                        )
+                        .await?;
+                        let bytes = diff.retained_allocation_bytes;
+                        let diff = Owned::new(diff, allocation, bytes);
+                        let mut contribution = Owned::allocate(0, accounting)?;
+                        let result = (|| {
+                            if diff.value.truncated {
+                                return Err(FsError::MergeChangeLimit);
+                            }
+                            for change in &diff.value.changes {
+                                if let Some(before) = &change.before {
+                                    add_delta(&mut contribution, before.file_id, -1, accounting)?;
+                                }
+                                if let Some(after) = &change.after {
+                                    add_delta(&mut contribution, after.file_id, 1, accounting)?;
+                                }
+                            }
+                            Ok(())
+                        })();
+                        let count = diff.value.changes.len();
+                        diff.retire(accounting)?;
+                        if let Err(error) = result {
+                            contribution.retire(accounting)?;
+                            return Err(error);
+                        }
+                        state.remaining_changes = state
+                            .remaining_changes
+                            .checked_sub(
+                                u32::try_from(count).map_err(|_| FsError::MergeChangeLimit)?,
+                            )
+                            .ok_or(FsError::MergeChangeLimit)?;
+                        let entry = DirectoryTransition {
+                            directory: *directory,
+                            before,
+                            after,
+                            contribution,
+                        };
+                        match cached {
+                            Ok(index) => {
+                                let previous = std::mem::replace(
+                                    transitions
+                                        .value
+                                        .get_mut(index)
+                                        .ok_or(FsError::InvalidDiff)?,
+                                    entry,
+                                );
+                                previous.contribution.retire(accounting)?;
+                            }
+                            Err(index) => {
+                                transitions.ensure_for_push(usize::MAX, accounting)?;
+                                transitions.value.insert(index, entry);
+                            }
+                        }
+                    }
+                    let index = super::search::binary_search_with_accounting(
+                        &transitions.value,
+                        accounting,
+                        |entry| entry.directory.cmp(directory),
+                    )?
+                    .map_err(|_| FsError::InvalidDiff)?;
+                    for (file, delta) in &transitions
+                        .value
+                        .get(index)
+                        .ok_or(FsError::InvalidDiff)?
+                        .contribution
+                        .value
+                    {
+                        add_delta(&mut deltas, *file, *delta, accounting)?;
+                    }
+                }
+                for (file, delta) in &deltas.value {
+                    if *delta != 0 {
+                        state.record(*file, accounting)?;
+                    }
+                }
+                let mut pruned = false;
+                for (file, (ours, resolved)) in &mut state.records.value {
+                    let delta = super::search::binary_search_with_accounting(
+                        &deltas.value,
+                        accounting,
+                        |(id, _)| id.cmp(file),
+                    )?
+                    .ok()
+                    .and_then(|index| deltas.value.get(index))
+                    .map_or(0, |(_, delta)| *delta);
+                    let links = i128::from(ours.map_or(0, |record| record.link_count))
+                        .checked_add(i128::from(delta))
+                        .and_then(|value| u64::try_from(value).ok())
+                        .ok_or(FsError::InvalidDiff)?;
+                    if resolved.is_none() {
+                        if links != 0 {
+                            return Err(FsError::InvalidDiff);
+                        }
+                    } else if links == 0 {
+                        pruned |= is_directory(*resolved);
+                        *resolved = None;
+                    } else if !pruned && let Some(record) = resolved {
+                        record.link_count = links;
+                    }
+                }
+                Ok(pruned)
+            }
+            .await;
+            deltas.retire(accounting)?;
+            if !result? {
+                return Ok(());
+            }
+        }
+    }
+    .await;
+    for transition in transitions.value.drain(..) {
+        transition.contribution.retire(accounting)?;
+    }
+    transitions.retire(accounting)?;
+    result
 }
 
 enum OptionalResolution {
@@ -1265,58 +1769,32 @@ pub(crate) fn resolve_three<T: Clone + Eq>(base: &T, ours: &T, theirs: &T) -> Op
     }
 }
 
-/// Field-wise record merge without a store: every field must resolve
-/// three-way. [`merge_file_fields_async`] adds metadata reconciliation.
-#[cfg(test)]
-pub(crate) fn merge_file_fields(
-    base: FileRecord,
-    ours: FileRecord,
-    theirs: FileRecord,
-) -> Option<FileRecord> {
-    Some(FileRecord {
-        file_id: ours.file_id,
-        kind: resolve_three(&base.kind, &ours.kind, &theirs.kind)?,
-        link_count: ours.link_count,
-        metadata: resolve_three(&base.metadata, &ours.metadata, &theirs.metadata)?,
-        payload: resolve_three(&base.payload, &ours.payload, &theirs.payload)?,
-    })
-}
-
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the three merge sides, decode limits, budget, cancellation, and shared work counters are independent inputs"
-)]
 async fn merge_file_fields_async<S: AsyncObjectStore>(
     store: &S,
     base: FileRecord,
     ours: FileRecord,
     theirs: FileRecord,
     limits: DecodeLimits,
-    budget: WorkBudget,
+    accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
-    work: &mut WorkCounters,
-) -> Result<Option<FileRecord>, OperationFailure<MergeGenerationError>> {
+) -> Result<Option<FileRecord>, FsError> {
     let (Some(kind), Some(payload)) = (
         resolve_three(&base.kind, &ours.kind, &theirs.kind),
         resolve_three(&base.payload, &ours.payload, &theirs.payload),
     ) else {
         return Ok(None);
     };
-    let Some(metadata) = merge_metadata_async(
+    let metadata = merge_metadata_async(
         store,
         Some(base.metadata),
         ours.metadata,
         theirs.metadata,
         limits,
-        budget,
+        accounting,
         cancellation,
-        work,
     )
-    .await?
-    else {
-        return Ok(None);
-    };
-    Ok(Some(FileRecord {
+    .await?;
+    Ok(metadata.map(|metadata| FileRecord {
         file_id: ours.file_id,
         kind,
         link_count: ours.link_count,
@@ -1325,18 +1803,13 @@ async fn merge_file_fields_async<S: AsyncObjectStore>(
     }))
 }
 
-/// A record both sides changed, merged field by field; `None` is a
-/// conflict. One file both sides added merges only with the same bytes, as
-/// when each captured its own copy of one source file: only timestamps may
-/// differ.
 async fn merge_records_async<S: AsyncObjectStore>(
     store: &S,
     [base, ours, theirs]: [Option<FileRecord>; 3],
     limits: DecodeLimits,
-    budget: WorkBudget,
+    accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
-    work: &mut WorkCounters,
-) -> Result<Option<FileRecord>, OperationFailure<MergeGenerationError>> {
+) -> Result<Option<FileRecord>, FsError> {
     let (Some(ours), Some(theirs)) = (ours, theirs) else {
         return Ok(None);
     };
@@ -1347,9 +1820,8 @@ async fn merge_records_async<S: AsyncObjectStore>(
             ours,
             theirs,
             limits,
-            budget,
+            accounting,
             cancellation,
-            work,
         )
         .await;
     }
@@ -1365,353 +1837,153 @@ async fn merge_records_async<S: AsyncObjectStore>(
         ours.metadata,
         theirs.metadata,
         limits,
-        budget,
+        accounting,
         cancellation,
-        work,
     )
     .await?;
     Ok(metadata.map(|metadata| FileRecord { metadata, ..ours }))
 }
 
-/// Three-way merge of one record's metadata reference; without a base, of
-/// two sides that added the same file.
-///
-/// Identical or one-sided changes resolve without a read. When both sides
-/// moved the metadata, the records are decoded and merged field by field
-/// (see [`merge_metadata_fields`] and [`merge_added_metadata_fields`]); the
-/// merged record is stored unless it already equals one input. `None` is a
-/// real conflict.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the three metadata references, decode limits, budget, cancellation, and shared work counters are independent inputs"
-)]
 async fn merge_metadata_async<S: AsyncObjectStore>(
     store: &S,
     base: Option<ObjectId>,
     ours: ObjectId,
     theirs: ObjectId,
     limits: DecodeLimits,
-    budget: WorkBudget,
+    accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
-    work: &mut WorkCounters,
-) -> Result<Option<ObjectId>, OperationFailure<MergeGenerationError>> {
+) -> Result<Option<ObjectId>, FsError> {
     if ours == theirs {
         return Ok(Some(ours));
     }
     if let Some(resolved) = base.and_then(|base| resolve_three(&base, &ours, &theirs)) {
         return Ok(Some(resolved));
     }
-    let ours_fields = read_metadata(store, ours, limits, budget, cancellation, work).await?;
-    let theirs_fields = read_metadata(store, theirs, limits, budget, cancellation, work).await?;
-    let merged = match base {
-        Some(base) => {
-            let base_fields =
-                read_metadata(store, base, limits, budget, cancellation, work).await?;
-            merge_metadata_fields(base_fields, ours_fields, theirs_fields)
-        }
-        None => merge_added_metadata_fields(ours_fields, theirs_fields),
+    let ours_fields = read_metadata(store, ours, limits, accounting, cancellation).await?;
+    let theirs_fields = read_metadata(store, theirs, limits, accounting, cancellation).await?;
+    let (merged, base_fields) = if let Some(base) = base {
+        let fields = read_metadata(store, base, limits, accounting, cancellation).await?;
+        (
+            merge_metadata_fields(fields, ours_fields, theirs_fields),
+            Some(fields),
+        )
+    } else {
+        (
+            merge_added_metadata_fields(ours_fields, theirs_fields),
+            None,
+        )
     };
     let Some(merged) = merged else {
         return Ok(None);
     };
-    let bytes =
-        encode_file_metadata(merged).map_err(|error| OperationFailure::new(error.into(), *work))?;
-    let object = ObjectId {
-        kind: ObjectKind::Metadata,
-        digest: object_digest(ObjectKind::Metadata, &bytes),
-    };
-    if Some(object) != base && object != ours && object != theirs {
-        let receipt = store
-            .put(
-                object,
-                Bytes::from(bytes),
-                remaining(*work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(*work, MergeGenerationError::Object))?;
-        *work = add(*work, receipt.work)?;
+    if merged == ours_fields {
+        return Ok(Some(ours));
     }
-    Ok(Some(object))
-}
-
-struct FoldState<'a> {
-    conflicts: &'a mut Vec<MergeConflict>,
-    truncated: &'a mut bool,
-    remaining_changes: &'a mut u32,
-    file_folds: &'a mut Vec<FileFold>,
-}
-
-/// Folds each directory theirs added under a name ours also added as a
-/// directory: ours keeps its identity and gains theirs' entries (merged
-/// against an empty directory, which may fold further), and theirs' record,
-/// left without a name, is dropped. Then folds the files both sides added
-/// under one name, including those found inside folded directories.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "folds update the shared resolutions and fold state under the conflict bound, decode limits, budget, and cancellation"
-)]
-async fn fold_additions<S: AsyncObjectStore>(
-    store: &S,
-    mut folds: Vec<(FileId, FileId)>,
-    resolutions: &mut BTreeMap<FileId, RecordChange>,
-    state: &mut FoldState<'_>,
-    maximum_conflicts: u32,
-    requested: &BTreeMap<MergeConflict, MergeConflictResolution>,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-    work: &mut WorkCounters,
-) -> Result<(), OperationFailure<MergeGenerationError>> {
-    while let Some((ours_id, theirs_id)) = folds.pop() {
-        let (Some((ours_before, Some(ours_record))), Some((theirs_before, Some(theirs_record)))) = (
-            resolutions.get(&ours_id).copied(),
-            resolutions.get(&theirs_id).copied(),
-        ) else {
-            return Err(invalid(*work));
-        };
-        let entries = empty_tree_async(store, limits, budget, cancellation, work).await?;
-        let empty = FileRecord {
-            payload: FilePayload::Directory { entries },
-            ..ours_record
-        };
-        let directory = merge_directory_record_with_resolutions_async(
-            store,
-            ours_id,
-            empty,
-            ours_record,
-            theirs_record,
-            (*state.remaining_changes).max(1),
-            maximum_conflicts
-                .saturating_sub(u32::try_from(state.conflicts.len()).unwrap_or(u32::MAX)),
-            requested,
-            limits,
-            remaining(*work, budget)?,
-            cancellation,
-        )
+    if merged == theirs_fields {
+        return Ok(Some(theirs));
+    }
+    if Some(merged) == base_fields {
+        return Ok(base);
+    }
+    write_metadata(store, merged, accounting, cancellation)
         .await
-        .map_err(|failure| failure.map_with_prior_work(*work, std::convert::identity))?;
-        *work = add(*work, directory.work)?;
-        *state.remaining_changes = state
-            .remaining_changes
-            .saturating_sub(directory.value.examined_changes);
-        state.conflicts.extend(directory.value.conflicts);
-        *state.truncated |= directory.value.truncated;
-        folds.extend(directory.value.folds);
-        state.file_folds.extend(directory.value.file_folds);
-        if let Some(record) = directory.value.record {
-            resolutions.insert(ours_id, (ours_before, Some(record)));
-        }
-        resolutions.insert(theirs_id, (theirs_before, None));
-    }
-    fold_files(
+        .map(Some)
+}
+
+async fn write_metadata<S: AsyncObjectStore>(
+    store: &S,
+    metadata: FileMetadata,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<ObjectId, FsError> {
+    let (encoded, allocation) =
+        crate::kernel::codec::encode_owned(accounting, |observe, reserve| {
+            super::metadata::encode_file_metadata(metadata, observe, reserve)
+        })?;
+    let bytes = crate::foundation::usize_to_u64(encoded.capacity());
+    put_encoded_with_accounting(
         store,
-        std::mem::take(state.file_folds),
-        resolutions,
-        state.conflicts,
-        state.truncated,
-        maximum_conflicts,
-        limits,
-        budget,
+        ObjectKind::Metadata,
+        Owned::new(encoded, allocation, bytes),
+        accounting,
         cancellation,
-        work,
     )
     .await
 }
 
-/// Folds each file theirs added under a name ours also added: one file when
-/// both records hold the same kind and content, each under this one name
-/// only, with authored metadata that agrees. Theirs' identity then leaves
-/// the table. Anything else is a real conflict at that binding.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "folds update the shared resolutions, conflicts, and truncation flag under the conflict bound, decode limits, budget, and cancellation"
-)]
-async fn fold_files<S: AsyncObjectStore>(
-    store: &S,
-    folds: Vec<FileFold>,
-    resolutions: &mut BTreeMap<FileId, RecordChange>,
-    conflicts: &mut Vec<MergeConflict>,
-    truncated: &mut bool,
-    maximum_conflicts: u32,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-    work: &mut WorkCounters,
-) -> Result<(), OperationFailure<MergeGenerationError>> {
-    for fold in folds {
-        let (Some((ours_before, Some(ours_record))), Some((theirs_before, Some(theirs_record)))) = (
-            resolutions.get(&fold.ours).copied(),
-            resolutions.get(&fold.theirs).copied(),
-        ) else {
-            return Err(invalid(*work));
-        };
-        let metadata = if ours_record.kind == theirs_record.kind
-            && ours_record.payload == theirs_record.payload
-            && ours_record.link_count == 1
-            && theirs_record.link_count == 1
-        {
-            converge_metadata_async(
-                store,
-                ours_record.metadata,
-                theirs_record.metadata,
-                limits,
-                budget,
-                cancellation,
-                work,
-            )
-            .await?
-        } else {
-            None
-        };
-        let Some(metadata) = metadata else {
-            if conflicts.len() < usize::try_from(maximum_conflicts).unwrap_or(usize::MAX) {
-                conflicts.push(MergeConflict::Binding {
-                    directory_id: fold.directory_id,
-                    name: fold.name,
-                });
-            } else {
-                *truncated = true;
-            }
-            continue;
-        };
-        resolutions.insert(
-            fold.ours,
-            (
-                ours_before,
-                Some(FileRecord {
-                    metadata,
-                    ..ours_record
-                }),
-            ),
-        );
-        resolutions.insert(fold.theirs, (theirs_before, None));
-    }
-    Ok(())
-}
-
-/// The canonical empty directory tree, stored if absent.
 async fn empty_tree_async<S: AsyncObjectStore>(
     store: &S,
     limits: DecodeLimits,
-    budget: WorkBudget,
+    accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
-    work: &mut WorkCounters,
-) -> Result<ObjectId, OperationFailure<MergeGenerationError>> {
-    let bytes = super::encode_tree_page(
-        &super::TreePage::Leaf(Vec::new()),
-        limits.maximum_page_items,
+) -> Result<ObjectId, FsError> {
+    let (encoded, allocation) =
+        crate::kernel::codec::encode_owned(accounting, |observe, _reserve| {
+            cancellation.check()?;
+            super::tree::encode_tree_page(
+                &super::TreePage::Leaf(Vec::new()),
+                limits.maximum_page_items,
+                observe,
+                crate::FsError::EncodedAllocationFailed,
+            )
+        })?;
+    let bytes = crate::foundation::usize_to_u64(encoded.capacity());
+    put_encoded_with_accounting(
+        store,
+        ObjectKind::TreePage,
+        Owned::new(encoded, allocation, bytes),
+        accounting,
+        cancellation,
     )
-    .map_err(|error| OperationFailure::new(error.into(), *work))?;
-    let object = ObjectId {
-        kind: ObjectKind::TreePage,
-        digest: object_digest(ObjectKind::TreePage, &bytes),
-    };
-    let receipt = store
-        .put(
-            object,
-            Bytes::from(bytes),
-            remaining(*work, budget)?,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| failure.map_with_prior_work(*work, MergeGenerationError::Object))?;
-    *work = add(*work, receipt.work)?;
-    Ok(object)
+    .await
 }
 
 async fn read_metadata<S: AsyncObjectStore>(
     store: &S,
     object: ObjectId,
     limits: DecodeLimits,
-    budget: WorkBudget,
+    accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
-    work: &mut WorkCounters,
-) -> Result<FileMetadata, OperationFailure<MergeGenerationError>> {
-    let receipt = store
-        .read(
-            object,
-            limits.maximum_object_bytes,
-            remaining(*work, budget)?,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| failure.map_with_prior_work(*work, MergeGenerationError::Object))?;
-    *work = add(*work, receipt.work)?;
-    decode_file_metadata(&receipt.value.bytes, limits)
-        .map_err(|error| OperationFailure::new(error.into(), *work))
+) -> Result<FileMetadata, FsError> {
+    let (read, retained) = super::file_read::read_object_with_accounting(
+        store,
+        object,
+        limits.maximum_object_bytes,
+        accounting,
+        cancellation,
+    )
+    .await?;
+    let result = (|| {
+        accounting.charge(WorkCounters {
+            items_examined: 1,
+            ..WorkCounters::UNCHARGED
+        })?;
+        decode_file_metadata(&read.bytes, limits, &mut |_| {
+            Ok::<_, crate::kernel::CanonicalDecodeError>(())
+        })
+        .map_err(FsError::from)
+    })();
+    drop(read);
+    // Native provider bytes own their original guard internally; only the
+    // standalone provider retention remains on the caller's ledger.
+    if retained != 0 {
+        retire_allocation(KernelOwnedAllocation::Standalone, retained, accounting)?;
+    }
+    result
 }
 
-/// Metadata for one identity both sides added independently: authored fields
-/// must agree, timestamps take the later value. `None` is a real conflict.
 async fn converge_metadata_async<S: AsyncObjectStore>(
     store: &S,
     ours: ObjectId,
     theirs: ObjectId,
     limits: DecodeLimits,
-    budget: WorkBudget,
+    accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
-    work: &mut WorkCounters,
-) -> Result<Option<ObjectId>, OperationFailure<MergeGenerationError>> {
-    if ours == theirs {
-        return Ok(Some(ours));
-    }
-    let ours_fields = read_metadata(store, ours, limits, budget, cancellation, work).await?;
-    let theirs_fields = read_metadata(store, theirs, limits, budget, cancellation, work).await?;
-    // A base equal to neither side's timestamps and to both sides' authored
-    // fields makes the three-way merge exactly "authored must agree, times
-    // take the later value".
-    let mut base = ours_fields;
-    for field in [
-        &mut base.created_ns,
-        &mut base.modified_ns,
-        &mut base.accessed_ns,
-        &mut base.changed_ns,
-    ] {
-        *field = MetadataField::Value(i64::MIN);
-    }
-    if ours_fields.posix_mode != theirs_fields.posix_mode
-        || ours_fields.posix_uid != theirs_fields.posix_uid
-        || ours_fields.posix_gid != theirs_fields.posix_gid
-        || ours_fields.posix_flags != theirs_fields.posix_flags
-        || ours_fields.windows_attributes != theirs_fields.windows_attributes
-        || ours_fields.named_attributes != theirs_fields.named_attributes
-        || ours_fields.acl != theirs_fields.acl
-        || ours_fields.security_descriptor != theirs_fields.security_descriptor
-    {
-        return Ok(None);
-    }
-    let Some(merged) = merge_metadata_fields(base, ours_fields, theirs_fields) else {
-        return Ok(None);
-    };
-    let bytes =
-        encode_file_metadata(merged).map_err(|error| OperationFailure::new(error.into(), *work))?;
-    let object = ObjectId {
-        kind: ObjectKind::Metadata,
-        digest: object_digest(ObjectKind::Metadata, &bytes),
-    };
-    if object != ours && object != theirs {
-        let receipt = store
-            .put(
-                object,
-                Bytes::from(bytes),
-                remaining(*work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(*work, MergeGenerationError::Object))?;
-        *work = add(*work, receipt.work)?;
-    }
-    Ok(Some(object))
+) -> Result<Option<ObjectId>, FsError> {
+    // The added-record rule is exactly authored fields agree / later times.
+    merge_metadata_async(store, None, ours, theirs, limits, accounting, cancellation).await
 }
 
-/// Field-wise three-way metadata merge.
-///
-/// Timestamps record when something happened to a file, not what anyone
-/// meant it to be: two sides that each touched a record moved its times for
-/// their own reasons, and the later time is the true one. Every other field
-/// (mode, ownership, flags, attributes, ACLs) is authored state and must
-/// resolve three-way, or the record conflicts.
 pub(crate) fn merge_metadata_fields(
     base: FileMetadata,
     ours: FileMetadata,
@@ -1761,8 +2033,6 @@ pub(crate) fn merge_metadata_fields(
     })
 }
 
-/// Metadata of one file two sides added independently: everything but
-/// the timestamps must agree, and each timestamp is the later one.
 pub(crate) fn merge_added_metadata_fields(
     ours: FileMetadata,
     theirs: FileMetadata,
@@ -1825,6 +2095,7 @@ pub(crate) fn file_table_mutation(
         (None, None) => None,
     }
 }
+#[cfg(test)]
 pub(crate) fn tree_mutation(
     name: LogicalName,
     before: Option<super::TreeEntry>,
@@ -1843,40 +2114,31 @@ pub(crate) fn tree_mutation(
         (None, None) => None,
     }
 }
-fn invalid(work: WorkCounters) -> OperationFailure<MergeGenerationError> {
-    OperationFailure::new(MergeGenerationError::InvalidDiff, work)
-}
-fn remaining(
-    work: WorkCounters,
-    budget: WorkBudget,
-) -> Result<WorkBudget, OperationFailure<MergeGenerationError>> {
-    work.remaining(budget)
-        .map_err(|error| OperationFailure::new(error.into(), work))
-}
-fn add(
-    prior: WorkCounters,
-    next: WorkCounters,
-) -> Result<WorkCounters, OperationFailure<MergeGenerationError>> {
-    prior
-        .checked_add(next)
-        .map_err(|error| OperationFailure::new(error.into(), prior))
-}
-fn map_diff_failure(
-    failure: OperationFailure<PersistentDiffError>,
-    prior: WorkCounters,
-) -> OperationFailure<MergeGenerationError> {
-    failure.map_with_prior_work(prior, |error| match error {
-        PersistentDiffError::WrongRootKind | PersistentDiffError::InvalidLimit => {
-            MergeGenerationError::InvalidDiff
+
+fn project_merge_error(error: FsError) -> MergeGenerationError {
+    match error {
+        FsError::InvalidDiff => MergeGenerationError::InvalidDiff,
+        FsError::MergeChangeLimit => MergeGenerationError::ChangeLimit,
+        FsError::DiffAllocationFailed => MergeGenerationError::AllocationFailed,
+        FsError::Object(error) | FsError::BlobRead(super::BlobReadError::Storage(error)) => {
+            MergeGenerationError::Object(error)
         }
-        PersistentDiffError::AllocationFailed => MergeGenerationError::AllocationFailed,
-        PersistentDiffError::Storage(error) => MergeGenerationError::Object(error),
-        PersistentDiffError::Decode(error) => MergeGenerationError::Decode(error),
-        PersistentDiffError::Work(error) => MergeGenerationError::Work(error),
-        PersistentDiffError::Cancelled => MergeGenerationError::Cancelled(CancellationError),
-    })
+        FsError::Decode(error) => MergeGenerationError::Decode(error),
+        FsError::MergeFileTable(error) => MergeGenerationError::FileTable(error),
+        FsError::MergeTree(error) => MergeGenerationError::Tree(error),
+        FsError::Checkpoint(error) => MergeGenerationError::Checkpoint(error),
+        FsError::FileRead(super::FileRangeReadError::Extent(error)) => {
+            MergeGenerationError::ExtentRead(error)
+        }
+        FsError::DetachedMutation(super::RegularMutationError::Extent(error)) => {
+            MergeGenerationError::ExtentMutation(error)
+        }
+        FsError::Cancelled(error) => MergeGenerationError::Cancelled(error),
+        FsError::Work(error) => MergeGenerationError::Work(error),
+        error => MergeGenerationError::Kernel(error),
+    }
 }
 
 #[cfg(test)]
-#[path = "tests/merge.rs"]
+#[path = "tests/merge/mod.rs"]
 mod tests;

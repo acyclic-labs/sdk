@@ -18,11 +18,9 @@ use acyclic_fs::{
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use std::{collections::BTreeMap, sync::Arc};
 
-/// One signed parent binding. Its child plans retain the same authenticated
-/// parent authority and exact inspected Filesystem generations.
+/// One signed parent binding.
 pub struct FilesystemProjectWorkspaces<A, O> {
     host: Arc<FilesystemHost<A, O>>,
-    parent: Authority,
     project: VolumeRef,
     verifier: AuthorityVerifier,
     scope: Scope,
@@ -32,7 +30,6 @@ impl<A, O> Clone for FilesystemProjectWorkspaces<A, O> {
     fn clone(&self) -> Self {
         Self {
             host: Arc::clone(&self.host),
-            parent: self.parent.clone(),
             project: self.project.clone(),
             verifier: self.verifier.clone(),
             scope: self.scope.clone(),
@@ -50,11 +47,10 @@ impl<A, O> FilesystemProjectWorkspaces<A, O> {
         project: VolumeRef,
     ) -> Result<Self> {
         let controller =
-            ParentProjectController::new(host.as_ref(), parent, verifier, scope, project)?;
+            ParentProjectController::new(host.as_ref(), parent, verifier, scope, &project, None)?;
         Ok(Self {
             host: Arc::clone(host),
-            parent: controller.parent,
-            project: controller.project,
+            project,
             verifier: controller.verifier,
             scope: controller.scope,
         })
@@ -63,15 +59,16 @@ impl<A, O> FilesystemProjectWorkspaces<A, O> {
     fn controller(&self) -> ParentProjectController<'_, A, O> {
         ParentProjectController {
             host: &self.host,
-            parent: self.parent.clone(),
             project: self.project.clone(),
             verifier: self.verifier.clone(),
             scope: self.scope.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_custody: None,
         }
     }
 
     fn require_scope(&self, scope: &Scope) -> Result<()> {
-        self.verifier.verify(scope)?;
+        self.verifier.verify(scope, &mut None)?;
         if scope != &self.scope {
             return Err(Error::Unauthorized(
                 "project operation belongs to another parent scope".into(),
@@ -121,7 +118,7 @@ where
     ) -> BoxFuture<'a, Result<Box<dyn ProjectJoinPlan>>> {
         Box::pin(async move {
             self.require_scope(scope)?;
-            if destination.authority() != &self.parent
+            if destination.authority() != self.verifier.audience()
                 || destination.conversation().and_then(|state| state.agent) != scope.agent()
                 || source.kind != crate::core::AggregateKind::Conversation
             {
@@ -129,13 +126,13 @@ where
                     "import is outside the bound destination conversation".into(),
                 ));
             }
-            source.stream_path()?;
+            source.stream_path(&mut None)?;
             let plan = self
                 .controller()
-                .prepare_project_import(source_project, source_generation)
+                .prepare_project_import(source_project, source_generation, None)
                 .await?;
-            let source_generation = self.host.generation_ref_id(plan.source_head())?;
-            let target = self.host.generation_ref_id(plan.target_head())?;
+            let source_generation = self.host.generation_ref_id(plan.source_head(), None)?;
+            let target = self.host.generation_ref_id(plan.target_head(), None)?;
             Ok(Box::new(FilesystemProjectJoinPlan {
                 binding: self.clone(),
                 plan,
@@ -150,9 +147,6 @@ where
 struct FilesystemProjectJoinPlan<A, O> {
     binding: FilesystemProjectWorkspaces<A, O>,
     plan: ParentMergePlan<A, O>,
-    // Publication was authenticated against the current parent reducer during
-    // preparation. The plan keeps only the child identity; its Filesystem
-    // generations remain the independent CAS boundary for application.
     child: Authority,
     source: GenerationRef,
     target: GenerationRef,
@@ -186,53 +180,44 @@ where
                     "project join child is not a conversation".into(),
                 ));
             }
-            child.stream_path()?;
+            child.stream_path(&mut None)?;
             if &self.child != child {
                 return Err(Error::Unauthorized(
                     "project join child is not the inspected fork".into(),
                 ));
             }
-            notice.validate()?;
+            notice.validate(&mut None)?;
             if notice.kind != crate::conversation::MessageKind::Merge {
                 return Err(Error::Invalid("project join notice is not a merge".into()));
             }
             let controller = self.binding.controller();
-            let outcome = if selections.is_empty() {
-                controller
-                    .apply_project_merge(&self.plan, operation_id)
-                    .await?
-            } else {
-                let mut sides = BTreeMap::new();
-                for selection in selections {
-                    selection.conflict.validate()?;
-                    if selection.conflict.provider != *self.binding.provider() {
-                        return Err(Error::Unauthorized(
-                            "conflict belongs to another provider".into(),
-                        ));
-                    }
-                    let conflict = decode_conflict(&selection.conflict.key)?;
-                    let side = match selection.side {
-                        ProjectConflictSide::Base => ConflictSide::Base,
-                        ProjectConflictSide::Target => ConflictSide::Ours,
-                        ProjectConflictSide::Source => ConflictSide::Theirs,
-                    };
-                    if sides.insert(conflict, side).is_some() {
-                        return Err(Error::Invalid("conflict side was selected twice".into()));
-                    }
+            let mut sides = BTreeMap::new();
+            for selection in selections {
+                selection.conflict.validate()?;
+                if selection.conflict.provider != *self.binding.provider() {
+                    return Err(Error::Unauthorized(
+                        "conflict belongs to another provider".into(),
+                    ));
                 }
-                controller
-                    .apply_project_merge_sides(&self.plan, operation_id, sides)
-                    .await?
-            };
+                let conflict = decode_conflict(&selection.conflict.key, None)?;
+                let side = match selection.side {
+                    ProjectConflictSide::Base => ConflictSide::Base,
+                    ProjectConflictSide::Target => ConflictSide::Ours,
+                    ProjectConflictSide::Source => ConflictSide::Theirs,
+                };
+                if sides.insert(conflict, side).is_some() {
+                    return Err(Error::Invalid("conflict side was selected twice".into()));
+                }
+            }
+            let outcome = controller
+                .apply_project_merge(&self.plan, operation_id, sides)
+                .await?
+                .0;
             match &outcome {
                 JoinOutcome::Applied(_) | JoinOutcome::AlreadyApplied(_) => {
-                    let receipt = controller.merge_receipt(
-                        &self.plan,
-                        &outcome,
-                        child.clone(),
-                        operation_id,
-                        notice.clone(),
-                    )?;
+                    let receipt = controller
+                        .merge_receipt(&self.plan, &outcome, child, operation_id, notice)?
+                        .0;
                     Ok(if matches!(&outcome, JoinOutcome::AlreadyApplied(_)) {
                         ProjectJoinOutcome::AlreadyApplied(receipt)
                     } else {
@@ -240,10 +225,10 @@ where
                     })
                 }
                 JoinOutcome::NoChanges(generation) => Ok(ProjectJoinOutcome::NoChanges(
-                    self.binding.host.generation_ref(generation)?,
+                    self.binding.host.generation_ref_id(generation.id(), None)?,
                 )),
                 JoinOutcome::StaleTarget(generation) => Ok(ProjectJoinOutcome::StaleTarget(
-                    self.binding.host.generation_ref(generation)?,
+                    self.binding.host.generation_ref_id(generation.id(), None)?,
                 )),
                 JoinOutcome::Conflicted {
                     conflicts,
@@ -265,7 +250,7 @@ where
     }
 }
 
-fn encode_conflict(conflict: &MergeConflict) -> Vec<u8> {
+pub(super) fn encode_conflict(conflict: &MergeConflict) -> Vec<u8> {
     match conflict {
         MergeConflict::File(id) => {
             let mut key = vec![1];
@@ -286,15 +271,22 @@ fn encode_conflict(conflict: &MergeConflict) -> Vec<u8> {
     }
 }
 
-fn decode_conflict(key: &[u8]) -> Result<MergeConflict> {
+pub(super) fn decode_conflict(
+    key: &[u8],
+    io: Option<&super::PreparationIo>,
+) -> Result<MergeConflict> {
+    let invalid = |message| stock_boundary(io, crate::wire::ErrorCode::Invalid, message);
+    if let Some(io) = io {
+        io.retain_owned(std::mem::size_of::<MergeConflict>() as u64)?;
+    }
     let (tag, rest) = key
         .split_first()
-        .ok_or_else(|| Error::Invalid("empty conflict key".into()))?;
+        .ok_or_else(|| invalid("empty conflict key"))?;
     let id_bytes: [u8; 16] = rest
         .get(..16)
-        .ok_or_else(|| Error::Invalid("short conflict key".into()))?
+        .ok_or_else(|| invalid("short conflict key"))?
         .try_into()
-        .map_err(|_| Error::Invalid("invalid conflict identity".into()))?;
+        .map_err(|_| invalid("invalid conflict identity"))?;
     let id = FileId::from_bytes(id_bytes);
     match (*tag, rest.get(16..)) {
         (1, Some([])) => Ok(MergeConflict::File(id)),
@@ -303,35 +295,123 @@ fn decode_conflict(key: &[u8]) -> Result<MergeConflict> {
                 1 => NameEncoding::Utf8,
                 2 => NameEncoding::PosixBytes,
                 3 => NameEncoding::WindowsUtf16Le,
-                _ => return Err(Error::Invalid("unknown conflict name encoding".into())),
+                _ => return Err(invalid("unknown conflict name encoding")),
             };
-            let name = LogicalName::new(encoding, name.to_vec(), u32::MAX)
-                .map_err(|error| Error::Invalid(error.to_string()))?;
+            let copying = acyclic_fs::WorkCounters {
+                bytes_copied: name.len() as u64,
+                ..acyclic_fs::WorkCounters::default()
+            };
+            if let Some(io) = io {
+                io.charge(acyclic_fs::WorkCounters {
+                    items_examined: 1,
+                    ..Default::default()
+                })?;
+                io.preflight(copying)?;
+            }
+            let mut copied = crate::model::vec_with_capacity(name.len(), io)?;
+            copied.extend_from_slice(name);
+            if let Some(io) = io {
+                io.charge(copying)?;
+            }
+            let name = LogicalName::new(encoding, copied, u32::MAX).map_err(|error| {
+                #[cfg(not(target_arch = "wasm32"))]
+                if io
+                    .and_then(super::PreparationIo::original_native_work)
+                    .is_some()
+                {
+                    return Error::NativeFilesystem {
+                        source: Box::new(acyclic_fs::FsError::Path(
+                            acyclic_fs::kernel::PathLookupError::NamespacePath(
+                                acyclic_fs::kernel::NamespacePathError::Name(error),
+                            ),
+                        )),
+                        custody: None,
+                    };
+                }
+                Error::Invalid(error.to_string())
+            })?;
             Ok(MergeConflict::Binding {
                 directory_id: id,
                 name,
             })
         }
-        _ => Err(Error::Invalid("invalid conflict key".into())),
+        _ => Err(invalid("invalid conflict key")),
     }
 }
+
+use crate::executor::stock_boundary;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_conflict_decode_retains_real_name_custody_and_denies_before_copy() -> Result<()> {
+        let conflict = MergeConflict::Binding {
+            directory_id: FileId::from_bytes([9; 16]),
+            name: LogicalName::new(NameEncoding::PosixBytes, vec![0xff, b'x'], 255)
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+        };
+        let key = encode_conflict(&conflict);
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::WorkCounters {
+            allocation_operations: 8,
+            peak_allocation_bytes: 65_536,
+            bytes_copied: 2048,
+            items_examined: 64,
+            ..acyclic_fs::WorkCounters::default()
+        };
+        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let live = work.live_allocation_bytes();
+        let io = super::super::PreparationIo::from_native_work(&work)?;
+        let decoded = decode_conflict(&key, Some(&io))?;
+        let custody = io.take_native_custody(io.owned_bytes()?)?;
+        assert_eq!(decoded, conflict);
+        assert!(work.live_allocation_bytes() > live);
+        drop(decoded);
+        drop(custody);
+        assert_eq!(work.live_allocation_bytes(), live);
+        let denied = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkCounters {
+                bytes_copied: 0,
+                ..budget
+            },
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let before = denied.receipt();
+        assert!(
+            decode_conflict(
+                &key,
+                Some(&super::super::PreparationIo::from_native_work(&denied)?)
+            )
+            .is_err()
+        );
+        assert_eq!(denied.receipt().bytes_copied, before.bytes_copied);
+        let file_key = encode_conflict(&MergeConflict::File(FileId::from_bytes([7; 16])));
+        let io = super::super::PreparationIo::from_native_work(&denied)?;
+        let file = decode_conflict(&file_key, Some(&io))?;
+        let file_custody = io.take_native_custody(io.owned_bytes()?)?;
+        assert_eq!(file, MergeConflict::File(FileId::from_bytes([7; 16])));
+        drop(file);
+        drop(file_custody);
+        Ok(())
+    }
+
     #[test]
     fn conflict_keys_round_trip_without_losing_native_name_bytes() -> Result<()> {
         let file = MergeConflict::File(FileId::from_bytes([7; 16]));
-        assert_eq!(decode_conflict(&encode_conflict(&file))?, file);
+        assert_eq!(decode_conflict(&encode_conflict(&file), None)?, file);
         let name = LogicalName::new(NameEncoding::PosixBytes, vec![0xff, b'x'], 255)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         let binding = MergeConflict::Binding {
             directory_id: FileId::from_bytes([9; 16]),
             name,
         };
-        assert_eq!(decode_conflict(&encode_conflict(&binding))?, binding);
-        assert!(decode_conflict(&[2, 1]).is_err());
+        assert_eq!(decode_conflict(&encode_conflict(&binding), None)?, binding);
+        assert!(decode_conflict(&[2, 1], None).is_err());
         Ok(())
     }
 }

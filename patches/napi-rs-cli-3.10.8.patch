@@ -1,0 +1,36 @@
+diff --git a/dist/index.cjs b/dist/index.cjs
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -6366,7 +6366,7 @@
+ 
+ if (!nativeBinding) {
+   if (loadErrors.length > 0) {
+-    const error = new Error(
++    const error = new AggregateError(loadErrors,
+       \`Cannot find native binding. \` +
+         \`npm has a bug related to optional dependencies (https://github.com/npm/cli/issues/4828). \` +
+         'Please try \`npm i\` again after removing both package-lock.json and node_modules directory.',
+diff --git a/dist/index.js b/dist/index.js
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -6340,7 +6340,7 @@
+ 
+ if (!nativeBinding) {
+   if (loadErrors.length > 0) {
+-    const error = new Error(
++    const error = new AggregateError(loadErrors,
+       \`Cannot find native binding. \` +
+         \`npm has a bug related to optional dependencies (https://github.com/npm/cli/issues/4828). \` +
+         'Please try \`npm i\` again after removing both package-lock.json and node_modules directory.',
+diff --git a/src/api/templates/js-binding.ts b/src/api/templates/js-binding.ts
+--- a/src/api/templates/js-binding.ts
++++ b/src/api/templates/js-binding.ts
+@@ -496,7 +496,7 @@
+ 
+ if (!nativeBinding) {
+   if (loadErrors.length > 0) {
+-    const error = new Error(
++    const error = new AggregateError(loadErrors,
+       \`Cannot find native binding. \` +
+         \`npm has a bug related to optional dependencies (https://github.com/npm/cli/issues/4828). \` +
+         'Please try \`npm i\` again after removing both package-lock.json and node_modules directory.',

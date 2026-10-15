@@ -24,7 +24,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-indexed_db_futures.workspace = true
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["browser"] }
 js-sys.workspace = true
 tsify.workspace = true
 wasm-bindgen.workspace = true

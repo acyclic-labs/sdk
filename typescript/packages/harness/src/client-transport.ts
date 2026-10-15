@@ -1,25 +1,15 @@
 import type { ClientCommand, Connection, ReplayCursor, Transport } from "./client.js";
-import { RequestScheduler, requestAborted } from "./client-requests.js";
+import { RequestScheduler } from "./client-requests.js";
 
-/** Provider-specific reservation, checked by the shared scheduler before work.
- * Include retained commands/cursors and provider buffers, not just wire bytes.
- * The underlying transport remains responsible for bounded inbound framing.
- */
-export interface TransportReservations {
-  connect(cursors: ReadonlyMap<string, ReplayCursor>): number;
-  send(command: ClientCommand): number;
-}
-
-/** Composes existing transport correlation/replay with finite request admission.
- * Never retries, deduplicates writes, buffers delivery history or claims an
- * aborted send was rejected. Share its scheduler with foreground hydration.
- */
+/** Share finite request admission with hydration; preserve transport correlation and replay. */
 export class ScheduledTransport<Event> implements Transport<Event> {
-  constructor(readonly transport: Transport<Event>, readonly scheduler: RequestScheduler,
-    readonly reservations: TransportReservations,
-    /** Late cancelled connects have no receiving owner; cleanup failures must
-     * still reach the host. Delivered connections report close failures directly. */
-    readonly onCleanupError: (error: unknown) => void = error => { queueMicrotask(() => { throw error; }); }) {}
+  constructor(private readonly transport: Transport<Event>, private readonly scheduler: RequestScheduler,
+    private readonly reservations: {
+      connect(cursors: ReadonlyMap<string, ReplayCursor>): number;
+      send(command: ClientCommand): number;
+    },
+    /** Report late cancelled connection cleanup failures to the host. */
+    private readonly onCleanupError: (error: unknown) => void = error => { queueMicrotask(() => { throw error; }); }) {}
 
   async connect(cursors: ReadonlyMap<string, ReplayCursor>, signal?: AbortSignal): Promise<Connection<Event>> {
     const controller = new AbortController();
@@ -46,35 +36,28 @@ export class ScheduledTransport<Event> implements Transport<Event> {
           owned = connected;
           if (controller.signal.aborted) {
             await closeOwned();
-            throw requestAborted();
+            throw new DOMException("Request cancelled", "AbortError");
           }
           return connected;
         } finally { abort.removeEventListener("abort", cancel); }
       }, signal);
-      if (controller.signal.aborted) { await closeOwned(); throw requestAborted(); }
+      if (controller.signal.aborted) { await closeOwned(); throw new DOMException("Request cancelled", "AbortError"); }
     } catch (error) {
       signal?.removeEventListener("abort", cancel);
       detached = owned === undefined;
       await closeOwned();
       throw error;
     }
-    // Transfer cleanup ownership only after the cancellation-safe handoff.
-    owned = undefined;
-    let closed = false;
-    let closing: Promise<void> | undefined;
     return {
       [Symbol.asyncIterator]: () => connection[Symbol.asyncIterator](),
       send: async command => {
-        if (closed) return Promise.reject(new Error("connection closed; operation outcome may be indeterminate"));
+        if (cleanup !== undefined) return Promise.reject(new Error("connection closed; operation outcome may be indeterminate"));
         return this.scheduler.schedule(this.reservations.send(command), () => connection.send(command), controller.signal);
       },
       close: () => {
-        if (closing !== undefined) return closing;
-        closed = true;
         signal?.removeEventListener("abort", cancel);
         controller.abort();
-        closing = Promise.resolve().then(() => connection.close());
-        return closing;
+        return closeOwned();
       },
     };
   }

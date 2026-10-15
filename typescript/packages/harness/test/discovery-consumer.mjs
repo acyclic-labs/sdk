@@ -25,7 +25,7 @@ export async function exerciseDiscovery(engine, label, reopen) {
   const root = { volume, directory: "" };
   const readerAgent = "09090909-0909-0909-0909-090909090909";
   const grant = core.directoryReadCapability(volume, "");
-  const scope = core.issueScopeForAgent(readerAgent, "reader", [grant]);
+  const scope = core.issueScope("reader", [grant], readerAgent);
   let prefixes = 0;
   let bodies = 0;
   async function retained(reference) {
@@ -96,7 +96,7 @@ export async function exerciseDiscovery(engine, label, reopen) {
       validate(file) { contracts.validate("file_ref", file); },
       verify(file, bytes) { contracts.verifyFileBytes(file, bytes); },
       async read(file) {
-        core.verifyContentRead(core.issueScopeForAgent(readerAgent, "model-reader", [core.volumeCapability(volume, "read")]), file);
+        core.verifyContentRead(core.issueScope("model-reader", [core.volumeCapability(volume, "read")], readerAgent), file);
         return (await retained({ key: Array.from(file.version.match(/../g), byte => parseInt(byte, 16)) })).read(`/${file.path}`, 512n);
       },
       fileReadCapability: file => core.fileReadCapability(file),
@@ -145,7 +145,7 @@ export async function exerciseDiscovery(engine, label, reopen) {
     await rejects(() => contracts.readPinnedContextPath(restored.skills[0].source, reader, 512), "oversize body accepted");
     await rejects(() => contracts.captureDiscoveredContext(declaration, {
       ...reader, async list(query) {
-        core.verifyPrivateDirectoryRead(core.issueScopeForAgent(readerAgent, "denied", []), query.root.volume, query.root.directory, query.path);
+        core.verifyPrivateDirectoryRead(core.issueScope("denied", [], readerAgent), query.root.volume, query.root.directory, query.path);
         return reader.list(query);
       },
     }), "declarations granted directory authority");

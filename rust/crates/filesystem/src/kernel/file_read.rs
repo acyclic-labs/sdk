@@ -1,16 +1,16 @@
 //! Composed bounded regular-file reads across inline and sparse representations.
 
+use super::allocation::{AllocationError, KernelAccounting, KernelOwnedAllocation};
 use super::{
-    BlobReadError, DecodeLimits, ExtentKind, ExtentRangeRequest, ExtentReadError, ExtentSlice,
-    FileKind, FilePayload, FileRecord, plan_extent_range_async, read_blob_range_async,
+    BlobReadError, DecodeLimits, ExtentKind, ExtentRangeRequest, ExtentReadError, FileKind,
+    FilePayload, FileRecord,
 };
 use crate::AsyncObjectStore;
+use crate::FsError;
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
-use crate::heap_future::in_heap;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::ByteRange;
-use bytes::Bytes;
 use thiserror::Error;
 
 /// Complete bounded request for one regular-file byte range.
@@ -32,226 +32,711 @@ pub struct FileRangeRequest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileRangeRead {
     /// Exact requested bytes, with holes and allocated zeros represented as zero.
-    pub bytes: Bytes,
-    /// Complete page, blob, copy, allocation, and output work.
+    pub bytes: acyclic_stream::OwnedBytes,
+    /// Actual controlled output-buffer capacity retained by `bytes`.
+    pub logical_owned_bytes: u64,
+    /// Accounting-context snapshot of completed page, blob, copy, allocation, and output work.
     pub work: WorkCounters,
 }
 
+impl FileRangeRead {
+    /// Exact logical payload capacity, measured by the producer before handoff.
+    pub fn logical_owned_bytes(&self) -> u64 {
+        self.logical_owned_bytes
+    }
+}
+
 /// Reads one regular-file range without materializing untouched extents.
-///
-/// # Errors
-///
-/// Rejects non-regular files, invalid or excessive ranges, malformed sparse
-/// trees and blobs, cancellation, storage failures, and work beyond budget.
 pub async fn read_file_range_async<S: AsyncObjectStore>(
     store: &S,
     request: FileRangeRequest,
     cancellation: &CancellationToken,
 ) -> Result<FileRangeRead, FileRangeReadFailure> {
-    in_heap(move || async move {
-        cancellation
-            .check()
-            .map_err(|_| failed(FileRangeReadError::Cancelled, WorkCounters::default()))?;
-        if request.record.kind != FileKind::Regular {
-            return Err(failed(
-                FileRangeReadError::NotRegular,
-                WorkCounters::default(),
-            ));
-        }
-        match request.record.payload {
-            FilePayload::InlineRegular(data) => read_inline(data.as_bytes(), &request),
-            FilePayload::Regular {
-                logical_bytes,
-                extents,
-            } => read_sparse(store, logical_bytes, extents, &request, cancellation).await,
-            _ => Err(failed(
-                FileRangeReadError::NotRegular,
-                WorkCounters::default(),
-            )),
-        }
-    })
-    .await
+    let mut accounting = KernelAccounting::standalone(request.budget, cancellation);
+    read_file_range_with_accounting(store, request, &mut accounting, cancellation)
+        .await
+        .map_err(|error| failed(file_error(error), accounting.spent()))
 }
 
-fn read_inline(
-    bytes: &[u8],
-    request: &FileRangeRequest,
-) -> Result<FileRangeRead, FileRangeReadFailure> {
-    let end = request
-        .range
-        .offset
-        .checked_add(request.range.length)
-        .ok_or_else(|| failed(FileRangeReadError::InvalidRange, WorkCounters::default()))?;
-    if end > usize_to_u64(bytes.len()) {
-        return Err(failed(
-            FileRangeReadError::InvalidRange,
-            WorkCounters::default(),
-        ));
+#[allow(
+    clippy::too_many_lines,
+    reason = "This state transition keeps admission, effects and resource retirement in one frame."
+)]
+pub(crate) async fn read_file_range_with_accounting<S: AsyncObjectStore>(
+    store: &S,
+    request: FileRangeRequest,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<FileRangeRead, FsError> {
+    accounting.check()?;
+    if request.record.kind != FileKind::Regular {
+        return Err(FileRangeReadError::NotRegular.into());
     }
-    let start = usize::try_from(request.range.offset)
-        .map_err(|_| failed(FileRangeReadError::InvalidRange, WorkCounters::default()))?;
-    let end = usize::try_from(end)
-        .map_err(|_| failed(FileRangeReadError::InvalidRange, WorkCounters::default()))?;
-    let length = usize_to_u64(end - start);
-    let work = WorkCounters {
-        bytes_copied: length,
-        output_bytes: length,
+    let completed = WorkCounters {
+        output_bytes: request.range.length,
         items_returned: 1,
-        allocation_operations: u64::from(length != 0),
-        peak_allocation_bytes: length,
-        ..WorkCounters::default()
+        ..WorkCounters::UNCHARGED
     };
-    work.verify(request.budget)
-        .map_err(|error| failed(error.into(), WorkCounters::default()))?;
-    #[allow(
-        clippy::indexing_slicing,
-        reason = "end <= bytes.len() is checked above (end > bytes.len() as u64 returns InvalidRange before this point) and start <= end since start and end are both derived from the same validated request.range, so bytes[start..end] cannot panic"
-    )]
-    let region = &bytes[start..end];
+    accounting.admit(completed)?;
+    let output = match request.record.payload {
+        FilePayload::InlineRegular(data) => {
+            let end = request
+                .range
+                .offset
+                .checked_add(request.range.length)
+                .ok_or(FileRangeReadError::InvalidRange)?;
+            let start = usize::try_from(request.range.offset)
+                .map_err(|_| FileRangeReadError::InvalidRange)?;
+            let end = usize::try_from(end).map_err(|_| FileRangeReadError::InvalidRange)?;
+            let region = data
+                .as_bytes()
+                .get(start..end)
+                .ok_or(FileRangeReadError::InvalidRange)?;
+            let copied = WorkCounters {
+                bytes_copied: request.range.length,
+                ..WorkCounters::UNCHARGED
+            };
+            accounting.admit(copied)?;
+            let mut output = allocate_read_buffer(region.len(), accounting)?;
+            output.value.extend_from_slice(region);
+            accounting.record_completed(copied)?;
+            output
+        }
+        FilePayload::Regular {
+            logical_bytes,
+            extents,
+        } => {
+            let plan = ReadOwned::from(
+                super::range::plan_extent_range_with_accounting(
+                    store,
+                    ExtentRangeRequest {
+                        root: extents,
+                        file_size: logical_bytes,
+                        range: request.range,
+                        maximum_spans: request.maximum_spans,
+                        limits: request.limits,
+                        budget: request.budget,
+                    },
+                    accounting,
+                    cancellation,
+                )
+                .await?,
+            );
+            let length = usize::try_from(request.range.length)
+                .map_err(|_| FileRangeReadError::InvalidRange)?;
+            let zeroed = WorkCounters {
+                bytes_copied: request.range.length,
+                ..WorkCounters::UNCHARGED
+            };
+            accounting.admit(zeroed)?;
+            let mut output = allocate_read_buffer(length, accounting)?;
+            output.value.resize(length, 0);
+            accounting.record_completed(zeroed)?;
+            for span in &plan.value.spans {
+                let ExtentKind::Content {
+                    object,
+                    object_offset,
+                } = span.kind
+                else {
+                    continue;
+                };
+                let nested = super::blob::read_blob_range_with_accounting(
+                    store,
+                    object,
+                    ByteRange {
+                        offset: object_offset,
+                        length: span.length,
+                    },
+                    request.limits,
+                    accounting,
+                    cancellation,
+                    false,
+                )
+                .await?;
+                let start = usize::try_from(span.offset - request.range.offset)
+                    .map_err(|_| FileRangeReadError::InvalidRange)?;
+                let end = start
+                    .checked_add(nested.bytes.len())
+                    .ok_or(FileRangeReadError::InvalidRange)?;
+                let destination = output
+                    .value
+                    .get_mut(start..end)
+                    .ok_or(FileRangeReadError::InvalidRange)?;
+                let copied = WorkCounters {
+                    bytes_copied: span.length,
+                    ..WorkCounters::UNCHARGED
+                };
+                accounting.admit(copied)?;
+                destination.copy_from_slice(&nested.bytes);
+                accounting.record_completed(copied)?;
+                let retained = nested.logical_owned_bytes;
+                drop(nested);
+                release_standalone_read_bytes(retained, accounting)?;
+            }
+            let retained = plan.value.retained_allocation_bytes;
+            drop(plan.value);
+            release_read_allocation(retained, plan.custody, accounting)?;
+            output
+        }
+        _ => return Err(FileRangeReadError::NotRegular.into()),
+    };
+    let logical_owned_bytes = usize_to_u64(output.value.capacity());
+    let bytes = owned_read_bytes(output)?;
+    accounting.charge(completed)?;
     Ok(FileRangeRead {
-        bytes: Bytes::copy_from_slice(region),
-        work,
+        bytes,
+        logical_owned_bytes,
+        work: accounting.spent(),
     })
 }
 
-async fn read_sparse<S: AsyncObjectStore>(
-    store: &S,
-    logical_bytes: u64,
-    extents: crate::ObjectId,
-    request: &FileRangeRequest,
-    cancellation: &CancellationToken,
-) -> Result<FileRangeRead, FileRangeReadFailure> {
-    let plan = plan_extent_range_async(
-        store,
-        ExtentRangeRequest {
-            root: extents,
-            file_size: logical_bytes,
-            range: request.range,
-            maximum_spans: request.maximum_spans,
-            limits: request.limits,
-            budget: request.budget,
-        },
-        cancellation,
-    )
-    .await
-    .map_err(|failure| failure.map_with_prior_work(WorkCounters::default(), Into::into))?;
-    let mut work = plan.work;
-    let output_len = usize::try_from(request.range.length)
-        .map_err(|_| failed(FileRangeReadError::InvalidRange, work))?;
-    let live_output = request.range.length;
-    let initial_peak = plan
-        .retained_allocation_bytes
-        .checked_add(live_output)
-        .ok_or_else(|| failed(FileRangeReadError::Work(WorkError::Overflow), work))?;
-    work = add(
-        work,
-        WorkCounters {
-            allocation_operations: u64::from(output_len != 0),
-            peak_allocation_bytes: initial_peak,
-            ..WorkCounters::default()
-        },
-    )?;
-    work.verify(request.budget)
-        .map_err(|error| failed(error.into(), work))?;
-    let mut output = Vec::new();
-    output
-        .try_reserve_exact(output_len)
-        .map_err(|_| failed(FileRangeReadError::AllocationFailed, work))?;
-    output.resize(output_len, 0);
-    for span in &plan.spans {
-        work = copy_content_span(
-            store,
-            span,
-            work,
-            initial_peak,
-            &mut output,
-            request,
-            cancellation,
-        )
-        .await?;
+fn file_error(error: FsError) -> FileRangeReadError {
+    match error {
+        FsError::FileRead(error) => error,
+        FsError::BlobRead(error) => FileRangeReadError::Blob(error),
+        FsError::Work(error) => FileRangeReadError::Work(error),
+        FsError::Cancelled(_) => FileRangeReadError::Cancelled,
+        error => FileRangeReadError::Context(Box::new(error)),
     }
-    work = add(
-        work,
-        WorkCounters {
-            output_bytes: request.range.length,
-            items_returned: 1,
-            ..WorkCounters::default()
+}
+
+pub(crate) fn allocation_error(error: AllocationError) -> FsError {
+    error.into_work_or(FsError::FileRead(FileRangeReadError::AllocationFailed))
+}
+
+pub(crate) struct ReadOwned<T> {
+    pub(crate) value: T,
+    pub(crate) custody: KernelOwnedAllocation,
+}
+
+impl<T> From<(T, KernelOwnedAllocation)> for ReadOwned<T> {
+    fn from((value, custody): (T, KernelOwnedAllocation)) -> Self {
+        Self { value, custody }
+    }
+}
+
+impl<T> ReadOwned<T> {
+    pub(crate) fn decoded(
+        (page, bytes, custody): (T, u64, KernelOwnedAllocation),
+    ) -> ReadOwned<(T, u64)> {
+        ReadOwned {
+            value: (page, bytes),
+            custody,
+        }
+    }
+}
+
+pub(crate) fn allocate_read_buffer(
+    length: usize,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<ReadOwned<Vec<u8>>, FsError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let native = accounting.native_work().is_some();
+    let requested = usize_to_u64(length);
+    let mut owner = ReadOwned {
+        value: Vec::new(),
+        custody: accounting.claim_owned(requested, u64::from(length != 0))?,
+    };
+    let result = (|| {
+        owner.value.try_reserve_exact(length).map_err(|error| {
+            #[cfg(not(target_arch = "wasm32"))]
+            if native {
+                return crate::NativeTreeMaterializationError::AllocationFailed(error).into();
+            }
+            let _ = error;
+            FsError::FileRead(FileRangeReadError::AllocationFailed)
+        })?;
+        accounting.reconcile_owned(
+            &mut owner.custody,
+            requested,
+            usize_to_u64(owner.value.capacity()),
+        )
+    })();
+    match result {
+        Ok(()) => Ok(owner),
+        Err(error) => {
+            let backing = requested.max(usize_to_u64(owner.value.capacity()));
+            drop(owner.value);
+            release_read_allocation(backing, owner.custody, accounting)?;
+            Err(error)
+        }
+    }
+}
+
+pub(crate) fn absorb_read_custody(
+    target: &mut KernelOwnedAllocation,
+    incoming: KernelOwnedAllocation,
+) -> Result<(), FsError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    match incoming {
+        KernelOwnedAllocation::Standalone => {}
+        KernelOwnedAllocation::NativeOriginal(mut incoming) => match target {
+            KernelOwnedAllocation::Standalone => {
+                *target = KernelOwnedAllocation::NativeOriginal(incoming);
+            }
+            KernelOwnedAllocation::NativeOriginal(target) => target.absorb(&mut incoming)?,
         },
-    )?;
-    work.verify(request.budget)
-        .map_err(|error| failed(error.into(), work))?;
-    Ok(FileRangeRead {
-        bytes: Bytes::from(output),
-        work,
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = (target, incoming);
+    Ok(())
+}
+
+pub(crate) fn release_read_allocation(
+    bytes: u64,
+    mut custody: KernelOwnedAllocation,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(), FsError> {
+    match custody {
+        KernelOwnedAllocation::Standalone => accounting.release_owned(&mut custody, bytes),
+        #[cfg(not(target_arch = "wasm32"))]
+        KernelOwnedAllocation::NativeOriginal(custody) => {
+            drop(custody);
+            Ok(())
+        }
+    }
+}
+
+pub(crate) fn owned_read_bytes(
+    owner: ReadOwned<Vec<u8>>,
+) -> Result<acyclic_stream::OwnedBytes, FsError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let KernelOwnedAllocation::NativeOriginal(custody) = &owner.custody {
+        let original = custody.work().clone();
+        return acyclic_stream::OwnedBytes::from_vec_with_guard(
+            owner.value,
+            owner.custody,
+            original.runtime_meter(),
+        )
+        .map_err(|failure| match failure.into_error() {
+            acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
+                original.runtime_error(error).into()
+            }
+            acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
+                crate::NativeTreeMaterializationError::InvalidLayout.into()
+            }
+        });
+    }
+    Ok(owner.value.into())
+}
+
+pub(crate) async fn read_object_with_accounting<S: AsyncObjectStore>(
+    store: &S,
+    object: crate::ObjectId,
+    maximum: u64,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<(crate::storage::ObjectRead, u64), FsError> {
+    accounting.check()?;
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(original) = accounting.native_work() {
+        return {
+            let __object_args = (object, maximum, original, cancellation);
+            let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
+
+            store
+                .read(__object_args.0, __object_args.1, &mut __object_work)
+                .await
+        }
+        .map(|read| (read, 0))
+        .map_err(read_store_error);
+    }
+    let result = {
+        let __object_args = (object, maximum, accounting.remaining()?, cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    };
+    accept_standalone_object_read(result, accounting)
+}
+
+pub(crate) fn read_store_error(error: crate::storage::ObjectStoreError) -> FsError {
+    match error {
+        crate::storage::ObjectStoreError::Work(error) => error.into(),
+        crate::storage::ObjectStoreError::Cancelled => crate::CancellationError.into(),
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::storage::ObjectStoreError::Native(error) => error.into(),
+        error => error.into(),
+    }
+}
+
+pub(crate) fn complete_standalone_backend(
+    accounting: &mut KernelAccounting<'_>,
+    completed: WorkCounters,
+    retained: u64,
+) -> Result<(), FsError> {
+    record_standalone_backend(accounting, completed, retained).map_err(|(error, _)| error)
+}
+
+fn record_standalone_backend(
+    accounting: &mut KernelAccounting<'_>,
+    completed: WorkCounters,
+    retained: u64,
+) -> Result<(), (FsError, bool)> {
+    let record = |allocations: &mut super::allocation::AllocationLedger,
+                  work: &mut WorkCounters,
+                  budget: WorkBudget| {
+        *work = work
+            .with_backend(completed, allocations.live_bytes())
+            .map_err(|error| (FsError::from(error), false))?;
+        allocations
+            .record_owned_bytes(retained, work)
+            .map_err(|error| (allocation_error(error), false))?;
+        work.verify(budget)
+            .map_err(|error| (FsError::from(error), true))
+    };
+    match accounting {
+        KernelAccounting::Standalone {
+            allocations,
+            work,
+            budget,
+            ..
+        } => record(allocations, work, *budget),
+        KernelAccounting::BorrowedStandalone {
+            allocations,
+            work,
+            budget,
+            ..
+        } => record(allocations, work, *budget),
+        #[cfg(not(target_arch = "wasm32"))]
+        KernelAccounting::NativeOriginal { .. } => Err((
+            crate::NativeTreeMaterializationError::InvalidLayout.into(),
+            false,
+        )),
+    }
+}
+
+pub(crate) fn accept_standalone_object_read(
+    result: crate::storage::ObjectResult<crate::storage::ObjectRead>,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(crate::storage::ObjectRead, u64), FsError> {
+    let completed = match &result {
+        Ok(receipt) => receipt.work,
+        Err(failure) => *failure.work,
+    };
+    let retained = match &result {
+        Ok(receipt) => match receipt.value.retention {
+            crate::storage::ObjectReadRetention::Shared => 0,
+            crate::storage::ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
+        },
+        Err(_) => 0,
+    };
+    if let Err((error, registered)) = record_standalone_backend(accounting, completed, retained) {
+        drop(result);
+        if registered {
+            release_standalone_read_bytes(retained, accounting)?;
+        }
+        return Err(error);
+    }
+    let receipt = result.map_err(|failure| read_store_error(failure.error))?;
+    Ok((receipt.value, retained))
+}
+
+pub(crate) async fn read_objects_with_accounting<S: AsyncObjectStore>(
+    store: &S,
+    requests: &[crate::storage::ObjectReadRequest],
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<ReadOwned<Vec<crate::storage::ObjectRead>>, FsError> {
+    accounting.check()?;
+    cancellation.check()?;
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(original) = accounting.native_work() {
+        let mut work = crate::AuthorityWork::native(original, cancellation);
+        let (value, allocation) = store
+            .read_many(requests, &mut work)
+            .await
+            .map_err(read_store_error)?;
+        let custody = allocation.ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?;
+        return Ok(ReadOwned {
+            value,
+            custody: KernelOwnedAllocation::NativeOriginal(custody),
+        });
+    }
+    let result = {
+        let __object_args = (requests, accounting.remaining()?, cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+        let __object_result = store
+            .read_many(__object_args.0, &mut __object_work)
+            .await
+            .map(|(values, _allocation)| values);
+        __object_work.receipt(__object_result)
+    };
+    let completed = match &result {
+        Ok(receipt) => receipt.work,
+        Err(failure) => *failure.work,
+    };
+    let retained = match &result {
+        Ok(receipt) => retained_object_reads_bytes(&receipt.value, receipt.value.capacity()),
+        Err(_) => Ok(0),
+    };
+    let retained = match retained {
+        Ok(retained) => retained,
+        Err(error) => {
+            let prefix =
+                record_standalone_backend(accounting, completed, 0).map_err(|(error, _)| error);
+            drop(result);
+            prefix?;
+            return Err(error);
+        }
+    };
+    if let Err((error, registered)) = record_standalone_backend(accounting, completed, retained) {
+        drop(result);
+        if registered {
+            release_standalone_read_bytes(retained, accounting)?;
+        }
+        return Err(error);
+    }
+    let receipt = result.map_err(|failure| read_store_error(failure.error))?;
+    Ok(ReadOwned {
+        value: receipt.value,
+        custody: KernelOwnedAllocation::Standalone,
     })
 }
 
-/// Copies one plan span's content into `output`, if it carries content at all.
-async fn copy_content_span<S: AsyncObjectStore>(
+pub(crate) fn retained_object_reads_bytes(
+    reads: &[crate::storage::ObjectRead],
+    capacity: usize,
+) -> Result<u64, FsError> {
+    let container = capacity
+        .checked_mul(std::mem::size_of::<crate::storage::ObjectRead>())
+        .map(usize_to_u64)
+        .ok_or(crate::WorkError::Overflow)?;
+    reads.iter().try_fold(container, |total, read| {
+        let bytes = match read.retention {
+            crate::storage::ObjectReadRetention::Shared => 0,
+            crate::storage::ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
+        };
+        total
+            .checked_add(bytes)
+            .ok_or_else(|| crate::WorkError::Overflow.into())
+    })
+}
+
+pub(crate) struct OriginalReadAccounting<'a, 'operation> {
+    accounting: &'a mut KernelAccounting<'operation>,
+    allocation: KernelOwnedAllocation,
+    owned_bytes: u64,
+}
+
+impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
+    pub(crate) fn new(accounting: &'a mut KernelAccounting<'operation>) -> Result<Self, FsError> {
+        let allocation = accounting.claim_owned(0, 0)?;
+        Ok(Self {
+            accounting,
+            allocation,
+            owned_bytes: 0,
+        })
+    }
+
+    pub(crate) fn observe(
+        &mut self,
+        step: super::codec::ReadAllocationStep,
+    ) -> Result<(), FsError> {
+        use super::codec::ReadAllocationStep;
+        match step {
+            ReadAllocationStep::Allocate { bytes, operations } => {
+                let next = self
+                    .owned_bytes
+                    .checked_add(bytes)
+                    .ok_or(WorkError::Overflow)?;
+                let mut allocation = self.accounting.claim_owned(bytes, operations)?;
+                self.allocation.absorb(&mut allocation)?;
+                self.owned_bytes = next;
+            }
+            ReadAllocationStep::ReserveFailed(_error) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                if self.accounting.native_work().is_some() {
+                    return Err(
+                        crate::NativeTreeMaterializationError::AllocationFailed(_error).into(),
+                    );
+                }
+                return Err(super::CanonicalDecodeError::AllocationFailed.into());
+            }
+            ReadAllocationStep::Capacity {
+                admitted_bytes,
+                actual_bytes,
+            } => {
+                let next = self
+                    .owned_bytes
+                    .checked_sub(admitted_bytes)
+                    .and_then(|bytes| bytes.checked_add(actual_bytes))
+                    .ok_or(WorkError::Overflow)?;
+                let reconciled = self.accounting.reconcile_owned(
+                    &mut self.allocation,
+                    admitted_bytes,
+                    actual_bytes,
+                );
+                self.owned_bytes = next;
+                reconciled?;
+            }
+            ReadAllocationStep::BeforeCopy(bytes) => {
+                self.accounting.check()?;
+                self.accounting.admit(WorkCounters {
+                    bytes_copied: bytes,
+                    ..WorkCounters::UNCHARGED
+                })?;
+            }
+            ReadAllocationStep::Copied(bytes) => {
+                self.accounting.record_completed(WorkCounters {
+                    bytes_copied: bytes,
+                    ..WorkCounters::UNCHARGED
+                })?;
+            }
+            ReadAllocationStep::BeforeHash(bytes) => {
+                self.accounting.check()?;
+                self.accounting.admit(WorkCounters {
+                    bytes_hashed: bytes,
+                    ..WorkCounters::UNCHARGED
+                })?;
+            }
+            ReadAllocationStep::Hashed(bytes) => {
+                self.accounting.record_completed(WorkCounters {
+                    bytes_hashed: bytes,
+                    ..WorkCounters::UNCHARGED
+                })?;
+                self.accounting.check()?;
+            }
+            ReadAllocationStep::BeforeItem => {
+                self.accounting.check()?;
+                self.accounting.admit(WorkCounters {
+                    items_examined: 1,
+                    ..WorkCounters::UNCHARGED
+                })?;
+            }
+            ReadAllocationStep::Item => {
+                self.accounting.record_completed(WorkCounters {
+                    items_examined: 1,
+                    ..WorkCounters::UNCHARGED
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn into_allocation(self) -> KernelOwnedAllocation {
+        self.allocation
+    }
+
+    pub(crate) fn into_parts(self) -> (KernelOwnedAllocation, u64) {
+        (self.allocation, self.owned_bytes)
+    }
+
+    pub(crate) fn admit(&mut self, delta: WorkCounters) -> Result<(), FsError> {
+        self.accounting.check()?;
+        self.accounting.admit(delta)
+    }
+
+    pub(crate) fn record_completed(&mut self, delta: WorkCounters) -> Result<(), FsError> {
+        self.accounting.record_completed(delta)
+    }
+
+    pub(crate) fn release_failed(mut self) -> Result<(), FsError> {
+        self.accounting
+            .release_owned(&mut self.allocation, self.owned_bytes)
+    }
+}
+
+pub(crate) fn reserve_decoded_items<T, E: From<super::CanonicalDecodeError>>(
+    values: &mut Vec<T>,
+    count: usize,
+    observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+) -> Result<(), E> {
+    let admitted = count
+        .checked_mul(std::mem::size_of::<T>())
+        .ok_or(super::CanonicalDecodeError::LengthOverflow)?;
+    observe(super::codec::ReadAllocationStep::Allocate {
+        bytes: usize_to_u64(admitted),
+        operations: u64::from(count != 0),
+    })?;
+    if let Err(error) = values.try_reserve_exact(count) {
+        observe(super::codec::ReadAllocationStep::ReserveFailed(error))?;
+        return Err(super::CanonicalDecodeError::AllocationFailed.into());
+    }
+    let actual = values
+        .capacity()
+        .checked_mul(std::mem::size_of::<T>())
+        .ok_or(super::CanonicalDecodeError::LengthOverflow)?;
+    observe(super::codec::ReadAllocationStep::Capacity {
+        admitted_bytes: usize_to_u64(admitted),
+        actual_bytes: usize_to_u64(actual),
+    })?;
+    Ok(())
+}
+
+pub(crate) fn release_standalone_read_bytes(
+    bytes: u64,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(), FsError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if accounting.native_work().is_some() {
+        return Ok(());
+    }
+    release_read_allocation(bytes, KernelOwnedAllocation::Standalone, accounting)
+}
+
+pub(crate) fn cache_decoded_read<S: AsyncObjectStore, T: std::any::Any + Send + Sync>(
     store: &S,
-    span: &ExtentSlice,
-    mut work: WorkCounters,
-    initial_peak: u64,
-    output: &mut [u8],
-    request: &FileRangeRequest,
-    cancellation: &CancellationToken,
-) -> Result<WorkCounters, FileRangeReadFailure> {
-    let ExtentKind::Content {
-        object,
-        object_offset,
-    } = span.kind
-    else {
-        return Ok(work);
+    key: crate::async_storage::DecodedCacheKey,
+    mut owner: ReadOwned<(T, u64)>,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(crate::async_storage::DecodedCacheValue, u64), FsError> {
+    let page_control = std::mem::size_of::<T>()
+        .checked_add(2 * std::mem::size_of::<usize>())
+        .ok_or(WorkError::Overflow)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let guard_control = if accounting.native_work().is_some() {
+        std::mem::size_of::<crate::NativeAllocation>() + 2 * std::mem::size_of::<usize>()
+    } else {
+        0
     };
-    let nested = read_blob_range_async(
-        store,
-        object,
-        ByteRange {
-            offset: object_offset,
-            length: span.length,
-        },
-        request.limits,
-        remaining(work, request.budget)?,
-        cancellation,
-    )
-    .await
-    .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-    let mut nested_work = nested.work;
-    nested_work.output_bytes = 0;
-    work = work
-        .with_backend(nested_work, initial_peak)
-        .map_err(|error| failed(error.into(), work))?;
-    let destination = usize::try_from(span.offset - request.range.offset)
-        .map_err(|_| failed(FileRangeReadError::InvalidRange, work))?;
-    let end = destination
-        .checked_add(nested.bytes.len())
-        .ok_or_else(|| failed(FileRangeReadError::InvalidRange, work))?;
-    #[allow(
-        clippy::indexing_slicing,
-        reason = "RangeMachine::finish (range.rs) only returns an ExtentPlan when spans exactly and contiguously tile [request.range.offset, request.range.offset + request.range.length) with no gaps or overlaps (ExtentReadError::IncompleteCoverage otherwise), and BlobRangeMachine::finish (blob.rs) only returns Ok when nested.bytes.len() == span.length exactly (BlobReadError::IncompleteCoverage otherwise); together these guarantee destination..end falls within output, which was sized to request.range.length"
-    )]
-    output[destination..end].copy_from_slice(&nested.bytes);
-    work = add(
-        work,
-        WorkCounters {
-            bytes_copied: span.length,
-            ..WorkCounters::default()
-        },
-    )?;
-    work.verify(request.budget)
-        .map_err(|error| failed(error.into(), work))?;
-    Ok(work)
-}
-
-fn add(prior: WorkCounters, next: WorkCounters) -> Result<WorkCounters, FileRangeReadFailure> {
-    prior
-        .checked_add(next)
-        .map_err(|error| failed(error.into(), prior))
-}
-
-fn remaining(work: WorkCounters, budget: WorkBudget) -> Result<WorkBudget, FileRangeReadFailure> {
-    work.remaining(budget)
-        .map_err(|error| failed(error.into(), work))
+    #[cfg(target_arch = "wasm32")]
+    let guard_control = 0;
+    let controls = page_control
+        .checked_add(guard_control)
+        .ok_or(WorkError::Overflow)?;
+    let controls_custody =
+        accounting.claim_owned(usize_to_u64(controls), 1 + u64::from(guard_control != 0))?;
+    absorb_read_custody(&mut owner.custody, controls_custody)?;
+    let logical_bytes = owner
+        .value
+        .1
+        .checked_add(usize_to_u64(controls))
+        .ok_or(WorkError::Overflow)?;
+    let value = std::sync::Arc::new(owner.value.0);
+    #[cfg(not(target_arch = "wasm32"))]
+    let native_custody = match owner.custody {
+        KernelOwnedAllocation::Standalone => None,
+        KernelOwnedAllocation::NativeOriginal(custody) => Some(std::sync::Arc::new(custody)),
+    };
+    let value = crate::async_storage::DecodedCacheValue {
+        value,
+        logical_bytes,
+        #[cfg(not(target_arch = "wasm32"))]
+        native_custody,
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let admitted = if let Some(original) = accounting.native_work() {
+        {
+            let __decoded_args = (key, value, original);
+            __decoded_args
+                .2
+                .remaining()
+                .map_err(crate::ObjectStoreError::from)
+                .and_then(|_| store.decoded_cache_admit(__decoded_args.0, __decoded_args.1))
+        }
+    } else {
+        store.decoded_cache_admit(key, value)
+    };
+    #[cfg(target_arch = "wasm32")]
+    let admitted = store.decoded_cache_admit(key, value);
+    let value = match admitted.map_err(crate::kernel::file_read::read_store_error)? {
+        crate::async_storage::DecodedCacheAdmission::Shared(value)
+        | crate::async_storage::DecodedCacheAdmission::Uncached(value) => value,
+    };
+    Ok((value, logical_bytes))
 }
 
 /// Measured composed file-read failure.
@@ -281,6 +766,9 @@ pub enum FileRangeReadError {
     /// Exact work overflowed or exceeded budget.
     #[error(transparent)]
     Work(#[from] WorkError),
+    /// Shared original-ledger read boundary failed.
+    #[error(transparent)]
+    Context(Box<FsError>),
 }
 
 fn failed(error: FileRangeReadError, work: WorkCounters) -> FileRangeReadFailure {
@@ -290,3 +778,19 @@ fn failed(error: FileRangeReadError, work: WorkCounters) -> FileRangeReadFailure
 #[cfg(test)]
 #[path = "tests/file_read.rs"]
 mod tests;
+
+pub(crate) fn decode_owned<T>(
+    accounting: &mut KernelAccounting<'_>,
+    create: impl FnOnce(
+        &mut dyn FnMut(super::codec::ReadAllocationStep) -> Result<(), FsError>,
+    ) -> Result<T, FsError>,
+) -> Result<(T, KernelOwnedAllocation), FsError> {
+    let mut observed = OriginalReadAccounting::new(accounting)?;
+    match create(&mut |step| observed.observe(step)) {
+        Ok(value) => Ok((value, observed.into_allocation())),
+        Err(error) => {
+            observed.release_failed()?;
+            Err(error)
+        }
+    }
+}

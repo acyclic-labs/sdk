@@ -1,4 +1,4 @@
-import type { Context, Item } from "../src/index.js";
+import type { ContextView, Item } from "../src/index.js";
 import { INFERENCE_FIXED_WIDTHS } from "../generated/widths.js";
 
 const revisionWidth: 32 = INFERENCE_FIXED_WIDTHS.contextRevision;
@@ -13,12 +13,12 @@ INFERENCE_FIXED_WIDTHS.runId = 16;
 
 // The service returns generated Item messages. A caller's input subtype cannot
 // be recovered from a revision or asserted across a server-side mutation.
-declare const context: Context;
-const items: Promise<readonly Item[]> = context.items();
+declare const context: ContextView;
+const items: readonly Item[] = context.items;
 void items;
 
-// @ts-expect-error Context has no caller-chosen item subtype.
-type ForgedContext = Context<Item & { readonly trusted: true }>;
+// @ts-expect-error ContextView has no caller-chosen item subtype.
+type ForgedContext = ContextView<Item & { readonly trusted: true }>;
 void (undefined as unknown as ForgedContext);
 
 // The Rust descriptor exports each terminal as a correlated readonly literal.
