@@ -11,6 +11,7 @@
   },
   "type": "module",
   "exports": {
+    "./manifest.schema.json": "./src/generated/manifest.schema.json",
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
@@ -19,6 +20,7 @@
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
+    "src/generated/manifest.schema.json",
     "CHANGELOG.md"
   ],
   "scripts": {

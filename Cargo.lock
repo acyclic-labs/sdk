@@ -603,15 +603,20 @@ version = "0.2.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-objects",
+ "acyclic-stream",
  "axum",
  "bytes",
  "hex",
+ "proptest",
  "prost",
  "prost-reflect",
+ "schemars",
+ "serde",
  "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.21",
  "tokio",
+ "ts-rs",
 ]
 
 [[package]]

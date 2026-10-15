@@ -1,0 +1,346 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DeploymentManifest",
+  "description": "Version-one deployment manifest. Environment configurations are complete, not overlays.",
+  "type": "object",
+  "properties": {
+    "environments": {
+      "description": "Independent named deployment configurations.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Environment"
+      }
+    },
+    "schemaVersion": {
+      "description": "Exactly 1 for this schema.",
+      "type": "integer",
+      "format": "uint32",
+      "maximum": 1,
+      "minimum": 1
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "environments"
+  ],
+  "$defs": {
+    "AssetSpec": {
+      "description": "An asset prefix in an explicitly selected Objects binding.",
+      "type": "object",
+      "properties": {
+        "binding": {
+          "description": "Objects binding selected by the entry.",
+          "type": "string"
+        },
+        "entry": {
+          "description": "Entry serving the assets.",
+          "type": "string"
+        },
+        "prefix": {
+          "description": "Opaque object-key prefix.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "entry",
+        "binding",
+        "prefix"
+      ]
+    },
+    "BindingKind": {
+      "description": "Binding handle family. Capabilities remain opaque references to Trust policy.",
+      "oneOf": [
+        {
+          "description": "Stream namespace handle.",
+          "type": "string",
+          "const": "streams"
+        },
+        {
+          "description": "Filesystem volume handle.",
+          "type": "string",
+          "const": "volume"
+        },
+        {
+          "description": "Objects bucket handle.",
+          "type": "string",
+          "const": "objects"
+        },
+        {
+          "description": "Machines or sandbox compute handle.",
+          "type": "string",
+          "const": "compute"
+        },
+        {
+          "description": "Actor client handle, for apps.",
+          "type": "string",
+          "const": "actors"
+        },
+        {
+          "description": "Outbound HTTPS handle.",
+          "type": "string",
+          "const": "fetch"
+        }
+      ]
+    },
+    "BindingSpec": {
+      "description": "A named resource capability; deployment does not embed credentials.",
+      "type": "object",
+      "properties": {
+        "capability": {
+          "description": "Opaque Trust capability/policy reference, not a bearer token.",
+          "type": "string"
+        },
+        "kind": {
+          "description": "Runtime handle family.",
+          "$ref": "#/$defs/BindingKind"
+        },
+        "name": {
+          "description": "Guest env property name.",
+          "type": "string"
+        },
+        "resource": {
+          "description": "Opaque platform resource reference.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "kind",
+        "resource",
+        "capability"
+      ]
+    },
+    "CronSpec": {
+      "description": "UTC five-field numeric cron, with lists, ranges and positive steps. Sunday is 0.\nDay-of-month/day-of-week use OR when both are restricted. A fire appends to the\nactor inbox, keyed by occurrence timer ID; no Invoke or runtime keepalive wake.",
+      "type": "object",
+      "properties": {
+        "entry": {
+          "description": "Target actor entry name.",
+          "type": "string"
+        },
+        "inboxBinding": {
+          "description": "Target inbox stream binding selected by that entry.",
+          "type": "string"
+        },
+        "inboxStream": {
+          "description": "Canonical account-relative stream path resolved through that binding.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Unique schedule name.",
+          "type": "string"
+        },
+        "schedule": {
+          "description": "Minute/hour/day-of-month/month/day-of-week numeric cron expression.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "schedule",
+        "entry",
+        "inboxBinding",
+        "inboxStream"
+      ]
+    },
+    "EgressRule": {
+      "description": "Exact HTTPS authority allowed for outbound fetch; no wildcard or IP literals.",
+      "type": "object",
+      "properties": {
+        "host": {
+          "description": "Canonical lowercase ASCII DNS hostname.",
+          "type": "string"
+        },
+        "port": {
+          "description": "Explicit TCP port.",
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "port"
+      ]
+    },
+    "Entry": {
+      "description": "Content-addressed code and its selected environment handles.",
+      "type": "object",
+      "properties": {
+        "artifactSha256": {
+          "description": "Lowercase hexadecimal SHA-256 of the artifact.",
+          "type": "string"
+        },
+        "bindings": {
+          "description": "Names of explicitly granted bindings.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "kind": {
+          "description": "Actor or stateless worker.",
+          "$ref": "#/$defs/EntryKind"
+        },
+        "module": {
+          "description": "Logical module name within the artifact; not a filesystem path.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Unique entry name within the environment.",
+          "type": "string"
+        },
+        "secrets": {
+          "description": "Names of explicitly granted credential references.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "kind",
+        "artifactSha256",
+        "module",
+        "bindings",
+        "secrets"
+      ]
+    },
+    "EntryKind": {
+      "description": "Execution product for an artifact entry point.",
+      "oneOf": [
+        {
+          "description": "Stateful guest with restore/event/checkpoint hooks.",
+          "type": "string",
+          "const": "actor"
+        },
+        {
+          "description": "Stateless default.fetch guest.",
+          "type": "string",
+          "const": "worker"
+        }
+      ]
+    },
+    "Environment": {
+      "description": "One isolated environment; secret values are never part of this document.",
+      "type": "object",
+      "properties": {
+        "assets": {
+          "description": "Objects-backed static asset declarations.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AssetSpec"
+          }
+        },
+        "bindings": {
+          "description": "Declared capabilities available for explicit entry selection.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BindingSpec"
+          }
+        },
+        "crons": {
+          "description": "Schedules delivering to actor inbox streams.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CronSpec"
+          }
+        },
+        "egress": {
+          "description": "Exact outbound HTTPS destinations; DNS/private-address enforcement is host-owned.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EgressRule"
+          }
+        },
+        "entries": {
+          "description": "Artifact entry points.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Entry"
+          }
+        },
+        "name": {
+          "description": "Stable environment name.",
+          "type": "string"
+        },
+        "routes": {
+          "description": "HTTP routing declarations.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RouteSpec"
+          }
+        },
+        "secrets": {
+          "description": "Credential-store references available for explicit entry selection.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SecretRef"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "entries",
+        "bindings",
+        "secrets",
+        "egress",
+        "crons",
+        "assets",
+        "routes"
+      ]
+    },
+    "RouteSpec": {
+      "description": "Hostname and URL path-prefix route to a declared artifact entry.",
+      "type": "object",
+      "properties": {
+        "entry": {
+          "description": "Target entry name.",
+          "type": "string"
+        },
+        "host": {
+          "description": "Canonical DNS hostname.",
+          "type": "string"
+        },
+        "pathPrefix": {
+          "description": "Absolute URL path prefix, not a filesystem path.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "pathPrefix",
+        "entry"
+      ]
+    },
+    "SecretRef": {
+      "description": "Reference resolved by the host and sealed to the deployment artifact digest.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Guest env property name.",
+          "type": "string"
+        },
+        "reference": {
+          "description": "Opaque credential-store reference; never the secret value.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "reference"
+      ]
+    }
+  }
+}
