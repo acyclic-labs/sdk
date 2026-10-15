@@ -144,34 +144,44 @@ async fn search_native_decode_errors_release_their_original_custody() -> Result<
 
 #[tokio::test]
 async fn search_native_decode_accounting_failures_are_not_provider_rejections() -> Result<()> {
+    let deep = format!(
+        "{{\"results\":[],\"metadata\":{}0{}}}",
+        "[".repeat(258),
+        "]".repeat(258)
+    );
     for exa in [true, false] {
-        let work = NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget {
-                items_examined: 0,
-                ..acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024)
-            },
-            &CancellationToken::new(),
-        )
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = work.live_allocation_bytes();
-        let error = if exa {
-            codec::exa(br#"{"results":[]}"#, 1, Some(&work)).unwrap_err()
-        } else {
-            codec::tinyfish(br#"{"results":[]}"#, 1, Some(&work)).unwrap_err()
-        };
-        assert!(
-            matches!(
-                error,
-                Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid,
-                    reason: "JSON exceeds declared structural bound",
-                }
-            ),
-            "{error:?}"
-        );
-        assert!(error.is_native_failure());
-        drop(error);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        // The 257th metadata opener exceeds both the fixed depth bound and
+        // this original item allowance; exhausting work must keep precedence.
+        for (items_examined, body) in [(0, br#"{"results":[]}"#.as_slice()), (260, deep.as_bytes())]
+        {
+            let work = NativeMaterializationWork::new(
+                acyclic_fs::WorkBudget {
+                    items_examined,
+                    ..acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024)
+                },
+                &CancellationToken::new(),
+            )
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let baseline = work.live_allocation_bytes();
+            let error = if exa {
+                codec::exa(body, 1, Some(&work)).unwrap_err()
+            } else {
+                codec::tinyfish(body, 1, Some(&work)).unwrap_err()
+            };
+            assert!(
+                matches!(
+                    error,
+                    Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Invalid,
+                        reason: "JSON exceeds declared structural bound",
+                    }
+                ),
+                "{error:?}"
+            );
+            assert!(error.is_native_failure());
+            drop(error);
+            assert_eq!(work.live_allocation_bytes(), baseline);
+        }
     }
     Ok(())
 }
