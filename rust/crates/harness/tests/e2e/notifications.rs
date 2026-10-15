@@ -32,6 +32,18 @@ struct Expectations {
 }
 
 impl Notifications {
+    pub(super) fn verify_history(&self) -> Vec<u8> {
+        super::notification_history::verify(
+            self.records.iter().cloned().map(|record| (record, false)),
+            (
+                self.maximum_tasks,
+                self.maximum_pending,
+                self.maximum_text_bytes,
+            ),
+            (self.mode, self.protocol, self.focused),
+        )
+    }
+
     pub(super) fn parse(value: Value) -> Result<Self, String> {
         let case: Self = serde_json::from_value(value).map_err(|error| error.to_string())?;
         if case.expect.output.is_some() == case.expect.error.is_some() {

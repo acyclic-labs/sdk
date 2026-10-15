@@ -1,8 +1,8 @@
 use super::*;
-use acyclic_harness::client::{AttentionEvent, terminal_notification};
+use acyclic_harness::client::AttentionEvent;
 use proptest::prelude::*;
 use serde_json::json;
-use std::{collections::VecDeque, path::Path};
+use std::path::Path;
 
 fn record() -> impl Strategy<Value = AttentionNotification> {
     (
@@ -33,45 +33,9 @@ proptest! {
         maximum_tasks in 1_usize..5,
         maximum_pending in 1_usize..9,
     ) {
-        let mut view = NotificationView::new(maximum_tasks, maximum_pending, 256).unwrap();
-        let mut pending = VecDeque::new();
-        for (record, drain) in operations {
-            let before = serde_json::to_value(&view).unwrap();
-            let previous = before["latest"].get(&record.task);
-            let eligible = record.sequence > 0
-                && previous.is_none_or(|old| old["sequence"].as_u64().unwrap() < record.sequence)
-                && (previous.is_some() || before["latest"].as_object().unwrap().len() < maximum_tasks)
-                && pending.len() < maximum_pending;
-            let applied = view.apply(record.clone()).unwrap_or(false);
-            prop_assert_eq!(applied, eligible);
-            if applied {
-                let mut latest = before["latest"].clone();
-                latest[&record.task] = serde_json::to_value(&record).unwrap();
-                let actual = serde_json::to_value(&view).unwrap();
-                prop_assert_eq!(&actual["latest"], &latest);
-                pending.push_back(record.clone());
-                prop_assert!(!view.apply(record.clone()).unwrap());
-                let mut conflicting = record;
-                conflicting.detail.push('!');
-                let accepted = serde_json::to_value(&view).unwrap();
-                prop_assert!(view.apply(conflicting).is_err());
-                prop_assert_eq!(serde_json::to_value(&view).unwrap(), accepted);
-            } else {
-                prop_assert_eq!(serde_json::to_value(&view).unwrap(), before);
-            }
-            prop_assert_eq!(view.front(), pending.front());
-            prop_assert_eq!(view.len(), pending.len());
-            if drain {
-                let actual = view.pop();
-                let expected = pending.pop_front();
-                prop_assert_eq!(actual.as_deref(), expected.as_ref());
-            }
-        }
-        while let Some(expected) = pending.pop_front() {
-            let actual = view.pop();
-            prop_assert_eq!(actual.as_deref(), Some(&expected));
-        }
-        prop_assert!(view.is_empty());
+        crate::notification_history::verify(operations,
+            (maximum_tasks, maximum_pending, 256),
+            (NotificationMode::On, TerminalNotificationProtocol::Osc9, false));
     }
 
     // The actual case codec preserves all data, defaults and typed enum values.
@@ -87,6 +51,7 @@ proptest! {
             "expect":{"applied":vec![true; records.len()], "output":""}});
         if let Some(mode) = mode { value["mode"] = json!(mode); }
         let case = Notifications::parse(value).unwrap();
+        case.verify_history();
         let bytes = serde_json::to_vec(&case).unwrap();
         let decoded = Notifications::parse(serde_json::from_slice(&bytes).unwrap()).unwrap();
         prop_assert_eq!(case, decoded);
@@ -97,16 +62,30 @@ proptest! {
     #[test]
     fn terminal_payload_cannot_inject_controls(mut notification in record()) {
         notification.task = notification.detail.clone();
-        for (protocol, prefix, separators) in [
-            (TerminalNotificationProtocol::Osc9, "\x1b]9;", 0),
-            (TerminalNotificationProtocol::Osc777, "\x1b]777;notify;", 1),
-        ] {
-            let output = terminal_notification(&notification, NotificationMode::On, protocol, false);
-            let body = output.strip_prefix(prefix).unwrap().strip_suffix('\x07').unwrap();
-            prop_assert!(!body.chars().any(char::is_control));
-            prop_assert_eq!(body.matches(';').count(), separators);
+        for protocol in [TerminalNotificationProtocol::Osc9,
+            TerminalNotificationProtocol::Osc777, TerminalNotificationProtocol::Bell] {
+            crate::notification_history::encode(&notification, (NotificationMode::On, protocol, false));
         }
     }
+}
+
+#[test]
+fn fuzz_history_continues_after_stale_fixture_expectations() -> TestResult {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let mut value =
+        crate::scenario::load_value(&root, &root.join("notifications/queue-bound.json"))?;
+    value.as_object_mut().unwrap().remove("driver");
+    value["records"][0]["sequence"] = json!(0);
+    let case = Notifications::parse(value)?;
+    assert_eq!(
+        case.verify_history(),
+        b"\x1b]9;Goal done: task-1: Ready\x07"
+    );
+    assert!(
+        case.run().is_err(),
+        "fixture oracle must still reject the mutation"
+    );
+    Ok(())
 }
 
 #[test]

@@ -2,6 +2,8 @@
 
 #[path = "../../tests/e2e/matchers.rs"]
 mod matchers;
+#[path = "../../tests/e2e/notification_history.rs"]
+mod notification_history;
 #[path = "../../tests/e2e/notifications.rs"]
 mod notifications;
 
@@ -22,5 +24,5 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     let decoded =
         notifications::Notifications::parse(serde_json::from_slice(&encoded).unwrap()).unwrap();
     assert_eq!(case, decoded);
-    let _ = case.run();
+    let _ = case.verify_history();
 });
