@@ -246,12 +246,9 @@ impl Mutation {
             } if record.validate().is_err() || record.file_id != *file_id => {
                 Err(MutationPlanError::InvalidInitialRecord)
             }
-            Self::Rename {
-                source,
-                destination,
-                ..
-            }
-            | Self::Link {
+            // Renaming a name onto itself is a POSIX no-op; linking it onto
+            // itself is `EEXIST`.
+            Self::Link {
                 source,
                 destination,
             } if source == destination => Err(MutationPlanError::SameSourceAndDestination),

@@ -3646,3 +3646,55 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
     assert_eq!(described.conflicts[0].kind, crate::ConflictKind::Metadata);
     Ok(())
 }
+
+#[tokio::test]
+async fn transaction_rename_follows_posix_kind_rules() -> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("rename-kinds").await?;
+    let mut setup = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    setup.create_directory("/a").await?;
+    setup
+        .create_symbolic_link("/d", Bytes::from_static(b"/\x08"))
+        .await?;
+    setup.write("/f", Bytes::from_static(b"file")).await?;
+    let TransactionCommit::Committed(_) = setup.commit().await? else {
+        return Err("setup did not commit".into());
+    };
+
+    // A directory never replaces a non-directory (`ENOTDIR`), nor a
+    // non-directory a directory (`EISDIR`).
+    let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    assert!(matches!(
+        transaction.rename_with_replace("/a", "/d", true).await,
+        Err(WorkspaceError::NotDirectory)
+    ));
+    assert!(matches!(
+        transaction.rename_with_replace("/a", "/f", true).await,
+        Err(WorkspaceError::NotDirectory)
+    ));
+    assert!(
+        transaction
+            .rename_with_replace("/d", "/a", true)
+            .await
+            .is_err()
+    );
+    assert!(
+        transaction
+            .rename_with_replace("/f", "/a", true)
+            .await
+            .is_err()
+    );
+    // Renaming a name onto itself succeeds and changes nothing.
+    transaction.rename_with_replace("/a", "/a", true).await?;
+    transaction
+        .rename_with_replace("/a", "/a", false)
+        .await
+        .err()
+        .ok_or("RENAME_NOREPLACE onto itself succeeded")?;
+    drop(transaction);
+    let end = workspace.head().await?;
+    assert_eq!(end.stat("/a").await?.kind, FileKind::Directory);
+    assert_eq!(end.stat("/d").await?.kind, FileKind::SymbolicLink);
+    assert_eq!(end.stat("/f").await?.kind, FileKind::Regular);
+    Ok(())
+}

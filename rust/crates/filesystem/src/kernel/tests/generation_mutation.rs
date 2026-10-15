@@ -2697,3 +2697,268 @@ fn impossible_transaction_vector_allocation_releases_its_complete_claim()
     assert_eq!(allocations.live_bytes(), 0);
     Ok(())
 }
+
+/// One kind a rename endpoint can name in [`rename_follows_the_posix_kind_rules`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RenameEndpoint {
+    Absent,
+    Regular,
+    SymbolicLink,
+    EmptyDirectory,
+    FullDirectory,
+}
+
+impl RenameEndpoint {
+    const ALL: [Self; 5] = [
+        Self::Absent,
+        Self::Regular,
+        Self::SymbolicLink,
+        Self::EmptyDirectory,
+        Self::FullDirectory,
+    ];
+
+    const fn is_directory(self) -> bool {
+        matches!(self, Self::EmptyDirectory | Self::FullDirectory)
+    }
+
+    /// The mutations that bind `name` to this kind, under fresh identities
+    /// starting at `identity`.
+    fn create(
+        self,
+        store: &MemoryObjectStore,
+        fixture: &Fixture,
+        name: &str,
+        identity: u8,
+    ) -> Result<Vec<Mutation>, Box<dyn std::error::Error>> {
+        let directory = |file_id| FileRecord {
+            file_id,
+            kind: FileKind::Directory,
+            link_count: 1,
+            metadata: fixture.metadata,
+            payload: FilePayload::Directory {
+                entries: fixture.empty_tree,
+            },
+        };
+        let file_id = FileId::from_bytes([identity; 16]);
+        let record = match self {
+            Self::Absent => return Ok(Vec::new()),
+            Self::Regular => regular(file_id, fixture.metadata)?,
+            Self::SymbolicLink => FileRecord {
+                file_id,
+                kind: FileKind::SymbolicLink,
+                link_count: 1,
+                metadata: fixture.metadata,
+                payload: FilePayload::SymbolicLink {
+                    target_bytes: 6,
+                    target: blob(store, b"target")?,
+                },
+            },
+            Self::EmptyDirectory | Self::FullDirectory => directory(file_id),
+        };
+        let mut mutations = vec![Mutation::Create {
+            path: path(&[name])?,
+            record,
+        }];
+        if self == Self::FullDirectory {
+            mutations.push(Mutation::Create {
+                path: path(&[name, "child"])?,
+                record: regular(FileId::from_bytes([identity + 1; 16]), fixture.metadata)?,
+            });
+        }
+        Ok(mutations)
+    }
+}
+
+/// What POSIX `rename(2)` (Linux `renameat2` with `RENAME_NOREPLACE` when
+/// `replace` is false) does with these endpoints: `None` succeeds.
+fn posix_rename(
+    source: RenameEndpoint,
+    destination: RenameEndpoint,
+    same_name: bool,
+    replace: bool,
+) -> Option<&'static str> {
+    if source == RenameEndpoint::Absent {
+        return Some("ENOENT");
+    }
+    if destination == RenameEndpoint::Absent {
+        return None;
+    }
+    if !replace {
+        return Some("EEXIST");
+    }
+    if same_name {
+        return None;
+    }
+    match (source.is_directory(), destination.is_directory()) {
+        (true, false) => Some("ENOTDIR"),
+        (false, true) => Some("EISDIR"),
+        _ if destination == RenameEndpoint::FullDirectory => Some("ENOTEMPTY"),
+        _ => None,
+    }
+}
+
+fn errno_of(error: &GenerationMutationError) -> &'static str {
+    match error {
+        GenerationMutationError::MissingSource => "ENOENT",
+        GenerationMutationError::AlreadyExists => "EEXIST",
+        GenerationMutationError::NotDirectory => "ENOTDIR",
+        GenerationMutationError::IsDirectory => "EISDIR",
+        GenerationMutationError::DirectoryNotEmpty => "ENOTEMPTY",
+        _ => "unexpected",
+    }
+}
+
+/// Every pair of endpoint kinds, both replacement policies, and a name
+/// renamed onto itself, against the POSIX reference above: a refusal
+/// publishes nothing, and a success moves the source's identity whole.
+#[test]
+fn rename_follows_the_posix_kind_rules() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cases = Vec::new();
+    for source in RenameEndpoint::ALL {
+        for replace in [true, false] {
+            cases.push((source, source, true, replace));
+            for destination in RenameEndpoint::ALL {
+                cases.push((source, destination, false, replace));
+            }
+        }
+    }
+    for (source, destination, same_name, replace) in cases {
+        let case =
+            format!("{source:?} -> {destination:?}, same name {same_name}, replace {replace}");
+        let store = MemoryObjectStore::default();
+        let fixture = fixture(&store)?;
+        let mut setup = source.create(&store, &fixture, "source", 10)?;
+        if !same_name {
+            setup.extend(destination.create(&store, &fixture, "destination", 20)?);
+        }
+        let base = if setup.is_empty() {
+            fixture.generation.clone()
+        } else {
+            apply_generation_mutations(
+                &store,
+                &fixture.generation,
+                setup,
+                config(),
+                WorkBudget::UNBOUNDED,
+            )?
+            .root
+        };
+        let destination_name = if same_name { "source" } else { "destination" };
+        let renamed = apply_generation_mutations(
+            &store,
+            &base,
+            vec![Mutation::Rename {
+                source: path(&["source"])?,
+                destination: path(&[destination_name])?,
+                replace,
+            }],
+            config(),
+            WorkBudget::UNBOUNDED,
+        );
+        let lookup = |generation: &GenerationRoot, name: &str| {
+            lookup_path(
+                &store,
+                generation,
+                &path(&[name])?,
+                config(),
+                WorkBudget::UNBOUNDED,
+            )
+            .map(|found| found.record.map(|record| record.file_id))
+            .map_err(Box::<dyn std::error::Error>::from)
+        };
+        match (
+            posix_rename(source, destination, same_name, replace),
+            renamed,
+        ) {
+            (None, Ok(receipt)) => {
+                assert_eq!(
+                    lookup(&receipt.root, destination_name)?,
+                    Some(FileId::from_bytes([10; 16])),
+                    "{case}: the destination names the source's identity"
+                );
+                if !same_name {
+                    assert_eq!(lookup(&receipt.root, "source")?, None, "{case}");
+                }
+            }
+            (Some(expected), Err(failure)) => {
+                assert_eq!(
+                    errno_of(&failure.error),
+                    expected,
+                    "{case}: {}",
+                    failure.error
+                );
+                // Only emptiness needs the candidate view built.
+                if expected != "ENOTEMPTY" {
+                    assert_eq!(failure.work.backend_write_operations, 0, "{case}");
+                }
+            }
+            (expected, Ok(_)) => panic!("{case}: succeeded, POSIX gives {expected:?}"),
+            (None, Err(failure)) => panic!("{case}: POSIX succeeds, got {}", failure.error),
+        }
+    }
+    Ok(())
+}
+
+/// A name never replaces a directory above it: that directory holds the
+/// name, so it is not empty (Linux `ENOTEMPTY`), whatever the kinds.
+#[test]
+fn rename_over_an_ancestor_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let fixture = fixture(&store)?;
+    let directory = |identity| FileRecord {
+        file_id: FileId::from_bytes([identity; 16]),
+        kind: FileKind::Directory,
+        link_count: 1,
+        metadata: fixture.metadata,
+        payload: FilePayload::Directory {
+            entries: fixture.empty_tree,
+        },
+    };
+    let base = apply_generation_mutations(
+        &store,
+        &fixture.generation,
+        vec![
+            Mutation::Create {
+                path: path(&["dir", "e"])?,
+                record: directory(10),
+            },
+            Mutation::Create {
+                path: path(&["dir", "e", "a"])?,
+                record: directory(11),
+            },
+            Mutation::Create {
+                path: path(&["dir", "e", "f"])?,
+                record: regular(FileId::from_bytes([12; 16]), fixture.metadata)?,
+            },
+        ],
+        config(),
+        WorkBudget::UNBOUNDED,
+    )?
+    .root;
+    for (source, destination) in [
+        (&["dir", "e", "a"][..], &["dir", "e"][..]),
+        (&["dir", "e", "a"][..], &["dir"][..]),
+        (&["dir", "e", "f"][..], &["dir", "e"][..]),
+    ] {
+        let failure = apply_generation_mutations(
+            &store,
+            &base,
+            vec![Mutation::Rename {
+                source: path(source)?,
+                destination: path(destination)?,
+                replace: true,
+            }],
+            config(),
+            WorkBudget::UNBOUNDED,
+        )
+        .err()
+        .ok_or_else(|| format!("{source:?} replaced its ancestor {destination:?}"))?;
+        assert!(
+            matches!(failure.error, GenerationMutationError::DirectoryNotEmpty),
+            "{source:?} -> {destination:?}: {}",
+            failure.error
+        );
+        assert_eq!(failure.work.backend_write_operations, 0);
+    }
+    Ok(())
+}

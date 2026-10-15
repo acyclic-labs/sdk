@@ -193,14 +193,6 @@ fn every_mutation_precondition_is_rejected_before_plan_work()
             MutationPlanError::InvalidInitialRecord,
         ),
         (
-            Mutation::Rename {
-                source: regular.clone(),
-                destination: regular.clone(),
-                replace: false,
-            },
-            MutationPlanError::SameSourceAndDestination,
-        ),
-        (
             Mutation::Link {
                 source: other.clone(),
                 destination: other.clone(),

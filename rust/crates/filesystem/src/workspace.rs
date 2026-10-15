@@ -5823,7 +5823,10 @@ impl From<FsError> for WorkspaceError {
             FsError::Cancelled(error) => Self::Cancelled(error),
             FsError::Work(error) => Self::Work(error),
             FsError::NotFound => Self::NotFound,
-            FsError::NotDirectory => Self::NotDirectory,
+            FsError::NotDirectory
+            | FsError::Mutation(crate::kernel::GenerationMutationError::NotDirectory) => {
+                Self::NotDirectory
+            }
             FsError::FileRead(crate::kernel::FileRangeReadError::NotRegular) => {
                 Self::NotRegularFile
             }

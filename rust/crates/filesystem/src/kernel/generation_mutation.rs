@@ -86,6 +86,12 @@ pub enum GenerationMutationError {
     /// A directory move would place the directory below itself.
     #[error("namespace mutation would create a directory cycle")]
     DirectoryCycle,
+    /// A directory move would replace a name that is not a directory.
+    #[error("namespace mutation would replace a non-directory with a directory")]
+    NotDirectory,
+    /// A move of a non-directory would replace a directory.
+    #[error("namespace mutation would replace a directory with a non-directory")]
+    IsDirectory,
     /// A removed or replaced directory is not empty in the candidate view.
     #[error("namespace mutation directory is not empty")]
     DirectoryNotEmpty,
@@ -1427,19 +1433,47 @@ impl TransactionState {
         let source = self.paths[source_state]
             .binding
             .ok_or_else(|| failed(GenerationMutationError::MissingSource, self.work))?;
-        if source.kind == FileKind::Directory && destination_path.is_within(source_path) {
-            return Err(failed(GenerationMutationError::DirectoryCycle, self.work));
-        }
         let destination = self.paths[destination_state].binding;
-        // POSIX and Windows both define renaming one hard-link alias over
-        // another alias of the same file as a successful no-op. In
-        // particular, it must not remove a name or decrement the shared link
-        // count.
+        // Linux `RENAME_NOREPLACE` refuses any existing destination, the
+        // source's own name included, before anything else is checked.
+        if destination.is_some() && !replace {
+            return Err(failed(GenerationMutationError::AlreadyExists, self.work));
+        }
+        // POSIX and Windows both define renaming a name onto itself, or one
+        // hard-link alias over another alias of the same file, as a
+        // successful no-op. In particular, it must not remove a name or
+        // decrement the shared link count.
         if destination.is_some_and(|existing| existing.file_id == source.file_id) {
             return Ok(());
         }
-        if destination.is_some() && !replace {
-            return Err(failed(GenerationMutationError::AlreadyExists, self.work));
+        // A destination above the source holds the source, so it is not
+        // empty, whatever the kinds (Linux checks this before them).
+        if destination.is_some() && source_path.is_within(destination_path) {
+            return Err(failed(
+                GenerationMutationError::DirectoryNotEmpty,
+                self.work,
+            ));
+        }
+        if source.kind == FileKind::Directory && destination_path.is_within(source_path) {
+            return Err(failed(GenerationMutationError::DirectoryCycle, self.work));
+        }
+        if let Some(existing) = destination {
+            // POSIX `rename`: a directory replaces only a directory
+            // (`ENOTDIR`), and only a directory replaces one (`EISDIR`). An
+            // empty directory is checked once the candidate view is built
+            // (`ENOTEMPTY`).
+            match (
+                source.kind == FileKind::Directory,
+                existing.kind == FileKind::Directory,
+            ) {
+                (true, false) => {
+                    return Err(failed(GenerationMutationError::NotDirectory, self.work));
+                }
+                (false, true) => {
+                    return Err(failed(GenerationMutationError::IsDirectory, self.work));
+                }
+                _ => {}
+            }
         }
         let source_parent = self.parent_directory(source_state)?;
         let destination_parent = self.parent_directory(destination_state)?;
