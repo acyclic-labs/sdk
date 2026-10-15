@@ -27,29 +27,12 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-          fetch-depth: 2
-          ref: ${{ inputs.source_sha || github.sha }}
-      - name: Select affected generator checks
-        id: scope
-        shell: bash
-        run: |
-          node --input-type=module <<'JS'
-          import { execFileSync } from 'node:child_process';
-          import { appendFileSync } from 'node:fs';
-          import { selectGeneratorBackends } from './scripts/plan-qualification.mjs';
-          const changed = process.env.GITHUB_EVENT_NAME === 'pull_request'
-            ? execFileSync('git', ['diff', '--name-only', '-z', 'HEAD^', 'HEAD'], { encoding: 'utf8' }).split('\0')
-            : ['.github/workflows/sdk-generator.yml'];
-          const affected = selectGeneratorBackends(changed);
-          appendFileSync(process.env.GITHUB_OUTPUT, `go=${affected.includes('go')}\nnode_backends=${JSON.stringify(affected.filter(name => name !== 'go'))}\n`);
-          JS
+          ref: ${{ inputs.source_sha }}
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
-        if: steps.scope.outputs.go == 'true'
         with:
           go-version: '1.27.2'
           cache: false
       - name: Check Go formatting and staging
-        if: steps.scope.outputs.go == 'true'
         working-directory: tools/sdk-generator/backends/go
         shell: bash
         run: |
@@ -57,18 +40,14 @@ jobs:
           test -z "$(gofmt -l .)"
           go test -p=1 -parallel=1 -count=1 -v ./...
           node --test tests/qualify.test.mjs
-      - name: Check affected backend staging
-        if: steps.scope.outputs.node_backends != '[]'
-        env:
-          AFFECTED_NODE_BACKENDS: ${{ steps.scope.outputs.node_backends }}
+      - name: Check backend staging
         run: |
           node --input-type=module <<'JS'
           import { execFileSync } from 'node:child_process';
           import { readdirSync } from 'node:fs';
           import { languageGeneratorBackends } from './scripts/plan-qualification.mjs';
           const paths = [];
-          for (const backend of JSON.parse(process.env.AFFECTED_NODE_BACKENDS)) {
-            if (!languageGeneratorBackends.includes(backend) || backend === 'go') throw new Error('unregistered Node backend');
+          for (const backend of languageGeneratorBackends.filter(name => name !== 'go')) {
             const root = `tools/sdk-generator/backends/${backend}/tests`;
             const tests = readdirSync(root).filter(name => name.endsWith('.test.mjs')).sort();
             if (!tests.length) throw new Error(`no focused controls for ${backend}`);

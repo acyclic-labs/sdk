@@ -5,8 +5,9 @@ import { join, resolve, sep } from "node:path";
 import test from "node:test";
 import { posix } from "node:path";
 import { runInNewContext } from "node:vm";
+import YAML from "./vendor/yaml.cjs";
 import { compatibilityArtifacts, packagedSourceCopies } from "./generated-bindings.mjs";
-import { languageGeneratorBackends, parseGeneratorBackends, selectGeneratorBackends } from "./plan-qualification.mjs";
+import { languageGeneratorBackends, parseGeneratorBackends } from "./plan-qualification.mjs";
 
 const lanes = JSON.parse(readFileSync(".github/qualification-lanes.json", "utf8"));
 
@@ -48,47 +49,32 @@ test("the actual generated-copy guard rejects a mutation of every packaged confo
   assert.doesNotThrow(check);
 });
 
-test("generator scope selects only affected backends and retains package README checks", () => {
-  for (const backend of languageGeneratorBackends) {
-    assert.deepEqual(selectGeneratorBackends([`tools/sdk-generator/backends/${backend}/src/generate.mjs`]), [backend]);
-    assert.deepEqual(selectGeneratorBackends([`tools/sdk-generator/backends/${backend}/README.md`]), []);
-  }
-  const sharedScope = parseGeneratorBackends([
-    { name: "source-only", shared: ["authority"] }, { name: "archive-only", shared: ["archive"] },
-    { name: "both-readers", shared: ["authority", "archive"] }, { name: "neither-reader", shared: [] },
-  ]);
-  assert.deepEqual(selectGeneratorBackends(["tools/sdk-generator/shared/authority.mjs"], sharedScope), ["source-only", "both-readers"]);
-  assert.deepEqual(selectGeneratorBackends(["scripts/archive-utils.mjs"], sharedScope), ["archive-only", "both-readers"]);
-  assert.deepEqual(selectGeneratorBackends(["tools/sdk-generator/backends/dotnet/templates/package/README.md"]), ["dotnet"]);
-  for (const path of [".github/workflows/sdk-generator.yml", ".github/sdk-generator-backends.json", "scripts/plan-qualification.mjs", "scripts/test-plan-qualification.mjs"]) {
-    assert.deepEqual(selectGeneratorBackends([path]), languageGeneratorBackends);
-  }
-});
-
 test("generator registry rejects empty, duplicate and unsafe backend coordinates", () => {
-  const entry = { name: "go", shared: [] };
+  const entry = { name: "go" };
   for (const value of [[], [entry, entry], ["go"], [{ ...entry, name: "../outside" }], [{ ...entry, name: "go;echo" }], [null], {},
-    [{ ...entry, name: "Go" }], [{ ...entry, shared: ["unknown"] }], [{ ...entry, shared: ["archive", "archive"] }],
+    [{ ...entry, name: "Go" }], [{ ...entry, shared: ["archive"] }],
     [{ ...entry, unexpected: true }]]) assert.throws(() => parseGeneratorBackends(value));
 });
 
-test("future shared-reader dependencies are declared without planner code changes", () => {
-  const registry = parseGeneratorBackends([{ name: "new-backend", shared: ["archive"] }]);
-  assert.deepEqual(selectGeneratorBackends(["scripts/archive-utils.mjs"], registry), ["new-backend"]);
-  assert.deepEqual(selectGeneratorBackends(["tools/sdk-generator/shared/authority.mjs"], registry), []);
-});
-
-test("registered backends declare the shared readers used by their source and controls", () => {
-  const registry = parseGeneratorBackends(JSON.parse(readFileSync(".github/sdk-generator-backends.json", "utf8")));
-  const sources = root => readdirSync(root, { withFileTypes: true }).flatMap(entry => {
-    const path = `${root}/${entry.name}`;
-    return entry.isDirectory() ? sources(path) : /\.(mjs|go)$/.test(entry.name) ? [readFileSync(path, "utf8")] : [];
-  }).join("\n");
-  for (const entry of registry) {
-    const text = sources(`tools/sdk-generator/backends/${entry.name}`);
-    if (/shared\/(authority\.mjs|protoc\.json)/.test(text)) assert.ok(entry.shared.includes("authority"), `${entry.name} must declare shared authority inputs`);
-    if (/scripts\/archive-utils\.mjs/.test(text)) assert.ok(entry.shared.includes("archive"), `${entry.name} must declare archive-reader inputs`);
-  }
+test("release generator staging runs every registered backend without affected-file selection", () => {
+  const workflow = YAML.parse(readFileSync(".github/workflows/sdk-generator.yml", "utf8"));
+  const steps = workflow.jobs.go.steps;
+  assert.ok(languageGeneratorBackends.includes("go"));
+  assert.equal(steps.find(step => step.uses?.startsWith("actions/setup-go@"))?.if, undefined);
+  assert.equal(steps.find(step => step.name === "Check Go formatting and staging")?.if, undefined);
+  const staging = steps.find(step => step.name === "Check backend staging") ?? assert.fail("missing backend staging");
+  assert.equal(staging.if, undefined);
+  const code = staging.run.split("<<'JS'\n")[1]?.split("\nJS")[0] ?? assert.fail("missing staging script");
+  let invocation;
+  runInNewContext(code.replace(/^import .*;\n/gm, ""), {
+    languageGeneratorBackends, readdirSync, process: { execPath: process.execPath },
+    execFileSync: (command, args) => { assert.equal(command, process.execPath); invocation = Array.from(args); },
+  });
+  const expected = languageGeneratorBackends.filter(name => name !== "go").flatMap(name => {
+    const root = `tools/sdk-generator/backends/${name}/tests`;
+    return readdirSync(root).filter(file => file.endsWith(".test.mjs")).sort().map(file => `${root}/${file}`);
+  });
+  assert.deepEqual(invocation, ["--test", "--test-concurrency=1", ...expected]);
 });
 
 test("registered backend targets match the maintained transport contracts", () => {
