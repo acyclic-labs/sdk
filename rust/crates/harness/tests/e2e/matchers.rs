@@ -2,8 +2,14 @@ use serde_json::Value;
 
 // Objects are recursive subsets. Arrays are ordered subsequences with distinct
 // matches; an empty array asserts emptiness. Scalar values match exactly.
+// A sole $json key applies the same matcher to JSON-encoded text.
 pub fn subset(expected: &Value, actual: &Value) -> bool {
     match (expected, actual) {
+        (Value::Object(expected), Value::String(actual)) if expected.len() == 1 => {
+            expected.get("$json").is_some_and(|expected| {
+                serde_json::from_str(actual).is_ok_and(|actual| subset(expected, &actual))
+            })
+        }
         (Value::Object(expected), Value::Object(actual)) => expected
             .iter()
             .all(|(key, value)| actual.get(key).is_some_and(|actual| subset(value, actual))),
@@ -82,4 +88,25 @@ fn ordered_matchers_do_not_reuse_observations() {
     );
     assert!(ordered(&[json!(2)], &[json!(1), json!(2)], "frames").is_ok());
     assert!(ordered(&[json!(2), json!(1)], &[json!(1), json!(2)], "frames").is_err());
+}
+
+#[test]
+fn json_text_matchers_keep_subset_order_and_reject_invalid_encodings() {
+    use serde_json::json;
+    assert!(subset(
+        &json!({"$json":[{"name":"first"},{"name":"last"}]}),
+        &json!(r#"[{"name":"first","extra":1},{"name":"middle"},{"name":"last"}]"#)
+    ));
+    assert!(subset(&json!({"$json":[]}), &json!("[]")));
+    for (expected, actual) in [
+        (json!({"$json":[]}), json!("[1]")),
+        (json!({"$json":{"name":"a"}}), json!("not JSON")),
+        (json!({"$json":[2,1]}), json!("[1,2]")),
+        (json!({"$json":[1,1]}), json!("[1]")),
+        (json!({"$json":{"name":"a"}}), json!({"name":"a"})),
+        (json!({"$json":[],"extra":true}), json!("[]")),
+        (json!({"name":"a"}), json!(r#"{"name":"a"}"#)),
+    ] {
+        assert!(!subset(&expected, &actual), "{expected} matched {actual}");
+    }
 }

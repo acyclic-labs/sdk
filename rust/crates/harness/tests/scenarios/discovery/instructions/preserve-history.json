@@ -1,0 +1,3 @@
+{"seed":{"AGENTS.md":"instructions"},"context":[{"role":"assistant","content":"previous"}],"expect":{"request_files":[
+  ["instructions"]],"requests":[{"messages":[{"role":"system","content":{"kind":"file","file":{"path":"AGENTS.md"},
+  "policy":"bounded_full"}},{"role":"assistant","content":"previous"},{"role":"user","content":"Inspect files"}]}]}}

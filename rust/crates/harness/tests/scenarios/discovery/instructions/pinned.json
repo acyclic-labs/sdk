@@ -1,0 +1,3 @@
+{"seed":{"AGENTS.md":"Old rules"},"discovery":{"after_capture":{"AGENTS.md":"New rules"}},"expect":{"request_files":[[
+  "Old rules"]],"files":{"AGENTS.md":"New rules"},"requests":[{"messages":[{"role":"system","content":{"kind":"file",
+  "file":{"path":"AGENTS.md"},"policy":"bounded_full"}}]}]}}

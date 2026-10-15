@@ -1,0 +1,2 @@
+{"seed":{},"discovery":{"instructions":[{},{}],"limits":{"directories":1}},"expect":{"error":
+  "discovery declarations exceed work bounds"}}

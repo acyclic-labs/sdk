@@ -1,0 +1,2 @@
+{"seed":{"skills/SKILL.md":"---\nname: inspect\ndescription: Inspect files\n---\nSECRET BODY"},"expect":{
+  "request_files":[[]],"not_requests":[{"messages":[{"role":"system"}]}]}}
