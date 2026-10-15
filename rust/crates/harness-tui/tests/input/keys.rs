@@ -101,10 +101,78 @@ fn super_overrides_share_canonical_dispatch_and_help() -> Result<(), Box<dyn std
             })
         );
     }
-    assert_eq!(map.resolve("Super+k"), map.resolve("Ctrl+k"));
+    assert_eq!(
+        map.resolve("Ctrl+k").map(|b| b.action),
+        Some(Action::Move(Motion::LineStart))
+    );
     assert!(map.help().contains("Ctrl+k\tLine start"));
-    assert_eq!(map.resolve("Super+x Super+e"), map.resolve("Ctrl+x Ctrl+e"));
+    assert_eq!(
+        map.resolve("Ctrl+x Ctrl+e").map(|b| b.action),
+        Some(Action::ExternalEditor)
+    );
     assert_eq!(InputKeymap::from_json(&map.to_json()?)?, map);
     assert!(InputKeymap::from_json(r#"{"Super+k":"Home","Ctrl+k":"End"}"#).is_err());
     Ok(())
+}
+
+fn assert_dispatch_allocates_nothing(broken: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let overrides = InputKeymap::from_json(r#"{"Super+k":"Home","a":"","Ctrl+x Ctrl+e":"Home"}"#)?;
+    for map in [InputKeymap::default(), overrides] {
+        for code in [
+            KeyCode::Char('a'),
+            KeyCode::Char('Z'),
+            KeyCode::Char('\u{754c}'),
+            KeyCode::Char('\u{130}'),
+            KeyCode::Char('\u{1f980}'),
+            KeyCode::Left,
+            KeyCode::Home,
+            KeyCode::Backspace,
+            KeyCode::Enter,
+            KeyCode::BackTab,
+        ] {
+            for modifiers in [
+                M::NONE,
+                M::SHIFT,
+                M::CONTROL,
+                M::ALT,
+                M::SUPER,
+                M::SHIFT | M::CONTROL,
+                M::CONTROL | M::ALT | M::SHIFT | M::SUPER,
+            ] {
+                for kind in [
+                    KeyEventKind::Press,
+                    KeyEventKind::Repeat,
+                    KeyEventKind::Release,
+                ] {
+                    let mut event = KeyEvent::new(code, modifiers);
+                    event.kind = kind;
+                    let allocation = allocation_counter::measure(|| {
+                        if broken {
+                            // Negative control: recreate the old heap chord on the hot path.
+                            std::hint::black_box(key_chord(event));
+                        }
+                        std::hint::black_box(decode_key(event, &map));
+                        std::hint::black_box(map.resolve("Ctrl+x Ctrl+e"));
+                    });
+                    assert_eq!(
+                        allocation.count_total, 0,
+                        "keypress dispatch allocated: {event:?}"
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn default_and_override_keypress_dispatch_allocate_zero_times()
+-> Result<(), Box<dyn std::error::Error>> {
+    assert_dispatch_allocates_nothing(false)
+}
+
+#[test]
+#[should_panic(expected = "keypress dispatch allocated")]
+fn allocation_negative_control_rejects_heap_chord_dispatch() {
+    let _ = assert_dispatch_allocates_nothing(true);
 }

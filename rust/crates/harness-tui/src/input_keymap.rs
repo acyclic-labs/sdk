@@ -61,13 +61,10 @@ impl InputKeymap {
         serde_json::to_string(&self.overrides).map_err(io::Error::other)
     }
 
-    /// Resolve a chord using the same action data as generated help.
+    /// Resolve an already canonical event chord using the generated help data.
+    /// Override files are canonicalized once by `from_json`.
     pub fn resolve(&self, chord: &str) -> Option<Binding> {
-        let chord = canonical_chord(chord)?;
-        let target = self
-            .overrides
-            .get(&chord)
-            .map_or(chord.as_str(), String::as_str);
+        let target = self.overrides.get(chord).map_or(chord, String::as_str);
         KEYMAP
             .iter()
             .find(|binding| binding.chord == target)
@@ -75,9 +72,7 @@ impl InputKeymap {
     }
 
     pub(crate) fn disabled(&self, chord: &str) -> bool {
-        canonical_chord(chord)
-            .and_then(|chord| self.overrides.get(&chord))
-            .is_some_and(String::is_empty)
+        self.overrides.get(chord).is_some_and(String::is_empty)
     }
 
     pub(crate) fn has_prefix(&self, prefix: &str) -> bool {

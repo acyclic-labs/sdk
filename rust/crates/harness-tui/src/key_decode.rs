@@ -12,7 +12,7 @@ pub enum DecodedKey {
         select: bool,
     },
     /// One terminal character event; hosts may also deliver whole IME commits.
-    Text(String),
+    Text(char),
 }
 
 /// Resolve an already decoded key through the declarative editor bindings.
@@ -31,7 +31,7 @@ pub fn decode_key(mut key: KeyEvent, bindings: &InputKeymap) -> Option<DecodedKe
         key.modifiers.remove(KeyModifiers::SUPER);
         key.modifiers.insert(KeyModifiers::CONTROL);
     }
-    if key_chord(key).is_some_and(|chord| bindings.disabled(&chord)) {
+    if event_chord(key).is_some_and(|chord| bindings.disabled(&chord)) {
         return None;
     }
     if let Some(binding) = find_binding(bindings, key) {
@@ -64,7 +64,7 @@ pub fn decode_key(mut key: KeyEvent, bindings: &InputKeymap) -> Option<DecodedKe
     if key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
         if let KeyCode::Char(character) = key.code {
             if !character.is_control() {
-                return Some(DecodedKey::Text(character.to_string()));
+                return Some(DecodedKey::Text(character));
             }
         }
     }
@@ -72,12 +72,18 @@ pub fn decode_key(mut key: KeyEvent, bindings: &InputKeymap) -> Option<DecodedKe
 }
 
 fn find_binding(bindings: &InputKeymap, key: KeyEvent) -> Option<Binding> {
-    let chord = key_chord(key)?;
+    let chord = event_chord(key)?;
     bindings.resolve(&chord)
 }
 
 /// Canonical chord spelling for user overrides and keymap help.
-pub fn key_chord(mut key: KeyEvent) -> Option<String> {
+pub fn key_chord(key: KeyEvent) -> Option<String> {
+    event_chord(key).map(|chord| chord.as_str().to_owned())
+}
+
+// Four modifier labels (21 bytes), then at most three lowercased Unicode
+// scalars (12 bytes), or the longest named key (9 bytes), fit in 40 bytes.
+pub(crate) fn event_chord(mut key: KeyEvent) -> Option<arrayvec::ArrayString<40>> {
     if key.code == KeyCode::BackTab {
         key.code = KeyCode::Tab;
         key.modifiers.insert(KeyModifiers::SHIFT);
@@ -87,24 +93,23 @@ pub fn key_chord(mut key: KeyEvent) -> Option<String> {
         key.modifiers.insert(KeyModifiers::CONTROL);
     }
     let name = match key.code {
-        KeyCode::Backspace => "Backspace".to_owned(),
-        KeyCode::Enter => "Enter".to_owned(),
-        KeyCode::Left => "Left".to_owned(),
-        KeyCode::Right => "Right".to_owned(),
-        KeyCode::Up => "Up".to_owned(),
-        KeyCode::Down => "Down".to_owned(),
-        KeyCode::Home => "Home".to_owned(),
-        KeyCode::End => "End".to_owned(),
-        KeyCode::PageUp => "PageUp".to_owned(),
-        KeyCode::PageDown => "PageDown".to_owned(),
-        KeyCode::Tab => "Tab".to_owned(),
-        KeyCode::BackTab => "Shift+Tab".to_owned(),
-        KeyCode::Delete => "Delete".to_owned(),
-        KeyCode::Esc => "Esc".to_owned(),
-        KeyCode::Char(character) => character.to_lowercase().collect(),
+        KeyCode::Backspace => "Backspace",
+        KeyCode::Enter => "Enter",
+        KeyCode::Left => "Left",
+        KeyCode::Right => "Right",
+        KeyCode::Up => "Up",
+        KeyCode::Down => "Down",
+        KeyCode::Home => "Home",
+        KeyCode::End => "End",
+        KeyCode::PageUp => "PageUp",
+        KeyCode::PageDown => "PageDown",
+        KeyCode::Tab => "Tab",
+        KeyCode::Delete => "Delete",
+        KeyCode::Esc => "Esc",
+        KeyCode::Char(_) => "",
         _ => return None,
     };
-    let mut chord = String::new();
+    let mut chord = arrayvec::ArrayString::new();
     for (modifier, label) in [
         (KeyModifiers::CONTROL, "Ctrl+"),
         (KeyModifiers::ALT, "Alt+"),
@@ -121,6 +126,12 @@ pub fn key_chord(mut key: KeyEvent) -> Option<String> {
     {
         return None;
     }
-    chord.push_str(&name);
+    if let KeyCode::Char(character) = key.code {
+        for character in character.to_lowercase() {
+            chord.push(character);
+        }
+    } else {
+        chord.push_str(name);
+    }
     Some(chord)
 }

@@ -313,6 +313,8 @@ dependencies = [
 name = "acyclic-harness-tui"
 version = "0.2.0"
 dependencies = [
+ "allocation-counter",
+ "arrayvec",
  "crossterm",
  "image",
  "proptest",

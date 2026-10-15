@@ -1,4 +1,4 @@
-use crate::key_decode::{DecodedKey, decode_key, key_chord};
+use crate::key_decode::{DecodedKey, decode_key, event_chord};
 use crate::key_event::{
     KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -209,16 +209,15 @@ impl PromptInput {
         }
         let mut effects = self.chord_timeout(now_ms);
         if key.kind == KeyEventKind::Repeat
-            && self
-                .pending_chord
-                .as_ref()
-                .is_some_and(|(prefix, _, _)| key_chord(key).as_ref() == Some(prefix))
+            && self.pending_chord.as_ref().is_some_and(|(prefix, _, _)| {
+                event_chord(key).is_some_and(|chord| chord.as_str() == prefix)
+            })
         {
             return effects;
         }
         let decoded = decode_key(key, &self.keymap);
         if let Some((prefix, _, _)) = self.pending_chord.as_ref() {
-            let chord = key_chord(key).map(|chord| format!("{prefix} {chord}"));
+            let chord = event_chord(key).map(|chord| format!("{prefix} {chord}"));
             if key.kind == KeyEventKind::Press {
                 if let Some(binding) = chord
                     .as_deref()
@@ -239,7 +238,7 @@ impl PromptInput {
             effects.extend(self.flush_chord());
         }
         if key.kind == KeyEventKind::Press {
-            if let Some(chord) = key_chord(key) {
+            if let Some(chord) = event_chord(key) {
                 if self.keymap.has_prefix(&chord)
                     || matches!(
                         decoded,
@@ -251,7 +250,7 @@ impl PromptInput {
                 {
                     self.last_interrupt = None;
                     self.last_activity = now_ms;
-                    self.pending_chord = Some((chord, now_ms, decoded));
+                    self.pending_chord = Some((chord.as_str().to_owned(), now_ms, decoded));
                     return effects;
                 }
             }
@@ -292,7 +291,7 @@ impl PromptInput {
         if self.search.is_some() {
             match &decoded {
                 DecodedKey::Text(text) => {
-                    effects.extend(self.committed_text(text, now_ms));
+                    effects.extend(self.committed_text(text.encode_utf8(&mut [0; 4]), now_ms));
                     return effects;
                 }
                 DecodedKey::Action {
@@ -336,7 +335,7 @@ impl PromptInput {
             }
         }
         match decoded {
-            DecodedKey::Text(text) => self.editor.insert(&text, now_ms),
+            DecodedKey::Text(text) => self.editor.insert(text.encode_utf8(&mut [0; 4]), now_ms),
             DecodedKey::Action { action, select } => match action {
                 Action::Move(motion) => {
                     if self.dock_items
