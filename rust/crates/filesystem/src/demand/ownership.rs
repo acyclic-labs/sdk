@@ -1,8 +1,8 @@
 #[cfg(feature = "native-watch")]
 use super::*;
 use crate::NativeMaterializationWork;
+use crate::sync::atomic::{self as custody_atomics, AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::sync::atomic::{self as custody_atomics, AtomicBool, AtomicU64, Ordering};
 #[path = "ownership_accounting.rs"]
 pub(super) mod accounting;
 
@@ -100,7 +100,11 @@ impl SourcePayloadOwnership {
 impl Drop for SourcePayloadOwnership {
     fn drop(&mut self) {
         if let Self::Registered(custody, bytes) = self {
-            custody.retire_deferred(*bytes.get_mut());
+            #[cfg(loom)]
+            let bytes = bytes.with_mut(|bytes| *bytes);
+            #[cfg(not(loom))]
+            let bytes = *bytes.get_mut();
+            custody.retire_deferred(bytes);
         }
     }
 }
@@ -155,7 +159,7 @@ impl NativeMountAllocationCustody {
             };
             // A failed admission leaves this placeholder to be reclaimed.
             if let Some(dirty) = &work.roots.native_mount_dirty {
-                dirty.store(true, Ordering::Release);
+                accounting::publish(dirty);
             }
             work.scope(
                 |work| &mut work.roots.native_mount_admission_pending,
@@ -261,7 +265,7 @@ impl NativeMountAllocationCustody {
                     .filter(|current| *current >= std::mem::size_of::<Self>() as u64)
             })
             .map_err(|_| crate::WorkError::Overflow)?;
-        self.accounting_dirty.store(true, Ordering::Release);
+        accounting::publish(&self.accounting_dirty);
         self.retire_resource(bytes)
     }
     #[cfg(feature = "native-watch")]

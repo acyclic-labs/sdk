@@ -1,13 +1,12 @@
+use super::ownership::accounting as mount_accounting;
 use super::*;
 use crate::cancellation::{CancellationWaitError, Cancelled};
 use crate::kernel::{
     ProofDataCustody,
     allocation::{AllocationLedger, LogicalVecCapacity},
 };
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicU64, Ordering},
-};
+use crate::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 
 struct Observer {
     token: Arc<ProofDataCustody>,
@@ -83,7 +82,7 @@ fn native_retired(entry: &Observer) -> u64 {
 fn mount_bytes(entry: &(Arc<AtomicU64>, u64)) -> u64 {
     // The registry retains only this inert gauge. Upgrading custody here could
     // drop its last owner under the leaf and re-enter it through metadata Drop.
-    super::ownership::accounting::retained(Arc::strong_count(&entry.0), &entry.0)
+    mount_accounting::retained(Arc::strong_count(&entry.0), &entry.0)
 }
 fn reconcile_native_observer(
     entry: &mut Observer,
@@ -240,7 +239,7 @@ impl DemandWork {
         let Some(dirty) = self.roots.native_mount_dirty.as_ref() else {
             return self.prune_native_mount_admissions();
         };
-        if !dirty.load(Ordering::Acquire) || !dirty.swap(false, Ordering::AcqRel) {
+        if !mount_accounting::take_dirty(dirty) {
             return Ok(());
         }
         let mut empty = true;
@@ -259,7 +258,7 @@ impl DemandWork {
                 Ok(())
             };
             if let Err(error) = recorded {
-                dirty.store(true, Ordering::Release);
+                mount_accounting::publish(dirty);
                 return Err(error);
             }
             if actual > entry.1
@@ -276,7 +275,7 @@ impl DemandWork {
         }
         if empty && self.roots.native_mount_admission_pending {
             if let Some(dirty) = &self.roots.native_mount_dirty {
-                dirty.store(true, Ordering::Release);
+                mount_accounting::publish(dirty);
             }
         } else if empty {
             drop(self.roots.native_mount_dirty.take());
@@ -289,7 +288,7 @@ impl DemandWork {
     fn prune_native_mount_admissions(&mut self) -> Result<(), crate::WorkError> {
         if self.roots.native_mount_admission_pending {
             if let Some(dirty) = &self.roots.native_mount_dirty {
-                dirty.store(true, Ordering::Release);
+                mount_accounting::publish(dirty);
             }
             return Ok(());
         }
@@ -314,7 +313,7 @@ impl DemandWork {
         }
         if deferred {
             if let Some(dirty) = &self.roots.native_mount_dirty {
-                dirty.store(true, Ordering::Release);
+                mount_accounting::publish(dirty);
             }
             return self
                 .allocations

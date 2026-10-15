@@ -212,9 +212,12 @@ pub(super) fn cache_work(
     budget: crate::WorkBudget,
     cancellation: &crate::CancellationToken,
 ) -> crate::NativeMaterializationWork {
-    crate::NativeMaterializationWork::from_meter(Arc::new(crate::demand::NativeDemandReadMeter(
-        Mutex::new(crate::demand::DemandWork::new(budget, cancellation)),
-    )))
+    crate::NativeMaterializationWork::from_meter(Arc::new(
+        crate::demand::NativeDemandReadMeter::new(crate::demand::DemandWork::new(
+            budget,
+            cancellation,
+        )),
+    ))
 }
 
 #[test]

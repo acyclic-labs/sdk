@@ -77,6 +77,8 @@ pub mod compat_wire;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub mod core_state;
 pub mod demand;
+#[cfg(not(target_arch = "wasm32"))]
+mod sync;
 pub use demand::DemandError;
 #[cfg(feature = "distributed")]
 pub mod distributed;

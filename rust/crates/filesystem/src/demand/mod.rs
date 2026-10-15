@@ -61,5 +61,5 @@ mod paths;
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 pub(crate) use paths::*;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(test, loom, not(target_arch = "wasm32")))]
 mod context_loom_tests;
