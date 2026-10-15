@@ -64,15 +64,25 @@ impl<'a> AuthorityWork<'a> {
         &mut self,
     ) -> Result<Arc<dyn acyclic_native_runtime::NativeReadMeter>, AuthorityStoreError> {
         let original = self.original.expect("native SDK funding");
-        if let Some((bound, meter)) = &self.native_read_meter
-            && std::ptr::eq(*bound, original)
+        if let Some(allocation) = &self.request_allocation
+            && let Some(meter) = allocation.work().authority_read_meter_for(original)
         {
             original.admit(WorkCounters::UNCHARGED)?;
-            return Ok(meter.clone());
+            return Ok(meter);
         }
-        self.native_read_meter = None;
-        let meter = original.authority_read_meter()?;
-        self.native_read_meter = Some((original, meter.clone()));
+        if self.request_allocation.as_ref().is_some_and(|a| a.bytes() == 0) {
+            drop(self.request_allocation.take());
+        }
+        let mut allocation = original.authority_read_allocation()?;
+        let meter = allocation.work().runtime_meter();
+        if let Some(request) = &mut self.request_allocation {
+            // Public rebinding must retain the old request's paid capacity.
+            if !request.work().shares_allocation_context(original) {
+                return Ok(meter);
+            }
+            allocation.absorb(request)?;
+        }
+        self.request_allocation = Some(allocation);
         Ok(meter)
     }
 

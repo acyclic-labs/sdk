@@ -76,16 +76,38 @@ impl NativeMaterializationWork {
         }));
         Ok(())
     }
-    pub(crate) fn authority_read_meter(
+    pub(crate) fn authority_read_allocation(
         &self,
-    ) -> Result<Arc<dyn acyclic_native_runtime::NativeReadMeter>, NativeTreeMaterializationError>
-    {
+    ) -> Result<NativeAllocation, NativeTreeMaterializationError> {
         let mut work = self.allocation_work();
         work.bind_invocation(
             self.cancellation().clone(),
             NativeResourceCredit::AuthorityReadBytes,
         )?;
-        Ok(work.runtime_meter())
+        Ok(NativeAllocation { meter: work, bytes: 0 })
+    }
+    pub(crate) fn authority_read_meter_for(
+        &self,
+        original: &Self,
+    ) -> Option<Arc<dyn acyclic_native_runtime::NativeReadMeter>> {
+        let view = self.invocation.as_ref()?;
+        let bound = view.metadata.work();
+        let same_invocation = match (&bound.invocation, &original.invocation) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        let same_capture = match (&bound.capture_origin, &original.capture_origin) {
+            (Some(a), Some(b)) => Weak::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        (matches!(view.read_credit, NativeResourceCredit::AuthorityReadBytes)
+            && bound.shares_allocation_context(original)
+            && bound.cancellation().same_state(original.cancellation())
+            && same_invocation
+            && same_capture)
+            .then(|| self.runtime_meter())
     }
     /// Adds a finite resource ceiling without changing the original ledger.
     pub fn native_volume_work(

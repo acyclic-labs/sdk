@@ -22,11 +22,6 @@ pub struct AuthorityWork<'a> {
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg(feature = "distributed")]
     pub(crate) request_allocation: Option<crate::NativeAllocation>,
-    #[cfg(all(not(target_arch = "wasm32"), feature = "distributed"))]
-    pub(crate) native_read_meter: Option<(
-        &'a crate::NativeMaterializationWork,
-        std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    )>,
 }
 
 impl<'a> AuthorityWork<'a> {
@@ -41,8 +36,6 @@ impl<'a> AuthorityWork<'a> {
             #[cfg(not(target_arch = "wasm32"))]
             #[cfg(feature = "distributed")]
             request_allocation: None,
-            #[cfg(all(not(target_arch = "wasm32"), feature = "distributed"))]
-            native_read_meter: None,
             #[cfg(not(target_arch = "wasm32"))]
             original: None,
         }
