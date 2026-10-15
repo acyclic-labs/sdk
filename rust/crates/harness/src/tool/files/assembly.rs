@@ -92,7 +92,7 @@ impl FileTool {
                 Self::Read | Self::ReadRange { .. } => &["Read"],
                 Self::Write => &["Write"],
                 Self::Edit | Self::Patch { .. } => &["Edit"],
-                Self::Search { .. } => &[],
+                Self::Plan | Self::Search { .. } => &[],
             },
             definition,
             executor: Arc::new(self),

@@ -40,6 +40,7 @@ impl ToolSpec {
     ) -> crate::Result<Tool> {
         self.definition.validate(&mut None)?;
         Ok(Tool {
+            hook_names: &[],
             definition: self.definition,
             executor,
             projection,
