@@ -248,6 +248,12 @@ fn interrupted_model(observed_events: usize) -> Arc<ScriptedModelProvider> {
     )
 }
 
+fn workspace() -> Result<tempfile::TempDir> {
+    let root = env!("CARGO_TARGET_TMPDIR");
+    std::fs::create_dir_all(root).map_err(|error| Error::Storage(error.to_string()))?;
+    tempfile::tempdir_in(root).map_err(|error| Error::Storage(error.to_string()))
+}
+
 struct TaskMachine {
     identity: MachineIdentity,
     schema: Value,

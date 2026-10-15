@@ -54,7 +54,7 @@ pub(super) async fn worker_restart_with_options(
         evaluated: AtomicUsize::new(0),
         digest: [52; 32],
     });
-    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let directory = workspace()?;
     let fs_options = LocalOptions::new(directory.path().join("filesystem"));
     let stream_root = directory.path().join("streams");
     let provider = ProviderRef::new(

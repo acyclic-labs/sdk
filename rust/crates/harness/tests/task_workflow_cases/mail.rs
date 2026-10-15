@@ -5,7 +5,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
 -> Result<()> {
     use acyclic_harness::filesystem::StockTurnMachine;
     for queued in [true, false] {
-        let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let directory = workspace()?;
         let fs_options = LocalOptions::new(directory.path().join("filesystem"));
         let stream_root = directory.path().join("streams");
         let provider = ProviderRef::new(

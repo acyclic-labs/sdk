@@ -7,26 +7,30 @@ async fn direct_stock_turn_reconciles_through_runtime_after_provider_reopen() ->
 
 #[tokio::test]
 async fn stock_model_publication_faults_reconcile_after_provider_reopen() -> Result<()> {
-    for mode in [
-        ExecutionFaultMode::Before,
-        ExecutionFaultMode::AfterVisible,
-        ExecutionFaultMode::AfterHidden,
-    ] {
-        stock_restart_with_publication_fault(Some(mode), false, false).await?;
-    }
+    futures::future::try_join_all(
+        [
+            ExecutionFaultMode::Before,
+            ExecutionFaultMode::AfterVisible,
+            ExecutionFaultMode::AfterHidden,
+        ]
+        .map(|mode| stock_restart_with_publication_fault(Some(mode), false, false)),
+    )
+    .await?;
     Ok(())
 }
 
 #[tokio::test]
 async fn cancelled_uncertain_model_retains_ownership_until_fenced_release_after_reopen()
 -> Result<()> {
-    for mode in [
-        ExecutionFaultMode::Before,
-        ExecutionFaultMode::AfterVisible,
-        ExecutionFaultMode::AfterHidden,
-    ] {
-        stock_restart_with_publication_fault(Some(mode), true, false).await?;
-    }
+    futures::future::try_join_all(
+        [
+            ExecutionFaultMode::Before,
+            ExecutionFaultMode::AfterVisible,
+            ExecutionFaultMode::AfterHidden,
+        ]
+        .map(|mode| stock_restart_with_publication_fault(Some(mode), true, false)),
+    )
+    .await?;
     Ok(())
 }
 
@@ -39,7 +43,7 @@ pub(super) async fn stock_restart_with_publication_fault(
     cancel_after_failure: bool,
     direct_executor: bool,
 ) -> Result<()> {
-    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let directory = workspace()?;
     let fs_options = LocalOptions::new(directory.path().join("filesystem"));
     let stream_root = directory.path().join("streams");
     let provider = ProviderRef::new(
