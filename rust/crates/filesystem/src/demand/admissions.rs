@@ -41,6 +41,7 @@ pub(crate) struct Admissions {
     pub(super) pending: WorkCounters,
     pub(super) poisoned: bool,
     pub(super) io_failure: Option<DemandError>,
+    pub(super) native_mount_admission_pending: bool,
     observers: (Vec<Observer>, LogicalVecCapacity),
     pub(super) native_mount_admissions: (
         Vec<(Weak<NativeMountAllocationCustody>, u64)>,
@@ -168,6 +169,7 @@ impl DemandWork {
             let actual = observer_bytes(entry);
             (&mut entry.1, actual)
         });
+        let mut retired_mount = false;
         let mounts = self
             .roots
             .native_mount_admissions
@@ -175,6 +177,7 @@ impl DemandWork {
             .iter_mut()
             .map(|entry| {
                 let actual = mount_bytes(entry);
+                retired_mount |= actual == 0;
                 (&mut entry.1, actual)
             });
         let mut failure = None;
@@ -193,6 +196,9 @@ impl DemandWork {
             }
             *paid = actual;
         }
+        if retired_mount {
+            self.prune_native_mount_admissions()?;
+        }
         #[cfg(feature = "native-mount")]
         {
             self.roots.view_gates.reconcile(&mut self.allocations)?;
@@ -201,6 +207,39 @@ impl DemandWork {
                 .reconcile_work(&mut self.work, &mut self.budget)?;
         }
         failure.map_or(Ok(()), Err)
+    }
+    fn prune_native_mount_admissions(&mut self) -> Result<(), crate::WorkError> {
+        if self.roots.native_mount_admission_pending {
+            return Ok(());
+        }
+        let (owners, capacity) = &mut self.roots.native_mount_admissions;
+        let Some(first_dead) = owners.iter().position(|entry| entry.1 == 0) else {
+            return Ok(());
+        };
+        let moved = owners[first_dead..]
+            .iter()
+            .filter(|entry| entry.1 != 0)
+            .count();
+        let copied = WorkCounters {
+            bytes_copied: (moved * std::mem::size_of::<(Weak<NativeMountAllocationCustody>, u64)>())
+                as u64,
+            ..WorkCounters::UNCHARGED
+        };
+        // Compaction is optional when its copies cannot be admitted. Retirement
+        // above is still exact, and a dead tail needs no copies to reclaim.
+        if moved != 0 && self.work.charge(&copied, &self.budget).is_err() {
+            return Ok(());
+        }
+        owners.retain(|entry| entry.1 != 0);
+        if owners.is_empty() {
+            let backing = std::mem::take(owners);
+            let bytes = std::mem::take(capacity).logical_bytes();
+            drop(backing);
+            self.allocations
+                .release(bytes)
+                .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
+        }
+        Ok(())
     }
     fn retain_observer(
         &mut self,

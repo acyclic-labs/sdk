@@ -27,6 +27,11 @@ name = "filesystem"
 harness = false
 required-features = ["local"]
 
+[[test]]
+name = "native_owner_registry"
+path = "tests/native_owner_registry.rs"
+required-features = ["native-watch"]
+
 [[bench]]
 name = "filesystem_alloc"
 harness = false

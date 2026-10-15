@@ -127,20 +127,26 @@ impl NativeMountAllocationCustody {
                 &mut work.work,
                 work.budget,
             )?;
-            let metadata = std::mem::size_of::<Self>() as u64;
-            work.claim_allocation(metadata, 1, WorkCounters::UNCHARGED)?;
-            let custody = Arc::new(Self {
-                bytes: AtomicU64::new(metadata),
-                original,
-            });
-            let slot = work
-                .roots
-                .native_mount_admissions
-                .0
-                .get_mut(index)
-                .ok_or(DemandError::InvalidRequest)?;
-            *slot = (Arc::downgrade(&custody), metadata);
-            Ok(custody)
+            work.scope(
+                |work| &mut work.roots.native_mount_admission_pending,
+                true,
+                |work| {
+                    let metadata = std::mem::size_of::<Self>() as u64;
+                    work.claim_allocation(metadata, 1, WorkCounters::UNCHARGED)?;
+                    let custody = Arc::new(Self {
+                        bytes: AtomicU64::new(metadata),
+                        original,
+                    });
+                    let slot = work
+                        .roots
+                        .native_mount_admissions
+                        .0
+                        .get_mut(index)
+                        .ok_or(DemandError::InvalidRequest)?;
+                    *slot = (Arc::downgrade(&custody), metadata);
+                    Ok(custody)
+                },
+            )
         })
     }
     #[cfg(feature = "native-watch")]
