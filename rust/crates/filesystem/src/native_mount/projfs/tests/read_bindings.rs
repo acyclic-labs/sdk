@@ -79,6 +79,8 @@ async fn cached_read_close_rechecks_source_changes_and_keeps_both_host_probes()
 #[tokio::test]
 async fn a_current_source_binding_still_captures_a_host_metadata_edit()
 -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+
     let work = setup_work()?;
     let source = windows_checkout_source().await?;
     let path = windows_path("read.txt");
@@ -91,9 +93,12 @@ async fn a_current_source_binding_still_captures_a_host_metadata_edit()
     close_read(&runtime, &work);
     let basis = ReadBasis::sample(source.as_ref()).ok_or("source is unstable")?;
     assert_eq!(notify(&runtime, PRJ_NOTIFICATION_FILE_OPENED), HR_OK);
-    std::fs::File::open(&host)?.set_modified(
-        std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(978_307_200),
-    )?;
+    std::fs::OpenOptions::new()
+        .access_mode(windows::Win32::Storage::FileSystem::FILE_WRITE_ATTRIBUTES.0)
+        .open(&host)?
+        .set_modified(
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(978_307_200),
+        )?;
     assert_eq!(ReadBasis::sample(source.as_ref()), Some(basis));
     assert_eq!(
         notify(
