@@ -28,7 +28,7 @@ pub use command::decode_command_envelope;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub(crate) use command::{decode_command, encode_apply_result};
 mod protocol;
-pub(crate) use protocol::{protocol_identity, validate_protocol};
+pub(crate) use protocol::{COMPILED_PROTOCOL, protocol_identity, validate_protocol};
 mod errors;
 pub use errors::encode_error;
 mod authority;
