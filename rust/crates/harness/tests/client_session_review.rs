@@ -374,6 +374,40 @@ fn journal_sidecars_cannot_be_opened_as_journals_or_overwrite_existing_data() {
 }
 
 #[test]
+fn long_journal_names_survive_automatic_checkpoint_and_reopen() {
+    for name in ["a".repeat(220), "b".repeat(250), "é".repeat(110)] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(name);
+        let mut writer = ClientSession::open(FileClientState::open(&path).unwrap()).unwrap();
+        writer
+            .track(wire::ReplayCursor {
+                authority: Some(owner()),
+                generation: "generation".into(),
+                revision: 0,
+            })
+            .unwrap();
+        writer.queue(command()).unwrap();
+        for revision in 0..64 {
+            writer
+                .receive(frame(delivery(revision, LifecycleState::Active)))
+                .unwrap();
+        }
+        drop(writer);
+        let mut store = FileClientState::open(&path).unwrap();
+        assert!(
+            store.load().unwrap().len() < 64,
+            "automatic checkpoint was skipped"
+        );
+        let recovered = ClientSession::open(store).unwrap();
+        assert_eq!(
+            recovered.pending().cloned().collect::<Vec<_>>(),
+            [command()]
+        );
+        assert_eq!(recovered.resume().cursors[0].revision, 64);
+    }
+}
+
+#[test]
 fn historical_assistant_replay_preserves_the_current_turn_tail() {
     use acyclic_harness::model::ModelEvent;
     let mut state = session();
@@ -445,6 +479,19 @@ proptest::proptest! {
         let path = directory.path().join(format!("{name}{suffix}{trailing}"));
         proptest::prop_assert!(matches!(FileClientState::open(&path), Err(Error::Invalid(_))));
         proptest::prop_assert!(!path.exists());
+    }
+
+    // Property: every admitted basename within NAME_MAX leaves room for checkpoint files.
+    #[test]
+    fn checkpoint_names_are_independent_of_journal_name_length(name in "[a-zA-Z0-9_-]{1,250}") {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(name);
+        let mut session = ClientSession::open(FileClientState::open(&path).unwrap()).unwrap();
+        session.queue(command()).unwrap();
+        session.checkpoint().unwrap();
+        drop(session);
+        let recovered = ClientSession::open(FileClientState::open(&path).unwrap()).unwrap();
+        proptest::prop_assert_eq!(recovered.pending().cloned().collect::<Vec<_>>(), vec![command()]);
     }
 
     // Property: file framing and canonical protobuf JSON preserve every admitted field.

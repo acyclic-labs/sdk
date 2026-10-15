@@ -18,12 +18,16 @@ fuzz_target!(|data: &[u8]| {
         }
         // Exercise arbitrary single filenames without escaping the temporary root.
         let mut components = std::path::Path::new(text).components();
-        if text.len() <= 64
+        if text.len() <= 250
             && matches!(components.next(), Some(std::path::Component::Normal(_)))
             && components.next().is_none()
         {
             let directory = tempfile::tempdir().unwrap();
-            let _ = FileClientState::open(&directory.path().join(text));
+            if let Ok(mut store) = FileClientState::open(&directory.path().join(text)) {
+                let record = SessionRecord::default();
+                store.replace(&record).unwrap();
+                assert_eq!(store.load().unwrap(), vec![record]);
+            }
         }
     }
     let directory = tempfile::tempdir().unwrap();

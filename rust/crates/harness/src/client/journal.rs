@@ -179,9 +179,9 @@ impl ClientStateStore for FileClientState {
     fn replace(&mut self, checkpoint: &SessionRecord) -> Result<()> {
         self.check()?;
         let bytes = encode_record(checkpoint)?;
-        let mut temporary = self.path.as_os_str().to_owned();
-        temporary.push(format!(".{}.checkpoint", uuid::Uuid::new_v4()));
-        let temporary = PathBuf::from(temporary);
+        let temporary = self
+            .path
+            .with_file_name(format!(".{}.checkpoint", uuid::Uuid::new_v4()));
         let mut file = open_file(&temporary, true).map_err(storage)?;
         if let Err(error) = file
             .write_all(&bytes)
