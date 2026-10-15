@@ -187,8 +187,8 @@ fn transaction_publish_16(bencher: Bencher) {
 }
 
 /// One small file read from the head generation.
-#[divan::bench]
-fn read_small(bencher: Bencher) {
+#[divan::bench(args = [false, true])]
+fn read_small(bencher: Bencher, native_accounting: bool) {
     let runtime = Runtime::new().unwrap();
     let (_root, _fs, workspace) = workspace(&runtime);
     runtime
@@ -196,20 +196,90 @@ fn read_small(bencher: Bencher) {
             workspace.write("/entry", Bytes::from_static(b"value")),
         ))
         .unwrap();
+    let cancellation = acyclic_fs::CancellationToken::new();
+    if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() {
+        let read = runtime
+            .block_on(Box::pin(workspace.read(
+                "/entry",
+                64,
+                acyclic_fs::performance::BOUNDARY_BUDGET,
+                &cancellation,
+            )))
+            .unwrap();
+        eprintln!("local read: {:?}", read.work);
+    }
     bencher.bench_local(|| {
+        if native_accounting {
+            let work = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::performance::BOUNDARY_BUDGET,
+                &cancellation,
+            )
+            .unwrap();
+            return runtime
+                .block_on(Box::pin(workspace.read("/entry", 64, &work, &cancellation)))
+                .unwrap();
+        }
         runtime
-            .block_on(Box::pin(async {
-                workspace
-                    .read(
-                        "/entry",
-                        64,
-                        acyclic_fs::WorkBudget::UNBOUNDED,
-                        &acyclic_fs::CancellationToken::new(),
-                    )
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| failure.error)
-            }))
+            .block_on(Box::pin(workspace.read(
+                "/entry",
+                64,
+                acyclic_fs::performance::BOUNDARY_BUDGET,
+                &cancellation,
+            )))
             .unwrap()
+            .value
+    });
+}
+
+#[cfg(feature = "memory")]
+#[divan::bench(args = [false, true], threads = [1, 4])]
+fn read_memory_small(bencher: Bencher, native_accounting: bool) {
+    let runtime = Runtime::new().unwrap();
+    let fs = Fs::memory();
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let workspace = runtime
+        .block_on(Box::pin(fs.create_workspace(
+            "bench",
+            acyclic_fs::performance::BOUNDARY_BUDGET,
+            &cancellation,
+        )))
+        .unwrap()
+        .value;
+    runtime
+        .block_on(Box::pin(
+            workspace.write("/entry", Bytes::from_static(b"value")),
+        ))
+        .unwrap();
+    if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() {
+        let read = runtime
+            .block_on(Box::pin(workspace.read(
+                "/entry",
+                64,
+                acyclic_fs::performance::BOUNDARY_BUDGET,
+                &cancellation,
+            )))
+            .unwrap();
+        eprintln!("memory read: {:?}", read.work);
+    }
+    bencher.bench(|| {
+        if native_accounting {
+            let work = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::performance::BOUNDARY_BUDGET,
+                &cancellation,
+            )
+            .unwrap();
+            return runtime
+                .block_on(Box::pin(workspace.read("/entry", 64, &work, &cancellation)))
+                .unwrap();
+        }
+        runtime
+            .block_on(Box::pin(workspace.read(
+                "/entry",
+                64,
+                acyclic_fs::performance::BOUNDARY_BUDGET,
+                &cancellation,
+            )))
+            .unwrap()
+            .value
     });
 }

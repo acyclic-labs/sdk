@@ -37,6 +37,11 @@ name = "accounting_reconciliation"
 path = "tests/accounting_reconciliation.rs"
 required-features = ["memory"]
 
+[[test]]
+name = "workspace_reads"
+path = "tests/workspace_reads.rs"
+required-features = ["memory"]
+
 [dependencies]
 async-trait.workspace = true
 blake3.workspace = true
