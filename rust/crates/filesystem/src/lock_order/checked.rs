@@ -2,7 +2,9 @@ use std::cell::RefCell;
 use std::ops::{Deref, DerefMut};
 use std::panic::Location;
 use std::sync::{LockResult, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 
 thread_local! {
     static HELD: RefCell<Vec<(u16, &'static Location<'static>)>> = const { RefCell::new(Vec::new()) };
@@ -139,11 +141,19 @@ impl Condvar {
         guard: MutexGuard<'a, T>,
         duration: Duration,
     ) -> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)> {
-        match wait(guard, |inner| self.0.wait_timeout(inner, duration)) {
-            Ok((guard, timeout)) => Ok((guard, WaitTimeoutResult::from(timeout))),
-            Err(error) => {
-                let (guard, timeout) = error.into_inner();
-                Err(PoisonError::new((guard, WaitTimeoutResult::from(timeout))))
+        let result = wait(guard, |inner| self.0.wait_timeout(inner, duration));
+        #[cfg(not(test))]
+        {
+            result
+        }
+        #[cfg(test)]
+        {
+            match result {
+                Ok((guard, timeout)) => Ok((guard, WaitTimeoutResult::from(timeout))),
+                Err(error) => {
+                    let (guard, timeout) = error.into_inner();
+                    Err(PoisonError::new((guard, WaitTimeoutResult::from(timeout))))
+                }
             }
         }
     }
