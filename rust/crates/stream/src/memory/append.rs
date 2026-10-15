@@ -23,10 +23,18 @@ impl MemoryStream {
             work.record(work.meter.record_codec(0, 0, hashed))?;
         }
         let mut state = self.state.write().await;
-        if let Some(result) = replay_append(&state, request.idempotency_key.as_ref(), digest)? {
+        if let Some(result) =
+            self.replay_append(&state, request.idempotency_key.as_ref(), digest)?
+        {
             return Ok((result, Default::default()));
         }
         admit_replay(&state, request.idempotency_key.as_ref(), self.limits)?;
+        let mut probes = self.reserve_replay_probes(
+            request
+                .idempotency_key
+                .as_ref()
+                .map_or(0, |_| u64::from(state.replay_height(state.replay_root))),
+        )?;
         let start = state.paths.get(&request.path).map_or(0, |path| path.tail);
         if request.if_tail.is_some_and(|expected| expected != start) {
             let result = AppendOutcome::TailConflict { actual_tail: start };
@@ -34,6 +42,7 @@ impl MemoryStream {
                 self.reserve_retained(&mut state)?;
                 retain(
                     &mut state,
+                    &mut || self.record_replay_probe(&mut probes),
                     None,
                     request.idempotency_key,
                     digest,
@@ -81,6 +90,7 @@ impl MemoryStream {
             state.last_committed_at_micros = time;
             retain(
                 &mut state,
+                &mut || self.record_replay_probe(&mut probes),
                 Some(envelope),
                 request.idempotency_key,
                 digest,

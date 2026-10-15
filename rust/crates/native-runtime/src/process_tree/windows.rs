@@ -44,8 +44,14 @@ pub(super) fn write_pipe(
                 Ok(())
             }
         })?;
+    if let Err(error) = changed {
+        if error.kind() == io::ErrorKind::BrokenPipe {
+            return Ok((Some(0), recorded));
+        }
+        recorded?;
+        return Err(error);
+    }
     recorded?;
-    changed?;
     let mut candidate = bytes;
     loop {
         let mut actual = 0;
@@ -81,6 +87,9 @@ pub(super) fn write_pipe(
             Ok(0) => return Ok((None, recorded)),
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {
                 return Ok((None, recorded));
+            }
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {
+                return Ok((Some(0), recorded));
             }
             Err(error) => {
                 recorded?;

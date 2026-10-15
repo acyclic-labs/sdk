@@ -6,6 +6,181 @@ use acyclic_native_runtime::ReadAllocation;
 use std::sync::atomic::Ordering;
 type MemoryResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+#[tokio::test]
+async fn descending_replay_keys_keep_copy_work_and_lookup_depth_bounded() -> MemoryResult<()> {
+    let provider = MemoryStream::default();
+    let meter = Arc::new(Meter::default());
+    let mut small = 0;
+    for index in 0..256_u64 {
+        provider
+            .native_append(
+                AppendRequest {
+                    path: path("replay/growth")?,
+                    records: vec![OwnedBytes::from_static(b"value")],
+                    if_tail: Some(index),
+                    idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from(
+                        (255 - index).to_be_bytes().to_vec(),
+                    ))?),
+                },
+                meter.original(),
+            )
+            .await??;
+        if index == 63 {
+            small = meter.copied.load(Ordering::SeqCst);
+        }
+    }
+    let copied = meter.copied.load(Ordering::SeqCst);
+    assert!(small > 0);
+    assert!(copied <= small * 5, "copy work: {small} -> {copied}");
+    let examined = meter.examined.load(Ordering::SeqCst);
+    assert!(examined > 256);
+    assert!(examined <= 256 * (6 * u64::from(257_u16.ilog2()) + 2));
+    let retry = AppendRequest {
+        path: path("replay/growth")?,
+        records: vec![OwnedBytes::from_static(b"value")],
+        if_tail: Some(0),
+        idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from(
+            255_u64.to_be_bytes().to_vec(),
+        ))?),
+    };
+    let denied = Arc::new(Meter::default());
+    denied.examination_limit.store(0, Ordering::SeqCst);
+    assert!(
+        provider
+            .native_append(retry.clone(), denied.original())
+            .await
+            .is_err()
+    );
+    let retry_meter = Arc::new(Meter::default());
+    assert!(
+        matches!(provider.native_append(retry, retry_meter.original()).await??.value(),
+        AppendOutcome::Committed(receipt) if receipt.start == 0 && receipt.end == 1)
+    );
+    assert!(retry_meter.examined.load(Ordering::SeqCst) > 0);
+    assert!(retry_meter.examined.load(Ordering::SeqCst) <= 4 * u64::from(257_u16.ilog2()));
+    assert_eq!(provider.tail(path("replay/growth")?).await?, 256);
+    let insertion = Arc::new(Meter::default());
+    let conflict = provider
+        .native_append(
+            AppendRequest {
+                path: path("replay/growth")?,
+                records: vec![OwnedBytes::from_static(b"value")],
+                if_tail: Some(0),
+                idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from(
+                    256_u64.to_be_bytes().to_vec(),
+                ))?),
+            },
+            insertion.original(),
+        )
+        .await??;
+    assert!(matches!(
+        conflict.value(),
+        AppendOutcome::TailConflict { actual_tail: 256 }
+    ));
+    // Both keys follow the same rightmost search path; only the new key is inserted.
+    assert!(
+        insertion.examined.load(Ordering::SeqCst) > retry_meter.examined.load(Ordering::SeqCst)
+    );
+    for index in 0..256_u64 {
+        let observed = provider
+            .inspect_idempotency(IdempotencyKey::new(OwnedBytes::from(
+                index.to_be_bytes().to_vec(),
+            ))?)
+            .await?
+            .ok_or(StreamError::Unavailable)?;
+        assert!(matches!(observed.outcome,
+            IdempotencyOutcome::Append(AppendOutcome::Committed(receipt))
+            if receipt.start == 255 - index && receipt.end == 256 - index));
+    }
+    drop(provider);
+    assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn prepared_replays_share_reserved_inventory_through_interleaved_growth() -> MemoryResult<()>
+{
+    let (provider, request) = prepared_fixture(MemoryLimits::default()).await?;
+    let meter = Arc::new(Meter::default());
+    let mut pending = Vec::new();
+    for index in 0..16 {
+        let mut request = request.clone();
+        request.idempotency_key =
+            IdempotencyKey::new(OwnedBytes::from(format!("prepared/{index}")))?;
+        let key = request.idempotency_key.clone();
+        let (mut issued, guard) = provider
+            .native_prepare_commit(request, 64, meter.original())
+            .await??
+            .into_parts();
+        drop(issued.take_recovery_future());
+        pending.push((key, issued, guard));
+    }
+    for index in 0..64 {
+        provider
+            .native_append(
+                AppendRequest {
+                    path: path("other")?,
+                    records: vec![OwnedBytes::from_static(b"other")],
+                    if_tail: Some(index),
+                    idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from(format!(
+                        "other/{index}"
+                    )))?),
+                },
+                meter.original(),
+            )
+            .await??;
+    }
+    let allocations = meter.allocations.load(Ordering::SeqCst);
+    let examined = meter.examined.load(Ordering::SeqCst);
+    let withheld = meter.pending_examination.load(Ordering::SeqCst);
+    assert!(withheld > 0);
+    meter
+        .examination_limit
+        .store(examined + withheld, Ordering::SeqCst);
+    assert!(meter.original().examine(withheld + 1, 0).is_err());
+    meter.deny_allocation.store(true, Ordering::SeqCst);
+    meter.cancelled.store(true, Ordering::SeqCst);
+    for (index, (key, issued, _guard)) in pending.into_iter().enumerate() {
+        let output = issued.finish(OwnedBytes::from_static(b"body")).await??;
+        assert_eq!(
+            matches!(output.value(), CommitOutcome::Committed(_)),
+            index == 0
+        );
+        let cached = provider
+            .inspect_idempotency(key)
+            .await?
+            .ok_or(StreamError::Unavailable)?;
+        assert_eq!(
+            cached.outcome,
+            IdempotencyOutcome::Commit(output.value().clone())
+        );
+    }
+    assert_eq!(provider.tail(path("completion/target")?).await?, 2);
+    assert!(meter.examined.load(Ordering::SeqCst) > examined);
+    assert!(meter.examined.load(Ordering::SeqCst) <= examined + withheld);
+    assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
+    meter.assert_refunded();
+    drop(provider);
+    assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn prepared_replay_probe_credit_is_required_before_acceptance() -> MemoryResult<()> {
+    let (provider, request) = prepared_fixture(MemoryLimits::default()).await?;
+    let meter = Arc::new(Meter::default());
+    meter.examination_limit.store(1, Ordering::SeqCst);
+    assert!(
+        provider
+            .native_prepare_commit(request, 64, meter.original())
+            .await
+            .is_err()
+    );
+    assert_eq!(provider.tail(path("completion/target")?).await?, 1);
+    meter.assert_refunded();
+    Ok(())
+}
+
 async fn prepared_fixture(limits: MemoryLimits) -> MemoryResult<(MemoryStream, CommitRequest)> {
     let provider = MemoryStream::new(limits);
     for name in ["completion/owner", "completion/target"] {

@@ -1,0 +1,2 @@
+{"max_output_tokens":10,"turns":[[{"type":"event","kind":"reasoning","delta":"thinking"},{"type":"event",
+  "kind":"completed","metadata":null}]],"expect":{"error":"summary operation returned no content"}}

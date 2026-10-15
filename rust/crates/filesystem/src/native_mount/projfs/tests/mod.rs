@@ -8,6 +8,7 @@ use common::*;
 mod metadata;
 mod metadata_errors;
 mod mutations;
+mod names;
 mod notifications;
 mod projection;
 mod recovery;

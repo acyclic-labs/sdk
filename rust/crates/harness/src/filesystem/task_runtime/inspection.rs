@@ -455,8 +455,10 @@ where
             Some(&self.fence),
             self.run_limits.deadline_epoch_ms,
             self.operation_id,
-            self.executor
-                .model_step(&self.journal, input, step, prior_messages),
+            || {
+                self.executor
+                    .model_step(&self.journal, input, step, prior_messages)
+            },
             None,
             |_| false,
         )

@@ -240,7 +240,7 @@ impl McpToolTransport for ScopedHttp {
         name: &'a str,
         arguments: Value,
         context: Option<ToolContext>,
-    ) -> BoxFuture<'a, Result<Value>> {
+    ) -> BoxFuture<'a, Result<rmcp::model::CallToolResult>> {
         Box::pin(async move {
             let context = context
                 .ok_or_else(|| Error::Unsupported("durable task context required".into()))?;
@@ -255,7 +255,7 @@ impl McpToolTransport for ScopedHttp {
         &'a self,
         operation: OperationId,
         context: Option<ToolContext>,
-    ) -> BoxFuture<'a, Result<Option<Value>>> {
+    ) -> BoxFuture<'a, Result<Option<rmcp::model::CallToolResult>>> {
         Box::pin(async move {
             let context = context
                 .ok_or_else(|| Error::Unsupported("durable task context required".into()))?;

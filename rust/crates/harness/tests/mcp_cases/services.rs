@@ -308,8 +308,10 @@ async fn endpoint_sampling_lost_ack_reopens_without_model_redispatch_and_pins_re
         if lose_ack {
             assert!(matches!(observed, Err(Error::Indeterminate(_))));
         } else {
+            let observed = serde_json::to_value(observed?)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
             assert_eq!(
-                observed?["content"]
+                observed["content"]
                     .as_array()
                     .and_then(|content| content.first())
                     .and_then(|content| content.get("text")),

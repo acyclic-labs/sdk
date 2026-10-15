@@ -1,0 +1,7 @@
+{
+  "prompt": "Reject a turn above the admitted model bound.",
+  "limits": {"model_steps":1},
+  "max_steps": 2,
+  "turns": [],
+  "expect": {"error":"max_steps exceeds configured model step bound", "not_events":[{"kind":"model_started"}]}
+}

@@ -295,6 +295,7 @@ impl McpCatalog {
             next.register(
                 (
                     Tool {
+                        hook_names: &[],
                         definition,
                         executor: Arc::new(RemoteTool {
                             server: self.server.clone(),

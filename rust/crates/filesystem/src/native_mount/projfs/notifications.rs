@@ -4,14 +4,82 @@ pub(super) unsafe fn query_name(callback_data: *const PRJ_CALLBACK_DATA) -> HRES
     let Some((data, runtime)) = runtime(callback_data) else {
         return HR_UNEXPECTED;
     };
+    let basis = {
+        let creating = runtime
+            .creating_name
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let (path, Some(basis)) = &*creating {
+            // SAFETY: ProjFS retains this NUL-terminated path throughout the callback.
+            let name = if data.FilePathName.is_null() {
+                &[]
+            } else {
+                data.FilePathName.as_wide()
+            };
+            callback_name_matches(path, name).then_some(*basis)
+        } else {
+            None
+        }
+    };
+    // Release the slot before calling the source: a concurrent creator may
+    // need its write lock to return, and source calls can cause more callbacks.
+    let admitted = if let Some((file_id, basis)) = basis {
+        let work = match runtime.native_work(false) {
+            Ok(work) => work,
+            Err(error) => return native_hresult(&error),
+        };
+        match creating_name_is_current(runtime.source.as_ref(), file_id, basis, &work) {
+            Ok(true) => return HR_OK,
+            Ok(false) => Some(work),
+            Err(error) => return source_hresult(&error),
+        }
+    } else {
+        None
+    };
     let Some(path) = path_from(data.FilePathName) else {
         return HR_INVALID_DATA;
     };
-    let work = match runtime.native_work(false) {
-        Ok(work) => work,
-        Err(error) => return native_hresult(&error),
+    let work = match admitted {
+        Some(work) => work,
+        None => match runtime.native_work(false) {
+            Ok(work) => work,
+            Err(error) => return native_hresult(&error),
+        },
     };
-    match runtime.source.lookup_with_meter(&path, &work) {
+    lookup_name(runtime.source.as_ref(), &path, &work)
+}
+
+fn creating_name_is_current(
+    source: &dyn MountFilesystem,
+    file_id: FileId,
+    basis: ReadBasis,
+    work: &crate::NativeMaterializationWork,
+) -> Result<bool, MountSourceError> {
+    // Scalar facts can only reject this shortcut. Admitting a hit still needs
+    // the metered lease and checks below; rejected facts take the old lookup.
+    if !source.reports_changes_to(file_id)
+        || source.binding_epoch() != Some(basis.binding)
+        || source.view_stamp() != Some(basis.stamp)
+    {
+        return Ok(false);
+    }
+    let _lease = match source.acquire_binding_lease_with_meter(Some(basis.binding), work) {
+        Ok(lease) => lease,
+        Err(MountSourceError::Stale) => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    Ok(source.view_is_stable_with_meter(work)?
+        && source.binding_epoch_with_meter(work)? == Some(basis.binding)
+        && source.reports_changes_to(file_id)
+        && source.view_stamp_with_meter(work)? == Some(basis.stamp))
+}
+
+fn lookup_name(
+    source: &dyn MountFilesystem,
+    path: &MountPath,
+    work: &crate::NativeMaterializationWork,
+) -> HRESULT {
+    match source.lookup_with_meter(path, work) {
         Ok(Some(_)) => HR_OK,
         Ok(None) => HR_FILE_NOT_FOUND,
         Err(error) => source_hresult(&error),

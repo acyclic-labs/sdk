@@ -13,6 +13,15 @@ impl FileTool {
             projection_schema,
             projection,
         ) = match self {
+            Self::Plan => (
+                "update_plan",
+                "plan-1",
+                "Replace plan.md in the task volume with ordered pending, in_progress or completed steps; at most one step may be in_progress",
+                schema::input::<super::super::plan::UpdatePlanInput>()?,
+                schema::output::<FileResult>()?,
+                mode.schema::<FileResult>()?,
+                FileProjection::Publication(mode),
+            ),
             Self::Read => (
                 "acyclic.read_file",
                 "portable-5",
@@ -79,6 +88,12 @@ impl FileTool {
         };
         definition.validate(&mut None)?;
         Ok(Tool {
+            hook_names: match self {
+                Self::Read | Self::ReadRange { .. } => &["Read"],
+                Self::Write => &["Write"],
+                Self::Edit | Self::Patch { .. } => &["Edit"],
+                Self::Search { .. } => &[],
+            },
             definition,
             executor: Arc::new(self),
             projection: Arc::new(projection),

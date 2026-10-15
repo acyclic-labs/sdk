@@ -30,6 +30,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     registry.register(
         (
             Tool {
+                hook_names: &[],
                 definition: definition.clone(),
                 executor: counted.clone(),
                 projection: Arc::new(acyclic_harness::tool::JsonToolProjection),
@@ -50,6 +51,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     registry.register(
         (
             Tool {
+                hook_names: &[],
                 definition: invalid_output.clone(),
                 executor: counted.clone(),
                 projection: Arc::new(acyclic_harness::tool::JsonToolProjection),
@@ -70,6 +72,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     registry.register(
         (
             Tool {
+                hook_names: &[],
                 definition: invalid_projection.clone(),
                 executor: counted,
                 projection: Arc::new(acyclic_harness::tool::JsonToolProjection),
@@ -90,6 +93,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     registry.register(
         (
             Tool {
+                hook_names: &[],
                 definition: large_definition.clone(),
                 executor: Arc::new(CountingNoopTool {
                     executions: large_executions.clone(),
