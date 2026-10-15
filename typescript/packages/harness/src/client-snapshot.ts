@@ -44,7 +44,8 @@ export class SnapshotStore<Value> implements ClientSnapshot<Value> {
       if (this.#disposed) break;
       // A removed callback is never called later in the same publication.
       if (registration.active) {
-        try { registration.listener(); }
+        const listener = registration.listener;
+        try { listener(); }
         catch (error) { queueMicrotask(() => this.onError(error)); }
       }
     }

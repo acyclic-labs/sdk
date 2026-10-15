@@ -78,6 +78,26 @@ test("a failed callback does not prevent later subscriptions observing publicati
   store.dispose();
 });
 
+test("unbound class listeners throw without changing their subscription", async () => {
+  class Consumer {
+    active = true;
+    changed(): void { this.active = false; }
+  }
+  const errors: unknown[] = [];
+  const store = new SnapshotStore(0, undefined, error => errors.push(error));
+  const consumer = new Consumer();
+  store.subscribe(consumer.changed);
+  for (const value of [1, 2]) {
+    store.publish(value);
+    expect(errors).toHaveLength(value - 1);
+    await Promise.resolve();
+    expect(errors).toHaveLength(value);
+    expect(errors[value - 1]).toBeInstanceOf(TypeError);
+  }
+  expect(consumer.active).toBe(true);
+  store.dispose();
+});
+
 test("nested publication sees new subscriptions while the outer publication keeps its cut", () => {
   const store = new SnapshotStore(0);
   const seen: string[] = [];
