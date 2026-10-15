@@ -225,7 +225,7 @@ fn while_locked<G: DerefMut>(
     mut condition: impl FnMut(&mut G::Target) -> bool,
     mut wait: impl FnMut(TrackedGuard<G>) -> LockResult<TrackedGuard<G>>,
 ) -> LockResult<TrackedGuard<G>> {
-    while predicate(&mut guard, &mut condition) {
+    while predicate(&mut *guard, &mut condition) {
         guard = wait(guard)?;
     }
     Ok(guard)
@@ -240,7 +240,7 @@ fn while_timed<G: DerefMut>(
     mut wait: impl FnMut(TrackedGuard<G>, Duration) -> LockResult<(TrackedGuard<G>, WaitTimeoutResult)>,
 ) -> LockResult<(TrackedGuard<G>, WaitTimeoutResult)> {
     let started = Instant::now();
-    while predicate(&mut guard, &mut condition) {
+    while predicate(&mut *guard, &mut condition) {
         let remaining = duration.saturating_sub(started.elapsed());
         if remaining.is_zero() {
             return Ok((guard, WaitTimeoutResult(true)));
