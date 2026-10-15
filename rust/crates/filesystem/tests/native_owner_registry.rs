@@ -79,7 +79,7 @@ async fn interior_retirement_compacts_once_and_defers_when_copy_budget_is_full()
         work.charge(WorkCounters::UNCHARGED)?;
         let after = work.receipt();
         if compact {
-            assert!(after.bytes_copied > before.bytes_copied);
+            assert_eq!(after.bytes_copied - before.bytes_copied, 16);
             let mut expected = before;
             expected.bytes_copied = after.bytes_copied;
             assert_eq!(after, expected);
@@ -245,5 +245,39 @@ async fn oldest_owner_churn_moves_at_most_one_survivor_per_retirement() -> TestR
     }
     assert_eq!(previous.bytes_copied - before.bytes_copied, 32 * 16);
     assert_eq!(work.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+#[tokio::test]
+async fn mixed_retirement_layouts_charge_only_moved_survivors() -> TestResult {
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let root = tempfile::tempdir()?;
+    // Expected survivor moves for every subset of four retired owners.
+    let moves = [0, 1, 1, 2, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 0];
+    for (mask, moved) in moves.into_iter().enumerate() {
+        let cancellation = CancellationToken::new();
+        let work = NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
+        let baseline = work.live_allocation_bytes();
+        let mut survivors = Vec::with_capacity(4);
+        for _ in 0..4 {
+            survivors.push(Some(open(root.path(), &work).await?));
+        }
+        let before = work.receipt();
+        for (index, source) in survivors.iter_mut().enumerate() {
+            if mask & (1 << index) != 0 {
+                drop(source.take());
+            }
+        }
+        work.charge(WorkCounters::UNCHARGED)?;
+        let mut expected = before;
+        expected.bytes_copied += moved * 16;
+        assert_eq!(work.receipt(), expected, "retired mask {mask}");
+        work.charge(WorkCounters::UNCHARGED)?;
+        assert_eq!(work.receipt(), expected);
+        drop(survivors);
+        work.charge(WorkCounters::UNCHARGED)?;
+        assert_eq!(work.receipt(), expected);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+    }
     Ok(())
 }
