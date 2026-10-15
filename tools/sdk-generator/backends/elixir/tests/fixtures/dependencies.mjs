@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { sha256 } from "../../../../shared/authority.mjs";
-import { tar } from "./package.mjs";
+import { tar } from "../../../../shared/tests/archive.mjs";
 
 export function dependencyFixture(t) {
   const root = mkdtempSync(join(tmpdir(), "elixir-dependencies-"));
