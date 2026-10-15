@@ -2,12 +2,12 @@ use super::GuestError;
 use std::cell::Cell;
 use ts_rs::TS;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(loom)]
 use loom::{
     sync::{Arc, Mutex},
     thread_local,
 };
-#[cfg(not(all(test, not(target_arch = "wasm32"))))]
+#[cfg(not(loom))]
 use std::{
     sync::{Arc, Mutex},
     thread_local,
@@ -66,7 +66,7 @@ impl<State> GuestState<State> {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(test, loom))]
 mod tests {
     use super::*;
 
@@ -121,6 +121,35 @@ mod tests {
                     .is_ok()
             );
             assert!(second.with(|value| *value += 1).is_ok());
+        });
+    }
+
+    // Negative control: deliberately split a read/modify/write across an await.
+    // It exercises the same state shim, but loses atomic exclusion between steps.
+    #[test]
+    #[should_panic(expected = "lost update")]
+    fn model_detects_broken_mutation_exclusion() {
+        loom::model(|| {
+            let state = GuestState::new(0u8);
+            let handlers: Vec<_> = (0..2)
+                .map(|_| {
+                    let state = state.clone();
+                    loom::thread::spawn(move || {
+                        let mut snapshot = 0;
+                        assert!(state.with(|value| snapshot = *value).is_ok());
+                        loom::thread::yield_now();
+                        assert!(state.with(|value| *value = snapshot + 1).is_ok());
+                    })
+                })
+                .collect();
+            for handler in handlers {
+                assert!(handler.join().is_ok());
+            }
+            assert!(
+                state
+                    .with(|value| assert_eq!(*value, 2, "lost update"))
+                    .is_ok()
+            );
         });
     }
 }
