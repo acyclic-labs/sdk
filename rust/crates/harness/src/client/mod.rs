@@ -24,6 +24,8 @@ mod commands;
 pub use commands::*;
 mod mentions;
 pub use mentions::*;
+mod notifications;
+pub use notifications::*;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
 
