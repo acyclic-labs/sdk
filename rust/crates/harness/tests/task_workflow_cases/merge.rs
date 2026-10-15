@@ -31,7 +31,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
             })
         }
     }
-    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let directory = workspace()?;
     let options = LocalOptions::new(directory.path().join("filesystem"));
     let stream_root = directory.path().join("streams");
     let provider = ProviderRef::new(

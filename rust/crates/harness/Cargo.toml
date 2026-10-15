@@ -36,6 +36,11 @@ name = "mcp-durable"
 path = "tests/mcp_durable.rs"
 required-features = ["filesystem-local", "mcp-http"]
 
+[[test]]
+name = "task-workflow"
+path = "tests/task_workflow.rs"
+required-features = ["filesystem-local"]
+
 [lib]
 crate-type = ["rlib", "cdylib"]
 
