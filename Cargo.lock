@@ -145,6 +145,7 @@ dependencies = [
  "indexed_db_futures",
  "js-sys",
  "libc",
+ "loom",
  "napi",
  "napi-derive",
  "notify",

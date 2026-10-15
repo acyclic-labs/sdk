@@ -5,8 +5,8 @@ use crate::kernel::{
     allocation::{AllocationLedger, LogicalVecCapacity},
 };
 use std::sync::{
-    Arc, Weak,
-    atomic::{AtomicBool, Ordering},
+    Arc,
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 struct Observer {
@@ -53,10 +53,7 @@ pub(crate) struct Admissions {
     observers: (Vec<Observer>, LogicalVecCapacity),
     pub(super) native_mount_admission_pending: bool,
     pub(super) native_mount_dirty: Option<Arc<AtomicBool>>,
-    pub(super) native_mount_admissions: (
-        Vec<(Weak<NativeMountAllocationCustody>, u64)>,
-        LogicalVecCapacity,
-    ),
+    pub(super) native_mount_admissions: (Vec<(Arc<AtomicU64>, u64)>, LogicalVecCapacity),
     #[cfg(feature = "native-mount")]
     pub(crate) view_gates: crate::native_mount::ViewGateReadAdmissions,
 }
@@ -83,8 +80,10 @@ fn native_retired(entry: &Observer) -> u64 {
         .expect("monotonic retirement");
     u64::try_from(retired).expect("bounded live native bytes")
 }
-fn mount_bytes(entry: &(Weak<NativeMountAllocationCustody>, u64)) -> u64 {
-    entry.0.upgrade().map_or(0, |owner| owner.retained_bytes())
+fn mount_bytes(entry: &(Arc<AtomicU64>, u64)) -> u64 {
+    // The registry retains only this inert gauge. Upgrading custody here could
+    // drop its last owner under the leaf and re-enter it through metadata Drop.
+    super::ownership::accounting::retained(Arc::strong_count(&entry.0), &entry.0)
 }
 fn reconcile_native_observer(
     entry: &mut Observer,
@@ -301,29 +300,35 @@ impl DemandWork {
         let live = owners.iter().filter(|entry| entry.1 != 0).count();
         let moved = owners[..live].iter().filter(|entry| entry.1 == 0).count();
         let copied = WorkCounters {
-            bytes_copied: (moved * std::mem::size_of::<(Weak<NativeMountAllocationCustody>, u64)>())
-                as u64,
+            bytes_copied: (moved * std::mem::size_of::<(Arc<AtomicU64>, u64)>()) as u64,
             ..WorkCounters::UNCHARGED
         };
         // Retirement is unconditional. Moving survivors requires the current
         // cancellation, invocation, resource and original-ledger admission.
         let deferred = moved != 0 && self.charge_reconciled(copied).is_err();
         let (owners, capacity) = &mut self.roots.native_mount_admissions;
+        let mut released = 0;
         while owners.last().is_some_and(|entry| entry.1 == 0) {
             owners.pop();
+            released += std::mem::size_of::<AtomicU64>() as u64;
         }
         if deferred {
             if let Some(dirty) = &self.roots.native_mount_dirty {
                 dirty.store(true, Ordering::Release);
             }
-            return Ok(());
+            return self
+                .allocations
+                .release(released)
+                .map_err(|error| error.into_work_or(crate::WorkError::Overflow));
         }
         let mut index = 0;
         while index < owners.len() {
             if owners[index].1 == 0 {
                 owners.swap_remove(index);
+                released += std::mem::size_of::<AtomicU64>() as u64;
                 while owners.last().is_some_and(|entry| entry.1 == 0) {
                     owners.pop();
+                    released += std::mem::size_of::<AtomicU64>() as u64;
                 }
             } else {
                 index += 1;
@@ -331,12 +336,12 @@ impl DemandWork {
         }
         if owners.is_empty() {
             let backing = std::mem::take(owners);
-            let bytes = std::mem::take(capacity).logical_bytes();
+            released += std::mem::take(capacity).logical_bytes();
             drop(backing);
-            self.allocations
-                .release(bytes)
-                .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
         }
+        self.allocations
+            .release(released)
+            .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
         Ok(())
     }
     fn retain_observer(

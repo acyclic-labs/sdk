@@ -4,9 +4,19 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+// Lock order: observer registry (35), source cursors (40), original leaf (50),
+// gate counters (60). Resource allowances follow the leaf, ancestors first.
 pub(crate) struct NativeDemandReadMeter(pub(crate) Mutex<DemandWork>);
 impl NativeDemandReadMeter {
-    pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, DemandWork> {
+    pub(crate) fn lock(&self) -> impl std::ops::DerefMut<Target = DemandWork> {
+        #[cfg(test)]
+        let model = super::context_loom_tests::before_leaf();
+        let state = self.lock_state();
+        #[cfg(test)]
+        let state = super::context_loom_tests::LeafGuard::new(state, model);
+        state
+    }
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, DemandWork> {
         self.0.lock().unwrap_or_else(|poisoned| {
             let mut state = poisoned.into_inner();
             state.poison_native_original_work();
