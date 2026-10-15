@@ -96,8 +96,8 @@ type TokenCounter = dyn Fn(&PreparedModelRequest) -> Result<ModelTokenCount> + S
 /// Exhaustion fails instead of silently repeating the final response.
 pub struct ScriptedModelProvider {
     state: Mutex<State>,
-    capacity: ModelContextCapacity,
-    token_counter: Arc<TokenCounter>,
+    capacity: Option<ModelContextCapacity>,
+    token_counter: Option<Arc<TokenCounter>>,
 }
 
 impl ScriptedModelProvider {
@@ -109,18 +109,18 @@ impl ScriptedModelProvider {
                 turns: turns.into_iter().collect(),
                 ..State::default()
             }),
-            capacity: ModelContextCapacity {
+            capacity: Some(ModelContextCapacity {
                 context_tokens: 131_072,
                 output_tokens: 4_096,
-            },
-            token_counter: Arc::new(serialized_tokens),
+            }),
+            token_counter: Some(Arc::new(serialized_tokens)),
         }
     }
 
     /// Replaces the model's advertised context and output capacities.
     #[must_use]
     pub fn with_context_capacity(mut self, capacity: ModelContextCapacity) -> Self {
-        self.capacity = capacity;
+        self.capacity = Some(capacity);
         self
     }
 
@@ -130,7 +130,15 @@ impl ScriptedModelProvider {
         mut self,
         counter: impl Fn(&PreparedModelRequest) -> Result<ModelTokenCount> + Send + Sync + 'static,
     ) -> Self {
-        self.token_counter = Arc::new(counter);
+        self.token_counter = Some(Arc::new(counter));
+        self
+    }
+
+    /// Leaves capacity and token accounting unavailable, as in providers without compaction support.
+    #[must_use]
+    pub fn without_accounting(mut self) -> Self {
+        self.capacity = None;
+        self.token_counter = None;
         self
     }
 
@@ -199,11 +207,16 @@ impl ScriptedModelProvider {
 
 impl ModelProvider for ScriptedModelProvider {
     fn context_capacity(&self, _: &Model) -> Result<ModelContextCapacity> {
-        Ok(self.capacity)
+        self.capacity.ok_or_else(|| {
+            Error::Unsupported("selected model context capacity is unavailable".into())
+        })
     }
 
     fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
-        (self.token_counter)(request)
+        let counter = self.token_counter.as_ref().ok_or_else(|| {
+            Error::Unsupported("selected model token counting is unavailable".into())
+        })?;
+        counter(request)
     }
 
     fn generate<'a>(
