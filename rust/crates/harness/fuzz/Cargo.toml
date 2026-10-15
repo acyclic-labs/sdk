@@ -1,0 +1,23 @@
+[package]
+name = "acyclic-harness-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+acyclic-harness = { path = "..", features = ["test-support", "filesystem-local", "mcp-http"] }
+libfuzzer-sys = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[bin]]
+name = "notification_scenario"
+path = "fuzz_targets/notification_scenario.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
