@@ -14,9 +14,9 @@ pub struct TaskEffectPlan {
     /// Immutable result schema.
     pub result_schema: crate::conversation::FileRef,
 }
+#[cfg(feature = "filesystem")]
 impl TaskEffectPlan {
-    /// Returns the retained header and owned field storage.
-    pub fn logical_owned_bytes(&self) -> Result<u64> {
+    fn retained_bytes(&self) -> Result<u64> {
         crate::core::owned_sum([
             std::mem::size_of::<Self>() as u64,
             self.provider.capacity() as u64,
@@ -29,7 +29,7 @@ impl TaskEffectPlan {
 #[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for TaskEffectPlan {
     fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
-        self.logical_owned_bytes().map(Some)
+        self.retained_bytes().map(Some)
     }
 }
 /// Returns the canonical identity of one task command's effect.
@@ -59,4 +59,48 @@ pub(super) fn identity<T: serde::Serialize>(
         io.copy_bytes(16)?;
     }
     Ok(id)
+}
+
+#[cfg(all(test, feature = "filesystem"))]
+mod tests {
+    use super::*;
+    use crate::conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef};
+    use crate::filesystem::PreparationRecord;
+    use crate::resources::ProviderRef;
+
+    #[test]
+    fn decode_hook_retains_header_and_owned_fields() -> Result<()> {
+        let file = FileRef::new(
+            VolumeRef::new(
+                ProviderRef::new("test".into(), "filesystem".into(), "1".into(), &mut None)?,
+                "volume".into(),
+                VolumeClass::Project,
+                VolumeOwner::Project("project".into()),
+                &mut None,
+            )?,
+            "request.json".into(),
+            "revision".into(),
+            FileDescriptor::from_bytes(b"{}", "application/json", &mut None)?,
+            "request.json".into(),
+            &mut None,
+        )?;
+        let mut plan = TaskEffectPlan {
+            provider: "provider".into(),
+            guarantee: crate::core::EffectGuarantee::AtMostOnce,
+            effect_kind: "operation".into(),
+            request: file.clone(),
+            result_schema: file,
+        };
+        plan.provider.reserve(64);
+        plan.effect_kind.reserve(96);
+        let heap_bytes = plan.provider.capacity() as u64
+            + plan.effect_kind.capacity() as u64
+            + plan.request.logical_owned_bytes()?
+            + plan.result_schema.logical_owned_bytes()?;
+        assert_eq!(
+            plan.decoded_owned_bytes()?,
+            Some(std::mem::size_of::<TaskEffectPlan>() as u64 + heap_bytes)
+        );
+        Ok(())
+    }
 }
