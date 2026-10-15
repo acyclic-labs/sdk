@@ -93,3 +93,37 @@ test("a malformed report retains its HTML while later builds still produce JSON 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("pinned Cargo's real Windows ARM report selects the binary and preserves reported phase evidence", () => {
+  const fixture = readFileSync("scripts/fixtures/cargo-timings/windows-arm64-1.98.1.html", "utf8");
+  const pinned = readFileSync("rust-toolchain.toml", "utf8").match(/^channel = "([^"]+)"/m)?.[1]
+    ?? assert.fail("missing pinned Cargo toolchain");
+  assert.ok(fixture.includes(`rustc ${pinned} `), "refresh the real fixture when the pinned toolchain changes");
+  const parsed = readCargoTimings(fixture);
+  assert.equal(parsed.units.length, 5);
+  assert.deepEqual(parsed.units.map(unit => [unit.name, unit.duration]), [
+    ["acyclic-plugin", 283.35], ["acyclic-harness", 146.95], ["acyclic-fs", 86.28],
+    ["acyclic-objects", 19.82], ["acyclic-stream", 13.62],
+  ]);
+  const root = mkdtempSync(".tools/real-cargo-report-");
+  try {
+    mkdirSync(join(root, "target", "cargo-timings"), { recursive: true });
+    writeFileSync(join(root, "target", "cargo-timings", "cargo-timing.html"), fixture);
+    const output = join(root, "out");
+    const result = spawnSync(process.execPath, ["scripts/cargo-timings-summary.mjs", output, `product=${join(root, "target")}`],
+      { encoding: "utf8", timeout: 60000, env: { ...process.env, GITHUB_STEP_SUMMARY: join(root, "summary.md") } });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(readFileSync(join(output, "product-cargo-timings.json"), "utf8"));
+    assert.equal(report.finalBinaryUnits.length, 1);
+    assert.equal(report.finalBinaryUnits[0].target, ' acyclic "bin"');
+    assert.equal(report.finalBinaryUnits[0].duration, 283.35);
+    assert.equal(report.finalBinaryUnits[0].sections, null);
+    assert.match(result.stdout, /combined compilation\/codegen\/link 283\.35s; reported codegen not reported; reported link not reported/);
+    assert.match(result.stdout, /acyclic-fs \| 86\.28s \| 0\.00s \| not reported/);
+    assert.deepEqual(report.cpuUsage, parsed.cpuUsage);
+    assert.equal(readFileSync(join(output, "product-cargo-timing.html"), "utf8"), fixture);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

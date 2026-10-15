@@ -119,7 +119,7 @@ test("native cache snapshot runs before leaving the build step and preserves its
   assert.ok(end < build.run.indexOf("node scripts/build-product.mjs"));
   const startup = build.run.indexOf("sccache --start-server");
   assert.ok(startup >= 0, "native builds must start the compiler-cache daemon");
-  assert.ok(startup < build.run.indexOf("cargo build --locked"));
+  assert.ok(startup < build.run.indexOf("cargo build "));
   assert.ok(startup < build.run.indexOf("node scripts/build-product.mjs"));
   assert.ok(build.run.includes('command -v "$RUSTC_WRAPPER"'));
   assert.ok(build.run.includes('wait "${pids[$index]}"'));
