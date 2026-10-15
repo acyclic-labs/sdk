@@ -14,10 +14,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 &mut NativeDemandCarrier::Native(work),
                 cancellation,
                 Some(lifetime),
-                |carrier, stamp| {
-                    self.ledger.check_change_since(&change, stamp, carrier)?;
-                    record_view_change(&self.ledger, &change, carrier)
-                },
+                |carrier, _| record_view_change(&self.ledger, &change, carrier),
                 |checkout, candidate, prepared| {
                     cancellation
                         .commit_if_both_live(lifetime, || {

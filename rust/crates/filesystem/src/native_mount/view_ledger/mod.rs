@@ -15,7 +15,6 @@ use storage::ChangePositions;
 pub(super) use storage::same_work;
 pub(super) use storage::{copy_work, scan_work};
 use unicode_normalization::UnicodeNormalization as _;
-mod admission;
 mod notifications;
 mod storage;
 
@@ -346,7 +345,7 @@ impl ViewLedger {
                 && storage::unchanged_since(
                     &self.bindings,
                     stamp,
-                    path_keys(path.components().iter()).inspect(|key| terminal = *key),
+                    path_keys(path).inspect(|key| terminal = *key),
                 )
                 && storage::unchanged_since(&self.directories, stamp, [terminal])
                 && file_id.is_none_or(|file_id| {
@@ -384,11 +383,9 @@ impl ViewLedger {
     }
 }
 
-fn path_keys<'a>(
-    names: impl Iterator<Item = &'a LogicalName> + 'a,
-) -> impl Iterator<Item = u64> + 'a {
+fn path_keys(path: &NamespacePath) -> impl Iterator<Item = u64> + '_ {
     let root = key_of(&());
-    std::iter::once(root).chain(names.scan(root, |parent, name| {
+    std::iter::once(root).chain(path.components().iter().scan(root, |parent, name| {
         *parent = hash_child(*parent, name);
         Some(*parent)
     }))
@@ -466,8 +463,8 @@ fn child_key(
     })
 }
 
-fn admitted_names<'a, T>(
-    names: impl IntoIterator<Item = &'a LogicalName>,
+fn admitted_names<T>(
+    names: &[LogicalName],
     work: &mut crate::demand::DemandWork,
     read: impl FnOnce() -> T,
 ) -> Result<T, MountSourceError> {

@@ -28,41 +28,6 @@ fn path(names: &[&str]) -> Result<NamespacePath, Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn candidate_admission_tracks_exact_names_nodes_and_unconfirmed_changes()
--> Result<(), Box<dyn std::error::Error>> {
-    let mut work = work();
-    let mut carrier = NativeDemandCarrier::Borrowed(&mut work);
-    let ledger = ViewLedger::new(&mut carrier)?;
-    let first = path(&["clients", "first"])?;
-    let second = path(&["clients", "second"])?;
-    let first_id = FileId::new();
-    let second_id = FileId::new();
-    let stamp = ledger.stamp();
-    ledger.record(&ViewChange::Bound(&first), &mut carrier)?;
-    ledger.record(&ViewChange::Node(first_id), &mut carrier)?;
-    ledger.check_change_since(&ViewChange::Bound(&second), stamp, &mut carrier)?;
-    ledger.check_change_since(&ViewChange::Node(second_id), stamp, &mut carrier)?;
-    let effect = super::ViewEffect {
-        names: vec![(path(&["clients"])?, second.components()[1].clone())],
-        nodes: vec![second_id],
-        ..super::ViewEffect::default()
-    };
-    ledger.check_change_since(&ViewChange::Effect(&effect), stamp, &mut carrier)?;
-    for change in [ViewChange::Bound(&first), ViewChange::Node(first_id)] {
-        assert!(matches!(
-            ledger.check_change_since(&change, stamp, &mut carrier),
-            Err(crate::native_mount::MountSourceError::Stale)
-        ));
-    }
-    ledger.record(&ViewChange::Unconfirmed, &mut carrier)?;
-    assert!(matches!(
-        ledger.check_change_since(&ViewChange::Node(second_id), stamp, &mut carrier),
-        Err(crate::native_mount::MountSourceError::Stale)
-    ));
-    Ok(())
-}
-
-#[test]
 fn unrelated_changes_never_invalidate_a_lookup() -> Result<(), Box<dyn std::error::Error>> {
     let mut work = work();
     let ledger = ViewLedger::new(&mut NativeDemandCarrier::Borrowed(&mut work))?;

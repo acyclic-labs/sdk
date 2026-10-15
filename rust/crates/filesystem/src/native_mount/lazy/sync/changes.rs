@@ -249,11 +249,9 @@ where
                 cancellation,
                 Some(self.authored.cancellation()),
                 |carrier, stamp| {
-                    self.authored.shared_checkout().ledger.check_change_since(
-                        &ViewChange::Effect(installed),
-                        stamp,
-                        carrier,
-                    )?;
+                    if self.authored.shared_checkout().ledger.stamp() != stamp {
+                        return Err(MountSourceError::Stale);
+                    }
                     adapter::record_view_change(
                         &self.authored.shared_checkout().ledger,
                         &ViewChange::Effect(installed),
