@@ -100,9 +100,9 @@ impl SourcePayloadOwnership {
 impl Drop for SourcePayloadOwnership {
     fn drop(&mut self) {
         if let Self::Registered(custody, bytes) = self {
-            #[cfg(loom)]
+            #[cfg(acyclic_fs_loom)]
             let bytes = bytes.with_mut(|bytes| *bytes);
-            #[cfg(not(loom))]
+            #[cfg(not(acyclic_fs_loom))]
             let bytes = *bytes.get_mut();
             custody.retire_deferred(bytes);
         }
