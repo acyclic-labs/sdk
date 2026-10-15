@@ -1,0 +1,23 @@
+{
+  "run": "38665239762",
+  "run_url": "https://github.com/acyclic-labs/sdk/actions/runs/38665239762",
+  "source_commit": "9843fe0dbd1c74eb2098c1ae39904c359ced8e8a",
+  "job": "Build win32-arm64",
+  "artifact": "native-build-timings-win32-arm64-38665239762-1",
+  "original_file": "product-cargo-timing.html",
+  "original_report_sha256": "dea20ed991f933052ee186294dc7b9ae490b5dcfaad68b9164a0f110995062c4",
+  "toolchain": "1.98.1",
+  "host": "x86_64-pc-windows-msvc",
+  "product_target": "aarch64-pc-windows-msvc",
+  "profile": "dist",
+  "fixture": "windows-arm64-1.98.1.html",
+  "extraction": [
+    "Retain the original summary table verbatim.",
+    "Parse UNIT_DATA, sort by descending duration and retain the five slowest records without changing their fields.",
+    "Retain the first two and last two CONCURRENCY_DATA and CPU_USAGE samples.",
+    "Serialize arrays using JSON.stringify(value, null, 2), retaining Cargo's const declarations inside a script element.",
+    "Omit CSS and plotting JavaScript; preserve original unit IDs and references to omitted units."
+  ],
+  "limitations": "This is a data excerpt, not an interactive report. The binary sections value is null, so separate codegen/link durations are not established. Library sections, including zero-duration codegen, are unchanged.",
+  "refresh": "Capture the artifact from an authorized Release using the pinned toolchain, repeat the extraction and update this provenance. No local build generated the fixture."
+}
