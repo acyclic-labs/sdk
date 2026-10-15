@@ -502,10 +502,7 @@ async fn discovery_moves_schemas_and_rejects_cursor_count_and_byte_overruns() ->
 #[test]
 fn stdio_configuration_preserves_argv_scope_environment_and_project_root() -> Result<()> {
     let workspace = std::env::current_dir().map_err(Error::process_io)?;
-    let executable = std::env::current_exe()
-        .map_err(Error::process_io)?
-        .canonicalize()
-        .map_err(Error::process_io)?;
+    let executable = std::env::current_exe().map_err(Error::process_io)?;
     let environment = |name: &str| match name {
         "PROGRAM" => Some(executable.as_os_str().to_owned()),
         "TOKEN" => Some("secret".into()),
