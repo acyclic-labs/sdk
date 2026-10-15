@@ -260,7 +260,7 @@ pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_m
         Err(Error::Conflict(_))
     ));
 
-    let model = Arc::new(SummaryModel::default());
+    let (model, _counts) = summary_model(1);
     let snapshot_model = Model::new(
         "synthetic".into(),
         "snapshot-admission".into(),
@@ -313,13 +313,10 @@ pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_m
     .map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(prepared, composed);
     {
-        let requests = model
-            .requests
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let requests = model.requests();
         assert_eq!(requests.len(), 1);
         assert_eq!(
-            requests.first().map(|request| &request.request().messages),
+            requests.first().map(|request| &request.messages),
             Some(&composed.messages)
         );
     }
@@ -351,14 +348,7 @@ pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_m
             .await,
         Err(Error::NotFound(_))
     ));
-    assert_eq!(
-        model
-            .requests
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len(),
-        1
-    );
+    assert_eq!(model.requests().len(), 1);
     reader.missing.store(false, Ordering::SeqCst);
     let changed = storage
         .stage(
@@ -386,13 +376,6 @@ pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_m
         changed_executor.execute(turn, journal.as_ref()).await,
         Err(Error::Conflict(_))
     ));
-    assert_eq!(
-        model
-            .requests
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len(),
-        1
-    );
+    assert_eq!(model.requests().len(), 1);
     Ok(())
 }

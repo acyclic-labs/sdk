@@ -23,7 +23,11 @@ async fn execution_journal_rejects_noncanonical_json_before_replay() -> Result<(
 #[tokio::test]
 async fn admitted_replay_does_not_reload_or_transform_sources() -> Result<()> {
     let stage = Arc::new(OnceStage(AtomicUsize::new(0)));
-    let provider = Arc::new(PrefixBoundaryModel::default());
+    let provider = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Events(vec![
+        ScriptedEvent::Event(ModelEvent::Completed {
+            metadata: Value::Null,
+        }),
+    ])]));
     let executor = uncompacted_executor(
         Model::new("test".into(), "model".into(), "1".into(), Value::Null)?,
         provider.clone(),
@@ -43,7 +47,7 @@ async fn admitted_replay_does_not_reload_or_transform_sources() -> Result<()> {
     assert_eq!(first, executor.model_step(&journal, &input, 0, &[]).await?);
     assert_eq!(
         crate::model::PreparedModelRequest::decode(
-            &provider.0.lock().unwrap()[0],
+            &crate::contract::canonical_json_bytes(&provider.requests()[0])?,
             Limits::default(),
             None,
         )?
@@ -60,7 +64,7 @@ async fn admitted_replay_does_not_reload_or_transform_sources() -> Result<()> {
             .is_err()
     );
     assert_eq!(stage.0.load(Ordering::SeqCst), 1);
-    assert_eq!(provider.0.lock().unwrap().len(), 1);
+    assert_eq!(provider.requests().len(), 1);
     journal.1.lock().unwrap().clear();
     assert!(executor.execute(input, &journal).await.is_err());
     assert_eq!(stage.0.load(Ordering::SeqCst), 1);
@@ -92,7 +96,11 @@ async fn stock_prefix_reaches_provider_and_is_pinned_by_replay() -> Result<()> {
             crate::model::ModelPrefix::MEDIA_TYPE,
         )
         .await?;
-    let provider = Arc::new(PrefixBoundaryModel::default());
+    let provider = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Events(vec![
+        ScriptedEvent::Event(ModelEvent::Completed {
+            metadata: Value::Null,
+        }),
+    ])]));
     let executor = uncompacted_executor(
         model,
         provider.clone(),
@@ -115,7 +123,14 @@ async fn stock_prefix_reaches_provider_and_is_pinned_by_replay() -> Result<()> {
         content: input.input.clone(),
     });
     let expected = crate::model::PreparedModelRequest::prepare(expected, Limits::default(), None)?;
-    assert_eq!(*provider.0.lock().unwrap(), vec![expected.bytes().to_vec()]);
+    assert_eq!(
+        provider
+            .requests()
+            .iter()
+            .map(crate::contract::canonical_json_bytes)
+            .collect::<Result<Vec<_>>>()?,
+        vec![expected.bytes().to_vec()]
+    );
     let unbound = uncompacted_executor(
         root.request().model.clone(),
         provider.clone(),

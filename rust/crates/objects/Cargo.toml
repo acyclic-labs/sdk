@@ -8,15 +8,9 @@ repository.workspace = true
 publish = true
 description = "Logical Objects contract with gRPC, HTTP, and memory clients"
 readme = "README.md"
-exclude = ["benches"]
 documentation = "https://docs.rs/acyclic-objects"
 keywords = ["objects", "storage", "grpc"]
 categories = ["api-bindings", "filesystem"]
-
-[[bench]]
-name = "objects"
-harness = false
-required-features = ["local"]
 
 [features]
 default = ["grpc"]
@@ -63,7 +57,6 @@ rustls-platform-verifier = { workspace = true, optional = true }
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
 tracing-subscriber.workspace = true
 tracing-chrome.workspace = true
-divan.workspace = true
 axum.workspace = true
 parking_lot = "0.12"
 rcgen = "0.14.10"

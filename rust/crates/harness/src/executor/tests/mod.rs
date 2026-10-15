@@ -23,17 +23,6 @@ fn fixture_token_count(
     })
 }
 
-#[derive(Default)]
-struct CountedModel {
-    capacity: u32,
-    requests: Mutex<Vec<ModelRequest>>,
-    interrupt_summary: bool,
-    reconciliations: AtomicUsize,
-    dispatches: Mutex<Vec<crate::model::ModelDispatch>>,
-    accounting_fault: Option<AccountingFault>,
-    accounting_calls: AtomicUsize,
-}
-
 #[derive(Clone, Copy)]
 enum AccountingFault {
     Digest,
@@ -42,21 +31,23 @@ enum AccountingFault {
     CompactedPressure,
 }
 
-impl ModelProvider for CountedModel {
-    fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
-        Ok(crate::context::ModelContextCapacity {
-            context_tokens: self.capacity,
+fn counted_model(
+    capacity: u32,
+    fault: Option<AccountingFault>,
+    turns: impl IntoIterator<Item = ScriptedTurn>,
+    recoveries: impl IntoIterator<Item = ScriptedReconciliation>,
+) -> (Arc<ScriptedModelProvider>, Arc<AtomicUsize>) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = calls.clone();
+    let provider = ScriptedModelProvider::new(turns)
+        .with_reconciliations(recoveries)
+        .with_context_capacity(crate::context::ModelContextCapacity {
+            context_tokens: capacity,
             output_tokens: 4_096,
         })
-    }
-
-    fn count_tokens(
-        &self,
-        request: &crate::model::PreparedModelRequest,
-    ) -> Result<crate::context::ModelTokenCount> {
-        self.accounting_calls.fetch_add(1, Ordering::SeqCst);
-        let message_tokens =
-            request
+        .with_token_counter(move |request| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            let message_tokens = request
                 .request()
                 .messages
                 .iter()
@@ -82,88 +73,32 @@ impl ModelProvider for CountedModel {
                         .map_err(|_| Error::Invalid("synthetic token bound exceeds u32".into()))
                 })
                 .collect::<Result<Vec<_>>>()?;
-        let mut count = crate::context::ModelTokenCount {
-            request_digest: request.request_digest(),
-            fixed_tokens: 100,
-            message_tokens,
-        };
-        match self.accounting_fault {
-            Some(AccountingFault::Digest) => count.request_digest[0] ^= 1,
-            Some(AccountingFault::MissingMessage) => {
-                count.message_tokens.pop();
+            let mut count = crate::context::ModelTokenCount {
+                request_digest: request.request_digest(),
+                fixed_tokens: 100,
+                message_tokens,
+            };
+            match fault {
+                Some(AccountingFault::Digest) => count.request_digest[0] ^= 1,
+                Some(AccountingFault::MissingMessage) => {
+                    count.message_tokens.pop();
+                }
+                Some(AccountingFault::ExtraMessage) => count.message_tokens.push(1),
+                Some(AccountingFault::CompactedPressure)
+                    if request.request().messages.first().is_some_and(|message| {
+                        matches!(
+                            message.content,
+                            ModelContent::Part(ModelContentPart::File { .. })
+                        )
+                    }) =>
+                {
+                    count.fixed_tokens = capacity;
+                }
+                _ => {}
             }
-            Some(AccountingFault::ExtraMessage) => count.message_tokens.push(1),
-            Some(AccountingFault::CompactedPressure)
-                if request.request().messages.first().is_some_and(|message| {
-                    matches!(
-                        message.content,
-                        ModelContent::Part(ModelContentPart::File { .. })
-                    )
-                }) =>
-            {
-                count.fixed_tokens = self.capacity;
-            }
-            _ => {}
-        }
-        Ok(count)
-    }
-
-    fn generate<'a>(
-        &'a self,
-        request: crate::model::PreparedModelRequest,
-        dispatch: crate::model::ModelDispatch,
-    ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
-        let summary = request.request().messages.last().is_some_and(|message| matches!(&message.content, ModelContent::Text(text) if text.starts_with("Summarize the preceding context")));
-        self.requests
-            .lock()
-            .unwrap()
-            .push(request.request().clone());
-        self.dispatches.lock().unwrap().push(dispatch);
-        if summary && self.interrupt_summary {
-            return Box::pin(stream::iter([
-                Ok(ModelEvent::Content {
-                    delta: "partial-".into(),
-                }),
-                Err(Error::Storage("synthetic summary interruption".into())),
-            ]));
-        }
-        Box::pin(stream::iter([
-            Ok(ModelEvent::Content {
-                delta: if summary { "summary" } else { "answer" }.into(),
-            }),
-            Ok(ModelEvent::Completed {
-                metadata: Value::Null,
-            }),
-        ]))
-    }
-
-    fn reconcile<'a>(
-        &'a self,
-        dispatch: crate::model::ModelDispatch,
-        observed: &'a [crate::model::ModelEvent],
-    ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-        Box::pin(async move {
-            if !self.interrupt_summary {
-                return Ok(None);
-            }
-            assert!(self.dispatches.lock().unwrap().contains(&dispatch));
-            assert_eq!(
-                observed,
-                vec![ModelEvent::Content {
-                    delta: "partial-".into()
-                }]
-            );
-            self.reconciliations.fetch_add(1, Ordering::SeqCst);
-            Ok(Some(vec![
-                ModelEvent::Content {
-                    delta: "summary".into(),
-                },
-                ModelEvent::Completed {
-                    metadata: Value::Null,
-                },
-            ]))
-        })
-    }
+            Ok(count)
+        });
+    (Arc::new(provider), calls)
 }
 
 struct ChangingCompactionSource(AtomicUsize);
@@ -201,8 +136,6 @@ use crate::{
     resources::ProviderRef,
     tool::ToolExecutor,
 };
-
-use futures::stream;
 
 use std::collections::HashMap;
 
@@ -723,22 +656,6 @@ impl crate::conversation::ContentResidencyVerifier for Journal {
             io,
             || async move { self.load(file, io)?.await },
         )
-    }
-}
-
-#[derive(Default)]
-struct PrefixBoundaryModel(Mutex<Vec<Vec<u8>>>);
-
-impl ModelProvider for PrefixBoundaryModel {
-    fn generate<'a>(
-        &'a self,
-        request: crate::model::PreparedModelRequest,
-        _dispatch: crate::model::ModelDispatch,
-    ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
-        self.0.lock().unwrap().push(request.bytes().to_vec());
-        Box::pin(stream::iter([Ok(ModelEvent::Completed {
-            metadata: Value::Null,
-        })]))
     }
 }
 

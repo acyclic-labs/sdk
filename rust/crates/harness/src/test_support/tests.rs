@@ -388,3 +388,28 @@ fn token_counter_can_capture_configuration_without_changing_the_request() -> Res
     assert_eq!(provider.count_tokens(&request)?.fixed_tokens, 11);
     Ok(())
 }
+
+#[tokio::test]
+async fn unavailable_accounting_still_records_and_replays_generation() -> Result<()> {
+    let provider =
+        ScriptedModelProvider::new([ScriptedTurn::Text("answer".into())]).without_accounting();
+    let (request, dispatch) = request()?;
+    assert!(
+        matches!(provider.context_capacity(&request.request().model),
+        Err(crate::Error::Unsupported(message)) if message == "selected model context capacity is unavailable")
+    );
+    assert!(matches!(provider.count_tokens(&request),
+        Err(crate::Error::Unsupported(message)) if message == "selected model token counting is unavailable"));
+    let events = provider
+        .generate(request, dispatch)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>>>()?;
+    assert!(
+        matches!(events.as_slice(), [ModelEvent::Content { delta }, ModelEvent::Completed { .. }] if delta == "answer")
+    );
+    assert_eq!(provider.requests().len(), 1);
+    assert_eq!(provider.remaining(), 0);
+    Ok(())
+}

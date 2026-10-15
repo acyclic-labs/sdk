@@ -3,10 +3,8 @@ use super::*;
 #[tokio::test]
 async fn fixed_custom_context_uses_its_full_message_allowance() -> Result<()> {
     let journal = Journal::default();
-    let provider = Arc::new(CountedModel {
-        capacity: 65_536,
-        ..CountedModel::default()
-    });
+    let (provider, _accounting_calls) =
+        counted_model(65_536, None, [ScriptedTurn::Text("answer".into())], []);
     let source = crate::context::Context {
         messages: vec![ModelMessage {
             role: ModelRole::System,
@@ -42,7 +40,7 @@ async fn fixed_custom_context_uses_its_full_message_allowance() -> Result<()> {
     };
     let output = executor.execute(input.clone(), &journal).await?;
     assert_eq!(executor.execute(input, &journal).await?, output);
-    let requests = provider.requests.lock().unwrap();
+    let requests = provider.requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].messages.len(), 2);
     assert_eq!(
@@ -328,48 +326,14 @@ async fn interrupted_model_stream_reconciles_without_redispatch() -> Result<()> 
 
 #[tokio::test]
 async fn identical_model_bytes_keep_distinct_dispatch_identities() -> Result<()> {
-    #[derive(Default)]
-    struct Provider(Mutex<Vec<(crate::model::ModelDispatch, Vec<u8>)>>);
-    impl ModelProvider for Provider {
-        fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
-            Ok(crate::context::ModelContextCapacity {
-                context_tokens: 131_072,
-                output_tokens: 4_096,
-            })
-        }
-
-        fn count_tokens(
-            &self,
-            request: &crate::model::PreparedModelRequest,
-        ) -> Result<crate::context::ModelTokenCount> {
-            fixture_token_count(request)
-        }
-
-        fn generate<'a>(
-            &'a self,
-            request: crate::model::PreparedModelRequest,
-            dispatch: crate::model::ModelDispatch,
-        ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
-            Box::pin(stream::once(async move {
-                assert_eq!(dispatch.request_digest, request.request_digest());
-                self.0
-                    .lock()
-                    .unwrap()
-                    .push((dispatch, request.bytes().to_vec()));
-                Ok(ModelEvent::Completed {
-                    metadata: Value::Null,
-                })
-            }))
-        }
-        fn reconcile<'a>(
-            &'a self,
-            _dispatch: crate::model::ModelDispatch,
-            _observed: &'a [crate::model::ModelEvent],
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            Box::pin(async { Err(Error::Unsupported("completed attempts must replay".into())) })
-        }
-    }
-    let provider = Arc::new(Provider::default());
+    let provider = Arc::new(
+        ScriptedModelProvider::new((0..2).map(|_| {
+            ScriptedTurn::Events(vec![ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: Value::Null,
+            })])
+        }))
+        .with_token_counter(fixture_token_count),
+    );
     let executor = StockExecutor::new(
         Model::new("fixture".into(), "identity".into(), "1".into(), Value::Null)?,
         provider.clone(),
@@ -391,14 +355,20 @@ async fn identical_model_bytes_keep_distinct_dispatch_identities() -> Result<()>
         executor.execute(input(operation), &journal).await?;
     }
     executor.execute(input(operations[0]), &journal).await?;
-    let captures = provider.0.lock().unwrap();
+    let dispatches = provider.dispatches();
+    let requests = provider.requests();
+    let captures = dispatches.iter().zip(&requests).collect::<Vec<_>>();
     assert_eq!(captures.len(), 2);
     assert_eq!(captures[0].0.operation_id, operations[0]);
     assert_eq!(captures[1].0.operation_id, operations[1]);
     assert_eq!(captures[0].0.step, 0);
     assert_eq!(captures[1].0.step, 0);
     assert_eq!(captures[0].0.request_digest, captures[1].0.request_digest);
-    assert_eq!(captures[0].1, captures[1].1);
+    assert_eq!(
+        crate::contract::canonical_json_bytes(captures[0].1)?,
+        crate::contract::canonical_json_bytes(captures[1].1)?
+    );
+    assert!(provider.reconciliations().is_empty());
     Ok(())
 }
 
@@ -549,5 +519,36 @@ async fn native_result_reads_obey_effective_limits_and_attenuated_grants() -> Re
     )
     .await?;
     assert_eq!(journal.4.load(Ordering::SeqCst), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn direct_model_steps_reject_empty_and_partial_eof() -> Result<()> {
+    for events in [
+        vec![],
+        vec![ScriptedEvent::Event(ModelEvent::Content {
+            delta: "partial".into(),
+        })],
+    ] {
+        let provider = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Events(events)]));
+        let executor = uncompacted_executor(
+            Model::new("test".into(), "model".into(), "1".into(), Value::Null)?,
+            provider.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        );
+        let input = TurnInput {
+            operation_id: OperationId::new(),
+            input: ModelContent::Text("question".into()),
+            selected_context: None,
+            max_steps: 1,
+        };
+        assert!(
+            matches!(executor.model_step(&Journal::default(), &input, 0, &[]).await,
+            Err(Error::Indeterminate(id)) if id == input.operation_id)
+        );
+        assert_eq!(provider.requests().len(), 1);
+        assert_eq!(provider.remaining(), 0);
+    }
     Ok(())
 }
