@@ -419,7 +419,12 @@ impl Query {
     pub(super) fn ranges(&self) -> Vec<(std::ops::Bound<FileKey>, std::ops::Bound<FileKey>)> {
         use std::ops::Bound::{Included, Unbounded};
         let range = |task: &Component, first: TaskFile, last: TaskFile| {
-            let bound = |file| Included(FileKey::Task { task: task.clone(), file });
+            let bound = |file| {
+                Included(FileKey::Task {
+                    task: task.clone(),
+                    file,
+                })
+            };
             (bound(first), bound(last))
         };
         let minimum = Component(Arc::from(""));
