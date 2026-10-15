@@ -93,13 +93,17 @@ proptest! {
         prop_assert_eq!(provider.count_tokens(&prepared).unwrap(), count.clone());
         request.messages.reverse();
         expected.reverse();
-        request.model.revision = "2".into();
         let reordered = PreparedModelRequest::prepare(request, Limits::default(), None).unwrap();
-        prop_assert!(count.validate(&reordered, &mut None).is_err());
+        prop_assert_eq!(count.validate(&reordered, &mut None).is_err(),
+            reordered.request() != prepared.request());
         let reordered_count = provider.count_tokens(&reordered).unwrap();
         prop_assert_eq!(&reordered_count.message_tokens, &expected);
         prop_assert_eq!(reordered_count.validate(&reordered, &mut None).unwrap(),
             count.validate(&prepared, &mut None).unwrap());
+        let mut revised = reordered.request().clone();
+        revised.model.revision = "2".into();
+        let revised = PreparedModelRequest::prepare(revised, Limits::default(), None).unwrap();
+        prop_assert!(reordered_count.validate(&revised, &mut None).is_err());
         prop_assert!(provider.dispatches().is_empty());
         prop_assert!(provider.requests().is_empty());
     }
