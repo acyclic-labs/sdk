@@ -105,8 +105,7 @@ fn host_publication_cannot_cross_lease_release_or_cancellation() {
                 let mut original = Box::new(block_on(Box::pin(open(&client))).unwrap());
                 let task = OperationId::from_bytes([41; 16]);
                 block_on(declare(&mut original, spec(task, 0).unwrap(), "task")).unwrap();
-                let lease =
-                    Box::new(block_on(start(&mut original, &worker("worker"), "start")).unwrap());
+                let lease = block_on(start(&mut original, &worker("worker"), "start")).unwrap();
                 let fence = LeaseFence::from(&lease.reservation);
                 let (owner, issuer) = owner_issuer();
                 let scope = grant(&issuer, "observe", &["operation:observe"]).unwrap();

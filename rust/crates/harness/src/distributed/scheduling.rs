@@ -57,10 +57,12 @@ pub enum WorkPull {
 impl<P: StreamProvider> DistributedCoordinator<P> {
     /// Pulls and atomically admits one dependency- and resource-ready operation.
     pub async fn pull(&mut self, worker: &Worker) -> Result<Option<WorkLease>> {
-        match self.pull_for(worker, None, None, None, &mut None).await? {
-            WorkPull::Idle => Ok(None),
-            WorkPull::Claimed(lease) => Ok(Some(lease)),
-            WorkPull::Unresolved { error, .. } => Err(error),
+        let mut work = None;
+        let future = self.pull_for(worker, None, None, None, &mut work)?;
+        match future.await {
+            Ok(WorkPull::Idle) => Ok(None),
+            Ok(WorkPull::Claimed(lease)) => Ok(Some(lease)),
+            Ok(WorkPull::Unresolved { error, .. }) | Err(error) => Err(error),
         }
     }
 
@@ -72,10 +74,9 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     ) -> Result<Option<WorkLease>> {
         let bytes = crate::contract::canonical_json_bytes(worker)?;
         let fingerprint = blake3::hash(&bytes).to_hex().to_string();
-        match self
-            .pull_for(worker, None, None, Some((identity, fingerprint)), &mut None)
-            .await?
-        {
+        let mut work = None;
+        let future = self.pull_for(worker, None, None, Some((identity, fingerprint)), &mut work)?;
+        match future.await? {
             WorkPull::Idle => Ok(None),
             WorkPull::Claimed(lease) => Ok(Some(lease)),
             WorkPull::Unresolved { error, .. } => Err(error),
@@ -102,23 +103,26 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 "owned pull requires operation:declare and operation:observe",
             ));
         }
-        self.pull_for(worker, Some((owner, verifier)), operation_id, None, work)
-            .await
+        let future = self.pull_for(worker, Some((owner, verifier)), operation_id, None, work)?;
+        let bytes = future.frame_bytes();
+        let result = future.await;
+        let _frame = CodecQuota::from_retained(work, bytes);
+        result
     }
 
     #[allow(
         clippy::too_many_lines,
         reason = "The admitted lease and unresolved append error retain original custody through same-key resolution."
     )]
-    async fn pull_for(
-        &mut self,
-        worker: &Worker,
-        authorization: Option<(&Authority, &AuthorityVerifier)>,
+    fn pull_for<'a, 'w: 'a>(
+        &'a mut self,
+        worker: &'a Worker,
+        authorization: Option<(&'a Authority, &'a AuthorityVerifier)>,
         target: Option<OperationId>,
         identity: Option<(IdempotencyKey, String)>,
-        work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<WorkPull> {
-        let future = crate::store::HistoryContentFuture::new(work, |work| async move {
+        work: &'a mut Option<&'w mut dyn HistoryIo>,
+    ) -> Result<crate::store::HistoryContentFuture<'a, WorkPull>> {
+        crate::store::HistoryContentFuture::new(work, |work| async move {
             let owner = authorization.map(|(owner, _)| owner);
             self.refresh(work).await?;
             if worker.id.trim().is_empty() {
@@ -304,7 +308,12 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             if custody.work().is_some() {
                 custody.adopt(admitted.logical_owned_bytes()?)?;
             }
-            let mut lease = WorkLease {
+            let box_bytes = std::mem::size_of::<WorkLease>() as u64;
+            let mut lease_custody = CodecQuota::new(custody.work(), box_bytes)?;
+            if let Some(work) = lease_custody.work().as_deref_mut() {
+                work.admit_allocation(box_bytes)?;
+            }
+            let mut lease = Box::new(WorkLease {
                 operation,
                 reservation: Reservation {
                     id: reservation_id,
@@ -313,9 +322,9 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 },
                 checkpoint,
                 operation_revision,
-            };
+            });
             let appended = {
-                let mut attempt = CodecQuota::new(custody.work(), 0)?;
+                let mut attempt = CodecQuota::new(lease_custody.work(), 0)?;
                 let reservation = lease.reservation.clone_with_work(attempt.work())?;
                 if attempt.work().is_some() {
                     attempt.adopt(reservation.logical_owned_bytes()?)?;
@@ -345,9 +354,11 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 .await
             };
             if let Err(error) = appended {
-                if custody.work().is_some() && error.is_native_failure() {
+                if lease_custody.work().is_some() && error.is_native_failure() {
                     return Err(error);
                 }
+                let lease = *lease;
+                drop(lease_custody);
                 custody.transfer();
                 return Ok(WorkPull::Unresolved { lease, error });
             }
@@ -355,12 +366,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 .scheduler
                 .operation(operation_id)
                 .map_or(0, |value| value.revision);
+            let lease = *lease;
+            drop(lease_custody);
             custody.transfer();
             Ok(WorkPull::Claimed(lease))
-        })?;
-        let bytes = future.frame_bytes();
-        let result = future.await;
-        let _frame = CodecQuota::from_retained(work, bytes);
-        result
+        })
     }
 }

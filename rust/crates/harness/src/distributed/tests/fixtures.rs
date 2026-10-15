@@ -106,12 +106,13 @@ pub(super) fn start<'a, P: StreamProvider>(
     coordinator: &'a mut DistributedCoordinator<P>,
     worker: &'a Worker,
     key: &'a str,
-) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<WorkLease>> + 'a>> {
+) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<Box<WorkLease>>> + 'a>> {
     Box::pin(async move {
-        let lease = coordinator
-            .pull(worker)
-            .await?
-            .ok_or_else(|| Error::NotFound("lease".into()))?;
+        let lease = match coordinator.pull(worker).await {
+            Ok(Some(lease)) => Box::new(lease),
+            Ok(None) => return Err(Error::NotFound("lease".into())),
+            Err(error) => return Err(error),
+        };
         coordinator
             .apply(
                 IdempotencyKey::new(key)?,
