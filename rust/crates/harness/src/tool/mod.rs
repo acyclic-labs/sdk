@@ -12,6 +12,7 @@ use std::{collections::BTreeMap, sync::Arc};
 pub mod edit;
 pub mod files;
 pub mod patch;
+pub mod plan;
 pub mod schema;
 mod spec;
 pub use spec::{BuiltinTool, ToolEffect, ToolSpec};

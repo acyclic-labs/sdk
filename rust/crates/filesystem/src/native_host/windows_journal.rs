@@ -158,7 +158,7 @@ pub(super) fn windows_stat_information<W: NativeHostWork>(
     })
 }
 
-pub(super) fn stat_windows_file<W: NativeHostWork>(
+pub(crate) fn stat_windows_file<W: NativeHostWork>(
     file: &impl std::os::windows::io::AsHandle,
     volume: u32,
     work: &mut W,
@@ -169,12 +169,12 @@ pub(super) fn stat_windows_file<W: NativeHostWork>(
     )?)
 }
 
-pub(super) fn stat_windows_name<W: NativeHostWork>(
+pub(crate) fn stat_windows_name(
     directory: &Dir,
     name: &win::UNICODE_STRING,
     volume: u32,
-    work: &mut W,
-) -> Result<Option<HostStat>, W::Error> {
+    include_reparse: bool,
+) -> io::Result<Option<HostStat>> {
     let attributes = windows::Wdk::Foundation::OBJECT_ATTRIBUTES {
         Length: u32::try_from(std::mem::size_of::<
             windows::Wdk::Foundation::OBJECT_ATTRIBUTES,
@@ -187,7 +187,6 @@ pub(super) fn stat_windows_name<W: NativeHostWork>(
     };
     let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
     let mut information = nt::FILE_STAT_INFORMATION::default();
-    work.started_io(READ)?;
     // SAFETY: the held directory, name, and fixed-size output outlive the query.
     let status = unsafe {
         nt::NtQueryInformationByName(
@@ -203,9 +202,9 @@ pub(super) fn stat_windows_name<W: NativeHostWork>(
         return Ok(None);
     }
     if status.is_err() {
-        return Err(status_error(status).into());
+        return Err(status_error(status));
     }
-    if information.ReparseTag != 0 {
+    if !include_reparse && information.ReparseTag != 0 {
         return Ok(None);
     }
     Ok(Some(HostStat::from_stat_information(&information, volume)?))

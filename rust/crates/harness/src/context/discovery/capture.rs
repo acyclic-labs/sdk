@@ -13,14 +13,14 @@ pub struct DiscoveredContext {
     pub skills: Vec<SkillMetadata>,
 }
 
-pub(super) struct DiscoveryWork {
-    pub(super) entries: u32,
-    pub(super) directories: u32,
-    pub(super) limits: ContextDiscoveryLimits,
+pub(crate) struct DiscoveryWork {
+    pub(crate) entries: u32,
+    pub(crate) directories: u32,
+    pub(crate) limits: ContextDiscoveryLimits,
 }
 
 impl DiscoveryWork {
-    pub(super) async fn list(
+    pub(crate) async fn list(
         &mut self,
         reader: &dyn ContentResidencyVerifier,
         root: &ContextRoot,
@@ -91,7 +91,7 @@ impl DiscoveryWork {
     }
 }
 
-pub(super) fn child(directory: &str, name: &str) -> String {
+pub(crate) fn child(directory: &str, name: &str) -> String {
     if directory.is_empty() {
         name.into()
     } else {

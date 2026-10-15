@@ -6,7 +6,7 @@ use serde_json::Value;
 mod admission;
 mod identity;
 mod records;
-pub(crate) use identity::{canonical_json_digest, json_byte_length};
+pub(crate) use identity::{canonical_json_digest, json_byte_length, serialized_json_digest};
 mod diagnostics;
 pub(crate) use diagnostics::{
     audited_serde_diagnostic_bytes, json_decode_owned_bytes, snapshot_json_admission,
