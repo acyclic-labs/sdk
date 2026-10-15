@@ -93,7 +93,6 @@ jobs:
   qualification:
     name: ${{ matrix.lane }}
     needs: plan
-    if: needs.plan.outputs.matrix != '[]'
     strategy:
       fail-fast: false
       max-parallel: 18
@@ -139,12 +138,7 @@ jobs:
       - name: Require every qualification lane
         env:
           PLAN_RESULT: ${{ needs.plan.result }}
-          MATRIX: ${{ needs.plan.outputs.matrix }}
           RESULT: ${{ needs.qualification.result }}
         run: |
           test "$PLAN_RESULT" = success
-          if test "$MATRIX" = '[]'; then
-            test "$RESULT" = skipped
-          else
-            test "$RESULT" = success
-          fi
+          test "$RESULT" = success
