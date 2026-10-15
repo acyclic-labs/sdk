@@ -77,6 +77,19 @@ proptest! {
         prop_assert!(environment_typescript(&large, "production", "agent")?.contains("B0: Streams"));
     }
 
+    /// Shared grants are indexed once even when both action and cron counts grow.
+    #[test]
+    fn shared_grant_work_is_linear(count in 1usize..=16) {
+        let make = |size: usize| -> Result<DeploymentManifest, ManifestError> {
+            let mut manifest = fixture()?;
+            let env = &mut manifest.environments[0];
+            env.grants[0].grant.0.actions = vec!["streams/append".into(); size];
+            let cron = env.crons[0].clone();
+            env.crons = (0..size).map(|i| CronSpec { name:format!("cron{i}"), ..cron.clone() }).collect();
+            Ok(manifest)
+        };
+        prop_assert!(validate_work(&make(count * 4)?)? <= validate_work(&make(count)?)? * 5);
+    }
     /// Plain API keys, bearer credentials and credential-bearing URLs never become refs.
     #[test]
     fn plaintext_credentials_are_never_secret_references(payload in "[A-Za-z0-9_-]{1,120}") {

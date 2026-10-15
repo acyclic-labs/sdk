@@ -216,6 +216,7 @@ pub fn validate_work(manifest: &DeploymentManifest) -> Result<usize, ManifestErr
         let grants = index(&environment.grants, |g| &g.name, &p)?;
         let secrets = index(&environment.secrets, |s| &s.name, &p)?;
         work += entries.len() + bindings.len() + grants.len() + secrets.len();
+        let mut actions = HashMap::new();
         for grant in &environment.grants {
             require(identifier(&grant.name), &p, "grant-name")?;
             require(
@@ -252,6 +253,15 @@ pub fn validate_work(manifest: &DeploymentManifest) -> Result<usize, ManifestErr
                 &p,
                 "auth-resource",
             )?;
+            actions.insert(
+                grant.name.as_str(),
+                grant
+                    .grant
+                    .actions
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<HashSet<_>>(),
+            );
             work += grant.grant.actions.len();
         }
         for binding in &environment.bindings {
@@ -407,11 +417,11 @@ pub fn validate_work(manifest: &DeploymentManifest) -> Result<usize, ManifestErr
                 .ok_or_else(|| ManifestError::invalid(&cp, "inbox-grant"))?;
             require(
                 scope(&grant.grant.resource, &inbox.name)
-                    && grant.grant.actions.iter().any(|a| a == "streams/append"),
+                    && actions[grant.name.as_str()].contains("streams/append"),
                 &cp,
                 "inbox-authority",
             )?;
-            work += 4 + grant.grant.actions.len();
+            work += 4;
         }
         for asset in &environment.assets {
             require(digest(&asset.bundle_sha256), &p, "asset-digest")?;
@@ -432,11 +442,11 @@ pub fn validate_work(manifest: &DeploymentManifest) -> Result<usize, ManifestErr
                 scope(
                     &grant.grant.resource,
                     &asset_resource(&grant.grant.resource, &asset.bundle_sha256)?,
-                ) && grant.grant.actions.iter().any(|a| a == "objects/get"),
+                ) && actions[grant.name.as_str()].contains("objects/get"),
                 &p,
                 "asset-resource-grant",
             )?;
-            work += 3 + grant.grant.actions.len();
+            work += 3;
         }
         for route in &environment.routes {
             require(
