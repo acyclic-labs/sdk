@@ -1,11 +1,12 @@
 use super::*;
 use crate::{
     OperationId,
+    conversation::Limits,
     mcp::{
         McpToolTransport,
         config::{Dialect, ImportedServer},
     },
-    runtime::ToolContext,
+    runtime::{RuntimeScope, ToolContext},
     tool::{Tool, ToolDefinition, ToolInvocation},
 };
 use serde_json::Value;
@@ -124,6 +125,10 @@ async fn installation_is_additive_filtered_and_uses_the_retained_connection() ->
         .await?;
     assert!(installed.diagnostics.is_empty());
     assert_eq!(
+        installed.capabilities.iter().collect::<Vec<_>>(),
+        ["mcp:call:configured", "tool:call:mcp.configured.read"]
+    );
+    assert_eq!(
         installed
             .tools
             .definitions(None)?
@@ -142,18 +147,25 @@ async fn installation_is_additive_filtered_and_uses_the_retained_connection() ->
         .tools
         .get("mcp.configured.read", None, None)?
         .expect("MCP tool");
-    let result = tool
-        .executor
-        .execute(
-            ToolInvocation {
-                operation_id: OperationId::new(),
-                call_id: "call".into(),
-                name: "mcp.configured.read".into(),
-                arguments: json!({"x":1}),
-            },
-            None,
-        )
-        .await?;
+    let invocation = ToolInvocation {
+        operation_id: OperationId::new(),
+        call_id: "call".into(),
+        name: "mcp.configured.read".into(),
+        arguments: json!({"x":1}),
+    };
+    let scope = RuntimeScope::new(installed.capabilities, Limits::default())?;
+    tool.executor
+        .authorize(Some(&scope), None, &invocation, None)?;
+    let denied = RuntimeScope::new(
+        Capabilities::new(["tool:call:mcp.configured.read"]),
+        Limits::default(),
+    )?;
+    assert!(matches!(
+        tool.executor
+            .authorize(Some(&denied), None, &invocation, None),
+        Err(Error::Unauthorized(_))
+    ));
+    let result = tool.executor.execute(invocation, None).await?;
     assert_eq!(result.value["content"][0]["text"], "{\"x\":1}");
     assert_eq!(remote.0.load(Ordering::SeqCst), 1);
     assert!(installed.tools.clone().extend(installed.tools).is_err());
@@ -192,6 +204,53 @@ async fn initialization_is_concurrent_and_optional_diagnostics_keep_config_order
         ["a", "b", "c"]
     );
     assert!(result.tools.definitions(None)?.is_empty());
+    assert!(result.capabilities.iter().next().is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn no_selected_tools_grant_no_authority_and_invalid_limits_never_connect() -> Result<()> {
+    let configuration = || {
+        Ok::<_, Error>(McpConfig {
+            servers: BTreeMap::from([(
+                "configured".into(),
+                server(
+                    json!({"command":"server", "disabled_tools":["read"]}),
+                    Dialect::Codex,
+                )?,
+            )]),
+        })
+    };
+    let installed = configuration()?
+        .install_with(ToolRegistry::default(), McpClientLimits::default(), |_| {
+            Box::pin(async {
+                Ok(Connected {
+                    transport: Arc::new(Remote::default()),
+                    tools: advertised(&["read"]),
+                })
+            })
+        })
+        .await?;
+    assert!(installed.tools.definitions(None)?.is_empty());
+    assert!(installed.capabilities.iter().next().is_none());
+    assert!(installed.diagnostics.is_empty());
+    for field in 0..4 {
+        let mut limits = McpClientLimits::default();
+        match field {
+            0 => limits.servers = 0,
+            1 => limits.tools_per_server = 0,
+            2 => limits.pages_per_server = 0,
+            _ => limits.catalog_bytes = 0,
+        }
+        assert!(matches!(
+            configuration()?
+                .install_with(ToolRegistry::default(), limits, |_| panic!(
+                    "connected before admission"
+                ))
+                .await,
+            Err(Error::Invalid(_))
+        ));
+    }
     Ok(())
 }
 
@@ -405,6 +464,68 @@ fn http_credentials_resolve_without_serializing_or_disclosing_values() -> Result
         )
         .is_err()
     );
+    Ok(())
+}
+
+#[cfg(all(unix, feature = "mcp-stdio"))]
+#[tokio::test]
+async fn configured_stdio_server_inherits_its_workspace_and_retains_one_session() -> Result<()> {
+    use crate::native_settings::{NativeSettings, SettingsConfig};
+    let root = tempfile::tempdir().map_err(Error::process_io)?;
+    let cwd = root.path().join("child");
+    std::fs::create_dir(&cwd).map_err(Error::process_io)?;
+    let script = root.path().join("server.sh");
+    std::fs::write(
+        &script,
+        r#"printf '%s\n' "$MCP_TEST_VALUE" "$CLAUDE_PROJECT_DIR" > environment
+IFS= read -r input
+printf '%s\n' '{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1"}}}'
+IFS= read -r input
+IFS= read -r input
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"echo","inputSchema":{"type":"object"}}]}}'
+IFS= read -r input
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"configured stdio"}]}}'
+IFS= read -r input
+"#,
+    )
+    .map_err(Error::process_io)?;
+    let document = json!({"mcpServers":{"configured":{"command":"sh","args":[script],
+        "env":{"MCP_TEST_VALUE":"literal ' $ spaces"},"cwd":"child","required":true,
+        "startup_timeout_sec":1,"tool_timeout_sec":1}}});
+    std::fs::write(root.path().join(".claude.json"), document.to_string())
+        .map_err(Error::process_io)?;
+    let settings = NativeSettings::load(
+        SettingsConfig::new(root.path(), root.path()).codex_home(root.path().join("codex")),
+    )
+    .await?;
+    let installed = settings
+        .mcp
+        .install(
+            ToolRegistry::default(),
+            root.path(),
+            McpClientLimits::default(),
+        )
+        .await?;
+    assert!(installed.diagnostics.is_empty());
+    assert_eq!(
+        std::fs::read_to_string(cwd.join("environment")).map_err(Error::process_io)?,
+        format!("literal ' $ spaces\n{}\n", root.path().display())
+    );
+    let tool = installed
+        .tools
+        .get("mcp.configured.echo", None, None)?
+        .expect("installed stdio tool");
+    let invocation = ToolInvocation {
+        operation_id: OperationId::new(),
+        call_id: "configured-call".into(),
+        name: tool.definition.name.clone(),
+        arguments: json!({}),
+    };
+    let scope = RuntimeScope::new(installed.capabilities, Limits::default())?;
+    tool.executor
+        .authorize(Some(&scope), None, &invocation, None)?;
+    let result = tool.executor.execute(invocation, None).await?;
+    assert_eq!(result.value["content"][0]["text"], "configured stdio");
     Ok(())
 }
 

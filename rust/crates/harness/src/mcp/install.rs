@@ -5,7 +5,7 @@ use super::{
     McpToolTransport,
 };
 use crate::{
-    Error, Result,
+    Capabilities, Error, Result,
     tool::{JsonToolProjection, ToolProjection, ToolRegistry},
 };
 use acyclic_stream::BoxProviderFuture;
@@ -51,6 +51,8 @@ pub struct McpServerFailure {
 pub struct McpInstallation {
     /// Existing tools plus successfully initialized MCP tools.
     pub tools: ToolRegistry,
+    /// Grants needed to call the newly installed tools, before caller attenuation.
+    pub capabilities: Capabilities,
     /// Optional server failures, in configuration order.
     pub diagnostics: Vec<McpServerFailure>,
 }
@@ -100,6 +102,7 @@ impl McpConfig {
             ));
         }
         let mut diagnostics = Vec::new();
+        let mut capabilities = Capabilities::default();
         let results = join_all(self.servers.into_iter().map(|(name, server)| {
             let connect = &connect;
             async move {
@@ -120,7 +123,10 @@ impl McpConfig {
         .await;
         for (server, required, result) in results {
             match result {
-                Ok(additional) => tools = tools.extend(additional)?,
+                Ok((additional, grants)) => {
+                    tools = tools.extend(additional)?;
+                    capabilities.0.extend(grants.0);
+                }
                 Err(error) if required => return Err(error),
                 Err(error) => diagnostics.push(McpServerFailure {
                     server,
@@ -128,7 +134,11 @@ impl McpConfig {
                 }),
             }
         }
-        Ok(McpInstallation { tools, diagnostics })
+        Ok(McpInstallation {
+            tools,
+            capabilities,
+            diagnostics,
+        })
     }
 }
 
@@ -137,7 +147,7 @@ fn register(
     server: &McpServer,
     mut connected: Connected,
     limits: McpClientLimits,
-) -> Result<ToolRegistry> {
+) -> Result<(ToolRegistry, Capabilities)> {
     if connected.tools.len() as u64 > u64::from(limits.tools_per_server) {
         return Err(Error::Invalid("MCP discovery exceeds tool bound".into()));
     }
@@ -166,7 +176,18 @@ fn register(
         limits.tools_per_server,
         limits.catalog_bytes,
     )?;
-    Ok(tools)
+    let mut capabilities = Capabilities::new(
+        catalog
+            .tools
+            .iter()
+            .map(|tool| format!("tool:call:mcp.{}.{}", catalog.server, tool.name)),
+    );
+    if !catalog.tools.is_empty() {
+        capabilities
+            .0
+            .insert(format!("mcp:call:{}", catalog.server));
+    }
+    Ok((tools, capabilities))
 }
 
 #[cfg(test)]
