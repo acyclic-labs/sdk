@@ -22,3 +22,10 @@ path = "fuzz_targets/native_journal.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "native_staging_selection"
+path = "fuzz_targets/native_staging_selection.rs"
+test = false
+doc = false
+bench = false
