@@ -34,6 +34,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "search_http_codec_tinyfish"
+path = "fuzz_targets/search_http_codec_tinyfish.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "mcp_stdio_codec"
 path = "fuzz_targets/mcp_stdio_codec.rs"
 test = false
