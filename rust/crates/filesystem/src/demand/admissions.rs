@@ -57,7 +57,6 @@ fn mount_bytes(entry: &(Arc<AtomicU64>, u64)) -> u64 {
     // The registry retains only this inert gauge. Upgrading custody here could
     // drop its last owner under the leaf and re-enter it through metadata Drop.
     mount_accounting::retained(Arc::strong_count(&entry.0), &entry.0)
-
 }
 impl Admissions {
     pub(super) fn live_bytes(&self, live: u64) -> u64 {
