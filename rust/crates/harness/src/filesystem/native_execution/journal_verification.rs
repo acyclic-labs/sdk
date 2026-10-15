@@ -1,7 +1,7 @@
 use super::journal_allocation;
 use acyclic_fs::MaterializationJournal;
 
-pub(crate) fn verify_decode(input: &[u8]) {
+pub(crate) fn lexical_items(input: &[u8]) -> u64 {
     // Count lexical items independently of the production admission pass,
     // retaining duplicate object keys and stopping neither at invalid tokens
     // nor at unknown fields: the bound must also cover rejected documents.
@@ -34,7 +34,12 @@ pub(crate) fn verify_decode(input: &[u8]) {
             }
         }
     }
-    let bound = journal_allocation::decode_owned_bytes(items, input.len() as u64, 0).unwrap();
+    items
+}
+
+pub(crate) fn verify_decode(input: &[u8]) {
+    let bound = journal_allocation::decode_owned_bytes(lexical_items(input), input.len() as u64, 0)
+        .unwrap();
     let mut decoded = None;
     let measured = allocation_counter::measure(|| {
         decoded = Some(serde_json::from_slice::<MaterializationJournal>(input));
