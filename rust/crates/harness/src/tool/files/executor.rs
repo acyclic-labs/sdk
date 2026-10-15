@@ -81,10 +81,10 @@ impl FileTool {
             Self::Read => return self.read(context, invocation, work, io).await,
 
             Self::Plan => {
-                let input =
-                    decode::<super::super::plan::UpdatePlanInput>(&invocation.arguments, work)?;
                 let mut allocation = super::edit::allocation(work, std::mem::size_of::<String>())?;
-                let text = input.0.markdown(
+                let input =
+                    super::super::plan::PlanView::borrow(&invocation.arguments, &allocation)?;
+                let text = input.markdown(
                     context.effective_scope().limits().file_bytes,
                     &mut allocation,
                 )?;
