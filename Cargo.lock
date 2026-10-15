@@ -73,6 +73,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-auth"
+version = "0.2.0"
+dependencies = [
+ "acyclic-contract-derive",
+ "proptest",
+ "prost",
+ "prost-reflect",
+ "prost-types",
+ "protoc-bin-vendored",
+ "syn 3.0.6",
+ "tempfile",
+ "thiserror 2.0.21",
+ "ts-rs",
+]
+
+[[package]]
 name = "acyclic-conformance"
 version = "0.2.0"
 dependencies = [

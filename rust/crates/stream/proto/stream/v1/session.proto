@@ -2,6 +2,8 @@
 syntax = "proto3";
 package acyclic.stream.v1;
 
+import "validation/v1/options.proto";
+
 import "stream/v1/stream.proto";
 
 option go_package = "github.com/acyclic-labs/sdk/go/gen/stream/v1;streamv1";
@@ -127,5 +129,5 @@ message SessionLatestValue {
 }
 
 service StreamSessionService {
-  rpc Session(stream SessionFrame) returns (stream SessionFrame);
+  rpc Session(stream SessionFrame) returns (stream SessionFrame) { option (acyclic.validation.v1.auth) = { extractor: "streams.session-channels" }; }
 }
