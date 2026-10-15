@@ -8,15 +8,30 @@ edition = "2024"
 cargo-fuzz = true
 
 [workspace]
+members = ["."]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }
+
+[features]
+notifications = ["acyclic-harness/test-support", "acyclic-harness/filesystem-local", "acyclic-harness/mcp-http"]
 
 [dependencies]
+acyclic-harness = { path = ".." }
 libfuzzer-sys = "0.4"
 bytes = "1"
 rmcp = { version = "=3.5.1", default-features = false, features = ["client", "transport-async-rw"] }
-serde = "1"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio-util = { version = "0.7", features = ["codec"] }
 which = "=8.0.6"
+
+[[bin]]
+name = "goal_parser"
+path = "fuzz_targets/goal_parser.rs"
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "mcp_stdio_codec"
@@ -28,6 +43,14 @@ bench = false
 [[bin]]
 name = "mcp_executable"
 path = "fuzz_targets/mcp_executable.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "notification_scenario"
+path = "fuzz_targets/notification_scenario.rs"
+required-features = ["notifications"]
 test = false
 doc = false
 bench = false

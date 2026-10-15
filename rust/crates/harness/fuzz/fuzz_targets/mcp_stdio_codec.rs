@@ -9,6 +9,12 @@ use std::sync::{
 };
 use tokio_util::codec::{Decoder as _, Encoder as _};
 
+#[path = "../../src/mcp/sync.rs"]
+pub(crate) mod sync;
+mod mcp {
+    pub(crate) use crate::sync;
+}
+
 // Compile the production codec, rather than maintaining a fuzz-only parser.
 #[path = "../../src/mcp/stdio/native/codec.rs"]
 mod codec;

@@ -2,10 +2,9 @@ import { existsSync, lstatSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { sha256, within } from "../../../shared/authority.mjs";
-import { files } from "./provenance.mjs";
+import { sourceInventory, sha256, within } from "../../../shared/authority.mjs";
 
-const digestFiles = root => Object.fromEntries(files(root).map(name => [name, sha256(readFileSync(join(root, name)))]));
+const digestFiles = root => Object.fromEntries(sourceInventory(root).map(name => [name, sha256(readFileSync(join(root, name)))]));
 
 // Recording an inventory does not admit it. Qualification separately requires
 // the externally recorded bytes to match the checked-in qualification pin.

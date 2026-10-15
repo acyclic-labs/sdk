@@ -39,7 +39,6 @@ jobs:
       SCCACHE_CACHE_SIZE: ${{ matrix.platform.cache_size }}
       RUSTC_WRAPPER: sccache
       CARGO_PROFILE_TEST_DEBUG: 0
-      TOOLS_DIR: ${{ runner.temp }}/tools
     steps:
       - name: Check out exact source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -54,9 +53,11 @@ jobs:
 
       # Hosts reuse output within the job. Persisted compiler snapshots did
       # not shorten the release critical path and displaced native caches.
-      - name: Configure local compiler cache
+      - name: Configure local tools and compiler cache
         shell: bash
-        run: echo "SCCACHE_DIR=${RUNNER_TEMP}/sccache" >> "$GITHUB_ENV"
+        run: |
+          echo "TOOLS_DIR=$RUNNER_TEMP/tools" >> "$GITHUB_ENV"
+          echo "SCCACHE_DIR=$RUNNER_TEMP/sccache" >> "$GITHUB_ENV"
       - name: Enable compiler cache
         uses: mozilla-actions/sccache-action@d651010b8da762cde178750d8eda7b5febfe147a # v0.0.9
         with:

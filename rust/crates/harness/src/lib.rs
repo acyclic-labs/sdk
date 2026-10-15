@@ -18,6 +18,8 @@
 #![doc = include_str!("../README.md")]
 
 pub mod agent_loop;
+#[cfg(feature = "tui")]
+pub use acyclic_harness_tui as tui;
 pub mod bundle;
 pub mod client;
 pub mod context;
@@ -34,6 +36,7 @@ pub mod extension;
 #[cfg(feature = "filesystem")]
 pub mod filesystem;
 pub mod fork;
+pub mod goal;
 #[cfg(feature = "grpc")]
 pub mod grpc;
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]

@@ -6,21 +6,21 @@ import type {
   IdempotencyObservation, CommitResult, Sequence,
 } from "./types.js";
 
-export const HTTP_RESPONSE_CONTRACT = Object.freeze({
-  "delivery/acknowledge": "empty",
-  "idempotency/inspect": "observation",
-  "tail": "sequence",
-  "append": "append",
-  "fork": "fork",
-  "read": "records",
-  "children": "children",
-  "children/page": "children_page",
-  "commit": "commit",
-  "commits/read": "envelope",
-  "tokens/create": "token",
-} as const);
+type HttpResponseContract = {
+  "delivery/acknowledge": "empty";
+  "idempotency/inspect": "observation";
+  "tail": "sequence";
+  "append": "append";
+  "fork": "fork";
+  "read": "records";
+  "children": "children";
+  "children/page": "children_page";
+  "commit": "commit";
+  "commits/read": "envelope";
+  "tokens/create": "token";
+};
 
-export type HttpRoute = keyof typeof HTTP_RESPONSE_CONTRACT;
+export type HttpRoute = keyof HttpResponseContract;
 
 type HttpResponseByKind = {
   empty: void;
@@ -37,7 +37,7 @@ type HttpResponseByKind = {
 };
 
 export type HttpResponseFor<Route extends HttpRoute> =
-  HttpResponseByKind[typeof HTTP_RESPONSE_CONTRACT[Route]];
+  HttpResponseByKind[HttpResponseContract[Route]];
 
 /** Decode a Rust-validated response using its route-specific result type. */
 export function decodeHttpResponseFor<Route extends HttpRoute>(

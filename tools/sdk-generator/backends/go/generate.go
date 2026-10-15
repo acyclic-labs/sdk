@@ -70,7 +70,7 @@ func run(sourceRoot, authorityRoot, requestPath, outputRoot, protoc, genGo, genG
 	familySources := make([]string, 0, len(manifest.Families))
 	seenSources := map[string]bool{}
 	for _, f := range manifest.Families {
-		if err := validateInput(authorityRoot, f.Source, f.SourceSHA256); err != nil {
+		if _, err := readInput(authorityRoot, f.Source, f.SourceSHA256); err != nil {
 			return err
 		}
 		resolved, err := filepath.EvalSymlinks(filepath.Join(authorityRoot, f.Source))
@@ -83,7 +83,7 @@ func run(sourceRoot, authorityRoot, requestPath, outputRoot, protoc, genGo, genG
 		}
 		seenSources[key] = true
 		if f.Descriptor != "" {
-			if err := validateInput(authorityRoot, f.Descriptor, f.DescriptorSHA256); err != nil {
+			if _, err := readInput(authorityRoot, f.Descriptor, f.DescriptorSHA256); err != nil {
 				return err
 			}
 		}
