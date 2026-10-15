@@ -18,6 +18,11 @@ name = "main"
 path = "tests/main.rs"
 
 [[test]]
+name = "context-continuation"
+path = "tests/context_continuation.rs"
+required-features = ["filesystem-local"]
+
+[[test]]
 name = "context-discovery"
 path = "tests/context_discovery.rs"
 required-features = ["filesystem"]
