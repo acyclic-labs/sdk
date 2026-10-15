@@ -172,13 +172,7 @@ impl HarnessWireApi for NativeSession {
                 &mut None,
             )?;
             let history = match reader
-                .follow(
-                    cursor.revision,
-                    HistoryReadLimits {
-                        maximum_events: MAX_PAGE_EVENTS as u32,
-                        maximum_bytes: (MAX_FRAME_BYTES - 8192) as u64,
-                    },
-                )
+                .follow(cursor.revision, (MAX_FRAME_BYTES - 8192) as u64)
                 .await
             {
                 Ok(history) => history,
@@ -191,14 +185,11 @@ impl HarnessWireApi for NativeSession {
                 Err(error) => return Err(error),
             };
             let owner = binding.authority.clone();
-            Ok(Box::pin(history.map(move |batch| {
-                let batch = batch?;
-                let from_revision = batch[0].revision - 1;
-                let through_revision = batch[batch.len() - 1].revision;
-                let events = batch
-                    .iter()
-                    .map(|event| encode_event_envelope(&owner, event, &mut None))
-                    .collect::<Result<Vec<_>>>()?;
+            Ok(Box::pin(history.map(move |event| {
+                let event = event?;
+                let from_revision = event.revision - 1;
+                let through_revision = event.revision;
+                let events = vec![encode_event_envelope(&owner, &event, &mut None)?];
                 Ok(wire::Delivery {
                     authority: cursor.authority.clone(),
                     generation: cursor.generation.clone(),

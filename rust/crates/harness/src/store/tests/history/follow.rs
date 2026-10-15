@@ -2,13 +2,6 @@ use super::*;
 use crate::core::LifecycleState;
 use futures::{FutureExt, StreamExt};
 
-fn limits() -> HistoryReadLimits {
-    HistoryReadLimits {
-        maximum_events: 2,
-        maximum_bytes: 65_536,
-    }
-}
-
 #[tokio::test]
 async fn follows_later_owner_waiting_without_scheduler_changes() -> Result<()> {
     let client = Arc::new(MemoryStream::default());
@@ -38,7 +31,7 @@ async fn follows_later_owner_waiting_without_scheduler_changes() -> Result<()> {
                 .await?;
             continue;
         }
-        let mut history = writer.history_reader()?.follow(revision, limits()).await?;
+        let mut history = writer.history_reader()?.follow(revision, 65_536).await?;
         assert!(history.next().now_or_never().is_none());
         // No coordinator/scheduler event is published by this owner transition.
         writer
@@ -49,16 +42,15 @@ async fn follows_later_owner_waiting_without_scheduler_changes() -> Result<()> {
                 &mut None,
             )
             .await?;
-        let batch = history
+        let event = history
             .next()
             .now_or_never()
             .expect("append must wake live replay")
             .expect("live replay cannot end at the old snapshot")?;
-        assert_eq!(batch.len(), 1);
-        assert_eq!(batch[0].revision, 2);
-        assert_eq!(batch[0].operation_id, next.operation_id);
+        assert_eq!(event.revision, 2);
+        assert_eq!(event.operation_id, next.operation_id);
         assert!(matches!(
-            batch[0].payload,
+            event.payload,
             EventPayload::LifecycleTransitioned {
                 to: LifecycleState::Waiting,
                 ..
@@ -70,7 +62,7 @@ async fn follows_later_owner_waiting_without_scheduler_changes() -> Result<()> {
 }
 
 #[tokio::test]
-async fn follow_batches_ready_records_with_count_and_byte_bounds() -> Result<()> {
+async fn follow_pushes_individual_ready_records_and_checks_byte_bounds() -> Result<()> {
     let client = Arc::new(MemoryStream::default());
     let mut writer = with_content(&client).await?;
     for revision in 0..5 {
@@ -85,57 +77,22 @@ async fn follow_batches_ready_records_with_count_and_byte_bounds() -> Result<()>
     }
     let event = writer.read_event_at(1, &mut None).await?.0;
     let bytes = encode_event(&authority(), &event, &mut None)?.len() as u64;
-    for (bounds, lengths) in [
-        (limits(), vec![2, 2, 1]),
-        (
-            HistoryReadLimits {
-                maximum_bytes: bytes,
-                ..limits()
-            },
-            vec![1; 5],
-        ),
-    ] {
-        let mut history = writer.history_reader()?.follow(0, bounds).await?;
-        let mut revision = 0;
-        for length in lengths {
-            let events = history
+    for maximum in [bytes, 65_536] {
+        let mut history = writer.history_reader()?.follow(0, maximum).await?;
+        for revision in 1..=5 {
+            let event = history
                 .next()
                 .now_or_never()
-                .expect("ready records cannot wait")
-                .expect("records available")?;
-            assert_eq!(events.len(), length);
-            for event in events {
-                revision += 1;
-                assert_eq!(event.revision, revision);
-            }
+                .expect("ready append cannot wait")
+                .expect("record available")?;
+            assert_eq!(event.revision, revision);
         }
-        assert_eq!(revision, 5);
         assert!(history.next().now_or_never().is_none());
     }
-    for bounds in [
-        HistoryReadLimits {
-            maximum_events: 0,
-            ..limits()
-        },
-        HistoryReadLimits {
-            maximum_bytes: 0,
-            ..limits()
-        },
-    ] {
-        assert!(writer.history_reader()?.follow(0, bounds).await.is_err());
-    }
-    let mut too_small = writer
-        .history_reader()?
-        .follow(
-            0,
-            HistoryReadLimits {
-                maximum_bytes: 1,
-                ..limits()
-            },
-        )
-        .await?;
+    assert!(writer.history_reader()?.follow(0, 0).await.is_err());
+    let mut too_small = writer.history_reader()?.follow(0, 1).await?;
     assert!(too_small.next().await.expect("oversized record").is_err());
-    assert!(writer.history_reader()?.follow(6, limits()).await.is_err());
+    assert!(writer.history_reader()?.follow(6, 65_536).await.is_err());
     Ok(())
 }
 
@@ -162,7 +119,7 @@ async fn follow_verifies_authority_and_attestation() -> Result<()> {
             &issuer().verifier(&mut None)?,
             &mut None,
         )?;
-        let mut history = reader.follow(0, limits()).await?;
+        let mut history = reader.follow(0, 65_536).await?;
         assert!(history.next().await.expect("invalid record").is_err());
     }
     Ok(())
