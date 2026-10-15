@@ -305,6 +305,16 @@ fn source_failures_keep_distinct_statuses() {
     .collect::<HashSet<_>>();
     assert_eq!(statuses.len(), 9);
     assert!(!statuses.contains(&super::HR_UNEXPECTED));
+    for (error, status) in [
+        (MountSourceError::NotDirectory, super::HR_DIRECTORY),
+        (MountSourceError::IsDirectory, super::HR_ACCESS_DENIED),
+        (
+            MountSourceError::DirectoryNotEmpty,
+            super::HR_DIRECTORY_NOT_EMPTY,
+        ),
+    ] {
+        assert_eq!(source_hresult(&error), status, "{error:?}");
+    }
 }
 
 #[tokio::test]

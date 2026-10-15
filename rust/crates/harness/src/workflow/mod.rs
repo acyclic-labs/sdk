@@ -6,6 +6,8 @@ mod io;
 mod journal;
 mod machine;
 mod memory;
+#[cfg(all(test, feature = "model-checking", not(target_arch = "wasm32")))]
+mod model_checking;
 mod records;
 #[cfg(test)]
 mod tests;
