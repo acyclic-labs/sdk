@@ -17,17 +17,21 @@ pub(super) async fn connect(
     workspace: &Path,
     limits: McpClientLimits,
 ) -> Result<Connected> {
-    let connection = match &server.transport {
+    let (connection, binding) = match &server.transport {
         #[cfg(feature = "mcp-stdio")]
         McpTransport::Stdio { .. } => {
             let child = command_for(server, workspace, |name| std::env::var_os(name))?;
-            Connection::Stdio(
-                super::super::stdio::StdioMcpTransport::spawn(
-                    child,
-                    limits.catalog_bytes,
-                    server.startup_timeout_ms,
-                )
-                .await?,
+            let binding = command_binding(&child, server.dialect);
+            (
+                Connection::Stdio(
+                    super::super::stdio::StdioMcpTransport::spawn(
+                        child,
+                        limits.catalog_bytes,
+                        server.startup_timeout_ms,
+                    )
+                    .await?,
+                ),
+                binding,
             )
         }
         #[cfg(feature = "mcp-http")]
@@ -46,8 +50,9 @@ pub(super) async fn connect(
                 server.dialect == Dialect::Claude,
                 environment,
             )?;
-            let provider = Arc::new(NativeMcpHttpProvider::new(headers)?);
             let url = expand(url, server.dialect == Dialect::Claude, environment)?;
+            let binding = http_binding(&url, &headers);
+            let provider = Arc::new(NativeMcpHttpProvider::new(headers)?);
             let transport = HttpMcpTransport::new(
                 provider.clone(),
                 url.into_owned(),
@@ -71,7 +76,7 @@ pub(super) async fn connect(
                     "MCP initialized notification was rejected".into(),
                 ));
             }
-            Connection::Http(transport)
+            (Connection::Http(transport), binding)
         }
         #[cfg(not(all(feature = "mcp-stdio", feature = "mcp-http")))]
         _ => {
@@ -84,16 +89,87 @@ pub(super) async fn connect(
     let transport = match connection {
         #[cfg(feature = "mcp-stdio")]
         Connection::Stdio(transport) => {
-            Arc::new(transport.with_request_timeout(server.tool_timeout_ms)?)
+            Arc::new(transport.with_tool_limits(limits.tool_bytes, server.tool_timeout_ms)?)
                 as Arc<dyn McpToolTransport>
         }
         #[cfg(feature = "mcp-http")]
         Connection::Http(transport) => {
-            Arc::new(transport.with_request_timeout(server.tool_timeout_ms)?)
+            Arc::new(transport.with_tool_limits(limits.tool_bytes, server.tool_timeout_ms)?)
                 as Arc<dyn McpToolTransport>
         }
     };
-    Ok(Connected { transport, tools })
+    Ok(Connected {
+        transport,
+        tools,
+        binding,
+    })
+}
+
+fn binding_hasher(kind: &[u8]) -> blake3::Hasher {
+    let mut hasher = blake3::Hasher::new_derive_key("acyclic-harness/mcp-binding/v1");
+    hash_part(&mut hasher, super::super::PROTOCOL_VERSION.as_bytes());
+    hash_part(&mut hasher, kind);
+    hasher
+}
+
+fn hash_part(hasher: &mut blake3::Hasher, value: &[u8]) {
+    hasher.update(&(value.len() as u64).to_le_bytes());
+    hasher.update(value);
+}
+
+#[cfg(feature = "mcp-stdio")]
+pub(super) fn command_binding(command: &std::process::Command, dialect: Dialect) -> [u8; 32] {
+    let mut hasher = binding_hasher(b"stdio");
+    hash_part(
+        &mut hasher,
+        if dialect == Dialect::Claude {
+            b"inherit"
+        } else {
+            b"clear"
+        },
+    );
+    hash_part(&mut hasher, command.get_program().as_encoded_bytes());
+    hash_part(
+        &mut hasher,
+        &(command.get_args().len() as u64).to_le_bytes(),
+    );
+    for argument in command.get_args() {
+        hash_part(&mut hasher, b"argument");
+        hash_part(&mut hasher, argument.as_encoded_bytes());
+    }
+    hash_part(&mut hasher, b"environment");
+    hash_part(
+        &mut hasher,
+        &(command.get_envs().len() as u64).to_le_bytes(),
+    );
+    for (name, value) in command.get_envs() {
+        hash_part(&mut hasher, name.as_encoded_bytes());
+        hash_part(
+            &mut hasher,
+            if value.is_some() { b"set" } else { b"remove" },
+        );
+        if let Some(value) = value {
+            hash_part(&mut hasher, value.as_encoded_bytes());
+        }
+    }
+    hash_part(&mut hasher, b"cwd");
+    if let Some(cwd) = command.get_current_dir() {
+        hash_part(&mut hasher, cwd.as_os_str().as_encoded_bytes());
+    }
+    *hasher.finalize().as_bytes()
+}
+
+#[cfg(feature = "mcp-http")]
+pub(super) fn http_binding(url: &str, headers: &reqwest::header::HeaderMap) -> [u8; 32] {
+    let mut hasher = binding_hasher(b"http");
+    hash_part(&mut hasher, url.as_bytes());
+    let mut headers: Vec<_> = headers.iter().collect();
+    headers.sort_unstable_by(|(a, _), (b, _)| a.as_str().cmp(b.as_str()));
+    for (name, value) in headers {
+        hash_part(&mut hasher, name.as_str().as_bytes());
+        hash_part(&mut hasher, value.as_bytes());
+    }
+    *hasher.finalize().as_bytes()
 }
 
 impl Connection {

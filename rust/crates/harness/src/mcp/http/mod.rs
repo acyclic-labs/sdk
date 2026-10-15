@@ -75,14 +75,15 @@ pub struct HttpMcpTransport {
 }
 
 impl HttpMcpTransport {
-    /// Changes the per-request deadline after startup negotiation.
-    pub fn with_request_timeout(mut self, timeout_ms: u32) -> Result<Self> {
-        if timeout_ms == 0 {
+    /// Selects independent tool-exchange bounds after catalog discovery.
+    pub fn with_tool_limits(mut self, maximum_bytes: u32, timeout_ms: u32) -> Result<Self> {
+        if maximum_bytes == 0 || timeout_ms == 0 {
             return Err(Error::Invalid(
                 "MCP request deadline must be positive".into(),
             ));
         }
         self.timeout_ms = timeout_ms;
+        self.maximum_bytes = maximum_bytes;
         Ok(self)
     }
 

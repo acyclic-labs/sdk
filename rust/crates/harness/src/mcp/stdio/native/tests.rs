@@ -381,7 +381,7 @@ async fn lost_invalid_oversize_and_late_responses_never_redispatch() -> Result<(
 
 #[test]
 fn frame_limits_apply_both_directions_without_retaining_a_partial_request() -> Result<()> {
-    let mut codec = BoundedCodec::<Value>::new(16);
+    let mut codec = BoundedCodec::<Value>::new(Arc::new(AtomicU32::new(16)));
     let mut bytes = BytesMut::from(b"prior\n".as_slice());
     assert!(codec.encode(json!("x".repeat(32)), &mut bytes).is_err());
     assert_eq!(bytes.as_ref(), b"prior\n");

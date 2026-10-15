@@ -119,6 +119,7 @@ async fn installation_is_additive_filtered_and_uses_the_retained_connection() ->
                 Ok(Connected {
                     transport,
                     tools: advertised(&["read", "write", "other"]),
+                    binding: [1; 32],
                 })
             })
         })
@@ -169,6 +170,122 @@ async fn installation_is_additive_filtered_and_uses_the_retained_connection() ->
     assert_eq!(result.value["content"][0]["text"], "{\"x\":1}");
     assert_eq!(remote.0.load(Ordering::SeqCst), 1);
     assert!(installed.tools.clone().extend(installed.tools).is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn reinstall_restores_saved_tool_revisions_and_approval_digests() -> Result<()> {
+    async fn install(
+        binding: [u8; 32],
+        reverse: bool,
+        changed_schema: bool,
+    ) -> Result<McpInstallation> {
+        let config = McpConfig {
+            servers: BTreeMap::from([(
+                "configured".into(),
+                server(json!({"command":"server"}), Dialect::Codex)?,
+            )]),
+        };
+        config.install_with(ToolRegistry::default(), McpClientLimits::default(), move |_| {
+            Box::pin(async move {
+                let mut tools = advertised(&["read", "write"]);
+                if changed_schema {
+                    tools[0].input_schema = json!({"type":"object","required":["path"],"properties":{"path":{"type":"string"}}});
+                }
+                if reverse {
+                    tools.reverse();
+                }
+                Ok(Connected { transport: Arc::new(Remote::default()), tools, binding })
+            })
+        }).await
+    }
+    let first = install([1; 32], false, false).await?;
+    let saved = first
+        .tools
+        .get("mcp.configured.read", None, None)?
+        .expect("initial tool")
+        .definition
+        .clone();
+    let pending_approval = saved.digest()?;
+    drop(first);
+    let reopened = install([1; 32], true, false).await?;
+    let restored = reopened
+        .tools
+        .get(&saved.name, Some(&saved.revision), None)?
+        .expect("saved revision after restart");
+    assert_eq!(restored.definition, saved);
+    assert_eq!(restored.definition.digest()?, pending_approval);
+    let invocation = ToolInvocation {
+        operation_id: OperationId::new(),
+        call_id: "approved-call".into(),
+        name: saved.name.clone(),
+        arguments: json!({}),
+    };
+    let scope = RuntimeScope::new(reopened.capabilities, Limits::default())?;
+    restored
+        .executor
+        .authorize(Some(&scope), None, &invocation, None)?;
+    restored.executor.execute(invocation, None).await?;
+    for changed in [
+        install([2; 32], false, false).await?,
+        install([1; 32], false, true).await?,
+    ] {
+        assert!(
+            changed
+                .tools
+                .get(&saved.name, Some(&saved.revision), None)?
+                .is_none()
+        );
+        assert_ne!(
+            changed
+                .tools
+                .get(&saved.name, None, None)?
+                .expect("changed tool")
+                .definition
+                .digest()?,
+            pending_approval
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn registration_uses_the_remaining_startup_deadline_off_the_runtime_thread() -> Result<()> {
+    let caller = std::thread::current().id();
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(100);
+    tokio::time::advance(Duration::from_millis(90)).await;
+    let (started, worker) = tokio::sync::oneshot::channel();
+    let (release, wait) = std::sync::mpsc::channel();
+    let (completed, completion) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(register_before(deadline, move || {
+        let _ = started.send(std::thread::current().id());
+        let result = wait
+            .recv()
+            .map_err(|error| Error::Invalid(error.to_string()));
+        let _ = completed.send(());
+        result
+    }));
+    assert_ne!(
+        worker
+            .await
+            .map_err(|error| Error::Invalid(error.to_string()))?,
+        caller
+    );
+    tokio::time::advance(Duration::from_millis(11)).await;
+    assert!(matches!(
+        task.await
+            .map_err(|error| Error::Invalid(error.to_string()))?,
+        Err(Error::Process {
+            kind: "timeout",
+            ..
+        })
+    ));
+    release
+        .send(())
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    completion
+        .await
+        .map_err(|error| Error::Invalid(error.to_string()))?;
     Ok(())
 }
 
@@ -227,6 +344,7 @@ async fn no_selected_tools_grant_no_authority_and_invalid_limits_never_connect()
                 Ok(Connected {
                     transport: Arc::new(Remote::default()),
                     tools: advertised(&["read"]),
+                    binding: [1; 32],
                 })
             })
         })
@@ -234,13 +352,14 @@ async fn no_selected_tools_grant_no_authority_and_invalid_limits_never_connect()
     assert!(installed.tools.definitions(None)?.is_empty());
     assert!(installed.capabilities.iter().next().is_none());
     assert!(installed.diagnostics.is_empty());
-    for field in 0..4 {
+    for field in 0..5 {
         let mut limits = McpClientLimits::default();
         match field {
             0 => limits.servers = 0,
             1 => limits.tools_per_server = 0,
             2 => limits.pages_per_server = 0,
-            _ => limits.catalog_bytes = 0,
+            3 => limits.catalog_bytes = 0,
+            _ => limits.tool_bytes = 0,
         }
         assert!(matches!(
             configuration()?
@@ -421,6 +540,43 @@ fn stdio_configuration_preserves_argv_scope_environment_and_project_root() -> Re
     Ok(())
 }
 
+#[cfg(feature = "mcp-stdio")]
+#[test]
+fn resolved_stdio_binding_tracks_arguments_environment_directory_and_dialect() -> Result<()> {
+    let root = std::env::current_dir().map_err(Error::process_io)?;
+    let config = server(
+        json!({"command":"${PROGRAM}", "args":["${ARGUMENT}"], "env":{"KEY":"${TOKEN}"}}),
+        Dialect::Claude,
+    )?;
+    let command = |program: &str, argument: &str, token: &str, directory: &Path| {
+        native::command_for(&config, directory, |name| match name {
+            "PROGRAM" => Some(program.into()),
+            "ARGUMENT" => Some(argument.into()),
+            "TOKEN" => Some(token.into()),
+            _ => None,
+        })
+    };
+    let original = command("server", "argument", "secret", &root)?;
+    let binding = native::command_binding(&original, Dialect::Claude);
+    assert_eq!(
+        binding,
+        native::command_binding(
+            &command("server", "argument", "secret", &root)?,
+            Dialect::Claude
+        )
+    );
+    for changed in [
+        command("other", "argument", "secret", &root)?,
+        command("server", "different", "secret", &root)?,
+        command("server", "argument", "new-secret", &root)?,
+        command("server", "argument", "secret", &root.join("child"))?,
+    ] {
+        assert_ne!(binding, native::command_binding(&changed, Dialect::Claude));
+    }
+    assert_ne!(binding, native::command_binding(&original, Dialect::Codex));
+    Ok(())
+}
+
 #[cfg(feature = "mcp-http")]
 #[test]
 fn http_credentials_resolve_without_serializing_or_disclosing_values() -> Result<()> {
@@ -467,6 +623,30 @@ fn http_credentials_resolve_without_serializing_or_disclosing_values() -> Result
     Ok(())
 }
 
+#[cfg(feature = "mcp-http")]
+#[test]
+fn http_binding_tracks_resolved_endpoint_and_credentials_but_not_header_order() -> Result<()> {
+    use reqwest::header::{HeaderMap, HeaderValue};
+    let mut first = HeaderMap::new();
+    first.insert("x-first", HeaderValue::from_static("one"));
+    first.insert("x-second", HeaderValue::from_static("secret"));
+    let mut reordered = HeaderMap::new();
+    reordered.insert("x-second", HeaderValue::from_static("secret"));
+    reordered.insert("x-first", HeaderValue::from_static("one"));
+    let binding = native::http_binding("https://server/mcp", &first);
+    assert_eq!(
+        binding,
+        native::http_binding("https://server/mcp", &reordered)
+    );
+    assert_ne!(binding, native::http_binding("https://other/mcp", &first));
+    reordered.insert("x-second", HeaderValue::from_static("new-secret"));
+    assert_ne!(
+        binding,
+        native::http_binding("https://server/mcp", &reordered)
+    );
+    Ok(())
+}
+
 #[cfg(all(unix, feature = "mcp-stdio"))]
 #[tokio::test]
 async fn configured_stdio_server_inherits_its_workspace_and_retains_one_session() -> Result<()> {
@@ -484,9 +664,10 @@ IFS= read -r input
 IFS= read -r input
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"echo","inputSchema":{"type":"object"}}]}}'
 IFS= read -r input
+printf '%s\n' "$input" > invocation
 printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"configured stdio"}]}}'
 IFS= read -r input
-"#,
+"#.replace("configured stdio", &"x".repeat(2048)),
     )
     .map_err(Error::process_io)?;
     let document = json!({"mcpServers":{"configured":{"command":"sh","args":[script],
@@ -503,7 +684,11 @@ IFS= read -r input
         .install(
             ToolRegistry::default(),
             root.path(),
-            McpClientLimits::default(),
+            McpClientLimits {
+                catalog_bytes: 1024,
+                tool_bytes: 8192,
+                ..Default::default()
+            },
         )
         .await?;
     assert!(installed.diagnostics.is_empty());
@@ -519,13 +704,20 @@ IFS= read -r input
         operation_id: OperationId::new(),
         call_id: "configured-call".into(),
         name: tool.definition.name.clone(),
-        arguments: json!({}),
+        arguments: json!({"payload":"y".repeat(2048)}),
     };
     let scope = RuntimeScope::new(installed.capabilities, Limits::default())?;
     tool.executor
         .authorize(Some(&scope), None, &invocation, None)?;
     let result = tool.executor.execute(invocation, None).await?;
-    assert_eq!(result.value["content"][0]["text"], "configured stdio");
+    assert_eq!(result.value["content"][0]["text"], "x".repeat(2048));
+    let dispatched: Value =
+        serde_json::from_slice(&std::fs::read(cwd.join("invocation")).map_err(Error::process_io)?)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+    assert_eq!(
+        dispatched["params"]["arguments"]["payload"],
+        "y".repeat(2048)
+    );
     Ok(())
 }
 
@@ -612,9 +804,9 @@ async fn configured_http_server_initializes_pages_installs_and_calls_selected_to
                     assert_eq!(request["method"], "tools/call");
                     assert_eq!(
                         request["params"],
-                        json!({"name":"read","arguments":{"query":"needle"}})
+                        json!({"name":"read","arguments":{"query":"needle".repeat(512)}})
                     );
-                    json!({"content":[{"type":"text","text":"found"}]})
+                    json!({"content":[{"type":"text","text":"found".repeat(512)}]})
                 }
             };
             let result = json!({"jsonrpc":"2.0","id":request["id"],"result":result}).to_string();
@@ -655,7 +847,11 @@ async fn configured_http_server_initializes_pages_installs_and_calls_selected_to
         .install(
             ToolRegistry::default(),
             root.path(),
-            McpClientLimits::default(),
+            McpClientLimits {
+                catalog_bytes: 1024,
+                tool_bytes: 8192,
+                ..Default::default()
+            },
         )
         .await?;
     assert!(installed.diagnostics.is_empty());
@@ -679,12 +875,12 @@ async fn configured_http_server_initializes_pages_installs_and_calls_selected_to
                 operation_id: OperationId::new(),
                 call_id: "call".into(),
                 name: "mcp.configured.read".into(),
-                arguments: json!({"query":"needle"}),
+                arguments: json!({"query":"needle".repeat(512)}),
             },
             None,
         )
         .await?;
-    assert_eq!(result.value["content"][0]["text"], "found");
+    assert_eq!(result.value["content"][0]["text"], "found".repeat(512));
     assert_eq!(
         service
             .await

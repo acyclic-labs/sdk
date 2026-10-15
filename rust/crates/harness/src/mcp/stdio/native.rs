@@ -15,6 +15,10 @@ use serde_json::Value;
 use serde_json::json;
 use std::{
     process::{Command, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
     time::Duration,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -27,13 +31,15 @@ use codec::BoundedCodec;
 pub struct StdioMcpTransport {
     service: RunningService<RoleClient, ClientConfig>,
     timeout: Duration,
+    maximum_bytes: Arc<AtomicU32>,
     _process: Option<ProcessOwner>,
 }
 
 impl StdioMcpTransport {
-    /// Changes the per-request deadline after startup negotiation.
-    pub fn with_request_timeout(mut self, timeout_ms: u32) -> Result<Self> {
-        validate_bounds(1, timeout_ms)?;
+    /// Selects the independent tool-exchange bounds after catalog discovery.
+    pub fn with_tool_limits(mut self, maximum_bytes: u32, timeout_ms: u32) -> Result<Self> {
+        validate_bounds(maximum_bytes, timeout_ms)?;
+        self.maximum_bytes.store(maximum_bytes, Ordering::Release);
         self.timeout = Duration::from_millis(u64::from(timeout_ms));
         Ok(self)
     }
@@ -122,15 +128,16 @@ impl StdioMcpTransport {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
+        let maximum_bytes = Arc::new(AtomicU32::new(maximum_bytes));
         let read = FramedRead::new(
             read,
-            BoundedCodec::<ServerJsonRpcMessage>::new(maximum_bytes as usize),
+            BoundedCodec::<ServerJsonRpcMessage>::new(Arc::clone(&maximum_bytes)),
         )
         .take_while(|message| std::future::ready(message.is_ok()))
         .filter_map(|message| std::future::ready(message.ok()));
         let write = FramedWrite::new(
             write,
-            BoundedCodec::<ClientJsonRpcMessage>::new(maximum_bytes as usize),
+            BoundedCodec::<ClientJsonRpcMessage>::new(Arc::clone(&maximum_bytes)),
         );
         let client = ClientConfig::new(
             Default::default(),
@@ -152,6 +159,7 @@ impl StdioMcpTransport {
         Ok(Self {
             service,
             timeout,
+            maximum_bytes,
             _process: process,
         })
     }

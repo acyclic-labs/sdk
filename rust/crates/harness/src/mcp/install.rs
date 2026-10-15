@@ -15,7 +15,7 @@ use std::{path::Path, sync::Arc, time::Duration};
 
 mod native;
 
-/// Positive startup discovery bounds, independent of task execution allowances.
+/// Positive discovery and tool-exchange bounds, independent of task allowances.
 #[derive(Clone, Copy)]
 pub struct McpClientLimits {
     /// Maximum concurrently initialized servers.
@@ -26,6 +26,8 @@ pub struct McpClientLimits {
     pub pages_per_server: u32,
     /// Maximum aggregate catalog bytes from each server.
     pub catalog_bytes: u32,
+    /// Maximum request or response bytes for an installed tool call.
+    pub tool_bytes: u32,
 }
 
 impl Default for McpClientLimits {
@@ -35,6 +37,7 @@ impl Default for McpClientLimits {
             tools_per_server: 128,
             pages_per_server: 16,
             catalog_bytes: 1_048_576,
+            tool_bytes: 1_048_576,
         }
     }
 }
@@ -60,6 +63,7 @@ pub struct McpInstallation {
 struct Connected {
     transport: Arc<dyn McpToolTransport>,
     tools: Vec<McpToolDefinition>,
+    binding: [u8; 32],
 }
 
 impl McpConfig {
@@ -95,6 +99,7 @@ impl McpConfig {
             || limits.tools_per_server == 0
             || limits.pages_per_server == 0
             || limits.catalog_bytes == 0
+            || limits.tool_bytes == 0
             || self.servers.len() as u64 > u64::from(limits.servers)
         {
             return Err(Error::Invalid(
@@ -106,18 +111,24 @@ impl McpConfig {
         let results = join_all(self.servers.into_iter().map(|(name, server)| {
             let connect = &connect;
             async move {
-                let result = tokio::time::timeout(
-                    Duration::from_millis(u64::from(server.startup_timeout_ms)),
-                    connect(&server),
-                )
-                .await
-                .map_err(|_| Error::Process {
-                    kind: "timeout",
-                    message: "MCP startup deadline elapsed".into(),
-                })
-                .and_then(|result| result)
-                .and_then(|connected| register(name.clone(), &server, connected, limits));
-                (name, server.required, result)
+                let deadline = tokio::time::Instant::now()
+                    + Duration::from_millis(u64::from(server.startup_timeout_ms));
+                let result = tokio::time::timeout_at(deadline, connect(&server))
+                    .await
+                    .map_err(|_| startup_timeout())
+                    .and_then(|result| result);
+                let required = server.required;
+                let result = match result {
+                    Ok(connected) => {
+                        let name = name.clone();
+                        register_before(deadline, move || {
+                            register(name, &server, connected, limits)
+                        })
+                        .await
+                    }
+                    Err(error) => Err(error),
+                };
+                (name, required, result)
             }
         }))
         .await;
@@ -142,6 +153,26 @@ impl McpConfig {
     }
 }
 
+fn startup_timeout() -> Error {
+    Error::Process {
+        kind: "timeout",
+        message: "MCP startup deadline elapsed".into(),
+    }
+}
+
+async fn register_before<T: Send + 'static>(
+    deadline: tokio::time::Instant,
+    register: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    tokio::time::timeout_at(deadline, tokio::task::spawn_blocking(register))
+        .await
+        .map_err(|_| startup_timeout())?
+        .map_err(|error| Error::Process {
+            kind: "worker",
+            message: error.to_string(),
+        })?
+}
+
 fn register(
     name: String,
     server: &McpServer,
@@ -153,7 +184,7 @@ fn register(
     }
     let mut catalog = McpCatalog {
         server: name,
-        revision: uuid::Uuid::new_v4().to_string(),
+        revision: String::new(),
         schema_exposure: McpSchemaExposure::Eager,
         discovery: McpDiscoveryPolicy::Disabled,
         projection_schema: crate::tool::json_projection_schema(json!({})),
@@ -166,6 +197,20 @@ fn register(
             .is_none_or(|names| names.contains(&tool.name))
             && !server.disabled_tools.contains(&tool.name)
     });
+    catalog.tools.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+    catalog.revision = blake3::Hash::from_bytes(crate::executor::json::canonical_json_digest(
+        &(
+            "harness/mcp-install/v1",
+            connected.binding,
+            server.tool_timeout_ms,
+            limits.tool_bytes,
+            &catalog,
+        ),
+        u64::MAX,
+        &mut None,
+    )?)
+    .to_hex()
+    .to_string();
     let mut tools = ToolRegistry::default();
     let projection: Arc<dyn ToolProjection> = Arc::new(JsonToolProjection);
     catalog.install(
