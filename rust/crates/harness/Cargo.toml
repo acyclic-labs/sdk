@@ -92,8 +92,8 @@ name = "explicit-image-conversion"
 required-features = ["filesystem"]
 
 [features]
-model-checking = ["dep:loom"]
 test-support = []
+model-checking = ["dep:loom"]
 browser = ["wasm", "filesystem", "acyclic-fs/browser"]
 # Native presentation only; this does not select providers or grant authority.
 terminal = ["dep:hex"]
