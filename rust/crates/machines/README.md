@@ -8,12 +8,19 @@ the predecessor protocol revision rather than reinterpret its requests.
 
 Typed Machines contract for immutable image qualification, machine lifecycle, checkpoints, forks, operation recovery, events, and usage receipts.
 
+After a fork completes, the gRPC client inspects up to eight children at once.
+It returns their observations in admission order and rejects the result if any
+inspection fails or returns a different machine identity.
+
 `Machine::exec(ExecCommand::new(argv, timeout_ms)?)` dispatches one bounded guest
 command and returns a disposable stream of merged output bytes followed by one
 exit code. Dropping the stream cancels its RPC. A lost reply or interrupted stream
 returns `ProviderError::CommandIndeterminate(machine)`: the command may have run,
 so never redispatch it automatically. Argument validation does not evaluate a
 shell; shell execution requires an explicit shell program in `argv`.
+After the exit code, subsequent polls drain backend EOF for at most one second
+from receipt of the exit code. A poll after that bound ends the stream and
+releases its RPC; it does not restart the bound or reapply the command deadline.
 
 `Machine::read_output(offset, limit)` reads the retained live console with exact
 `u64` offsets. A later response offset exposes discarded bytes; continue from
@@ -27,7 +34,7 @@ cargo add acyclic-machines
 
 `Machines` wraps a `MachinesProvider`; the crate also includes a gRPC client. Qualify an immutable image digest before creation and retain idempotency keys for mutation recovery. Inspect an operation when its outcome is indeterminate rather than assuming failure.
 
-Once a gRPC mutation is admitted, its completion wait has no overall observation deadline. A silent or interrupted watch reconciles the same operation through inspection and resumes observation with a bounded retry delay. It never resubmits the mutation or changes its idempotency key. Authority-reported failure, cancellation and indeterminate outcomes remain visible; authentication and other permanent observation errors return the retained key for recovery. Dropping the waiting future stops local observation without cancelling the native operation. Persist the original idempotency key and recover its operation after process restart; the SDK does not replace the service's durable operation journal.
+Once a gRPC mutation is admitted, its completion wait has no overall observation deadline. A silent or interrupted watch reconciles the same operation through inspection. The first successful nonterminal inspection permits an immediate reconnect; subsequent interruptions retain the bounded retry delay. It never resubmits the mutation or changes its idempotency key. Authority-reported failure, cancellation and indeterminate outcomes remain visible; authentication and other permanent observation errors return the retained key for recovery. Dropping the waiting future stops local observation without cancelling the native operation. Persist the original idempotency key and recover its operation after process restart; the SDK does not replace the service's durable operation journal.
 
 An `Unknown` observation status may indicate temporary client readiness or a server journal error. An unknown watch always triggers inspection of the same operation. The client returns the retained key after three unknown inspections without an intervening validated operation state. A valid pending state resets this ambiguity count. `Internal` is returned immediately. Silence and ordinary transport unavailability do not consume this count or establish an operation failure.
 

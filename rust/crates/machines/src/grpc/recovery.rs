@@ -28,6 +28,7 @@ pub(super) async fn wait(
     obs::finish(
         async {
             let mut unknown_observations = 0;
+            let mut immediate_reconnect = true;
             loop {
                 match provider
                     .client
@@ -74,6 +75,12 @@ pub(super) async fn wait(
                         unknown_observations = 0;
                         if let Some(outcome) = observed_outcome(key, phase) {
                             return outcome;
+                        }
+                        // One healthy inspection can repair an interrupted watch without
+                        // delaying completion. Repeated interruptions still back off.
+                        if immediate_reconnect {
+                            immediate_reconnect = false;
+                            continue;
                         }
                     }
                     Err(error)
@@ -145,11 +152,15 @@ pub(super) async fn inspect_children(
     provider: &GrpcProvider,
     children: Vec<MachineId>,
 ) -> Result<Vec<MachineObservation>, ProviderError> {
-    let mut result = Vec::with_capacity(children.len());
-    for child in children {
-        result.push(MachinesProvider::inspect_machine(provider, child).await?);
-    }
-    Ok(result)
+    use futures::TryStreamExt as _;
+
+    // Keep admission order without serializing every child's round trip or
+    // opening the protocol's maximum 1,024 inspections at once.
+    stream::iter(children)
+        .map(|child| MachinesProvider::inspect_machine(provider, child))
+        .buffered(CHILD_INSPECTION_CONCURRENCY)
+        .try_collect()
+        .await
 }
 
 pub(super) fn decode_fork_machine_admission(

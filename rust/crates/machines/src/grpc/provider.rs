@@ -49,7 +49,7 @@ machine_mutations! {
         obs::finish(
             async {
                 let timeout =
-                    Duration::from_millis(u64::from(command.timeout_ms)) + Duration::from_secs(1);
+                    Duration::from_millis(u64::from(command.timeout_ms)) + EXEC_COMPLETION_GRACE;
                 let deadline = tokio::time::Instant::now() + timeout;
                 let mut request = Request::new(wire::ExecRequest {
                     protocol: Some(protocol()),
@@ -58,17 +58,23 @@ machine_mutations! {
                     timeout_ms: command.timeout_ms,
                 });
                 request.set_timeout(timeout);
-                let output = self
-                    .client.clone()
-                    .exec(request)
+                let output = tokio::time::timeout_at(deadline, self.client.clone().exec(request))
                     .await
+                    .map_err(|_| ProviderError::CommandIndeterminate(machine))?
                     .map_err(|error| command_error(machine, &error))?
                     .into_inner();
                 let output = stream::try_unfold(
-                    (output, false),
-                    move |(mut output, mut exited)| async move {
-                        let frame = if exited {
-                            output.message().await
+                    (output, None::<tokio::time::Instant>),
+                    move |(mut output, completion_deadline)| async move {
+                        let mut exited = completion_deadline.is_some();
+                        let frame = if let Some(until) = completion_deadline {
+                            if tokio::time::Instant::now() >= until {
+                                return Ok(None);
+                            }
+                            match tokio::time::timeout_at(until, output.message()).await {
+                                Ok(frame) => frame,
+                                Err(_) => return Ok(None),
+                            }
                         } else {
                             tokio::time::timeout_at(deadline, output.message())
                                 .await
@@ -80,7 +86,10 @@ machine_mutations! {
                             None => Err(ProviderError::CommandIndeterminate(machine)),
                             Some(frame) => {
                                 let frame = decode_exec_output(frame, machine, &mut exited)?;
-                                Ok(Some((frame, (output, exited))))
+                                let completion_deadline = completion_deadline.or_else(|| {
+                                    exited.then(|| tokio::time::Instant::now() + EXEC_COMPLETION_GRACE)
+                                });
+                                Ok(Some((frame, (output, completion_deadline))))
                             }
                         }
                     },

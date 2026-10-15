@@ -29,6 +29,7 @@ enum WatchItem {
 #[derive(Clone)]
 struct OperationService {
     guest: Option<Arc<guest_io::GuestIo>>,
+    children: Option<Arc<child_inspections::ChildInspections>>,
     expected_key: IdempotencyKey,
     expected_operation: OperationId,
     recovered: wire::RecoveredAdmission,
@@ -52,7 +53,6 @@ macro_rules! operation_service {
 
 operation_service! {
     (qualify_image, QualifyImageRequest, ImageQualification),
-    (create, CreateMachineRequest, MachineAdmission),
     (checkpoint, CheckpointMachineRequest, CheckpointAdmission),
     (fork, ForkCheckpointRequest, ForkAdmission),
     (fork_machine, ForkMachineRequest, ForkMachineAdmission),
@@ -60,16 +60,54 @@ operation_service! {
     (set_suspension_policy, SetSuspensionPolicyRequest, PolicyAdmission),
     (destroy_machine, MachineMutationRequest, MutationAdmission),
     (destroy_checkpoint, CheckpointMutationRequest, MutationAdmission),
-    (inspect_machine, InspectMachineRequest, MachineState),
     (inspect_checkpoint, InspectCheckpointRequest, CheckpointState),
     (list_machines, ListMachinesRequest, MachinePage),
     (events, EventsRequest, EventPage),
     (usage, UsageRequest, UsageReceipt);
+    async fn create(
+        &self,
+        request: Request<wire::CreateMachineRequest>,
+    ) -> Result<Response<wire::MachineAdmission>, Status> {
+        let Some(wire::recovered_admission::Result::Create(admission)) = &self.recovered.result else {
+            return Err(Status::unimplemented("create"));
+        };
+        if request.into_inner().idempotency_key != Some(encode_key(self.expected_key)) {
+            return Err(Status::invalid_argument("create key was substituted"));
+        }
+        if let WatchReply::Script(script) = &self.watch {
+            script.lock().expect("observation script").calls.push("create");
+        }
+        Ok(Response::new(admission.clone()))
+    }
+
+    async fn inspect_machine(
+        &self,
+        request: Request<wire::InspectMachineRequest>,
+    ) -> Result<Response<wire::MachineState>, Status> {
+        if let Some(children) = &self.children {
+            return children.inspect(request.into_inner()).await.map(Response::new);
+        }
+        let Some(wire::recovered_admission::Result::Create(admission)) = &self.recovered.result else {
+            return Err(Status::unimplemented("inspect_machine"));
+        };
+        if request.into_inner().machine != admission.machine {
+            return Err(Status::invalid_argument("machine was substituted"));
+        }
+        Ok(Response::new(wire::MachineState {
+            machine: admission.machine.clone(),
+            contract: admission.contract.clone(),
+            status: wire::MachineStatus::Running as i32,
+            created_at_unix_ms: 1,
+            changed_at_unix_ms: 1,
+            ..Default::default()
+        }))
+    }
+
     async fn suspend(
         &self,
         request: Request<wire::MachineMutationRequest>,
     ) -> Result<Response<wire::MutationAdmission>, Status> {
-        let WatchReply::Script(_) = &self.watch else {
+        let WatchReply::Script(script) = &self.watch else {
             return Err(Status::unimplemented("suspend"));
         };
         let request = request.into_inner();
@@ -89,6 +127,7 @@ operation_service! {
         if request.machine != admission.machine {
             return Err(Status::invalid_argument("machine was substituted"));
         }
+        script.lock().expect("observation script").calls.push("suspend");
         Ok(Response::new(admission.clone()))
     }
     async fn recover(
@@ -129,6 +168,7 @@ operation_service! {
         self.require_operation(&request.into_inner())?;
         if let WatchReply::Script(script) = &self.watch {
             let mut script = script.lock().expect("observation script");
+            script.calls.push("inspect");
             return script
                 .inspections
                 .pop_front()
@@ -226,6 +266,7 @@ fn scripted_operation_service(
     (
         OperationService {
             guest: None,
+            children: None,
             expected_key: key,
             expected_operation: operation,
             recovered: recovered_suspend(operation, operation, machine),
@@ -319,3 +360,6 @@ mod recovery;
 mod transport;
 
 mod guest_io;
+
+mod child_inspections;
+mod client_latency;

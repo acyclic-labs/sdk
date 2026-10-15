@@ -9,6 +9,7 @@ async fn operation_for_rejects_a_substituted_nested_admission_operation()
     let machine = MachineId::parse("00000000-0000-0000-0000-000000000004")?;
     let service = OperationService {
         guest: None,
+        children: None,
         expected_key: key,
         expected_operation: operation,
         recovered: recovered_suspend(operation, substituted, machine),
@@ -38,6 +39,7 @@ async fn operation_control_crosses_grpc_with_exact_identity_replay_and_terminal_
     let succeeded = operation_state(operation, wire::OperationStatus::Succeeded);
     let service = OperationService {
         guest: None,
+        children: None,
         expected_key: key,
         expected_operation: operation,
         recovered: recovered_suspend(operation, operation, machine),
@@ -99,6 +101,7 @@ async fn rpcs_emit_spans_with_status_codes_and_no_credentials()
     let pending = operation_state(operation, wire::OperationStatus::Pending);
     let service = OperationService {
         guest: None,
+        children: None,
         expected_key: key,
         expected_operation: operation,
         recovered: recovered_suspend(operation, operation, machine),
@@ -152,6 +155,7 @@ async fn all_operation_observation_paths_reject_substituted_identity()
     let substituted_state = operation_state(substituted, wire::OperationStatus::Pending);
     let service = OperationService {
         guest: None,
+        children: None,
         expected_key: key,
         expected_operation: operation,
         recovered: recovered_suspend(operation, operation, machine),
@@ -188,6 +192,7 @@ async fn operation_watch_distinguishes_pre_admission_rejection_from_post_admissi
     let machine = MachineId::parse("00000000-0000-0000-0000-000000000033")?;
     let base = OperationService {
         guest: None,
+        children: None,
         expected_key: key,
         expected_operation: operation,
         recovered: recovered_suspend(operation, operation, machine),
@@ -229,6 +234,7 @@ async fn operation_watch_distinguishes_pre_admission_rejection_from_post_admissi
 
     let service = OperationService {
         guest: None,
+        children: None,
         watch: WatchReply::Items(vec![WatchItem::State(operation_state(
             operation,
             wire::OperationStatus::Pending,

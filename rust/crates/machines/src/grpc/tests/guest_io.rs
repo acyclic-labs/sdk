@@ -37,7 +37,7 @@ impl GuestIo {
         Response::new(self.output.lock().unwrap().clone())
     }
 
-    fn sender(&self) -> Sender {
+    pub(super) fn sender(&self) -> Sender {
         self.senders.lock().unwrap().pop_front().unwrap()
     }
 }
@@ -54,6 +54,7 @@ async fn fixture() -> (
     let io = Arc::new(GuestIo::default());
     let service = OperationService {
         guest: Some(io.clone()),
+        children: None,
         expected_key: IdempotencyKey::parse("00000000-0000-4000-8000-000000000002").unwrap(),
         expected_operation: OperationId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
         recovered: wire::RecoveredAdmission::default(),
@@ -114,6 +115,42 @@ fn command_bounds_are_checked_before_dispatch() {
 }
 
 #[tokio::test]
+async fn exec_deadline_includes_waiting_for_response_headers() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (accepted, connected) = tokio::sync::oneshot::channel();
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let peer = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        accepted.send(()).unwrap();
+        let _ = stopped.await;
+        drop(socket);
+    });
+    let provider = GrpcProvider::grpc_with_auth(
+        TonicEndpoint::from_shared(format!("http://{address}"))
+            .unwrap()
+            .connect_lazy(),
+        BearerAuth::default(),
+    );
+    let machine = MachineId::new();
+    let exec = tokio::spawn(async move { provider.exec(machine, command(1)).await });
+    tokio::time::timeout(Duration::from_secs(5), connected)
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::pause();
+    tokio::time::advance(EXEC_COMPLETION_GRACE + Duration::from_millis(10)).await;
+    let result = tokio::time::timeout(Duration::from_secs(1), exec)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(result, Err(ProviderError::CommandIndeterminate(id)) if id == machine));
+    tokio::time::resume();
+    stop.send(()).unwrap();
+    peer.await.unwrap();
+}
+
+#[tokio::test]
 async fn exec_stream_preserves_values_and_completed_eof_after_deadline() {
     let (machine, io, shutdown, task) = fixture().await;
     let mut output = machine.exec(command(1)).await.unwrap();
@@ -153,6 +190,76 @@ async fn exec_stream_preserves_values_and_completed_eof_after_deadline() {
         assert_eq!(command.protocol, Some(protocol()));
     }
     drop(output);
+    stop(shutdown, task).await;
+}
+
+#[tokio::test]
+async fn exec_exit_bounds_eof_drain_and_releases_only_its_rpc() {
+    let (machine, io, shutdown, task) = fixture().await;
+    let active = machine.exec(command(60_000)).await.unwrap();
+    let active_sender = io.sender();
+    for timeout_ms in [1, 60_000] {
+        let mut output = machine.exec(command(timeout_ms)).await.unwrap();
+        let sender = io.sender();
+        sender
+            .send(Ok(frame(
+                machine.id(),
+                wire::exec_output::Output::ExitCode(7),
+            )))
+            .await
+            .unwrap();
+        assert_eq!(
+            output.next().await.unwrap().unwrap(),
+            ExecOutput::ExitCode(7)
+        );
+
+        // Keep the producer alive past both the completion bound and, for
+        // the short command, the original command deadline.
+        tokio::time::pause();
+        tokio::time::advance(EXEC_COMPLETION_GRACE + Duration::from_millis(10)).await;
+        assert!(output.next().await.is_none());
+        tokio::time::resume();
+        tokio::time::timeout(Duration::from_secs(2), sender.closed())
+            .await
+            .unwrap();
+        assert!(!active_sender.is_closed());
+    }
+    assert_eq!(io.commands.lock().unwrap().len(), 3);
+    drop(active);
+    tokio::time::timeout(Duration::from_secs(2), active_sender.closed())
+        .await
+        .unwrap();
+    stop(shutdown, task).await;
+}
+
+#[tokio::test]
+async fn exec_pending_eof_poll_stops_at_completion_bound() {
+    let (machine, io, shutdown, task) = fixture().await;
+    let mut output = machine.exec(command(60_000)).await.unwrap();
+    let sender = io.sender();
+    sender
+        .send(Ok(frame(
+            machine.id(),
+            wire::exec_output::Output::ExitCode(0),
+        )))
+        .await
+        .unwrap();
+    assert_eq!(
+        output.next().await.unwrap().unwrap(),
+        ExecOutput::ExitCode(0)
+    );
+    tokio::time::pause();
+    let mut eof = Box::pin(output.next());
+    assert!(futures::poll!(&mut eof).is_pending());
+    tokio::time::advance(EXEC_COMPLETION_GRACE / 2).await;
+    assert!(futures::poll!(&mut eof).is_pending());
+    tokio::time::advance(EXEC_COMPLETION_GRACE).await;
+    assert!(eof.await.is_none());
+    tokio::time::resume();
+    tokio::time::timeout(Duration::from_secs(2), sender.closed())
+        .await
+        .unwrap();
+    assert_eq!(io.commands.lock().unwrap().len(), 1);
     stop(shutdown, task).await;
 }
 

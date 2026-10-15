@@ -53,6 +53,7 @@ async fn servers_without_live_fork_report_unsupported()
     let machine = MachineId::parse("00000000-0000-0000-0000-000000000043")?;
     let service = OperationService {
         guest: None,
+        children: None,
         expected_key: key,
         expected_operation: operation,
         recovered: recovered_suspend(operation, operation, machine),
@@ -226,5 +227,59 @@ async fn permanent_observation_errors_retain_key_and_terminal_inspection_is_auth
             Err(expected.unwrap_or(ProviderError::Indeterminate(key)))
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn interrupted_watch_reconnects_once_then_retains_backoff()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let operation = OperationId::parse("00000000-0000-0000-0000-000000000042")?;
+    let (service, script, machine) = scripted_operation_service(
+        vec![
+            WatchReply::Reject(Code::Unavailable),
+            WatchReply::Reject(Code::Unavailable),
+            WatchReply::Items(vec![WatchItem::State(operation_state(
+                operation,
+                wire::OperationStatus::Succeeded,
+            ))]),
+        ],
+        vec![Ok(operation_state(operation, wire::OperationStatus::Pending)); 2],
+    );
+    let key = service.expected_key;
+    let (provider, shutdown, server) = serve_operation_service(service).await?;
+    let mut waiting = Box::pin(provider.suspend(machine, key));
+    tokio::time::pause();
+    let frozen = tokio::time::Instant::now();
+    let watchdog = std::time::Instant::now();
+    // Keep the task runnable so Tokio cannot auto-advance over the retry
+    // delay while socket I/O is pending. The watchdog bounds a failed test;
+    // elapsed wall time is not the latency assertion.
+    loop {
+        assert!(
+            watchdog.elapsed() < Duration::from_secs(5),
+            "first reconnect required a timer or stopped making progress"
+        );
+        assert!(futures::poll!(&mut waiting).is_pending());
+        if script.lock().expect("script").calls.len() == 5 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(tokio::time::Instant::now(), frozen);
+    tokio::time::advance(OBSERVATION_RETRY_DELAY / 2).await;
+    assert!(futures::poll!(&mut waiting).is_pending());
+    assert_eq!(
+        script.lock().expect("script").calls,
+        ["suspend", "watch", "inspect", "watch", "inspect"]
+    );
+    tokio::time::advance(OBSERVATION_RETRY_DELAY).await;
+    tokio::time::resume();
+    tokio::time::timeout(Duration::from_secs(5), waiting).await??;
+    assert_eq!(
+        script.lock().expect("script").calls,
+        ["suspend", "watch", "inspect", "watch", "inspect", "watch"]
+    );
+    let _ = shutdown.send(());
+    server.await??;
     Ok(())
 }
