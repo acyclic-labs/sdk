@@ -80,6 +80,15 @@ fn wait_helper() -> io::Result<()> {
 
 #[test]
 fn wait_preserves_timeout_and_child_ownership() -> io::Result<()> {
+    wait_preserves_ownership(false)
+}
+
+#[test]
+fn coarse_wait_preserves_timeout_and_child_ownership() -> io::Result<()> {
+    wait_preserves_ownership(true)
+}
+
+fn wait_preserves_ownership(coarse: bool) -> io::Result<()> {
     if std::env::var_os("ACYCLIC_NATIVE_WAIT_START_GATE").is_some() {
         let mut signal = [0];
         std::io::stdin().read_exact(&mut signal)?;
@@ -131,6 +140,20 @@ fn wait_preserves_timeout_and_child_ownership() -> io::Result<()> {
             tree.wait(timeout)
         })
     };
+    let pending_wait = |tree: &mut ProcessTree, timeout: Duration| {
+        if !coarse {
+            return wait(tree, timeout);
+        }
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        process_control_attempt(meter, crate::NativeOperationKind::Read, || {
+            platform::wait_for_exit_coarse(
+                tree.child.as_mut().ok_or(io::ErrorKind::NotFound)?,
+                deadline,
+            )
+        })
+    };
     let stdout = tree.take_stdout().ok_or(io::ErrorKind::NotFound)?;
     let (sent, received) = std::sync::mpsc::sync_channel(1);
     let reader = std::thread::spawn(move || -> io::Result<()> {
@@ -180,7 +203,7 @@ fn wait_preserves_timeout_and_child_ownership() -> io::Result<()> {
         };
         let before = operations();
         let started = Instant::now();
-        let result = wait(&mut tree, Duration::from_millis(50));
+        let result = pending_wait(&mut tree, Duration::from_millis(50));
         let elapsed = started.elapsed();
         let cpu = thread_cpu()? - cpu;
         let cycles = thread_cycles()? - cycles;
@@ -190,16 +213,18 @@ fn wait_preserves_timeout_and_child_ownership() -> io::Result<()> {
             result.err().ok_or(io::ErrorKind::Other)?.kind(),
             io::ErrorKind::TimedOut
         );
+        assert!(elapsed >= Duration::from_millis(50));
         assert!(!tree.is_reaped());
+        assert!(tree.try_wait(meter)?.is_none());
         eprintln!(
-            "NATIVE_WAIT_TIMEOUT elapsed_us={} cpu_100ns={cpu} cycles={cycles} recorded_ops={recorded}",
+            "NATIVE_WAIT_TIMEOUT elapsed_us={} cpu_100ns={cpu} cycles={cycles} recorded_ops={recorded} coarse={coarse}",
             elapsed.as_micros()
         );
         // SAFETY: this parent owns the event and the ready helper waits on it.
         if unsafe { SetEvent(gate.as_raw_handle()) } == 0 {
             return Err(io::Error::last_os_error());
         }
-        assert!(wait(&mut tree, Duration::from_secs(5))?.success());
+        assert!(pending_wait(&mut tree, Duration::from_secs(5))?.success());
         assert!(!tree.is_reaped());
         assert!(wait(&mut tree, Duration::ZERO)?.success());
         assert!(tree.try_wait(meter)?.is_some());
