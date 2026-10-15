@@ -39,9 +39,10 @@ jobs:
       SCCACHE_CACHE_SIZE: ${{ matrix.platform.cache_size }}
       RUSTC_WRAPPER: sccache
       CARGO_PROFILE_TEST_DEBUG: 0
+      TOOLS_DIR: ${{ runner.temp }}/tools
     steps:
       - name: Check out exact source
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_ref }}
           fetch-depth: 1
@@ -99,9 +100,23 @@ jobs:
           }
 
       - name: Install Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.15.0
+
+      - name: Install pinned Bun on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          source scripts/ensure-bun.sh
+          dirname "$(command -v bun)" >> "$GITHUB_PATH"
+
+      - name: Install pinned Bun on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          . ./scripts/ensure-bun.ps1
+          Split-Path -Parent (Get-Command bun).Source >> $env:GITHUB_PATH
 
       - name: Install locked host binaries
         shell: bash
@@ -125,6 +140,24 @@ jobs:
           echo "CARGO_TARGET_DIR=$RUNNER_TEMP/agent-host-target" >> "$GITHUB_ENV"
           echo "ACYCLIC_E2E_RECEIPT_DIR=$RUNNER_TEMP/agent-host-receipts" >> "$GITHUB_ENV"
 
+      - name: Prepare native SDK adapter for Pi controls
+        shell: bash
+        run: |
+          bun install --frozen-lockfile --ignore-scripts
+          node node_modules/typescript/bin/tsc -b typescript/packages/actors --pretty false
+          cargo build -p acyclic-fs-napi --locked
+          node --input-type=module <<'JS'
+          import { mkdir, copyFile, readFile, writeFile } from "node:fs/promises";
+          import { resolve, join } from "node:path";
+          const {version} = JSON.parse(await readFile("typescript/packages/filesystem/package.json", "utf8"));
+          const name = `@acyclic-labs/fs-${process.platform}-${process.arch}`;
+          const directory = resolve("node_modules", name);
+          const library = {win32: "acyclic_fs_napi.dll", linux: "libacyclic_fs_napi.so", darwin: "libacyclic_fs_napi.dylib"}[process.platform];
+          await mkdir(directory, {recursive: true});
+          await copyFile(resolve(process.env.CARGO_TARGET_DIR ?? "target", "debug", library), join(directory, "index.node"));
+          await writeFile(join(directory, "package.json"), JSON.stringify({name, version, main: "index.node"}));
+          JS
+
       - name: Build host scenario
         shell: bash
         run: |
@@ -135,11 +168,18 @@ jobs:
         run: |
           suffix=""
           if [[ "$RUNNER_OS" == Windows ]]; then suffix=".exe"; fi
-          ACYCLIC_BINARY="$CARGO_TARGET_DIR/debug/acyclic$suffix" \
-            node --experimental-strip-types --test \
-              plugin/tests/hosts/pi-context.test.ts \
-              plugin/tests/hosts/pi-bootstrap.test.ts \
-              plugin/tests/hosts/pi-installation.test.ts
+          export ACYCLIC_BINARY="$CARGO_TARGET_DIR/debug/acyclic$suffix"
+          cd plugin/tests/hosts
+          bun run test:pi-context
+          bun run test:pi-context-mail
+          bun run test:pi-bootstrap
+          bun run test:pi-session
+          bun run test:pi-installation
+          bun run test:pi-service
+          bun run test:pi-native-recursive
+          bun run test:pi-context-fresh
+          bun run test:pi-context-pages
+          bun run test:pi-builtin-paths
 
       - name: Run codex scenario
         shell: bash
@@ -186,7 +226,7 @@ jobs:
 
       - name: Retain qualification receipts
         if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: agent-host-${{ matrix.platform.name }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/agent-host-receipts
