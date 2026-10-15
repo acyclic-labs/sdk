@@ -34,6 +34,59 @@ fn native_oversize_is_rejected_before_json_materialization()
     assert_eq!(parse(&bytes).expect_err("wire budget").rule, "json-size");
     Ok(())
 }
+#[test]
+fn native_json_admission_agrees_at_exact_byte_boundary() -> Result<(), Box<dyn std::error::Error>> {
+    let base = fixture()?.environments.remove(0);
+    let mut manifest = DeploymentManifest {
+        schema_version: 1,
+        environments: (0..8)
+            .map(|index| {
+                let mut environment = base.clone();
+                environment.name = format!("env{index}");
+                environment.routes = (0..64)
+                    .map(|route| RouteSpec {
+                        host: format!("e{index}.example.com"),
+                        path_prefix: format!("/p{route}/a"),
+                        entry: "agent".into(),
+                    })
+                    .collect();
+                environment
+            })
+            .collect(),
+    };
+    let mut remaining = MAX_JSON_BYTES - serde_json::to_vec(&manifest)?.len();
+    for route in manifest
+        .environments
+        .iter_mut()
+        .flat_map(|env| &mut env.routes)
+    {
+        let count = remaining.min(MAX_STRING_BYTES - route.path_prefix.len());
+        route.path_prefix.push_str(&"a".repeat(count));
+        remaining -= count;
+    }
+    assert_eq!(remaining, 0);
+    let bytes = serde_json::to_vec(&manifest)?;
+    assert_eq!(bytes.len(), MAX_JSON_BYTES);
+    validate(&manifest)?;
+    assert_eq!(parse(&bytes)?, manifest);
+    manifest
+        .environments
+        .iter_mut()
+        .flat_map(|env| &mut env.routes)
+        .find(|route| route.path_prefix.len() < MAX_STRING_BYTES)
+        .ok_or("padding capacity")?
+        .path_prefix
+        .push('a');
+    let bytes = serde_json::to_vec(&manifest)?;
+    assert_eq!(bytes.len(), MAX_JSON_BYTES + 1);
+    assert_eq!(
+        validate(&manifest).expect_err("native budget").rule,
+        "json-size"
+    );
+    assert_eq!(parse(&bytes).expect_err("wire budget").rule, "json-size");
+    Ok(())
+}
+
 fn scaled(count: usize) -> Result<DeploymentManifest, Box<dyn std::error::Error>> {
     let mut manifest = fixture()?;
     let env = &mut manifest.environments[0];
