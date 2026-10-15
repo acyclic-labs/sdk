@@ -214,15 +214,22 @@ impl LocalStream {
         Ok(())
     }
 
-    /// Writes `frame`, in the order its mutation applied, without waiting for
+    /// Writes `frame` in mutation order, synchronizing its predecessor first.
     async fn persist(&self, mut frame: PreparedFrame) -> Result<(), StreamError> {
         let required = !deferred();
-        let journal = self.inner.journal.clone();
+        let inner = Arc::clone(&self.inner);
         let persist = tokio::task::spawn_blocking(move || {
-            journal
+            let mut journal = inner
+                .journal
                 .lock()
-                .map_err(|_| LocalStreamError::Corrupt)?
-                .append(&mut frame, required)
+                .map_err(|_| LocalStreamError::Corrupt)?;
+            journal.append(&mut frame, required)?;
+            // Append may have synchronized the preceding frame while an older
+            // flush leader is still running. Publish that progress under the
+            // same lock, so its waiters cannot sleep past the durability barrier.
+            let synced = journal.synced;
+            inner.publish_synced(&mut journal, synced);
+            Ok::<_, LocalStreamError>(())
         });
         let result = persist
             .await
@@ -273,7 +280,8 @@ impl LocalStream {
         .map_err(|_| self.inner.poison())
     }
 
-    /// Returns once every frame through `sequence` is durable: group commit.
+    /// Returns once every frame through `sequence` is durable, sharing any
+    /// in-flight flush with other waiters.
     async fn await_durable(&self, sequence: u64) -> Result<(), StreamError> {
         let mut synced = self.inner.synced.subscribe();
         loop {
@@ -305,7 +313,7 @@ impl LocalStream {
                     })
                     .await
                     .map_err(|_| self.inner.poison())?;
-                    // Group commit: one fsync covers every frame written since the last one.
+                    // Complete the pending frame's flush outside visibility.
                     tracing::debug!(
                         fsyncs = 1_u64,
                         batch_len = target.saturating_sub(synced_before),

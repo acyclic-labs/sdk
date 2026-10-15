@@ -225,12 +225,27 @@ impl Journal {
         Ok(())
     }
 
-    /// Writes `frame` after every earlier one, without waiting for the
+    /// Makes the preceding frame durable before writing `frame`. At most one
+    /// unsynced frame may reach the file: reordered writeback must not leave a
+    /// valid frame after a torn one and make recovery fail closed as corrupt.
     fn append(
         &mut self,
         frame: &mut PreparedFrame,
         required: bool,
     ) -> Result<(), LocalStreamError> {
+        if self.appended > self.synced {
+            match &frame.work {
+                Some(work) => work.sync(|| sync_file_data(&self.file, self.limits.durability))?,
+                None => sync_file_data(&self.file, self.limits.durability)?,
+            }
+            tracing::debug!(
+                fsyncs = 1_u64,
+                batch_len = self.appended - self.synced,
+                journal_bytes = self.bytes,
+                "acyclic.stream.fsync"
+            );
+            self.synced = self.appended;
+        }
         frame.write(&mut self.file)?;
         tracing::trace!(
             bytes = frame.encoded.len() as u64,
