@@ -1,4 +1,4 @@
-//! Transport-neutral server port implemented identically by every wire adapter.
+//! Transport-neutral client port for injected platform or local endpoints.
 
 use crate::contract::capability;
 pub use crate::wire_validation::{
@@ -14,6 +14,9 @@ use crate::{
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::BoxProviderStream as BoxStream;
+
+mod history;
+pub use history::follow_history;
 
 /// Complete application-facing wire API.
 pub trait HarnessWireApi: acyclic_stream::ProviderPlatform + 'static {

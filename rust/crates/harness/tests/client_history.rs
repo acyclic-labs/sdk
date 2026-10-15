@@ -187,3 +187,76 @@ async fn follow_verifies_authority_and_attestation() -> Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn client_replay_follows_owner_changes_without_a_scheduler() -> Result<()> {
+    use acyclic_harness::{wire, wire_api::follow_history, wire_codec::encode_authority};
+    let client = Arc::new(MemoryStream::default());
+    let verifier = issuer().verifier(&mut None)?;
+    let cursor = |revision| wire::ReplayCursor {
+        authority: Some(encode_authority(&authority())),
+        generation: "generation".into(),
+        revision,
+    };
+    let mut absent = follow_history(&client, &verifier, cursor(0), 65_536).await?;
+    assert!(absent.next().await.is_none());
+    assert!(
+        follow_history(&client, &verifier, cursor(1), 65_536)
+            .await
+            .is_err()
+    );
+    let mut writer = writer(&client).await?;
+    writer
+        .execute(
+            transition(0, LifecycleState::Active)?,
+            #[cfg(feature = "filesystem")]
+            None,
+            &mut None,
+        )
+        .await?;
+    let mut replay = follow_history(&client, &verifier, cursor(0), 65_536).await?;
+    let active = replay
+        .next()
+        .now_or_never()
+        .expect("committed event is ready")
+        .expect("active event")?;
+    assert_eq!((active.from_revision, active.through_revision), (0, 1));
+    assert_eq!(active.events.len(), 1);
+    assert!(
+        replay.next().now_or_never().is_none(),
+        "replay stays live at its cut"
+    );
+    writer
+        .execute(
+            transition(1, LifecycleState::Waiting)?,
+            #[cfg(feature = "filesystem")]
+            None,
+            &mut None,
+        )
+        .await?;
+    let waiting = replay
+        .next()
+        .now_or_never()
+        .expect("owner append must wake replay")
+        .expect("waiting event")?;
+    assert_eq!((waiting.from_revision, waiting.through_revision), (1, 2));
+    assert_eq!(waiting.events.len(), 1);
+    assert!(waiting.live);
+    let mut resumed = follow_history(&client, &verifier, cursor(1), 65_536).await?;
+    assert_eq!(resumed.next().await.transpose()?, Some(waiting));
+    let mut wrong = cursor(0);
+    wrong.authority.as_mut().expect("owner").id = "another-owner".into();
+    assert!(
+        follow_history(&client, &verifier, wrong, 65_536)
+            .await
+            .is_err()
+    );
+    let mut wrong = cursor(0);
+    wrong.generation.clear();
+    assert!(
+        follow_history(&client, &verifier, wrong, 65_536)
+            .await
+            .is_err()
+    );
+    Ok(())
+}

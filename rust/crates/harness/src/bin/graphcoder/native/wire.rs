@@ -2,10 +2,10 @@ use super::*;
 use acyclic_harness::{
     wire,
     wire_api::{
-        HarnessWireApi, OperationControlRequest, negotiate, operation_status,
+        HarnessWireApi, OperationControlRequest, follow_history, negotiate, operation_status,
         validate_cancel_request, validate_observe_request, validate_resume_protocol,
     },
-    wire_codec::{decode_command_envelope, encode_authority, encode_event_envelope},
+    wire_codec::{decode_command_envelope, encode_authority},
 };
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
 use futures::{StreamExt, stream};
@@ -165,41 +165,13 @@ impl HarnessWireApi for NativeSession {
                 .as_ref()
                 .ok_or_else(|| Error::Invalid("cursor authority missing".into()))?;
             let binding = self.binding(authority)?;
-            let reader = HistoryReader::new(
+            follow_history(
                 &self.stream,
-                &binding.authority,
-                &(binding.verifier()?),
-                &mut None,
-            )?;
-            let history = match reader
-                .follow(cursor.revision, (MAX_FRAME_BYTES - 8192) as u64)
-                .await
-            {
-                Ok(history) => history,
-                // A pre-admission replay may precede creation of the owner stream.
-                // Admission invalidates this empty snapshot and opens replay again.
-                Err(Error::NotFound(_)) if cursor.revision == 0 => {
-                    return Ok(Box::pin(stream::empty())
-                        as BoxProviderStream<'static, Result<wire::Delivery>>);
-                }
-                Err(error) => return Err(error),
-            };
-            let owner = binding.authority.clone();
-            Ok(Box::pin(history.map(move |event| {
-                let event = event?;
-                let from_revision = event.revision - 1;
-                let through_revision = event.revision;
-                let events = vec![encode_event_envelope(&owner, &event, &mut None)?];
-                Ok(wire::Delivery {
-                    authority: cursor.authority.clone(),
-                    generation: cursor.generation.clone(),
-                    from_revision,
-                    through_revision,
-                    events,
-                    live: true,
-                })
-            }))
-                as BoxProviderStream<'static, Result<wire::Delivery>>)
+                &binding.verifier()?,
+                cursor,
+                (MAX_FRAME_BYTES - 8192) as u64,
+            )
+            .await
         })
     }
     fn authorize_operation_control<'a>(
@@ -298,7 +270,3 @@ impl HarnessWireApi for NativeSession {
         })
     }
 }
-
-#[cfg(test)]
-#[path = "wire_tests.rs"]
-mod tests;
