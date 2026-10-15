@@ -9,6 +9,9 @@ struct LocalInner {
     synced: watch::Sender<u64>,
     // None is terminal; publication and failure share one synchronized push state.
     changed: watch::Sender<Option<u64>>,
+    // Model-only mutation control at the production persist wake site.
+    #[cfg(acyclic_loom)]
+    omit_persist_wake: bool,
     // Lock order: visibility -> durable_tails, after releasing provider state and journal.
     durable_tails: Mutex<std::collections::BTreeMap<StreamPath, u64>>,
 }

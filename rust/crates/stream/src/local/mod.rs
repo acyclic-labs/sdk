@@ -15,9 +15,13 @@ use acyclic_native_runtime::OwnershipAnchor;
 use async_trait::async_trait;
 use fs2::FileExt as _;
 use futures::{StreamExt as _, stream};
+#[cfg(acyclic_loom)]
+use query_model::{spawn, spawn_blocking};
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 use tokio::sync::mpsc;
+#[cfg(not(acyclic_loom))]
+use tokio::{spawn, task::spawn_blocking};
 #[cfg(test)]
 use tracing::Instrument as _;
 use tracing::field::Empty;

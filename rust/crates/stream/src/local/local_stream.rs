@@ -135,6 +135,8 @@ impl LocalStream {
                 visibility: RwLock::new(()),
                 synced: watch::channel(0_u64).0,
                 changed,
+                #[cfg(acyclic_loom)]
+                omit_persist_wake: false,
                 durable_tails: Mutex::new(Default::default()),
             }),
             work: None,
@@ -218,7 +220,7 @@ impl LocalStream {
     async fn persist(&self, mut frame: PreparedFrame) -> Result<(), StreamError> {
         let required = !deferred();
         let journal = self.inner.journal.clone();
-        let persist = tokio::task::spawn_blocking(move || {
+        let persist = spawn_blocking(move || {
             journal
                 .lock()
                 .map_err(|_| LocalStreamError::Corrupt)?
@@ -230,6 +232,10 @@ impl LocalStream {
             .and_then(|result| result);
         if result.is_err() {
             return Err(self.inner.poison());
+        }
+        #[cfg(acyclic_loom)]
+        if self.inner.omit_persist_wake {
+            return self.compact_if_due().await;
         }
         self.inner.published();
         self.compact_if_due().await
@@ -338,7 +344,7 @@ impl LocalStream {
         // The mutation owns completion as well as durability, even if its caller is dropped.
         let deferred = deferred();
         let operation = span.clone();
-        tokio::spawn(DEFERRED.scope(deferred, async move {
+        spawn(DEFERRED.scope(deferred, async move {
             let result = operation
                 .scope(async {
                     let (result, required) = {

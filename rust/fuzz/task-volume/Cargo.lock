@@ -70,6 +70,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror",
  "tokio",
  "tonic-prost-build",

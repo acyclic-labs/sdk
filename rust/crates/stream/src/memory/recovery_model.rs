@@ -167,3 +167,8 @@ pub fn local_accepted_queries_do_not_wait_for_durability() {
 pub fn local_poison_wakes_followers() {
     crate::local::query_model::poison_wakes_checked_followers();
 }
+
+/// Checks the production append/persist wake site, optionally removing only its wake.
+pub fn local_persist_wakes_parked_followers(omit_wake: bool) {
+    crate::local::query_model::persist_wakes_parked_followers(omit_wake);
+}

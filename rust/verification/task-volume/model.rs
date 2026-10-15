@@ -236,6 +236,17 @@ fn local_accepted_query_push() {
 }
 
 #[test]
+fn local_persist_push_reaches_an_already_parked_follower() {
+    acyclic_stream::verification::local_persist_wakes_parked_followers(false);
+}
+
+#[test]
+#[should_panic(expected = "persist omitted publication wake")]
+fn negative_control_detects_omitted_persist_wake() {
+    acyclic_stream::verification::local_persist_wakes_parked_followers(true);
+}
+
+#[test]
 fn local_failure_push() {
     acyclic_stream::verification::local_poison_wakes_followers();
 }
