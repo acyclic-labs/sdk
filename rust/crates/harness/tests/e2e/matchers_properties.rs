@@ -81,7 +81,7 @@ proptest! {
             .map(|(index, payload)| json!({"index": index, "payload": payload}))
             .collect();
         let mut expected: Vec<_> = frames.iter().enumerate()
-            .filter(|(index, _)| selected & (1 << index) != 0 || *index == 0)
+            .filter(|(index, _)| selected & (1_u8 << *index) != 0 || *index == 0)
             .map(|(_, frame)| frame.clone()).collect();
         prop_assert!(subset(&json!(expected), &json!(frames)));
         prop_assert!(ordered(&expected, &frames, "selected observations").is_ok());
