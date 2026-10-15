@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_auth::authority::resource_matches as scope;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -131,13 +132,6 @@ fn index<'a, T>(
         )?;
     }
     Ok(result)
-}
-fn scope(pattern: &ResourcePattern, resource: &str) -> bool {
-    if pattern.prefix {
-        resource.starts_with(&pattern.name)
-    } else {
-        resource == pattern.name
-    }
 }
 fn asset_resource(pattern: &ResourcePattern, digest: &str) -> Result<String, ManifestError> {
     let bucket = pattern
