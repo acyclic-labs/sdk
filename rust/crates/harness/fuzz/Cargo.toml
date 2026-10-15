@@ -1,0 +1,22 @@
+[package]
+name = "acyclic-harness-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+acyclic-harness = { path = ".." }
+libfuzzer-sys = "0.4"
+
+[[bin]]
+name = "goal_parser"
+path = "fuzz_targets/goal_parser.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

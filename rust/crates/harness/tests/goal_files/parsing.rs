@@ -227,15 +227,59 @@ fn accepted_boundary_reserves_room_for_blocked_and_done() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn yaml_reasons_escape_noncharacters_controls_and_apply_the_encoded_bound() -> Result<()> {
+    let view = goal(b"Goal")?;
+    for ch in [
+        '\u{7f}',
+        '\u{81}',
+        '\u{fffe}',
+        '\u{ffff}',
+        '\u{85}',
+        '\u{2028}',
+        '\u{2029}',
+        '\u{feff}',
+        '\u{10ffff}',
+        '"',
+        '\\',
+    ] {
+        let reason = ch.to_string();
+        for status in [GoalStatus::Active, GoalStatus::Blocked, GoalStatus::Done] {
+            let contents = view.status_contents(status, Some(&reason))?;
+            assert!(contents.is_ascii());
+            let rewritten = goal(contents.as_bytes())?;
+            assert_eq!(rewritten.reason.as_deref(), Some(reason.as_str()));
+            assert_eq!(rewritten.status, status);
+        }
+    }
+    let reason = "\u{81}".repeat(21);
+    let contents = view.status_contents(GoalStatus::Blocked, Some(&reason))?;
+    assert_eq!(
+        goal(contents.as_bytes())?.reason.as_deref(),
+        Some(reason.as_str())
+    );
+    // Raw bytes fit, but the YAML-escaped scalar exceeds the allowance.
+    assert!(
+        view.status_contents(GoalStatus::Blocked, Some(&"\u{81}".repeat(22)))
+            .is_err()
+    );
+    assert!(
+        view.status_contents(GoalStatus::Done, Some(&"\u{10ffff}".repeat(13)))
+            .is_err()
+    );
+    Ok(())
+}
+
 proptest! {
     #[test]
     fn every_accepted_goal_status_transition_fits(
         size in 0usize..4097,
-        unit in prop::sample::select(vec!["x", "🦀", "\n", "---\n", "é"]),
+        unit_chars in prop::collection::vec(any::<char>(), 0..5),
         extra_limit in 0usize..20000,
-        reason_chars in prop::collection::vec(prop::sample::select(vec!['a', '🦀', '\n', '\0', '"', '\\']), 0..21),
+        reason_chars in prop::collection::vec(any::<char>(), 0..13),
         cap in any::<u32>(),
     ) {
+        let unit: String = unit_chars.into_iter().collect();
         let body = format!("G{}", unit.repeat(size));
         let reason: String = reason_chars.into_iter().collect();
         let required = body.len() + GOAL_METADATA_HEADROOM;

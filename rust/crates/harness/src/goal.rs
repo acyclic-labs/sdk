@@ -2,8 +2,9 @@
 
 use crate::{Error, OperationId, Result, TaskId, conversation::VolumeClass};
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 
-/// Maximum bytes in a JSON-quoted status reason, including its quotes.
+/// Maximum bytes in a YAML-quoted status reason, including its quotes.
 pub const GOAL_REASON_BYTES: usize = 128;
 /// Bytes reserved beyond the Markdown body for any canonical status rewrite.
 pub const GOAL_METADATA_HEADROOM: usize =
@@ -137,7 +138,7 @@ impl GoalView {
     }
 
     /// Encodes an ordinary file rewrite, preserving the accepted Markdown body.
-    /// Reasons must fit the reserved metadata allowance after JSON escaping.
+    /// Reasons must fit the reserved metadata allowance after YAML escaping.
     pub fn status_contents(&self, status: GoalStatus, reason: Option<&str>) -> Result<String> {
         let reason = encoded_reason(reason)?;
         Ok(status_contents(status, reason.as_deref(), &self.markdown))
@@ -173,19 +174,33 @@ impl GoalView {
 fn encoded_reason(reason: Option<&str>) -> Result<Option<String>> {
     reason
         .map(|reason| {
-            // JSON escaping never shortens the input; reject before allocating.
+            // YAML escaping never shortens the input; reject before allocating.
             if reason.len() > GOAL_REASON_BYTES.saturating_sub(2) {
                 return Err(Error::Invalid(
                     "goal reason exceeds metadata allowance".into(),
                 ));
             }
-            let encoded =
-                serde_json::to_string(reason).map_err(|error| Error::Invalid(error.to_string()))?;
-            if encoded.len() > GOAL_REASON_BYTES {
-                return Err(Error::Invalid(
-                    "goal reason exceeds metadata allowance".into(),
-                ));
+            let mut encoded = String::from("\"");
+            for ch in reason.chars() {
+                match ch {
+                    '"' => encoded.push_str("\\\""),
+                    '\\' => encoded.push_str("\\\\"),
+                    ' '..='~' => encoded.push(ch),
+                    // Escape controls, line separators and Unicode noncharacters
+                    // as well as other non-ASCII scalars. YAML supports \U for
+                    // astral scalars without JSON's surrogate-pair ambiguity.
+                    ch if u32::from(ch) <= 0xffff => write!(encoded, "\\u{:04X}", u32::from(ch))
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                    ch => write!(encoded, "\\U{:08X}", u32::from(ch))
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                }
+                if encoded.len() + 1 > GOAL_REASON_BYTES {
+                    return Err(Error::Invalid(
+                        "goal reason exceeds metadata allowance".into(),
+                    ));
+                }
             }
+            encoded.push('"');
             Ok(encoded)
         })
         .transpose()
