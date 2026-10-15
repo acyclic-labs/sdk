@@ -193,33 +193,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
             .fs
             .inner
             .authority
-            .head(authority_id, &mut authority)
+            .head_record(authority_id, MAXIMUM_VOLUME_EVENT_BYTES, &mut authority)
             .await;
         record_authority_work(accounting, &authority)?;
-        let head = result?;
+        let (head, latest) = result?;
         if head.sequence == Sequence::GENESIS {
             return Err(FsError::EmptyAuthority);
         }
-        let mut authority = authority_work(accounting, cancellation)?;
-        let result = self
-            .fs
-            .inner
-            .authority
-            .replay(
-                authority_id,
-                Sequence::new(head.sequence.get().saturating_sub(1)),
-                ReplayLimit {
-                    records: 1,
-                    payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES,
-                },
-                &mut authority,
-            )
-            .await;
-        record_authority_work(accounting, &authority)?;
-        let (records, _allocation) = result?;
-        let latest = records.first().ok_or(FsError::InvalidAuthorityHistory)?;
+        let latest = latest.ok_or(FsError::InvalidAuthorityHistory)?;
         Ok((
-            generation_from_head_record_value(latest, self.id, accounting)?,
+            generation_from_head_record_value(&latest, self.id, accounting)?,
             head,
         ))
     }

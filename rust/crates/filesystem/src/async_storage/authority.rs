@@ -100,6 +100,32 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
         work: &mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<Head, crate::AuthorityStoreError>> + ProviderTask;
 
+    /// Reads the head and its bounded, authenticated last record together.
+    /// Genesis has no durable record. Backends may reuse the head's exact read.
+    fn head_record(
+        &self,
+        authority: AuthorityId,
+        maximum_payload_bytes: u64,
+        work: &mut AuthorityWork<'_>,
+    ) -> impl Future<Output = Result<(Head, Option<crate::DurableCommit>), crate::AuthorityStoreError>>
+    + ProviderTask {
+        async move {
+            let head = self.head(authority, work).await?;
+            if head.sequence == Sequence::GENESIS {
+                return Ok((head, None));
+            }
+            let (records, allocation) = self.replay(
+                authority,
+                Sequence::new(head.sequence.get().saturating_sub(1)),
+                ReplayLimit { records: 1, payload_bytes: maximum_payload_bytes },
+                work,
+            ).await?;
+            let record = records.into_iter().next();
+            drop(allocation);
+            Ok((head, record))
+        }
+    }
+
     /// Compares and appends under the caller's publication permit and guard.
     fn compare_and_append<G: AuthorityGuard>(
         &self,

@@ -82,5 +82,7 @@ pub(crate) use records::object_id_from_key;
 pub(crate) use records::object_key;
 use records::*;
 mod accounting;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod head_record_tests;
 #[cfg(test)]
 mod tests;
