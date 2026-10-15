@@ -48,7 +48,12 @@ impl<'a> AuthorityWork<'a> {
         if let Some(mut allocation) = allocation {
             match &mut self.request_allocation {
                 Some(request) => {
-                    if let Err(error) = request.absorb(&mut allocation) {
+                    if request.bytes() == 0
+                        && request.work().authority_read_original().is_some()
+                        && !request.work().shares_allocation_context(allocation.work())
+                    {
+                        *request = allocation;
+                    } else if let Err(error) = request.absorb(&mut allocation) {
                         drop(value);
                         return Err(error.into());
                     }

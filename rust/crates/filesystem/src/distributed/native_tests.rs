@@ -218,3 +218,25 @@ fn rebinding_invocation_on_same_ledger_does_not_reuse_cancellation() -> TestResu
     assert!(Arc::ptr_eq(&rebound, &work.native_meter()?));
     Ok(())
 }
+
+#[test]
+fn empty_meter_cache_does_not_restrict_rebound_request_funding() -> TestResult {
+    let cancellation = CancellationToken::new();
+    let first = NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
+    let second = NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
+    let baseline = first.live_allocation_bytes();
+    let second_baseline = second.live_allocation_bytes();
+    let mut work = AuthorityWork::native(&first, &cancellation);
+    drop(work.native_meter()?);
+    assert!(first.live_allocation_bytes() > baseline);
+    work.original = Some(&second);
+    let bytes = work.vec::<u8>(16)?;
+    assert_eq!(first.live_allocation_bytes(), baseline);
+    assert_eq!(second.live_allocation_bytes(), second_baseline + 16);
+    drop(work.native_meter()?);
+    assert_eq!(work.request_allocation.as_ref().unwrap().bytes(), 16);
+    drop(bytes);
+    drop(work);
+    assert_eq!(second.live_allocation_bytes(), second_baseline);
+    Ok(())
+}

@@ -90,8 +90,7 @@ impl NativeMaterializationWork {
         &self,
         original: &Self,
     ) -> Option<Arc<dyn acyclic_native_runtime::NativeReadMeter>> {
-        let view = self.invocation.as_ref()?;
-        let bound = view.metadata.work();
+        let bound = self.authority_read_original()?;
         let same_invocation = match (&bound.invocation, &original.invocation) {
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
             (None, None) => true,
@@ -102,12 +101,17 @@ impl NativeMaterializationWork {
             (None, None) => true,
             _ => false,
         };
-        (matches!(view.read_credit, NativeResourceCredit::AuthorityReadBytes)
-            && bound.shares_allocation_context(original)
+        (bound.shares_allocation_context(original)
             && bound.cancellation().same_state(original.cancellation())
             && same_invocation
             && same_capture)
             .then(|| self.runtime_meter())
+    }
+    pub(crate) fn authority_read_original(&self) -> Option<&Self> {
+        self.invocation.as_ref().and_then(|view| {
+            matches!(view.read_credit, NativeResourceCredit::AuthorityReadBytes)
+                .then(|| view.metadata.work())
+        })
     }
     /// Adds a finite resource ceiling without changing the original ledger.
     pub fn native_volume_work(
