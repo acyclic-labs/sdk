@@ -1,3 +1,5 @@
+//! ProjFS metadata capture regressions exercised through the mounted filesystem.
+
 #![cfg(windows)]
 
 use acyclic_fs::MountFilesystem;
