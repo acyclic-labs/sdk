@@ -1,6 +1,6 @@
 use acyclic_harness_tui::key_event::{KeyCode, KeyEvent, KeyModifiers};
 use acyclic_harness_tui::{
-    ClipboardContent, Editor, InputKeymap, KEYMAP, PromptInput, editor_command, format_history,
+    ClipboardContent, InputKeymap, KEYMAP, PromptInput, editor_command, format_history,
     parse_history, prepare_image,
 };
 use proptest::prelude::*;

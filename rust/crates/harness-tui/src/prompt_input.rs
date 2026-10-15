@@ -459,7 +459,7 @@ impl PromptInput {
                         self.editor = edit.draft;
                     }
                 }
-                Action::Escape if !self.editor.selection().is_empty() => {
+                Action::Escape if !self.busy && !self.editor.selection().is_empty() => {
                     self.editor.set_cursor(self.editor.cursor(), false);
                 }
                 other => {

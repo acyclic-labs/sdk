@@ -216,6 +216,24 @@ fn message_edit_and_dock_routing_restore_live_drafts() {
 }
 
 #[test]
+fn escape_cancels_an_edit_then_prioritizes_host_pause_over_selection() {
+    let mut input = PromptInput::new(Editor::new("draft"));
+    input.busy = true;
+    input.edit_message("old".into(), "edit");
+    assert!(press(&mut input, KeyCode::Esc, M::NONE, 0).is_empty());
+    assert_eq!(input.editor.text(), "draft");
+    input.editor.select_all();
+    assert_eq!(
+        press(&mut input, KeyCode::Esc, M::NONE, 1),
+        vec![InputEffect::Host(Action::Escape)]
+    );
+    assert_eq!(input.editor.selected_text(), "draft");
+    input.busy = false;
+    assert!(press(&mut input, KeyCode::Esc, M::NONE, 2).is_empty());
+    assert!(input.editor.selection().is_empty());
+}
+
+#[test]
 fn mouse_click_drag_double_triple_and_cursor_animation() {
     let mut input = PromptInput::new(Editor::new("界 word\nnext"));
     let area = Rect::new(2, 3, 12, 3);
