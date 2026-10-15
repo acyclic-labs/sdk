@@ -14,7 +14,6 @@ members = [
   "rust/crates/grpc-observability",
   "rust/crates/harness",
   "rust/crates/harness-conformance",
-  "rust/crates/harness-codex",
   "rust/crates/inference",
   "rust/crates/inference-wasm",
   "rust/crates/machines",
@@ -92,7 +91,6 @@ thiserror = "2.0.17"
 subtle = "2.6.1"
 sync_wrapper = { version = "=1.0.2", features = ["futures"] }
 time = "0.3.55"
-toml = "1.1.6"
 # Libraries depend on tracing only for non-wasm32 targets and never install a
 # subscriber; hosts and tests do. See docs/observability.md.
 tracing = { version = "0.1.44", default-features = false, features = ["std", "attributes"] }
