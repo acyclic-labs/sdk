@@ -152,4 +152,26 @@ mod tests {
             );
         });
     }
+
+    #[test]
+    #[should_panic(expected = "lock order violation")]
+    fn model_detects_disabled_lock_order_checker() {
+        loom::model(|| {
+            let first = GuestState::new(0u8);
+            let second = GuestState::new(0u8);
+            assert!(
+                first
+                    .with(|_| {
+                        // Negative control: deliberately erase the held-lock marker.
+                        IN_MUTATION.with(|held| held.set(false));
+                        assert_eq!(
+                            second.with(|_| {}),
+                            Err(GuestError::NestedMutation),
+                            "lock order violation"
+                        );
+                    })
+                    .is_ok()
+            );
+        });
+    }
 }
