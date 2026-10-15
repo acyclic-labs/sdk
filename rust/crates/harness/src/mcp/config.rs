@@ -7,7 +7,7 @@ use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 /// Host-owned connection configuration. Credentials are never serialized into task records.
 #[derive(Default)]
 pub struct McpConfig {
-    servers: BTreeMap<String, McpServer>,
+    pub(super) servers: BTreeMap<String, McpServer>,
 }
 
 /// One normalized server declaration; credentials remain host-owned.
@@ -24,6 +24,7 @@ pub struct McpServer {
     pub disabled_tools: Vec<String>,
     /// Whether connection failure prevents session startup.
     pub required: bool,
+    pub(super) dialect: Dialect,
 }
 
 /// Finite native connection vocabulary, without an embedded command language.
@@ -189,6 +190,7 @@ impl ImportedServer {
             enabled_tools: self.enabled_tools,
             disabled_tools: self.disabled_tools,
             required: self.required,
+            dialect,
         })
     }
 }

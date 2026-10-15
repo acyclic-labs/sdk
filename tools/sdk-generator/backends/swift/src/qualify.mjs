@@ -12,7 +12,7 @@ const read = name => readFileSync(join(directory, name));
 const pinned = JSON.parse(read("../toolchains/qualification.json"));
 const markers = [
   "PASS Swift bytes, unsigned bounds, optional zero, populated oneofs, gRPC codecs and bounded RPC metadata",
-  "PASS Swift 19 generated client/server calls, Rust descriptor message/field/path/stream checks, populated native payloads",
+  "PASS Swift 20 generated client/server calls, Rust descriptor message/field/path/stream checks, populated native payloads",
 ];
 const negatives = { InvalidActorBytes: "Data", InvalidOptionalInteger: "UInt64" };
 
@@ -152,7 +152,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned, onProgr
     source_sha256: Object.fromEntries([...sourceBytes].map(([name, bytes]) => [name, sha256(bytes)])),
     toolchain_sha256: sha256(JSON.stringify(toolchain)), installed_payload_sha256: admitted.receipt.output_sha256,
     executable_sha256: sha256(readFileSync(join(products, "Consumer"))), lock_sha256: sha256(lockBytes),
-    negative_type_controls: Object.keys(negatives), native_in_process_rpc_methods: 19,
+    negative_type_controls: Object.keys(negatives), native_in_process_rpc_methods: 20,
     network_transport_qualified: false, rust_backed_rpc_qualified: false, embedded_runtime_qualified: false,
     logs_sha256: Object.fromEntries(logs.map(name => [name, sha256(readFileSync(join(output, name)))])),
   };
