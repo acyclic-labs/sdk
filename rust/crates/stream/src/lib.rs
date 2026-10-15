@@ -11,6 +11,8 @@ use thiserror::Error;
 pub mod conformance;
 #[cfg(feature = "grpc")]
 pub mod grpc;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod head_tests;
 pub mod http_response;
 pub mod persistence;
 pub mod preparation;

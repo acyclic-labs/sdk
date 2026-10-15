@@ -284,6 +284,7 @@ fn commit_hash_bytes(request: &CommitRequest) -> u64 {
             .conditions
             .iter()
             .map(|condition| match condition {
+                CommitCondition::Head { path, .. } => 1 + path_bytes(path) + 8 + 32,
                 CommitCondition::Tail { path, .. } => 1 + path_bytes(path) + 8,
                 CommitCondition::Absent { path } => 1 + path_bytes(path),
             })

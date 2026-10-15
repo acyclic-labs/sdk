@@ -166,10 +166,14 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     /// Replays from a durable cursor and remains live without a snapshot/watch race.
     pub async fn follow(&self, query: Query, cursor: Cursor) -> Result<ChangeStream> {
         self.validate_cursor(&query, &cursor).await?;
-        let records = self
+        let mut records = self
             .provider
-            .follow(self.path.clone(), cursor.position)
+            .follow(self.path.clone(), cursor.position - 1)
             .await?;
+        let anchor = records.next().await.ok_or(Error::ResetRequired)??;
+        if anchor.sequence != cursor.position - 1 || anchor.commit_id.as_bytes() != &cursor.commit {
+            return Err(Error::ResetRequired);
+        }
         let stream = futures::stream::try_unfold(
             (records, query, cursor),
             |(mut records, query, mut cursor)| async move {

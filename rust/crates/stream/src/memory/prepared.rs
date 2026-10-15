@@ -56,7 +56,7 @@ impl MemoryStream {
                 if !state.paths.contains_key(condition_path(condition)) {
                     return Err(StreamError::NotFound);
                 }
-                if condition_conflict(&state, condition).is_some() {
+                if self.condition_conflict(&state, condition)?.is_some() {
                     return Err(StreamError::OutOfRange);
                 }
             }
@@ -267,7 +267,7 @@ impl PreparedCommit {
                 return Err(StreamError::PrefixNotRetained);
             }
             for condition in &self.conditions {
-                if let Some(conflict) = condition_conflict(&state, condition) {
+                if let Some(conflict) = self.provider.condition_conflict(&state, condition)? {
                     cached.push(conflict.clone());
                     conflicts.push(conflict);
                 }

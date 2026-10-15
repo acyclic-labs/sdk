@@ -234,6 +234,15 @@ pub struct CommittedEnvelope {
 /// Exact optimistic condition.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CommitCondition {
+    /// Existing tail and the immutable record immediately before it must match.
+    Head {
+        /// Existing nonempty path.
+        path: StreamPath,
+        /// Required exact tail.
+        expected: u64,
+        /// Required identity of the record at `expected - 1`.
+        commit_id: CommitId,
+    },
     /// Existing tail must match.
     Tail {
         /// Existing path.
@@ -319,6 +328,15 @@ impl UnixMillisClock for SystemUnixMillisClock {
 /// Failed exact condition.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CommitConflict {
+    /// The tail matched but the preceding record belonged to another history.
+    Head {
+        /// Path.
+        path: StreamPath,
+        /// Required preceding commit.
+        expected: CommitId,
+        /// Observed preceding commit.
+        actual: CommitId,
+    },
     /// Tail differed.
     Tail {
         /// Path.

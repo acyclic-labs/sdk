@@ -156,8 +156,9 @@ pub struct TaskVolume<P: ?Sized> {
 impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     /// Opens or atomically initializes a volume, then reconstructs its logical index.
     pub async fn open(provider: Arc<P>, path: StreamPath) -> Result<Self> {
-        let initialize = match provider.tail(path.clone()).await {
-            Ok(0) | Err(StreamError::NotFound) => true,
+        let initialize = match provider.watermarks(path.clone()).await {
+            Ok(acyclic_stream::StreamWatermarks { accepted: 0, .. })
+            | Err(StreamError::NotFound) => true,
             Ok(_) => false,
             Err(error) => return Err(error.into()),
         };
@@ -229,28 +230,29 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         if tail < index.next {
             return Err(Error::ResetRequired);
         }
-        let mut anchor = self
-            .provider
-            .read(ReadRequest {
-                path: self.path.clone(),
-                from: index.next - 1,
-                limit: 1,
-            })
-            .await?;
-        let anchor = anchor.next().await.ok_or(Error::ResetRequired)??;
-        if anchor.sequence != index.next - 1 || anchor.commit_id != index.commit {
-            return Err(Error::ResetRequired);
-        }
-        while index.next < tail {
+        loop {
+            // Anchor and suffix belong to one immutable provider read. Separate
+            // reads could splice a replaced accepted history into the cached files.
             let mut records = self
                 .provider
                 .read(ReadRequest {
                     path: self.path.clone(),
-                    from: index.next,
-                    limit: u32::try_from((tail - index.next).min(acyclic_stream::MAX_ITEMS as u64))
-                        .map_err(|_| Error::LimitExceeded)?,
+                    from: index.next - 1,
+                    limit: u32::try_from(
+                        (tail - index.next + 1).min(acyclic_stream::MAX_ITEMS as u64),
+                    )
+                    .map_err(|_| Error::LimitExceeded)?,
                 })
-                .await?;
+                .await
+                .map_err(history_error)?;
+            let anchor = records
+                .next()
+                .await
+                .ok_or(Error::ResetRequired)?
+                .map_err(history_error)?;
+            if anchor.sequence != index.next - 1 || anchor.commit_id != index.commit {
+                return Err(Error::ResetRequired);
+            }
             let before = index.next;
             while let Some(record) = records.next().await {
                 let record = record?;
@@ -266,11 +268,13 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 index.commit = record.commit_id;
                 index.next += 1;
             }
+            if index.next == tail {
+                return Ok(());
+            }
             if index.next == before {
                 return Err(Error::InvalidSegment);
             }
         }
-        Ok(())
     }
 
     /// Accepts one file event in its own append, without a batching boundary.
@@ -298,9 +302,10 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         let segment = segment::encode(write)?;
         // Decode before durable action, so the accepted event is locally applicable.
         let files = segment::decode(&segment)?;
-        conditions.push(CommitCondition::Tail {
+        conditions.push(CommitCondition::Head {
             path: self.path.clone(),
             expected: expected.position,
+            commit_id: CommitId::from_bytes(expected.commit),
         });
         let request = CommitRequest {
             conditions,
@@ -398,4 +403,13 @@ fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
 
 fn apply(index: &mut Index, file: FileValue) {
     index.files.insert(file.key.clone(), file);
+}
+
+fn history_error(error: StreamError) -> Error {
+    match error {
+        StreamError::NotFound | StreamError::OutOfRange | StreamError::PrefixNotRetained => {
+            Error::ResetRequired
+        }
+        error => error.into(),
+    }
 }

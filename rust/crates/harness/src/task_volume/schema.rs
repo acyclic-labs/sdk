@@ -455,6 +455,10 @@ impl Query {
             )
         };
         vec![match self {
+            Self::Agents => (
+                Included(FileKey::Agent(minimum)),
+                Included(FileKey::Agent(maximum)),
+            ),
             Self::Turn { task, turn } => {
                 return vec![
                     range(

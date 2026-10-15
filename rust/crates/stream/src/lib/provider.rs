@@ -58,7 +58,7 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError>;
     /// Atomic immutable-prefix fork.
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError>;
-    /// Opens a bounded finite read.
+    /// Opens a bounded finite read pinned to one immutable history snapshot.
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError>;
     /// Replays and then remains live without a handoff gap.
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError>;

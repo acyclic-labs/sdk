@@ -286,12 +286,11 @@ impl MemoryStream {
         check_deadline()?;
         admit_replay(state, Some(&request.idempotency_key), self.limits)?;
         let (mut conflicts, output_claim) = self.vector(request.conditions.len())?;
-        conflicts.extend(
-            request
-                .conditions
-                .iter()
-                .filter_map(|condition| condition_conflict(state, condition)),
-        );
+        for condition in &request.conditions {
+            if let Some(conflict) = self.condition_conflict(state, condition)? {
+                conflicts.push(conflict);
+            }
+        }
         if !conflicts.is_empty() {
             let result = CommitOutcome::Conflict(conflicts);
             let (cached, resident) = self.copy_commit(&result)?;
@@ -344,21 +343,78 @@ fn fact_records(fact: &CommittedMutation) -> &Vec<Record> {
     }
 }
 
-fn condition_conflict(state: &State, condition: &CommitCondition) -> Option<CommitConflict> {
-    let path = condition_path(condition);
-    let actual = state.paths.get(path).map(|path| path.tail);
-    match condition {
-        CommitCondition::Tail { expected, .. } if actual != Some(*expected) => {
-            Some(CommitConflict::Tail {
-                path: path.clone(),
-                expected: *expected,
-                actual,
-            })
+impl MemoryStream {
+    fn condition_conflict(
+        &self,
+        state: &State,
+        condition: &CommitCondition,
+    ) -> Result<Option<CommitConflict>, StreamError> {
+        let path = condition_path(condition);
+        let actual = state.paths.get(path).map(|path| path.tail);
+        Ok(match condition {
+            CommitCondition::Tail { expected, .. } | CommitCondition::Head { expected, .. }
+                if actual != Some(*expected) =>
+            {
+                Some(CommitConflict::Tail {
+                    path: path.clone(),
+                    expected: *expected,
+                    actual,
+                })
+            }
+            CommitCondition::Absent { .. } if actual.is_some() => {
+                Some(CommitConflict::Exists { path: path.clone() })
+            }
+            CommitCondition::Head { commit_id, .. } => {
+                let stream = state.paths.get(path).ok_or(StreamError::Unavailable)?;
+                let actual = self.preceding_commit(stream)?;
+                (actual != *commit_id).then(|| CommitConflict::Head {
+                    path: path.clone(),
+                    expected: *commit_id,
+                    actual,
+                })
+            }
+            _ => None,
+        })
+    }
+
+    fn preceding_commit(&self, path: &PathState) -> Result<CommitId, StreamError> {
+        let sequence = path
+            .tail
+            .checked_sub(1)
+            .ok_or(StreamError::InvalidArgument)?;
+        let mut walk = HistoryWalk::new(path.history.as_ref(), path.tail, sequence);
+        loop {
+            #[cfg(not(target_arch = "wasm32"))]
+            let next = if let Some(work) = &self.work {
+                work.record(inspect(&work.meter, || walk.next()))?
+            } else {
+                walk.next()
+            };
+            #[cfg(target_arch = "wasm32")]
+            let next = walk.next();
+            let Some((History::Batch { records, .. }, _)) = next else {
+                if next.is_none() {
+                    return Err(StreamError::Unavailable);
+                }
+                continue;
+            };
+            let lookup = || {
+                let first = records.records.first()?.sequence;
+                let offset = usize::try_from(sequence.checked_sub(first)?).ok()?;
+                records.records.get(offset).map(|record| record.commit_id)
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            let commit = if let Some(work) = &self.work {
+                work.record(inspect(&work.meter, lookup))?
+            } else {
+                lookup()
+            };
+            #[cfg(target_arch = "wasm32")]
+            let commit = lookup();
+            if let Some(commit) = commit {
+                return Ok(commit);
+            }
         }
-        CommitCondition::Absent { .. } if actual.is_some() => {
-            Some(CommitConflict::Exists { path: path.clone() })
-        }
-        _ => None,
     }
 }
 

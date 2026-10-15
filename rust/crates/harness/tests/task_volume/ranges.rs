@@ -2,8 +2,7 @@ use super::{Component, FileKey, Query};
 use std::collections::BTreeMap;
 
 #[test]
-fn approval_and_notification_ranges_do_not_visit_unrelated_task_history()
--> Result<(), Box<dyn std::error::Error>> {
+fn folder_ranges_do_not_visit_unrelated_task_history() -> Result<(), Box<dyn std::error::Error>> {
     let mut index = BTreeMap::new();
     for turn in 0..10_000 {
         index.insert(
@@ -32,6 +31,7 @@ fn approval_and_notification_ranges_do_not_visit_unrelated_task_history()
         (Query::Notifications(Component::new("t")?), 2),
         (Query::Approvals(Component::new("empty")?), 0),
         (Query::Notifications(Component::new("empty")?), 0),
+        (Query::Agents, 0),
     ] {
         // Count candidates before the query predicate: filtering a task-wide
         // range would still return correct files while scanning all its chunks.
@@ -45,5 +45,15 @@ fn approval_and_notification_ranges_do_not_visit_unrelated_task_history()
         let matching: Vec<_> = index.keys().filter(|key| query.matches(key)).collect();
         assert_eq!(candidates, matching);
     }
+    for path in [".volumes/agents/a", ".volumes/agents/z"] {
+        index.insert(FileKey::parse(path)?, ());
+    }
+    let agents: Vec<_> = Query::Agents
+        .ranges()
+        .into_iter()
+        .flat_map(|range| index.range(range).map(|(key, ())| key))
+        .collect();
+    assert_eq!(agents.len(), 2);
+    assert!(agents.iter().all(|key| Query::Agents.matches(key)));
     Ok(())
 }

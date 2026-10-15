@@ -259,6 +259,12 @@ impl HttpStream {
                     let path = parse_path(field(value, "path")?)?;
                     if value["expectedAbsent"] == true {
                         Ok(CommitConflict::Exists { path })
+                    } else if let Some(expected) = value.get("expectedCommitId") {
+                        Ok(CommitConflict::Head {
+                            path,
+                            expected: parse_id(expected)?,
+                            actual: parse_id(field(value, "actualCommitId")?)?,
+                        })
                     } else {
                         Ok(CommitConflict::Tail {
                             path,

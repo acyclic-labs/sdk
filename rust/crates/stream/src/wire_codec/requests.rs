@@ -32,6 +32,9 @@ pub(crate) fn fork_len(request: &ForkRequest) -> usize {
 }
 fn condition_len(condition: &CommitCondition) -> usize {
     block_len(match condition {
+        CommitCondition::Head { path, expected, .. } => {
+            block_len(path.as_str().len()) + uint_len(Some(*expected)) + block_len(32)
+        }
         CommitCondition::Tail { path, expected } => {
             block_len(path.as_str().len()) + uint_len((*expected != 0).then_some(*expected))
         }
@@ -117,6 +120,20 @@ pub(crate) fn commit(out: &mut Vec<u8>, request: &CommitRequest) {
     for condition in &request.conditions {
         header(out, 1, condition_len(condition));
         match condition {
+            CommitCondition::Head {
+                path,
+                expected,
+                commit_id,
+            } => {
+                header(
+                    out,
+                    3,
+                    block_len(path.as_str().len()) + uint_len(Some(*expected)) + block_len(32),
+                );
+                bytes(out, 1, path.as_str().as_bytes());
+                uint(out, 2, Some(*expected));
+                bytes(out, 3, commit_id.as_bytes());
+            }
             CommitCondition::Tail { path, expected } => {
                 header(
                     out,
