@@ -5,7 +5,7 @@ use acyclic_native_runtime::{
 };
 
 struct CapacityReservation {
-    counters: Arc<std::sync::Mutex<(usize, usize)>>,
+    counters: Arc<crate::query_sync::SyncMutex<(usize, usize)>>,
     bytes: usize,
 }
 impl Drop for CapacityReservation {

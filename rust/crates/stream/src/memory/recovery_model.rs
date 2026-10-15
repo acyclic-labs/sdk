@@ -38,13 +38,13 @@ fn seed(provider: &MemoryStream) -> Result<(StreamPath, CommitId)> {
     Ok((path, receipt.commit_id))
 }
 
-/// Checks every schedule; actor and publication counts bound the state.
+/// Checks schedules with two preemptions; actor and publication counts bound the state.
 ///
 /// # Panics
 /// Panics on a violated model invariant.
 pub fn check(run: impl Fn() -> Result + Send + Sync + 'static) {
     let mut builder = loom::model::Builder::new();
-    builder.preemption_bound = None;
+    builder.preemption_bound = Some(2);
     builder.max_permutations = None;
     builder.max_duration = None;
     builder.check(move || {

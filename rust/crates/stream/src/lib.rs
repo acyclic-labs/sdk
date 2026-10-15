@@ -36,6 +36,8 @@ mod journal;
 #[cfg(feature = "local")]
 mod local;
 mod memory;
+#[doc(hidden)]
+pub mod query_sync;
 #[cfg(all(
     not(target_arch = "wasm32"),
     any(feature = "grpc", feature = "http", feature = "local")
@@ -48,9 +50,9 @@ mod wasm;
 /// Conversion helpers between the canonical Rust domain types and generated wire messages.
 pub mod wire_codec;
 
-#[cfg(all(loom, feature = "local"))]
+#[cfg(all(acyclic_loom, feature = "local"))]
 #[path = "memory/recovery_model.rs"]
-/// Exhaustive verification of production query concurrency paths.
+/// Bounded schedule verification of production query concurrency paths.
 pub mod verification;
 
 /// Largest bearer credential, in bytes, that an SDK client accepts. It matches the

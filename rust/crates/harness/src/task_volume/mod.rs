@@ -9,6 +9,7 @@ pub use follow::{Change, ChangeStream, Cursor, Observation, Snapshot};
 pub use heads::{HeadFile, HeadSnapshot};
 pub use schema::{Channel, Component, FileKey, Owner, Query, SCHEMA, TaskFile, ToolFile};
 
+use acyclic_stream::query_sync::Mutex;
 use acyclic_stream::{
     AppendRequest, CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitRequest,
     IdempotencyKey, OwnedBytes, ReadRequest, StreamError, StreamPath, StreamProvider,
@@ -16,7 +17,6 @@ use acyclic_stream::{
 use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
-use tokio::sync::Mutex;
 use uuid::Uuid;
 
 /// Task-volume failure; reset requires a fresh bounded snapshot.

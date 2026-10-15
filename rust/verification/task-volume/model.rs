@@ -11,6 +11,115 @@ use loom::thread;
 use std::sync::Arc;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+// Control property: one locked increment preserves both updates. Splitting the
+// same operations into separate critical sections must expose a lost update.
+fn increment_control(split: bool) {
+    model(move || {
+        use acyclic_stream::query_sync::Mutex;
+        let value = Arc::new(Mutex::new(0_u8));
+        let increment = move |value: Arc<Mutex<u8>>| {
+            block_on(async {
+                if split {
+                    let before = *value.lock().await;
+                    *value.lock().await = before + 1;
+                } else {
+                    *value.lock().await += 1;
+                }
+            });
+        };
+        let worker = thread::spawn({
+            let value = value.clone();
+            move || increment(value)
+        });
+        increment(value.clone());
+        worker.join().map_err(|_| "increment worker panicked")?;
+        assert_eq!(*block_on(value.lock()), 2, "split increment lost update");
+        Ok(())
+    });
+}
+
+#[test]
+fn modeled_mutex_preserves_atomic_increment() {
+    increment_control(false);
+}
+
+#[test]
+#[should_panic(expected = "split increment lost update")]
+fn negative_control_detects_split_increment() {
+    increment_control(true);
+}
+
+fn rwlock_control(split: bool) {
+    model(move || {
+        use acyclic_stream::query_sync::RwLock;
+        let value = Arc::new(RwLock::new(0_u8));
+        let increment = move |value: Arc<RwLock<u8>>| {
+            block_on(async {
+                if split {
+                    let before = *value.read().await;
+                    *value.write().await = before + 1;
+                } else {
+                    *value.write().await += 1;
+                }
+            });
+        };
+        let worker = thread::spawn({
+            let value = value.clone();
+            move || increment(value)
+        });
+        increment(value.clone());
+        worker.join().map_err(|_| "increment worker panicked")?;
+        assert_eq!(*block_on(value.read()), 2, "split rwlock lost update");
+        Ok(())
+    });
+}
+
+#[test]
+fn modeled_rwlock_preserves_atomic_increment() {
+    rwlock_control(false);
+}
+
+#[test]
+#[should_panic(expected = "split rwlock lost update")]
+fn negative_control_detects_split_rwlock_increment() {
+    rwlock_control(true);
+}
+
+fn watch_control(discard_unseen: bool) {
+    model(move || {
+        use acyclic_stream::query_sync::watch;
+        let (sender, mut receiver) = watch::channel(0_u8);
+        let worker = thread::spawn(move || {
+            sender.send_replace(1);
+        });
+        if *receiver.borrow_and_update() == 0 {
+            if discard_unseen {
+                // Deliberately broken: consume a publication between the check
+                // and parking. No explicit yield may manufacture the race.
+                receiver.borrow_and_update();
+            }
+            assert!(
+                block_on(receiver.changed()).is_ok(),
+                "discarded watch publication"
+            );
+        }
+        assert_eq!(*receiver.borrow_and_update(), 1);
+        worker.join().map_err(|_| "watch publisher panicked")?;
+        Ok(())
+    });
+}
+
+#[test]
+fn modeled_watch_preserves_unseen_publication_and_close() {
+    watch_control(false);
+}
+
+#[test]
+#[should_panic(expected = "discarded watch publication")]
+fn negative_control_detects_discarded_watch_publication() {
+    watch_control(true);
+}
+
 fn initialized(
     provider: Arc<MemoryStream>,
     bytes: &'static [u8],

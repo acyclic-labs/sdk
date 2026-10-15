@@ -83,7 +83,7 @@ acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability
 tokio = { version = "1.48.0", features = ["net", "io-util", "rt-multi-thread"] }
 tracing-subscriber.workspace = true
 
-[target.'cfg(loom)'.dependencies]
+[target.'cfg(acyclic_loom)'.dependencies]
 loom = { version = "0.7.2", features = ["futures"] }
 
 [lints]

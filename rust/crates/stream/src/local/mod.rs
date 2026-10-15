@@ -1,26 +1,23 @@
 //! Bounded crash-recoverable local Stream provider.
 
-#[cfg(loom)]
-use loom::sync::Mutex;
 use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-#[cfg(not(loom))]
-use std::sync::Mutex;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, PoisonError};
 
 #[cfg(test)]
 use crate::OwnedBytes as Bytes;
+use crate::query_sync::{RwLock, SyncMutex as Mutex, watch};
 use acyclic_native_runtime::OwnershipAnchor;
 use async_trait::async_trait;
 use fs2::FileExt as _;
 use futures::{StreamExt as _, stream};
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
-use tokio::sync::{RwLock, mpsc, watch};
+use tokio::sync::mpsc;
 #[cfg(test)]
 use tracing::Instrument as _;
 use tracing::field::Empty;
@@ -51,7 +48,7 @@ const SNAPSHOT_TEMPORARY: &str = "stream.snapshot.tmp";
 const FRAME_CHECKSUM_BYTES: usize = 32;
 const REPLAY_PIPELINE_COMMANDS: usize = 32;
 
-#[cfg(loom)]
+#[cfg(acyclic_loom)]
 pub(crate) mod query_model;
 
 #[cfg(test)]
