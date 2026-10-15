@@ -3,10 +3,17 @@ import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { generatedDescriptors, writeChanged } from "./generated-bindings.mjs";
+import { generatedDescriptors, packagedSourceCopies, writeChanged } from "./generated-bindings.mjs";
 import { filesystemDescriptorDigestSource } from "./filesystem-descriptor-digest.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+for (const [source, destination] of packagedSourceCopies.filter(([source]) => source === "proto/validation/v1/options.proto")) {
+  mkdirSync(dirname(join(root, destination)), { recursive: true });
+  copyFileSync(join(root, source), join(root, destination));
+}
+const auth = spawnSync("cargo", ["run", "--locked", "--quiet", "-p", "acyclic-auth", "--example", "generate", "--", root], { cwd: root, stdio: "inherit" });
+if (auth.error) throw auth.error;
+if (auth.status !== 0) process.exit(auth.status ?? 1);
 for (const key of ["actors", "stream"]) {
   const facts = spawnSync("cargo", ["run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", "native-family", root, key], { cwd: root, encoding: "utf8" });
   if (facts.error) throw facts.error;

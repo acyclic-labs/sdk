@@ -39,8 +39,13 @@ impl Field {
             ));
         }
         let optional = options::inner(&field.ty, "Option");
-        let repeated =
-            options::inner(&field.ty, "Vec").filter(|_| options.kind.as_deref() == Some("message"));
+        let repeated = options::inner(&field.ty, "Vec").filter(|inner| {
+            matches!(
+                options.kind.as_deref(),
+                Some("message" | "string" | "uint32" | "uint64" | "bool" | "enumeration")
+            ) || (options.kind.as_deref() == Some("bytes")
+                && options::inner(inner, "Vec").is_some())
+        });
         let ty = optional
             .clone()
             .or(repeated.clone())
