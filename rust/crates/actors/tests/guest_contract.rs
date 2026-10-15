@@ -1,0 +1,193 @@
+//! Guest ABI properties, parser corpus replay and generated declaration drift.
+use acyclic_actors::guest::*;
+use proptest::prelude::*;
+
+fn identity(version: &str) -> CodecIdentity {
+    CodecIdentity {
+        name: "test-bytes".into(),
+        version: version.into(),
+    }
+}
+
+fn codec(version: &str, readable: Vec<CodecIdentity>) -> CheckpointCodec<Vec<u8>> {
+    CheckpointCodec {
+        identity: identity(version),
+        readable,
+        encode: |state| Ok(state.clone()),
+        decode: |checkpoint| Ok(checkpoint.bytes.clone()),
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    #[test]
+    fn artifact_codec_round_trip(bytes in prop::collection::vec(any::<u8>(), 0..2048)) {
+        let codec = codec("1", vec![identity("1")]);
+        let checkpoint = Checkpoint { codec: codec.identity.clone(), bytes: (codec.encode)(&bytes)? };
+        let wire = serde_json::to_vec(&checkpoint)?;
+        let decoded: Checkpoint = serde_json::from_slice(&wire)?;
+        prop_assert_eq!((codec.decode)(&decoded)?, bytes);
+    }
+
+    #[test]
+    fn rejected_update_preserves_entire_installed_boundary(
+        configuration in any::<u64>(), subscriptions in prop::collection::vec(any::<u64>(), 0..16),
+        bytes in prop::collection::vec(any::<u8>(), 0..512), decoder_fails in any::<bool>(),
+    ) {
+        let mut installed = GuestInstallation {
+            configuration,
+            subscriptions,
+            checkpoint: Some(Checkpoint { codec: identity("1"), bytes }),
+        };
+        let prior = installed.clone();
+        let mut candidate = codec("2", vec![identity("2")]);
+        if decoder_fails {
+            candidate.readable.push(identity("1"));
+            candidate.decode = |_| Err(GuestError::Decode("bad state".into()));
+        }
+        prop_assert!(installed.update(configuration.wrapping_add(1), vec![], &candidate).is_err());
+        prop_assert_eq!(installed, prior);
+    }
+
+    #[test]
+    fn compatible_update_decodes_prior_format_without_rewriting_checkpoint(
+        bytes in prop::collection::vec(any::<u8>(), 0..512),
+    ) {
+        let checkpoint = Checkpoint { codec: identity("1"), bytes: bytes.clone() };
+        let mut installed = GuestInstallation {
+            configuration: "old", subscriptions: vec![1], checkpoint: Some(checkpoint.clone()),
+        };
+        let candidate = codec("2", vec![identity("1"), identity("2")]);
+        prop_assert_eq!(installed.update("new", vec![2], &candidate)?, Some(bytes));
+        prop_assert_eq!(installed.configuration, "new");
+        prop_assert_eq!(installed.subscriptions, vec![2]);
+        prop_assert_eq!(installed.checkpoint, Some(checkpoint));
+    }
+
+    #[test]
+    fn effect_keys_are_stable_and_injective(a in ".{1,64}", b in ".{1,64}", c in ".{1,64}", d in ".{1,64}") {
+        let first = retry_key(&a, &b)?;
+        prop_assert_eq!(&first, &retry_key(&a, &b)?);
+        if a != c || b != d { prop_assert_ne!(first, retry_key(&c, &d)?); }
+    }
+
+    #[test]
+    fn generated_events_round_trip(
+        kind in 0u8..9, identity in ".{0,32}", number in any::<u64>(),
+        bytes in prop::collection::vec(any::<u8>(), 0..512),
+    ) {
+        let event = match kind {
+            0 => GuestEvent::Stream { subscription: identity.clone(), stream: identity.clone(),
+                sequence: number.to_string(), committed_at_micros: number.to_string(),
+                value: identity.clone(), commit_id: identity.clone() },
+            1 => GuestEvent::Invoke { payload: bytes.clone() },
+            2 => GuestEvent::Fetch { request: GuestRequest { url: identity.clone(), method: identity.clone(),
+                headers: vec![(identity.clone(), identity.clone())], body: bytes.clone() } },
+            3 => GuestEvent::Timer { timer_id: identity.clone(), deadline_unix_ms: number.to_string() },
+            kind => GuestEvent::Socket { connection_id: identity.clone(), event: match kind {
+                4 => GuestSocketEvent::Open { protocol: identity.clone() },
+                5 => GuestSocketEvent::Message { offset: number.to_string(), data: bytes.clone(), text: number % 2 == 0 },
+                6 => GuestSocketEvent::Close { code: (number % 65536) as u16, reason: identity.clone() },
+                7 => GuestSocketEvent::Error { code: identity.clone() },
+                _ => GuestSocketEvent::Reconnecting,
+            } },
+        };
+        let encoded = serde_json::to_vec(&event)?;
+        prop_assert_eq!(serde_json::from_slice::<GuestEvent>(&encoded)?, event);
+    }
+
+    #[test]
+    fn accepted_untrusted_json_is_round_trip_stable(input in prop::collection::vec(any::<u8>(), 0..2048)) {
+        if let Ok(event) = serde_json::from_slice::<GuestEvent>(&input) {
+            prop_assert_eq!(serde_json::from_slice::<GuestEvent>(&serde_json::to_vec(&event)?)?, event);
+        }
+    }
+}
+
+#[test]
+fn fuzz_seed_corpus_round_trips_accepted_inputs() -> Result<(), Box<dyn std::error::Error>> {
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../fuzz/corpus/guest_json");
+    for entry in std::fs::read_dir(root)? {
+        let input = std::fs::read(entry?.path())?;
+        if let Ok(event) = serde_json::from_slice::<GuestEvent>(&input) {
+            assert_eq!(
+                serde_json::from_slice::<GuestEvent>(&serde_json::to_vec(&event)?)?,
+                event
+            );
+        }
+        if let Ok(checkpoint) = serde_json::from_slice::<Checkpoint>(&input) {
+            assert_eq!(
+                serde_json::from_slice::<Checkpoint>(&serde_json::to_vec(&checkpoint)?)?,
+                checkpoint
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn absent_checkpoint_still_requires_valid_codec_and_never_calls_decoder() {
+    let mut candidate = codec("1", vec![]);
+    assert_eq!(
+        prepare_update(None, &candidate),
+        Err(GuestError::IncompatibleCodec)
+    );
+    candidate.readable.push(identity("1"));
+    candidate.decode = |_| panic!("absent checkpoint must not be decoded");
+    assert_eq!(prepare_update(None, &candidate), Ok(None));
+    assert!(retry_key("", "effect").is_err());
+    assert!(retry_key("delivery", "").is_err());
+}
+
+#[test]
+fn every_event_round_trips_with_a_single_discriminant() -> Result<(), Box<dyn std::error::Error>> {
+    let request = GuestRequest {
+        url: "https://example.test/".into(),
+        method: "POST".into(),
+        headers: vec![],
+        body: vec![0, 255],
+    };
+    let events = [
+        GuestEvent::Stream {
+            subscription: "inbox".into(),
+            stream: "agents/a/inbox".into(),
+            sequence: u64::MAX.to_string(),
+            committed_at_micros: "0".into(),
+            value: "AP8=".into(),
+            commit_id: "ab".repeat(16),
+        },
+        GuestEvent::Invoke {
+            payload: vec![0, 255],
+        },
+        GuestEvent::Fetch { request },
+        GuestEvent::Timer {
+            timer_id: "timer-1".into(),
+            deadline_unix_ms: "123".into(),
+        },
+        GuestEvent::Socket {
+            connection_id: "app-1".into(),
+            event: GuestSocketEvent::Reconnecting,
+        },
+    ];
+    for event in events {
+        assert_eq!(
+            serde_json::from_slice::<GuestEvent>(&serde_json::to_vec(&event)?)?,
+            event
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn generated_authoring_contract_has_no_drift() -> Result<(), Box<dyn std::error::Error>> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../typescript/packages/actors/src/generated/guest.ts");
+    let generated = typescript();
+    if std::env::var_os("ACYCLIC_WRITE_GUEST_TYPES").is_some() {
+        std::fs::write(&path, &generated)?;
+    }
+    assert_eq!(std::fs::read_to_string(path)?, generated);
+    Ok(())
+}

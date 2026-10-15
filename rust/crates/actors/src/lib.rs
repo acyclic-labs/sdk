@@ -12,6 +12,9 @@ pub mod client;
 /// Rust-owned Actors contract declarations and schema renderer.
 pub mod contract;
 
+/// Rust-owned guest ABI and typed authoring hooks, without an execution runtime.
+pub mod guest;
+
 /// Native gRPC client for the canonical Actors v1 service.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod grpc;
