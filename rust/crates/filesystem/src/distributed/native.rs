@@ -61,12 +61,19 @@ impl<'a> AuthorityWork<'a> {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn native_meter(
-        &self,
+        &mut self,
     ) -> Result<Arc<dyn acyclic_native_runtime::NativeReadMeter>, AuthorityStoreError> {
-        self.original
-            .expect("native SDK funding")
-            .authority_read_meter()
-            .map_err(Into::into)
+        let original = self.original.expect("native SDK funding");
+        if let Some((bound, meter)) = &self.native_read_meter
+            && std::ptr::eq(*bound, original)
+        {
+            original.admit(WorkCounters::UNCHARGED)?;
+            return Ok(meter.clone());
+        }
+        self.native_read_meter = None;
+        let meter = original.authority_read_meter()?;
+        self.native_read_meter = Some((original, meter.clone()));
+        Ok(meter)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -445,3 +452,7 @@ pub(super) fn codec_work(encoded: u64, copied: u64, hashed: u64) -> WorkCounters
         ..WorkCounters::UNCHARGED
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "native_tests.rs"]
+mod tests;
