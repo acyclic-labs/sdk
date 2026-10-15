@@ -257,9 +257,13 @@ impl DemandWork {
         Ok(())
     }
     fn prune_native_mount_admissions(&mut self) -> Result<(), crate::WorkError> {
-        if self.roots.native_mount_admission_pending
-            || self.roots.native_mount_admissions.0.is_empty()
-        {
+        if self.roots.native_mount_admission_pending {
+            if let Some(dirty) = &self.roots.native_mount_dirty {
+                dirty.store(true, Ordering::Release);
+            }
+            return Ok(());
+        }
+        if self.roots.native_mount_admissions.0.is_empty() {
             return Ok(());
         }
         let owners = &self.roots.native_mount_admissions.0;
@@ -394,3 +398,7 @@ impl NativeDemandReadMeter {
         Ok(token.clone())
     }
 }
+
+#[cfg(all(test, feature = "native-watch"))]
+#[path = "admissions_registry_tests.rs"]
+mod registry_tests;

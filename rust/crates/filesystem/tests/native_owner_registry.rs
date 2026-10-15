@@ -281,3 +281,37 @@ async fn mixed_retirement_layouts_charge_only_moved_survivors() -> TestResult {
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn rejected_admissions_with_a_live_owner_do_not_accumulate_slots_or_copies() -> TestResult {
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let root = tempfile::tempdir()?;
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
+    let owner = open(root.path(), &work).await?;
+    let denied = work.native_volume_work(WorkBudget {
+        peak_allocation_bytes: 0,
+        ..BUDGET
+    })?;
+    assert!(open(root.path(), &denied).await.is_err());
+    work.charge(WorkCounters::UNCHARGED)?;
+    let retained = work.live_allocation_bytes();
+    let spent = work.receipt();
+    for _ in 0..64 {
+        assert!(open(root.path(), &denied).await.is_err());
+        let failed_prefix = work.receipt();
+        work.charge(WorkCounters::UNCHARGED)?;
+        assert_eq!(work.receipt(), failed_prefix);
+        assert_eq!(work.live_allocation_bytes(), retained);
+        assert_eq!(work.receipt(), spent);
+    }
+    drop(owner);
+    work.charge(WorkCounters::UNCHARGED)?;
+    assert_eq!(work.receipt(), spent);
+    drop(denied);
+    assert_eq!(
+        work.live_allocation_bytes(),
+        NativeMaterializationWork::accounting_state_bytes()
+    );
+    Ok(())
+}
