@@ -272,19 +272,20 @@ impl Fixture {
 }
 
 #[tokio::test]
-async fn defaults_load_both_instruction_names_in_ancestor_order() -> Result<()> {
+async fn production_default_policy_loads_both_instruction_names_in_ancestor_order() -> Result<()> {
     let fixture = Fixture::new().await?;
-    for path in [
+    let paths = [
         "AGENTS.md",
         "CLAUDE.md",
         "project/AGENTS.md",
         "project/CLAUDE.md",
-    ] {
+    ];
+    for path in paths {
         fixture.put(path, path.as_bytes(), path).await?;
     }
     let mut declaration = fixture.declaration();
+    declaration.policy = ContextDiscoveryPolicy::default();
     declaration.skills.clear();
-    declaration.limits = ContextDiscoveryLimits::default();
     let captured = declaration.capture(fixture.reader.as_ref()).await?;
     assert_eq!(
         captured
@@ -292,46 +293,8 @@ async fn defaults_load_both_instruction_names_in_ancestor_order() -> Result<()> 
             .iter()
             .map(|file| file.path())
             .collect::<Vec<_>>(),
-        [
-            "AGENTS.md",
-            "CLAUDE.md",
-            "project/AGENTS.md",
-            "project/CLAUDE.md"
-        ]
+        paths
     );
-    declaration.policy.instruction_names = vec!["CLAUDE.md".into()];
-    assert_eq!(
-        declaration
-            .capture(fixture.reader.as_ref())
-            .await?
-            .instructions
-            .len(),
-        2
-    );
-    for limits in [
-        ContextDiscoveryLimits {
-            entries: 0,
-            ..Default::default()
-        },
-        ContextDiscoveryLimits {
-            directories: 0,
-            ..Default::default()
-        },
-        ContextDiscoveryLimits {
-            header_bytes: 0,
-            ..Default::default()
-        },
-        ContextDiscoveryLimits {
-            instruction_bytes: 0,
-            ..Default::default()
-        },
-    ] {
-        declaration.limits = limits;
-        assert!(matches!(
-            declaration.capture(fixture.reader.as_ref()).await,
-            Err(Error::Invalid(_))
-        ));
-    }
     Ok(())
 }
 

@@ -1,0 +1,3 @@
+{"seed":{"skills/a/SKILL.md":"---\nname: same\ndescription: Inspect files\n---\nSECRET BODY","skills/b/SKILL.md":
+  "---\nname: same\ndescription: Inspect files\n---\nSECRET BODY"},"expect":{"error":
+  "skill name same is declared twice"}}

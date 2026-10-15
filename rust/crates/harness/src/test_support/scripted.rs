@@ -4,6 +4,7 @@ use crate::{
     model::{Model, ModelDispatch, ModelEvent, ModelProvider, ModelRequest, PreparedModelRequest},
 };
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
+use futures::StreamExt as _;
 use serde::{
     Deserialize, Deserializer, Serialize,
     de::{SeqAccess, Visitor, value::SeqAccessDeserializer},
@@ -66,6 +67,8 @@ pub enum ScriptedEvent {
         /// Diagnostic returned as a provider storage error.
         error: String,
     },
+    /// Remains pending until the consumer drops the stream.
+    Pending {},
 }
 
 /// One reconciliation of a previously admitted model request.
@@ -98,6 +101,7 @@ pub struct ScriptedModelProvider {
     state: Mutex<State>,
     capacity: Option<ModelContextCapacity>,
     token_counter: Option<Arc<TokenCounter>>,
+    dispatch_observer: Option<Arc<dyn Fn(ModelDispatch) + Send + Sync>>,
 }
 
 impl ScriptedModelProvider {
@@ -114,6 +118,7 @@ impl ScriptedModelProvider {
                 output_tokens: 4_096,
             }),
             token_counter: Some(Arc::new(serialized_tokens)),
+            dispatch_observer: None,
         }
     }
 
@@ -139,6 +144,17 @@ impl ScriptedModelProvider {
     pub fn without_accounting(mut self) -> Self {
         self.capacity = None;
         self.token_counter = None;
+        self
+    }
+
+    /// Signals an accepted scripted dispatch after recording it and releasing the state lock.
+    /// Runs before returning its stream; invalid requests and exhausted scripts do not signal.
+    #[must_use]
+    pub fn with_dispatch_observer(
+        mut self,
+        observer: impl Fn(ModelDispatch) + Send + Sync + 'static,
+    ) -> Self {
+        self.dispatch_observer = Some(Arc::new(observer));
         self
     }
 
@@ -224,19 +240,28 @@ impl ModelProvider for ScriptedModelProvider {
         request: PreparedModelRequest,
         dispatch: ModelDispatch,
     ) -> BoxProviderStream<'a, Result<ModelEvent>> {
-        match self.next(request, dispatch) {
+        let turn = self.next(request, dispatch);
+        if turn.is_ok()
+            && let Some(observer) = &self.dispatch_observer
+        {
+            observer(dispatch);
+        }
+        match turn {
             Ok(ScriptedTurn::Text(delta)) => Box::pin(futures::stream::iter([
                 Ok(ModelEvent::Content { delta }),
                 Ok(ModelEvent::Completed {
                     metadata: serde_json::Value::Null,
                 }),
             ])),
-            Ok(ScriptedTurn::Events(events)) => Box::pin(futures::stream::iter(
-                events.into_iter().map(|event| match event {
-                    ScriptedEvent::Event(event) => Ok(event),
-                    ScriptedEvent::Error { error } => Err(Error::Storage(error)),
-                }),
-            )),
+            Ok(ScriptedTurn::Events(events)) => {
+                Box::pin(futures::stream::iter(events).then(|event| async move {
+                    match event {
+                        ScriptedEvent::Event(event) => Ok(event),
+                        ScriptedEvent::Error { error } => Err(Error::Storage(error)),
+                        ScriptedEvent::Pending {} => std::future::pending().await,
+                    }
+                }))
+            }
             Err(error) => Box::pin(futures::stream::iter([Err(error)])),
         }
     }

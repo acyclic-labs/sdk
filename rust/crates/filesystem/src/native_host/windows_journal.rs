@@ -317,11 +317,11 @@ pub(crate) fn remove_windows_leaf<W: NativeHostWork>(
     })
 }
 
-pub(super) fn set_windows_name<W: NativeHostWork>(
+pub(crate) fn set_windows_name<W: NativeHostWork>(
     file: &File,
     parent: &Dir,
     name: &[u16],
-    replace: bool,
+    flags: u32,
     class: nt::FILE_INFORMATION_CLASS,
     work: &mut W,
 ) -> Result<(), W::Error> {
@@ -332,7 +332,7 @@ pub(super) fn set_windows_name<W: NativeHostWork>(
             .ok_or(crate::WorkError::Overflow)?,
     );
     work.admit(copied)?;
-    let (packet, allocation, length) = windows_name_packet(parent, name, replace, work)?;
+    let (packet, allocation, length) = windows_name_packet(parent, name, flags, work)?;
     let result = work.record(copied).and_then(|()| {
         work.attempt_io(WRITE, || {
             // SAFETY: initialized aligned storage covers the header and flexible name.

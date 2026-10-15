@@ -21,6 +21,12 @@ use windows_sys::Win32::System::Threading::{
 
 pub(super) use std::os::windows::io::AsRawHandle as Pipe;
 
+#[path = "windows_wait.rs"]
+pub(super) mod wait;
+pub(super) use wait::wait_for_exit;
+#[cfg(test)]
+pub(super) use wait::wait_for_exit_coarse;
+
 pub(super) fn write_pipe(
     pipe: &mut (impl Write + Pipe),
     bytes: &[u8],

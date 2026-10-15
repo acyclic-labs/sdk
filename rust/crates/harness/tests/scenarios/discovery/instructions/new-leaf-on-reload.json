@@ -1,0 +1,5 @@
+{"seed":{"AGENTS.md":"root","src/file":"source"},"discovery":{"instructions":[{"active_directory":"src"}],
+  "after_capture":{"src/CLAUDE.md":"new leaf"},"reload":"next_request"},"expect":{"request_files":[["root","new leaf"]
+  ],"requests":[{"messages":[{"role":"system","content":{"kind":"file","file":{"path":"AGENTS.md"},"policy":
+  "bounded_full"}},{"role":"system","content":{"kind":"file","file":{"path":"src/CLAUDE.md"},"policy":"bounded_full"}}
+  ]}]}}
