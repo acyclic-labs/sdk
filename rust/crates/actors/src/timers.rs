@@ -172,7 +172,7 @@ pub async fn fire<P: acyclic_stream::StreamProvider>(
 pub fn typescript() -> String {
     let config = Config::default();
     let output = format!(
-        "// Generated from acyclic_actors::timers. Do not edit.\nexport {}\n",
+        "// Generated from acyclic_actors::timers. Do not edit.\nexport const TIMER_STREAM_PREFIX = {TIMER_STREAM_PREFIX:?};\nexport {}\n",
         <TimerRecord as TS>::decl(&config)
     );
     output

@@ -32,6 +32,25 @@ fn nominal_error(error: domain::DomainError) -> JsValue {
     js_error(code, error)
 }
 
+/// Encode a validated source timer, retaining exact u64 milliseconds from JS bigint.
+#[wasm_bindgen(js_name = "timerRecord")]
+pub fn timer_record(task: String, operation: String, deadline: BigInt) -> Result<Vec<u8>, JsValue> {
+    let deadline = u64::try_from(deadline)
+        .map_err(|_| js_error("invalid_argument", "timer deadline must be a positive u64"))?;
+    acyclic_actors::timers::TimerRecord::new(task, operation, deadline)
+        .and_then(|record| record.encode())
+        .map_err(|error| js_error("invalid_argument", error))
+}
+
+/// Derive the harness-compatible source append identity in Rust.
+#[wasm_bindgen(js_name = "timerRetentionKey")]
+pub fn timer_retention_key(task: String, operation: String) -> Result<Vec<u8>, JsValue> {
+    acyclic_actors::timers::TimerRecord::new(task, operation, 1)
+        .and_then(|record| record.retention_key())
+        .map(|key| key.as_bytes().to_vec())
+        .map_err(|error| js_error("invalid_argument", error))
+}
+
 fn nominal_string(value: &JsValue, field: &str) -> Result<String, JsValue> {
     value
         .as_string()
