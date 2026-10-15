@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "environments": [{
+    "name": "production",
+    "entries": [{ "name": "counter", "kind": "actor", "artifactSha256": "abababababababababababababababababababababababababababababababab", "module": "counter", "bindings": ["inbox"], "secrets": ["MODEL_KEY"] }],
+    "bindings": [{ "name": "inbox", "kind": "streams", "resource": "agents/inbox", "capability": "policies/inbox-append-follow" }],
+    "secrets": [{ "name": "MODEL_KEY", "reference": "credentials/model-key-v2" }],
+    "egress": [{ "host": "api.example.com", "port": 443 }],
+    "crons": [{ "name": "hourly", "schedule": "0 * * * *", "entry": "counter", "inboxBinding": "inbox", "inboxStream": "agents/counter/inbox" }],
+    "assets": [],
+    "routes": [{ "host": "counter.example.com", "pathPrefix": "/", "entry": "counter" }]
+  }]
+}
