@@ -2,9 +2,37 @@
 use acyclic_manifest::*;
 use proptest::prelude::*;
 use serde_json::{Value, json};
+#[path = "support/admission.rs"]
+mod admission;
 
 fn fixture() -> Result<DeploymentManifest, ManifestError> {
     parse(include_bytes!("../fuzz/corpus/manifest_json/valid.json"))
+}
+
+#[test]
+#[should_panic(expected = "inbox-authority")]
+fn bypassed_inbox_authority_is_detected_by_independent_oracle() {
+    let mut candidate = fixture().expect("valid seed");
+    candidate.environments[0].grants[0].grant.0.actions = vec!["streams/read".into()];
+    // Model admission with the authority check deleted: pass the candidate directly.
+    assert_eq!(admission::check(&candidate), Ok(()));
+}
+
+#[test]
+fn native_oversize_is_rejected_before_json_materialization()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut manifest = scaled(12)?;
+    for grant in &mut manifest.environments[0].grants {
+        grant.grant.0.actions = vec![format!("streams/{}", "r".repeat(1980)); 64];
+    }
+    let bytes = serde_json::to_vec(&manifest)?;
+    assert!(bytes.len() > MAX_JSON_BYTES);
+    assert_eq!(
+        validate(&manifest).expect_err("native budget").rule,
+        "json-size"
+    );
+    assert_eq!(parse(&bytes).expect_err("wire budget").rule, "json-size");
+    Ok(())
 }
 fn scaled(count: usize) -> Result<DeploymentManifest, Box<dyn std::error::Error>> {
     let mut manifest = fixture()?;
@@ -59,6 +87,7 @@ proptest! {
             manifest.environments[0].entries[0].runtime = EntryRuntime::Worker { limits: WorkerLimits { cpu_millis:quota, memory_bytes:quota, timeout_millis:quota } };
         }
         validate(&manifest)?;
+        prop_assert_eq!(admission::check(&manifest), Ok(()));
         prop_assert_eq!(&parse(&serde_json::to_vec(&manifest)?)?, &manifest);
         if worker {
             manifest.environments[0].entries[0].runtime = EntryRuntime::Worker { limits: WorkerLimits { cpu_millis:0, memory_bytes:quota, timeout_millis:quota } };
@@ -75,6 +104,19 @@ proptest! {
         let large_work = validate_work(&large)?;
         prop_assert!(large_work <= small_work * 5);
         prop_assert!(environment_typescript(&large, "production", "agent")?.contains("B0: Streams"));
+    }
+
+    /// Native and JSON admission share the aggregate byte ceiling, including wire overhead.
+    #[test]
+    fn native_and_json_budgets_agree(count in 1usize..=16, width in 1usize..=2040) {
+        let mut manifest = scaled(count).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        for grant in &mut manifest.environments[0].grants {
+            grant.grant.0.actions = vec![format!("streams/{}", "r".repeat(width)); 64];
+        }
+        let bytes = serde_json::to_vec(&manifest)?;
+        let native = validate(&manifest);
+        prop_assert_eq!(native.is_ok(), parse(&bytes).is_ok());
+        if bytes.len() > MAX_JSON_BYTES { prop_assert_eq!(native.expect_err("oversized" ).rule, "json-size"); }
     }
 
     /// Shared grants are indexed once even when both action and cron counts grow.
@@ -425,6 +467,23 @@ fn asset_bundle_requires_immutable_digest_and_matching_objects_grant()
         cache: AssetCache::Immutable,
     });
     validate(&manifest)?;
+    assert_eq!(admission::check(&manifest), Ok(()));
+    let directory = acyclic_auth::objects_resource(
+        b"static",
+        format!("assets/{}/", "ab".repeat(32)).as_bytes(),
+    );
+    manifest.environments[0].grants[1].grant.0.resource.name = directory.clone();
+    manifest.environments[0].bindings[1] =
+        Binding::new("ASSETS".into(), "assetsGrant".into(), directory)?.into();
+    assert_eq!(admission::check(&manifest), Err("asset-object-authority"));
+    assert!(validate(&manifest).is_err());
+    manifest.environments[0].grants[1].grant.0.resource.name = "objects:/static/".into();
+    manifest.environments[0].bindings[1] = Binding::new(
+        "ASSETS".into(),
+        "assetsGrant".into(),
+        "objects:/static/".into(),
+    )?
+    .into();
     manifest.environments[0].grants[1].grant.0.resource.prefix = false;
     assert!(validate(&manifest).is_err());
     Ok(())
@@ -432,6 +491,30 @@ fn asset_bundle_requires_immutable_digest_and_matching_objects_grant()
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
+    /// Every opaque bundle object is covered; an encoded directory is insufficient.
+    #[test]
+    fn asset_grants_cover_actual_opaque_keys(key in prop::collection::vec(any::<u8>(), 0..64), directory_only in any::<bool>()) {
+        let mut manifest = fixture()?;
+        let env = &mut manifest.environments[0];
+        env.crons.clear();
+        if let EntryRuntime::Actor { timer_inbox, .. } = &mut env.entries[0].runtime { *timer_inbox = None; }
+        let digest = "ab".repeat(32);
+        let name = if directory_only {
+            acyclic_auth::objects_resource(b"static", format!("assets/{digest}/").as_bytes())
+        } else { "objects:/static/".into() };
+        env.bindings[0] = Binding::new("INBOX".into(), "inboxGrant".into(), name.clone())?.into();
+        env.grants[0].grant.0 = ResourceGrant { resource:ResourcePattern { name, prefix:true }, actions:vec!["objects/get".into()] };
+        env.assets.push(AssetSpec { entry:"agent".into(), binding:"INBOX".into(), bundle_sha256:digest.clone(), spa_fallback:true, cache:AssetCache::Immutable });
+        prop_assert_eq!(validate(&manifest).is_ok(), !directory_only);
+        if !directory_only {
+            let mut object = format!("assets/{digest}/").into_bytes();
+            object.extend_from_slice(&key);
+            let resource = acyclic_auth::objects_resource(b"static", &object);
+            prop_assert!(acyclic_auth::authority::resource_matches(&manifest.environments[0].grants[0].grant.resource, &resource));
+            prop_assert_eq!(admission::check(&manifest), Ok(()));
+        }
+    }
+
     /// Whole-segment grants cover descendants but never neighboring names.
     #[test]
     fn inbox_scope_uses_s1_whole_segments(parent in "[a-z]{1,12}", suffix in "[a-z]{1,8}") {

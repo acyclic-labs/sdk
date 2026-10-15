@@ -133,7 +133,7 @@ fn index<'a, T>(
     }
     Ok(result)
 }
-fn asset_resource(pattern: &ResourcePattern, digest: &str) -> Result<String, ManifestError> {
+fn asset_bucket(pattern: &ResourcePattern) -> Result<String, ManifestError> {
     let bucket = pattern
         .name
         .strip_prefix("objects:/")
@@ -142,9 +142,9 @@ fn asset_resource(pattern: &ResourcePattern, digest: &str) -> Result<String, Man
         .ok_or_else(|| ManifestError::invalid("assets", "objects-bucket"))?;
     let bucket = acyclic_auth::decode_component(bucket)
         .map_err(|_| ManifestError::invalid("assets", "objects-bucket"))?;
-    Ok(acyclic_auth::objects_resource(
-        &bucket,
-        format!("assets/{digest}/").as_bytes(),
+    Ok(format!(
+        "objects:/{}",
+        acyclic_auth::encode_component(&bucket)
     ))
 }
 fn stream_path(resource: &str) -> Result<String, ManifestError> {
@@ -200,6 +200,7 @@ pub fn validate_work(manifest: &DeploymentManifest) -> Result<usize, ManifestErr
     )?;
     // Check native collection/string bounds before descriptor adapters can clone values.
     native_bounds(manifest)?;
+    encoded_budget(manifest)?;
     let mut work = bound_json(&serde_json::to_value(manifest).map_err(ManifestError::json)?)?;
     let mut environments = HashSet::new();
     let mut routes = HashSet::new();
@@ -439,10 +440,9 @@ pub fn validate_work(manifest: &DeploymentManifest) -> Result<usize, ManifestErr
                 .get(binding.capability())
                 .ok_or_else(|| ManifestError::invalid(&p, "asset-grant"))?;
             require(
-                scope(
-                    &grant.grant.resource,
-                    &asset_resource(&grant.grant.resource, &asset.bundle_sha256)?,
-                ) && actions[grant.name.as_str()].contains("objects/get"),
+                grant.grant.resource.prefix
+                    && scope(&grant.grant.resource, &asset_bucket(&grant.grant.resource)?)
+                    && actions[grant.name.as_str()].contains("objects/get"),
                 &p,
                 "asset-resource-grant",
             )?;
@@ -537,38 +537,89 @@ fn lower_actor_unchecked(
     .map_err(|_| ManifestError::invalid("entry.runtime", "actors-admission"))
 }
 
+#[derive(Default)]
+struct NativeBudget {
+    bytes: usize,
+    items: usize,
+}
+impl NativeBudget {
+    fn text(&mut self, text: &str) -> Result<(), ManifestError> {
+        require(text.len() <= MAX_STRING_BYTES, "$", "string-limit")?;
+        // Exact quoted string cost, before any descriptor adapter clones strings.
+        self.bytes += 2 + text
+            .bytes()
+            .map(|b| match b {
+                b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 8 | 12 => 2,
+                0..=31 => 6,
+                _ => 1,
+            })
+            .sum::<usize>();
+        require(self.bytes <= MAX_JSON_BYTES, "$", "json-size")
+    }
+    fn list<T>(&mut self, items: &[T]) -> Result<(), ManifestError> {
+        require(items.len() <= MAX_ITEMS, "$", "collection-limit")?;
+        self.items += items.len();
+        require(self.items <= MAX_NODES, "$", "node-limit")
+    }
+}
+
+// Stream exact JSON into a capped counter, never into a document-sized buffer.
+fn encoded_budget(manifest: &DeploymentManifest) -> Result<(), ManifestError> {
+    struct Counter {
+        bytes: usize,
+        exceeded: bool,
+    }
+    impl std::io::Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > MAX_JSON_BYTES - self.bytes {
+                self.exceeded = true;
+                return Err(std::io::Error::other("json-size"));
+            }
+            self.bytes += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter {
+        bytes: 0,
+        exceeded: false,
+    };
+    let result = serde_json::to_writer(&mut counter, manifest);
+    if counter.exceeded {
+        return Err(ManifestError::invalid("$", "json-size"));
+    }
+    result.map_err(ManifestError::json)
+}
+
 fn native_bounds(manifest: &DeploymentManifest) -> Result<(), ManifestError> {
-    fn text(s: &str) -> Result<(), ManifestError> {
-        require(s.len() <= MAX_STRING_BYTES, "$", "string-limit")
-    }
-    fn list<T>(s: &[T]) -> Result<(), ManifestError> {
-        require(s.len() <= MAX_ITEMS, "$", "collection-limit")
-    }
+    let mut budget = NativeBudget::default();
     for env in &manifest.environments {
-        text(&env.name)?;
-        list(&env.entries)?;
-        list(&env.bindings)?;
-        list(&env.grants)?;
-        list(&env.secrets)?;
-        list(&env.crons)?;
-        list(&env.assets)?;
-        list(&env.routes)?;
+        budget.text(&env.name)?;
+        budget.list(&env.entries)?;
+        budget.list(&env.bindings)?;
+        budget.list(&env.grants)?;
+        budget.list(&env.secrets)?;
+        budget.list(&env.crons)?;
+        budget.list(&env.assets)?;
+        budget.list(&env.routes)?;
         for binding in &env.bindings {
-            text(binding.name())?;
-            text(binding.capability())?;
-            text(binding.resource())?;
+            budget.text(binding.name())?;
+            budget.text(binding.capability())?;
+            budget.text(binding.resource())?;
         }
         for grant in &env.grants {
-            text(&grant.name)?;
-            text(&grant.grant.resource.name)?;
-            list(&grant.grant.actions)?;
+            budget.text(&grant.name)?;
+            budget.text(&grant.grant.resource.name)?;
+            budget.list(&grant.grant.actions)?;
             for action in &grant.grant.actions {
-                text(action)?;
+                budget.text(action)?;
             }
         }
         for secret in &env.secrets {
-            text(&secret.name)?;
-            text(secret.reference.as_str())?;
+            budget.text(&secret.name)?;
+            budget.text(secret.reference.as_str())?;
         }
         for entry in &env.entries {
             if let EntryRuntime::Actor {
@@ -576,22 +627,22 @@ fn native_bounds(manifest: &DeploymentManifest) -> Result<(), ManifestError> {
                 ..
             } = &entry.runtime
             {
-                text(&inbox.binding)?;
-                text(&inbox.stream.name)?;
+                budget.text(&inbox.binding)?;
+                budget.text(&inbox.stream.name)?;
             }
-            text(&entry.name)?;
-            text(&entry.module)?;
-            text(&entry.artifact_sha256)?;
-            list(&entry.bindings)?;
-            list(&entry.secrets)?;
+            budget.text(&entry.name)?;
+            budget.text(&entry.module)?;
+            budget.text(&entry.artifact_sha256)?;
+            budget.list(&entry.bindings)?;
+            budget.list(&entry.secrets)?;
             for name in entry.bindings.iter().chain(&entry.secrets) {
-                text(name)?;
+                budget.text(name)?;
             }
             if let Some(fetch) = &entry.fetch {
-                text(&fetch.name)?;
-                list(&fetch.egress)?;
+                budget.text(&fetch.name)?;
+                budget.list(&fetch.egress)?;
                 for rule in &fetch.egress {
-                    text(&rule.host)?;
+                    budget.text(&rule.host)?;
                 }
             }
             if let EntryRuntime::Actor {
@@ -600,30 +651,30 @@ fn native_bounds(manifest: &DeploymentManifest) -> Result<(), ManifestError> {
                 ..
             } = &entry.runtime
             {
-                text(home_region)?;
-                list(subscriptions)?;
+                budget.text(home_region)?;
+                budget.list(subscriptions)?;
                 for sub in subscriptions {
-                    text(sub.subscription_id())?;
-                    text(sub.stream_path())?;
+                    budget.text(sub.subscription_id())?;
+                    budget.text(sub.stream_path())?;
                 }
             }
         }
         for cron in &env.crons {
-            text(&cron.name)?;
-            text(&cron.schedule)?;
-            text(&cron.entry)?;
-            text(&cron.inbox_binding)?;
-            text(&cron.inbox.name)?;
+            budget.text(&cron.name)?;
+            budget.text(&cron.schedule)?;
+            budget.text(&cron.entry)?;
+            budget.text(&cron.inbox_binding)?;
+            budget.text(&cron.inbox.name)?;
         }
         for asset in &env.assets {
-            text(&asset.entry)?;
-            text(&asset.binding)?;
-            text(&asset.bundle_sha256)?;
+            budget.text(&asset.entry)?;
+            budget.text(&asset.binding)?;
+            budget.text(&asset.bundle_sha256)?;
         }
         for route in &env.routes {
-            text(&route.host)?;
-            text(&route.path_prefix)?;
-            text(&route.entry)?;
+            budget.text(&route.host)?;
+            budget.text(&route.path_prefix)?;
+            budget.text(&route.entry)?;
         }
     }
     Ok(())
