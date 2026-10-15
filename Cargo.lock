@@ -414,6 +414,7 @@ dependencies = [
  "futures-core",
  "libc",
  "pin-project-lite",
+ "proptest",
  "rustix",
  "tempfile",
  "tracing",
