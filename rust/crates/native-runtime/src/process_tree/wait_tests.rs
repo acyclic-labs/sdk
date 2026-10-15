@@ -88,6 +88,153 @@ fn coarse_wait_preserves_timeout_and_child_ownership() -> io::Result<()> {
     wait_preserves_ownership(true)
 }
 
+#[test]
+fn resume_rechecks_expired_deadlines_in_both_wait_paths() -> io::Result<()> {
+    for precise in [false, true] {
+        wait_across_resume(precise, Duration::from_secs(300))?;
+    }
+    Ok(())
+}
+
+#[test]
+fn resume_preserves_unexpired_deadlines_in_both_wait_paths() -> io::Result<()> {
+    for precise in [false, true] {
+        wait_across_resume(precise, Duration::from_secs(60))?;
+    }
+    Ok(())
+}
+
+fn wait_across_resume(precise: bool, suspended: Duration) -> io::Result<()> {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use windows_sys::Win32::UI::WindowsAndMessaging::PBT_APMRESUMEAUTOMATIC;
+
+    let root = tempfile::tempdir()?;
+    let name = format!(
+        "Local\\acyclic-resume-{}-{}",
+        std::process::id(),
+        root.path().display()
+    );
+    let name = name.replace(['\\', '/', ':'], "-");
+    let gate = event(&name)?;
+    let mut command = Command::new(std::env::current_exe()?);
+    command
+        .args([
+            "--exact",
+            "process_tree::wait_tests::wait_helper",
+            "--nocapture",
+        ])
+        .env_clear()
+        .env(EVENT, name)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped());
+    let mut tree = ProcessTree::spawn(&mut command)?;
+    let stdout = tree.take_stdout().ok_or(io::ErrorKind::NotFound)?;
+    let (ready, receive_ready) = std::sync::mpsc::sync_channel(1);
+    let reader = std::thread::spawn(move || -> io::Result<()> {
+        for line in std::io::BufReader::new(stdout).lines() {
+            if line?.ends_with(READY) {
+                ready.send(()).map_err(io::Error::other)?;
+            }
+        }
+        Ok(())
+    });
+    receive_ready
+        .recv_timeout(Duration::from_secs(5))
+        .map_err(io::Error::other)?;
+    let epoch = Instant::now();
+    let deadline = epoch + Duration::from_secs(120);
+    let resumed = Arc::new(AtomicBool::new(false));
+    let advanced = resumed.clone();
+    let (armed, receive_armed) = std::sync::mpsc::sync_channel(1);
+    let (checked, receive_checked) = std::sync::mpsc::sync_channel(1);
+    let (finished, receive_finished) = std::sync::mpsc::sync_channel(1);
+    let waiter = std::thread::spawn(move || -> io::Result<_> {
+        let resume = platform::wait::ResumeNotification::new()?;
+        let timer = if precise {
+            Some(platform::wait::deadline_timer().ok_or_else(io::Error::last_os_error)?)
+        } else {
+            None
+        };
+        let mut armed = Some((armed, resume.event.try_clone()?));
+        let mut checked = Some(checked);
+        let result = platform::wait::wait_with_resume(
+            tree.child.as_mut().ok_or(io::ErrorKind::NotFound)?,
+            deadline,
+            timer,
+            &resume,
+            || {
+                // Sample before publishing readiness: the initial native wait
+                // retains its full 120-second relative timeout across the jump.
+                let now = if advanced.load(Ordering::Acquire) {
+                    if let Some(checked) = checked.take() {
+                        let _ = checked.send(());
+                    }
+                    epoch + suspended
+                } else {
+                    epoch
+                };
+                if let Some((armed, event)) = armed.take() {
+                    let _ = armed.send(event);
+                }
+                now
+            },
+        );
+        let reported = result
+            .as_ref()
+            .map(|status| status.success())
+            .map_err(io::Error::kind);
+        finished.send(reported).map_err(io::Error::other)?;
+        Ok((tree, result))
+    });
+    let result = (|| -> io::Result<()> {
+        let wake = receive_armed
+            .recv_timeout(Duration::from_secs(1))
+            .map_err(io::Error::other)?;
+        resumed.store(true, Ordering::Release);
+        // SAFETY: this is an owned alias of the production callback's event.
+        // No real host clock or power state is changed by this regression.
+        unsafe {
+            platform::wait::resume_notification(
+                wake.as_raw_handle(),
+                PBT_APMRESUMEAUTOMATIC,
+                std::ptr::null(),
+            );
+        }
+        receive_checked
+            .recv_timeout(Duration::from_secs(1))
+            .map_err(io::Error::other)?;
+        if suspended >= Duration::from_secs(120) {
+            assert_eq!(
+                receive_finished
+                    .recv_timeout(Duration::from_secs(1))
+                    .map_err(io::Error::other)?,
+                Err(io::ErrorKind::TimedOut)
+            );
+        }
+        Ok(())
+    })();
+    // Always release the child, including when a missed resume hits the watchdog.
+    // SAFETY: the parent still owns this gate and the helper waits on it.
+    let released = if unsafe { SetEvent(gate.as_raw_handle()) } == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    };
+    let (mut tree, status) = waiter
+        .join()
+        .map_err(|_| io::Error::other("resume waiter panicked"))??;
+    let cleanup = tree.terminate(None);
+    let drained = reader
+        .join()
+        .map_err(|_| io::Error::other("readiness reader panicked"))?;
+    result.and(released).and(cleanup).and(drained)?;
+    if suspended < Duration::from_secs(120) {
+        assert!(status?.success());
+    }
+    Ok(())
+}
+
 fn wait_preserves_ownership(coarse: bool) -> io::Result<()> {
     if std::env::var_os("ACYCLIC_NATIVE_WAIT_START_GATE").is_some() {
         let mut signal = [0];

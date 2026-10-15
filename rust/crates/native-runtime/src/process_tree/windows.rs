@@ -1,12 +1,12 @@
 use std::io;
 use std::io::{Read, Write};
 use std::mem::{size_of, zeroed};
-use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
 use std::os::windows::process::CommandExt as _;
-use std::process::{Child, Command, ExitStatus};
+#[cfg(test)]
+use std::process::Child;
+use std::process::Command;
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_BROKEN_PIPE, HANDLE, NTSTATUS, RtlNtStatusToDosError, WAIT_FAILED,
-    WAIT_OBJECT_0, WAIT_TIMEOUT,
+    CloseHandle, ERROR_BROKEN_PIPE, HANDLE, NTSTATUS, RtlNtStatusToDosError,
 };
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -17,110 +17,15 @@ use windows_sys::Win32::System::JobObjects::{
 use windows_sys::Win32::System::Pipes::{PIPE_NOWAIT, PeekNamedPipe, SetNamedPipeHandleState};
 use windows_sys::Win32::System::Threading::{
     CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED,
-    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, INFINITE,
-    SYNCHRONIZATION_SYNCHRONIZE, SetWaitableTimerEx, TIMER_MODIFY_STATE, WaitForMultipleObjects,
-    WaitForSingleObject,
 };
 
 pub(super) use std::os::windows::io::AsRawHandle as Pipe;
 
-pub(super) fn wait_for_exit(
-    child: &mut Child,
-    deadline: std::time::Instant,
-) -> io::Result<ExitStatus> {
-    if let Some(status) = child.try_wait()? {
-        return Ok(status);
-    }
-    if std::time::Instant::now() >= deadline {
-        return Err(exit_timeout());
-    }
-    // The ordinary wait timeout has clock-tick precision. Keep the previous
-    // high-resolution sleep deadline without repeatedly waking to poll exit.
-    // SAFETY: no security descriptor or name is borrowed, and the result is owned.
-    let timer = unsafe {
-        CreateWaitableTimerExW(
-            std::ptr::null(),
-            std::ptr::null(),
-            CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
-            SYNCHRONIZATION_SYNCHRONIZE | TIMER_MODIFY_STATE,
-        )
-    };
-    if timer.is_null() {
-        return wait_for_exit_coarse(child, deadline);
-    }
-    // SAFETY: successful timer creation transfers one fresh owned handle.
-    let timer = unsafe { OwnedHandle::from_raw_handle(timer) };
-    loop {
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() {
-            return child.try_wait()?.ok_or_else(exit_timeout);
-        }
-        let ticks = i64::try_from(remaining.as_nanos().div_ceil(100)).unwrap_or(i64::MAX);
-        let due = -ticks;
-        // SAFETY: the live owned timer and relative due time outlive this call.
-        if unsafe {
-            SetWaitableTimerEx(
-                timer.as_raw_handle(),
-                &raw const due,
-                0,
-                None,
-                std::ptr::null(),
-                std::ptr::null(),
-                0,
-            )
-        } == 0
-        {
-            drop(timer);
-            return wait_for_exit_coarse(child, deadline);
-        }
-        let handles = [child.as_raw_handle(), timer.as_raw_handle()];
-        // SAFETY: both handles remain owned and live throughout this bounded wait.
-        match unsafe { WaitForMultipleObjects(2, handles.as_ptr(), 0, INFINITE) } {
-            WAIT_OBJECT_0 => return child.wait(),
-            result if result == WAIT_OBJECT_0 + 1 => {
-                if let Some(status) = child.try_wait()? {
-                    return Ok(status);
-                }
-                if std::time::Instant::now() >= deadline {
-                    return Err(exit_timeout());
-                }
-            }
-            WAIT_FAILED => return Err(io::Error::last_os_error()),
-            _ => return Err(io::Error::other("unexpected process wait result")),
-        }
-    }
-}
-
-fn exit_timeout() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::TimedOut,
-        "process exit deadline exceeded; termination may be unresolved",
-    )
-}
-
-pub(super) fn wait_for_exit_coarse(
-    child: &mut Child,
-    deadline: std::time::Instant,
-) -> io::Result<ExitStatus> {
-    loop {
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() {
-            return child.try_wait()?.ok_or_else(exit_timeout);
-        }
-        // Round upward without ever selecting INFINITE. Very long deadlines
-        // need multiple bounded waits because the Windows timeout is a DWORD.
-        let milliseconds = u32::try_from(remaining.as_nanos().div_ceil(1_000_000))
-            .unwrap_or(u32::MAX - 1)
-            .min(u32::MAX - 1);
-        // SAFETY: Child retains this process handle until this call returns.
-        match unsafe { WaitForSingleObject(child.as_raw_handle().cast(), milliseconds) } {
-            WAIT_OBJECT_0 => return child.wait(),
-            WAIT_TIMEOUT => {}
-            WAIT_FAILED => return Err(io::Error::last_os_error()),
-            _ => return Err(io::Error::other("unexpected process wait result")),
-        }
-    }
-}
+#[path = "windows_wait.rs"]
+pub(super) mod wait;
+pub(super) use wait::wait_for_exit;
+#[cfg(test)]
+pub(super) use wait::wait_for_exit_coarse;
 
 pub(super) fn write_pipe(
     pipe: &mut (impl Write + Pipe),
