@@ -20,10 +20,23 @@ impl Wake for PanicWake {
 }
 
 fn waiter_count(token: &CancellationToken) -> usize {
-    match token.state.waiters.lock() {
-        Ok(waiters) => waiters.len(),
-        Err(poisoned) => poisoned.into_inner().len(),
+    let mut waiter = token
+        .state
+        .waiters
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .upgrade();
+    let mut count = 0;
+    while let Some(current) = waiter {
+        count += 1;
+        waiter = current
+            .links
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .and_then(|(_, next)| next.upgrade());
     }
+    count
 }
 
 fn poison<T>(mutex: &Mutex<T>) {
@@ -103,20 +116,16 @@ fn poisoned_waiter_registries_and_wakers_remain_cancellable_and_drop_safe() {
     assert!(registry_poisoned.is_cancelled());
 
     let waker_poisoned = CancellationToken::new();
-    let waiter = Arc::new(CancellationWaiter::default());
     let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
-    {
-        let mut waker = match waiter.waker.lock() {
-            Ok(waker) => waker,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        *waker = Some(Waker::from(Arc::clone(&counter)));
-    }
-    match waker_poisoned.state.waiters.lock() {
-        Ok(mut waiters) => waiters.push(Arc::downgrade(&waiter)),
-        Err(poisoned) => poisoned.into_inner().push(Arc::downgrade(&waiter)),
-    }
-    poison(&waiter.waker);
+    let mut future = Box::pin(waker_poisoned.cancelled());
+    let waker = Waker::from(Arc::clone(&counter));
+    assert!(
+        future
+            .as_mut()
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    poison(&future.waiter.as_ref().expect("registered waiter").waker);
     waker_poisoned.cancel();
     assert_eq!(counter.0.load(Ordering::Relaxed), 1);
 
@@ -132,7 +141,12 @@ fn poisoned_waiter_registries_and_wakers_remain_cancellable_and_drop_safe() {
 
     let poll_waker_poisoned = CancellationToken::new();
     let mut future = Box::pin(poll_waker_poisoned.cancelled());
-    poison(&future.waiter.waker);
+    let waker = Waker::noop();
+    assert_eq!(
+        future.as_mut().poll(&mut Context::from_waker(waker)),
+        Poll::Pending
+    );
+    poison(&future.waiter.as_ref().expect("registered waiter").waker);
     let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
     let waker = Waker::from(counter);
     let mut context = Context::from_waker(&waker);
@@ -141,16 +155,124 @@ fn poisoned_waiter_registries_and_wakers_remain_cancellable_and_drop_safe() {
     assert_eq!(waiter_count(&poll_waker_poisoned), 0);
 }
 
-#[test]
-fn cancellation_ignores_waiters_dropped_before_delivery() {
-    let token = CancellationToken::new();
-    let waiter = Arc::new(CancellationWaiter::default());
-    match token.state.waiters.lock() {
-        Ok(mut waiters) => waiters.push(Arc::downgrade(&waiter)),
-        Err(poisoned) => poisoned.into_inner().push(Arc::downgrade(&waiter)),
+#[cfg(not(target_arch = "wasm32"))]
+struct CancelOnDrop(CancellationToken);
+#[cfg(not(target_arch = "wasm32"))]
+impl Wake for CancelOnDrop {
+    fn wake(self: Arc<Self>) {}
+}
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel();
     }
-    drop(waiter);
-    token.cancel();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_waiter_replacement_is_reentrant_and_releases_its_original_owner() {
+    let token = CancellationToken::new();
+    let work = crate::NativeMaterializationWork::new(
+        crate::WorkBudget {
+            items_examined: 6,
+            ..crate::WorkBudget::UNBOUNDED
+        },
+        &token,
+    )
+    .map_err(|(error, _)| error)
+    .unwrap();
+    let state = Arc::downgrade(&token.state);
+    let accounting = Arc::downgrade(&work.state);
+    let mut prepared = token.prepare_cancelled_with_native_work(&work).unwrap();
+    let waker = Waker::from(Arc::new(CancelOnDrop(token.clone())));
+    assert!(
+        Pin::new(&mut prepared)
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    drop(waker);
+    assert!(
+        Pin::new(&mut prepared)
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_ready()
+    );
     assert!(token.is_cancelled());
-    assert_eq!(waiter_count(&token), 0);
+    drop(token);
+    drop(work);
+    assert!(accounting.upgrade().is_some());
+    drop(prepared);
+    assert!(state.upgrade().is_none());
+    assert!(accounting.upgrade().is_none());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn linked_children_preserve_local_stop_parent_propagation_and_release_their_owner() {
+    for stop_parent in [false, true] {
+        let parent = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &parent)
+            .map_err(|(error, _)| error)
+            .unwrap();
+        let child = CancellationToken::linked_child_with_native_work(&parent, &original).unwrap();
+        let parent_state = Arc::downgrade(&parent.state);
+        let child_state = Arc::downgrade(&child.state);
+        let accounting = Arc::downgrade(&original.state);
+        let scope = original
+            .native_volume_work(crate::WorkBudget {
+                items_examined: 6,
+                ..crate::WorkBudget::UNBOUNDED
+            })
+            .unwrap();
+        let mut prepared = child.prepare_cancelled_with_native_work(&scope).unwrap();
+        let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
+        let waker = Waker::from(counter.clone());
+        assert!(
+            Pin::new(&mut prepared)
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        if stop_parent {
+            parent.cancel();
+        } else {
+            child.cancel();
+        }
+        assert!(child.is_cancelled());
+        assert_eq!(parent.is_cancelled(), stop_parent);
+        assert_eq!(counter.0.load(Ordering::Relaxed), 1);
+        assert!(
+            Pin::new(&mut prepared)
+                .poll(&mut Context::from_waker(&waker))
+                .is_ready()
+        );
+        scope.receipt().verify(scope.budget()).unwrap();
+        drop((waker, prepared, scope, original, parent));
+        drop(child);
+        assert!(parent_state.upgrade().is_none());
+        assert!(child_state.upgrade().is_none());
+        assert!(accounting.upgrade().is_none());
+    }
+}
+
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[test]
+fn stopped_parent_prevents_commit_through_either_linked_child() {
+    let parent = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &parent)
+        .map_err(|(error, _)| error)
+        .unwrap();
+    let first = CancellationToken::linked_child_with_native_work(&parent, &original).unwrap();
+    let second = CancellationToken::linked_child_with_native_work(&parent, &original).unwrap();
+    let mut installed = 0;
+    first
+        .commit_if_both_live(&second, || installed += 1)
+        .unwrap();
+    assert_eq!(installed, 1);
+    parent.cancel();
+    assert!(parent.commit_if_live(|| installed += 1).is_err());
+    assert!(
+        first
+            .commit_if_both_live(&second, || installed += 1)
+            .is_err()
+    );
+    assert_eq!(installed, 1);
 }

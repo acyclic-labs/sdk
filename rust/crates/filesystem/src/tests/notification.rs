@@ -9,164 +9,127 @@ fn head(epoch: u64, sequence: u64, digest: u8) -> Head {
     }
 }
 
-#[test]
-fn memory_notifications_coalesce_monotonically_and_never_claim_authority() {
+#[tokio::test]
+async fn notifications_coalesce_monotonically_and_isolate_authorities() {
     let store = MemoryNotificationStore::new();
     let authority = AuthorityId::from_bytes([7; 16]);
+    let other = AuthorityId::from_bytes([10; 16]);
+    let cancellation = CancellationToken::new();
     let baseline = head(1, 4, 4);
-    assert!(matches!(
-        store.poll_after(authority, baseline, WorkBudget::UNBOUNDED),
-        Ok(OperationReceipt {
-            value: NotificationPoll::Unchanged,
-            ..
-        })
-    ));
-    assert!(
-        store
-            .publish(authority, head(1, 6, 6), WorkBudget::UNBOUNDED)
-            .is_ok()
-    );
-    assert!(
-        store
-            .publish(authority, head(1, 5, 5), WorkBudget::UNBOUNDED)
-            .is_ok()
-    );
-    assert!(matches!(
-        store.poll_after(authority, baseline, WorkBudget::UNBOUNDED),
-        Ok(OperationReceipt {
-            value: NotificationPoll::Advanced(value),
-            ..
-        }) if value == head(1, 6, 6)
-    ));
-    assert!(
-        store
-            .publish(authority, head(2, 0, 9), WorkBudget::UNBOUNDED)
-            .is_ok()
-    );
-    assert!(matches!(
-        store.poll_after(authority, head(1, 99, 8), WorkBudget::UNBOUNDED),
-        Ok(OperationReceipt {
-            value: NotificationPoll::Advanced(value),
-            ..
-        }) if value == head(2, 0, 9)
-    ));
-}
-
-#[test]
-fn cancellation_and_budget_reject_before_adapter_access() {
-    let store = MemoryNotificationStore::new();
-    let authority = AuthorityId::from_bytes([8; 16]);
-    let cancellation = CancellationToken::new();
-    cancellation.cancel();
-    let result = crate::async_storage::poll_ready(AsyncNotificationStore::publish_hint(
-        &store,
-        authority,
-        head(1, 1, 1),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
-    assert!(matches!(
-        result,
-        Some(Err(OperationFailure {
-            error: NotificationError::Cancelled,
-            ..
-        }))
-    ));
-    assert!(matches!(
-        store.publish(authority, head(1, 1, 1), WorkBudget::default()),
-        Err(OperationFailure {
-            error: NotificationError::Work(_),
-            ..
-        })
-    ));
-}
-
-#[test]
-fn asynchronous_notification_adapter_preserves_successful_receipts()
--> Result<(), Box<dyn std::error::Error>> {
-    let store = MemoryNotificationStore::new();
-    let authority = AuthorityId::from_bytes([11; 16]);
-    let cancellation = CancellationToken::new();
-    let published = crate::async_storage::poll_ready(AsyncNotificationStore::publish_hint(
-        &store,
-        authority,
-        head(3, 7, 7),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("memory notification adapter blocked")??;
-    assert_eq!(published.work.backend_write_operations, 1);
-    let polled = crate::async_storage::poll_ready(AsyncNotificationStore::poll_hint_after(
-        &store,
-        authority,
-        head(3, 6, 6),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("memory notification poll blocked")??;
-    assert_eq!(polled.value, NotificationPoll::Advanced(head(3, 7, 7)));
-    assert_eq!(polled.work.backend_read_operations, 1);
-    Ok(())
-}
-
-#[test]
-fn poll_hints_are_isolated_monotonic_bounded_and_cancellable() {
-    let store = MemoryNotificationStore::new();
-    let first = AuthorityId::from_bytes([9; 16]);
-    let second = AuthorityId::from_bytes([10; 16]);
-    let current = head(1, 2, 2);
-    let published = store.publish(first, current, WorkBudget::UNBOUNDED).ok();
     assert_eq!(
-        published.map(|receipt| receipt.work.backend_write_operations),
-        Some(1)
-    );
-    assert!(matches!(
-        store.poll_after(first, current, WorkBudget::UNBOUNDED),
-        Ok(OperationReceipt {
-            value: NotificationPoll::Unchanged,
-            ..
-        })
-    ));
-    assert!(
         store
-            .publish(first, head(1, 2, 99), WorkBudget::UNBOUNDED)
-            .is_ok()
+            .poll_hint_after(authority, baseline, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .unwrap()
+            .value,
+        NotificationPoll::Unchanged
     );
-    assert!(matches!(
-        store.poll_after(first, head(1, 1, 1), WorkBudget::UNBOUNDED),
-        Ok(OperationReceipt {
-            value: NotificationPoll::Advanced(value),
-            ..
-        }) if value == current
-    ));
-    assert!(matches!(
-        store.poll_after(second, Head::genesis(Epoch::GENESIS), WorkBudget::UNBOUNDED),
-        Ok(OperationReceipt {
-            value: NotificationPoll::Unchanged,
-            work,
-        }) if work.backend_read_operations == 1
-    ));
-
-    let cancellation = CancellationToken::new();
-    cancellation.cancel();
-    assert!(matches!(
-        crate::async_storage::poll_ready(AsyncNotificationStore::poll_hint_after(
-            &store,
-            first,
-            Head::genesis(Epoch::GENESIS),
+    for hint in [head(1, 6, 6), head(1, 5, 5), head(1, 6, 99)] {
+        store
+            .publish_hint(authority, hint, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        store
+            .poll_hint_after(authority, baseline, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .unwrap()
+            .value,
+        NotificationPoll::Advanced(head(1, 6, 6))
+    );
+    assert_eq!(
+        store
+            .poll_hint_after(
+                authority,
+                head(1, 6, 6),
+                WorkBudget::UNBOUNDED,
+                &cancellation
+            )
+            .await
+            .unwrap()
+            .value,
+        NotificationPoll::Unchanged
+    );
+    assert_eq!(
+        store
+            .poll_hint_after(
+                other,
+                Head::genesis(Epoch::GENESIS),
+                WorkBudget::UNBOUNDED,
+                &cancellation
+            )
+            .await
+            .unwrap()
+            .value,
+        NotificationPoll::Unchanged
+    );
+    store
+        .publish_hint(
+            authority,
+            head(2, 0, 9),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )),
-        Some(Err(OperationFailure {
-            error: NotificationError::Cancelled,
-            ..
-        }))
-    ));
-    assert!(matches!(
-        store.poll_after(first, current, WorkBudget::default()),
-        Err(OperationFailure {
-            error: NotificationError::Work(_),
-            ..
-        })
-    ));
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .poll_hint_after(
+                authority,
+                head(1, 99, 8),
+                WorkBudget::UNBOUNDED,
+                &cancellation
+            )
+            .await
+            .unwrap()
+            .value,
+        NotificationPoll::Advanced(head(2, 0, 9))
+    );
+}
+
+#[tokio::test]
+async fn cancellation_and_budget_reject_publish_and_poll() {
+    let store = MemoryNotificationStore::new();
+    let authority = AuthorityId::from_bytes([8; 16]);
+    let hint = head(1, 1, 1);
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let live = CancellationToken::new();
+    for (budget, cancellation) in [
+        (WorkBudget::UNBOUNDED, &cancelled),
+        (WorkBudget::default(), &live),
+    ] {
+        for error in [
+            store
+                .publish_hint(authority, hint, budget, cancellation)
+                .await
+                .unwrap_err()
+                .error,
+            store
+                .poll_hint_after(authority, hint, budget, cancellation)
+                .await
+                .unwrap_err()
+                .error,
+        ] {
+            if cancellation.is_cancelled() {
+                assert!(matches!(error, NotificationError::Cancelled));
+            } else {
+                assert!(matches!(error, NotificationError::Work(_)));
+            }
+        }
+    }
+    assert_eq!(
+        store
+            .poll_hint_after(
+                authority,
+                Head::genesis(Epoch::GENESIS),
+                WorkBudget::UNBOUNDED,
+                &live
+            )
+            .await
+            .unwrap()
+            .value,
+        NotificationPoll::Unchanged
+    );
 }

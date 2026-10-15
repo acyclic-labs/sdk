@@ -1,11 +1,11 @@
 use super::*;
+use crate::async_storage::AsyncObjectStore;
 use crate::kernel::{Extent, ExtentChild, encode_extent_page, extent_page_id};
 use crate::memory::MemoryObjectStore;
 use crate::speculation::{ResidencyHint, ResidencyReason};
 use crate::storage::ObjectReadRequest;
 use crate::test_support::OwnedReadObjectStore;
-use crate::{CachedObjectStore, ObjectCacheOptions};
-use bytes::Bytes;
+use acyclic_stream::OwnedBytes;
 use std::sync::atomic::Ordering;
 use std::task::{Context, Poll, Waker};
 
@@ -13,22 +13,34 @@ fn unlimited() -> WorkBudget {
     WorkBudget::UNBOUNDED
 }
 
-fn put_page(
+async fn put_page(
     store: &MemoryObjectStore,
     page: &ExtentPage,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let id = extent_page_id(page, 16)?;
-    ObjectStore::put(
-        store,
-        id,
-        Bytes::from(encode_extent_page(page, 16)?),
-        WorkBudget::UNBOUNDED,
-    )?;
+    {
+        let __object_args = (
+            id,
+            OwnedBytes::from(encode_extent_page(
+                page,
+                16,
+                |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+                |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+            )?),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
     Ok(id)
 }
 
-#[test]
-fn range_reads_only_intersecting_leaf_pages() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn range_reads_only_intersecting_leaf_pages() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let first = put_page(
         &store,
@@ -37,7 +49,8 @@ fn range_reads_only_intersecting_leaf_pages() -> Result<(), Box<dyn std::error::
             length: 100,
             kind: ExtentKind::Hole,
         }]),
-    )?;
+    )
+    .await?;
     let second = put_page(
         &store,
         &ExtentPage::Leaf(vec![Extent {
@@ -45,7 +58,8 @@ fn range_reads_only_intersecting_leaf_pages() -> Result<(), Box<dyn std::error::
             length: 100,
             kind: ExtentKind::AllocatedZero,
         }]),
-    )?;
+    )
+    .await?;
     let root = put_page(
         &store,
         &ExtentPage::Internal(vec![
@@ -60,7 +74,8 @@ fn range_reads_only_intersecting_leaf_pages() -> Result<(), Box<dyn std::error::
                 page: second,
             },
         ]),
-    )?;
+    )
+    .await?;
     let request = ExtentRangeRequest {
         root,
         file_size: 200,
@@ -72,7 +87,7 @@ fn range_reads_only_intersecting_leaf_pages() -> Result<(), Box<dyn std::error::
         limits: DecodeLimits::default(),
         budget: unlimited(),
     };
-    let plan = plan_extent_range(&store, request)?;
+    let plan = plan_extent_range(&store, request, &CancellationToken::new()).await?;
     assert_eq!(plan.work.page_reads, 2);
     assert_eq!(
         plan.spans,
@@ -84,18 +99,10 @@ fn range_reads_only_intersecting_leaf_pages() -> Result<(), Box<dyn std::error::
         }]
     );
 
-    let cancellation = CancellationToken::new();
-    let mut future = std::pin::pin!(plan_extent_range_async(&store, request, &cancellation,));
-    let waker = Waker::noop();
-    let mut context = Context::from_waker(waker);
-    let Poll::Ready(asynchronous) = future.as_mut().poll(&mut context) else {
-        return Err("memory-backed asynchronous extent planning remained pending".into());
-    };
-    assert_eq!(asynchronous?, plan);
-
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let mut future = std::pin::pin!(plan_extent_range_async(&store, request, &cancelled));
+    let mut future = std::pin::pin!(plan_extent_range(&store, request, &cancelled));
+    let mut context = Context::from_waker(Waker::noop());
     let Poll::Ready(result) = future.as_mut().poll(&mut context) else {
         return Err("pre-cancelled asynchronous extent planning remained pending".into());
     };
@@ -107,8 +114,8 @@ fn range_reads_only_intersecting_leaf_pages() -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
-#[test]
-fn owned_extent_pages_preserve_sparse_results_and_exact_retention()
+#[tokio::test]
+async fn owned_extent_pages_preserve_sparse_results_and_exact_retention()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = OwnedReadObjectStore::default();
     let root = put_page(
@@ -118,7 +125,8 @@ fn owned_extent_pages_preserve_sparse_results_and_exact_retention()
             length: 8,
             kind: ExtentKind::AllocatedZero,
         }]),
-    )?;
+    )
+    .await?;
     let request = ExtentRangeRequest {
         root,
         file_size: 8,
@@ -130,12 +138,7 @@ fn owned_extent_pages_preserve_sparse_results_and_exact_retention()
         limits: DecodeLimits::default(),
         budget: WorkBudget::UNBOUNDED,
     };
-    let plan = crate::async_storage::poll_ready(plan_extent_range_async(
-        &store,
-        request,
-        &CancellationToken::new(),
-    ))
-    .ok_or("owned extent planning blocked")??;
+    let plan = (plan_extent_range(&store, request, &CancellationToken::new())).await?;
     assert_eq!(plan.spans.len(), 1);
     assert_eq!(plan.spans[0].offset, 2);
     assert_eq!(plan.spans[0].length, 4);
@@ -143,8 +146,8 @@ fn owned_extent_pages_preserve_sparse_results_and_exact_retention()
     Ok(())
 }
 
-#[test]
-fn owned_extent_page_releases_retention_when_decoded_cache_rejects_admission()
+#[tokio::test]
+async fn owned_extent_page_releases_retention_when_decoded_cache_rejects_admission()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = OwnedReadObjectStore::default();
     let root = put_page(
@@ -154,11 +157,12 @@ fn owned_extent_page_releases_retention_when_decoded_cache_rejects_admission()
             length: 8,
             kind: ExtentKind::AllocatedZero,
         }]),
-    )?;
+    )
+    .await?;
     store
         .reject_decoded_admission
         .store(true, Ordering::Relaxed);
-    let failure = crate::async_storage::poll_ready(plan_extent_range_async(
+    let failure = (plan_extent_range(
         &store,
         ExtentRangeRequest {
             root,
@@ -173,7 +177,7 @@ fn owned_extent_page_releases_retention_when_decoded_cache_rejects_admission()
         },
         &CancellationToken::new(),
     ))
-    .ok_or("owned extent planning blocked")?
+    .await
     .err()
     .ok_or("decoded-cache rejection unexpectedly succeeded")?;
     assert!(matches!(
@@ -184,66 +188,8 @@ fn owned_extent_page_releases_retention_when_decoded_cache_rejects_admission()
     Ok(())
 }
 
-#[test]
-fn repeated_extent_plans_reuse_decoded_pages_without_backend_reads()
--> Result<(), Box<dyn std::error::Error>> {
-    let backend = MemoryObjectStore::new(1024 * 1024)?;
-    let leaf = put_page(
-        &backend,
-        &ExtentPage::Leaf(vec![Extent {
-            offset: 0,
-            length: 200,
-            kind: ExtentKind::AllocatedZero,
-        }]),
-    )?;
-    let root = put_page(
-        &backend,
-        &ExtentPage::Internal(vec![ExtentChild {
-            first_offset: 0,
-            end_offset: 200,
-            page: leaf,
-        }]),
-    )?;
-    let store = CachedObjectStore::new(
-        backend,
-        ObjectCacheOptions {
-            maximum_entries: 8,
-            maximum_bytes: 1024 * 1024,
-            maximum_in_flight: 2,
-            maximum_waiters_per_object: 2,
-        },
-    )?;
-    let request = ExtentRangeRequest {
-        root,
-        file_size: 200,
-        range: ByteRange {
-            offset: 64,
-            length: 32,
-        },
-        maximum_spans: 1,
-        limits: DecodeLimits::default(),
-        budget: WorkBudget::UNBOUNDED,
-    };
-    let cancellation = CancellationToken::new();
-    let first =
-        crate::async_storage::poll_ready(plan_extent_range_async(&store, request, &cancellation))
-            .ok_or("cached extent planning blocked")??;
-    assert_eq!(first.work.backend_read_operations, 2);
-    assert_eq!(store.stats()?.resident_decoded_pages, 2);
-
-    let second =
-        crate::async_storage::poll_ready(plan_extent_range_async(&store, request, &cancellation))
-            .ok_or("warm cached extent planning blocked")??;
-    assert_eq!(second.spans, first.spans);
-    assert_eq!(second.work.page_reads, 2);
-    assert_eq!(second.work.backend_read_operations, 0);
-    assert_eq!(second.work.object_bytes_read, 0);
-    assert_eq!(store.stats()?.decoded_hits, 2);
-    Ok(())
-}
-
-#[test]
-fn range_plan_exposes_nearest_authenticated_unvisited_page()
+#[tokio::test]
+async fn range_plan_exposes_nearest_authenticated_unvisited_page()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let first = put_page(
@@ -253,7 +199,8 @@ fn range_plan_exposes_nearest_authenticated_unvisited_page()
             length: 100,
             kind: ExtentKind::Hole,
         }]),
-    )?;
+    )
+    .await?;
     let second = put_page(
         &store,
         &ExtentPage::Leaf(vec![Extent {
@@ -261,7 +208,8 @@ fn range_plan_exposes_nearest_authenticated_unvisited_page()
             length: 100,
             kind: ExtentKind::AllocatedZero,
         }]),
-    )?;
+    )
+    .await?;
     let root = put_page(
         &store,
         &ExtentPage::Internal(vec![
@@ -276,7 +224,8 @@ fn range_plan_exposes_nearest_authenticated_unvisited_page()
                 page: second,
             },
         ]),
-    )?;
+    )
+    .await?;
     let limits = DecodeLimits::default();
     let plan = plan_extent_range(
         &store,
@@ -291,7 +240,9 @@ fn range_plan_exposes_nearest_authenticated_unvisited_page()
             limits,
             budget: unlimited(),
         },
-    )?;
+        &CancellationToken::new(),
+    )
+    .await?;
     assert_eq!(plan.work.page_reads, 2);
     assert_eq!(
         plan.next_residency,
@@ -306,8 +257,9 @@ fn range_plan_exposes_nearest_authenticated_unvisited_page()
     Ok(())
 }
 
-#[test]
-fn sparse_seek_traverses_each_forward_frontier_once() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn sparse_seek_traverses_each_forward_frontier_once() -> Result<(), Box<dyn std::error::Error>>
+{
     let store = MemoryObjectStore::default();
     let first = put_page(
         &store,
@@ -316,7 +268,8 @@ fn sparse_seek_traverses_each_forward_frontier_once() -> Result<(), Box<dyn std:
             length: 100,
             kind: ExtentKind::Hole,
         }]),
-    )?;
+    )
+    .await?;
     let second = put_page(
         &store,
         &ExtentPage::Leaf(vec![Extent {
@@ -324,7 +277,8 @@ fn sparse_seek_traverses_each_forward_frontier_once() -> Result<(), Box<dyn std:
             length: 100,
             kind: ExtentKind::Hole,
         }]),
-    )?;
+    )
+    .await?;
     let content = ObjectId {
         kind: ObjectKind::Blob,
         digest: crate::foundation::Digest::from_bytes([9; 32]),
@@ -339,7 +293,8 @@ fn sparse_seek_traverses_each_forward_frontier_once() -> Result<(), Box<dyn std:
                 object_offset: 0,
             },
         }]),
-    )?;
+    )
+    .await?;
     let root = put_page(
         &store,
         &ExtentPage::Internal(vec![
@@ -359,7 +314,8 @@ fn sparse_seek_traverses_each_forward_frontier_once() -> Result<(), Box<dyn std:
                 page: third,
             },
         ]),
-    )?;
+    )
+    .await?;
     let data = seek_extent(
         &store,
         ExtentSeekRequest {
@@ -370,7 +326,9 @@ fn sparse_seek_traverses_each_forward_frontier_once() -> Result<(), Box<dyn std:
             limits: DecodeLimits::default(),
             budget: unlimited(),
         },
-    )?;
+        &CancellationToken::new(),
+    )
+    .await?;
     assert_eq!(data.value, Some(200));
     assert_eq!(data.work.page_reads, 4);
     assert_eq!(data.work.backend_read_operations, 4);
@@ -384,7 +342,9 @@ fn sparse_seek_traverses_each_forward_frontier_once() -> Result<(), Box<dyn std:
             limits: DecodeLimits::default(),
             budget: unlimited(),
         },
-    )?;
+        &CancellationToken::new(),
+    )
+    .await?;
     assert_eq!(hole.value, Some(300));
     assert_eq!(hole.work.page_reads, 2);
     let eof = seek_extent(
@@ -397,14 +357,16 @@ fn sparse_seek_traverses_each_forward_frontier_once() -> Result<(), Box<dyn std:
             limits: DecodeLimits::default(),
             budget: unlimited(),
         },
-    )?;
+        &CancellationToken::new(),
+    )
+    .await?;
     assert_eq!(eof.value, Some(300));
     assert_eq!(eof.work.page_reads, 0);
     Ok(())
 }
 
-#[test]
-fn sparse_seek_distinguishes_holes_allocated_data_content_and_eof()
+#[tokio::test]
+async fn sparse_seek_distinguishes_holes_allocated_data_content_and_eof()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let content = ObjectId {
@@ -433,7 +395,9 @@ fn sparse_seek_distinguishes_holes_allocated_data_content_and_eof()
                 },
             },
         ]),
-    )?;
+    )
+    .await?;
+    let cancellation = CancellationToken::new();
     let seek = |offset, target| {
         seek_extent(
             &store,
@@ -445,41 +409,30 @@ fn sparse_seek_distinguishes_holes_allocated_data_content_and_eof()
                 limits: DecodeLimits::default(),
                 budget: unlimited(),
             },
+            &cancellation,
         )
     };
-    assert_eq!(seek(5, ExtentSeekTarget::Hole)?.value, Some(5));
-    assert_eq!(seek(5, ExtentSeekTarget::Data)?.value, Some(10));
-    assert_eq!(seek(12, ExtentSeekTarget::Data)?.value, Some(12));
-    assert_eq!(seek(12, ExtentSeekTarget::Hole)?.value, Some(30));
-    assert_eq!(seek(22, ExtentSeekTarget::Data)?.value, Some(22));
-    assert_eq!(seek(30, ExtentSeekTarget::Data)?.value, None);
-    assert_eq!(seek(30, ExtentSeekTarget::Hole)?.value, Some(30));
+    assert_eq!(seek(5, ExtentSeekTarget::Hole).await?.value, Some(5));
+    assert_eq!(seek(5, ExtentSeekTarget::Data).await?.value, Some(10));
+    assert_eq!(seek(12, ExtentSeekTarget::Data).await?.value, Some(12));
+    assert_eq!(seek(12, ExtentSeekTarget::Hole).await?.value, Some(30));
+    assert_eq!(seek(22, ExtentSeekTarget::Data).await?.value, Some(22));
+    assert_eq!(seek(30, ExtentSeekTarget::Data).await?.value, None);
+    assert_eq!(seek(30, ExtentSeekTarget::Hole).await?.value, Some(30));
 
     let invalid = seek(31, ExtentSeekTarget::Data)
+        .await
         .err()
         .ok_or("seek beyond EOF succeeded")?;
     assert!(matches!(invalid.error, ExtentReadError::InvalidRange));
     assert_eq!(*invalid.work, WorkCounters::default());
 
-    let asynchronous = crate::async_storage::poll_ready(seek_extent_async(
-        &store,
-        ExtentSeekRequest {
-            root,
-            file_size: 30,
-            offset: 5,
-            target: ExtentSeekTarget::Data,
-            limits: DecodeLimits::default(),
-            budget: unlimited(),
-        },
-        &CancellationToken::new(),
-    ))
-    .ok_or("memory-backed asynchronous seek remained pending")??;
-    assert_eq!(asynchronous, seek(5, ExtentSeekTarget::Data)?);
     Ok(())
 }
 
-#[test]
-fn empty_and_all_hole_files_have_exact_seek_boundaries() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn empty_and_all_hole_files_have_exact_seek_boundaries()
+-> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = put_page(
         &store,
@@ -488,7 +441,8 @@ fn empty_and_all_hole_files_have_exact_seek_boundaries() -> Result<(), Box<dyn s
             length: 10,
             kind: ExtentKind::Hole,
         }]),
-    )?;
+    )
+    .await?;
     for (file_size, target, expected) in [
         (10, ExtentSeekTarget::Data, None),
         (10, ExtentSeekTarget::Hole, Some(0)),
@@ -505,7 +459,9 @@ fn empty_and_all_hole_files_have_exact_seek_boundaries() -> Result<(), Box<dyn s
                 limits: DecodeLimits::default(),
                 budget: unlimited(),
             },
-        )?;
+            &CancellationToken::new(),
+        )
+        .await?;
         assert_eq!(receipt.value, expected);
         if file_size == 0 {
             assert_eq!(receipt.work.page_reads, 0);
@@ -514,8 +470,8 @@ fn empty_and_all_hole_files_have_exact_seek_boundaries() -> Result<(), Box<dyn s
     Ok(())
 }
 
-#[test]
-fn span_bound_stops_alternating_sparse_output() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn span_bound_stops_alternating_sparse_output() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = put_page(
         &store,
@@ -531,7 +487,8 @@ fn span_bound_stops_alternating_sparse_output() -> Result<(), Box<dyn std::error
                 kind: ExtentKind::AllocatedZero,
             },
         ]),
-    )?;
+    )
+    .await?;
     let failure = plan_extent_range(
         &store,
         ExtentRangeRequest {
@@ -545,7 +502,9 @@ fn span_bound_stops_alternating_sparse_output() -> Result<(), Box<dyn std::error
             limits: DecodeLimits::default(),
             budget: unlimited(),
         },
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("one-span bound unexpectedly admitted two spans")?;
     assert!(matches!(failure.error, ExtentReadError::TooManySpans));
@@ -565,7 +524,9 @@ fn span_bound_stops_alternating_sparse_output() -> Result<(), Box<dyn std::error
             limits: DecodeLimits::default(),
             budget: unlimited(),
         },
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("zero span limit unexpectedly succeeded")?;
     assert!(matches!(
@@ -600,71 +561,58 @@ fn range_terminal_and_lower_layer_error_translation_is_total()
         kind: ObjectKind::ExtentPage,
         digest: crate::foundation::Digest::from_bytes([91; 32]),
     };
-    let machine = RangeMachine::new(
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let request = ExtentRangeRequest {
         root,
-        PlanInput {
-            file_size: 4,
-            range: ByteRange {
-                offset: 0,
-                length: 4,
-            },
-            maximum_spans: 1,
+        file_size: 4,
+        range: ByteRange {
+            offset: 0,
+            length: 4,
         },
-        TraversalMode::Plan,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-    )?;
-    let incomplete = {
-        let mut machine = machine;
-        machine
-            .finish()
-            .err()
-            .ok_or("incomplete range machine produced a plan")?
+        maximum_spans: 1,
+        limits: DecodeLimits::default(),
+        budget: WorkBudget::UNBOUNDED,
     };
+    let machine = RangeMachine::new(request, TraversalMode::Plan, &mut accounting)?;
+    let incomplete = machine
+        .finish_plan(&mut accounting)
+        .err()
+        .ok_or("incomplete range machine produced a plan")?;
     assert!(matches!(
-        incomplete.error,
+        range_error(incomplete),
         ExtentReadError::IncompleteCoverage
     ));
 
-    let machine = RangeMachine::new(
-        root,
-        PlanInput {
-            file_size: 4,
-            range: ByteRange {
-                offset: 0,
-                length: 4,
-            },
-            maximum_spans: 1,
-        },
-        TraversalMode::Plan,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-    )?;
-    let cancelled = frontier::Machine::cancelled(&machine);
-    assert!(matches!(cancelled.error, ExtentReadError::Cancelled));
+    let cancelled = range_error(crate::FsError::Cancelled(
+        crate::cancellation::CancellationError,
+    ));
+    assert!(matches!(cancelled, ExtentReadError::Cancelled));
 
     let prospective = WorkCounters {
         object_probes: u64::MAX,
         ..WorkCounters::default()
     };
-    let backend = crate::storage::ObjectFailure::new(
-        ObjectStoreError::Missing,
-        WorkCounters {
+    if let KernelAccounting::Standalone { work, .. } = &mut accounting {
+        *work = prospective;
+    }
+    let overflow = accounting
+        .record_completed(WorkCounters {
             object_probes: 1,
             ..WorkCounters::default()
-        },
-    );
-    let overflow = frontier::Machine::storage_failure(&machine, prospective, backend);
+        })
+        .err()
+        .ok_or("overflowing backend prefix was accepted")?;
     assert!(matches!(
-        overflow.error,
+        range_error(overflow),
         ExtentReadError::Work(WorkError::Overflow)
     ));
-    assert_eq!(*overflow.work, prospective);
+    assert_eq!(accounting.spent(), prospective);
     Ok(())
 }
 
-#[test]
-fn decoded_pages_and_output_spans_are_admitted_before_allocation()
+#[tokio::test]
+async fn decoded_pages_and_output_spans_are_admitted_before_allocation()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = put_page(
@@ -686,7 +634,8 @@ fn decoded_pages_and_output_spans_are_admitted_before_allocation()
                 kind: ExtentKind::Hole,
             },
         ]),
-    )?;
+    )
+    .await?;
     let limits = DecodeLimits {
         maximum_page_height: 1,
         maximum_visited_pages: 2,
@@ -703,7 +652,7 @@ fn decoded_pages_and_output_spans_are_admitted_before_allocation()
         limits,
         budget: WorkBudget::UNBOUNDED,
     };
-    let baseline = plan_extent_range(&store, request)?;
+    let baseline = plan_extent_range(&store, request, &CancellationToken::new()).await?;
     assert_eq!(
         baseline.retained_allocation_bytes,
         u64::try_from(3 * size_of::<ExtentSlice>())?
@@ -718,7 +667,9 @@ fn decoded_pages_and_output_spans_are_admitted_before_allocation()
             },
             ..request
         },
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("one-byte-short range allocation budget unexpectedly succeeded")?;
     assert!(matches!(
@@ -734,8 +685,8 @@ fn decoded_pages_and_output_spans_are_admitted_before_allocation()
     Ok(())
 }
 
-#[test]
-fn range_and_seek_admission_reject_every_invalid_request_before_storage()
+#[tokio::test]
+async fn range_and_seek_admission_reject_every_invalid_request_before_storage()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = put_page(
@@ -745,7 +696,8 @@ fn range_and_seek_admission_reject_every_invalid_request_before_storage()
             length: 4,
             kind: ExtentKind::Hole,
         }]),
-    )?;
+    )
+    .await?;
     let request = ExtentRangeRequest {
         root,
         file_size: 4,
@@ -794,7 +746,8 @@ fn range_and_seek_admission_reject_every_invalid_request_before_storage()
         ExtentReadError::HeightExceeded,
     ];
     for (request, expected) in invalid.into_iter().zip(expected) {
-        let failure = plan_extent_range(&store, request)
+        let failure = plan_extent_range(&store, request, &CancellationToken::new())
+            .await
             .err()
             .ok_or("invalid range request succeeded")?;
         assert_eq!(
@@ -806,7 +759,7 @@ fn range_and_seek_admission_reject_every_invalid_request_before_storage()
 
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let failure = crate::async_storage::poll_ready(seek_extent_async(
+    let failure = (seek_extent(
         &store,
         ExtentSeekRequest {
             root,
@@ -818,7 +771,7 @@ fn range_and_seek_admission_reject_every_invalid_request_before_storage()
         },
         &cancellation,
     ))
-    .ok_or("pre-cancelled sparse seek remained pending")?
+    .await
     .err()
     .ok_or("pre-cancelled sparse seek succeeded")?;
     assert!(matches!(failure.error, ExtentReadError::Cancelled));
@@ -826,8 +779,9 @@ fn range_and_seek_admission_reject_every_invalid_request_before_storage()
     Ok(())
 }
 
-#[test]
-fn nested_extent_pages_reject_forged_parent_bounds() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn nested_extent_pages_reject_forged_parent_bounds() -> Result<(), Box<dyn std::error::Error>>
+{
     let store = MemoryObjectStore::default();
     let leaf = put_page(
         &store,
@@ -836,7 +790,8 @@ fn nested_extent_pages_reject_forged_parent_bounds() -> Result<(), Box<dyn std::
             length: 1,
             kind: ExtentKind::Hole,
         }]),
-    )?;
+    )
+    .await?;
     let nested = put_page(
         &store,
         &ExtentPage::Internal(vec![ExtentChild {
@@ -844,7 +799,8 @@ fn nested_extent_pages_reject_forged_parent_bounds() -> Result<(), Box<dyn std::
             end_offset: 1,
             page: leaf,
         }]),
-    )?;
+    )
+    .await?;
     let root = put_page(
         &store,
         &ExtentPage::Internal(vec![ExtentChild {
@@ -852,7 +808,8 @@ fn nested_extent_pages_reject_forged_parent_bounds() -> Result<(), Box<dyn std::
             end_offset: 2,
             page: nested,
         }]),
-    )?;
+    )
+    .await?;
     let failure = plan_extent_range(
         &store,
         ExtentRangeRequest {
@@ -869,7 +826,9 @@ fn nested_extent_pages_reject_forged_parent_bounds() -> Result<(), Box<dyn std::
             },
             budget: WorkBudget::UNBOUNDED,
         },
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("forged nested child bounds succeeded")?;
     assert!(matches!(
@@ -880,8 +839,8 @@ fn nested_extent_pages_reject_forged_parent_bounds() -> Result<(), Box<dyn std::
     Ok(())
 }
 
-#[test]
-fn authenticated_range_traversal_rejects_height_alias_and_child_bound_forgery()
+#[tokio::test]
+async fn authenticated_range_traversal_rejects_height_alias_and_child_bound_forgery()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let leaf = put_page(
@@ -891,7 +850,8 @@ fn authenticated_range_traversal_rejects_height_alias_and_child_bound_forgery()
             length: 1,
             kind: ExtentKind::Hole,
         }]),
-    )?;
+    )
+    .await?;
     let one_child = put_page(
         &store,
         &ExtentPage::Internal(vec![ExtentChild {
@@ -899,7 +859,8 @@ fn authenticated_range_traversal_rejects_height_alias_and_child_bound_forgery()
             end_offset: 2,
             page: leaf,
         }]),
-    )?;
+    )
+    .await?;
     let request = |root, limits| ExtentRangeRequest {
         root,
         file_size: 2,
@@ -911,9 +872,14 @@ fn authenticated_range_traversal_rejects_height_alias_and_child_bound_forgery()
         limits,
         budget: WorkBudget::UNBOUNDED,
     };
-    let bounds = plan_extent_range(&store, request(one_child, DecodeLimits::default()))
-        .err()
-        .ok_or("forged child bounds succeeded")?;
+    let bounds = plan_extent_range(
+        &store,
+        request(one_child, DecodeLimits::default()),
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("forged child bounds succeeded")?;
     assert!(matches!(bounds.error, ExtentReadError::ChildBoundsMismatch));
     assert_eq!(bounds.work.page_reads, 2);
 
@@ -926,7 +892,9 @@ fn authenticated_range_traversal_rejects_height_alias_and_child_bound_forgery()
                 ..DecodeLimits::default()
             },
         ),
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("height-limited internal traversal succeeded")?;
     assert!(matches!(height.error, ExtentReadError::HeightExceeded));
@@ -946,43 +914,18 @@ fn authenticated_range_traversal_rejects_height_alias_and_child_bound_forgery()
                 page: leaf,
             },
         ]),
-    )?;
-    let alias = plan_extent_range(&store, request(alias_root, DecodeLimits::default()))
-        .err()
-        .ok_or("aliased extent page succeeded")?;
+    )
+    .await?;
+    let alias = plan_extent_range(
+        &store,
+        request(alias_root, DecodeLimits::default()),
+        &CancellationToken::new(),
+    )
+    .await
+    .err()
+    .ok_or("aliased extent page succeeded")?;
     assert!(matches!(alias.error, ExtentReadError::Cycle));
     assert_eq!(alias.work.page_reads, 2);
 
-    let cancellation = CancellationToken::new();
-    for (request, expected) in [
-        (request(one_child, DecodeLimits::default()), "child-bounds"),
-        (
-            request(
-                one_child,
-                DecodeLimits {
-                    maximum_page_height: 1,
-                    ..DecodeLimits::default()
-                },
-            ),
-            "height",
-        ),
-        (request(alias_root, DecodeLimits::default()), "cycle"),
-    ] {
-        let failure = crate::async_storage::poll_ready(plan_extent_range_async(
-            &store,
-            request,
-            &cancellation,
-        ))
-        .ok_or("malformed async range unexpectedly suspended")?
-        .err()
-        .ok_or("malformed async range unexpectedly succeeded")?;
-        assert!(match expected {
-            "child-bounds" => matches!(failure.error, ExtentReadError::ChildBoundsMismatch),
-            "height" => matches!(failure.error, ExtentReadError::HeightExceeded),
-            "cycle" => matches!(failure.error, ExtentReadError::Cycle),
-            _ => false,
-        });
-        assert!(failure.work.page_reads > 0);
-    }
     Ok(())
 }

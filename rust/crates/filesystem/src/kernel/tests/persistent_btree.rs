@@ -1,9 +1,8 @@
 use super::*;
 use crate::foundation::{Digest, FileId};
-use crate::kernel::tree_mutation::{TreeFormat, TreeMutation, TreeSemanticError};
+use crate::kernel::tree_mutation::{TreeFormat, TreeMutation, TreeMutationError};
 use crate::kernel::{FileKind, LogicalName, NameEncoding, TreeEntry};
-use crate::performance::WorkError;
-use crate::storage::{ObjectKind, ObjectStoreError};
+use crate::storage::ObjectKind;
 
 fn name(byte: u8) -> Result<LogicalName, crate::kernel::TreePageError> {
     LogicalName::new(NameEncoding::PosixBytes, vec![byte], 1)
@@ -85,12 +84,11 @@ fn admission_rejects_every_invalid_request_before_work() -> Result<(), Box<dyn s
         )
         .err()
         .ok_or("invalid persistent-tree request was admitted")?;
-        assert_eq!(*failure.work, WorkCounters::default());
         match expected {
-            "wrong-kind" => assert!(matches!(failure.error, Error::WrongRootKind)),
-            "empty" => assert!(matches!(failure.error, Error::Empty)),
-            "too-many" => assert!(matches!(failure.error, Error::TooManyMutations)),
-            "invalid-limits" => assert!(matches!(failure.error, Error::InvalidLimits)),
+            "wrong-kind" => assert!(matches!(failure, Error::WrongRootKind)),
+            "empty" => assert!(matches!(failure, Error::Empty)),
+            "too-many" => assert!(matches!(failure, Error::TooManyMutations)),
+            "invalid-limits" => assert!(matches!(failure, Error::InvalidLimits)),
             _ => unreachable!(),
         }
     }
@@ -115,7 +113,7 @@ fn pages_clone_without_changing_authenticated_frontiers() -> Result<(), Box<dyn 
 fn page_sizes(
     lengths: &[usize],
     limits: DecodeLimits,
-) -> Result<Vec<usize>, Error<TreeSemanticError>> {
+) -> Result<Vec<usize>, Error<TreeMutationError>> {
     let (mut chunks, examined) = PageChunks::new(lengths, limits, |length| Ok(*length))?;
     assert_eq!(examined, u64::try_from(lengths.len()).unwrap_or(u64::MAX));
     let mut sizes = Vec::new();
@@ -158,7 +156,7 @@ fn chunking_is_bounded_by_items_bytes_and_encoder_contracts()
     assert!(matches!(
         PageChunks::new(&[1_u8], limits, |_| Err(CanonicalDecodeError::Truncated))
             .map(|(chunks, _)| chunks.start),
-        Err(Error::<TreeSemanticError>::Decode(
+        Err(Error::<TreeMutationError>::Decode(
             CanonicalDecodeError::Truncated
         ))
     ));
@@ -182,21 +180,9 @@ fn chunking_balances_pages_around_the_soft_target() -> Result<(), Box<dyn std::e
 }
 
 #[test]
-fn search_unchanged_and_bounds_cover_every_frontier() -> Result<(), Box<dyn std::error::Error>> {
+fn bounds_cover_every_frontier() -> Result<(), Box<dyn std::error::Error>> {
     let entries = [entry(2)?, entry(4)?, entry(6)?];
-    assert_eq!(search::<TreeFormat>(&entries, &name(2)?).0, Ok(0));
-    assert_eq!(search::<TreeFormat>(&entries, &name(4)?).0, Ok(1));
-    assert_eq!(search::<TreeFormat>(&entries, &name(6)?).0, Ok(2));
-    assert_eq!(search::<TreeFormat>(&entries, &name(1)?).0, Err(0));
-    assert_eq!(search::<TreeFormat>(&entries, &name(3)?).0, Err(1));
-    assert_eq!(search::<TreeFormat>(&entries, &name(7)?).0, Err(3));
-
     let children = [child(2)?, child(4)?];
-    assert!(unchanged(&children, &children));
-    assert!(!unchanged(&children[..1], &children));
-    let mut changed = children.clone();
-    changed[1].page = root(ObjectKind::TreePage, 9);
-    assert!(!unchanged(&changed, &children));
 
     assert!(leaf_within::<TreeFormat>(&entries, None, None));
     assert!(leaf_within::<TreeFormat>(
@@ -214,32 +200,4 @@ fn search_unchanged_and_bounds_cover_every_frontier() -> Result<(), Box<dyn std:
     assert!(!children_within(&children, None, Some(&name(4)?)));
     assert!(children_within(&[], None, Some(&name(1)?)));
     Ok(())
-}
-
-#[test]
-fn lower_layer_error_translation_is_total() {
-    assert!(matches!(
-        map_io::<TreeSemanticError>(persistent_io::Error::AllocationFailed),
-        Error::AllocationFailed
-    ));
-    assert!(matches!(
-        map_io::<TreeSemanticError>(persistent_io::Error::Allocation(
-            AllocationError::CapacityExceeded
-        )),
-        Error::Allocation(AllocationError::CapacityExceeded)
-    ));
-    assert!(matches!(
-        map_io::<TreeSemanticError>(persistent_io::Error::Storage(ObjectStoreError::Missing)),
-        Error::Storage(ObjectStoreError::Missing)
-    ));
-    assert!(matches!(
-        map_io::<TreeSemanticError>(persistent_io::Error::Decode(
-            CanonicalDecodeError::Truncated
-        )),
-        Error::Decode(CanonicalDecodeError::Truncated)
-    ));
-    assert!(matches!(
-        map_io::<TreeSemanticError>(persistent_io::Error::Work(WorkError::Overflow)),
-        Error::Work(WorkError::Overflow)
-    ));
 }
