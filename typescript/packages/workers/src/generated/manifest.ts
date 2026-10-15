@@ -1,152 +1,250 @@
-// Generated from acyclic_workers::manifest. Do not edit.
+// Generated from acyclic_manifest. Do not edit.
+export type Binding = {
+  name?: string;
+  capability?: string;
+  resource?: string;
+};
+export type ActorLimits = {
+  handlerTimeoutMillis?: string | number;
+  memoryBytes?: string | number;
+  checkpointBytes?: string | number;
+};
+export type SubscriptionStart = {
+  cursor?: string | number;
+  currentHead?: boolean;
+};
+export type SubscriptionSpec = {
+  subscriptionId?: string;
+  streamPath?: string;
+  start?: SubscriptionStart;
+  placementAnchor?: boolean;
+};
+export type ResourcePattern = {
+  name?: string;
+  prefix?: boolean;
+};
+export type ResourceGrant = {
+  resource?: ResourcePattern;
+  actions?: (string)[];
+};
+export type Limits = {
+  rps?: string | number;
+  burst?: string | number;
+  bytesPerS?: string | number;
+  channels?: string | number;
+  concurrency?: string | number;
+  bytes?: string | number;
+  spendMicros?: string | number;
+  tokens?: string | number;
+};
 export type DeploymentManifest = {
 /**
- * Exactly 1 for this schema.
+ * Schema discriminator, exactly one.
  */
 schemaVersion: number,
 /**
- * Independent named deployment configurations.
+ * Independent DNS-label-named deployment environments.
  */
 environments: Array<Environment>, };
 export type Environment = {
 /**
- * Stable environment name.
+ * Declaration name; environment names are DNS labels, env properties are identifiers.
  */
 name: string,
 /**
- * Artifact entry points.
+ * Artifact entries available for deployment.
  */
 entries: Array<Entry>,
 /**
- * Declared capabilities available for explicit entry selection.
+ * The Actors contract binding, with capability naming a typed grant below.
  */
-bindings: Array<BindingSpec>,
+bindings: Binding[],
 /**
- * Credential-store references available for explicit entry selection.
+ * Named typed workload grants; account spend entitlements remain host-owned.
+ */
+grants: Array<BindingGrant>,
+/**
+ * Credential-store references available only through explicit selection.
  */
 secrets: Array<SecretRef>,
 /**
- * Exact outbound HTTPS destinations; DNS/private-address enforcement is host-owned.
- */
-egress: Array<EgressRule>,
-/**
- * Schedules delivering to actor inbox streams.
+ * UTC schedules delivering idempotent records to subscribed inboxes.
  */
 crons: Array<CronSpec>,
 /**
- * Objects-backed static asset declarations.
+ * Content-addressed asset bundle declarations.
  */
 assets: Array<AssetSpec>,
 /**
- * HTTP routing declarations.
+ * Customer routes; host/prefix pairs are unique across all environments.
  */
 routes: Array<RouteSpec>, };
 export type Entry = {
 /**
- * Unique entry name within the environment.
+ * Declaration name; environment names are DNS labels, env properties are identifiers.
  */
 name: string,
 /**
- * Actor or stateless worker.
- */
-kind: EntryKind,
-/**
- * Lowercase hexadecimal SHA-256 of the artifact.
+ * Nonzero lowercase SHA-256 of the immutable code artifact.
  */
 artifactSha256: string,
 /**
- * Logical module name within the artifact; not a filesystem path.
+ * Logical artifact module identifier, never a filesystem path.
  */
 module: string,
 /**
- * Names of explicitly granted bindings.
+ * Explicitly selected binding names.
  */
 bindings: Array<string>,
 /**
- * Names of explicitly granted credential references.
+ * Credential-store references available only through explicit selection.
  */
-secrets: Array<string>, };
-export type EntryKind = "actor" | "worker";
-export type BindingSpec = {
+secrets: Array<string>,
 /**
- * Guest env property name.
+ * Actor instance or stateless Worker configuration.
+ */
+runtime: EntryRuntime,
+/**
+ * Optional scoped HTTPS handle; absence denies outbound HTTPS.
+ */
+fetch: FetchBinding | null, };
+export type EntryRuntime = { "kind": "actor",
+/**
+ * Explicit initial placement region.
+ */
+homeRegion: string,
+/**
+ * Product-specific execution or capability ceilings.
+ */
+limits: ActorLimits,
+/**
+ * Canonical Actors subscription specs, including starts and placement anchors.
+ */
+subscriptions: SubscriptionSpec[],
+/**
+ * Optional durable alarm destination; enabling timers requires its wake subscription.
+ */
+timerInbox: TimerInbox | null, } | { "kind": "worker",
+/**
+ * Product-specific execution or capability ceilings.
+ */
+limits: WorkerLimits, };
+export type TimerInbox = {
+/**
+ * Selected environment binding name.
+ */
+binding: string,
+/**
+ * Exact canonical Streams resource for durable fires.
+ */
+stream: ResourcePattern, };
+export type WorkerLimits = {
+/**
+ * Positive CPU milliseconds per request.
+ */
+cpuMillis: number,
+/**
+ * Positive memory ceiling in bytes.
+ */
+memoryBytes: number,
+/**
+ * Positive wall-clock milliseconds per request.
+ */
+timeoutMillis: number, };
+export type FetchBinding = {
+/**
+ * Declaration name; environment names are DNS labels, env properties are identifiers.
  */
 name: string,
 /**
- * Runtime handle family.
+ * Complete allow-list; an empty list is rejected.
  */
-kind: BindingKind,
+egress: Array<EgressRule>, };
+export type BindingGrant = {
 /**
- * Opaque platform resource reference.
+ * Declaration name; environment names are DNS labels, env properties are identifiers.
  */
-resource: string,
+name: string,
 /**
- * Opaque Trust capability/policy reference, not a bearer token.
+ * Authority using the shared auth.v1 resource and action contract.
  */
-capability: string, };
-export type BindingKind = "streams" | "volume" | "objects" | "compute" | "actors" | "fetch";
+grant: ResourceGrant,
+/**
+ * Product-specific execution or capability ceilings.
+ */
+limits: Limits | null, };
 export type SecretRef = {
 /**
- * Guest env property name.
+ * Declaration name; environment names are DNS labels, env properties are identifiers.
  */
 name: string,
 /**
- * Opaque credential-store reference; never the secret value.
+ * Only secrets:/ followed by nonempty ASCII identifier path segments.
  */
-reference: string, };
+reference: SecretReference, };
+export type SecretReference = string;
 export type EgressRule = {
 /**
- * Canonical lowercase ASCII DNS hostname.
+ * Lowercase canonical ASCII DNS name, excluding numeric IP forms.
  */
 host: string,
 /**
- * Explicit TCP port.
+ * The host always uses TLS with certificate validation, on this port.
  */
 port: number, };
 export type CronSpec = {
 /**
- * Unique schedule name.
+ * Declaration name; environment names are DNS labels, env properties are identifiers.
  */
 name: string,
 /**
- * Minute/hour/day-of-month/month/day-of-week numeric cron expression.
+ * Five numeric UTC cron fields, with lists, ranges and positive steps.
  */
 schedule: string,
 /**
- * Target actor entry name.
+ * Target entry name in this environment.
  */
 entry: string,
 /**
- * Target inbox stream binding selected by that entry.
+ * Selected Streams binding authorizing append to this inbox.
  */
 inboxBinding: string,
 /**
- * Canonical account-relative stream path resolved through that binding.
+ * Exact streams:/ resource; the target must subscribe to this stream.
  */
-inboxStream: string, };
+inbox: ResourcePattern, };
 export type AssetSpec = {
 /**
- * Entry serving the assets.
+ * Target entry name in this environment.
  */
 entry: string,
 /**
- * Objects binding selected by the entry.
+ * Selected environment binding name.
  */
 binding: string,
 /**
- * Opaque object-key prefix.
+ * Immutable Objects keys are assets/<bundleSha256>/<path>.
  */
-prefix: string, };
+bundleSha256: string,
+/**
+ * Serve the bundle index for missing asset paths when enabled.
+ */
+spaFallback: boolean,
+/**
+ * Explicit cache policy for bundle responses.
+ */
+cache: AssetCache, };
+export type AssetCache = "immutable" | "revalidate";
 export type RouteSpec = {
 /**
- * Canonical DNS hostname.
+ * Lowercase canonical ASCII DNS name, excluding numeric IP forms.
  */
 host: string,
 /**
- * Absolute URL path prefix, not a filesystem path.
+ * Canonical absolute prefix; segment-boundary matching, no trailing slash except /.
  */
 pathPrefix: string,
 /**
- * Target entry name.
+ * Target entry name in this environment.
  */
 entry: string, };

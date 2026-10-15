@@ -1,18 +1,18 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "DeploymentManifest",
-  "description": "Version-one deployment manifest. Environment configurations are complete, not overlays.",
+  "description": "Versioned deployment document; project and account identity come from the deploy call.",
   "type": "object",
   "properties": {
     "environments": {
-      "description": "Independent named deployment configurations.",
+      "description": "Independent DNS-label-named deployment environments.",
       "type": "array",
       "items": {
         "$ref": "#/$defs/Environment"
       }
     },
     "schemaVersion": {
-      "description": "Exactly 1 for this schema.",
+      "description": "Schema discriminator, exactly one.",
       "type": "integer",
       "format": "uint32",
       "maximum": 1,
@@ -25,116 +25,161 @@
     "environments"
   ],
   "$defs": {
+    "ActorLimits": {
+      "type": "object",
+      "properties": {
+        "checkpointBytes": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^-?[0-9]+$"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "handlerTimeoutMillis": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^-?[0-9]+$"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "memoryBytes": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^-?[0-9]+$"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "AssetCache": {
+      "description": "Browser cache behavior for content-addressed asset paths.",
+      "oneOf": [
+        {
+          "description": "Cache the immutable bundle path without revalidation.",
+          "type": "string",
+          "const": "immutable"
+        },
+        {
+          "description": "Require revalidation for browser responses.",
+          "type": "string",
+          "const": "revalidate"
+        }
+      ]
+    },
     "AssetSpec": {
-      "description": "An asset prefix in an explicitly selected Objects binding.",
+      "description": "Immutable asset bundle served through a selected Objects binding.",
       "type": "object",
       "properties": {
         "binding": {
-          "description": "Objects binding selected by the entry.",
+          "description": "Selected environment binding name.",
           "type": "string"
+        },
+        "bundleSha256": {
+          "description": "Immutable Objects keys are assets/<bundleSha256>/<path>.",
+          "type": "string"
+        },
+        "cache": {
+          "description": "Explicit cache policy for bundle responses.",
+          "$ref": "#/$defs/AssetCache"
         },
         "entry": {
-          "description": "Entry serving the assets.",
+          "description": "Target entry name in this environment.",
           "type": "string"
         },
-        "prefix": {
-          "description": "Opaque object-key prefix.",
-          "type": "string"
+        "spaFallback": {
+          "description": "Serve the bundle index for missing asset paths when enabled.",
+          "type": "boolean"
         }
       },
       "additionalProperties": false,
       "required": [
         "entry",
         "binding",
-        "prefix"
+        "bundleSha256",
+        "spaFallback",
+        "cache"
       ]
     },
-    "BindingKind": {
-      "description": "Binding handle family. Capabilities remain opaque references to Trust policy.",
-      "oneOf": [
-        {
-          "description": "Stream namespace handle.",
-          "type": "string",
-          "const": "streams"
-        },
-        {
-          "description": "Filesystem volume handle.",
-          "type": "string",
-          "const": "volume"
-        },
-        {
-          "description": "Objects bucket handle.",
-          "type": "string",
-          "const": "objects"
-        },
-        {
-          "description": "Machines or sandbox compute handle.",
-          "type": "string",
-          "const": "compute"
-        },
-        {
-          "description": "Actor client handle, for apps.",
-          "type": "string",
-          "const": "actors"
-        },
-        {
-          "description": "Outbound HTTPS handle.",
-          "type": "string",
-          "const": "fetch"
-        }
-      ]
-    },
-    "BindingSpec": {
-      "description": "A named resource capability; deployment does not embed credentials.",
+    "Binding": {
       "type": "object",
       "properties": {
         "capability": {
-          "description": "Opaque Trust capability/policy reference, not a bearer token.",
           "type": "string"
         },
-        "kind": {
-          "description": "Runtime handle family.",
-          "$ref": "#/$defs/BindingKind"
-        },
         "name": {
-          "description": "Guest env property name.",
           "type": "string"
         },
         "resource": {
-          "description": "Opaque platform resource reference.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "BindingGrant": {
+      "description": "Named S1 grant and optional ceilings used to derive a workload capability.",
+      "type": "object",
+      "properties": {
+        "grant": {
+          "description": "Authority using the shared auth.v1 resource and action contract.",
+          "$ref": "#/$defs/ResourceGrant"
+        },
+        "limits": {
+          "description": "Product-specific execution or capability ceilings.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Limits"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "description": "Declaration name; environment names are DNS labels, env properties are identifiers.",
           "type": "string"
         }
       },
       "additionalProperties": false,
       "required": [
         "name",
-        "kind",
-        "resource",
-        "capability"
+        "grant"
       ]
     },
     "CronSpec": {
-      "description": "UTC five-field numeric cron, with lists, ranges and positive steps. Sunday is 0.\nDay-of-month/day-of-week use OR when both are restricted. A fire appends to the\nactor inbox, keyed by occurrence timer ID; no Invoke or runtime keepalive wake.",
+      "description": "UTC numeric five-field cron; restricted day-of-month and weekday use OR.",
       "type": "object",
       "properties": {
         "entry": {
-          "description": "Target actor entry name.",
+          "description": "Target entry name in this environment.",
           "type": "string"
+        },
+        "inbox": {
+          "description": "Exact streams:/ resource; the target must subscribe to this stream.",
+          "$ref": "#/$defs/ResourcePattern"
         },
         "inboxBinding": {
-          "description": "Target inbox stream binding selected by that entry.",
-          "type": "string"
-        },
-        "inboxStream": {
-          "description": "Canonical account-relative stream path resolved through that binding.",
+          "description": "Selected Streams binding authorizing append to this inbox.",
           "type": "string"
         },
         "name": {
-          "description": "Unique schedule name.",
+          "description": "Declaration name; environment names are DNS labels, env properties are identifiers.",
           "type": "string"
         },
         "schedule": {
-          "description": "Minute/hour/day-of-month/month/day-of-week numeric cron expression.",
+          "description": "Five numeric UTC cron fields, with lists, ranges and positive steps.",
           "type": "string"
         }
       },
@@ -144,19 +189,19 @@
         "schedule",
         "entry",
         "inboxBinding",
-        "inboxStream"
+        "inbox"
       ]
     },
     "EgressRule": {
-      "description": "Exact HTTPS authority allowed for outbound fetch; no wildcard or IP literals.",
+      "description": "Exact canonical DNS authority, resolved and pinned by the host before use.",
       "type": "object",
       "properties": {
         "host": {
-          "description": "Canonical lowercase ASCII DNS hostname.",
+          "description": "Lowercase canonical ASCII DNS name, excluding numeric IP forms.",
           "type": "string"
         },
         "port": {
-          "description": "Explicit TCP port.",
+          "description": "The host always uses TLS with certificate validation, on this port.",
           "type": "integer",
           "format": "uint16",
           "maximum": 65535,
@@ -170,34 +215,45 @@
       ]
     },
     "Entry": {
-      "description": "Content-addressed code and its selected environment handles.",
+      "description": "Content-addressed guest entry with explicitly selected environment handles.",
       "type": "object",
       "properties": {
         "artifactSha256": {
-          "description": "Lowercase hexadecimal SHA-256 of the artifact.",
+          "description": "Nonzero lowercase SHA-256 of the immutable code artifact.",
           "type": "string"
         },
         "bindings": {
-          "description": "Names of explicitly granted bindings.",
+          "description": "Explicitly selected binding names.",
           "type": "array",
           "items": {
             "type": "string"
           }
         },
-        "kind": {
-          "description": "Actor or stateless worker.",
-          "$ref": "#/$defs/EntryKind"
+        "fetch": {
+          "description": "Optional scoped HTTPS handle; absence denies outbound HTTPS.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FetchBinding"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "module": {
-          "description": "Logical module name within the artifact; not a filesystem path.",
+          "description": "Logical artifact module identifier, never a filesystem path.",
           "type": "string"
         },
         "name": {
-          "description": "Unique entry name within the environment.",
+          "description": "Declaration name; environment names are DNS labels, env properties are identifiers.",
           "type": "string"
         },
+        "runtime": {
+          "description": "Actor instance or stateless Worker configuration.",
+          "$ref": "#/$defs/EntryRuntime"
+        },
         "secrets": {
-          "description": "Names of explicitly granted credential references.",
+          "description": "Credential-store references available only through explicit selection.",
           "type": "array",
           "items": {
             "type": "string"
@@ -207,80 +263,133 @@
       "additionalProperties": false,
       "required": [
         "name",
-        "kind",
         "artifactSha256",
         "module",
         "bindings",
-        "secrets"
+        "secrets",
+        "runtime"
       ]
     },
-    "EntryKind": {
-      "description": "Execution product for an artifact entry point.",
+    "EntryRuntime": {
+      "description": "Product configuration lowered to the corresponding platform request.",
       "oneOf": [
         {
-          "description": "Stateful guest with restore/event/checkpoint hooks.",
-          "type": "string",
-          "const": "actor"
+          "description": "One actor instance per project/environment/entry deploy identity.",
+          "type": "object",
+          "properties": {
+            "homeRegion": {
+              "description": "Explicit initial placement region.",
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "actor"
+            },
+            "limits": {
+              "description": "Product-specific execution or capability ceilings.",
+              "$ref": "#/$defs/ActorLimits"
+            },
+            "subscriptions": {
+              "description": "Canonical Actors subscription specs, including starts and placement anchors.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/SubscriptionSpec"
+              }
+            },
+            "timerInbox": {
+              "description": "Optional durable alarm destination; enabling timers requires its wake subscription.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TimerInbox"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "homeRegion",
+            "limits",
+            "subscriptions"
+          ]
         },
         {
-          "description": "Stateless default.fetch guest.",
-          "type": "string",
-          "const": "worker"
+          "description": "Stateless Worker with explicit request ceilings.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "worker"
+            },
+            "limits": {
+              "description": "Product-specific execution or capability ceilings.",
+              "$ref": "#/$defs/WorkerLimits"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "limits"
+          ]
         }
       ]
     },
     "Environment": {
-      "description": "One isolated environment; secret values are never part of this document.",
+      "description": "Complete isolated configuration; no environment overlays or implicit selections.",
       "type": "object",
       "properties": {
         "assets": {
-          "description": "Objects-backed static asset declarations.",
+          "description": "Content-addressed asset bundle declarations.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/AssetSpec"
           }
         },
         "bindings": {
-          "description": "Declared capabilities available for explicit entry selection.",
+          "description": "The Actors contract binding, with capability naming a typed grant below.",
           "type": "array",
           "items": {
-            "$ref": "#/$defs/BindingSpec"
+            "$ref": "#/$defs/Binding"
           }
         },
         "crons": {
-          "description": "Schedules delivering to actor inbox streams.",
+          "description": "UTC schedules delivering idempotent records to subscribed inboxes.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/CronSpec"
           }
         },
-        "egress": {
-          "description": "Exact outbound HTTPS destinations; DNS/private-address enforcement is host-owned.",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/EgressRule"
-          }
-        },
         "entries": {
-          "description": "Artifact entry points.",
+          "description": "Artifact entries available for deployment.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/Entry"
           }
         },
+        "grants": {
+          "description": "Named typed workload grants; account spend entitlements remain host-owned.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BindingGrant"
+          }
+        },
         "name": {
-          "description": "Stable environment name.",
+          "description": "Declaration name; environment names are DNS labels, env properties are identifiers.",
           "type": "string"
         },
         "routes": {
-          "description": "HTTP routing declarations.",
+          "description": "Customer routes; host/prefix pairs are unique across all environments.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/RouteSpec"
           }
         },
         "secrets": {
-          "description": "Credential-store references available for explicit entry selection.",
+          "description": "Credential-store references available only through explicit selection.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/SecretRef"
@@ -292,27 +401,179 @@
         "name",
         "entries",
         "bindings",
+        "grants",
         "secrets",
-        "egress",
         "crons",
         "assets",
         "routes"
       ]
     },
+    "FetchBinding": {
+      "description": "One entry-owned HTTPS handle and its complete destination allow-list.",
+      "type": "object",
+      "properties": {
+        "egress": {
+          "description": "Complete allow-list; an empty list is rejected.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EgressRule"
+          }
+        },
+        "name": {
+          "description": "Declaration name; environment names are DNS labels, env properties are identifiers.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "egress"
+      ]
+    },
+    "Limits": {
+      "type": "object",
+      "properties": {
+        "burst": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^-?[0-9]+$"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "bytes": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^-?[0-9]+$"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "bytesPerS": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^-?[0-9]+$"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "channels": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^-?[0-9]+$"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "concurrency": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^-?[0-9]+$"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "rps": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^-?[0-9]+$"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "spendMicros": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^-?[0-9]+$"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "tokens": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^-?[0-9]+$"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ResourceGrant": {
+      "type": "object",
+      "properties": {
+        "actions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "resource": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "prefix": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "ResourcePattern": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "prefix": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "RouteSpec": {
-      "description": "Hostname and URL path-prefix route to a declared artifact entry.",
+      "description": "Customer route with canonical segment-boundary prefix matching.",
       "type": "object",
       "properties": {
         "entry": {
-          "description": "Target entry name.",
+          "description": "Target entry name in this environment.",
           "type": "string"
         },
         "host": {
-          "description": "Canonical DNS hostname.",
+          "description": "Lowercase canonical ASCII DNS name, excluding numeric IP forms.",
           "type": "string"
         },
         "pathPrefix": {
-          "description": "Absolute URL path prefix, not a filesystem path.",
+          "description": "Canonical absolute prefix; segment-boundary matching, no trailing slash except /.",
           "type": "string"
         }
       },
@@ -324,22 +585,111 @@
       ]
     },
     "SecretRef": {
-      "description": "Reference resolved by the host and sealed to the deployment artifact digest.",
+      "description": "Typed credential-store reference, resolved by the host outside the manifest.",
       "type": "object",
       "properties": {
         "name": {
-          "description": "Guest env property name.",
+          "description": "Declaration name; environment names are DNS labels, env properties are identifiers.",
           "type": "string"
         },
         "reference": {
-          "description": "Opaque credential-store reference; never the secret value.",
-          "type": "string"
+          "description": "Only secrets:/ followed by nonempty ASCII identifier path segments.",
+          "$ref": "#/$defs/SecretReference"
         }
       },
       "additionalProperties": false,
       "required": [
         "name",
         "reference"
+      ]
+    },
+    "SecretReference": {
+      "type": "string",
+      "maxLength": 256,
+      "pattern": "^secrets:/[A-Za-z0-9_-]{1,63}(/[A-Za-z0-9_-]{1,63})*$"
+    },
+    "SubscriptionSpec": {
+      "type": "object",
+      "properties": {
+        "placementAnchor": {
+          "type": "boolean"
+        },
+        "start": {
+          "type": "object",
+          "properties": {
+            "currentHead": {
+              "type": "boolean"
+            },
+            "cursor": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^-?[0-9]+$"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "streamPath": {
+          "type": "string"
+        },
+        "subscriptionId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "TimerInbox": {
+      "description": "Durable alarm destination, admitted only with a matching wake subscription.",
+      "type": "object",
+      "properties": {
+        "binding": {
+          "description": "Selected environment binding name.",
+          "type": "string"
+        },
+        "stream": {
+          "description": "Exact canonical Streams resource for durable fires.",
+          "$ref": "#/$defs/ResourcePattern"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "binding",
+        "stream"
+      ]
+    },
+    "WorkerLimits": {
+      "description": "Positive stateless Worker CPU, memory and wall-clock ceilings.",
+      "type": "object",
+      "properties": {
+        "cpuMillis": {
+          "description": "Positive CPU milliseconds per request.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "memoryBytes": {
+          "description": "Positive memory ceiling in bytes.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "timeoutMillis": {
+          "description": "Positive wall-clock milliseconds per request.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "cpuMillis",
+        "memoryBytes",
+        "timeoutMillis"
       ]
     }
   }
