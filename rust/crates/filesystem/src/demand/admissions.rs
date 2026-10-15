@@ -239,12 +239,13 @@ impl DemandWork {
         failure: &mut Option<crate::WorkError>,
     ) -> Result<(), crate::WorkError> {
         let Some(dirty) = self.roots.native_mount_dirty.as_ref() else {
-            return Ok(());
+            return self.prune_native_mount_admissions();
         };
         if !dirty.load(Ordering::Acquire) || !dirty.swap(false, Ordering::AcqRel) {
             return Ok(());
         }
         let mut empty = true;
+        let mut retired_mount = false;
         for entry in &mut self.roots.native_mount_admissions.0 {
             let actual = mount_bytes(entry);
             let recorded = if actual < entry.1 {
@@ -269,13 +270,71 @@ impl DemandWork {
             }
             entry.1 = actual;
             empty &= actual == 0;
+            retired_mount |= actual == 0;
+        }
+        if retired_mount {
+            self.prune_native_mount_admissions()?;
         }
         if empty && self.roots.native_mount_admission_pending {
-            dirty.store(true, Ordering::Release);
+            if let Some(dirty) = &self.roots.native_mount_dirty {
+                dirty.store(true, Ordering::Release);
+            }
         } else if empty {
             drop(self.roots.native_mount_dirty.take());
             self.allocations
                 .release(std::mem::size_of::<AtomicBool>() as u64)
+                .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
+        }
+        Ok(())
+    }
+    fn prune_native_mount_admissions(&mut self) -> Result<(), crate::WorkError> {
+        if self.roots.native_mount_admission_pending {
+            if let Some(dirty) = &self.roots.native_mount_dirty {
+                dirty.store(true, Ordering::Release);
+            }
+            return Ok(());
+        }
+        if self.roots.native_mount_admissions.0.is_empty() {
+            return Ok(());
+        }
+        let owners = &self.roots.native_mount_admissions.0;
+        let live = owners.iter().filter(|entry| entry.1 != 0).count();
+        let moved = owners[..live].iter().filter(|entry| entry.1 == 0).count();
+        let copied = WorkCounters {
+            bytes_copied: (moved * std::mem::size_of::<(Weak<NativeMountAllocationCustody>, u64)>())
+                as u64,
+            ..WorkCounters::UNCHARGED
+        };
+        // Retirement is unconditional. Moving survivors requires the current
+        // cancellation, invocation, resource and original-ledger admission.
+        let deferred = moved != 0 && self.charge_reconciled(copied).is_err();
+        let (owners, capacity) = &mut self.roots.native_mount_admissions;
+        while owners.last().is_some_and(|entry| entry.1 == 0) {
+            owners.pop();
+        }
+        if deferred {
+            if let Some(dirty) = &self.roots.native_mount_dirty {
+                dirty.store(true, Ordering::Release);
+            }
+            return Ok(());
+        }
+        let mut index = 0;
+        while index < owners.len() {
+            if owners[index].1 == 0 {
+                owners.swap_remove(index);
+                while owners.last().is_some_and(|entry| entry.1 == 0) {
+                    owners.pop();
+                }
+            } else {
+                index += 1;
+            }
+        }
+        if owners.is_empty() {
+            let backing = std::mem::take(owners);
+            let bytes = std::mem::take(capacity).logical_bytes();
+            drop(backing);
+            self.allocations
+                .release(bytes)
                 .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
         }
         Ok(())
@@ -379,6 +438,10 @@ impl NativeDemandReadMeter {
         Ok(token.clone())
     }
 }
+
+#[cfg(all(test, feature = "native-watch"))]
+#[path = "admissions_registry_tests.rs"]
+mod registry_tests;
 
 #[cfg(all(test, feature = "memory"))]
 #[path = "admissions_tests.rs"]
