@@ -144,6 +144,15 @@ fn accounting_source_registry(bencher: Bencher, (count, retire): (usize, bool)) 
 
 #[divan::bench(args = [false, true], threads = [1, 4])]
 fn authority_head(bencher: Bencher, native_accounting: bool) {
+    authority_head_bench(bencher, native_accounting, false);
+}
+
+#[divan::bench(threads = [1, 4], sample_count = 64, sample_size = 8)]
+fn authority_head_shared(bencher: Bencher) {
+    authority_head_bench(bencher, true, true);
+}
+
+fn authority_head_bench(bencher: Bencher, native_accounting: bool, shared: bool) {
     use acyclic_fs::{AsyncAuthorityStore, AuthorityId, AuthorityWork, Epoch};
     let runtime = Runtime::new().unwrap();
     let cancellation = acyclic_fs::CancellationToken::new();
@@ -174,17 +183,33 @@ fn authority_head(bencher: Bencher, native_accounting: bool) {
             work.spent()
         );
     }
-    benchmark_marker("authority_head", native_accounting, true);
+    let shared_original =
+        shared.then(|| acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).unwrap());
+    let name = if shared {
+        "authority_head_shared"
+    } else {
+        "authority_head"
+    };
+    benchmark_marker(name, native_accounting, true);
     bencher.bench(|| {
-        let original = native_accounting
+        let original = (native_accounting && !shared)
             .then(|| acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).unwrap());
-        let mut work = match &original {
+        let mut work = match shared_original.as_ref().or(original.as_ref()) {
             Some(original) => AuthorityWork::native(original, &cancellation),
             None => AuthorityWork::new(budget, &cancellation),
         };
         runtime.block_on(store.head(authority, &mut work)).unwrap()
     });
-    benchmark_marker("authority_head", native_accounting, false);
+    benchmark_marker(name, native_accounting, false);
+    if std::env::var_os("ACYCLIC_BENCH_WORK").is_some()
+        && let Some(original) = shared_original
+    {
+        eprintln!(
+            "shared head live={} work={:?}",
+            original.live_allocation_bytes(),
+            original.receipt()
+        );
+    }
 }
 
 fn workspace(runtime: &Runtime) -> (tempfile::TempDir, LocalFs, LocalWorkspace) {
